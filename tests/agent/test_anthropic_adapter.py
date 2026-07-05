@@ -167,6 +167,39 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
 
+    def test_provider_identity_base_url_keeps_minimax_auth_through_loopback_tap(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "minimax-secret-123",
+                base_url="http://127.0.0.1:58641",
+                provider_identity_base_url="https://api.minimax.io/anthropic/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "http://127.0.0.1:58641"
+            assert kwargs["auth_token"] == "minimax-secret-123"
+            assert "api_key" not in kwargs
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14"
+            }
+
+    def test_provider_identity_env_keeps_minimax_auth_through_loopback_tap(self, monkeypatch):
+        monkeypatch.setenv(
+            "HERMES_PROVIDER_IDENTITY_BASE_URL",
+            "https://api.minimax.io/anthropic/v1",
+        )
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "minimax-secret-123",
+                base_url="http://127.0.0.1:58641",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "http://127.0.0.1:58641"
+            assert kwargs["auth_token"] == "minimax-secret-123"
+            assert "api_key" not in kwargs
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14"
+            }
+
     def test_minimax_cn_anthropic_endpoint_omits_tool_streaming_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(

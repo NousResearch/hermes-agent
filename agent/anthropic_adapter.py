@@ -344,6 +344,7 @@ _OAUTH_ONLY_BETAS = [
 # when the spoofed user-agent version is too far behind the actual release.
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
+_PROVIDER_IDENTITY_BASE_URL_ENV = "HERMES_PROVIDER_IDENTITY_BASE_URL"
 
 
 def _detect_claude_code_version() -> str:
@@ -420,6 +421,27 @@ def _normalize_base_url_text(base_url) -> str:
     if not base_url:
         return ""
     return str(base_url).strip()
+
+
+def _provider_identity_base_url(
+    base_url: str | None,
+    provider_identity_base_url: str | None = None,
+) -> str:
+    """Return the URL used for provider-specific auth/header classification.
+
+    Stream-tap and debugging proxies can deliberately make the SDK transport
+    ``base_url`` a loopback address.  Some Anthropic-compatible providers still
+    need their original upstream URL for auth and beta-header decisions (for
+    example MiniMax requires Bearer auth and rejects the tool-streaming beta).
+    ``HERMES_PROVIDER_IDENTITY_BASE_URL`` preserves that identity while the
+    request transport remains proxied.
+    """
+    explicit = _normalize_base_url_text(provider_identity_base_url)
+    if not explicit:
+        explicit = _normalize_base_url_text(
+            os.environ.get(_PROVIDER_IDENTITY_BASE_URL_ENV)
+        )
+    return explicit or _normalize_base_url_text(base_url)
 
 
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
@@ -630,6 +652,7 @@ def _build_anthropic_client_with_bearer_hook(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    provider_identity_base_url: str | None = None,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
 
@@ -664,6 +687,10 @@ def _build_anthropic_client_with_bearer_hook(
 
     # Strip any trailing /v1 — the Anthropic SDK appends /v1/messages.
     normalized_base_url = _normalize_base_url_text(base_url)
+    identity_base_url = _provider_identity_base_url(
+        normalized_base_url,
+        provider_identity_base_url,
+    )
     if normalized_base_url:
         import re as _re
         normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
@@ -684,14 +711,14 @@ def _build_anthropic_client_with_bearer_hook(
     }
 
     if normalized_base_url:
-        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
+        if _is_azure_anthropic_endpoint(identity_base_url) and "api-version" not in identity_base_url:
             kwargs["base_url"] = normalized_base_url
             kwargs["default_query"] = {"api-version": "2025-04-15"}
         else:
             kwargs["base_url"] = normalized_base_url
 
     common_betas = _common_betas_for_base_url(
-        normalized_base_url,
+        identity_base_url,
         drop_context_1m_beta=drop_context_1m_beta,
     )
     if common_betas:
@@ -706,6 +733,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    provider_identity_base_url: str | None = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -747,6 +775,7 @@ def build_anthropic_client(
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
             drop_context_1m_beta=drop_context_1m_beta,
+            provider_identity_base_url=provider_identity_base_url,
         )
 
     normalize_proxy_env_vars()
@@ -754,6 +783,10 @@ def build_anthropic_client(
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
+    identity_base_url = _provider_identity_base_url(
+        normalized_base_url,
+        provider_identity_base_url,
+    )
     if normalized_base_url:
         import re as _re
         normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
@@ -772,17 +805,17 @@ def build_anthropic_client(
         # Pass it via default_query so the SDK appends it to every request URL
         # without corrupting the base_url (appending it directly produces
         # malformed paths like /anthropic?api-version=.../v1/messages).
-        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
+        if _is_azure_anthropic_endpoint(identity_base_url) and "api-version" not in identity_base_url:
             kwargs["base_url"] = normalized_base_url.rstrip("/")
             kwargs["default_query"] = {"api-version": "2025-04-15"}
         else:
             kwargs["base_url"] = normalized_base_url
     common_betas = _common_betas_for_base_url(
-        normalized_base_url,
+        identity_base_url,
         drop_context_1m_beta=drop_context_1m_beta,
     )
 
-    if _is_kimi_coding_endpoint(base_url):
+    if _is_kimi_coding_endpoint(identity_base_url):
         # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
         # to be recognized as a valid Coding Agent. Without it, returns 403.
         # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
@@ -791,7 +824,7 @@ def build_anthropic_client(
             "User-Agent": "claude-code/0.1.0",
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
-    elif _requires_bearer_auth(normalized_base_url):
+    elif _requires_bearer_auth(identity_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer *** for regular API keys. Route those endpoints
         # through auth_token so the SDK sends Bearer auth instead of x-api-key.
@@ -801,7 +834,7 @@ def build_anthropic_client(
         kwargs["auth_token"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
-    elif _is_third_party_anthropic_endpoint(base_url):
+    elif _is_third_party_anthropic_endpoint(identity_base_url):
         # Third-party proxies (Microsoft Foundry, AWS Bedrock, etc.) use their
         # own API keys with x-api-key auth. Skip OAuth detection — their keys
         # don't follow Anthropic's sk-ant-* prefix convention and would be

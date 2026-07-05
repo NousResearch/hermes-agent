@@ -562,6 +562,56 @@ def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
     assert persisted["last_error_code"] == 429
 
 
+def test_mark_exhausted_and_rotate_api_key_hint_parks_failed_key_not_next_entry(tmp_path, monkeypatch):
+    """api_key_hint prevents false sibling exhaustion when no current entry is set."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "failed",
+                        "label": "failed",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "failed-token",
+                    },
+                    {
+                        "id": "healthy",
+                        "label": "healthy",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "healthy-token",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    pool = load_pool("openai-codex")
+    assert pool.current() is None
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"reason": "usage_limit_reached"},
+        api_key_hint="failed-token",
+    )
+
+    assert next_entry is not None
+    assert next_entry.id == "healthy"
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    by_id = {entry["id"]: entry for entry in auth_payload["credential_pool"]["openai-codex"]}
+    assert by_id["failed"]["last_status"] == STATUS_EXHAUSTED
+    assert by_id["failed"]["last_error_code"] == 429
+    assert by_id["healthy"].get("last_status") in (None, "ok")
+
+
 def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monkeypatch):
     """A 401 with no specific code/reason should keep TTL semantics.
 
@@ -3345,6 +3395,43 @@ def _write_quota_aware_pool(tmp_path, monkeypatch, *, provider="openai-codex", e
     (tmp_path / "hermes" / "config.yaml").write_text(
         f"credential_pool_strategies:\n  {provider}: quota_aware\n"
     )
+
+
+def test_quota_aware_strategy_routes_around_recently_exhausted_codex_entry(tmp_path, monkeypatch):
+    """A falsely parked Codex sibling is skipped if any credential remains healthy."""
+    _write_quota_aware_pool(
+        tmp_path,
+        monkeypatch,
+        entries=[
+            {
+                "id": "falsely-parked",
+                "label": "falsely-parked",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:device_code",
+                "access_token": "tok-parked",
+                "last_status": "exhausted",
+                "last_status_at": time.time(),
+                "last_error_code": 429,
+            },
+            {
+                "id": "healthy",
+                "label": "healthy",
+                "auth_type": "oauth",
+                "priority": 1,
+                "source": "manual:device_code",
+                "access_token": "tok-healthy",
+            },
+        ],
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "healthy"
 
 
 def test_quota_aware_strategy_selects_higher_remaining_codex_entry(tmp_path, monkeypatch):

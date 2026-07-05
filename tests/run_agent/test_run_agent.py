@@ -5604,7 +5604,7 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return current
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None, api_key_hint=None):
                 assert status_code == 402
                 assert error_context is None
                 return next_entry
@@ -5621,11 +5621,54 @@ class TestCredentialPoolRecovery:
         assert retry_same is False
         agent._swap_credential.assert_called_once_with(next_entry)
 
+    def test_recover_with_pool_marks_failed_runtime_key_not_selected_sibling(self, agent):
+        """Recovery must park the key that failed, not the pool's next selection.
+
+        Reproduces the false-exhaustion path seen when a freshly-loaded pool has
+        no current entry: without an api_key_hint, mark_exhausted_and_rotate()
+        can select/park the healthy sibling instead of the key that actually got
+        the 429.
+        """
+        next_entry = SimpleNamespace(label="secondary", id="secondary")
+        captured = {}
+
+        class _Pool:
+            provider = "openai-codex"
+
+            def current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None, api_key_hint=None):
+                captured["status_code"] = status_code
+                captured["error_context"] = error_context
+                captured["api_key_hint"] = api_key_hint
+                return next_entry
+
+        agent.provider = "openai-codex"
+        agent.api_key = "failed-runtime-key"
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=True,
+            error_context={"reason": "usage_limit_reached"},
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        assert captured == {
+            "status_code": 429,
+            "error_context": {"reason": "usage_limit_reached"},
+            "api_key_hint": "failed-runtime-key",
+        }
+        agent._swap_credential.assert_called_once_with(next_entry)
+
     def test_recover_with_pool_rotates_on_billing_reason_even_with_http_400(self, agent):
         next_entry = SimpleNamespace(label="secondary")
 
         class _Pool:
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None, api_key_hint=None):
                 assert status_code == 400
                 assert error_context == {"reason": "out_of_extra_usage"}
                 return next_entry
@@ -5651,7 +5694,7 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None, api_key_hint=None):
                 assert status_code == 429
                 assert error_context is None
                 return next_entry
@@ -5756,7 +5799,7 @@ class TestCredentialPoolRecovery:
             def try_refresh_current(self):
                 return None  # refresh failed
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None, api_key_hint=None):
                 assert status_code == 401
                 assert error_context is None
                 return next_entry
@@ -5780,7 +5823,7 @@ class TestCredentialPoolRecovery:
             def try_refresh_current(self):
                 return None
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None, api_key_hint=None):
                 assert error_context is None
                 return None  # no more credentials
 
@@ -5857,7 +5900,7 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None, api_key_hint=None):
                 captured["status_code"] = status_code
                 captured["error_context"] = error_context
                 return next_entry

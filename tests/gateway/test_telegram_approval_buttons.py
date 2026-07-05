@@ -75,6 +75,62 @@ class _AuthRunner:
 
 
 # ===========================================================================
+# Mobile quick-keyboard labels
+# ===========================================================================
+
+class TestTelegramMobileQuickLabels:
+    """Chinese mobile keyboard labels should be handled locally."""
+
+    @pytest.mark.asyncio
+    async def test_chinese_control_label_opens_mobile_panel(self):
+        adapter = _make_adapter()
+        adapter._send_mobile_panel_for_message = AsyncMock()
+        adapter._send_mobile_schedule_help = AsyncMock()
+        msg = SimpleNamespace(text="🕹 掌上控制")
+
+        handled = await adapter._handle_mobile_quick_text(msg)
+
+        assert handled is True
+        adapter._send_mobile_panel_for_message.assert_awaited_once_with(msg)
+        adapter._send_mobile_schedule_help.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chinese_schedule_label_shows_chinese_schedule_help(self):
+        adapter = _make_adapter()
+        adapter._send_mobile_panel_for_message = AsyncMock()
+        adapter._send_mobile_schedule_help = AsyncMock()
+        msg = SimpleNamespace(text="◷ 定时")
+
+        handled = await adapter._handle_mobile_quick_text(msg)
+
+        assert handled is True
+        adapter._send_mobile_schedule_help.assert_awaited_once_with(msg)
+        adapter._send_mobile_panel_for_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_schedule_help_text_is_chinese_and_local(self):
+        adapter = _make_adapter()
+        adapter._bot = AsyncMock()
+        adapter._send_message_with_thread_fallback = AsyncMock()
+        msg = SimpleNamespace(
+            text="◷ 定时",
+            message_id=77,
+            message_thread_id=None,
+            chat=SimpleNamespace(id="12345"),
+        )
+
+        await adapter._send_mobile_schedule_help(msg)
+
+        adapter._send_message_with_thread_fallback.assert_awaited_once()
+        kwargs = adapter._send_message_with_thread_fallback.call_args.kwargs
+        assert kwargs["chat_id"] == 12345
+        assert "定时任务" in kwargs["text"]
+        assert "你可以直接用中文告诉我" in kwargs["text"]
+        assert "明天上午 9 点提醒我看周报" in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+
+
+# ===========================================================================
 # send_exec_approval — inline keyboard buttons
 # ===========================================================================
 

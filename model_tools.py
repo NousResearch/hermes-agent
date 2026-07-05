@@ -429,11 +429,14 @@ def _compute_tool_definitions(
                         )
                 else:
                     resolved = resolve_toolset(toolset_name)
-                    # Protect tools that belong to explicitly-enabled toolsets
-                    # (#58281). When the user has only terminal + file enabled and
-                    # disables the superset 'coding', we keep the terminal/file
-                    # tools instead of stripping everything.
                     protected = set()
+                    for ts_name in (effective_enabled_toolsets or []):
+                        if ts_name == toolset_name:
+                            continue
+                        if validate_toolset(ts_name):
+                            protected.update(resolve_toolset(ts_name))
+                        elif ts_name in _LEGACY_TOOLSET_MAP:
+                            protected.update(_LEGACY_TOOLSET_MAP[ts_name])
                     for ts_name in (effective_enabled_toolsets or []):
                         protected.update(resolve_toolset(ts_name))
                     actually_remove = set(resolved) - protected

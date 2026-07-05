@@ -46,7 +46,7 @@ _race_path = _SCRIPTS_DIR / "godmode_race.py"
 
 # Use the calling frame's globals so functions are accessible everywhere
 import inspect as _inspect
-_caller_globals = _inspect.stack()[0][0].f_globals if len(_inspect.stack()) > 0 else globals()
+_caller_globals = _inspect.stack()[0][0].f_globals if _inspect.stack() else globals()
 
 if _parseltongue_path.exists():
     exec(compile(open(_parseltongue_path).read(), str(_parseltongue_path), 'exec'), _caller_globals)

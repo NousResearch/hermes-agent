@@ -46,7 +46,7 @@ class DCFModelValidator:
         results = {
             'file': self.excel_path,
             'validation_date': datetime.now().isoformat(),
-            'status': 'PASS' if len(self.errors) == 0 else 'FAIL',
+            'status': 'PASS' if not self.errors else 'FAIL',
             'error_count': len(self.errors),
             'warning_count': len(self.warnings),
             'errors': self.errors,

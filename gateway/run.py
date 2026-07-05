@@ -191,13 +191,47 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
         project_entry = str(project_root)
         site_entry = str(site_packages)
+
+        # Check if the running Python version matches the venv Python version
+        # to prevent binary incompatibility crashes (e.g. Python 3.12 gateway loading
+        # Python 3.11 compiled binaries like pydantic_core from venv).
+        is_version_mismatch = False
+        pyvenv_cfg = resolved_venv / "pyvenv.cfg"
+        if pyvenv_cfg.exists():
+            try:
+                with open(pyvenv_cfg, encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("version"):
+                            venv_ver = line.split("=")[-1].strip().split(".")[:2]
+                            running_ver = [str(x) for x in sys.version_info[:2]]
+                            if venv_ver != running_ver:
+                                is_version_mismatch = True
+                            break
+            except Exception:
+                pass
+
         if project_entry not in sys.path:
             sys.path.insert(0, project_entry)
+
+        if is_version_mismatch:
+            # Under version mismatch (e.g. running Python 3.12 loading 3.11 venv),
+            # DO NOT add site_entry to PYTHONPATH or process its .pth files.
+            # Only append it to sys.path as a very low-priority fallback for pure-python packages,
+            # ensuring we do not override desktop-runtime's own site-packages with incompatible binary extensions.
+            sys.path.append(site_entry)
+            os.environ["VIRTUAL_ENV"] = str(resolved_venv)
+            pythonpath = [project_entry]
+            if os.environ.get("PYTHONPATH"):
+                pythonpath.append(os.environ["PYTHONPATH"])
+            os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
+            return
+
         # addsitepackages() semantics matter here: pywin32, used by the MCP
         # SDK on Windows, relies on .pth processing to expose pywintypes.
         site.addsitedir(site_entry)
         if site_entry in sys.path:
             sys.path.remove(site_entry)
+
         insert_at = 1 if sys.path and sys.path[0] == project_entry else 0
         sys.path.insert(insert_at, site_entry)
 

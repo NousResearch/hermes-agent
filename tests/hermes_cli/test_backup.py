@@ -192,6 +192,62 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path(rel))
 
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            # Browser-automation debug profiles (chrome-*/playwright-* prefixes):
+            # dozens of Chrome SQLite DBs a live browser keeps exclusively locked
+            # (a safe-copy hang risk) and worthless on another machine.
+            "chrome-debug-shopping/GPUPersistentCache/GPUCache/x/cache.db",
+            "chrome-amazon-main/Default/Cookies",
+            "chrome_debug/Default/History",
+            "playwright-abc123/Default/History",
+            # The managed browser-automation profile lives at browser/managed/user-data/
+            # — same class (locked *.db, worthless off-host), matched path-anchored under managed/.
+            "browser/managed/user-data/Default/History",
+            # The backup system's OWN encrypted output/working trees — backing these
+            # into a full backup is exponential self-nesting (16GB+ of already-encrypted
+            # daily tars + regenerable restore-drill scratch). Path-anchored (parent/child).
+            "state/backup/drive-offsite/2026-07-04/hermes-fleet-encrypted-2026-07-04.tar",
+            "state/backup/offsite2/2026-07-02/blob.tar.gpg",
+            "state/offsite-restore-drill/scratch/restored/x.db",
+        ],
+    )
+    def test_excludes_browser_profiles_and_self_nested_backup_output(self, rel):
+        """Browser-automation profiles (hang risk + worthless off-host) and the
+        backup's own encrypted offsite trees (exponential self-nesting) must be
+        pruned from the full backup walk."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path(rel))
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            # The tiny heartbeat / passphrase files live DIRECTLY under state/backup/
+            # (not in an excluded subdir) and must still be captured.
+            "state/backup/last-success-fleet-backup",
+            "state/backup/.gpg-passphrase",
+            # A user dir that merely shares a leaf name with a browser profile is kept
+            # (prefix match is anchored to the "chrome-"/"playwright-" component start).
+            "skills/my-skill/chrome-tips.md",
+            "notes/user-data-model.md",
+            # The self-nested backup + browser excludes are PATH-ANCHORED (parent/child),
+            # so an unrelated user dir that merely shares the leaf name — NOT under its
+            # real parent — is still backed up (this is the Greptile P1 that the earlier
+            # global-basename approach got wrong).
+            "skills/my-skill/user-data/example.json",
+            "workspace/offsite2/notes.md",
+            "projects/foo/drive-offsite/data.txt",
+            "sessions/offsite-restore-drill/log.txt",
+        ],
+    )
+    def test_keeps_backup_heartbeats_and_lookalike_names(self, rel):
+        """Exclusions must not over-reach: heartbeat files under state/backup/,
+        files that merely resemble an excluded dir name, and unrelated dirs that
+        share a leaf name but not the anchored parent all stay in the backup."""
+        from hermes_cli.backup import _should_exclude
+        assert not _should_exclude(Path(rel))
+
     def test_does_not_exclude_curator_archive(self):
         """skills/.archive/ holds restorable archived skills and MUST survive
         a backup — it is intentionally NOT in the exclusion set."""

@@ -84,6 +84,21 @@ _EXCLUDED_PARENT_CHILD = (
     # swiftui-docs/ dir, keep Apple's IP out of the backup zip. Scoped to swiftui-skills/
     # so a user's unrelated dir named "swiftui-docs" elsewhere is still backed up.
     ("swiftui-skills", "swiftui-docs"),
+    # The backup system's OWN encrypted output/working trees — backing these INTO
+    # the next backup is exponential self-nesting (same rationale as "backups"),
+    # ~16GB of already-encrypted daily tars + regenerable restore-drill scratch.
+    # Path-anchored so a user's unrelated dir that happens to share the leaf name
+    # (e.g. skills/x/offsite2/, workspace/drive-offsite/) is still backed up. The
+    # tiny heartbeat/passphrase files live DIRECTLY under state/backup/ (not in
+    # these subdirs) and remain captured.
+    ("backup", "drive-offsite"),        # state/backup/drive-offsite — daily encrypted offsite tars
+    ("backup", "offsite2"),             # state/backup/offsite2 — secondary offsite staging
+    ("state", "offsite-restore-drill"),  # state/offsite-restore-drill — restore-drill scratch
+    # The managed browser-automation profile (browser/managed/user-data): dozens of
+    # live-locked Chrome SQLite DBs (History, Cookies, first_party_sets) — worthless
+    # off-host AND a _safe_copy_db exclusive-lock hang risk, same class as chrome-*.
+    # Anchored to managed/ so an unrelated user "user-data" dir is preserved.
+    ("managed", "user-data"),           # browser/managed/user-data — Chromium automation profile
 )
 
 # Directory-NAME prefixes to skip anywhere in the tree. Browser-automation debug
@@ -248,10 +263,17 @@ def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
-    for part in parts:
-        # Directory-name prefix match (browser debug profiles etc.) — anywhere.
+    # Directory-name prefix match (browser debug profiles etc.). These patterns
+    # (chrome-*/playwright-*) name DIRECTORIES. _should_exclude is only ever fed a
+    # FILE path (see _should_skip_backup_file), so the final component is a
+    # filename — testing it would wrongly drop a legit file like ``chrome-tips.md``.
+    # Match the prefix only on ANCESTOR components; a filename with a matching
+    # extension is preserved. (The os.walk prune sites drop the profile DIR itself.)
+    for part in parts[:-1]:
         if part.startswith(_EXCLUDED_DIR_PREFIXES):
             return True
+
+    for part in parts:
         if part not in _EXCLUDED_DIRS:
             continue
         # ``hermes-agent`` only matches at the root level (first component).

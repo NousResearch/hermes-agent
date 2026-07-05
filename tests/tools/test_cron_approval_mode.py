@@ -7,6 +7,7 @@ from tools.approval import (
     _get_cron_approval_mode,
     check_all_command_guards,
     check_dangerous_command,
+    check_execute_code_guard,
     detect_dangerous_command,
 )
 
@@ -14,12 +15,22 @@ from tools.approval import (
 @pytest.fixture(autouse=True)
 def _clear_approval_state():
     approval_module._permanent_approved.clear()
+    approval_module._gateway_queues.clear()
+    approval_module._gateway_notify_cbs.clear()
+    approval_module._pending.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
+    approval_module.clear_session("gateway-kanban-test")
+    approval_module.clear_session("interactive-gateway-test")
     yield
     approval_module._permanent_approved.clear()
+    approval_module._gateway_queues.clear()
+    approval_module._gateway_notify_cbs.clear()
+    approval_module._pending.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
+    approval_module.clear_session("gateway-kanban-test")
+    approval_module.clear_session("interactive-gateway-test")
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +403,161 @@ class TestCronWithGatewayOrigin:
                 assert result.get("status") != "approval_required"
         finally:
             clear_session_vars(tokens)
+
+
+class TestCronModeGatewayHostedUnattended:
+    """Gateway-hosted unattended jobs must fail closed on cron_mode=deny."""
+
+    @pytest.mark.parametrize(
+        ("marker", "value"),
+        [
+            ("HERMES_CRON_SESSION", "1"),
+            ("HERMES_KANBAN_TASK", "task-42"),
+        ],
+    )
+    def test_gateway_hosted_unattended_job_denies_without_gateway_wait(
+        self,
+        monkeypatch,
+        marker,
+        value,
+    ):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.setenv(marker, value)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        if marker != "HERMES_CRON_SESSION":
+            monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        if marker != "HERMES_KANBAN_TASK":
+            monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        session_key = "gateway-kanban-test"
+        token = approval_module.set_current_session_key(session_key)
+        notified = []
+
+        def notify(_approval_data):
+            notified.append(_approval_data)
+            raise AssertionError("unattended jobs must not enter gateway approval")
+
+        approval_module.register_gateway_notify(session_key, notify)
+        try:
+            from unittest.mock import patch as mock_patch
+
+            with (
+                mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
+                mock_patch("tools.approval._get_approval_mode", return_value="manual"),
+                mock_patch("tools.approval._get_approval_config",
+                           return_value={"gateway_timeout": 30}),
+            ):
+                result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+        finally:
+            approval_module.reset_current_session_key(token)
+            approval_module.unregister_gateway_notify(session_key)
+
+        assert not result["approved"]
+        assert "BLOCKED" in result["message"]
+        assert "cron_mode" in result["message"]
+        assert result.get("status") != "pending_approval"
+        assert result.get("outcome") != "timeout"
+        assert notified == []
+
+    def test_gateway_hosted_kanban_execute_code_denies_without_gateway_wait(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-42")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        session_key = "gateway-kanban-test"
+        token = approval_module.set_current_session_key(session_key)
+        notified = []
+
+        def notify(_approval_data):
+            notified.append(_approval_data)
+            raise AssertionError("unattended jobs must not enter gateway approval")
+
+        approval_module.register_gateway_notify(session_key, notify)
+        try:
+            from unittest.mock import patch as mock_patch
+
+            with (
+                mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
+                mock_patch("tools.approval._get_approval_mode", return_value="manual"),
+                mock_patch("tools.approval._get_approval_config",
+                           return_value={"gateway_timeout": 30}),
+            ):
+                result = check_execute_code_guard("import os", "local")
+        finally:
+            approval_module.reset_current_session_key(token)
+            approval_module.unregister_gateway_notify(session_key)
+
+        assert not result["approved"]
+        assert result["outcome"] == "blocked"
+        assert result["pattern_key"] == "execute_code"
+        assert "cron_mode" in result["message"]
+        assert notified == []
+
+    def test_interactive_gateway_still_uses_gateway_approval_flow(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        session_key = "interactive-gateway-test"
+        token = approval_module.set_current_session_key(session_key)
+        notified = []
+
+        def notify(approval_data):
+            notified.append(approval_data)
+            with approval_module._lock:
+                entry = approval_module._gateway_queues[session_key][-1]
+                entry.result = "once"
+                entry.event.set()
+
+        approval_module.register_gateway_notify(session_key, notify)
+        try:
+            from unittest.mock import patch as mock_patch
+
+            with (
+                mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
+                mock_patch("tools.approval._get_approval_mode", return_value="manual"),
+            ):
+                result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+        finally:
+            approval_module.reset_current_session_key(token)
+            approval_module.unregister_gateway_notify(session_key)
+
+        assert result["approved"]
+        assert result.get("user_approved") is True
+        assert len(notified) == 1
+        assert notified[0]["command"] == "rm -rf /tmp/stuff"
+
+    def test_non_gateway_cron_deny_behavior_is_unchanged(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from unittest.mock import patch as mock_patch
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
+            result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+
+        assert not result["approved"]
+        assert "BLOCKED" in result["message"]
+        assert "cron_mode" in result["message"]
+        assert result.get("status") != "pending_approval"
+
+
+class TestCronWithGatewayOriginAdditional:
+    """Additional cron jobs from gateway-origin delivery routing checks."""
 
     def test_cron_with_telegram_origin_approve_mode_allows(self, monkeypatch):
         """Cron + contextvar platform=telegram + cron_mode=approve → allowed via cron path."""

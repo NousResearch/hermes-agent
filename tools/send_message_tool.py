@@ -41,13 +41,13 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 # WhatsApp JIDs: group chats (<digits>@g.us), individual users
-# (<phone>@s.whatsapp.net), linked identities (<id>@lid), and broadcast /
-# newsletter chats. These are explicit native targets the bridge accepts
-# verbatim — they must NOT fall through to home-channel resolution.
+# (<phone>@s.whatsapp.net), and broadcast / newsletter chats. Linked-identity
+# IDs use their own conservative parser below so support stays WhatsApp-only.
 _WHATSAPP_JID_RE = re.compile(
-    r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
+    r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|broadcast|newsletter)\s*$",
     re.IGNORECASE,
 )
+_WHATSAPP_LID_RE = re.compile(r"^\s*\d+@lid\s*$")
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -532,9 +532,9 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             return target_ref.strip(), None, True
     if platform_name == "whatsapp":
-        # Native WhatsApp JIDs (group @g.us, user @s.whatsapp.net, @lid, etc.)
-        # are explicit targets — pass through verbatim. E.164 '+' numbers fall
-        # through to the _PHONE_PLATFORMS handler below.
+        # Native WhatsApp JIDs are explicit targets — pass through verbatim.
+        # E.164 '+' numbers and LID targets fall through to the phone-platform
+        # handler below.
         if _WHATSAPP_JID_RE.fullmatch(target_ref):
             return target_ref.strip(), None, True
     stripped_target = target_ref.strip()
@@ -548,6 +548,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
+            return target_ref.strip(), None, True
+        if platform_name == "whatsapp" and _WHATSAPP_LID_RE.fullmatch(target_ref):
             return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True

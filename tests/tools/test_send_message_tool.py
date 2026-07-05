@@ -266,6 +266,40 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_whatsapp_lid_target_bypasses_home_channel_resolution(self):
+        whatsapp_cfg = SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000})
+        config = SimpleNamespace(
+            platforms={Platform.WHATSAPP: whatsapp_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("should not resolve WhatsApp LID targets")), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "whatsapp:37576702443707@lid",
+                        "message": "Test",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.WHATSAPP,
+            whatsapp_cfg,
+            "37576702443707@lid",
+            "Test",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()
@@ -1539,9 +1573,9 @@ class TestParseTargetRefWhatsAppJID:
 
     def test_lid_jid_is_explicit(self):
         chat_id, _, is_explicit = _parse_target_ref(
-            "whatsapp", "149606612619433@lid"
+            "whatsapp", "37576702443707@lid"
         )
-        assert chat_id == "149606612619433@lid"
+        assert chat_id == "37576702443707@lid"
         assert is_explicit is True
 
     def test_broadcast_and_newsletter_jids_are_explicit(self):
@@ -1557,7 +1591,16 @@ class TestParseTargetRefWhatsAppJID:
     def test_jid_suffix_only_matches_whatsapp(self):
         """WhatsApp JID suffixes must NOT be treated as explicit elsewhere."""
         assert _parse_target_ref("telegram", "120363408391911677@g.us")[2] is False
-        assert _parse_target_ref("signal", "149606612619433@lid")[2] is False
+
+    def test_lid_suffix_only_matches_whatsapp_phone_platform(self):
+        """WhatsApp LID targets must not broaden other phone platforms."""
+        for platform_name in ("photon", "signal", "sms"):
+            chat_id, thread_id, is_explicit = _parse_target_ref(
+                platform_name, "37576702443707@lid"
+            )
+            assert chat_id is None
+            assert thread_id is None
+            assert is_explicit is False
 
     def test_non_jid_whatsapp_target_falls_through(self):
         """A bare friendly name is not a JID — it must fall through to

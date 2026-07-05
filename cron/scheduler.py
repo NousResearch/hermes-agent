@@ -407,6 +407,31 @@ def _shutdown_parallel_pool() -> None:
 atexit.register(_shutdown_parallel_pool)
 
 
+def _interpreter_shutting_down(exc: Optional[BaseException] = None) -> bool:
+    """True when the Python interpreter is finalizing.
+
+    A cron tick can fire while the gateway is tearing down — SIGTERM from
+    ``hermes update`` / ``hermes gateway stop`` / systemd restart, or an
+    OOM-kill. Once finalization starts, ``concurrent.futures`` refuses new
+    work with ``RuntimeError: cannot schedule new futures after interpreter
+    shutdown`` and asyncio's default executor is gone, so *any* attempt to
+    schedule delivery (live-adapter, ``asyncio.run``, or a fresh pool) is
+    doomed and only pollutes ``errors.log`` with a traceback. Callers use
+    this to skip gracefully with a warning instead of crashing (#58720,
+    #55924).
+
+    ``exc`` lets a caller also treat an already-raised scheduling error as a
+    shutdown signal: the ``concurrent.futures`` module-global flag can be set
+    a hair before ``sys.is_finalizing()`` flips, so matching the error text is
+    a safe fallback for that race.
+    """
+    if sys.is_finalizing():
+        return True
+    if exc is not None:
+        return "cannot schedule new futures" in str(exc).lower()
+    return False
+
+
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
 
@@ -1758,16 +1783,37 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
+            # If the interpreter is finalizing (gateway SIGTERM / restart /
+            # OOM), scheduling any new delivery is futile — asyncio.run and a
+            # fresh ThreadPoolExecutor both raise "cannot schedule new futures
+            # after interpreter shutdown". Skip gracefully with a warning
+            # rather than emitting an ERROR traceback on every restart-race
+            # (#58720, #55924).
+            if _interpreter_shutting_down():
+                msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
+                logger.warning("Job '%s': %s", job["id"], msg)
+                target_errors.append(msg)
+                delivery_errors.extend(target_errors)
+                continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
                 result = asyncio.run(coro)
-            except RuntimeError:
+            except RuntimeError as run_err:
                 # asyncio.run() checks for a running loop before awaiting the coroutine;
                 # when it raises, the original coro was never started — close it to
                 # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
                 # fresh thread that has no running loop.
                 coro.close()
+                # If the RuntimeError is the interpreter-finalization signal,
+                # the fresh-thread fallback would fail identically — skip
+                # gracefully instead of logging a shutdown-race traceback.
+                if _interpreter_shutting_down(run_err):
+                    msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    target_errors.append(msg)
+                    delivery_errors.extend(target_errors)
+                    continue
                 # The thread-pool fallback can itself raise (SMTP ConnectionError,
                 # future.result timeout, etc.). An exception raised inside this
                 # `except RuntimeError` block is NOT caught by the sibling
@@ -1784,6 +1830,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     finally:
                         pool.shutdown(wait=False)
                 except Exception as e:
+                    # A shutdown-race here is expected during teardown; downgrade
+                    # to a warning so it doesn't read as a genuine failure.
+                    if _interpreter_shutting_down(e):
+                        msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
+                        logger.warning("Job '%s': %s", job["id"], msg)
+                        target_errors.append(msg)
+                        delivery_errors.extend(target_errors)
+                        continue
                     msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                     logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
                     target_errors.extend([msg])
@@ -3375,6 +3429,17 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             membership is released in the worker's finally block.
             """
             job_id = job["id"]
+            # A tick can race gateway teardown: once the interpreter is
+            # finalizing, ``pool.submit`` raises "cannot schedule new futures
+            # after interpreter shutdown" and crashes the tick. Skip cleanly —
+            # the job stays due and will fire on the next healthy tick
+            # (#58720, #55924).
+            if _interpreter_shutting_down():
+                logger.warning(
+                    "Job '%s' not dispatched — interpreter is shutting down",
+                    job.get("name", job_id),
+                )
+                return None
             with _running_lock:
                 if job_id in _running_job_ids:
                     logger.info("Job '%s' already running — skipping", job.get("name", job_id))
@@ -3389,7 +3454,20 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     with _running_lock:
                         _running_job_ids.discard(j["id"])
 
-            return pool.submit(_run_and_release)
+            try:
+                return pool.submit(_run_and_release)
+            except RuntimeError as submit_err:
+                # Interpreter began finalizing between the guard above and the
+                # submit — release the in-flight claim we just took and skip.
+                if _interpreter_shutting_down(submit_err):
+                    with _running_lock:
+                        _running_job_ids.discard(job_id)
+                    logger.warning(
+                        "Job '%s' not dispatched — interpreter is shutting down",
+                        job.get("name", job_id),
+                    )
+                    return None
+                raise
 
         # Sequential pass for env-mutating (workdir) jobs.
         # Queued to a persistent single-thread pool so they run one at a time

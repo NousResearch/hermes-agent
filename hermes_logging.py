@@ -180,14 +180,19 @@ def clear_session_context() -> None:
 # Record factory — injects session_tag and sanitizes every LogRecord at creation
 # ---------------------------------------------------------------------------
 
+def _redact_log_record_text(text: str) -> str:
+    """Redact a log text value without letting redactor failures break logging."""
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text)
+    except Exception:
+        return text
+
+
 def _redact_log_record_value(value: Any) -> Any:
     """Redact string values inside common logging payload containers."""
     if isinstance(value, str):
-        try:
-            from agent.redact import redact_sensitive_text
-            return redact_sensitive_text(value)
-        except Exception:
-            return value
+        return _redact_log_record_text(value)
     if isinstance(value, tuple):
         return tuple(_redact_log_record_value(item) for item in value)
     if isinstance(value, list):
@@ -200,6 +205,35 @@ def _redact_log_record_value(value: Any) -> Any:
     return value
 
 
+def _sanitize_log_record(record: logging.LogRecord) -> None:
+    """Redact rendered message and exception fields on a LogRecord in place."""
+    try:
+        record.msg = _redact_log_record_text(record.getMessage())
+        record.args = ()
+    except Exception:
+        try:
+            record.msg = _redact_log_record_value(record.msg)
+            record.args = _redact_log_record_value(record.args)
+        except Exception:
+            pass
+
+    try:
+        if record.exc_info:
+            record.exc_text = _redact_log_record_text(
+                logging.Formatter().formatException(record.exc_info)
+            )
+        elif record.exc_text:
+            record.exc_text = _redact_log_record_text(record.exc_text)
+    except Exception:
+        pass
+
+    try:
+        if record.stack_info:
+            record.stack_info = _redact_log_record_text(record.stack_info)
+    except Exception:
+        pass
+
+
 def _install_session_record_factory() -> None:
     """Replace the global LogRecord factory with Hermes record defaults.
 
@@ -207,8 +241,8 @@ def _install_session_record_factory() -> None:
     runs for EVERY record in the process — including records that propagate
     from child loggers and records handled by third-party handlers.  This
     guarantees ``%(session_tag)s`` is always available in format strings and
-    ensures plain non-Hermes formatters receive already-sanitized ``msg`` and
-    ``args`` payloads.
+    ensures plain non-Hermes formatters receive already-sanitized messages,
+    traceback text, and stack text.
 
     Idempotent — checks for a marker attribute to avoid double-wrapping if
     the module is reloaded.
@@ -221,11 +255,7 @@ def _install_session_record_factory() -> None:
         record = current_factory(*args, **kwargs)
         sid = getattr(_session_context, "session_id", None)
         record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
-        try:
-            record.msg = _redact_log_record_value(record.msg)
-            record.args = _redact_log_record_value(record.args)
-        except Exception:
-            pass
+        _sanitize_log_record(record)
         return record
 
     _session_record_factory._hermes_session_injector = True  # type: ignore[attr-defined]

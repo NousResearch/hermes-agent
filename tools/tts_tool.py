@@ -2417,6 +2417,17 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
+        elif want_opus and provider == "piper" and file_str.endswith(".ogg"):
+            # Piper TTS writes raw WAV bytes regardless of output path extension.
+            # When _send_voice_reply sets a .ogg path, the Opus conversion below
+            # is skipped because the file already ends with .ogg, leaving raw WAV
+            # bytes in a .ogg container. Rename to .wav first so the converter works.
+            wav_path = file_str[:-4] + ".wav"
+            os.rename(file_str, wav_path)
+            opus_path = _convert_to_opus(wav_path)
+            if opus_path:
+                file_str = opus_path
+                voice_compatible = True
         elif (
             want_opus
             and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}

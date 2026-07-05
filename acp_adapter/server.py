@@ -652,7 +652,13 @@ class HermesACPAgent(acp.Agent):
             from hermes_cli.models import detect_provider_for_model, parse_model_input
 
             target_provider, new_model = parse_model_input(new_model, current_provider)
-            if target_provider == current_provider:
+            # If the input had an explicit provider:model prefix, parse_model_input
+            # already resolved the correct provider.  Do NOT re-run
+            # detect_provider_for_model — it can overwrite the explicit choice
+            # when the resolved provider happens to equal the current session
+            # provider but the model is also known to another provider.
+            _had_explicit_provider = ":" in raw_model
+            if not _had_explicit_provider and target_provider == current_provider:
                 detected = detect_provider_for_model(new_model, current_provider)
                 if detected:
                     target_provider, new_model = detected

@@ -83,6 +83,34 @@ def test_wedged_worker_does_not_block_interpreter_exit():
     assert "main-done" in proc.stdout
 
 
+def test_worker_signature_detection_matches_runtime():
+    """_WORKER_USES_CTX must reflect the actual _worker signature."""
+    import inspect
+
+    from concurrent.futures.thread import _worker
+
+    from tools.daemon_pool import _WORKER_USES_CTX
+
+    param_count = len(inspect.signature(_worker).parameters)
+    if sys.version_info >= (3, 14):
+        assert param_count == 3, f"Expected 3 params on 3.14+, got {param_count}"
+        assert _WORKER_USES_CTX is True
+    else:
+        assert param_count == 4, f"Expected 4 params on <3.14, got {param_count}"
+        assert _WORKER_USES_CTX is False
+
+
+def test_concurrent_submit_with_context_path():
+    """Multiple concurrent submits must work under the ctx-based worker path."""
+    pool = DaemonThreadPoolExecutor(max_workers=3)
+    try:
+        futures = [pool.submit(lambda x: x ** 2, i) for i in range(10)]
+        results = sorted(f.result(timeout=10) for f in futures)
+        assert results == [i ** 2 for i in range(10)]
+    finally:
+        pool.shutdown(wait=True)
+
+
 def _repo_root():
     import pathlib
 

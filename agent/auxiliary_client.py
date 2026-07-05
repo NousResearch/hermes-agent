@@ -5627,6 +5627,17 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     return {}
 
 
+def _get_task_stream(task: str) -> bool:
+    """Read auxiliary.{task}.stream from config. Returns False by default."""
+    if not task:
+        return False
+    task_config = _get_auxiliary_task_config(task)
+    raw = task_config.get("stream")
+    if isinstance(raw, bool):
+        return raw
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------
@@ -6083,7 +6094,11 @@ def call_llm(
     # consumer) owns chunk reassembly, stale-stream detection, and falling back to
     # a non-streaming call on error. stream_options is best-effort: providers that
     # reject it surface an error the caller's fallback already handles.
-    if stream:
+    # Additionally, auxiliary.<task>.stream config may enable streaming per-task
+    # (e.g. auxiliary.vision.stream: true for providers that reject large
+    # non-streaming request bodies).
+    effective_stream = stream or _get_task_stream(task)
+    if effective_stream:
         kwargs["stream"] = True
         if stream_options:
             kwargs["stream_options"] = stream_options
@@ -6572,6 +6587,8 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    stream: bool = False,
+    stream_options: dict = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -6656,6 +6673,16 @@ async def async_call_llm(
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+
+    # Async streaming path: return the raw async SDK Stream iterator directly.
+    # See call_llm() for rationale. Also respects auxiliary.<task>.stream config
+    # for per-task enabling (e.g. auxiliary.vision.stream).
+    effective_stream = stream or _get_task_stream(task)
+    if effective_stream:
+        kwargs["stream"] = True
+        if stream_options:
+            kwargs["stream_options"] = stream_options
+        return await client.chat.completions.create(**kwargs)
 
     try:
         # Retry ONCE on the same provider for a transient transport blip

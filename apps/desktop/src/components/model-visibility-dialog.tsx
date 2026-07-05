@@ -10,14 +10,14 @@ import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { normalize } from '@/lib/text'
 import {
   $visibleModels,
   collapseModelFamilies,
   effectiveVisibleKeys,
-  emptyProviderSentinelKey,
-  isProviderSentinel,
   modelVisibilityKey,
-  setVisibleModels
+  setVisibleModels,
+  toggleModelVisibility
 } from '@/store/model-visibility'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
@@ -61,28 +61,10 @@ export function ModelVisibilityDialog({
   const visible = effectiveVisibleKeys(stored, providers)
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
-    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
-    const key = modelVisibilityKey(provider.slug, model)
-    const sentinel = emptyProviderSentinelKey(provider.slug)
-
-    if (next.has(key)) {
-      next.delete(key)
-
-      // Check if this was the last real model for this provider.
-      const remainingForProvider = [...next].some(k => k.startsWith(`${provider.slug}::`) && !isProviderSentinel(k))
-
-      if (!remainingForProvider) {
-        next.add(sentinel)
-      }
-    } else {
-      next.delete(sentinel)
-      next.add(key)
-    }
-
-    setVisibleModels(next)
+    setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
   }
 
-  const q = search.trim().toLowerCase()
+  const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q || `${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`.toLowerCase().includes(q)

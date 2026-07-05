@@ -220,7 +220,7 @@ export default function ProfileBuilderPage() {
     try {
       const res = await api.createProfile({
         name: n,
-        clone_from_default: false,
+        clone_from: null,
         description: description.trim() || undefined,
         provider: pickedModel?.provider,
         model: pickedModel?.model,

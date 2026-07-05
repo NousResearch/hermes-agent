@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 import sys
 import urllib.request
-from typing import Optional
+from typing import Any, Optional
 
 from utils import base_url_hostname, normalize_proxy_url
 
@@ -142,6 +142,56 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     return proxy
 
 
+def build_keepalive_http_client(
+    base_url: str = "",
+    *,
+    async_mode: bool = False,
+    verify: Any = True,
+) -> Optional[Any]:
+    """Build an httpx client for OpenAI SDK calls with env-only proxy policy.
+
+    Uses explicit ``HTTPS_PROXY`` / ``NO_PROXY`` env vars via
+    ``_get_proxy_for_base_url``. A custom transport disables httpx's default
+    ``trust_env`` path, so macOS system proxy settings from
+    ``urllib.request.getproxies()`` (which omit the ExceptionsList) are not
+    applied. Mirrors ``AIAgent._build_keepalive_http_client``.
+
+    ``verify`` is forwarded to httpx so auxiliary-client calls (compression,
+    vision, web_extract, title generation, etc.) honor the same per-provider
+    ``ssl_ca_cert`` / ``ssl_verify`` and ``HERMES_CA_BUNDLE`` settings the main
+    client uses. It is passed on the ``HTTPTransport`` (which owns the SSL
+    context when a custom transport is supplied) and, for the copilot branch
+    that has no custom transport, on the client itself.
+    """
+    try:
+        import httpx
+        import socket
+
+        if "api.githubcopilot.com" in str(base_url or "").lower():
+            client_cls = httpx.AsyncClient if async_mode else httpx.Client
+            return client_cls(verify=verify)
+
+        sock_opts = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            sock_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30))
+            sock_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10))
+            sock_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3))
+        elif hasattr(socket, "TCP_KEEPALIVE"):
+            sock_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 30))
+
+        proxy = _get_proxy_for_base_url(base_url)
+        transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
+        client_cls = httpx.AsyncClient if async_mode else httpx.Client
+        # verify lives on the transport: httpx ignores the client-level
+        # ``verify`` when a custom ``transport=`` is supplied.
+        return client_cls(
+            transport=transport_cls(socket_options=sock_opts, verify=verify),
+            proxy=proxy,
+        )
+    except Exception:
+        return None
+
+
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
@@ -164,4 +214,5 @@ __all__ = [
     "_install_safe_stdio",
     "_get_proxy_from_env",
     "_get_proxy_for_base_url",
+    "build_keepalive_http_client",
 ]

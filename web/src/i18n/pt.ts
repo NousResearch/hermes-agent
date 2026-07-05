@@ -158,6 +158,7 @@ export const pt: Translations = {
     selectedSessionsDeleted: "{count} sessões eliminadas",
     failedToDeleteSelected: "Falha ao eliminar as sessões selecionadas",
     resumeInChat: "Retomar no Chat",
+    newChat: "Novo chat",
     previousPage: "Página anterior",
     nextPage: "Página seguinte",
     roles: {
@@ -287,7 +288,8 @@ export const pt: Translations = {
     nameRule:
       "Apenas letras minúsculas, dígitos, _ e -; deve começar com letra ou dígito; até 64 caracteres.",
     invalidName: "Nome de perfil inválido",
-    cloneFromDefault: "Clonar configuração do perfil predefinido",
+    cloneFrom: "Clonar a partir do perfil",
+    cloneFromNone: "Nenhum (vazio)",
     allProfiles: "Perfis",
     noProfiles: "Não foram encontrados perfis.",
     defaultBadge: "predefinido",
@@ -432,6 +434,14 @@ export const pt: Translations = {
     replaceCurrentValue: "Substituir valor atual ({preview})",
     showValue: "Mostrar valor real",
     hideValue: "Ocultar valor",
+    customTitle: "Chaves personalizadas",
+    customHint: "Variáveis de ambiente arbitrárias armazenadas no seu .env que o Hermes não reconhece. Use-as para injetar variáveis de ambiente para skills, servidores MCP ou suas próprias ferramentas.",
+    customConfigured: "{count} chave(s) personalizada(s) definida(s)",
+    addCustomKey: "Adicionar uma chave personalizada",
+    customKeyName: "Nome da variável",
+    customKeyNamePlaceholder: "ex. MY_SERVICE_API_KEY",
+    add: "Adicionar",
+    invalidKeyName: "Use apenas letras, números e sublinhados (deve começar com uma letra ou sublinhado).",
   },
 
   oauth: {

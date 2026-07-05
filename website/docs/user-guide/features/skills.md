@@ -71,6 +71,42 @@ hermes chat --toolsets skills -q "What skills do you have?"
 hermes chat --toolsets skills -q "Show me the axolotl skill"
 ```
 
+## Learning a skill from sources (`/learn`)
+
+`/learn` is the fast way to turn something you already know — or a pile of
+reference material — into a reusable skill, without hand-writing the
+`SKILL.md`. It is open-ended: point it at *anything you can describe* and the
+agent gathers the material with the tools it already has, then authors a skill
+that follows the [house authoring standards](#skillmd-format) (≤60-char
+description, the standard section order, Hermes-tool framing, no invented
+commands).
+
+```bash
+# A local SDK or doc directory — read with read_file / search_files
+/learn the REST client in ~/projects/acme-sdk, focus on auth + pagination
+
+# An online doc page — fetched with web_extract
+/learn https://docs.example.com/api/quickstart
+
+# The workflow you just walked the agent through in this conversation
+/learn how I just deployed the staging server
+
+# Pasted notes / a described procedure
+/learn filing an expense: open the portal, New > Expense, attach the receipt, submit
+```
+
+Because the live agent does the sourcing, `/learn` works the same in the CLI,
+the messaging gateway, the TUI, and the dashboard — and on any terminal backend
+(local, Docker, remote), since there is no separate ingestion engine. In the
+**dashboard**, the Skills page has a **Learn a skill** button that opens a panel
+with a directory field, a URL field, and an open-ended text box; it composes a
+`/learn` request and runs it in chat.
+
+There is no model-tool footprint: `/learn` builds a standards-guided prompt and
+hands it to the agent as a normal turn. The agent saves the result with the
+`skill_manage` tool, so the [write-approval gate](#gating-agent-skill-writes-skillswrite_approval)
+applies if you have it on.
+
 ## Progressive Disclosure
 
 Skills use a token-efficient loading pattern:
@@ -378,6 +414,12 @@ A bundle is just a YAML alias — it doesn't install skills for you. The skills 
 ## Agent-Managed Skills (skill_manage tool)
 
 The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** — when it figures out a non-trivial workflow, it saves the approach as a skill for future reuse.
+
+Skills and memory work together in the self-improvement loop: memory stores
+small durable facts that should always be in context, while skills store longer
+procedures that should load only when relevant. The background review can
+suggest or stage skill changes after a session, but the write-approval gate
+below lets you require human review before those changes land.
 
 ### When the Agent Creates Skills
 

@@ -110,7 +110,7 @@ def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path
     monkeypatch.setattr(
         image_generation_tool,
         "_dispatch_to_plugin_provider",
-        lambda prompt, aspect_ratio: json.dumps({"success": True, "image": str(image_path)}),
+        lambda prompt, aspect_ratio, **kw: json.dumps({"success": True, "image": str(image_path)}),
     )
 
     result = json.loads(

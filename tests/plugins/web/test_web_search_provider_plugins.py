@@ -193,16 +193,11 @@ class TestIsAvailable:
         assert p.is_available() is True
 
     def test_parallel_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """is_available() is key-based — it gates the registry's active-provider
-        walk/picker. (Keyless search/extract still work via the free MCP through
-        _get_backend's terminal default, independent of this flag.)
-        """
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
 
         p = get_provider("parallel")
         assert p is not None
-        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
         assert p.is_available() is False
         monkeypatch.setenv("PARALLEL_API_KEY", "real")
         assert p.is_available() is True
@@ -427,33 +422,17 @@ class TestErrorResponseShapes:
         assert result.get("success") is False
         assert "error" in result
 
-    def test_parallel_extract_keyless_uses_mcp_web_fetch(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without a key, extract routes to the free MCP web_fetch tool rather
-        than erroring. The MCP transport is mocked so the test stays offline."""
+    def test_parallel_extract_returns_per_url_errors_when_unconfigured(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
-        import plugins.web.parallel.provider as parallel_provider
-
-        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
-        captured = {}
-
-        def _fake_fetch(urls, api_key):
-            captured["urls"] = list(urls)
-            captured["api_key"] = api_key
-            return [{"url": urls[0], "title": "Example", "content": "body",
-                     "raw_content": "body", "metadata": {"sourceURL": urls[0]}}]
-
-        monkeypatch.setattr(parallel_provider, "_mcp_web_fetch", _fake_fetch)
 
         p = get_provider("parallel")
         assert p is not None
         result = asyncio.run(p.extract(["https://example.com"]))
         assert isinstance(result, list)
+        assert len(result) == 1
+        assert "error" in result[0]
         assert result[0]["url"] == "https://example.com"
-        assert result[0]["content"] == "body"
-        assert captured == {"urls": ["https://example.com"], "api_key": None}
 
     def test_firecrawl_extract_returns_per_url_errors_when_unconfigured(self) -> None:
         _ensure_plugins_loaded()

@@ -70,7 +70,9 @@ export interface Translations {
     docs: string
     done: string
     error: string
+    expand: string
     failed: string
+    formatJson: string
     free: string
     loading: string
     notSet: string
@@ -83,6 +85,7 @@ export interface Translations {
     set: string
     skip: string
     update: string
+    tryHint: (term: string) => string
     on: string
     off: string
   }
@@ -208,7 +211,6 @@ export interface Translations {
 
   remoteDisplayBanner: {
     message: (reason: string) => string
-    dismiss: string
   }
 
   titlebar: {
@@ -411,8 +413,6 @@ export interface Translations {
       enterValueFirst: string
       couldNotSave: string
       remove: string
-      or: string
-      escToCancel: string
       getKey: string
       saving: string
     }
@@ -543,6 +543,20 @@ export interface Translations {
       catalogInstallFailed: (name: string) => string
       catalogEnvPrompt: (name: string) => string
       catalogEnvRequired: string
+      capabilitySummary: (tools: number, prompts: number, resources: number) => string
+      statusConnecting: string
+      statusNeedsAuth: string
+      statusError: string
+      statusOff: string
+      allServers: string
+      authenticatedTitle: string
+      authenticatedMessage: (server: string, count: number) => string
+      waitingForBrowser: string
+      authenticate: string
+      unsavedConnect: string
+      enableTool: (tool: string) => string
+      disableTool: (tool: string) => string
+      noOutput: string
     }
     model: {
       loading: string
@@ -656,6 +670,7 @@ export interface Translations {
   skills: {
     tabSkills: string
     tabToolsets: string
+    tabMcp: string
     tabHub: string
     all: string
     searchSkills: string
@@ -681,6 +696,26 @@ export interface Translations {
     toolsetDisabled: string
     appliesToNewSessions: (name: string) => string
     failedToUpdate: (name: string) => string
+    sortMostUsed: string
+    sortAlpha: string
+    sortMostUsedDesc: string
+    sortLeastUsedAsc: string
+    enableAll: string
+    disableAll: string
+    disableUnused: string
+    bulkUpdated: (count: number) => string
+    bulkNoChange: string
+    usageCount: (count: number | string) => string
+    provenance: Record<'agent' | 'bundled' | 'hub', string>
+    emptyNoneFound: (noun: string) => string
+    emptyNothingMatches: (query: string) => string
+    emptyNoneAvailable: (noun: string) => string
+    changesApplyNewSessions: string
+    skillUpdated: string
+    edit: string
+    archive: string
+    skillArchivedTitle: string
+    skillArchivedMessage: string
     hub: {
       searchPlaceholder: string
       search: string
@@ -696,6 +731,7 @@ export interface Translations {
       install: string
       installing: string
       uninstall: string
+      uninstalling: string
       updateAll: string
       updating: string
       preview: string
@@ -779,8 +815,7 @@ export interface Translations {
     ageHours: (hours: number) => string
     durationSeconds: (seconds: string) => string
     durationMinutes: (minutes: number, seconds: number) => string
-    tokensK: (k: string) => string
-    tokens: (value: number) => string
+    tokens: (value: number | string) => string
   }
 
   commandCenter: {
@@ -843,6 +878,7 @@ export interface Translations {
     }
     installTheme: {
       title: string
+      pageTitle: string
       placeholder: string
       loading: string
       error: string
@@ -1017,6 +1053,8 @@ export interface Translations {
     env: string
     defaultBadge: string
     rename: string
+    renameMenu: string
+    editSoul: string
     copySetup: string
     copying: string
     modelLabel: string

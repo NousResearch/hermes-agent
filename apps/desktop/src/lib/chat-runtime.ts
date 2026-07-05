@@ -4,6 +4,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
@@ -217,7 +218,7 @@ export function personalityNamesFromConfig(config: unknown): string[] {
 }
 
 export function normalizePersonalityValue(value: string): string {
-  const trimmed = value.trim().toLowerCase()
+  const trimmed = normalize(value)
 
   return !trimmed || trimmed === 'default' || trimmed === 'none' ? '' : trimmed
 }

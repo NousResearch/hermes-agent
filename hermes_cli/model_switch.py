@@ -1426,6 +1426,7 @@ def list_authenticated_providers(
     max_models: int | None = None,
     current_model: str = "",
     refresh: bool = False,
+    probe_custom_providers: bool = True,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1452,6 +1453,11 @@ def list_authenticated_providers(
     live catalog. Use for an explicit user-triggered "refresh models" action
     (e.g. the desktop picker's refresh control); leave false for normal picker
     opens so they stay snappy on the 1h cache.
+
+    ``probe_custom_providers`` controls live ``/models`` discovery for saved
+    custom OpenAI-compatible endpoints. Keep the default true for CLI parity;
+    GUI picker opens can pass false to show configured models immediately
+    without waiting on offline local endpoints.
     """
     import os
     from agent.models_dev import (
@@ -1994,7 +2000,7 @@ def list_authenticated_providers(
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
             has_explicit_models = bool(models_list)
-            should_probe = bool(api_url) and discover and (
+            should_probe = probe_custom_providers and bool(api_url) and discover and (
                 bool(api_key) or not has_explicit_models
             )
             if should_probe:
@@ -2255,7 +2261,8 @@ def list_authenticated_providers(
             #   full aggregator catalog via /models but only serve a subset
             #   (parity with section 3's user ``providers:`` behaviour).
             should_probe = (
-                bool(api_url)
+                probe_custom_providers
+                and bool(api_url)
                 and (bool(api_key) or not grp["models"])
                 and grp.get("discover_models", True)
             )

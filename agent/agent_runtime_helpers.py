@@ -306,7 +306,13 @@ def sanitize_tool_call_arguments(
             try:
                 json.loads(arguments)
             except json.JSONDecodeError:
-                tool_call_id = tool_call.get("id")
+                # Use the canonical ``call_id || id`` precedence so both the
+                # scan for an existing tool result and any inserted stub key
+                # on the same id the rest of the pipeline uses. Keying on bare
+                # ``id`` here would fail to find a result built with ``call_id``
+                # (Codex Responses format) and insert a duplicate stub that
+                # itself becomes an orphan (#58168).
+                tool_call_id = _ra().AIAgent._get_tool_call_id_static(tool_call) or None
                 function_name = function.get("name", "?")
                 preview = arguments[:80]
                 log.warning(
@@ -464,6 +470,21 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # Pass 1: drop stray tool messages that don't follow a known
     # assistant tool_call_id. Uses a rolling set of known ids refreshed
     # on each assistant message.
+    #
+    # Both ``id`` AND ``call_id`` are registered for every assistant
+    # tool_call. In the Codex Responses API format the two differ
+    # (``id`` = ``fc_...`` response-item id, ``call_id`` = ``call_...``
+    # the function-call id), and a tool result's ``tool_call_id`` may be
+    # matched against *either* depending on which code path built it
+    # (the OpenAI-compatible path stores ``tc.id``; codex paths store
+    # ``call_id``). Registering only ``id`` — as this pass did before —
+    # made a valid tool result look orphaned whenever the assistant
+    # tool_call carried a distinct ``call_id`` (or only ``call_id``); the
+    # pass then dropped it, leaving the assistant tool_call unanswered and
+    # producing an HTTP 400 on strict providers (DeepSeek, Kimi). Matching
+    # on the *superset* of both keys achieves the same tolerance as
+    # ``_get_tool_call_id_static``'s ``call_id || id`` — a match set must
+    # accept every legitimate reference, not just the canonical one (#58168).
     known_tool_ids: set = set()
     filtered: List[Dict] = []
     for msg in collapsed:
@@ -474,14 +495,23 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         if role == "assistant":
             known_tool_ids = set()
             for tc in (msg.get("tool_calls") or []):
-                tc_id = tc.get("id") if isinstance(tc, dict) else None
-                if tc_id:
-                    known_tool_ids.add(tc_id)
+                if not isinstance(tc, dict):
+                    continue
+                for key in ("id", "call_id"):
+                    tc_id = tc.get(key)
+                    if tc_id:
+                        known_tool_ids.add(tc_id)
             filtered.append(msg)
         elif role == "tool":
             tc_id = msg.get("tool_call_id")
             if tc_id and tc_id in known_tool_ids:
                 filtered.append(msg)
+                # Consume the id so a SECOND tool result carrying the same
+                # tool_call_id (duplicate from a retry/crash/session-resume
+                # glitch) falls into the drop branch below instead of being
+                # replayed — strict providers (DeepSeek) reject a duplicate
+                # tool_call_id with HTTP 400 (#58327). Credit: #55436.
+                known_tool_ids.discard(tc_id)
             else:
                 repairs += 1
         else:
@@ -2453,6 +2483,50 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         _ra().logger.debug(
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
+        )
+
+    # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a
+    # payload where the same tool_call_id appears more than once with HTTP 400
+    # "Duplicate value for 'tool_call_id'" (#58327). Duplicates can arise from
+    # retries, crash/resume glitches, or a compression window that re-emits a
+    # tool result. This is the final pre-API chokepoint, so dedup defensively
+    # here even though repair_message_sequence also consumes matched ids.
+    #   (a) collapse duplicate tool_calls WITHIN an assistant message
+    #   (b) drop later tool result messages reusing an already-seen id
+    seen_assistant_call_ids: set = set()
+    seen_result_call_ids: set = set()
+    deduped: List[Dict[str, Any]] = []
+    removed_dupes = 0
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            kept_tcs = []
+            for tc in msg.get("tool_calls") or []:
+                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                if cid and cid in seen_assistant_call_ids:
+                    removed_dupes += 1
+                    continue
+                if cid:
+                    seen_assistant_call_ids.add(cid)
+                kept_tcs.append(tc)
+            if len(kept_tcs) != len(msg.get("tool_calls") or []):
+                msg = {**msg, "tool_calls": kept_tcs}
+            deduped.append(msg)
+        elif role == "tool":
+            cid = (msg.get("tool_call_id") or "").strip()
+            if cid and cid in seen_result_call_ids:
+                removed_dupes += 1
+                continue
+            if cid:
+                seen_result_call_ids.add(cid)
+            deduped.append(msg)
+        else:
+            deduped.append(msg)
+    if removed_dupes:
+        messages = deduped
+        _ra().logger.debug(
+            "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
+            removed_dupes,
         )
     return messages
 

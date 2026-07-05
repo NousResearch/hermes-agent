@@ -2,9 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   getCronJobs,
+  getGlobalModelInfo,
   getGlobalModelOptions,
+  getHermesConfig,
+  getHermesConfigDefaults,
+  getHermesConfigRecord,
+  getHermesConfigSchema,
+  getLogs,
   getProfiles,
   getSessionMessages,
+  getStatus,
   listAllProfileSessions,
   listSessions
 } from './hermes'
@@ -67,14 +74,45 @@ describe('Hermes REST session helpers', () => {
 
   it('uses a longer timeout for boot aggregate calls', async () => {
     await getCronJobs()
+    await getGlobalModelInfo()
     await getGlobalModelOptions()
+    await getHermesConfig()
+    await getHermesConfigRecord()
+    await getHermesConfigDefaults()
+    await getHermesConfigSchema()
+    await getLogs({ file: 'gui', lines: 12 })
+    await getStatus()
 
     expect(api).toHaveBeenCalledWith({
       path: '/api/cron/jobs',
       timeoutMs: 60_000
     })
     expect(api).toHaveBeenCalledWith({
+      path: '/api/model/info',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
       path: '/api/model/options',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/config',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/config/defaults',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/config/schema',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/logs?file=gui&lines=12',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/status',
       timeoutMs: 60_000
     })
   })

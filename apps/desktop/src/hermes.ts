@@ -46,7 +46,7 @@ import type {
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 const PROFILE_LIST_REQUEST_TIMEOUT_MS = 60_000
-const BOOT_AGGREGATE_REQUEST_TIMEOUT_MS = 60_000
+export const BOOT_AGGREGATE_REQUEST_TIMEOUT_MS = 60_000
 
 export type {
   ActionResponse,
@@ -264,13 +264,15 @@ export function renameSession(
 export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
   return window.hermesDesktop.api<ModelInfoResponse>({
     ...profileScoped(),
-    path: '/api/model/info'
+    path: '/api/model/info',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
 export function getStatus(): Promise<StatusResponse> {
   return window.hermesDesktop.api<StatusResponse>({
-    path: '/api/status'
+    path: '/api/status',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -302,35 +304,40 @@ export function getLogs(params: {
 
   return window.hermesDesktop.api<LogsResponse>({
     ...profileScoped(),
-    path: suffix ? `/api/logs?${suffix}` : '/api/logs'
+    path: suffix ? `/api/logs?${suffix}` : '/api/logs',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
 export function getHermesConfig(): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
     ...profileScoped(),
-    path: '/api/config'
+    path: '/api/config',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
 export function getHermesConfigRecord(): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
     ...profileScoped(),
-    path: '/api/config'
+    path: '/api/config',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
 export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
     ...profileScoped(),
-    path: '/api/config/defaults'
+    path: '/api/config/defaults',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
 export function getHermesConfigSchema(): Promise<ConfigSchemaResponse> {
   return window.hermesDesktop.api<ConfigSchemaResponse>({
     ...profileScoped(),
-    path: '/api/config/schema'
+    path: '/api/config/schema',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 

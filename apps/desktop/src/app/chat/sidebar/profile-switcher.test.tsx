@@ -19,6 +19,7 @@ import { ProfileRail } from './profile-switcher'
 const getProfilesMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hermes', () => ({
+  BOOT_AGGREGATE_REQUEST_TIMEOUT_MS: 60_000,
   getProfiles: getProfilesMock,
   setApiRequestProfile: vi.fn()
 }))
@@ -195,7 +196,9 @@ describe('ProfileRail attention badges', () => {
     )
 
     expect(await screen.findByRole('button', { name: 'bina-meatzevet' })).toBeDefined()
-    expect(api).toHaveBeenCalledWith({ path: '/api/profiles/active' })
+    await waitFor(() => {
+      expect(api).toHaveBeenCalledWith({ path: '/api/profiles/active', timeoutMs: 60_000 })
+    })
     expect(getProfilesMock).toHaveBeenCalledTimes(1)
   })
 

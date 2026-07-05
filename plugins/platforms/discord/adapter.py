@@ -3163,6 +3163,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 and self._discord_channel_ids_allowed(channel_ids)
             ):
                 return True
+            # When no allowlists are configured at all (no users, no roles,
+            # and no DISCORD_ALLOWED_CHANNELS), default to allowing everyone.
+            # This preserves the pre-v0.18.0 backwards-compatible behavior
+            # where empty allowlists = open access.
+            if not os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip():
+                return True
             return False
         # Check user ID allowlist (works for both DMs and guild messages).
         # ``"*"`` is honored as an open-mode wildcard, mirroring

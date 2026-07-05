@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { copyTextWithFeedback } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
@@ -266,10 +266,14 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
       return
     }
 
-    void writeClipboardText(command).then(() => {
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1800)
-    })
+    void copyTextWithFeedback(command, { successMessage: u.copied, successTitle: u.copy })
+      .then(copied => {
+        if (copied) {
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1800)
+        }
+      })
+      .catch(() => undefined)
   }
 
   // No command (e.g. the Linux sandbox-blocked relaunch): render the explanatory

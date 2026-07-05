@@ -11,6 +11,42 @@ from gateway.session import (
 from gateway.config import Platform, HomeChannel
 
 
+PROVIDER_REPORT_FIXTURES = {
+    "set_cookie": "Set-Cookie: CF_Authorization=fixture_gateway_cookie; Path=/; Secure; HttpOnly",
+    "cookie": "Cookie: CF_Authorization=fixture_gateway_cookie; session=fixture_gateway_session",
+    "authorization": "Authorization: Bearer fixture_gateway_authorization",
+    "signed_redirect": (
+        "https://access.example.invalid/cdn-cgi/access/login/github?"
+        "redirect_url=https%3A%2F%2Fcrm.example.invalid%2Fdashboard"
+        "&sig=fixture_gateway_signature"
+    ),
+    "magic_link": "https://crm.example.invalid/login?magic_link_token=fixture_gateway_magic_link",
+    "jwt_meta": "meta=eyJmaXh0dXJlIjoiZ2F0ZXdheSJ9.eyJzdWIiOiJmaXh0dXJlIn0.signatureFixture",
+    "provider_redirect": (
+        "https://provider.example.invalid/oauth?"
+        "private_redirect_url=https%3A%2F%2Fcrm.internal.invalid%2Fadmin"
+        "&provider_token=fixture_gateway_provider_token"
+    ),
+}
+
+
+def _assert_provider_report_value_free(text: str) -> None:
+    for label, fixture in PROVIDER_REPORT_FIXTURES.items():
+        if fixture in text:
+            raise AssertionError(f"unredacted provider report fixture leaked: {label}")
+    for fragment in (
+        "fixture_gateway_cookie",
+        "fixture_gateway_session",
+        "fixture_gateway_authorization",
+        "fixture_gateway_signature",
+        "fixture_gateway_magic_link",
+        "fixture_gateway_provider_token",
+        "crm.internal.invalid",
+    ):
+        if fragment in text:
+            raise AssertionError("unredacted provider report fixture fragment leaked")
+
+
 # ---------------------------------------------------------------------------
 # Low-level helpers
 # ---------------------------------------------------------------------------
@@ -145,3 +181,12 @@ class TestBuildSessionContextPromptRedaction:
         ctx = _make_context(user_id="U12345ABC", platform=Platform.SLACK)
         prompt = build_session_context_prompt(ctx, redact_pii=True)
         assert "U12345ABC" in prompt
+
+
+def test_gateway_final_report_redacts_provider_private_material():
+    from agent.redact import redact_sensitive_text
+
+    raw_report = "\n".join(PROVIDER_REPORT_FIXTURES.values())
+    redacted = redact_sensitive_text(raw_report, force=True)
+
+    _assert_provider_report_value_free(redacted)

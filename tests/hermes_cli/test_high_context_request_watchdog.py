@@ -197,6 +197,42 @@ def test_terminal_recovery_writes_compact_state_without_mass_closing_sessions(tm
     assert "all_sessions" not in data
 
 
+def test_repeated_stale_closeout_recovery_is_policy_aware(tmp_path):
+    from agent.request_watchdog import (
+        poll_request_watchdog,
+        start_request_watchdog,
+        write_recoverable_turn_state,
+    )
+
+    record = start_request_watchdog(
+        _agent(),
+        request_id="turn-1:api:5",
+        api_call_count=5,
+        estimated_context_tokens=275_000,
+        now=100.0,
+        thresholds=_thresholds(),
+        start_monitor=False,
+    )
+    status = poll_request_watchdog(record, now=131.0, thresholds=_thresholds())
+    status["closeout_only"] = True
+    status["repeated_stale_call_count"] = 2
+    status["fixed_model_policy"] = True
+    recovery = write_recoverable_turn_state(
+        record,
+        status=status,
+        directory=tmp_path,
+    )
+
+    data = json.loads(recovery["path"].read_text(encoding="utf-8"))
+
+    assert recovery["recommended_action"] == "compact_finalization_prompt"
+    assert data["recommended_action"] == "compact_finalization_prompt"
+    assert data["repeated_stale_call_count"] == 2
+    assert "Do not retry the same huge request unchanged" in data["resume_prompt"]
+    assert "model switch requires explicit user approval" in data["resume_prompt"]
+    assert "gpt-5.4" not in data["resume_prompt"]
+
+
 def test_closeout_phase_uses_bounded_mode_before_another_high_context_request():
     from agent.request_watchdog import should_use_bounded_closeout_mode
 

@@ -216,3 +216,14 @@ class TestYoloMode:
         approval_module.clear_session("session-a")
 
         assert is_session_yolo_enabled("session-a") is False
+
+    def test_yolo_does_not_bypass_external_repo_write_gate(self, monkeypatch):
+        """YOLO is not an explicit approval token for remote repository writes."""
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_SESSION_KEY", "test-session")
+
+        result = check_all_command_guards("git push", "local")
+
+        assert result["approved"] is False
+        assert result["risk_class"] == "external_repo_write"

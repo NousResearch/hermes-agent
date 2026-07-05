@@ -225,6 +225,113 @@ def validate_compact_handoff_packet(packet: Mapping[str, Any]) -> list[str]:
     return errors
 
 
+_SESSION_STOP_MARKERS = (
+    "session_stop",
+    "session stop",
+    "context_estimate >=",
+    "last_input >=",
+)
+_CLOSEOUT_ONLY_MARKERS = (
+    "final",
+    "closeout",
+    "report",
+    "summary",
+    "cleanup",
+    "verification",
+    "verify",
+    "smoke",
+    "ci",
+    "deploy gate",
+    "post-main",
+)
+_IMPLEMENTATION_WORK_MARKERS = (
+    "implement",
+    "write code",
+    "patch",
+    "fix failing",
+    "add feature",
+    "migration",
+    "schema",
+)
+
+
+def _model_policy_note(*, required_model: str, fixed_model_policy: bool) -> str:
+    model = _clean_text(required_model or "gpt-5.5", max_chars=80)
+    if fixed_model_policy:
+        return (
+            f"Fixed model policy requires {model}; model switch requires explicit "
+            "user approval."
+        )
+    return f"Keep recovery on {model} unless the operator explicitly changes policy."
+
+
+def classify_usage_guard_closeout_state(
+    *,
+    usage_guard_reason: str,
+    repo_clean: bool = False,
+    known_dirty_changes_recorded: bool = False,
+    tests_run: Any = None,
+    verification_run: Any = None,
+    build_run: bool = False,
+    lint_run: bool = False,
+    smoke_run: bool = False,
+    remaining_work: Any = None,
+    implementation_commands_needed: bool = False,
+    required_model: str = "gpt-5.5",
+    fixed_model_policy: bool = False,
+) -> dict[str, Any]:
+    """Classify whether usage-guard ``session_stop`` should force closeout.
+
+    This is deliberately value-free and packet-shaped.  It lets callers turn a
+    high-context, post-green state into compact finalization instead of asking
+    the model for another broad history replay just to produce a final answer.
+    """
+
+    reason = _clean_text(usage_guard_reason, max_chars=300).lower()
+    remaining = _clean_list(remaining_work, max_items=12, max_chars=240)
+    remaining_text = " ".join(item.lower() for item in remaining)
+    tests = _clean_list(tests_run, max_items=12, max_chars=240)
+    verification = _clean_list(verification_run, max_items=12, max_chars=240)
+
+    reasons: list[str] = []
+    if not any(marker in reason for marker in _SESSION_STOP_MARKERS):
+        reasons.append("usage_guard_not_session_stop")
+    if not (repo_clean or known_dirty_changes_recorded):
+        reasons.append("repo_state_not_recorded")
+    if not (tests or verification or build_run or lint_run or smoke_run):
+        reasons.append("verification_evidence_missing")
+    if implementation_commands_needed or any(
+        marker in remaining_text for marker in _IMPLEMENTATION_WORK_MARKERS
+    ):
+        reasons.append("implementation_work_remains")
+    if remaining and not any(marker in remaining_text for marker in _CLOSEOUT_ONLY_MARKERS):
+        reasons.append("remaining_work_not_closeout_only")
+
+    closeout_required = not reasons
+    return {
+        "status": (
+            "compact_finalization_required"
+            if closeout_required
+            else "continue_narrow_work"
+        ),
+        "recommended_action": (
+            "compact_finalization_prompt"
+            if closeout_required
+            else "narrow_next_step"
+        ),
+        "reasons": reasons,
+        "remaining_work": remaining,
+        "tests_run": tests,
+        "verification_run": verification,
+        "required_model": _clean_text(required_model or "gpt-5.5", max_chars=80),
+        "model_policy_note": _model_policy_note(
+            required_model=required_model,
+            fixed_model_policy=fixed_model_policy,
+        ),
+        "repo_state_recorded": bool(repo_clean or known_dirty_changes_recorded),
+    }
+
+
 def reviewer_verdict_instruction(
     *,
     task_id: Optional[str] = None,

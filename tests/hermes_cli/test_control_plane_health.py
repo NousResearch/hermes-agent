@@ -84,6 +84,48 @@ def test_control_plane_reports_queued_steer_boundary_without_prompt_text():
     assert "secret queued message" not in json.dumps(report)
 
 
+def test_control_plane_status_counts_cli_control_queue_without_prompt_text(tmp_path, monkeypatch):
+    from hermes_cli import active_sessions
+    import hermes_cli.control_plane as control_plane
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(control_plane, "_read_model_policy_config", lambda: {})
+    monkeypatch.setattr(control_plane, "_read_session_db_models", lambda _ids: {})
+    monkeypatch.setattr(control_plane, "_read_session_db_lifecycle", lambda _ids: {})
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="cli-queued-status",
+        surface="cli",
+        config={},
+    )
+    assert message is None
+    assert lease is not None
+    try:
+        queued = control_plane.queue_control_plane_steer(
+            agent=None,
+            session_id="cli-queued-status",
+            text="private queued correction",
+        )
+        assert queued["status"] == "queued"
+
+        report = control_plane.build_control_plane_status(
+            registry_status=active_sessions.active_session_registry_status(),
+            runtime_status={"gateway_state": "stopped", "active_agents": 0},
+            listener_alive=False,
+            ws_probe={"ok": True},
+            close_wait_count=0,
+            now=1_000.0,
+        )
+    finally:
+        lease.release()
+
+    session = report["sessions"][0]
+    assert session["session_id"] == "cli-queued-status"
+    assert session["queued_steer_count"] == 1
+    assert session["steer_boundary"] == "cannot_steer_until_current_tool_boundary"
+    assert "private queued correction" not in json.dumps(report)
+
+
 def test_control_plane_steer_queues_without_echoing_text():
     from hermes_cli.control_plane import queue_control_plane_steer
 
@@ -235,6 +277,52 @@ def test_control_plane_flags_fixed_model_violation_from_session_db(monkeypatch):
     assert report["model_policy_violation"] is True
     assert session["model_policy_violation"] is True
     assert session["required_model"] == "gpt-5.5"
+
+
+def test_control_plane_recommends_repair_for_ended_session_with_live_evidence(monkeypatch):
+    import hermes_cli.control_plane as control_plane
+
+    monkeypatch.setattr(control_plane, "_read_model_policy_config", lambda: {})
+    monkeypatch.setattr(control_plane, "_read_session_db_models", lambda _ids: {})
+    monkeypatch.setattr(
+        control_plane,
+        "_read_session_db_lifecycle",
+        lambda _ids: {
+            "ended-live": {
+                "ended": True,
+                "end_reason": "agent_close",
+                "messages_after_end": True,
+            }
+        },
+        raising=False,
+    )
+
+    report = control_plane.build_control_plane_status(
+        registry_status={
+            "checked": 1,
+            "live": 1,
+            "stale": 0,
+            "entries": [
+                {
+                    "session_id": "ended-live",
+                    "runtime_status": "live",
+                    "metadata": {"last_activity_age_seconds": 1},
+                }
+            ],
+        },
+        runtime_status={"gateway_state": "running", "active_agents": 0},
+        listener_alive=True,
+        ws_probe={"ok": True},
+        now=1_000.0,
+    )
+
+    session = report["sessions"][0]
+    assert session["db_lifecycle_status"] == "ended_with_live_runtime_evidence"
+    assert session["db_lifecycle_evidence"] == [
+        "active_runtime_lease",
+        "messages_after_end",
+    ]
+    assert session["repair_recommendation"] == "inspect_before_reopen_or_close"
 
 
 def test_runtime_control_plane_status_cli_is_value_free(capsys):

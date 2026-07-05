@@ -150,6 +150,10 @@ def _lock_path() -> Path:
 
 
 _LOCK_OWNER_FILENAME = "owner.json"
+_METADATA_UPDATE_LOCK_TIMEOUT_SECONDS = 0.25
+_WINDOWS_LOCK_RELEASE_CLEANUP_TIMEOUT_SECONDS = 5.0
+_WINDOWS_LOCK_RELEASE_RETRY_INTERVAL_SECONDS = 0.02
+_WINDOWS_OWNERLESS_LOCK_RECLAIM_GRACE_SECONDS = 2.0
 _LOCK_BUSY_ALERT_WINDOW_SECONDS = 120.0
 _LOCK_BUSY_ALERT_THRESHOLD = 3
 _LOCK_BUSY_ALERT_STATE: dict[str, Any] = {
@@ -157,6 +161,27 @@ _LOCK_BUSY_ALERT_STATE: dict[str, Any] = {
     "count": 0,
     "alerted": False,
 }
+
+
+def _lock_owner_dir() -> Path:
+    return _lock_path().with_name(f"{_lock_path().name}.d")
+
+
+def _read_lock_owner_metadata() -> Optional[dict[str, Any]]:
+    try:
+        with open(_lock_owner_dir() / _LOCK_OWNER_FILENAME, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.debug("Could not read active session lock owner metadata", exc_info=True)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def active_session_lock_owner_summary() -> Optional[dict[str, Any]]:
+    owner = _read_lock_owner_metadata()
+    return _active_session_owner_summary(owner) if owner else None
 
 
 class ActiveSessionLockBusyError(RuntimeError):
@@ -171,11 +196,13 @@ class _FileLock:
         path: Path,
         *,
         owner_metadata: Optional[dict[str, Any]] = None,
+        timeout_seconds: Optional[float] = None,
     ):
         self.path = path
         self._fh = None
         self._lock_dir: Optional[Path] = None
         self._owner_metadata = dict(owner_metadata or {})
+        self._timeout_seconds = timeout_seconds
 
     def _owner_path(self, lock_dir: Path) -> Path:
         return lock_dir / _LOCK_OWNER_FILENAME
@@ -226,10 +253,43 @@ class _FileLock:
             return None
         return data if isinstance(data, dict) else None
 
+    def _try_reclaim_ownerless_lock_dir(self, lock_dir: Path) -> bool:
+        """Remove an ownerless Windows lock dir only after a safety grace."""
+        try:
+            age = time.time() - lock_dir.stat().st_mtime
+        except FileNotFoundError:
+            return True
+        except Exception:
+            logger.debug(
+                "Could not stat ownerless active session file lock at %s",
+                lock_dir,
+                exc_info=True,
+            )
+            return False
+        if age < _WINDOWS_OWNERLESS_LOCK_RECLAIM_GRACE_SECONDS:
+            return False
+        try:
+            lock_dir.rmdir()
+            logger.warning(
+                "Reclaimed ownerless active session file lock at %s age_seconds=%.3f",
+                lock_dir,
+                max(0.0, age),
+            )
+            return True
+        except FileNotFoundError:
+            return True
+        except Exception:
+            logger.debug(
+                "Failed to reclaim ownerless active session file lock at %s",
+                lock_dir,
+                exc_info=True,
+            )
+            return False
+
     def _try_reclaim_stale_lock_dir(self, lock_dir: Path) -> bool:
         owner = self._read_owner(lock_dir)
         if not owner:
-            return False
+            return self._try_reclaim_ownerless_lock_dir(lock_dir)
         if _pid_alive(owner.get("pid"), owner.get("process_start_time")):
             return False
         try:
@@ -251,6 +311,26 @@ class _FileLock:
             )
             return False
 
+    def _cleanup_windows_lock_dir(self, lock_dir: Path) -> bool:
+        deadline = time.monotonic() + _WINDOWS_LOCK_RELEASE_CLEANUP_TIMEOUT_SECONDS
+        while True:
+            try:
+                self._owner_path(lock_dir).unlink(missing_ok=True)
+                lock_dir.rmdir()
+                return True
+            except FileNotFoundError:
+                return True
+            except Exception:
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "Failed to remove active session file lock at %s after %.1fs",
+                        lock_dir,
+                        _WINDOWS_LOCK_RELEASE_CLEANUP_TIMEOUT_SECONDS,
+                        exc_info=True,
+                    )
+                    return False
+                time.sleep(_WINDOWS_LOCK_RELEASE_RETRY_INTERVAL_SECONDS)
+
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if os.name == "nt":
@@ -258,7 +338,8 @@ class _FileLock:
             # byte-range locks proved unreliable for the highly concurrent
             # active-session last-slot claim path on this machine.
             lock_dir = self.path.with_name(f"{self.path.name}.d")
-            deadline = time.time() + 30
+            timeout = 30.0 if self._timeout_seconds is None else max(0.0, float(self._timeout_seconds))
+            deadline = time.time() + timeout
             while True:
                 try:
                     lock_dir.mkdir()
@@ -284,10 +365,23 @@ class _FileLock:
         try:
             import fcntl
 
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+            if self._timeout_seconds is None:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+            else:
+                deadline = time.time() + max(0.0, float(self._timeout_seconds))
+                while True:
+                    try:
+                        fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.time() > deadline:
+                            raise ActiveSessionLockBusyError({})
+                        time.sleep(0.02)
         except Exception as exc:
             self._fh.close()
             self._fh = None
+            if isinstance(exc, ActiveSessionLockBusyError):
+                raise
             raise RuntimeError("active session file lock unavailable") from exc
         return self
 
@@ -295,13 +389,7 @@ class _FileLock:
         if self._lock_dir is not None:
             lock_dir = self._lock_dir
             try:
-                for _attempt in range(20):
-                    try:
-                        self._owner_path(lock_dir).unlink(missing_ok=True)
-                        lock_dir.rmdir()
-                        break
-                    except Exception:
-                        time.sleep(0.01)
+                self._cleanup_windows_lock_dir(lock_dir)
             finally:
                 self._lock_dir = None
         if self._fh is None:
@@ -791,33 +879,42 @@ def update_active_session_metadata(
     state_path = _state_path()
     updated = 0
     current_pid = os.getpid()
-    with _FileLock(
-        _lock_path(),
-        owner_metadata={
-            "session_id": session_key,
-            "owner_kind": "metadata_update",
-        },
-    ):
-        entries = _prune_dead(_read_entries(state_path))
-        now = time.time()
-        for entry in entries:
-            if str(entry.get("session_id") or "") != session_key:
-                continue
-            try:
-                if int(entry.get("pid")) != current_pid:
+    try:
+        with _FileLock(
+            _lock_path(),
+            owner_metadata={
+                "session_id": session_key,
+                "owner_kind": "metadata_update",
+            },
+            timeout_seconds=_METADATA_UPDATE_LOCK_TIMEOUT_SECONDS,
+        ):
+            entries = _prune_dead(_read_entries(state_path))
+            now = time.time()
+            for entry in entries:
+                if str(entry.get("session_id") or "") != session_key:
                     continue
-            except (TypeError, ValueError):
-                continue
-            current_metadata = entry.get("metadata")
-            merged = dict(current_metadata) if isinstance(current_metadata, dict) else {}
-            for key in remove_keys:
-                merged.pop(key, None)
-            merged.update(safe_metadata)
-            entry["metadata"] = merged
-            entry["updated_at"] = now
-            updated += 1
-        if updated:
-            _write_entries(state_path, entries)
+                try:
+                    if int(entry.get("pid")) != current_pid:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                current_metadata = entry.get("metadata")
+                merged = dict(current_metadata) if isinstance(current_metadata, dict) else {}
+                for key in remove_keys:
+                    merged.pop(key, None)
+                merged.update(safe_metadata)
+                entry["metadata"] = merged
+                entry["updated_at"] = now
+                updated += 1
+            if updated:
+                _write_entries(state_path, entries)
+    except ActiveSessionLockBusyError as exc:
+        _record_lock_busy_alert(exc.owner)
+        logger.warning(
+            "Skipped active session metadata update because registry lock is busy: %s",
+            active_session_lock_busy_message(exc.owner),
+        )
+        return 0
     return updated
 
 
@@ -952,25 +1049,56 @@ def active_session_registry_snapshot() -> list[dict[str, Any]]:
         return snapshot
 
 
-def active_session_registry_status() -> dict[str, Any]:
+def _registry_status_from_entries(
+    entries: list[dict[str, Any]],
+    *,
+    lock_status: str = "ok",
+    lock_owner_summary: Optional[dict[str, Any]] = None,
+    read_mode: str = "locked",
+) -> dict[str, Any]:
+    live = []
+    stale = []
+    for entry in entries:
+        item = _entry_with_runtime_status(entry)
+        if item["runtime_status"] == "live":
+            live.append(item)
+        else:
+            stale.append(item)
+    report: dict[str, Any] = {
+        "checked": len(entries),
+        "live": len(live),
+        "stale": len(stale),
+        "entries": live + stale,
+        "lock_status": lock_status,
+        "read_mode": read_mode,
+    }
+    if lock_owner_summary:
+        report["lock_owner_summary"] = lock_owner_summary
+    return report
+
+
+def active_session_registry_status(*, no_lock: bool = False) -> dict[str, Any]:
     """Return live/stale active-session registry diagnostics without repair."""
     state_path = _state_path()
-    with _FileLock(_lock_path(), owner_metadata={"owner_kind": "status"}):
-        entries = _read_entries(state_path)
-        live = []
-        stale = []
-        for entry in entries:
-            item = _entry_with_runtime_status(entry)
-            if item["runtime_status"] == "live":
-                live.append(item)
-            else:
-                stale.append(item)
-        return {
-            "checked": len(entries),
-            "live": len(live),
-            "stale": len(stale),
-            "entries": live + stale,
-        }
+    if no_lock:
+        owner = active_session_lock_owner_summary()
+        return _registry_status_from_entries(
+            _read_entries(state_path),
+            lock_status="degraded" if owner else "lock_free",
+            lock_owner_summary=owner,
+            read_mode="lock_free",
+        )
+    try:
+        with _FileLock(_lock_path(), owner_metadata={"owner_kind": "status"}):
+            return _registry_status_from_entries(_read_entries(state_path))
+    except ActiveSessionLockBusyError as exc:
+        _record_lock_busy_alert(exc.owner)
+        return _registry_status_from_entries(
+            _read_entries(state_path),
+            lock_status="degraded",
+            lock_owner_summary=_active_session_owner_summary(exc.owner),
+            read_mode="lock_free",
+        )
 
 
 def repair_stale_active_session_leases(

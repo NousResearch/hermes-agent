@@ -584,6 +584,37 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "triage to break unblock loops. Omit for a generic block."
         ),
     )
+    p_block.add_argument(
+        "--comment-only-ok",
+        action="store_true",
+        help=(
+            "If the requested state transition cannot happen, append the "
+            "BLOCKED comment anyway and exit 0 with changed=false."
+        ),
+    )
+
+    p_cleanup = sub.add_parser("cleanup", help="Kanban cleanup helpers")
+    cleanup_sub = p_cleanup.add_subparsers(dest="cleanup_action")
+    p_cleanup_report = cleanup_sub.add_parser(
+        "report",
+        help="Write a compact structured cleanup report for one graph or inventory",
+    )
+    p_cleanup_report.add_argument(
+        "--task",
+        dest="task_id",
+        default=None,
+        help="Root task id; report is limited to this dependency graph",
+    )
+    p_cleanup_report.add_argument(
+        "--inventory-only",
+        action="store_true",
+        help="Explicit escape hatch for board-wide inventory without mutations",
+    )
+    p_cleanup_report.add_argument(
+        "--output",
+        required=True,
+        help="Path to write the compact JSON report",
+    )
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -1083,6 +1114,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "acceptance": _cmd_acceptance,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
+            "cleanup":  _cmd_cleanup,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
@@ -2095,16 +2127,48 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_cleanup(args: argparse.Namespace) -> int:
+    if getattr(args, "cleanup_action", None) != "report":
+        print("kanban cleanup requires a subcommand (try: report)", file=sys.stderr)
+        return 2
+
+    task_id = getattr(args, "task_id", None)
+    inventory_only = bool(getattr(args, "inventory_only", False))
+    if not task_id and not inventory_only:
+        print("cleanup report requires --task or --inventory-only", file=sys.stderr)
+        return 2
+    if task_id and inventory_only:
+        print("cleanup report accepts either --task or --inventory-only, not both", file=sys.stderr)
+        return 2
+
+    from hermes_cli.kanban_cleanup_report import build_cleanup_report, write_cleanup_report
+
+    with kb.connect_closing() as conn:
+        report = build_cleanup_report(
+            conn,
+            board=kb.get_current_board(),
+            root_task_id=task_id,
+            inventory_only=inventory_only,
+        )
+    path = write_cleanup_report(report, getattr(args, "output"))
+    print(
+        f"cleanup report wrote {path} "
+        f"cards_inspected={len(report['cards_inspected'])} "
+        f"state_mutations={len(report['state_mutations'])} "
+        f"comments_added={len(report['comments_added'])}"
+    )
+    return 0
+
+
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     kind = getattr(args, "kind", None)
+    comment_only_ok = bool(getattr(args, "comment_only_ok", False))
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
             if not kb.block_task(
                 conn,
                 tid,
@@ -2112,23 +2176,44 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 kind=kind,
                 expected_run_id=_worker_run_id_for(tid),
             ):
-                failed.append(tid)
-                print(f"cannot block {tid}", file=sys.stderr)
+                landed = kb.get_task(conn, tid)
+                where = landed.status if landed else "missing"
+                if comment_only_ok:
+                    comments_added = 0
+                    if reason:
+                        kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
+                        comments_added = 1
+                    print(
+                        f"task_id={tid} changed=false status={where} "
+                        f"comment_only=true comments_added={comments_added}"
+                    )
+                else:
+                    failed.append(tid)
+                    print(
+                        f"cannot block {tid} changed=false status={where}",
+                        file=sys.stderr,
+                    )
             else:
+                if reason:
+                    kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
                 # Report where the task actually landed — dependency blocks go
                 # to todo, and a tripped unblock-loop breaker routes to triage.
                 landed = kb.get_task(conn, tid)
                 where = landed.status if landed else "blocked"
                 suffix = f": {reason}" if reason else ""
                 if where == "todo":
-                    print(f"{tid} → todo (dependency wait){suffix}")
+                    print(
+                        f"{tid} → todo (dependency wait) changed=true "
+                        f"task_id={tid} status={where}{suffix}"
+                    )
                 elif where == "triage":
                     print(
                         f"{tid} → triage (unblock loop detected — needs a "
-                        f"human decision){suffix}"
+                        f"human decision) changed=true task_id={tid} "
+                        f"status={where}{suffix}"
                     )
                 else:
-                    print(f"Blocked {tid}{suffix}")
+                    print(f"Blocked {tid} changed=true task_id={tid} status={where}{suffix}")
     return 0 if not failed else 1
 
 

@@ -826,6 +826,67 @@ def test_windows_directory_lock_reclaims_stale_owner_and_writes_metadata(
     assert not lock_dir.exists()
 
 
+def test_windows_directory_lock_release_retries_transient_cleanup_failure(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(active_sessions.os, "name", "nt", raising=False)
+
+    lock_path = active_sessions._lock_path()
+    lock_dir = lock_path.with_name(f"{lock_path.name}.d")
+    original_rmdir = os.rmdir
+    attempts = {"remaining": 3}
+
+    def flaky_rmdir(path, *args, **kwargs):
+        if Path(path) == lock_dir and attempts["remaining"] > 0:
+            attempts["remaining"] -= 1
+            raise PermissionError("simulated transient Windows cleanup busy")
+        return original_rmdir(path, *args, **kwargs)
+
+    sleeps = []
+    monkeypatch.setattr(active_sessions.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    with active_sessions._FileLock(
+        lock_path,
+        owner_metadata={"owner_kind": "test"},
+    ):
+        assert lock_dir.exists()
+        monkeypatch.setattr(active_sessions.os, "rmdir", flaky_rmdir)
+
+    assert attempts["remaining"] == 0
+    assert sleeps == [active_sessions._WINDOWS_LOCK_RELEASE_RETRY_INTERVAL_SECONDS] * 3
+    assert not lock_dir.exists()
+
+
+def test_windows_directory_lock_reclaims_only_stale_ownerless_lock_dir(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(active_sessions.os, "name", "nt", raising=False)
+
+    lock_path = active_sessions._lock_path()
+    lock_dir = lock_path.with_name(f"{lock_path.name}.d")
+    lock_dir.mkdir(parents=True)
+    lock = active_sessions._FileLock(lock_path)
+
+    assert lock._try_reclaim_stale_lock_dir(lock_dir) is False
+    assert lock_dir.exists()
+
+    old_time = (
+        time.time()
+        - active_sessions._WINDOWS_OWNERLESS_LOCK_RECLAIM_GRACE_SECONDS
+        - 1.0
+    )
+    os.utime(lock_dir, (old_time, old_time))
+
+    assert lock._try_reclaim_stale_lock_dir(lock_dir) is True
+    assert not lock_dir.exists()
+
+
 def test_live_windows_directory_lock_owner_returns_safe_busy_message(
     tmp_path,
     monkeypatch,
@@ -926,3 +987,98 @@ def test_repeated_active_session_lock_busy_logs_one_deduped_alert(
     assert "count=3" in alerts[0]
     assert "live-session" in alerts[0]
     assert "secret folder" not in alerts[0]
+
+
+def test_active_session_registry_status_degrades_when_metadata_update_lock_is_busy(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    active_sessions._write_entries(
+        active_sessions._state_path(),
+        [
+            {
+                "lease_id": "live",
+                "session_id": "live-session",
+                "session_key": "live-session",
+                "surface": "tui",
+                "owner_kind": "tui",
+                "pid": 12345,
+                "process_start_time": 456.0,
+                "metadata": {"current_tool": "terminal"},
+            }
+        ],
+    )
+    monkeypatch.setattr(active_sessions, "_pid_alive", lambda *_args: True)
+
+    owner = {
+        "pid": 67890,
+        "session_id": "metadata-session",
+        "surface": "tui",
+        "owner_kind": "metadata_update",
+        "cwd": "C:/Users/Admin/private project",
+        "command_line_fingerprint": "abcdef1234567890",
+    }
+
+    def raise_busy(_self):
+        raise active_sessions.ActiveSessionLockBusyError(owner)
+
+    monkeypatch.setattr(active_sessions._FileLock, "__enter__", raise_busy)
+
+    report = active_sessions.active_session_registry_status()
+
+    assert report["checked"] == 1
+    assert report["live"] == 1
+    assert report["stale"] == 0
+    assert report["lock_status"] == "degraded"
+    assert report["lock_owner_summary"]["owner_kind"] == "metadata_update"
+    assert report["lock_owner_summary"]["session_id"] == "metadata-session"
+    assert report["entries"][0]["session_id"] == "live-session"
+    assert report["entries"][0]["runtime_status"] == "live"
+    assert "private project" not in json.dumps(report)
+
+
+def test_update_active_session_metadata_fails_open_when_registry_lock_is_busy(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    active_sessions._write_entries(
+        active_sessions._state_path(),
+        [
+            {
+                "lease_id": "ours",
+                "session_id": "metadata-target",
+                "session_key": "metadata-target",
+                "surface": "cli",
+                "owner_kind": "cli",
+                "pid": os.getpid(),
+                "process_start_time": active_sessions._process_start_time(os.getpid()),
+            }
+        ],
+    )
+
+    owner = {
+        "pid": 67890,
+        "session_id": "metadata-target",
+        "owner_kind": "metadata_update",
+    }
+
+    def raise_busy(_self):
+        raise active_sessions.ActiveSessionLockBusyError(owner)
+
+    monkeypatch.setattr(active_sessions._FileLock, "__enter__", raise_busy)
+    caplog.set_level(logging.WARNING, logger="hermes_cli.active_sessions")
+
+    assert active_sessions.update_active_session_metadata(
+        session_id="metadata-target",
+        metadata={"current_tool": "terminal"},
+    ) == 0
+    assert active_sessions._read_entries(active_sessions._state_path())[0].get("metadata") is None
+    assert any(
+        "Skipped active session metadata update because registry lock is busy" in record.message
+        for record in caplog.records
+    )

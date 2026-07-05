@@ -478,10 +478,11 @@ class TestWindowsQueryFileLaunchRunbook:
         assert "--query-file" in source
         assert "--stdin-query" in source
         assert '--slash "/goal resume"' in source
-        assert "& $exe @moduleArgs" in source
+        assert '$args = @("-m", "hermes_cli.main", "chat", "--resume", $sessionId, "--model", "gpt-5.5", "--query-file", $promptPath)' in source
+        assert "& .\\venv\\Scripts\\python.exe @args" in source
         assert "Start-Process `" in source
         assert "-FilePath $exe" in source
-        assert "-ArgumentList $moduleArgs" in source
+        assert "-ArgumentList $args" in source
         assert "unrecognized arguments" in source
 
 

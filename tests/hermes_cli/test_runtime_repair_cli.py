@@ -179,6 +179,83 @@ def test_runtime_active_sessions_status_registered_in_main_cli(tmp_path):
     assert "active sessions:" in result.stdout
 
 
+def test_runtime_active_sessions_diagnose_no_lock_reports_degraded_owner(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from hermes_cli import runtime_cli
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(active_sessions, "_pid_alive", lambda *_args: True)
+    _write_registry(
+        home,
+        [
+            {
+                "lease_id": "lease-1",
+                "session_id": "session-1",
+                "session_key": "session-1",
+                "surface": "cli",
+                "owner_kind": "cli",
+                "pid": 12345,
+                "process_start_time": 1.0,
+            }
+        ],
+    )
+    lock_dir = home / "runtime" / "active_sessions.lock.d"
+    lock_dir.mkdir()
+    (lock_dir / "owner.json").write_text(
+        json.dumps(
+            {
+                "pid": 67890,
+                "session_id": "metadata-session",
+                "surface": "tui",
+                "owner_kind": "metadata_update",
+                "cwd": "C:/Users/Admin/private project",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = runtime_cli._cmd_active_sessions_diagnose(
+        SimpleNamespace(json=False, no_lock=True)
+    )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "active sessions:" in out
+    assert "lock_status=degraded" in out
+    assert "owner_kind=metadata_update" in out
+    assert "session_id=metadata-session" in out
+    assert "checked=1" in out
+    assert "private project" not in out
+
+
+def test_runtime_active_sessions_diagnose_registered_in_main_cli(tmp_path):
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(tmp_path / ".hermes")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "runtime",
+            "active-sessions",
+            "diagnose",
+            "--no-lock",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "active sessions:" in result.stdout
+
+
 def test_runtime_recovery_prompt_prints_bounded_watchdog_action(tmp_path, monkeypatch, capsys):
     from hermes_cli import runtime_cli
 

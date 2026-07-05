@@ -7831,6 +7831,181 @@ def set_config_value(key: str, value: str):
 # Command handler
 # =============================================================================
 
+_KANBAN_WORKER_BUDGET_KEYS = (
+    "agent.max_turns",
+    "delegation.max_iterations",
+    "goals.max_turns",
+)
+
+
+def _nested_config_read(config: Any, dotted_key: str) -> Any:
+    cur = config
+    for part in dotted_key.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def _nested_config_write(config: dict, dotted_key: str, value: int) -> None:
+    cur = config
+    parts = dotted_key.split(".")
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[part] = nxt
+        cur = nxt
+    cur[parts[-1]] = int(value)
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _profile_configs_root() -> Path:
+    return get_hermes_home() / "profiles"
+
+
+def _iter_profile_config_paths(*, profile: Optional[str] = None):
+    root = _profile_configs_root()
+    if profile:
+        name = str(profile).strip().lower()
+        path = root / name / "config.yaml"
+        if path.exists():
+            yield name, path
+        return
+    if not root.is_dir():
+        return
+    for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        if child.is_dir():
+            path = child / "config.yaml"
+            if path.exists():
+                yield child.name, path
+
+
+@dataclass(frozen=True)
+class _ProfileConfigLoadResult:
+    config: dict
+    error: Optional[str] = None
+
+
+def _load_profile_config_file(path: Path) -> _ProfileConfigLoadResult:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            loaded = fast_safe_load(f)
+    except Exception:
+        return _ProfileConfigLoadResult({}, "invalid or unreadable config.yaml")
+    if loaded is None:
+        return _ProfileConfigLoadResult({})
+    if not isinstance(loaded, dict):
+        return _ProfileConfigLoadResult(
+            {}, "invalid config.yaml: expected a mapping at the document root"
+        )
+    return _ProfileConfigLoadResult(loaded)
+
+
+def _print_profile_config_load_errors(errors: list[tuple[str, str]]) -> None:
+    print("Invalid/unreadable profile configs:")
+    for name, reason in errors:
+        print(f"  {name}: {reason}")
+
+
+def _kanban_worker_explicitly_disabled(config: dict) -> bool:
+    kanban = config.get("kanban")
+    if not isinstance(kanban, dict):
+        return False
+    worker = kanban.get("worker")
+    return isinstance(worker, dict) and worker.get("enabled") is False
+
+
+def _zero_worker_budget_keys(config: dict) -> list[str]:
+    if _kanban_worker_explicitly_disabled(config):
+        return []
+    bad: list[str] = []
+    for key in _KANBAN_WORKER_BUDGET_KEYS:
+        value = _safe_int(_nested_config_read(config, key))
+        if value is not None and value <= 0:
+            bad.append(key)
+    return bad
+
+
+def _cmd_config_check_kanban_workers(args) -> int:
+    profile_name = getattr(args, "profile", None)
+    load_errors: list[tuple[str, str]] = []
+    issues: list[tuple[str, list[str]]] = []
+    for name, path in _iter_profile_config_paths(profile=profile_name):
+        loaded = _load_profile_config_file(path)
+        if loaded.error:
+            load_errors.append((name, loaded.error))
+            continue
+        bad = _zero_worker_budget_keys(loaded.config)
+        if bad:
+            issues.append((name, bad))
+    if load_errors:
+        _print_profile_config_load_errors(load_errors)
+    if issues:
+        print("Kanban worker profile budget issues:")
+        for name, bad in issues:
+            print(f"  {name}: zero worker budget keys: {', '.join(bad)}")
+    if load_errors or issues:
+        return 1
+    print("Kanban worker profile budgets: ok")
+    return 0
+
+
+def _cmd_config_repair_worker_budgets(args) -> int:
+    set_value = int(getattr(args, "set_value", 120))
+    if set_value <= 0:
+        print("--set must be a positive integer", file=sys.stderr)
+        return 2
+    profile_name = getattr(args, "profile", None)
+    all_profiles = bool(getattr(args, "all_profiles", False))
+    if not all_profiles and not profile_name:
+        print("worker-budgets repair requires --all-profiles or --profile", file=sys.stderr)
+        return 2
+    if all_profiles and profile_name:
+        print("choose either --all-profiles or --profile, not both", file=sys.stderr)
+        return 2
+    dry_run = bool(getattr(args, "dry_run", False))
+    changed = 0
+    from utils import atomic_yaml_write
+
+    load_errors: list[tuple[str, str]] = []
+    loaded_profiles: list[tuple[str, Path, dict]] = []
+    for name, path in _iter_profile_config_paths(profile=profile_name):
+        loaded = _load_profile_config_file(path)
+        if loaded.error:
+            load_errors.append((name, loaded.error))
+            continue
+        loaded_profiles.append((name, path, loaded.config))
+    if load_errors:
+        _print_profile_config_load_errors(load_errors)
+        return 1
+
+    for name, path, config in loaded_profiles:
+        bad = _zero_worker_budget_keys(config)
+        if not bad:
+            continue
+        changed += 1
+        if dry_run:
+            print(f"dry-run: would set {', '.join(bad)} to {set_value} in profile {name}")
+            continue
+        for key in bad:
+            _nested_config_write(config, key, set_value)
+        atomic_yaml_write(path, config, sort_keys=False)
+        print(f"repaired profile {name}: set {', '.join(bad)} to {set_value}")
+    if changed == 0:
+        prefix = "dry-run: " if dry_run else ""
+        print(f"{prefix}no worker budget repairs needed")
+    return 0
+
+
 def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)
@@ -7859,6 +8034,13 @@ def config_command(args):
     
     elif subcmd == "env-path":
         print(get_env_path())
+
+    elif subcmd == "repair":
+        repair_cmd = getattr(args, "repair_command", None)
+        if repair_cmd == "worker-budgets":
+            sys.exit(_cmd_config_repair_worker_budgets(args))
+        print("Unknown config repair command", file=sys.stderr)
+        sys.exit(2)
     
     elif subcmd == "migrate":
         print()
@@ -7917,6 +8099,8 @@ def config_command(args):
         print()
     
     elif subcmd == "check":
+        if getattr(args, "all_profiles", False) and getattr(args, "kanban_workers", False):
+            sys.exit(_cmd_config_check_kanban_workers(args))
         # Non-interactive check for what's missing
         print()
         print(color("📋 Configuration Status", Colors.CYAN, Colors.BOLD))

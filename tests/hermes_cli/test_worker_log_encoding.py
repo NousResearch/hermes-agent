@@ -159,7 +159,7 @@ def test_default_spawn_preserves_explicit_utf8_pythonioencoding(
     assert captured["env"]["PYTHONUTF8"] == "1"
 
 
-def test_kanban_subprocess_text_capture_replaces_non_utf8_worker_output(tmp_path):
+def test_kanban_subprocess_text_capture_recovers_cp1250_worker_output(tmp_path):
     script = tmp_path / "emit_cp1250.py"
     payload = POLISH_TEXT.encode("cp1250")
     script.write_bytes(
@@ -182,8 +182,10 @@ def test_kanban_subprocess_text_capture_replaces_non_utf8_worker_output(tmp_path
     assert result.returncode == 0
     assert "max-iteration summary:" in result.stdout
     assert "stderr tail:" in result.stderr
-    assert "\ufffd" in result.stdout
-    assert "\ufffd" in result.stderr
+    assert POLISH_TEXT in result.stdout
+    assert POLISH_TEXT in result.stderr
+    assert "\ufffd" not in result.stdout
+    assert "\ufffd" not in result.stderr
 
 
 def test_default_spawn_overrides_disabled_pythonutf8(kanban_home, monkeypatch, tmp_path):

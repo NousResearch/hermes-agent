@@ -2687,6 +2687,109 @@ def _redact_browser_output(value: Any) -> Any:
     return value
 
 
+def _status_class(status_code: int | str | None) -> str:
+    try:
+        code = int(status_code or 0)
+    except (TypeError, ValueError):
+        return "unknown"
+    if code <= 0:
+        return "unknown"
+    return f"{code // 100}xx"
+
+
+def build_front_door_access_boundary_evidence(
+    *,
+    status_code: int | str | None,
+    expected_auth_provider: str,
+    title: str | None = None,
+    url: str | None = None,
+    final_url: str | None = None,
+    headers: Optional[dict[str, Any]] = None,
+    body_text: str | None = None,
+) -> dict[str, Any]:
+    """Build value-free evidence for protected front-door checks.
+
+    Raw URLs, redirects, headers, cookies, and body text are intentionally not
+    returned. This helper records only the coarse boundary outcome needed to
+    distinguish an auth gate from an authenticated UI acceptance check.
+    """
+    del url, final_url, headers
+
+    coarse_title = str(_redact_browser_output(title or "")).strip()
+    status = _status_class(status_code)
+    combined = f"{coarse_title}\n{body_text or ''}".casefold()
+    provider = (expected_auth_provider or "").strip()
+    access_markers = (
+        "cloudflare access",
+        "access",
+        "sign in",
+        "login",
+        "authenticate",
+        "identity provider",
+    )
+    boundary_result = "access_boundary" if (
+        status in {"3xx", "4xx"}
+        or any(marker in combined for marker in access_markers)
+        or "access" in provider.casefold()
+    ) else "front_door_reachable"
+
+    return {
+        "status_class": status,
+        "expected_auth_provider": provider,
+        "boundary_result": boundary_result,
+        "coarse_title": coarse_title,
+        "authenticated_ui_acceptance": False,
+    }
+
+
+def build_authenticated_ui_smoke_contract(
+    *,
+    auth_available: bool,
+    title: str | None,
+    body_text: str | None,
+    required_body_terms: list[str] | tuple[str, ...] | None = None,
+    required_shell_terms: list[str] | tuple[str, ...] | None = None,
+    forbidden_first_viewport_terms: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Summarize authenticated UI smoke acceptance without persisting body text."""
+    body = body_text or ""
+    body_fold = body.casefold()
+    combined_fold = f"{title or ''}\n{body}".casefold()
+
+    if not auth_available:
+        return {
+            "status": "authenticated_ui_smoke_pending",
+            "authenticated_ui_acceptance": False,
+            "body_verified": False,
+            "shared_shell_verified": False,
+            "leftover_technical_terms": [],
+        }
+
+    body_terms = list(required_body_terms or [])
+    shell_terms = list(required_shell_terms or [])
+    forbidden_terms = list(forbidden_first_viewport_terms or [])
+    missing_body_terms = [term for term in body_terms if term.casefold() not in body_fold]
+    missing_shell_terms = [term for term in shell_terms if term.casefold() not in combined_fold]
+    leftover_terms = [term for term in forbidden_terms if term.casefold() in body_fold]
+
+    body_verified = not missing_body_terms
+    shell_verified = not missing_shell_terms
+    passed = body_verified and shell_verified and not leftover_terms
+
+    result = {
+        "status": "authenticated_ui_smoke_passed" if passed else "authenticated_ui_smoke_failed",
+        "authenticated_ui_acceptance": passed,
+        "body_verified": body_verified,
+        "shared_shell_verified": shell_verified,
+        "leftover_technical_terms": leftover_terms,
+    }
+    if missing_body_terms:
+        result["missing_body_terms"] = missing_body_terms
+    if missing_shell_terms:
+        result["missing_shell_terms"] = missing_shell_terms
+    return result
+
+
 # ============================================================================
 # Browser Tool Functions
 # ============================================================================

@@ -35,13 +35,40 @@ def _cmd_active_sessions_status(_args) -> int:
     from hermes_cli import active_sessions
 
     report = active_sessions.active_session_registry_status()
+    _print_active_sessions_report(report)
+    return 0
+
+
+def _print_active_sessions_report(report: dict[str, Any]) -> None:
+    lock_status = report.get("lock_status")
+    read_mode = report.get("read_mode")
+    lock_bits = ""
+    if lock_status:
+        lock_bits += f" lock_status={lock_status}"
+    if read_mode:
+        lock_bits += f" read_mode={read_mode}"
     print(
         "active sessions: "
         f"checked={report['checked']} live={report['live']} stale={report['stale']}"
+        f"{lock_bits}"
     )
+    if report.get("lock_owner_summary"):
+        print(f"  lock_owner: {_format_owner_summary(report.get('lock_owner_summary'))}")
     for entry in report.get("entries", []):
         status = entry.get("runtime_status", "unknown")
         print(f"  {status}: {_format_owner_summary(entry.get('owner_summary'))}")
+
+
+def _cmd_active_sessions_diagnose(args) -> int:
+    from hermes_cli import active_sessions
+
+    report = active_sessions.active_session_registry_status(
+        no_lock=bool(getattr(args, "no_lock", False))
+    )
+    if getattr(args, "json", False):
+        print(json_module.dumps(report, sort_keys=True))
+        return 0
+    _print_active_sessions_report(report)
     return 0
 
 
@@ -130,6 +157,10 @@ def _cmd_control_plane_status(args) -> int:
             parts.append(f"steer_boundary={session['steer_boundary']}")
         if session.get("model_request_status"):
             parts.append(f"model_request_status={session['model_request_status']}")
+        if session.get("db_lifecycle_status"):
+            parts.append(f"db_lifecycle_status={session['db_lifecycle_status']}")
+        if session.get("repair_recommendation"):
+            parts.append(f"repair_recommendation={session['repair_recommendation']}")
         if session.get("model_policy_violation") is True:
             parts.append("model_policy_violation=True")
             parts.append(f"required_model={session.get('required_model', '')}")
@@ -294,6 +325,18 @@ def build_parser(subparsers) -> argparse.ArgumentParser:
     )
     status.set_defaults(func=_cmd_active_sessions_status)
 
+    diagnose = active_sub.add_parser(
+        "diagnose",
+        help="Show value-free active-session diagnostics without repairing leases",
+    )
+    diagnose.add_argument(
+        "--no-lock",
+        action="store_true",
+        help="Read the registry without taking the metadata lock; may be stale",
+    )
+    diagnose.add_argument("--json", action="store_true", help="Emit JSON")
+    diagnose.set_defaults(func=_cmd_active_sessions_diagnose)
+
     repair = active_sub.add_parser(
         "repair",
         help="Repair stale active-session leases",
@@ -330,7 +373,7 @@ def build_parser(subparsers) -> argparse.ArgumentParser:
 
     control_steer = control_sub.add_parser(
         "steer",
-        help="Queue a value-free steer when a live local agent channel supports it",
+        help="Queue a value-free steer when a live agent or CLI boundary supports it",
     )
     control_steer.add_argument("--session-id", required=True)
     control_steer.add_argument("--message", required=True)

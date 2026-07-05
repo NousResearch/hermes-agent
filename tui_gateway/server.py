@@ -85,10 +85,28 @@ def _panic_hook(exc_type, exc_value, exc_tb):
 sys.excepthook = _panic_hook
 
 
+def _is_subprocess_reader_decode_error(args) -> bool:
+    if args.exc_type is not UnicodeDecodeError:
+        return False
+    thread_name = getattr(getattr(args, "thread", None), "name", "")
+    if "_readerthread" in thread_name:
+        return True
+    tb = args.exc_traceback
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if code.co_name == "_readerthread" and Path(code.co_filename).name == "subprocess.py":
+            return True
+        tb = tb.tb_next
+    return False
+
+
 def _thread_panic_hook(args):
     # threading.excepthook signature: SimpleNamespace(exc_type, exc_value, exc_traceback, thread)
     import traceback
 
+    reader_decode_warning = _is_subprocess_reader_decode_error(args)
+    label = "thread warning" if reader_decode_warning else "thread exception"
+    prefix = "gateway-thread-warning" if reader_decode_warning else "gateway-crash"
     trace = "".join(
         traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
     )
@@ -96,7 +114,7 @@ def _thread_panic_hook(args):
         os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
         with open(_CRASH_LOG, "a", encoding="utf-8") as f:
             f.write(
-                f"\n=== thread exception · {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"\n=== {label} · {time.strftime('%Y-%m-%d %H:%M:%S')} "
                 f"· thread={args.thread.name} ===\n"
             )
             f.write(trace)
@@ -108,7 +126,7 @@ def _thread_panic_hook(args):
         else args.exc_type.__name__
     )
     print(
-        f"[gateway-crash] thread {args.thread.name} raised {args.exc_type.__name__}: {first_line}",
+        f"[{prefix}] thread {args.thread.name} raised {args.exc_type.__name__}: {first_line}",
         file=sys.stderr,
         flush=True,
     )
@@ -415,6 +433,15 @@ def _claim_active_session_slot(
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
         return None, None
+
+
+def _active_session_registry_degradation(limit_message: str | None) -> dict | None:
+    if not str(limit_message or "").startswith("Hermes active session registry is busy;"):
+        return None
+    return {
+        "active_session_registry": "degraded",
+        "reason": "active_session_registry_busy",
+    }
 
 
 def _release_active_session_slot(session: dict | None) -> None:
@@ -5378,7 +5405,8 @@ def _(rid, params: dict) -> dict:
     if is_truthy_value(params.get("lazy", False)):
         sid = uuid.uuid4().hex[:8]
         lease, limit_message = _claim_active_session_slot(target, live_session_id=sid)
-        if limit_message is not None:
+        runtime_degradation = _active_session_registry_degradation(limit_message)
+        if limit_message is not None and runtime_degradation is None:
             return _err(rid, 4090, limit_message)
         try:
             db.reopen_session(target)
@@ -5407,21 +5435,21 @@ def _(rid, params: dict) -> dict:
         # its liveness from the relay registry so the window shows a busy turn.
         child_running = _child_run_active(target)
         messages = _history_to_messages(history)
-        return _ok(
-            rid,
-            {
-                "session_id": sid,
-                "resumed": target,
-                "message_count": len(messages),
-                "messages": messages,
-                "info": _lazy_resume_info(cwd),
-                "inflight": None,
-                "running": child_running,
-                "session_key": target,
-                "started_at": record["created_at"],
-                "status": "streaming" if child_running else "idle",
-            },
-        )
+        payload = {
+            "session_id": sid,
+            "resumed": target,
+            "message_count": len(messages),
+            "messages": messages,
+            "info": _lazy_resume_info(cwd),
+            "inflight": None,
+            "running": child_running,
+            "session_key": target,
+            "started_at": record["created_at"],
+            "status": "streaming" if child_running else "idle",
+        }
+        if runtime_degradation is not None:
+            payload["runtime_status"] = runtime_degradation
+        return _ok(rid, payload)
 
     # Cold resume default: register the live session and read its stored
     # transcript, but build the agent OFF the response path. _make_agent can
@@ -5439,7 +5467,8 @@ def _(rid, params: dict) -> dict:
     if not is_truthy_value(params.get("eager_build", False)):
         sid = uuid.uuid4().hex[:8]
         lease, limit_message = _claim_active_session_slot(target, live_session_id=sid)
-        if limit_message is not None:
+        runtime_degradation = _active_session_registry_degradation(limit_message)
+        if limit_message is not None and runtime_degradation is None:
             return _err(rid, 4090, limit_message)
         # Interactive resume routes approvals/clarify through gateway prompts;
         # the deferred build wires the remaining per-session callbacks.
@@ -5483,25 +5512,25 @@ def _(rid, params: dict) -> dict:
         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
 
         messages = _history_to_messages(display_history)
-        return _ok(
-            rid,
-            {
-                "session_id": sid,
-                "resumed": target,
-                "message_count": len(messages),
-                "messages": messages,
-                "info": _lazy_resume_info(
-                    cwd,
-                    model=model_override.get("model") or "",
-                    provider=overrides.get("provider_override") or "",
-                ),
-                "inflight": None,
-                "running": False,
-                "session_key": target,
-                "started_at": record["created_at"],
-                "status": "idle",
-            },
-        )
+        payload = {
+            "session_id": sid,
+            "resumed": target,
+            "message_count": len(messages),
+            "messages": messages,
+            "info": _lazy_resume_info(
+                cwd,
+                model=model_override.get("model") or "",
+                provider=overrides.get("provider_override") or "",
+            ),
+            "inflight": None,
+            "running": False,
+            "session_key": target,
+            "started_at": record["created_at"],
+            "status": "idle",
+        }
+        if runtime_degradation is not None:
+            payload["runtime_status"] = runtime_degradation
+        return _ok(rid, payload)
 
     # Build the agent OUTSIDE the lock — _make_agent can block for seconds
     # (MCP discovery, prompt/skill build, AIAgent construction). Holding
@@ -5509,7 +5538,8 @@ def _(rid, params: dict) -> dict:
     # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
     sid = uuid.uuid4().hex[:8]
     lease, limit_message = _claim_active_session_slot(target, live_session_id=sid)
-    if limit_message is not None:
+    runtime_degradation = _active_session_registry_degradation(limit_message)
+    if limit_message is not None and runtime_degradation is None:
         return _err(rid, 4090, limit_message)
     _enable_gateway_prompts()
     home_token = (
@@ -5617,21 +5647,21 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
-    return _ok(
-        rid,
-        {
-            "session_id": sid,
-            "resumed": target,
-            "message_count": len(messages),
-            "messages": messages,
-            "info": _session_info(agent, session),
-            "inflight": None,
-            "running": False,
-            "session_key": target,
-            "started_at": float(session.get("created_at") or time.time()),
-            "status": "idle",
-        },
-    )
+    payload = {
+        "session_id": sid,
+        "resumed": target,
+        "message_count": len(messages),
+        "messages": messages,
+        "info": _session_info(agent, session),
+        "inflight": None,
+        "running": False,
+        "session_key": target,
+        "started_at": float(session.get("created_at") or time.time()),
+        "status": "idle",
+    }
+    if runtime_degradation is not None:
+        payload["runtime_status"] = runtime_degradation
+    return _ok(rid, payload)
 
 
 @method("session.cwd.set")

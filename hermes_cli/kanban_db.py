@@ -113,7 +113,7 @@ def _run_text_subprocess(*popenargs, **kwargs) -> subprocess.CompletedProcess[st
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "blocked_needs_input", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
@@ -2569,6 +2569,8 @@ def create_task(
         if row:
             return row["id"]
 
+    _validate_worker_profile_skills_or_raise(assignee, skills_list)
+
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
@@ -4745,8 +4747,8 @@ def edit_completed_task_result(
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,
-    *,
     reason: Optional[str] = None,
+    *,
     kind: Optional[str] = None,
     metadata: Optional[dict] = None,
     expected_run_id: Optional[int] = None,
@@ -4762,6 +4764,10 @@ def block_task(
       ``todo`` so the existing parent-gating / ``recompute_ready`` machinery
       promotes it automatically once its parents finish. No human, no cron, no
       retry storm. This is Dale's "Type 2 — dependency blocked".
+
+    * ``needs_input`` on a dependency-gated ``todo`` card — routed to
+      ``blocked_needs_input`` so the human-input blocker is visible without
+      unlinking parent dependencies or making the card dispatchable.
 
     * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
@@ -4803,6 +4809,44 @@ def block_task(
             and cur_row["block_recurrences"] is not None
             else 0
         )
+
+        if kind == "needs_input" and cur_row["status"] == "todo":
+            waiting_parents = incomplete_parent_ids(conn, task_id)
+            if waiting_parents:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'blocked_needs_input',
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = ?,
+                           block_recurrences = ?
+                     WHERE id = ?
+                       AND status = 'todo'
+                    """,
+                    (kind, 1, task_id),
+                )
+                if cur.rowcount != 1:
+                    return False
+                payload = {
+                    "reason": reason,
+                    "kind": kind,
+                    "waiting_on": waiting_parents,
+                }
+                if block_recovery:
+                    payload["block_recovery"] = block_recovery
+                _append_event(conn, task_id, "blocked_needs_input", payload)
+                _blocked_task = get_task(conn, task_id)
+                _fire_kanban_lifecycle_hook(
+                    "kanban_task_blocked",
+                    task_id,
+                    board=get_current_board(),
+                    assignee=_blocked_task.assignee if _blocked_task else None,
+                    run_id=None,
+                    reason=reason,
+                )
+                return True
 
         # Dependency blocks never enter the human ``blocked`` bucket — they
         # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
@@ -5066,7 +5110,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled', 'blocked_needs_input')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -5107,7 +5151,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "WHERE id = ? AND status IN ('blocked', 'scheduled', 'blocked_needs_input')",
             (new_status, task_id),
         )
         if cur.rowcount != 1:
@@ -6140,6 +6184,10 @@ class DispatchResult:
     window just makes the task bounce cheaply until the window clears."""
     spawn_blocked_zero_budget: list[str] = field(default_factory=list)
     """Task ids blocked before spawn because their effective worker budget resolved to zero."""
+    spawn_blocked_missing_skills: list[str] = field(default_factory=list)
+    """Task ids blocked before spawn because the target profile lacks requested skills."""
+    spawn_blocked_session_lineage: list[str] = field(default_factory=list)
+    """Task ids blocked before spawn because their stored session id belongs elsewhere."""
     ready_explanations: list[dict[str, Any]] = field(default_factory=list)
     """Machine-readable reasons ready work did not spawn this tick."""
     skipped_locked: bool = False
@@ -6300,6 +6348,18 @@ class WorkerBudgetPreflight:
     detail: str
 
 
+@dataclass(frozen=True)
+class SessionLineageVerdict:
+    ok: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class WorkerRunningClaim:
+    running: bool
+    reason: str
+
+
 def _safe_budget_int(value: Any) -> Optional[int]:
     if value is None:
         return None
@@ -6349,6 +6409,63 @@ def _load_worker_profile_config(assignee: Optional[str]) -> dict[str, Any]:
     except Exception:
         return {}
     return cfg if isinstance(cfg, dict) else {}
+
+
+def _profile_skill_names(assignee: Optional[str]) -> Optional[set[str]]:
+    profile = (assignee or "").strip()
+    if not profile:
+        return None
+    try:
+        from hermes_cli.profiles import get_profile_dir, profile_exists
+
+        if not profile_exists(profile):
+            return None
+        skills_dir = get_profile_dir(profile) / "skills"
+    except Exception:
+        return None
+    if not skills_dir.is_dir():
+        return set()
+    names: set[str] = set()
+    for child in skills_dir.iterdir():
+        if child.is_dir() and (child / "SKILL.md").is_file():
+            names.add(child.name)
+    return names
+
+
+def _missing_worker_profile_skills(
+    assignee: Optional[str],
+    skills: Optional[Iterable[str]],
+) -> list[str]:
+    requested = [str(s).strip() for s in (skills or []) if str(s).strip()]
+    if not requested:
+        return []
+    available = _profile_skill_names(assignee)
+    if available is None:
+        return []
+    return [name for name in requested if name not in available]
+
+
+def _missing_worker_skills_message(
+    assignee: Optional[str],
+    missing: Iterable[str],
+    *,
+    task_id: Optional[str] = None,
+) -> str:
+    profile = (assignee or "unassigned").strip() or "unassigned"
+    prefix = (
+        f"spawn_blocked_missing_skills: task {task_id} target profile {profile}"
+        if task_id else f"target profile {profile}"
+    )
+    return f"{prefix} missing skills: {', '.join(missing)}"
+
+
+def _validate_worker_profile_skills_or_raise(
+    assignee: Optional[str],
+    skills: Optional[Iterable[str]],
+) -> None:
+    missing = _missing_worker_profile_skills(assignee, skills)
+    if missing:
+        raise ValueError(_missing_worker_skills_message(assignee, missing))
 
 
 def resolve_kanban_worker_budget(
@@ -6431,6 +6548,185 @@ def _block_spawn_zero_budget(
             metadata,
             run_id=run_id,
         )
+
+
+def _block_spawn_missing_skills(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    assignee: Optional[str],
+    missing: Iterable[str],
+) -> None:
+    missing_list = list(missing)
+    reason = _missing_worker_skills_message(
+        assignee, missing_list, task_id=task_id
+    )
+    metadata = {
+        "reason": "spawn_blocked_missing_skills",
+        "assignee": assignee,
+        "missing_skills": missing_list,
+    }
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, last_failure_error = ? "
+            "WHERE id = ? AND status IN ('ready', 'review')",
+            (reason[:500], task_id),
+        )
+        run_id = _synthesize_ended_run(
+            conn,
+            task_id,
+            outcome="spawn_blocked_missing_skills",
+            summary=reason,
+            error=reason[:500],
+            metadata=metadata,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "spawn_blocked_missing_skills",
+            metadata,
+            run_id=run_id,
+        )
+
+
+def _session_record_value(record: Any, key: str) -> Any:
+    if isinstance(record, dict):
+        return record.get(key)
+    return getattr(record, key, None)
+
+
+def _same_path(left: Any, right: Any) -> bool:
+    if not left or not right:
+        return True
+    try:
+        lpath = os.path.normcase(os.path.abspath(str(left)))
+        rpath = os.path.normcase(os.path.abspath(str(right)))
+    except Exception:
+        return str(left) == str(right)
+    return lpath == rpath
+
+
+def validate_task_session_lineage(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    session_db: Any = None,
+    board: Optional[str] = None,
+) -> SessionLineageVerdict:
+    task = get_task(conn, task_id)
+    if task is None:
+        return SessionLineageVerdict(False, f"task {task_id} not found")
+    if not task.session_id:
+        return SessionLineageVerdict(True, "no session id")
+    if session_db is None:
+        return SessionLineageVerdict(True, "session db unavailable")
+    try:
+        record = session_db.get_session(task.session_id)
+    except Exception as exc:
+        return SessionLineageVerdict(
+            False,
+            f"session lineage check failed for {task.session_id}: {exc}",
+        )
+    if not record:
+        return SessionLineageVerdict(
+            False,
+            f"session lineage mismatch for {task.session_id}: session not found",
+        )
+
+    problems: list[str] = []
+    owner_task = _session_record_value(record, "kanban_task_id")
+    if owner_task and str(owner_task) != str(task.id):
+        problems.append(f"task {owner_task}")
+    owner_board = _session_record_value(record, "kanban_board")
+    if board and owner_board and str(owner_board) != str(board):
+        problems.append(f"board {owner_board}")
+    owner_workspace = _session_record_value(record, "workspace_path")
+    if owner_workspace and task.workspace_path and not _same_path(
+        owner_workspace, task.workspace_path
+    ):
+        problems.append(
+            f"workspace {owner_workspace} != {task.workspace_path}"
+        )
+
+    if problems:
+        return SessionLineageVerdict(
+            False,
+            f"session lineage mismatch for {task.session_id}: "
+            + "; ".join(problems),
+        )
+    return SessionLineageVerdict(True, "session lineage ok")
+
+
+def _block_spawn_session_lineage(
+    conn: sqlite3.Connection,
+    task_id: str,
+    verdict: SessionLineageVerdict,
+) -> None:
+    reason = f"session lineage blocked: {verdict.reason}"
+    metadata = {
+        "reason": "spawn_blocked_session_lineage",
+        "detail": verdict.reason,
+    }
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, last_failure_error = ? "
+            "WHERE id = ? AND status IN ('ready', 'review')",
+            (reason[:500], task_id),
+        )
+        run_id = _synthesize_ended_run(
+            conn,
+            task_id,
+            outcome="spawn_blocked_session_lineage",
+            summary=reason,
+            error=reason[:500],
+            metadata=metadata,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "spawn_blocked_session_lineage",
+            metadata,
+            run_id=run_id,
+        )
+
+
+def worker_running_claim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    process_alive=None,
+    now: Optional[int] = None,
+) -> WorkerRunningClaim:
+    del now
+    row = conn.execute(
+        "SELECT status, worker_pid, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return WorkerRunningClaim(False, "task not found")
+    if row["status"] != "running":
+        return WorkerRunningClaim(False, f"status is {row['status']}")
+    if row["current_run_id"] is None:
+        return WorkerRunningClaim(False, "current run missing")
+    pid = row["worker_pid"]
+    if pid is None:
+        return WorkerRunningClaim(False, "process missing")
+    run = conn.execute(
+        "SELECT status, ended_at FROM task_runs WHERE id = ?",
+        (int(row["current_run_id"]),),
+    ).fetchone()
+    if run is None or run["ended_at"] is not None or run["status"] != "running":
+        return WorkerRunningClaim(False, "current run is not live")
+    checker = process_alive if process_alive is not None else _pid_alive
+    try:
+        alive = bool(checker(int(pid)))
+    except Exception:
+        alive = False
+    if not alive:
+        return WorkerRunningClaim(False, f"process {pid} is not live")
+    return WorkerRunningClaim(True, "running")
 
 
 _ZERO_BUDGET_SIGNATURES = (
@@ -8314,8 +8610,30 @@ def _dispatch_once_locked(
         task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone()
         if task_row is None:
             continue
+        task = Task.from_row(task_row)
+        missing_skills = _missing_worker_profile_skills(
+            row_assignee, task.skills
+        )
+        if missing_skills:
+            result.spawn_blocked_missing_skills.append(row["id"])
+            if not dry_run:
+                _block_spawn_missing_skills(
+                    conn,
+                    row["id"],
+                    assignee=row_assignee,
+                    missing=missing_skills,
+                )
+            continue
+        lineage = validate_task_session_lineage(
+            conn, row["id"], session_db=session_db, board=board
+        )
+        if not lineage.ok:
+            result.spawn_blocked_session_lineage.append(row["id"])
+            if not dry_run:
+                _block_spawn_session_lineage(conn, row["id"], lineage)
+            continue
         budget_preflight = resolve_kanban_worker_budget(
-            Task.from_row(task_row), assignee=row_assignee
+            task, assignee=row_assignee
         )
         if not budget_preflight.allowed:
             result.spawn_blocked_zero_budget.append(row["id"])
@@ -10089,3 +10407,130 @@ def latest_summaries(
         ids,
     ).fetchall()
     return {r["task_id"]: r["summary"] for r in rows}
+
+
+class ArtifactVerificationError(ValueError):
+    """Raised when completion declares artifacts that are not host-visible."""
+
+    def __init__(self, issues: list[dict[str, Any]]):
+        self.issues = issues
+        super().__init__(
+            "completion blocked: declared artifacts failed host-visible verification"
+        )
+
+
+def verify_deploy_artifact_contract(
+    *,
+    artifact_path: str | os.PathLike[str],
+    expected_sha256: Optional[str] = None,
+    required_entries: Optional[Iterable[str]] = None,
+) -> dict[str, Any]:
+    from hermes_cli.artifact_contracts import verify_deploy_artifact_contract as _verify
+
+    return _verify(
+        artifact_path=artifact_path,
+        expected_sha256=expected_sha256,
+        required_entries=required_entries,
+    )
+
+
+def _artifact_metadata_lookup(metadata: dict[str, Any], keys: Iterable[str], path: str) -> Any:
+    basename = Path(path).name
+    for key in keys:
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            if path in value:
+                return value[path]
+            if basename in value:
+                return value[basename]
+            if "*" in value:
+                return value["*"]
+        elif value:
+            return value
+    return None
+
+
+def _verify_completion_artifacts_or_raise(metadata: Optional[dict]) -> Optional[dict]:
+    if not isinstance(metadata, dict):
+        return metadata
+    raw_artifacts = metadata.get("artifacts")
+    if not isinstance(raw_artifacts, (list, tuple)):
+        return metadata
+    artifact_paths = [
+        str(path).strip()
+        for path in raw_artifacts
+        if isinstance(path, (str, os.PathLike)) and str(path).strip()
+    ]
+    if not artifact_paths:
+        return metadata
+
+    failures: list[dict[str, Any]] = []
+    verified: list[dict[str, Any]] = []
+    canonical_artifacts: list[str] = []
+    for artifact_path in artifact_paths:
+        expected_hash = _artifact_metadata_lookup(
+            metadata,
+            ("artifact_hashes", "expected_hashes", "expected_sha256"),
+            artifact_path,
+        )
+        required_entries = _artifact_metadata_lookup(
+            metadata,
+            ("required_entries", "required_archive_entries"),
+            artifact_path,
+        )
+        if isinstance(required_entries, str):
+            required_entries = [required_entries]
+        result = verify_deploy_artifact_contract(
+            artifact_path=artifact_path,
+            expected_sha256=str(expected_hash).strip() if expected_hash else None,
+            required_entries=required_entries if isinstance(required_entries, (list, tuple, set)) else None,
+        )
+        if not result.get("ok"):
+            failures.append({"path": artifact_path, "issues": result.get("issues") or []})
+            continue
+        checked = result.get("checked") or {}
+        canonical = str(checked.get("canonical_path") or artifact_path)
+        canonical_artifacts.append(canonical)
+        verified.append(
+            {
+                "path": canonical,
+                "byte_length": checked.get("byte_length"),
+                "sha256": checked.get("sha256"),
+                "runtime_can_read": checked.get("runtime_can_read"),
+            }
+        )
+    if failures:
+        raise ArtifactVerificationError(failures)
+
+    updated = dict(metadata)
+    updated["artifacts"] = canonical_artifacts
+    existing_verified = updated.get("verified_artifacts")
+    if isinstance(existing_verified, list):
+        verified = [*existing_verified, *verified]
+    updated["verified_artifacts"] = verified
+    return updated
+
+
+_complete_task_without_artifact_guard = complete_task
+
+
+def complete_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    created_cards: Optional[Iterable[str]] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    metadata = _verify_completion_artifacts_or_raise(metadata)
+    return _complete_task_without_artifact_guard(
+        conn,
+        task_id,
+        result=result,
+        summary=summary,
+        metadata=metadata,
+        created_cards=created_cards,
+        expected_run_id=expected_run_id,
+    )

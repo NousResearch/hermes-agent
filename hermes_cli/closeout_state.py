@@ -133,15 +133,19 @@ def write_closeout_state(
     ci_status: str | None = None,
     invalid_review_children: list[dict[str, Any]] | None = None,
     remaining_closeout_tasks: list[str] | None = None,
+    remaining_gates: list[str] | None = None,
     changed_files: list[str] | None = None,
+    commits: list[str] | None = None,
     verified_artifacts: list[str] | None = None,
     tests_run: list[str] | None = None,
     failing_tests: list[str] | None = None,
     blockers: list[str] | None = None,
+    blocked_review_children: list[str] | None = None,
     next_safe_action: str | None = None,
     required_model: str = "gpt-5.5",
     live_provider_actions_approved: bool = False,
 ) -> Path:
+    from hermes_cli.artifact_contracts import write_required_artifacts
     from hermes_cli.closure_artifacts import read_closure_artifact, write_closure_artifact
 
     invalid_children = _clean_invalid_review_children(invalid_review_children or [])
@@ -165,10 +169,31 @@ def write_closeout_state(
 
     clean_blockers = _clean_list(blockers if blockers is not None else failing_tests or verdict["reasons"])
     clean_remaining = _clean_list(remaining_closeout_tasks)
+    clean_remaining_gates = _clean_list(
+        remaining_gates if remaining_gates is not None else remaining_closeout_tasks
+    )
+    clean_commits = _clean_list(commits if commits is not None else ([head_sha] if head_sha else []))
+    clean_blocked_review_children = _clean_list(
+        blocked_review_children,
+        max_items=20,
+        max_chars=300,
+    )
     clean_next_action = _clean_text(
         next_safe_action or (clean_remaining[0] if clean_remaining else "return a compact final or blocked answer"),
         max_chars=500,
     )
+    required_artifacts = write_required_artifacts(task_contract or "", final_response)
+    required_written_paths = [
+        item["path"]
+        for item in required_artifacts
+        if item.get("status") == "written" and item.get("path")
+    ]
+    clean_verified_artifacts = _clean_list(
+        verified_artifacts if verified_artifacts is not None else changed_files
+    )
+    for artifact_path in required_written_paths:
+        if artifact_path not in clean_verified_artifacts:
+            clean_verified_artifacts.append(artifact_path)
 
     path = write_closure_artifact(
         session_id=session_id,
@@ -197,7 +222,14 @@ def write_closeout_state(
             "safe_bounded_resume_prompt": safe_prompt,
             "closeout_reasons": verdict["reasons"],
             "task_contract": _clean_text(task_contract or task_id or "", max_chars=900),
-            "verified_artifacts": _clean_list(verified_artifacts if verified_artifacts is not None else changed_files),
+            "commits": clean_commits,
+            "remaining_gates": clean_remaining_gates,
+            "blocked_review_children": clean_blocked_review_children,
+            "provider_actions_approval_status": (
+                "approved" if live_provider_actions_approved else "not_approved"
+            ),
+            "required_artifacts": required_artifacts,
+            "verified_artifacts": clean_verified_artifacts,
             "blockers": clean_blockers,
             "next_safe_action": clean_next_action,
             "required_model": _clean_text(required_model or "gpt-5.5", max_chars=80),

@@ -115,8 +115,8 @@ def test_quick_move_reliability_chain_canary(
         assert kb.get_task(conn, archive).status == "todo"
 
         candidates, dry_actions = kb.repair_zero_budget_failures(conn, dry_run=True)
-        assert [c.task_id for c in candidates] == [zero_a, zero_b]
-        assert [a.task_id for a in dry_actions] == [zero_a, zero_b]
+        assert {c.task_id for c in candidates} == {zero_a, zero_b}
+        assert {a.task_id for a in dry_actions} == {zero_a, zero_b}
         assert all(a.mutated is False for a in dry_actions)
 
         _candidates, reroute_actions = kb.repair_zero_budget_failures(

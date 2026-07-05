@@ -7,7 +7,7 @@ import sys
 POLISH_TEXT = "Za\u017c\u00f3\u0142\u0107 g\u0119\u015bl\u0105 ja\u017a\u0144"
 
 
-def test_run_text_subprocess_replaces_non_utf8_output(tmp_path):
+def test_run_text_subprocess_recovers_cp1250_polish_output(tmp_path):
     from hermes_cli.subprocess_text import run_text_subprocess
 
     script = tmp_path / "emit_cp1250.py"
@@ -28,8 +28,21 @@ def test_run_text_subprocess_replaces_non_utf8_output(tmp_path):
     assert result.returncode == 0
     assert "out:" in result.stdout
     assert "err:" in result.stderr
-    assert "\ufffd" in result.stdout
-    assert "\ufffd" in result.stderr
+    assert POLISH_TEXT in result.stdout
+    assert POLISH_TEXT in result.stderr
+    assert "\ufffd" not in result.stdout
+    assert "\ufffd" not in result.stderr
+
+
+def test_decode_subprocess_bytes_keeps_replacement_for_unhelpful_binary():
+    from hermes_cli.subprocess_text import decode_subprocess_bytes
+
+    decoded = decode_subprocess_bytes(b"before \xff\xfe after", allow_fallback=True)
+
+    assert decoded.text == "before \ufffd\ufffd after"
+    assert decoded.encoding == "utf-8"
+    assert decoded.used_fallback is False
+    assert decoded.had_replacement is True
 
 
 def test_popen_text_kwargs_force_lossy_utf8_text_mode():

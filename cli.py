@@ -4246,6 +4246,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         finally:
             self._active_session_lease = None
 
+    def _consume_control_plane_steers_for_active_agent(self) -> int:
+        """Drain cross-process CLI steer records into the live agent slot."""
+        agent = getattr(self, "agent", None)
+        if agent is None or not hasattr(agent, "steer"):
+            return 0
+        try:
+            from hermes_cli.control_plane import consume_control_plane_steers
+
+            messages = consume_control_plane_steers(self.session_id)
+        except Exception:
+            logger.debug("Failed to consume control-plane steers", exc_info=True)
+            return 0
+        accepted = 0
+        for message in messages:
+            if not message:
+                continue
+            try:
+                if agent.steer(message):
+                    accepted += 1
+            except Exception:
+                logger.debug("Failed to queue control-plane steer on agent", exc_info=True)
+        if accepted and not getattr(self, "quiet", False):
+            suffix = "" if accepted == 1 else f" ({accepted})"
+            _cprint(
+                f"\n⏩ Control-plane steer queued{suffix} — arrives after the next tool boundary"
+            )
+        return accepted
+
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint for high-frequency background updates.
 
@@ -12049,6 +12077,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             request_overrides=turn_route.get("request_overrides"),
         ):
             return None
+        self._consume_control_plane_steers_for_active_agent()
         
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
@@ -12344,7 +12373,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # by the Enter key binding (routed to the clarify response queue),
             # so we skip interrupt processing to avoid stealing that input.
             interrupt_msg = None
+            last_control_plane_steer_poll = 0.0
             while agent_thread.is_alive():
+                now = time.monotonic()
+                if now - last_control_plane_steer_poll >= 0.2:
+                    last_control_plane_steer_poll = now
+                    self._consume_control_plane_steers_for_active_agent()
                 if hasattr(self, '_interrupt_queue'):
                     try:
                         interrupt_msg = self._interrupt_queue.get(timeout=0.1)
@@ -15656,6 +15690,23 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         max_turns=max_turns,
         first_response=first_response or "",
         log=lambda m: logger.info("%s", m),
+    )
+
+
+def build_windows_query_file_resume_argv(
+    *,
+    session_id: str,
+    prompt_path: str | Path,
+    model: str = "gpt-5.5",
+) -> list[str]:
+    """Build an atomic argv list for Windows resume + query-file launches."""
+
+    from hermes_cli.windows_launch import build_query_file_argv
+
+    return build_query_file_argv(
+        session_id=session_id,
+        prompt_path=prompt_path,
+        model=model,
     )
 
 

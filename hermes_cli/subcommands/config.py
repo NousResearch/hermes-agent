@@ -41,7 +41,47 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_subparsers.add_parser("env-path", help="Print .env file path")
 
     # config check
-    config_subparsers.add_parser("check", help="Check for missing/outdated config")
+    config_check = config_subparsers.add_parser(
+        "check", help="Check for missing/outdated config"
+    )
+    config_check.add_argument(
+        "--all-profiles",
+        action="store_true",
+        help="Include every named profile under HERMES_HOME/profiles",
+    )
+    config_check.add_argument(
+        "--kanban-workers",
+        action="store_true",
+        help="Validate Kanban worker profile execution budgets",
+    )
+
+    # config repair
+    config_repair = config_subparsers.add_parser(
+        "repair", help="Repair bounded configuration issues"
+    )
+    repair_subparsers = config_repair.add_subparsers(dest="repair_command")
+    worker_budgets = repair_subparsers.add_parser(
+        "worker-budgets",
+        help="Repair zero execution budgets in Kanban worker profiles",
+    )
+    worker_budgets.add_argument(
+        "--all-profiles",
+        action="store_true",
+        help="Repair every named profile under HERMES_HOME/profiles",
+    )
+    worker_budgets.add_argument("--profile", help="Repair one named profile")
+    worker_budgets.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report planned changes without writing config files",
+    )
+    worker_budgets.add_argument(
+        "--set",
+        dest="set_value",
+        type=int,
+        default=120,
+        help="Positive budget value to write for zero budgets",
+    )
 
     # config migrate
     config_subparsers.add_parser("migrate", help="Update config with new options")

@@ -1336,6 +1336,8 @@ def _fs_git_branch(cwd: str) -> str:
         run_kwargs: Dict[str, Any] = {
             "capture_output": True,
             "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
             "timeout": 2,
             "check": False,
         }
@@ -3127,6 +3129,8 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if out.returncode != 0:

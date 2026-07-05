@@ -300,6 +300,25 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_subprocess_reader_decode_error_is_thread_warning(monkeypatch, tmp_path, capsys):
+    crash_log = tmp_path / "tui_gateway_crash.log"
+    monkeypatch.setattr(server, "_CRASH_LOG", str(crash_log))
+    err = UnicodeDecodeError("utf-8", b"\xf3", 0, 1, "invalid continuation byte")
+    args = types.SimpleNamespace(
+        exc_type=UnicodeDecodeError,
+        exc_value=err,
+        exc_traceback=None,
+        thread=types.SimpleNamespace(name="Thread-271 (_readerthread)"),
+    )
+
+    server._thread_panic_hook(args)
+
+    stderr = capsys.readouterr().err
+    assert "[gateway-crash]" not in stderr
+    assert "[gateway-thread-warning]" in stderr
+    assert "UnicodeDecodeError" in crash_log.read_text(encoding="utf-8")
+
+
 def test_write_json_drops_detached_ws_frames(monkeypatch):
     out = _ChunkyStdout()
     monkeypatch.setattr(server, "_real_stdout", out)
@@ -975,6 +994,54 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         {"role": "assistant", "text": "root answer"},
     ]
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
+
+
+def test_session_resume_returns_transcript_when_active_registry_lock_busy(monkeypatch):
+    target = "stored-lock-busy"
+
+    class FakeDB:
+        def get_session(self, _target):
+            return {"id": target}
+
+        def get_session_by_title(self, _target):
+            return None
+
+        def reopen_session(self, _target):
+            pass
+
+        def get_messages_as_conversation(self, _target, include_ancestors=False):
+            return [{"role": "user", "content": "recover this transcript"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(
+        server,
+        "_claim_active_session_slot",
+        lambda *_args, **_kwargs: (
+            None,
+            "Hermes active session registry is busy; owner "
+            "pid=67890 session_id=metadata-session owner_kind=metadata_update. "
+            "Try again shortly or run `hermes runtime active-sessions status`.",
+        ),
+    )
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.resume", "params": {"session_id": target}}
+        )
+    finally:
+        server._sessions.clear()
+
+    assert "error" not in resp
+    assert resp["result"]["session_key"] == target
+    assert resp["result"]["messages"] == [
+        {"role": "user", "text": "recover this transcript"}
+    ]
+    assert resp["result"]["runtime_status"] == {
+        "active_session_registry": "degraded",
+        "reason": "active_session_registry_busy",
+    }
 
 
 def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):

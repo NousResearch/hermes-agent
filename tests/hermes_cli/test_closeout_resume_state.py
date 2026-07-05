@@ -47,6 +47,40 @@ def test_max_turn_closeout_state_contains_latest_child_and_bounded_resume_prompt
     assert "bloated parent history" in data["safe_bounded_resume_prompt"]
 
 
+def test_closeout_state_persists_task2_compact_packet_fields(hermes_home):
+    from hermes_cli.closeout_state import write_closeout_state
+    from hermes_cli.closure_artifacts import read_closure_artifact
+
+    path = write_closeout_state(
+        session_id="root-session",
+        latest_session_id="child-session",
+        task_id="task-2",
+        task_contract="Compact finalization from verified state.",
+        changed_files=["agent/request_watchdog.py"],
+        commits=["abc123def456"],
+        tests_run=["pytest focused -q"],
+        remaining_gates=["post-main CI"],
+        blocked_review_children=["review child had zero budget"],
+        live_provider_actions_approved=False,
+        required_model="gpt-5.5",
+        final_response="Closeout still pending.",
+    )
+
+    data = read_closure_artifact(path)
+
+    assert data["session_id"] == "root-session"
+    assert data["latest_session_id"] == "child-session"
+    assert data["task_contract"] == "Compact finalization from verified state."
+    assert data["changed_files"] == ["agent/request_watchdog.py"]
+    assert data["commits"] == ["abc123def456"]
+    assert data["tests_run"] == ["pytest focused -q"]
+    assert data["remaining_gates"] == ["post-main CI"]
+    assert data["blocked_review_children"] == ["review child had zero budget"]
+    assert data["provider_actions_approval_status"] == "not_approved"
+    assert data["required_model"] == "gpt-5.5"
+    assert "gpt-5.5" in data["compact_finalization_prompt"]
+
+
 def test_closeout_final_response_with_unmerged_pr_is_recoverable_incomplete():
     from hermes_cli.closeout_state import classify_closeout_response
 
@@ -158,3 +192,25 @@ def test_post_merge_main_ci_required_before_complete():
     assert pending["status"] == "recoverable_incomplete"
     assert "post_main_ci_not_green" in pending["reasons"]
     assert green["status"] == "complete_candidate"
+
+
+def test_closeout_state_records_required_artifact_written_from_final_stdout(hermes_home, tmp_path):
+    from hermes_cli.closeout_state import write_closeout_state
+    from hermes_cli.closure_artifacts import read_closure_artifact
+
+    report = tmp_path / "task-9" / "report.md"
+    packet_path = write_closeout_state(
+        session_id="task-9-session",
+        task_id="task-9",
+        task_contract=f"Required output file: {report}",
+        final_response="## Final report\n\nSynthesized useful stdout.\n",
+        remaining_closeout_tasks=["confirm artifact exists before final answer"],
+    )
+
+    packet = read_closure_artifact(packet_path)
+
+    assert report.read_text(encoding="utf-8").startswith("## Final report")
+    assert packet["required_artifacts"] == [
+        {"path": str(report), "required": True, "status": "written"}
+    ]
+    assert str(report) in packet["verified_artifacts"]

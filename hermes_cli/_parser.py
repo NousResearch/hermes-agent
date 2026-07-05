@@ -149,6 +149,12 @@ def build_top_level_parser():
         help="Resume a previous session by ID or title",
     )
     parser.add_argument(
+        "--allow-parallel-owner",
+        action="store_true",
+        default=False,
+        help="Allow starting even when another live process owns the resumed session",
+    )
+    parser.add_argument(
         "--continue",
         "-c",
         dest="continue_last",
@@ -317,6 +323,12 @@ def build_top_level_parser():
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
         help="Resume a previous session by ID (shown on exit)",
+    )
+    chat_parser.add_argument(
+        "--allow-parallel-owner",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Allow starting even when another live process owns the resumed session",
     )
     chat_parser.add_argument(
         "--continue",

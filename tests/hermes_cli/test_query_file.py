@@ -4,7 +4,6 @@ from io import StringIO
 
 import pytest
 
-
 class _Console:
     def print(self, *args, **_kwargs):
         print(*args)
@@ -57,6 +56,32 @@ def test_chat_parser_accepts_query_file_and_stdin_query():
 
     assert file_args.query_file == "prompt.txt"
     assert stdin_args.stdin_query is True
+
+
+def test_legacy_cli_exports_atomic_windows_resume_query_file_argv_builder():
+    import cli as cli_mod
+
+    prompt_path = r"C:\Users\Admin\Documents\Hermes monitoring\runs\prompt.txt"
+
+    argv = cli_mod.build_windows_query_file_resume_argv(
+        session_id="resume-session",
+        prompt_path=prompt_path,
+        model="gpt-5.5",
+    )
+
+    assert argv == [
+        "-m",
+        "hermes_cli.main",
+        "chat",
+        "--resume",
+        "resume-session",
+        "--model",
+        "gpt-5.5",
+        "--query-file",
+        prompt_path,
+    ]
+    assert argv[argv.index("--query-file") + 1] == prompt_path
+    assert not any("\n" in arg or "\r" in arg for arg in argv)
 
 
 def test_query_file_loads_utf8_and_normalizes_crlf(tmp_path, monkeypatch):

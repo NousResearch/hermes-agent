@@ -19,6 +19,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from tools.approval import check_external_action_approval
+
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
 _MAX_BUFFER = 32 * 1024 * 1024
@@ -38,6 +40,8 @@ def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
@@ -56,6 +60,15 @@ def _git_ok(cwd: str, args: list[str]) -> None:
     code, _, err = _git(cwd, args)
     if code != 0:
         raise RuntimeError(err.strip() or f"git {' '.join(args)} failed")
+
+
+def _require_external_action_approval(command: str) -> None:
+    gate = check_external_action_approval(command, "local")
+    if gate.get("approved"):
+        return
+    description = gate.get("description") or gate.get("message") or "external action"
+    risk_class = gate.get("risk_class") or gate.get("pattern_key") or "external_action"
+    raise PermissionError(f"{description} requires explicit approval ({risk_class})")
 
 
 def _is_dir(cwd: str) -> bool:
@@ -375,10 +388,12 @@ def review_commit(cwd: str, message: str, push: bool) -> dict:
 def _review_push(cwd: str) -> None:
     upstream = _git_out(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).strip()
     if upstream:
+        _require_external_action_approval("git push")
         _git_ok(cwd, ["push"])
         return
     branch = _git_out(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).strip()
     if branch and branch != "HEAD":
+        _require_external_action_approval(f"git push -u origin {branch}")
         _git_ok(cwd, ["push", "-u", "origin", branch])
 
 
@@ -421,7 +436,13 @@ def _gh(cwd: str, args: list[str]) -> tuple[bool, str]:
         return False, ""
     try:
         proc = subprocess.run(
-            ["gh", *args], cwd=cwd, capture_output=True, text=True, timeout=_GH_TIMEOUT
+            ["gh", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_GH_TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError):
         return False, ""
@@ -453,6 +474,7 @@ def review_create_pr(cwd: str) -> dict:
         _review_push(cwd)
     except RuntimeError:
         pass
+    _require_external_action_approval("gh pr create --fill")
     created, out = _gh(cwd, ["pr", "create", "--fill"])
     if not created:
         raise RuntimeError("gh pr create failed (is gh installed and authenticated?)")

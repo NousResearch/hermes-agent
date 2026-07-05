@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 RECOVERY_RECOMMENDED_ACTION = "bounded_recovery_prompt"
+COMPACT_FINALIZATION_RECOMMENDED_ACTION = "compact_finalization_prompt"
 
 
 @dataclass
@@ -231,23 +232,38 @@ def _default_recovery_directory() -> Path:
         return Path.cwd() / "request_watchdog"
 
 
+def _model_policy_recovery_line(packet: dict[str, Any]) -> str:
+    model = _safe_label(packet.get("required_model") or packet.get("model") or "gpt-5.5")
+    fixed = bool(packet.get("fixed_model_policy"))
+    if fixed:
+        return (
+            f"Fixed model policy requires {model}; model switch requires explicit "
+            "user approval."
+        )
+    return f"Keep {model}."
+
+
 def build_bounded_recovery_prompt(packet: dict[str, Any]) -> str:
     session_id = _safe_label(packet.get("session_id"), limit=80)
-    return "\n".join(
-        [
-            f"Resume session {session_id or 'unknown'} from current DB/log/repo state.",
-            "First inspect current DB/log/repo state first.",
-            "Do not replay broad history.",
-            "If the task contract is known, use terminal-only write/test mode.",
-            "If closeout or verification is the only remaining work, use compact final/blocked answer mode.",
-            "Keep gpt-5.5.",
-            (
-                "queued steer cannot land until the active request exits or reaches "
-                "a tool boundary; account for that before waiting or resubmitting."
-            ),
-            "Do not close unrelated sessions; act only on the exact session with current evidence.",
-        ]
-    )
+    lines = [
+        f"Resume session {session_id or 'unknown'} from current DB/log/repo state.",
+        "First inspect current DB/log/repo state first.",
+        "Do not replay broad history.",
+        "If the task contract is known, use terminal-only write/test mode.",
+        "If closeout or verification is the only remaining work, use compact final/blocked answer mode.",
+        _model_policy_recovery_line(packet),
+        (
+            "queued steer cannot land until the active request exits or reaches "
+            "a tool boundary; account for that before waiting or resubmitting."
+        ),
+        "Do not retry the same huge request unchanged after stale-call kills; emit/use a compact recovery or finalization packet first.",
+        "Do not close unrelated sessions; act only on the exact session with current evidence.",
+    ]
+    if packet.get("closeout_only"):
+        lines.append(
+            "Closeout-only evidence is present; prefer compact finalization over another broad model request."
+        )
+    return "\n".join(lines)
 
 
 def latest_recoverable_turn_state(
@@ -286,7 +302,29 @@ def write_recoverable_turn_state(
 ) -> dict[str, Any]:
     directory = Path(directory) if directory is not None else _default_recovery_directory()
     directory.mkdir(parents=True, exist_ok=True)
-    prompt_packet = {"session_id": record.session_id}
+    closeout_only = bool(
+        status.get("closeout_only")
+        or status.get("closeout_only_candidate")
+        or status.get("compact_finalization_required")
+    )
+    repeated_stale_call_count = int(
+        status.get("repeated_stale_call_count")
+        or status.get("stale_call_kill_count")
+        or status.get("same_request_stale_kill_count")
+        or 0
+    )
+    recommended_action = (
+        COMPACT_FINALIZATION_RECOMMENDED_ACTION
+        if closeout_only
+        else RECOVERY_RECOMMENDED_ACTION
+    )
+    prompt_packet = {
+        "session_id": record.session_id,
+        "required_model": record.model or "gpt-5.5",
+        "model": record.model or "gpt-5.5",
+        "fixed_model_policy": bool(status.get("fixed_model_policy")),
+        "closeout_only": closeout_only,
+    }
     payload = {
         "kind": "high_context_request_watchdog_recovery",
         "session_id": record.session_id,
@@ -300,7 +338,9 @@ def write_recoverable_turn_state(
         "api_call_count": record.api_call_count,
         "queued_steer_count": record.queued_steer_count,
         "status": status,
-        "recommended_action": RECOVERY_RECOMMENDED_ACTION,
+        "repeated_stale_call_count": repeated_stale_call_count,
+        "closeout_only": closeout_only,
+        "recommended_action": recommended_action,
         "resume_prompt": build_bounded_recovery_prompt(prompt_packet),
     }
     path = directory / (
@@ -314,7 +354,7 @@ def write_recoverable_turn_state(
         "session_id": record.session_id,
         "mass_close_sessions": False,
         "end_session_reason": "high_context_request_stalled",
-        "recommended_action": RECOVERY_RECOMMENDED_ACTION,
+        "recommended_action": recommended_action,
     }
 
 

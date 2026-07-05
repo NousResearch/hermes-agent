@@ -29,6 +29,7 @@ Usage:
     process_registry.kill(session.id)
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -39,15 +40,20 @@ import subprocess
 import threading
 import time
 import uuid
-from pathlib import Path
-
-_IS_WINDOWS = platform.system() == "Windows"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
-from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+try:
+    import psutil
+except ModuleNotFoundError:  # pragma: no cover - local CLI fallback without repo venv
+    psutil = None  # type: ignore[assignment]
+
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import get_hermes_home
+from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +309,186 @@ def external_media_process_evidence(
         except Exception:
             continue
     return out
+
+
+_LOCAL_DEV_CMD_MARKERS = ("npm run dev", "next dev", "start-server.js")
+
+
+def _proc_cmdline(proc: Any) -> list[str]:
+    try:
+        return [str(part) for part in proc.cmdline()]
+    except Exception:
+        return []
+
+
+def _proc_cwd(proc: Any) -> str:
+    try:
+        return str(proc.cwd() or "")
+    except Exception:
+        return ""
+
+
+def _proc_create_time(proc: Any) -> Optional[float]:
+    try:
+        return float(proc.create_time())
+    except Exception:
+        return None
+
+
+def _cmdline_text(cmdline: list[str]) -> str:
+    return " ".join(cmdline).replace("\\", "/").lower()
+
+
+def _token_basename(token: str) -> str:
+    cleaned = str(token).replace("\\", "/").strip('"\'')
+    return cleaned.rsplit("/", 1)[-1].lower()
+
+
+def _looks_like_local_dev_cmdline(cmdline: list[str]) -> bool:
+    text = _cmdline_text(cmdline)
+    padded = f" {text} "
+    if "start-server.js" in text:
+        return True
+    if "next" in text and " dev" in padded:
+        return True
+    if ("npm" in text or "npm-cli.js" in text) and " run " in padded and " dev" in padded:
+        return True
+    if "cmd.exe" in text and "npm run dev" in text:
+        return True
+    return False
+
+
+def _normalized_path_text(path: str) -> str:
+    try:
+        return os.path.normcase(os.path.abspath(os.path.normpath(str(path)))).replace("\\", "/")
+    except Exception:
+        return str(path).replace("\\", "/").lower()
+
+
+def _path_is_under(path: str, parent: str) -> bool:
+    if not path or not parent:
+        return False
+    try:
+        child_norm = os.path.normcase(os.path.abspath(os.path.normpath(path)))
+        parent_norm = os.path.normcase(os.path.abspath(os.path.normpath(parent)))
+        return os.path.commonpath([child_norm, parent_norm]) == parent_norm
+    except Exception:
+        child_norm = _normalized_path_text(path)
+        parent_norm = _normalized_path_text(parent).rstrip("/")
+        return child_norm == parent_norm or child_norm.startswith(parent_norm + "/")
+
+
+def _cwd_fingerprint(cwd: str) -> str:
+    if not cwd:
+        return "unknown"
+    norm = _normalized_path_text(cwd)
+    name = norm.rstrip("/").rsplit("/", 1)[-1] or "root"
+    digest = hashlib.sha256(norm.encode("utf-8", errors="replace")).hexdigest()[:10]
+    return f"{name}:{digest}"
+
+
+def _cmdline_fingerprint(cmdline: list[str]) -> str:
+    if not cmdline:
+        return "unknown"
+    text = _cmdline_text(cmdline)
+    padded = f" {text} "
+    bits = [_token_basename(cmdline[0])]
+    if "npm run dev" in text or (("npm" in text or "npm-cli.js" in text) and " run " in padded and " dev" in padded):
+        bits.append("npm run dev")
+    if "next" in text and " dev" in padded:
+        bits.append("next dev")
+    if "start-server.js" in text:
+        bits.append("start-server.js")
+    if len(bits) == 1:
+        bits.extend(_token_basename(part) for part in cmdline[1:4])
+    return " ".join(part for part in bits if part)[:200]
+
+
+def _process_fingerprint(proc: Any) -> dict[str, Any]:
+    return {
+        "pid": int(getattr(proc, "pid", 0) or 0),
+        "cmdline_fingerprint": _cmdline_fingerprint(_proc_cmdline(proc)),
+        "cwd_fingerprint": _cwd_fingerprint(_proc_cwd(proc)),
+    }
+
+
+def _proc_listens_on_port(proc: Any, port: int) -> bool:
+    reader = getattr(proc, "net_connections", None) or getattr(proc, "connections", None)
+    if not callable(reader):
+        return False
+    try:
+        conns = reader(kind="inet")
+    except TypeError:
+        conns = reader()
+    except Exception:
+        return False
+    for conn in conns or []:
+        try:
+            if str(getattr(conn, "status", "")).upper() != "LISTEN":
+                continue
+            laddr = getattr(conn, "laddr", None)
+            conn_port = getattr(laddr, "port", None)
+            if conn_port is None and isinstance(laddr, (tuple, list)) and len(laddr) >= 2:
+                conn_port = laddr[1]
+            if int(conn_port) == int(port):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _unique_processes(procs: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    seen: set[int] = set()
+    for proc in procs:
+        try:
+            pid = int(proc.pid)
+        except Exception:
+            continue
+        if pid in seen:
+            continue
+        seen.add(pid)
+        out.append(proc)
+    return out
+
+
+def _owned_windows_tree(root: Any) -> list[Any]:
+    root_cwd = _proc_cwd(root)
+    root_start = _proc_create_time(root)
+    try:
+        children = list(root.children(recursive=True))
+    except Exception:
+        children = []
+    owned = [root]
+    for child in children:
+        child_start = _proc_create_time(child)
+        if root_start is not None and child_start is not None and child_start + 0.001 < root_start:
+            continue
+        child_cwd = _proc_cwd(child)
+        child_cmd = _proc_cmdline(child)
+        if _path_is_under(child_cwd, root_cwd) or _looks_like_local_dev_cmdline(child_cmd):
+            owned.append(child)
+    return _unique_processes(owned)
+
+
+def _taskkill_pid(pid: int) -> bool:
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=windows_hide_flags(),
+            stdin=subprocess.DEVNULL,
+        )
+        return getattr(completed, "returncode", 1) == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            return True
+        except (OSError, ProcessLookupError, PermissionError):
+            return False
+
 
 @dataclass
 class ProcessSession:
@@ -754,7 +940,7 @@ class ProcessRegistry:
             return 2.0
 
     @classmethod
-    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
+    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> dict:
         """Terminate a host-visible PID and its descendants.
 
         ``expected_start`` is the kernel start time captured when we spawned the
@@ -804,35 +990,62 @@ class ProcessRegistry:
                 "Refusing to terminate host pid %d: start-time mismatch — "
                 "PID was recycled onto an unrelated process.", pid,
             )
-            return
+            return {"status": "not_owned", "pid": pid}
         if _IS_WINDOWS:
-            try:
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    creationflags=windows_hide_flags(),
-                    stdin=subprocess.DEVNULL,
-                )
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            targets: list[Any] = []
+            if psutil is not None:
                 try:
-                    os.kill(pid, signal.SIGTERM)
-                except (OSError, ProcessLookupError, PermissionError):
-                    pass
-            return
+                    root = psutil.Process(int(pid))
+                    targets = _owned_windows_tree(root)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, PermissionError):
+                    targets = []
 
-        import psutil
+            if targets:
+                target_pids = [int(proc.pid) for proc in reversed(targets)]
+            else:
+                target_pids = [int(pid)]
+
+            killed_pids: list[int] = []
+            seen: set[int] = set()
+            for target_pid in target_pids:
+                if target_pid in seen:
+                    continue
+                seen.add(target_pid)
+                if _taskkill_pid(target_pid):
+                    killed_pids.append(target_pid)
+
+            remaining = [
+                _process_fingerprint(proc)
+                for proc in targets
+                if cls._proc_alive(proc)
+            ]
+            if remaining:
+                return {
+                    "status": "partial_kill_children_remain",
+                    "pid": pid,
+                    "killed_pids": killed_pids,
+                    "child_pids": [item["pid"] for item in remaining],
+                    "remaining_children": remaining,
+                }
+            return {"status": "killed", "pid": pid, "killed_pids": killed_pids}
+
+        if psutil is None:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                return {"status": "killed", "pid": pid, "killed_pids": [pid]}
+            except (OSError, ProcessLookupError, PermissionError):
+                return {"status": "already_exited", "pid": pid}
+
         try:
             parent = psutil.Process(pid)
         except psutil.NoSuchProcess:
-            return
+            return {"status": "already_exited", "pid": pid}
         except (OSError, PermissionError):
             try:
                 os.kill(pid, signal.SIGTERM)
             except (OSError, ProcessLookupError, PermissionError):
                 pass
-            return
+            return {"status": "killed", "pid": pid, "killed_pids": [pid]}
 
         # Snapshot the whole tree (children before parent) and SIGTERM each.
         try:
@@ -854,7 +1067,7 @@ class ProcessRegistry:
         # leak indefinitely.
         grace = cls._daemon_term_grace_seconds()
         if grace <= 0:
-            return
+            return {"status": "killed", "pid": pid, "killed_pids": [int(proc.pid) for proc in targets]}
         # Sleep out the grace window, then independently re-probe every target
         # and SIGKILL any survivor.  We deliberately do NOT trust
         # ``psutil.wait_procs``'s gone/alive partition here: it reaps via
@@ -880,6 +1093,71 @@ class ProcessRegistry:
                 pass
             except (psutil.AccessDenied, OSError):
                 pass
+        remaining = [
+            _process_fingerprint(proc)
+            for proc in targets
+            if cls._proc_alive(proc)
+        ]
+        if remaining:
+            return {
+                "status": "partial_kill_children_remain",
+                "pid": pid,
+                "killed_pids": [int(proc.pid) for proc in targets if int(proc.pid) not in {item["pid"] for item in remaining}],
+                "child_pids": [item["pid"] for item in remaining],
+                "remaining_children": remaining,
+            }
+        return {"status": "killed", "pid": pid, "killed_pids": [int(proc.pid) for proc in targets]}
+
+    @classmethod
+    def cleanup_local_dev_server(cls, project_path: str | os.PathLike[str], *, port: int) -> dict:
+        """Clean up a project-owned local dev server listener on Windows."""
+        project = str(project_path)
+        if psutil is None:
+            return {"status": "unavailable", "port": port, "killed_pids": []}
+        candidates: list[Any] = []
+        try:
+            processes = list(psutil.process_iter(["pid", "cmdline", "cwd"]))
+        except Exception:
+            processes = []
+
+        for proc in processes:
+            cmdline = _proc_cmdline(proc)
+            cwd = _proc_cwd(proc)
+            if not _proc_listens_on_port(proc, port):
+                continue
+            if not _path_is_under(cwd, project):
+                continue
+            if not _looks_like_local_dev_cmdline(cmdline):
+                continue
+            candidates.append(proc)
+
+        candidates = _unique_processes(candidates)
+        if not candidates:
+            return {"status": "not_found", "port": port, "killed_pids": []}
+
+        killed_pids: list[int] = []
+        for proc in candidates:
+            try:
+                target_pid = int(proc.pid)
+            except Exception:
+                continue
+            if _taskkill_pid(target_pid):
+                killed_pids.append(target_pid)
+
+        remaining = [
+            _process_fingerprint(proc)
+            for proc in candidates
+            if cls._proc_alive(proc) and _proc_listens_on_port(proc, port)
+        ]
+        if remaining:
+            return {
+                "status": "partial_kill_children_remain",
+                "port": port,
+                "killed_pids": killed_pids,
+                "child_pids": [item["pid"] for item in remaining],
+                "remaining_children": remaining,
+            }
+        return {"status": "cleaned", "port": port, "killed_pids": killed_pids}
 
     # ----- Spawn -----
 
@@ -1660,10 +1938,11 @@ class ProcessRegistry:
                 # Local process -- kill the process tree. On Windows this
                 # must be taskkill /T /F; Popen.terminate() only kills the
                 # shell wrapper and leaves Git Bash descendants behind.
-                self._terminate_host_pid(session.process.pid, session.host_start_time)
+                termination_result = self._terminate_host_pid(session.process.pid, session.host_start_time)
             elif session.env_ref and session.pid:
                 # Non-local -- kill inside sandbox
                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+                termination_result = None
             elif session.detached and session.pid_scope == "host" and session.pid:
                 # Identity check, not bare liveness: if the PID is gone OR was
                 # recycled onto an unrelated process, treat our process as
@@ -1677,7 +1956,7 @@ class ProcessRegistry:
                         "status": "already_exited",
                         "exit_code": session.exit_code,
                     }
-                self._terminate_host_pid(session.pid, session.host_start_time)
+                termination_result = self._terminate_host_pid(session.pid, session.host_start_time)
             else:
                 return {
                     "status": "error",
@@ -1686,18 +1965,33 @@ class ProcessRegistry:
                         "its original runtime handle is no longer available"
                     ),
                 }
+            if 'termination_result' not in locals():
+                termination_result = None
             session.exited = True
             session.exit_code = -15  # SIGTERM
-            session.completion_reason = "killed"
+            status = (
+                termination_result.get("status")
+                if isinstance(termination_result, dict)
+                else None
+            )
+            if status == "partial_kill_children_remain":
+                session.completion_reason = "partial_kill_children_remain"
+            else:
+                session.completion_reason = "killed"
             session.termination_source = source
             self._move_to_finished(session)
             self._write_checkpoint()
-            return {
-                "status": "killed",
+            result = {
+                "status": session.completion_reason,
                 "session_id": session.id,
                 "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source,
             }
+            if isinstance(termination_result, dict):
+                for key in ("child_pids", "remaining_children", "killed_pids"):
+                    if key in termination_result:
+                        result[key] = termination_result[key]
+            return result
         except Exception as e:
             return {"status": "error", "error": str(e)}
 

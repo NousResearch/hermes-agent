@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
-import hashlib
+import time
+import uuid
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -12,6 +16,7 @@ _SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 _SAFE_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,120}$")
 _STEER_BOUNDARY = "cannot_steer_until_current_tool_boundary"
 _MODEL_POLICY_RECOMMENDED_ACTION = "interrupt_and_restore_fixed_model"
+_CLI_QUEUE_DELIVERY = "queued_until_next_boundary"
 
 
 def _safe_token(value: Any, *, default: str = "unknown") -> str:
@@ -106,6 +111,236 @@ def _read_session_db_models(session_ids: list[str]) -> dict[str, str]:
     return models
 
 
+def _read_session_db_lifecycle(session_ids: list[str]) -> dict[str, dict[str, Any]]:
+    safe_ids = []
+    for session_id in session_ids:
+        text = str(session_id or "").strip()
+        if text:
+            safe_ids.append(text)
+    if not safe_ids:
+        return {}
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+    except Exception:
+        return {}
+    lifecycle: dict[str, dict[str, Any]] = {}
+    try:
+        for session_id in sorted(set(safe_ids)):
+            try:
+                row = db.get_session(session_id)
+            except Exception:
+                row = None
+            if not isinstance(row, dict):
+                continue
+            ended_at = _coerce_optional_float(row.get("ended_at"))
+            latest_message_at = None
+            message_rows = 0
+            conn = getattr(db, "_conn", None)
+            lock = getattr(db, "_lock", None)
+            if conn is not None:
+                try:
+                    if lock is not None:
+                        with lock:
+                            latest = conn.execute(
+                                "SELECT MAX(timestamp) AS latest_message_at, COUNT(*) AS message_rows "
+                                "FROM messages WHERE session_id = ?",
+                                (session_id,),
+                            ).fetchone()
+                    else:
+                        latest = conn.execute(
+                            "SELECT MAX(timestamp) AS latest_message_at, COUNT(*) AS message_rows "
+                            "FROM messages WHERE session_id = ?",
+                            (session_id,),
+                        ).fetchone()
+                    if latest is not None:
+                        latest_message_at = _coerce_optional_float(latest["latest_message_at"])
+                        message_rows = _coerce_nonnegative_int(latest["message_rows"])
+                except Exception:
+                    latest_message_at = None
+                    message_rows = 0
+            lifecycle[session_id] = {
+                "ended": ended_at is not None,
+                "end_reason": _safe_token(row.get("end_reason"), default=""),
+                "messages_after_end": bool(
+                    ended_at is not None
+                    and latest_message_at is not None
+                    and latest_message_at > ended_at
+                ),
+                "message_rows": message_rows,
+            }
+    finally:
+        close = getattr(db, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+    return lifecycle
+
+
+def _runtime_dir() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return Path(get_hermes_home()) / "runtime"
+
+
+def _control_plane_steer_queue_path() -> Path:
+    return _runtime_dir() / "control_plane_steer_queue.json"
+
+
+def _control_plane_steer_queue_lock_path() -> Path:
+    return _runtime_dir() / "control_plane_steer_queue.lock"
+
+
+def _read_control_plane_steer_queue_unlocked() -> list[dict[str, Any]]:
+    try:
+        with open(_control_plane_steer_queue_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+    entries = data.get("entries") if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        return []
+    safe: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        session_id = str(entry.get("session_id") or "").strip()
+        text = str(entry.get("text") or "").strip()
+        if not session_id or not text:
+            continue
+        safe.append(
+            {
+                "id": _safe_token(entry.get("id"), default=uuid.uuid4().hex),
+                "session_id": session_id,
+                "text": text,
+                "created_at": _coerce_optional_float(entry.get("created_at")) or 0.0,
+            }
+        )
+    return safe
+
+
+def _write_control_plane_steer_queue_unlocked(entries: list[dict[str, Any]]) -> None:
+    path = _control_plane_steer_queue_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"entries": entries}, fh, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def _control_plane_steer_queue_lock(*, owner_kind: str, session_id: str | None = None):
+    from hermes_cli.active_sessions import _FileLock
+
+    owner_metadata = {"owner_kind": owner_kind}
+    if session_id:
+        owner_metadata["session_id"] = session_id
+    return _FileLock(
+        _control_plane_steer_queue_lock_path(),
+        owner_metadata=owner_metadata,
+        timeout_seconds=1.0,
+    )
+
+
+def _live_cli_session_owner(session_id: str) -> dict[str, Any] | None:
+    target = str(session_id or "").strip()
+    if not target:
+        return None
+    try:
+        from hermes_cli import active_sessions
+
+        try:
+            report = active_sessions.active_session_registry_status(no_lock=True)
+        except TypeError:
+            report = active_sessions.active_session_registry_status()
+    except Exception:
+        return None
+    entries = report.get("entries") if isinstance(report, dict) else []
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("session_id") or "") != target:
+            continue
+        if entry.get("runtime_status") != "live":
+            continue
+        owner_kind = _safe_token(entry.get("owner_kind"), default="")
+        surface = str(entry.get("surface") or "").split(":", 1)[0].strip().lower()
+        if owner_kind == "cli" or surface == "cli":
+            return entry
+    return None
+
+
+def _append_control_plane_cli_steer(session_id: str, text: str) -> int:
+    target = str(session_id or "").strip()
+    if not target:
+        return 0
+    with _control_plane_steer_queue_lock(
+        owner_kind="control_steer_queue",
+        session_id=target,
+    ):
+        entries = _read_control_plane_steer_queue_unlocked()
+        entries.append(
+            {
+                "id": uuid.uuid4().hex,
+                "session_id": target,
+                "text": text,
+                "created_at": time.time(),
+            }
+        )
+        _write_control_plane_steer_queue_unlocked(entries)
+        return sum(1 for entry in entries if entry.get("session_id") == target)
+
+
+def _control_plane_steer_queue_counts(session_ids: list[str]) -> dict[str, int]:
+    wanted = {str(session_id or "").strip() for session_id in session_ids}
+    wanted.discard("")
+    if not wanted:
+        return {}
+    try:
+        with _control_plane_steer_queue_lock(owner_kind="control_steer_status"):
+            entries = _read_control_plane_steer_queue_unlocked()
+    except Exception:
+        return {}
+    counts: dict[str, int] = {session_id: 0 for session_id in wanted}
+    for entry in entries:
+        session_id = str(entry.get("session_id") or "")
+        if session_id in counts:
+            counts[session_id] += 1
+    return {key: value for key, value in counts.items() if value > 0}
+
+
+def consume_control_plane_steers(session_id: str, *, limit: int = 20) -> list[str]:
+    """Return and remove queued cross-process CLI steers for *session_id*."""
+    target = str(session_id or "").strip()
+    if not target:
+        return []
+    try:
+        max_items = max(1, int(limit))
+    except (TypeError, ValueError):
+        max_items = 20
+    with _control_plane_steer_queue_lock(
+        owner_kind="control_steer_consume",
+        session_id=target,
+    ):
+        entries = _read_control_plane_steer_queue_unlocked()
+        consumed: list[str] = []
+        kept: list[dict[str, Any]] = []
+        for entry in entries:
+            if entry.get("session_id") == target and len(consumed) < max_items:
+                consumed.append(str(entry.get("text") or ""))
+            else:
+                kept.append(entry)
+        if len(kept) != len(entries):
+            _write_control_plane_steer_queue_unlocked(kept)
+        return [text for text in consumed if text.strip()]
+
+
 def _session_identity_fields(value: Any) -> dict[str, str]:
     text = str(value or "").strip()
     if not text:
@@ -139,6 +374,13 @@ def _coerce_optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed >= 0 else None
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -221,9 +463,11 @@ def _session_summary(
     fresh_seconds: float,
     model_policy_config: dict[str, Any] | None = None,
     session_db_model: str | None = None,
+    session_db_lifecycle: dict[str, Any] | None = None,
+    control_queue_count: int = 0,
 ) -> dict[str, Any]:
     metadata = _metadata(entry)
-    queued = _queued_steer_count(metadata)
+    queued = max(_queued_steer_count(metadata), _coerce_nonnegative_int(control_queue_count))
     summary: dict[str, Any] = {
         "runtime_status": _safe_token(entry.get("runtime_status")),
         "queued_steer_count": queued,
@@ -250,6 +494,22 @@ def _session_summary(
     )
     if policy_fields:
         summary.update(policy_fields)
+    lifecycle = session_db_lifecycle if isinstance(session_db_lifecycle, dict) else {}
+    if lifecycle.get("ended") is True:
+        evidence = []
+        if summary.get("runtime_status") == "live":
+            evidence.append("active_runtime_lease")
+        if lifecycle.get("messages_after_end") is True:
+            evidence.append("messages_after_end")
+        if evidence:
+            summary["db_lifecycle_status"] = "ended_with_live_runtime_evidence"
+            summary["db_lifecycle_evidence"] = evidence
+            summary["repair_recommendation"] = "inspect_before_reopen_or_close"
+        else:
+            summary["db_lifecycle_status"] = "ended"
+        end_reason = _safe_token(lifecycle.get("end_reason"), default="")
+        if end_reason:
+            summary["db_end_reason"] = end_reason
     return summary
 
 
@@ -408,6 +668,12 @@ def build_control_plane_status(
     session_db_models = _read_session_db_models(
         [str(entry.get("session_id") or "") for entry in entries if isinstance(entry, dict)]
     )
+    session_db_lifecycle = _read_session_db_lifecycle(
+        [str(entry.get("session_id") or "") for entry in entries if isinstance(entry, dict)]
+    )
+    control_queue_counts = _control_plane_steer_queue_counts(
+        [str(entry.get("session_id") or "") for entry in entries if isinstance(entry, dict)]
+    )
     sessions = [
         _session_summary(
             entry,
@@ -415,6 +681,8 @@ def build_control_plane_status(
             fresh_seconds=fresh_activity_seconds,
             model_policy_config=model_policy_config,
             session_db_model=session_db_models.get(str(entry.get("session_id") or "")),
+            session_db_lifecycle=session_db_lifecycle.get(str(entry.get("session_id") or "")),
+            control_queue_count=control_queue_counts.get(str(entry.get("session_id") or ""), 0),
         )
         for entry in entries
         if isinstance(entry, dict)
@@ -472,6 +740,21 @@ def queue_control_plane_steer(
             "reason": "empty_text",
         }, session_id)
     if agent is None or not hasattr(agent, "steer"):
+        if session_id and _live_cli_session_owner(str(session_id)) is not None:
+            try:
+                count = _append_control_plane_cli_steer(str(session_id), cleaned)
+            except Exception as exc:
+                return _with_session_identity({
+                    "status": "failed",
+                    "reason": _safe_token(type(exc).__name__),
+                }, session_id)
+            return _with_session_identity({
+                "status": "queued",
+                "queued_steer_count": max(1, count),
+                "delivery": _CLI_QUEUE_DELIVERY,
+                "steer_boundary": _STEER_BOUNDARY,
+                "control_channel": "cli_queue",
+            }, session_id)
         return _with_session_identity({
             "status": "unsupported",
             "reason": "no_live_agent_control_channel",

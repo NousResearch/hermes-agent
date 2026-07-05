@@ -32,7 +32,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
@@ -211,6 +211,34 @@ def _connect(board: Optional[str] = None):
 
 
 _GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
+
+
+class _GoalJudgeCheckResult(NamedTuple):
+    verdict: str
+    reason: str
+    parse_failed: bool
+    wait_directive: Any
+
+
+def _coerce_goal_judge_result(result: Any) -> _GoalJudgeCheckResult:
+    if not isinstance(result, (list, tuple)):
+        raise ValueError(
+            f"expected tuple/list with 3 or 4 fields, got {type(result).__name__}"
+        )
+    if len(result) not in {3, 4}:
+        raise ValueError(f"expected 3 or 4 fields, got {len(result)}")
+
+    verdict, reason, parse_failed = result[:3]
+    wait_directive = result[3] if len(result) == 4 else None
+    if not isinstance(verdict, str) or not verdict.strip():
+        raise ValueError("verdict must be a non-empty string")
+
+    return _GoalJudgeCheckResult(
+        verdict=verdict.strip().lower(),
+        reason=str(reason or ""),
+        parse_failed=bool(parse_failed),
+        wait_directive=wait_directive,
+    )
 
 
 def _goal_judge_available() -> bool:
@@ -875,24 +903,33 @@ def _handle_complete(args: dict, **kw) -> str:
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
             if task and task.goal_mode and _goal_judge_available():
-                verdict = "done"
-                reason = ""
                 try:
-                    verdict, reason, _ = judge_goal(
-                        goal=f"{task.title}\n\n{task.body or ''}".strip(),
-                        last_response=(summary or result or "").strip(),
+                    judge_result = _coerce_goal_judge_result(
+                        judge_goal(
+                            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                            last_response=(summary or result or "").strip(),
+                        )
                     )
+                except ValueError as judge_exc:
+                    return tool_error(f"invalid goal judge result: {judge_exc}")
                 except Exception as judge_exc:
-                    # Defensive: judge_goal swallows its own errors, but if
-                    # it ever raises, fail open rather than wedge the worker.
                     logger.warning(
-                        "goal judge check failed, allowing completion: %s",
+                        "goal judge check failed; rejecting completion: %s",
                         judge_exc,
                         exc_info=True,
                     )
-                if verdict != "done":
+                    return tool_error(f"goal judge check failed: {judge_exc}")
+                if judge_result.parse_failed:
                     return tool_error(
-                        f"Goal completion rejected by judge: {reason}. "
+                        f"Goal completion rejected by judge: {judge_result.reason}. "
+                        f"To proceed, either: (1) provide explicit acceptance "
+                        f"evidence in your summary matching the task's criteria, "
+                        f"or (2) create continuation tasks with parents=[{tid}] "
+                        f"and keep this task alive."
+                    )
+                if judge_result.verdict != "done":
+                    return tool_error(
+                        f"Goal completion rejected by judge: {judge_result.reason}. "
                         f"To proceed, either: (1) provide explicit acceptance "
                         f"evidence in your summary matching the task's criteria, "
                         f"or (2) create continuation tasks with parents=[{tid}] "

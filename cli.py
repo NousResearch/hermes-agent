@@ -8562,6 +8562,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._pending_moa_disable_after_turn = True
             self._pending_agent_seed = payload
             _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")
+        elif canonical == "boomerang":
+            # /boomerang <task>: queue a boomerang skill invocation as
+            # the next agent turn. The skill drives delegate_task(inherit_context=
+            # true, ...) with the autonomous-execution contract; the child's summary
+            # re-enters the session when it finishes.
+            parts = cmd_original.split(None, 1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            if not payload:
+                _cprint("  Usage: /boomerang <task>")
+                _cprint("  Runs the task autonomously in an isolated subagent that "
+                        "inherits this session's context; a summary returns when done.")
+                return True
+            try:
+                from agent.skill_commands import resolve_skill_command_key
+                cmd_key = resolve_skill_command_key("boomerang")
+                seed = build_skill_invocation_message(cmd_key, payload) if cmd_key else None
+                if not seed:
+                    seed = (
+                        f"Boomerang this task: {payload}\n\n"
+                        "Use delegate_task with inherit_context=true so the subagent "
+                        "inherits this conversation's context. Instruct it to execute "
+                        "autonomously (reasonable assumptions, do NOT stop to ask; if "
+                        "blocked, complete what you can and report the blocker) and end "
+                        "with a structured summary (Outcome / Changed / Commands+validation "
+                        "/ Blockers). Its summary re-enters this session when it finishes."
+                    )
+                self._pending_agent_seed = seed
+                _cprint("  🔁 Boomerang queued — the subagent inherits this session; a summary returns when it finishes.")
+            except Exception as _boom_exc:
+                _cprint(f"  Failed to prepare the boomerang turn: {_boom_exc}")
+            return True
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":

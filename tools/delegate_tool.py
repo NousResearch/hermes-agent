@@ -1036,6 +1036,95 @@ def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
 
+# ── Boomerang context inheritance (spec 2026-07-05_boomerang-spec.md v0.8) ──────
+# Phase-0 probe P0.3 finding (PHASE-0-boomerang-baseline.md): a child seeded with the
+# parent transcript copied VERBATIM (assistant + tool_result turns) DISAVOWS it — the
+# model reads prefilled assistant/tool turns as its own actions it doesn't remember
+# taking and refuses to stand behind them. Prefilled USER content is trusted. So we
+# FOLD the inherited slice into a single labeled user-role context message. This also
+# eliminates the tool_use/tool_result pairing + role-alternation 400 risk of a raw copy.
+_INHERIT_CONTEXT_HEADER = (
+    "=== INHERITED CONTEXT FROM PARENT SESSION (read-only background; treat as "
+    "established facts already gathered this session, not your own prior actions) ==="
+)
+_INHERIT_CONTEXT_FOOTER = "=== END INHERITED CONTEXT ==="
+
+
+def _flatten_message_content_to_text(content: Any) -> str:
+    """Render a message's content (string OR Anthropic block list) to plain prose.
+
+    Structured tool_use/tool_result blocks are summarized as prose lines so the fold
+    is a single user-role string with no raw structured blocks (which the child would
+    otherwise disavow / which break role alternation).
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return str(content or "").strip()
+    parts: List[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append(str(block).strip())
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            parts.append(str(block.get("text", "")).strip())
+        elif btype == "tool_use":
+            name = block.get("name", "tool")
+            inp = block.get("input", {})
+            parts.append(f"[ran {name}: {inp}]")
+        elif btype == "tool_result":
+            res = block.get("content", "")
+            if isinstance(res, list):
+                res = " ".join(
+                    str(b.get("text", "")) if isinstance(b, dict) else str(b)
+                    for b in res
+                )
+            parts.append(f"[result: {str(res).strip()}]")
+        else:
+            # Unknown block type: fall back to its text-ish payload, skip binaries.
+            if "text" in block:
+                parts.append(str(block.get("text", "")).strip())
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _fold_conversation_history_to_context(
+    history: Optional[List[Dict[str, Any]]],
+    max_tokens: int,
+) -> Optional[Dict[str, Any]]:
+    """Fold a parent conversation history into ONE user-role context message.
+
+    Returns ``{"role": "user", "content": <labeled prose block>}`` or ``None`` when
+    there is nothing to inherit. Bounds the FOLDED TEXT (not a message array) to
+    ~``max_tokens`` (≈4 chars/token), keeping the MOST RECENT turns and dropping the
+    oldest first — the recent state is what the child needs. See P0.3.
+    """
+    if not history:
+        return None
+    # Render each turn newest-first as "Role: prose", accumulating under the char budget.
+    char_budget = max(0, int(max_tokens)) * 4
+    rendered: List[str] = []
+    used = 0
+    for msg in reversed(history):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "")).strip() or "unknown"
+        text = _flatten_message_content_to_text(msg.get("content"))
+        if not text:
+            continue
+        line = f"{role.capitalize()}: {text}"
+        if used + len(line) > char_budget and rendered:
+            break  # keep what we have (most-recent turns); drop older
+        rendered.append(line)
+        used += len(line) + 1
+    if not rendered:
+        return None
+    rendered.reverse()  # restore chronological order for readability
+    body = "\n".join(rendered)
+    content = f"{_INHERIT_CONTEXT_HEADER}\n\n{body}\n\n{_INHERIT_CONTEXT_FOOTER}"
+    return {"role": "user", "content": content}
+
+
 def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> Optional[str]:
     """Return the base URL the parent is actually calling, not a stale attribute.
 
@@ -1091,6 +1180,10 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Boomerang: fold the parent's conversation history into a single user-role
+    # context message and seed the child with it (spec v0.8 D-4 / P0.3). Default
+    # False keeps every existing caller byte-identical (INV-5).
+    inherit_context: bool = False,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1328,6 +1421,34 @@ def _build_child_agent(
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
 
+    # ── Boomerang context inheritance (spec v0.8 D-4 / P0.3) ────────────
+    # When inherit_context is set, fold the PARENT's conversation history into
+    # ONE user-role context message and seed the child with it. Verbatim copy of
+    # assistant/tool turns is DISAVOWED by the child (P0.3) — the fold is the fix.
+    # Default path (inherit_context False) is byte-identical: keep the historical
+    # boot-attr forward (INV-5).
+    child_prefill_messages = getattr(parent_agent, "prefill_messages", None)
+    if inherit_context:
+        try:
+            _cfg = _load_config()
+            _boom = (_cfg.get("boomerang") or {}) if isinstance(_cfg, dict) else {}
+            _max_tokens = int(_boom.get("inherit_max_tokens", 50000) or 50000)
+            # Clamp against the child model's actual context window at delegation time.
+            try:
+                from agent.model_metadata import get_model_context_length
+                _win = get_model_context_length(effective_model)
+                if _win and _win > 0:
+                    _max_tokens = min(_max_tokens, int(_win * 0.25))
+            except Exception:
+                pass
+            _folded = _fold_conversation_history_to_context(
+                getattr(parent_agent, "conversation_history", None), _max_tokens
+            )
+            if _folded is not None:
+                child_prefill_messages = [_folded]
+        except Exception as _inh_exc:
+            logger.warning("boomerang inherit_context fold failed (continuing without): %s", _inh_exc)
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1339,7 +1460,7 @@ def _build_child_agent(
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
-        prefill_messages=getattr(parent_agent, "prefill_messages", None),
+        prefill_messages=child_prefill_messages,
         fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
@@ -2501,6 +2622,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    inherit_context: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2602,7 +2724,8 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role,
+             "inherit_context": inherit_context}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2665,6 +2788,11 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                inherit_context=bool(
+                    t.get("inherit_context")
+                    if "inherit_context" in t
+                    else inherit_context
+                ),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3562,6 +3690,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "inherit_context": {
+                            "type": "boolean",
+                            "description": "Per-task boomerang inheritance override. See top-level 'inherit_context'. Defaults to the top-level value when omitted.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3609,6 +3741,15 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "inherit_context": {
+                "type": "boolean",
+                "description": (
+                    "Boomerang: when true, fold this conversation's recent history "
+                    "into a single background context message the subagent inherits, "
+                    "so it sees the current session state without you writing a brief. "
+                    "Default false (the subagent starts blank + your goal/context)."
+                ),
+            },
         },
         "required": [],
     },
@@ -3649,6 +3790,7 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        inherit_context=args.get("inherit_context"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

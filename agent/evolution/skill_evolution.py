@@ -202,31 +202,10 @@ class SkillEvolutionTracker:
                         skill_name, len(content), MAX_SKILL_SIZE_BYTES)
             return False
 
-        # Build the patch — add a new failure case to the Pitfalls section
-        failure_entry = self._build_failure_entry(record)
-        if not failure_entry:
-            return False
-
-        # Find insertion point: after "## Pitfalls" or at end
-        if "## Pitfalls" in content:
-            # Insert after the Pitfalls heading, before next section
-            parts = content.split("## Pitfalls", 1)
-            before = parts[0] + "## Pitfalls"
-            after = parts[1] if len(parts) > 1 else ""
-
-            # Find the end of the Pitfalls section (next ## or end)
-            next_section = after.find("\n## ")
-            if next_section > 0:
-                pitfalls_body = after[:next_section]
-                rest = after[next_section:]
-            else:
-                pitfalls_body = after
-                rest = ""
-
-            new_content = before + pitfalls_body + failure_entry + rest
-        else:
-            # No Pitfalls section — add one
-            new_content = content.rstrip() + "\n\n## Pitfalls\n\n" + failure_entry.strip() + "\n"
+        # Build targeted improvement patch
+        new_content = self._build_patch(record, content)
+        if new_content == content:
+            return False  # No meaningful change
 
         # Gate through safety check — validate new content
         from agent.evolution.regression_gate import RegressionGate
@@ -266,22 +245,141 @@ class SkillEvolutionTracker:
                     len(new_content) - len(content), len(self._session_failures))
         return True
 
-    def _build_failure_entry(self, record: SkillEvolutionRecord) -> str:
-        """Build a new failure entry for the skill's Pitfalls section."""
-        if not self._session_failures:
-            return ""
+    def _build_patch(self, record: SkillEvolutionRecord, content: str) -> str:
+        """Generate a TARGETED skill improvement — not just a failure log.
 
-        failures_text = "\n".join(
-            f"- Recorded failure (gen {record.current_generation}): {f[:150]}"
-            for f in self._session_failures[-3:]
+        SOTA approach: analyze failure patterns → generate specific procedure
+        changes → add concrete verification commands → update triggers.
+        """
+        if not self._session_failures:
+            return content
+
+        # Analyze failure patterns
+        failure_types = set()
+        failure_details = []
+        for f in self._session_failures[-5:]:
+            parts = f.split(":", 1)
+            ftype = parts[0].strip() if parts else "unknown"
+            detail = parts[1].strip() if len(parts) > 1 else ""
+            failure_types.add(ftype)
+            if detail:
+                failure_details.append(detail)
+
+        patches = []
+
+        # 1. Add concrete verification step for each failure type
+        if "missing_verification" in failure_types:
+            new_step = self._generate_verification_step(failure_details)
+            if new_step and new_step not in content:
+                # Insert into Procedure section
+                if "## Procedure" in content:
+                    content = content.replace(
+                        "## Procedure",
+                        "## Procedure\n\n" + new_step.strip()
+                    )
+                else:
+                    content += f"\n\n## Procedure\n\n{new_step.strip()}\n"
+
+        if "loop_detected" in failure_types:
+            loop_guidance = self._generate_loop_guidance(failure_details)
+            if loop_guidance and loop_guidance not in content:
+                if "## How to Run" in content:
+                    content = content.replace(
+                        "## How to Run",
+                        "## How to Run\n\n" + loop_guidance.strip()
+                    )
+
+        # 2. Update Pitfalls with actionable prevention (not just logs)
+        prevention = self._generate_prevention(failure_types, failure_details)
+        if prevention and prevention not in content:
+            if "## Pitfalls" in content:
+                content = content.replace(
+                    "## Pitfalls",
+                    "## Pitfalls\n\n" + prevention.strip()
+                )
+            else:
+                content += f"\n\n## Pitfalls\n\n{prevention.strip()}\n"
+
+        # 3. Add verification commands that catch these failures
+        verify_cmd = self._generate_verification_commands(failure_types)
+        if verify_cmd and "## Verification" in content:
+            # Append to existing verification
+            content += verify_cmd
+
+        return content
+
+    def _generate_verification_step(self, details: List[str]) -> str:
+        """Generate a concrete procedure step based on failure details."""
+        steps = []
+        for d in details[:2]:
+            if "exit code" in d.lower():
+                steps.append(
+                    "1. After running any command, check the exit code: "
+                    "`echo $?` must return 0. If not, the command FAILED."
+                )
+            elif "file" in d.lower() or "output" in d.lower():
+                steps.append(
+                    "1. Verify every output file exists and is non-empty: "
+                    "`test -s <file> && echo 'exists' || echo 'MISSING'`"
+                )
+            elif "permission" in d.lower():
+                steps.append(
+                    "1. Check file permissions before assuming success: "
+                    "`ls -la <file>` — verify read/write access."
+                )
+        if not steps:
+            steps.append(
+                "1. Before declaring completion, run ALL verification "
+                "commands. Check each result. Only proceed if ALL pass."
+            )
+        return "\n".join(steps)
+
+    def _generate_loop_guidance(self, details: List[str]) -> str:
+        """Generate anti-loop guidance from failure evidence."""
+        return (
+            "1. If any command fails, diagnose the error BEFORE retrying.\n"
+            "2. Never retry the same command more than twice without changing something.\n"
+            "3. If stuck, switch to a DIFFERENT approach — don't repeat."
         )
 
-        return f"""
+    def _generate_prevention(self, failure_types: set, details: List[str]) -> str:
+        """Generate actionable prevention advice, not just failure logs."""
+        lines = []
+        for ftype in failure_types:
+            if ftype == "missing_verification":
+                lines.append(
+                    "- **Missing verification**: Agent completed work without checking results. "
+                    "Always run verification commands BEFORE declaring done. Check exit codes, "
+                    "file existence, and output correctness."
+                )
+            elif ftype == "loop_detected":
+                lines.append(
+                    "- **Loop detection**: Agent repeated the same failing action. "
+                    "After 2 identical failures, STOP. Diagnose the root cause. "
+                    "Try a completely different approach."
+                )
+            elif ftype == "user_correction":
+                lines.append(
+                    "- **User correction**: Output was incorrect. Read the correction carefully. "
+                    "Adjust the approach based on what the user said was wrong."
+                )
+            else:
+                lines.append(
+                    f"- **{ftype}**: Failure detected. Review the procedure above "
+                    "and ensure all verification steps are followed."
+                )
+        return "\n".join(lines)
 
-{failures_text}
-- If the above failures occur, the skill's procedure was insufficient.
-  Consider a different approach before retrying the same steps.
-"""
+    def _generate_verification_commands(self, failure_types: set) -> str:
+        """Generate concrete verification commands for detected failure types."""
+        cmds = []
+        if "missing_verification" in failure_types:
+            cmds.append("# Verify: check exit code of last command\ntest $? -eq 0 && echo 'OK' || echo 'FAILED'")
+        if "missing_verification" in failure_types:
+            cmds.append("# Verify: check output files exist\nls -la <expected_output_files>")
+        if not cmds:
+            return ""
+        return "\n\n" + "\n".join(cmds) + "\n"
 
     # ── Query API ──────────────────────────────────────────────────────
 

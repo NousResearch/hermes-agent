@@ -2577,9 +2577,10 @@ class TestWebServerEndpoints:
     def test_apply_main_model_assignment_base_url_and_context_reconcile(self):
         """The shared main-slot assignment helper must persist a supplied
         base_url, clear a stale base_url only when switching providers, preserve
-        it on same-provider re-assignment, and always drop a hardcoded
-        context_length override. Both POST /api/model/set and profile-model
-        writes route through this, so the contract is pinned here."""
+        it on same-provider re-assignment, and drop a hardcoded context_length
+        override only when the model/provider actually changes. Both POST
+        /api/model/set and profile-model writes route through this, so the
+        contract is pinned here."""
         from hermes_cli.web_server import _apply_main_model_assignment
 
         # Custom + base_url → persisted; stale context_length dropped.
@@ -2611,6 +2612,34 @@ class TestWebServerEndpoints:
         assert out["provider"] == "xiaomi"
         assert out["default"] == "mimo-v2.5-pro"
         assert out["base_url"] == "https://token-plan-ams.xiaomimimo.com/v1"
+
+        # Same provider + same model → manual context override preserved.
+        out = _apply_main_model_assignment(
+            {
+                "provider": "custom",
+                "default": "my-local-model",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "context_length": 262144,
+            },
+            "custom",
+            "my-local-model",
+            "http://127.0.0.1:8000/v1",
+        )
+        assert out["context_length"] == 262144
+
+        # Same provider + different model → context override cleared because the
+        # new model may have a different context window.
+        out = _apply_main_model_assignment(
+            {
+                "provider": "custom",
+                "default": "my-local-model",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "context_length": 262144,
+            },
+            "custom",
+            "other-local-model",
+        )
+        assert "context_length" not in out
 
         # A supplied base_url is honored for any provider, not just custom.
         out = _apply_main_model_assignment(

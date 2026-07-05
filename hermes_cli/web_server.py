@@ -1065,7 +1065,8 @@ def _apply_main_model_assignment(
     ``OPENAI_BASE_URL``) and only honors it when the configured provider matches
     and the pool entry is on the registry default, so preserving it here is what
     lets the override actually route. The hardcoded ``context_length`` override
-    is always dropped since the new model may have a different context window.
+    is dropped only on a real model/provider switch; same-model re-picks keep the
+    user's manual context-window override intact.
 
     Returns the same dict (coerced to a fresh dict if the input wasn't one) so
     callers can assign it straight back onto the model config.
@@ -1073,7 +1074,9 @@ def _apply_main_model_assignment(
     if not isinstance(model_cfg, dict):
         model_cfg = {}
     prev_provider = str(model_cfg.get("provider") or "").strip().lower()
+    prev_model = str(model_cfg.get("default") or "").strip()
     new_provider = provider.strip().lower()
+    new_model = str(model or "").strip()
     model_cfg["provider"] = provider
     model_cfg["default"] = model
     if base_url.strip():
@@ -1094,7 +1097,8 @@ def _apply_main_model_assignment(
         clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
     if new_provider != prev_provider:
         clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
-    model_cfg.pop("context_length", None)
+    if new_provider != prev_provider or new_model != prev_model:
+        model_cfg.pop("context_length", None)
     return model_cfg
 
 

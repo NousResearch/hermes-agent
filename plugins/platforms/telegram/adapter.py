@@ -1699,7 +1699,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self._rich_send_disabled = True
                 logger.debug(
                     "[%s] sendRichMessage rejected (%s) — falling back to MarkdownV2",
-                    self.name, exc,
+                    self.name, _redact_telegram_error_text(exc),
                 )
                 return None
             # Transient / network / unknown: the request may have reached
@@ -1805,7 +1805,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return SendResult(success=True, message_id=message_id)
                 logger.debug(
                     "[%s] rich editMessageText rejected (%s) — falling back to MarkdownV2 edit",
-                    self.name, exc,
+                    self.name, _redact_telegram_error_text(exc),
                 )
                 return None
             if "not modified" in str(exc).lower():
@@ -2161,7 +2161,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._send_path_degraded = True
         logger.warning(
             "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s",
-            self.name, reason, error,
+            self.name, reason, _redact_telegram_error_text(error),
         )
         loop = asyncio.get_running_loop()
         self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))

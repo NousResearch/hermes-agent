@@ -37,6 +37,12 @@
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
 
+function isOauthSessionAuthFailure(error) {
+  if (!error || typeof error !== 'object') return false
+  if (error.statusCode === 401 || error.statusCode === 403) return true
+  return /(^|\b)(401|403)\b/.test(String(error.message || ''))
+}
+
 function normalizeRemoteBaseUrl(rawUrl) {
   const value = String(rawUrl || '').trim()
 
@@ -115,6 +121,9 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
+      if (!isOauthSessionAuthFailure(error)) {
+        throw error
+      }
       const err = new Error(
         'Reached the gateway over HTTP, but could not mint a WebSocket ticket for the OAuth session ' +
           '(it may have expired). Open Settings → Gateway and sign in again.'
@@ -279,5 +288,6 @@ module.exports = {
   profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
+  isOauthSessionAuthFailure,
   tokenPreview
 }

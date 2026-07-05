@@ -20,11 +20,17 @@ describe('resolveGatewayWsUrl', () => {
     })
 
     it('preserves the underlying mint failure as the cause', async () => {
-      const cause = new Error('401 cookie expired')
+      const cause = Object.assign(new Error('401 cookie expired'), { statusCode: 401 })
       const getGatewayWsUrl = vi.fn().mockRejectedValue(cause)
       const error = await resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn).catch(e => e)
       expect(error).toBeInstanceOf(GatewayReauthRequiredError)
       expect((error as GatewayReauthRequiredError).cause).toBe(cause)
+    })
+
+    it('passes through transport failures instead of misclassifying them as reauth', async () => {
+      const cause = new Error('Timed out connecting to Hermes backend after 8000ms')
+      const getGatewayWsUrl = vi.fn().mockRejectedValue(cause)
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn)).rejects.toBe(cause)
     })
 
     it('throws a reauth error when the preload cannot mint (no method)', async () => {

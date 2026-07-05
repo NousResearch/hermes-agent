@@ -28,6 +28,7 @@ const {
   profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
+  isOauthSessionAuthFailure,
   tokenPreview
 } = require('./connection-config.cjs')
 
@@ -373,7 +374,9 @@ test('resolveTestWsUrl (oauth, mint FAILS) throws — must NOT skip WS validatio
     () =>
       resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
         mintTicket: async () => {
-          throw new Error('401 ticket mint failed')
+          const err = new Error('401 ticket mint failed')
+          err.statusCode = 401
+          throw err
         }
       }),
     err => {
@@ -386,6 +389,31 @@ test('resolveTestWsUrl (oauth, mint FAILS) throws — must NOT skip WS validatio
       return true
     }
   )
+})
+
+test('resolveTestWsUrl (oauth, transport failure) preserves the original error', async () => {
+  const timeout = new Error('Timed out connecting to Hermes backend after 8000ms')
+  await assert.rejects(
+    () =>
+      resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+        mintTicket: async () => {
+          throw timeout
+        }
+      }),
+    err => {
+      assert.equal(err, timeout)
+      assert.equal(err.needsOauthLogin, undefined)
+      return true
+    }
+  )
+})
+
+test('isOauthSessionAuthFailure only flags auth failures', () => {
+  assert.equal(isOauthSessionAuthFailure({ statusCode: 401 }), true)
+  assert.equal(isOauthSessionAuthFailure({ statusCode: 403 }), true)
+  assert.equal(isOauthSessionAuthFailure(new Error('401 expired')), true)
+  assert.equal(isOauthSessionAuthFailure(new Error('Timed out connecting to Hermes backend')), false)
+  assert.equal(isOauthSessionAuthFailure({ statusCode: 500, message: '500 upstream error' }), false)
 })
 
 test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {

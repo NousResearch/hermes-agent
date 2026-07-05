@@ -4597,6 +4597,12 @@ function fetchJsonViaOauthSession(url, options = {}) {
   })
 }
 
+function isOauthSessionAuthFailure(error) {
+  if (!error || typeof error !== 'object') return false
+  if (error.statusCode === 401 || error.statusCode === 403) return true
+  return /(^|\b)(401|403)\b/.test(String(error.message || ''))
+}
+
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
 // Throws (with statusCode 401) if the session cookie is missing/expired —
 // callers treat that as "needs re-login".
@@ -4899,6 +4905,9 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     try {
       ticket = await mintGatewayWsTicket(baseUrl)
     } catch (error) {
+      if (!isOauthSessionAuthFailure(error)) {
+        throw error
+      }
       const err = new Error(
         'Your remote gateway session has expired. ' + 'Open Settings → Gateway and click "Sign in" again.'
       )

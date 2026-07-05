@@ -31,6 +31,20 @@ export function isGatewayReauthRequired(error: unknown): error is GatewayReauthR
   )
 }
 
+function isGatewayAuthFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+
+  const statusCode = (error as { statusCode?: unknown }).statusCode
+  if (statusCode === 401 || statusCode === 403) {
+    return true
+  }
+
+  const message = String((error as { message?: unknown }).message || '')
+  return /(^|\b)(401|403)\b/.test(message)
+}
+
 export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: GatewayWsConnection): Promise<string> {
   const mint = deps.getGatewayWsUrl
   const profile = conn.profile ?? null
@@ -45,6 +59,10 @@ export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: G
     try {
       return await mint(profile)
     } catch (error) {
+      if (!isGatewayAuthFailure(error)) {
+        throw error
+      }
+
       throw new GatewayReauthRequiredError(
         'Your remote gateway session has expired. Open Settings -> Gateway and click "Sign in" again.',
         { cause: error }

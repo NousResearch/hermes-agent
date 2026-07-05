@@ -4073,6 +4073,7 @@ def resolve_provider_client(
     # main_model also empty), the branches still hit their own
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
+    _model_was_prefilled = not bool(model)
     if not model:
         model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
@@ -4139,7 +4140,21 @@ def resolve_provider_client(
                 "Dropping OpenRouter-format model %r for non-OpenRouter "
                 "auxiliary provider (using %r instead)", model, resolved)
             model = None
-        final_model = model or resolved
+        # _resolve_auto() already resolves MoA→aggregator (PR #53827) and
+        # returns the real model ID for every provider it successfully builds
+        # a client for.  When ``model`` was pre-filled from _read_main_model()
+        # (i.e. the caller passed no explicit model), prefer ``resolved`` over
+        # ``model`` — the pre-fill may carry the MoA preset name (e.g.
+        # "default"), a truthy but invalid model ID that would override the
+        # correctly resolved value (issue #58639).  When the caller passed an
+        # explicit model (e.g. auxiliary.<task>.model via
+        # _resolve_task_provider_model), honor it — that is a user config
+        # override, not a stale pre-fill, and resolved is just the main model.
+        # ``model`` remains as a fallback when resolved is None.
+        if _model_was_prefilled:
+            final_model = resolved or model
+        else:
+            final_model = model or resolved
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

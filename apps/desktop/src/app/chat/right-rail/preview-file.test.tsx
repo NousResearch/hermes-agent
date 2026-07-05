@@ -91,7 +91,7 @@ describe('LocalFilePreview null-text handling', () => {
 
     // Should render the binary warning instead of crashing
     await waitFor(() => {
-      expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+      expect(screen.queryByText('Loading…')).toBeNull()
     })
     // The component should render without throwing — the binary
     // guard blocks the null text from reaching chunkTextLines.
@@ -126,7 +126,7 @@ describe('LocalFilePreview null-text handling', () => {
     // Should NOT crash — null text is normalized to undefined by the
     // ?? operator, so the rendering guard (state.text != null) blocks it.
     await waitFor(() => {
-      expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+      expect(screen.queryByText('Loading…')).toBeNull()
     })
     expect(readFileText).toHaveBeenCalledWith('/test/data.bin')
   })

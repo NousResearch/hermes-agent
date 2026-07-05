@@ -57,7 +57,7 @@ class _StatefulTitleDB:
         self.title = title
         self.set_calls: list[tuple[str, str]] = []
 
-    def get_session_title(self, session_id: str) -> str | None:
+    async def get_session_title(self, session_id: str) -> str | None:
         return self.title
 
     def sanitize_title(self, title: str) -> str:
@@ -66,17 +66,17 @@ class _StatefulTitleDB:
             raise ValueError("invalid title")
         return cleaned
 
-    def set_session_title(self, session_id: str, title: str) -> bool:
+    async def set_session_title(self, session_id: str, title: str) -> bool:
         self.title = title
         self.set_calls.append((session_id, title))
         return True
 
-    def set_session_title_if_empty(self, session_id: str, title: str) -> bool:
+    async def set_session_title_if_empty(self, session_id: str, title: str) -> bool:
         if self.title:
             return False
-        return self.set_session_title(session_id, title)
+        return await self.set_session_title(session_id, title)
 
-    def create_session(self, **kwargs):
+    async def create_session(self, **kwargs):
         return None
 
 
@@ -377,14 +377,12 @@ async def test_platform_thread_rename_syncs_back_to_session_title():
     runner, _adapter = _make_runner()
     entry = SimpleNamespace(session_id="sess-discord")
     finder = MagicMock(return_value=entry)
-    sanitize_title = MagicMock(side_effect=lambda title: " ".join(title.split()))
-    set_session_title = MagicMock(return_value=True)
+    set_session_title = AsyncMock(return_value=True)
     setattr(runner, "session_store", SimpleNamespace(find_session_by_thread=finder))
     setattr(
         runner,
         "_session_db",
         SimpleNamespace(
-            sanitize_title=sanitize_title,
             set_session_title=set_session_title,
         ),
     )
@@ -396,7 +394,7 @@ async def test_platform_thread_rename_syncs_back_to_session_title():
     )
 
     finder.assert_called_once_with(Platform.DISCORD, "999")
-    set_session_title.assert_called_once_with(
+    set_session_title.assert_awaited_once_with(
         "sess-discord",
         "Renamed Workflow Thread",
     )
@@ -431,7 +429,7 @@ async def test_manual_thread_rename_during_first_response_wins_over_auto_title(m
     monkeypatch.setattr(title_generator, "generate_title", generate_title)
 
     title_generator.auto_title_session(
-        session_db,
+        SimpleNamespace(get_session_title=lambda _session_id: session_db.title),
         session_id,
         "please investigate the workflow run",
         "I will check the failure",
@@ -503,7 +501,7 @@ async def test_invalid_platform_thread_rename_does_not_corrupt_session_title():
     await runner._handle_platform_thread_title_change(
         Platform.DISCORD,
         "999",
-        "INVALID",
+        "x" * 101,
     )
 
     assert session_db.title == "Existing Title"

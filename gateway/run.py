@@ -13472,8 +13472,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_db = getattr(self, "_session_db", None)
         if session_db is not None:
             try:
-                expected_db_title = session_db.sanitize_title(title)
-                current_db_title = session_db.get_session_title(session_id)
+                from hermes_state import SessionDB
+
+                expected_db_title = SessionDB.sanitize_title(title)
+                current_db_title = await session_db.get_session_title(session_id)
             except Exception:
                 logger.debug("Failed to verify session title before Discord thread rename", exc_info=True)
                 return
@@ -13518,7 +13520,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not title or not self._session_db:
             return
         try:
-            sanitized = self._session_db.sanitize_title(title)
+            from hermes_state import SessionDB
+
+            sanitized = SessionDB.sanitize_title(title)
         except ValueError:
             logger.debug("Ignoring invalid platform thread title %r from %s", title, platform.value)
             return
@@ -13553,7 +13557,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         echoes.pop(str(thread_id), None)
                 try:
-                    current_title = self._session_db.get_session_title(entry.session_id)
+                    current_title = await self._session_db.get_session_title(entry.session_id)
                 except Exception:
                     current_title = None
                 # This is the echo of a bot-initiated rename. If the thread was
@@ -13569,7 +13573,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 return
         try:
-            self._session_db.set_session_title(entry.session_id, sanitized)
+            await self._session_db.set_session_title(entry.session_id, sanitized)
         except ValueError:
             logger.debug(
                 "Ignoring platform thread title %r for session %s",

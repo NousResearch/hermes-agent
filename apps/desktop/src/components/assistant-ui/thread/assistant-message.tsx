@@ -73,6 +73,7 @@ export const AssistantMessage: FC<{
   const completedText = useAuiState(s =>
     s.message.status?.type === 'running' ? '' : messageContentText(s.message.content)
   )
+
   const previousUserText = useAuiState(s => {
     const index = s.thread.messages.findIndex(message => message.id === s.message.id)
 
@@ -96,6 +97,7 @@ export const AssistantMessage: FC<{
   }, [completedText])
 
   const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
+
   const getPromptResponseText = useCallback(() => {
     const prompt = previousUserText.trim()
     const response = getMessageText().trim()

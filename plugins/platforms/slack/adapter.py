@@ -2188,6 +2188,13 @@ class SlackAdapter(BasePlatformAdapter):
         thread replies.  Messages that originate inside an existing thread are
         always replied to in-thread to preserve conversation context.
         """
+        # Guard: async/cron deliveries (reply_to=None) should always go to
+        # the home/target channel, never to a stale thread context captured
+        # in metadata.  Only real replies to inbound messages preserve thread
+        # routing.
+        if reply_to is None:
+            return None
+
         # When reply_in_thread is disabled (default: True for backward compat),
         # only thread messages that are already part of an existing thread.
         # For top-level channel messages, the inbound handler sets

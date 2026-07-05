@@ -41,6 +41,7 @@ from session_orchestration.registry import SessionOrchestrationRegistry
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
 from session_orchestration.watcher import (
     SessionWatcher,
+    build_default_adapters,
     _is_omp_nudge_checkin_eligible,
     _is_stale_frozen_eligible,
     _on_hang,
@@ -180,6 +181,11 @@ def _seed_row(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_default_adapters_register_user_facing_aliases():
+    adapters = build_default_adapters()
+    assert {"claude", "claude-code", "codex", "codex-cli", "omp", "omp-adapter"} <= set(adapters)
 
 
 class TestTickWritesState:
@@ -1144,6 +1150,13 @@ class TestPaneHash:
         # nothing else does. The hash must stay stable so idle_ticks accrues.
         a = "⟨task⟩ Review 11m22s\n⠴ Polling review more\n92.5%/272K  $14.51"
         b = "⟨task⟩ Review 12m28s\n⠏ Polling review more\n93.2%/272K  $14.84"
+        assert _pane_hash(a) == _pane_hash(b)
+
+    def test_omp_waiting_clock_animation_hashes_stably(self):
+        # OMP renders a private-use timer glyph next to long-running subagent
+        # waits. Those frames churn independently of semantic output.
+        a = "└─ 󱑋 ⟨task⟩ ReviewT003 8m2s\n⠸ Waiting T003 review ⟨esc⟩"
+        b = "└─ 󱑎 ⟨task⟩ ReviewT003 8m5s\n⠹ Waiting T003 review ⟨esc⟩"
         assert _pane_hash(a) == _pane_hash(b)
 
     def test_real_output_change_still_changes_hash(self):

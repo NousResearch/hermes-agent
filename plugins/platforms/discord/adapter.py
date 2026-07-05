@@ -31,6 +31,9 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 _DISCORD_READY_TIMEOUT_SECONDS_DEFAULT = 30.0
+_SO_SIGNAL_POLL_INTERVAL_SECONDS = 10.0
+_SO_SIGNAL_DRAIN_TIMEOUT_SECONDS_DEFAULT = 5.0
+_SO_SIGNAL_FAILURE_BACKOFF_SECONDS_DEFAULT = 60.0
 
 try:
     import discord
@@ -95,6 +98,33 @@ def _env_bool(name: str, default: bool) -> bool:
         return False
     logger.warning("Ignoring invalid %s=%r", name, raw)
     return default
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(minimum, float(raw))
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r", name, raw)
+        return default
+
+
+def _so_signal_drain_timeout_seconds() -> float:
+    return _env_float(
+        "HERMES_SO_SIGNAL_DRAIN_TIMEOUT",
+        _SO_SIGNAL_DRAIN_TIMEOUT_SECONDS_DEFAULT,
+        minimum=1.0,
+    )
+
+
+def _so_signal_failure_backoff_seconds() -> float:
+    return _env_float(
+        "HERMES_SO_SIGNAL_FAILURE_BACKOFF",
+        _SO_SIGNAL_FAILURE_BACKOFF_SECONDS_DEFAULT,
+        minimum=_SO_SIGNAL_POLL_INTERVAL_SECONDS,
+    )
 
 
 def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
@@ -182,38 +212,47 @@ else:
 
 
 def _drain_so_signal_events(repo_root: Optional[str] = None) -> list[dict]:
-    """Drain Hermes so MCP signals from the z-harness backend."""
+    """Drain Hermes so MCP signals from the z-harness backend.
+
+    The signal queue is a JSONL file under the z-harness Hermes state root.
+    Keep this path import-light: the Discord gateway polls it frequently, and
+    importing the full z-harness MCP orchestrator here makes a non-critical
+    notification path vulnerable to slow third-party imports.
+    """
     root = str(repo_root or os.getenv("Z_HARNESS_REPO") or "/Users/zeke/dev/z-harness")
-    scripts_dir = str(_Path(root) / "scripts")
-    code = r'''
-import json
-import os
-import sys
-sys.path.insert(0, os.environ["SCRIPTS_DIR"])
-from hermes.config import load_config
-from hermes.mcp_hermes_orchestrator import drain_signal_events
-cfg = load_config(os.environ.get("Z_HARNESS_REPO", "."))
-print(json.dumps(drain_signal_events(cfg)))
-'''
-    env = dict(os.environ)
-    env["SCRIPTS_DIR"] = scripts_dir
-    env["PYTHONPATH"] = scripts_dir
-    env["Z_HARNESS_REPO"] = root
-    proc = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=root,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or "so signal drain failed").strip())
-    raw = proc.stdout.strip()
-    if not raw:
+    state_root = _Path("~/.hermes").expanduser()
+    config_path = _Path(root) / "hermes-config.yaml"
+    try:
+        import yaml
+        with config_path.open() as fh:
+            data = yaml.safe_load(fh) or {}
+        paths = data.get("paths") if isinstance(data, dict) else None
+        configured = paths.get("hermes_state_root") if isinstance(paths, dict) else None
+        if configured:
+            state_root = _Path(str(configured)).expanduser()
+    except FileNotFoundError:
+        pass
+    except Exception as exc:  # noqa: BLE001 - notification polling must not kill Discord.
+        raise RuntimeError(f"so signal config read failed: {exc}") from exc
+
+    signal_file = state_root / "so-mcp-signals.jsonl"
+    try:
+        raw = signal_file.read_text()
+    except FileNotFoundError:
         return []
-    events = json.loads(raw.splitlines()[-1])
-    return events if isinstance(events, list) else []
+
+    events: list[dict] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    signal_file.write_text("")
+    return events
 
 
 def check_discord_requirements() -> bool:
@@ -1094,6 +1133,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _poll_so_signals(self) -> None:
         """Drain Hermes so MCP signals and route them back to Discord."""
         while self._client is not None and not self._client.is_closed():
+            sleep_for = _SO_SIGNAL_POLL_INTERVAL_SECONDS
             try:
                 for event in await asyncio.to_thread(_drain_so_signal_events):
                     await self._route_so_signal(event)
@@ -1101,7 +1141,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 raise
             except Exception as exc:
                 logger.warning("[%s] so signal routing failed: %s", self.name, exc)
-            await asyncio.sleep(10)
+                sleep_for = _so_signal_failure_backoff_seconds()
+            await asyncio.sleep(sleep_for)
 
     async def _route_so_signal(self, event: dict) -> None:
         target = event.get("discord_thread_id") or event.get("discord_channel_id")

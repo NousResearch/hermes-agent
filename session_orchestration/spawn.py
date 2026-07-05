@@ -29,7 +29,8 @@ Adapter selection
 -----------------
 ``get_adapter(agent_name)`` maps the string from the Discord command to a
 concrete adapter instance.  Supported names: "claude", "claude-code",
-"omp", "omp-adapter".  Unknown names raise ``UnknownAgentError``.
+"codex", "codex-cli", "omp", "omp-adapter".  Unknown names raise
+``UnknownAgentError``.
 
 Configuration
 -------------
@@ -86,6 +87,8 @@ class SpawnDisabledError(RuntimeError):
 _ADAPTER_CLASSES: dict[str, str] = {
     "claude": "session_orchestration.adapters.claude_code.ClaudeCodeAdapter",
     "claude-code": "session_orchestration.adapters.claude_code.ClaudeCodeAdapter",
+    "codex": "session_orchestration.adapters.codex.CodexAdapter",
+    "codex-cli": "session_orchestration.adapters.codex.CodexAdapter",
     "omp": "session_orchestration.adapters.omp.OmpAdapter",
     "omp-adapter": "session_orchestration.adapters.omp.OmpAdapter",
 }
@@ -98,7 +101,7 @@ def get_adapter(agent_name: str) -> AgentAdapter:
     ----------
     agent_name:
         Case-insensitive agent identifier.  Supported: "claude",
-        "claude-code", "omp", "omp-adapter".
+        "claude-code", "codex", "codex-cli", "omp", "omp-adapter".
 
     Raises
     ------

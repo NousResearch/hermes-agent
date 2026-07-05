@@ -2329,6 +2329,7 @@ def _is_session_orchestration_enabled() -> bool:
 #: masquerading as fresh output. See ``_pane_hash`` and ``_is_stale_frozen_eligible``.
 _VOLATILE_PANE_TOKENS: re.Pattern[str] = re.compile(
     r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠛⠟⠿⢿⣻⣽⣾⣷⣯⣟]"              # braille/tui spinner frames
+    r"|[\U000f1440-\U000f145f]"                         # Nerd Font clock/timer animation frames
     r"|\b\d+h\d+m\d+s\b|\b\d+m\d+s\b|\b\d+(?:\.\d+)?s\b"  # elapsed timers (12m28s, 4.3s)
     r"|\$\s?\d[\d,]*(?:\.\d+)?"                          # running cost meter ($14.51)
     r"|\d+(?:\.\d+)?\s*%\s*/\s*\d+[KkMm]"                # context usage (92.5%/272K)
@@ -2369,16 +2370,26 @@ def main() -> None:
         logger.info("watcher: session_orchestration.enabled is false — exiting")
         return
 
-    from session_orchestration.adapters.claude_code import ClaudeCodeAdapter
-    from session_orchestration.adapters.omp import OmpAdapter
-
-    adapters: Dict[str, AgentAdapter] = {
-        "claude": ClaudeCodeAdapter(),
-        "omp": OmpAdapter(),
-    }
+    adapters = build_default_adapters()
 
     n = run_tick(adapters=adapters)
     logger.info("watcher: tick complete — %d rows processed", n)
+
+
+def build_default_adapters() -> Dict[str, AgentAdapter]:
+    """Return the live adapter map, including user-facing aliases."""
+    from session_orchestration.adapters.claude_code import ClaudeCodeAdapter
+    from session_orchestration.adapters.codex import CodexAdapter
+    from session_orchestration.adapters.omp import OmpAdapter
+
+    return {
+        "claude": ClaudeCodeAdapter(),
+        "claude-code": ClaudeCodeAdapter(),
+        "codex": CodexAdapter(),
+        "codex-cli": CodexAdapter(),
+        "omp": OmpAdapter(),
+        "omp-adapter": OmpAdapter(),
+    }
 
 
 if __name__ == "__main__":

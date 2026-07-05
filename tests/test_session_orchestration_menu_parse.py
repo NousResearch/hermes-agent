@@ -96,6 +96,51 @@ def test_extract_free_form_prompt_is_not_a_menu():
     assert "Which branch should I use?" in question
 
 
+def test_extract_completion_pane_command_box_is_not_a_menu():
+    pane = (
+        "d as a direct provider/fallback (advances criterion #5).\n"
+        "- none recorded\n"
+        "├─── Output ─────────────────────────────────────────────────────────┤\n"
+        "╰───────────────────────────────────────────────────────────────────╯\n"
+        "T003 only completed.\n"
+        "- Updated tests/test_omp_provider.py so omp-gemini is validated via alias:\n"
+        "- aliases[\"omp-gemini\"] == \"omp-antigravity-pro\"\n"
+        "- fallback validated on canonical omp-antigravity-pro\n"
+        "- no duplicate omp-gemini provider entry added\n"
+        "- Targeted verification passed:\n"
+        "- python -m unittest tests.test_omp_provider.TestOmpLiveEntries.test_live_omp_entries_carry_fallback\n"
+        "tests.test_resolve_provider.TestResolveProvider.test_omp_gemini_alias_resolves_to_antigravity_provider\n"
+        "- python -m unittest tests.test_omp_provider\n"
+        "- Reviewer final pass:\n"
+        "- review-cycle3.md: PASS, 0 blockers, 0 majors\n"
+        "- Plan state:\n"
+        "- T003 marked [x]\n"
+        "- T004-T006 left [ ], not started\n"
+        "│ … 14 more lines ⟨Ctrl+O: Expand⟩                              │\n"
+        "│ $ BASE=\"/Users/zeke/.local/state/z-harness/example\"            │\n"
+        "│ RUN=\"$(cat \"$BASE/archive/.current-run\")\"                    │\n"
+        "│ bash scripts/log-event.sh tasks/T003 task_done '{}'             │\n"
+        "│ 2>/dev/null || true                                             │\n"
+        "│ cat >> \"$BASE/LEDGER.md\" <<'EOF'                              │\n"
+        "│ ## Level 0                                                      │\n"
+        "│ ### T003                                                        │\n"
+        "│ **Decisions:**                                                  │\n"
+        "│ compatibility (advances criterion #4).                          │\n"
+        "│ **Deviations:**                                                 │\n"
+        "│ EOF                                                             │\n"
+        "│ (no output)                                                     │\n"
+        "│ ⟨Wall: 0.46s | Timeout: 30s⟩                                   │\n"
+        "❯\n"
+    )
+
+    question, options, is_menu = extract(pane)
+    assert is_menu is False
+    assert options == []
+    assert "$ BASE" not in question
+    assert "2>/dev/null" not in question
+    assert question != "❯"
+
+
 def test_extract_empty_pane():
     question, options, is_menu = extract("")
     assert is_menu is False

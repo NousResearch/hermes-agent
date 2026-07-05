@@ -185,7 +185,7 @@ SPAWN_TOOL_SCHEMA: Dict[str, Any] = {
             "agent": {
                 "type": "string",
                 "description": (
-                    "Agent to use: 'omp', 'claude', 'claude-code', etc. "
+                    "Agent to use: 'omp', 'claude', 'claude-code', 'codex', etc. "
                     "Defaults to 'omp' when omitted."
                 ),
             },

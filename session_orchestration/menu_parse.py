@@ -49,6 +49,46 @@ _LEADING_PUA = re.compile("^[\ue000-\uf8ff\U000f0000-\U0010fffd]+")
 #: Box-drawing prefixes that start a NON-option row (rules, corners, headers).
 _BOX_NONOPTION_PREFIXES = ("╭", "╰", "├", "┤", "┌", "└")
 
+#: Rows from tool/output boxes that look like left-bordered menu rows but are
+#: shell transcript or terminal chrome, not selectable options.
+_OPTION_NOISE_PREFIXES = (
+    "$ ",
+    "2>",
+    "BASE=",
+    "RUN=",
+    "bash scripts/",
+    "cat >>",
+    "cp ",
+    "diff ",
+    "git ",
+    "EOF",
+    "python -m",
+    "python3 -m",
+    "python3 -c",
+    "print(json.dumps",
+    "sed -n",
+    "set -",
+    "tmux ",
+    "wc ",
+)
+_OPTION_NOISE_EXACT = {"(no output)"}
+
+
+def _is_option_noise(label: str) -> bool:
+    """Reject command/output rows accidentally wrapped in box borders."""
+    stripped = label.strip()
+    if not stripped:
+        return True
+    if stripped in _OPTION_NOISE_EXACT:
+        return True
+    if stripped.startswith("…") or "Ctrl+O: Expand" in stripped or "⟨Wall:" in stripped:
+        return True
+    if stripped.startswith(_OPTION_NOISE_PREFIXES):
+        return True
+    if stripped.startswith(("#", "**")):
+        return True
+    return stripped.endswith(".") and len(stripped) > 24
+
 
 def _is_rule(stripped: str) -> bool:
     """True for a pure box-drawing separator rule (─, —, -, =, _)."""
@@ -83,7 +123,8 @@ def extract_menu_options(text: str) -> list[str]:
             continue
         label = inner.strip()
         if label:
-            options.append(label)
+            if not _is_option_noise(label):
+                options.append(label)
     return options
 
 
@@ -193,6 +234,8 @@ def _footer_anchored_menu(text: str) -> Optional[Tuple[str, List[str]]]:
         # Nerd-Font glyph marks the row as a selectable label.
         if not had_glyph and (raw_indent >= 3 or label.startswith("↳")):
             continue
+        if _is_option_noise(label):
+            continue
         options.append(label)
 
     if not options:
@@ -238,6 +281,10 @@ def _extract_free_form_question(text: str) -> str:
     for raw in text.splitlines():
         s = raw.strip()
         if not s or _is_rule(s):
+            continue
+        if s in {"❯", ">"}:
+            continue
+        if _is_option_noise(s):
             continue
         if s[:1] in "╭╰│├┤┌└╮╯|":
             continue  # box-drawing chrome (composer/status bar)

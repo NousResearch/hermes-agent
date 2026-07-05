@@ -166,6 +166,18 @@ def test_get_adapter_resolves_claude_code():
     assert isinstance(adapter, ClaudeCodeAdapter)
 
 
+def test_get_adapter_resolves_codex():
+    from session_orchestration.adapters.codex import CodexAdapter
+    adapter = get_adapter("codex")
+    assert isinstance(adapter, CodexAdapter)
+
+
+def test_get_adapter_resolves_codex_cli():
+    from session_orchestration.adapters.codex import CodexAdapter
+    adapter = get_adapter("codex-cli")
+    assert isinstance(adapter, CodexAdapter)
+
+
 def test_get_adapter_resolves_omp():
     from session_orchestration.adapters.omp import OmpAdapter
     adapter = get_adapter("omp")

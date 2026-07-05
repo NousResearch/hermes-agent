@@ -31,6 +31,7 @@ entries as unavailable and skip them.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -145,10 +146,21 @@ _OMP_SPEC = AdapterProbeSpec(
     json_mode_flag="--mode",  # same flag covers json mode
 )
 
+_APP_CODEX_BINARY = "/Applications/Codex.app/Contents/Resources/codex"
+
+_CODEX_SPEC = AdapterProbeSpec(
+    binary=_APP_CODEX_BINARY if os.path.exists(_APP_CODEX_BINARY) else "codex",
+    supports_print_mode_flag="exec",
+    has_hooks_flag=None,
+    rpc_mode_flag=None,
+    json_mode_flag=None,
+)
+
 # Registry mapping adapter class name → probe spec.
 # Extend this dict when new adapters are added.
 _ADAPTER_PROBE_SPECS: dict[str, AdapterProbeSpec] = {
     "ClaudeCodeAdapter": _CLAUDE_SPEC,
+    "CodexAdapter": _CODEX_SPEC,
     "OmpAdapter": _OMP_SPEC,
 }
 

@@ -289,6 +289,31 @@ def test_selfhost_401_surfaces_error_and_records_failure_without_fabricated_memo
     assert provider._consecutive_failures == 1
 
 
+def test_search_meta_filtered_coerces_empty_query_to_nonempty():
+    """The self-host server rejects an empty/whitespace query with HTTP 400 even when a metadata
+    `filters` clause is the real selector (the capture_idem reconcile path). search_meta_filtered
+    must send a non-empty placeholder query so a pure metadata-equality lookup works. Regression for
+    the live 2026-07-03 auto-capture incident (every drain 400'd on query='')."""
+    from importlib import import_module
+    mod = import_module("plugins.memory.mem0")
+    client = mod._DirectRestMem0Client(host="http://mem0.test", admin_api_key="k", agent_id="apollo", user_id="ace")
+    sent = []
+    client._request = lambda method, path, *, body=None, params=None: (sent.append(body) or {"results": []})
+
+    for empty in ("", "   ", None):
+        client.search_meta_filtered(empty, {"capture_idem": "abc"})
+        assert sent[-1]["query"] and sent[-1]["query"].strip(), f"empty query {empty!r} not coerced"
+        assert sent[-1]["filters"] == {"capture_idem": "abc"}      # the filter still selects
+    # a real query is passed through untouched
+    client.search_meta_filtered("real query", {"capture_idem": "abc"})
+    assert sent[-1]["query"] == "real query"
+    # FAIL-CLOSED: an empty metadata filter is refused (the "." placeholder would broad-search)
+    import pytest as _pytest
+    for bad in (None, {}):
+        with _pytest.raises(ValueError):
+            client.search_meta_filtered("", bad)
+
+
 def test_direct_rest_client_scopes_writes_both_reads_user_only():
     """B3/B4: on a shared multi-agent store, add/search/get_all with NO explicit scope
     must still be constrained to the client's configured user_id AND agent_id —

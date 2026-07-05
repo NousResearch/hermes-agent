@@ -41,6 +41,18 @@ def test_load_gateway_config_honors_top_level_stt_echo_transcripts(monkeypatch, 
     assert cfg.stt_echo_transcripts is False
 
 
+def test_load_gateway_config_honors_top_level_stt_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "stt:\n  enabled: true\nstt_enabled: false\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_gateway_config()
+
+    assert cfg.stt_enabled is False
+
+
 def test_gateway_runner_uses_stt_echo_transcripts_flag():
     runner = GatewayRunner.__new__(GatewayRunner)
 

@@ -927,6 +927,8 @@ def load_gateway_config() -> GatewayConfig:
             stt_cfg = yaml_cfg.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
+            if "stt_enabled" in yaml_cfg:
+                gw_data["stt_enabled"] = yaml_cfg["stt_enabled"]
             if "stt_echo_transcripts" in yaml_cfg:
                 gw_data["stt_echo_transcripts"] = yaml_cfg["stt_echo_transcripts"]
 

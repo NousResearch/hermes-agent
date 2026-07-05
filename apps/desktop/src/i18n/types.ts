@@ -1228,6 +1228,34 @@ export interface Translations {
     showSessions: string
     groupTitleGrouped: string
     groupTitleUngrouped: string
+    cloudChannelsTitle: string
+    cloudChannelsDesc: string
+    cloudInviteTokenAria: string
+    cloudInviteTokenPlaceholder: string
+    cloudInviteAccept: string
+    cloudInviteAccepting: string
+    cloudChannelsListTitle: string
+    cloudChannelsLoading: string
+    cloudChannelsEmpty: string
+    cloudChannelsRefresh: string
+    cloudChannelsRefreshing: string
+    cloudChannelsClose: string
+    cloudChannelsOwner: string
+    cloudChannelsRead: string
+    cloudChannelsSeq: (seq: string) => string
+    cloudMessagesTitle: string
+    cloudMessagesPickChannel: string
+    cloudMessagesLoading: string
+    cloudMessagesEmpty: string
+    cloudMessagesRefresh: string
+    cloudMessagesLoadMore: string
+    cloudMessagesLoadingMore: string
+    cloudMessagesNoContent: string
+    cloudParticipantsTitle: string
+    cloudParticipantsEmpty: string
+    cloudHostOnline: string
+    cloudHostOffline: string
+    cloudParticipantLabel: (device: string, count: string) => string
     allPinned: string
     shiftClickHint: string
     noWorkspace: string
@@ -1302,6 +1330,11 @@ export interface Translations {
       copyId: string
       export: string
       branchFrom: string
+      shareToCloud: string
+      copyCloudId: string
+      inviteToCloud: string
+      cloudMembers: string
+      deleteCloudChannel: string
       rename: string
       archive: string
       newWindow: string
@@ -1316,6 +1349,23 @@ export interface Translations {
       renameFailed: string
       renameTitle: string
       renameDesc: string
+      inviteCloudTitle: string
+      inviteCloudDesc: string
+      inviteEmailPlaceholder: string
+      inviteCreate: string
+      cloudMembersTitle: string
+      cloudMembersDesc: string
+      cloudMembersEmpty: string
+      cloudMembersRefresh: string
+      cloudMembersPermissionLabel: string
+      cloudMembersPermission: (permission: string) => string
+      cloudMembersRevoke: string
+      cloudMembersRevokeConfirm: (member: string) => string
+      cloudMembersSaving: string
+      deleteCloudTitle: string
+      deleteCloudDesc: string
+      deleteCloudConfirm: string
+      deleteCloudDeleting: string
       untitledPlaceholder: string
       ageNow: string
       ageDay: string

@@ -130,6 +130,8 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
+_cloud_tails: dict[str, dict] = {}
+_cloud_tails_lock = threading.Lock()
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -5861,6 +5863,451 @@ def _(rid, params: dict) -> dict:
             transport=current_transport() or _stdio_transport,
         ),
     )
+
+
+def _participants_map(session: dict) -> dict[int, str]:
+    participants = session.get("participants")
+    if not isinstance(participants, dict):
+        participants = {}
+        session["participants"] = participants
+    return participants
+
+
+def _session_participants_payload(session: dict) -> list[dict]:
+    """Deduped viewer list: one entry per device name with a live-client count."""
+    counts: dict[str, int] = {}
+    for device in _participants_map(session).values():
+        name = (device or "").strip()
+        if not name:
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    return [{"device": name, "count": counts[name]} for name in sorted(counts)]
+
+
+@method("session.participants")
+def _(rid, params: dict) -> dict:
+    """Return the live viewers (device names) currently attached to a session.
+
+    Lets a client that just attached pull the initial channel roster instead of
+    waiting for the next attach/detach to emit a ``session.participants`` event.
+    """
+    sid = str(params.get("session_id") or "")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    assert session is not None
+    return _ok(rid, {"participants": _session_participants_payload(session)})
+
+
+def _cloud_share_key(params: dict) -> str:
+    """Resolve the STORED session key from either a runtime sid or a stored id.
+
+    Cloud sharing reads the message log straight from state.db, so the session
+    does not need to be live — a runtime id maps through its session_key, and
+    anything else is treated as the stored key itself.
+    """
+    sid = str(params.get("session_id") or "")
+    live = _sessions.get(sid)
+    if live is not None:
+        return str(live.get("session_key") or sid)
+    return sid
+
+
+@method("session.cloud_share")
+def _(rid, params: dict) -> dict:
+    """Share this session to meshboard-cloud (channels slice 4.0).
+
+    Promotes the stored session to a cloud channel (idempotent) and starts the
+    background pusher that tails the local message log into it. Strictly
+    opt-in: refused outright unless the operator configured HERMES_CLOUD_TOKEN
+    — the zero-dependency core never dials the cloud on its own.
+    """
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+    key = _cloud_share_key(params)
+    db = _get_db()
+    if db is None or not key:
+        return _err(rid, 5000, "session store unavailable")
+
+    meta: dict = {}
+    try:
+        meta = db.get_session(key) or {}
+    except Exception:
+        pass
+    if not meta:
+        return _err(rid, 4007, "session not found")
+
+    try:
+        from hermes_constants import get_device_name
+
+        device = get_device_name() or ""
+    except Exception:
+        device = ""
+
+    try:
+        result = cloud_channels.share_session(
+            db_path=str(db.db_path),
+            session_key=key,
+            device_name=device,
+            title=str(meta.get("title") or ""),
+            model=str(meta.get("model") or ""),
+        )
+    except Exception as e:
+        return _err(rid, 5040, f"cloud share failed: {e}")
+    return _ok(rid, result)
+
+
+@method("session.cloud_status")
+def _(rid, params: dict) -> dict:
+    """Report whether this session is being pushed to a cloud channel."""
+    from tui_gateway import cloud_channels
+
+    key = _cloud_share_key(params)
+    status = cloud_channels.shared_status(key)
+    return _ok(rid, {
+        "configured": cloud_channels.cloud_enabled(),
+        "shared": status is not None,
+        **(status or {}),
+    })
+
+
+@method("session.cloud_invite")
+def _(rid, params: dict) -> dict:
+    """Create an invite for an already-shared cloud channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    key = _cloud_share_key(params)
+    status = cloud_channels.shared_status(key)
+    if not status or not status.get("channel_id"):
+        return _err(rid, 4008, "session is not shared to cloud")
+
+    email = str(params.get("email") or "").strip()
+    if not email:
+        return _err(rid, 4006, "email required")
+
+    permission = str(params.get("permission") or "read").strip().lower() or "read"
+    try:
+        result = cloud_channels.invite_member(str(status["channel_id"]), email, permission)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud invite failed: {e}")
+    return _ok(rid, result)
+
+
+@method("session.cloud_members")
+def _(rid, params: dict) -> dict:
+    """List members for an already-shared cloud channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    key = _cloud_share_key(params)
+    status = cloud_channels.shared_status(key)
+    if not status or not status.get("channel_id"):
+        return _err(rid, 4008, "session is not shared to cloud")
+
+    try:
+        result = cloud_channels.list_members(str(status["channel_id"]))
+    except Exception as e:
+        return _err(rid, 5040, f"cloud members failed: {e}")
+    return _ok(rid, result)
+
+
+@method("session.cloud_member_permission")
+def _(rid, params: dict) -> dict:
+    """Change a member permission for an already-shared cloud channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    key = _cloud_share_key(params)
+    status = cloud_channels.shared_status(key)
+    if not status or not status.get("channel_id"):
+        return _err(rid, 4008, "session is not shared to cloud")
+
+    account_id = str(params.get("account_id") or "").strip()
+    if not account_id:
+        return _err(rid, 4006, "account_id required")
+
+    permission = str(params.get("permission") or "read").strip().lower() or "read"
+    try:
+        result = cloud_channels.set_member_permission(str(status["channel_id"]), account_id, permission)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud member permission failed: {e}")
+    return _ok(rid, result)
+
+
+@method("session.cloud_member_remove")
+def _(rid, params: dict) -> dict:
+    """Remove a member from an already-shared cloud channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    key = _cloud_share_key(params)
+    status = cloud_channels.shared_status(key)
+    if not status or not status.get("channel_id"):
+        return _err(rid, 4008, "session is not shared to cloud")
+
+    account_id = str(params.get("account_id") or "").strip()
+    if not account_id:
+        return _err(rid, 4006, "account_id required")
+
+    try:
+        result = cloud_channels.remove_member(str(status["channel_id"]), account_id)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud member remove failed: {e}")
+    return _ok(rid, result)
+
+
+@method("session.cloud_delete")
+def _(rid, params: dict) -> dict:
+    """Hard-delete an already-shared cloud channel and stop local pushing."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    key = _cloud_share_key(params)
+    status = cloud_channels.shared_status(key)
+    if not status or not status.get("channel_id"):
+        return _err(rid, 4008, "session is not shared to cloud")
+
+    channel_id = str(status["channel_id"])
+    try:
+        result = cloud_channels.delete_channel(channel_id)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud channel delete failed: {e}")
+
+    stopped = cloud_channels.unshare_session(key)
+    return _ok(rid, {**result, "stopped": stopped})
+
+
+@method("session.cloud_unshare")
+def _(rid, params: dict) -> dict:
+    """Stop pushing this session to the cloud (the cloud log is kept;
+    deleting it is an explicit cloud-side operation)."""
+    from tui_gateway import cloud_channels
+
+    key = _cloud_share_key(params)
+    return _ok(rid, {"stopped": cloud_channels.unshare_session(key)})
+
+
+@method("cloud.accept_invite")
+def _(rid, params: dict) -> dict:
+    """Accept a cloud-channel invite for the configured cloud account."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    token = str(params.get("token") or "").strip()
+    if not token:
+        return _err(rid, 4006, "token required")
+
+    try:
+        result = cloud_channels.accept_invite(token)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud invite accept failed: {e}")
+    return _ok(rid, result)
+
+
+@method("cloud.channels")
+def _(rid, params: dict) -> dict:
+    """List owned and joined cloud channels for the configured cloud account."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    try:
+        result = cloud_channels.list_channels()
+    except Exception as e:
+        return _err(rid, 5040, f"cloud channels failed: {e}")
+    return _ok(rid, result)
+
+
+@method("cloud.channel_messages")
+def _(rid, params: dict) -> dict:
+    """Read cloud-channel message history for a joined/owned channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    channel_id = str(params.get("channel_id") or "").strip()
+    if not channel_id:
+        return _err(rid, 4006, "channel_id required")
+
+    try:
+        since_seq = int(params.get("since_seq") or 0)
+    except Exception:
+        since_seq = 0
+    try:
+        limit = int(params.get("limit") or 100)
+    except Exception:
+        limit = 100
+
+    try:
+        result = cloud_channels.list_messages(channel_id, since_seq=since_seq, limit=limit)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud channel messages failed: {e}")
+    return _ok(rid, result)
+
+
+@method("cloud.channel_participants")
+def _(rid, params: dict) -> dict:
+    """Read the live cloud-channel roster for a joined/owned channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    channel_id = str(params.get("channel_id") or "").strip()
+    if not channel_id:
+        return _err(rid, 4006, "channel_id required")
+
+    try:
+        result = cloud_channels.list_participants(channel_id)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud channel participants failed: {e}")
+    return _ok(rid, result)
+
+
+def _emit_cloud_tail_event(transport, event_type: str, subscription_id: str, channel_id: str, payload: dict) -> bool:
+    frame = {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+            "type": event_type,
+            "payload": {
+                "subscription_id": subscription_id,
+                "channel_id": channel_id,
+                **payload,
+            },
+        },
+    }
+    if transport is not None:
+        return bool(transport.write(frame))
+    return bool(write_json(frame))
+
+
+def _cloud_tail_worker(subscription_id: str, channel_id: str, since_seq: int, transport, stop: threading.Event):
+    from tui_gateway import cloud_channels
+
+    next_seq = max(0, int(since_seq or 0))
+    try:
+        while not stop.is_set():
+            try:
+                for event_name, payload in cloud_channels.stream_messages(
+                    channel_id,
+                    since_seq=next_seq,
+                    stop_event=stop,
+                ):
+                    if stop.is_set():
+                        break
+                    if event_name == "message" and isinstance(payload, dict):
+                        try:
+                            seq = int(payload.get("seq") or next_seq)
+                        except Exception:
+                            seq = next_seq
+                        next_seq = max(next_seq, seq)
+                        if not _emit_cloud_tail_event(
+                            transport,
+                            "cloud.channel.message",
+                            subscription_id,
+                            channel_id,
+                            {"message": payload, "next_seq": next_seq},
+                        ):
+                            stop.set()
+                            break
+                    elif event_name == "error":
+                        if not _emit_cloud_tail_event(
+                            transport,
+                            "cloud.channel.error",
+                            subscription_id,
+                            channel_id,
+                            {"error": payload},
+                        ):
+                            stop.set()
+                            break
+                if not stop.is_set():
+                    stop.wait(1.0)
+            except Exception as e:
+                if stop.is_set():
+                    break
+                if not _emit_cloud_tail_event(
+                    transport,
+                    "cloud.channel.error",
+                    subscription_id,
+                    channel_id,
+                    {"error": str(e)},
+                ):
+                    stop.set()
+                    break
+                stop.wait(5.0)
+    finally:
+        with _cloud_tails_lock:
+            current = _cloud_tails.get(subscription_id)
+            if current and current.get("stop") is stop:
+                _cloud_tails.pop(subscription_id, None)
+
+
+@method("cloud.channel_tail_start")
+def _(rid, params: dict) -> dict:
+    """Start a cloud-channel SSE tail and emit gateway events as messages arrive."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    channel_id = str(params.get("channel_id") or "").strip()
+    if not channel_id:
+        return _err(rid, 4006, "channel_id required")
+
+    try:
+        since_seq = int(params.get("since_seq") or 0)
+    except Exception:
+        since_seq = 0
+
+    subscription_id = f"cloud-tail-{uuid.uuid4().hex}"
+    stop = threading.Event()
+    transport = current_transport() or _stdio_transport
+    thread = threading.Thread(
+        target=_cloud_tail_worker,
+        args=(subscription_id, channel_id, since_seq, transport, stop),
+        name=f"cloud-tail-{channel_id[:18]}",
+        daemon=True,
+    )
+    with _cloud_tails_lock:
+        _cloud_tails[subscription_id] = {
+            "channel_id": channel_id,
+            "stop": stop,
+            "thread": thread,
+        }
+    thread.start()
+    return _ok(rid, {"subscription_id": subscription_id, "channel_id": channel_id})
+
+
+@method("cloud.channel_tail_stop")
+def _(rid, params: dict) -> dict:
+    """Stop a cloud-channel SSE tail started by cloud.channel_tail_start."""
+    subscription_id = str(params.get("subscription_id") or "").strip()
+    if not subscription_id:
+        return _err(rid, 4006, "subscription_id required")
+
+    with _cloud_tails_lock:
+        current = _cloud_tails.pop(subscription_id, None)
+    if current:
+        current["stop"].set()
+    return _ok(rid, {"ok": True, "subscription_id": subscription_id, "stopped": bool(current)})
 
 
 @method("session.delete")

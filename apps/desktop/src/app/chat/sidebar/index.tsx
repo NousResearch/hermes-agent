@@ -99,6 +99,7 @@ import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '..
 import type { SidebarNavItem } from '../../types'
 
 import { countLabel } from './chrome'
+import { CloudChannelsDialog } from './cloud-channels-dialog'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
@@ -142,6 +143,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     label: '',
     icon: props => <Codicon name="symbol-misc" {...props} />,
     route: SKILLS_ROUTE
+  },
+  {
+    id: 'cloud-channels',
+    label: '',
+    icon: props => <Codicon name="cloud" {...props} />,
+    action: 'cloud-channels'
   },
   { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
@@ -243,6 +250,7 @@ export function ChatSidebar({
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
+  const [cloudChannelsOpen, setCloudChannelsOpen] = useState(false)
   const messagingSessions = useStore($messagingSessions)
   const messagingPlatformTotals = useStore($messagingPlatformTotals)
   const messagingTruncated = useStore($messagingTruncated)
@@ -1029,21 +1037,22 @@ export function ChatSidebar({
     )
 
   return (
-    <Sidebar
-      className={cn(
-        'relative h-full min-w-0 overflow-hidden border-t-0 border-b-0 text-foreground transition-none',
-        panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',
-        sidebarOpen
-          ? 'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
-          : 'pointer-events-none border-transparent bg-transparent opacity-0',
-        // While floated by PaneShell's hover-reveal, force visible + interactive
-        // — on hover (group-hover/reveal) or when keyboard-pinned (data-forced).
-        'in-data-[pane-hover-reveal=open]:pointer-events-auto in-data-[pane-hover-reveal=open]:border-(--sidebar-edge-border) in-data-[pane-hover-reveal=open]:bg-(--ui-sidebar-surface-background) in-data-[pane-hover-reveal=open]:opacity-100',
-        'group-hover/reveal:pointer-events-auto group-hover/reveal:border-(--sidebar-edge-border) group-hover/reveal:bg-(--ui-sidebar-surface-background) group-hover/reveal:opacity-100'
-      )}
-      collapsible="none"
-    >
-      <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
+    <>
+      <Sidebar
+        className={cn(
+          'relative h-full min-w-0 overflow-hidden border-t-0 border-b-0 text-foreground transition-none',
+          panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',
+          sidebarOpen
+            ? 'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
+            : 'pointer-events-none border-transparent bg-transparent opacity-0',
+          // While floated by PaneShell's hover-reveal, force visible + interactive
+          // — on hover (group-hover/reveal) or when keyboard-pinned (data-forced).
+          'in-data-[pane-hover-reveal=open]:pointer-events-auto in-data-[pane-hover-reveal=open]:border-(--sidebar-edge-border) in-data-[pane-hover-reveal=open]:bg-(--ui-sidebar-surface-background) in-data-[pane-hover-reveal=open]:opacity-100',
+          'group-hover/reveal:pointer-events-auto group-hover/reveal:border-(--sidebar-edge-border) group-hover/reveal:bg-(--ui-sidebar-surface-background) group-hover/reveal:opacity-100'
+        )}
+        collapsible="none"
+      >
+        <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
@@ -1056,6 +1065,7 @@ export function ChatSidebar({
                   (item.id === 'artifacts' && currentView === 'artifacts')
 
                 const isNewSession = item.id === 'new-session'
+                const isCloudChannels = item.id === 'cloud-channels'
 
                 return (
                   <SidebarMenuItem key={item.id}>
@@ -1082,6 +1092,12 @@ export function ChatSidebar({
                         // change which profile that is.
                         if (isNewSession) {
                           $newChatProfile.set(null)
+                        }
+
+                        if (isCloudChannels) {
+                          setCloudChannelsOpen(true)
+
+                          return
                         }
 
                         onNavigate(item)
@@ -1402,6 +1418,8 @@ export function ChatSidebar({
       </SidebarContent>
       <ProjectDialog />
     </Sidebar>
+      <CloudChannelsDialog onOpenChange={setCloudChannelsOpen} open={cloudChannelsOpen} />
+    </>
   )
 }
 

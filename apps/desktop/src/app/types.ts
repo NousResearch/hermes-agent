@@ -122,14 +122,21 @@ export type CommandDispatchResponse =
   | SendCommandDispatchResponse
   | PrefillCommandDispatchResponse
 
-export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
+export type SidebarNavId =
+  | 'artifacts'
+  | 'cloud-channels'
+  | 'command-center'
+  | 'messaging'
+  | 'new-session'
+  | 'settings'
+  | 'skills'
 
 export interface SidebarNavItem {
   id: SidebarNavId
   label: string
   icon: React.ComponentType<{ className?: string }>
   route?: string
-  action?: 'new-session'
+  action?: 'cloud-channels' | 'new-session'
 }
 
 export interface ClientSessionState {

@@ -10243,7 +10243,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # predictable cadence (matches when they pull new agent code) without
         # adding startup latency or a per-launch GitHub API call.
         try:
-            if sys.platform in ("darwin", "win32", "linux") and shutil.which("cua-driver"):
+            refresh_cua_driver = True
+            try:
+                from hermes_cli.config import load_config
+
+                _update_cfg = (load_config() or {}).get("updates", {})
+                if isinstance(_update_cfg, dict):
+                    refresh_cua_driver = bool(
+                        _update_cfg.get("refresh_cua_driver", True)
+                    )
+            except Exception as cfg_exc:
+                logger.debug("Could not read updates.refresh_cua_driver: %s", cfg_exc)
+
+            if (
+                refresh_cua_driver
+                and sys.platform in ("darwin", "win32", "linux")
+                and shutil.which("cua-driver")
+            ):
                 from hermes_cli.tools_config import install_cua_driver
 
                 print()

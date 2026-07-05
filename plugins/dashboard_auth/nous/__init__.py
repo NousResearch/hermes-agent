@@ -552,7 +552,7 @@ def _load_config_oauth_section() -> dict:
         from hermes_cli.config import cfg_get, load_config
 
         cfg = load_config()
-    except Exception as exc:  # noqa: BLE001 — broad catch is intentional
+    except Exception as exc:
         logger.debug(
             "dashboard-auth-nous: load_config() raised %s; "
             "falling back to env-only configuration",

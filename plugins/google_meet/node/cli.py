@@ -111,7 +111,7 @@ def node_command(args: argparse.Namespace) -> int:
         client = NodeClient(entry["url"], entry["token"])
         try:
             result = client.ping()
-        except Exception as exc:  # noqa: BLE001 — surface any connection error
+        except Exception as exc:
             print(json.dumps({"ok": False, "error": str(exc)}))
             return 1
         print(json.dumps({"ok": True, "node": args.name, **_coerce_dict(result)}))

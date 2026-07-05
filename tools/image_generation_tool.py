@@ -60,7 +60,7 @@ from tools.debug_helpers import DebugSession
 from tools.fal_common import (
     _ManagedFalSyncClient,
     _extract_http_status,
-    _normalize_fal_queue_url_format,  # noqa: F401 — re-exported for tests
+    _normalize_fal_queue_url_format,
 )
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
@@ -736,7 +736,7 @@ def _active_terminal_env(task_id: str | None):
         from tools.terminal_tool import get_active_env
 
         return get_active_env(task_id or "default")
-    except Exception as exc:  # noqa: BLE001 - artifact hinting must not break generation
+    except Exception as exc:
         logger.debug("Could not inspect active terminal environment: %s", exc)
         return None
 
@@ -753,7 +753,7 @@ def _agent_cache_base_for_env(env: Any) -> str | None:
                 value = explicit()
                 if value:
                     return str(value).rstrip("/")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.debug("active env agent_visible_cache_base failed: %s", exc)
 
         remote_home = getattr(env, "_remote_home", None)
@@ -788,7 +788,7 @@ def _agent_visible_cache_path(host_path: str, env: Any) -> str | None:
         from tools.credential_files import map_cache_path_to_container
 
         return map_cache_path_to_container(host_path, container_base=cache_base)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Could not translate image cache path for backend: %s", exc)
     return None
 
@@ -799,7 +799,7 @@ def _force_artifact_sync(env: Any) -> None:
         return
     try:
         sync_manager.sync(force=True)
-    except Exception as exc:  # noqa: BLE001 - keep generation success; log for operators
+    except Exception as exc:
         logger.warning("Could not force-sync generated image artifact: %s", exc)
 
 
@@ -1140,7 +1140,7 @@ if __name__ == "__main__":
     print("✅ FAL.ai API key found")
 
     try:
-        import fal_client  # noqa: F401
+        import fal_client
         print("✅ fal_client library available")
     except ImportError:
         print("❌ fal_client library not found — pip install fal-client")
@@ -1460,7 +1460,7 @@ def _maybe_route_managed_krea(
 
         if _resolve_managed_krea_gateway() is None:
             return None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Managed Krea routing probe failed: %s", exc)
         return None
 
@@ -1470,7 +1470,7 @@ def _maybe_route_managed_krea(
 
         _ensure_plugins_discovered()
         provider = get_provider("krea")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Managed Krea routing: provider unavailable: %s", exc)
         return None
     if provider is None:
@@ -1492,7 +1492,7 @@ def _maybe_route_managed_krea(
         if norm_refs:
             kwargs["reference_image_urls"] = norm_refs
         result = provider.generate(**kwargs)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Managed Krea routing failed: %s", exc)
         return json.dumps({
             "success": False,
@@ -1591,7 +1591,7 @@ def _active_image_capabilities() -> Dict[str, Any]:
                 caps = {}
                 try:
                     caps = provider.capabilities() or {}
-                except Exception:  # noqa: BLE001
+                except Exception:
                     caps = {}
                 info["provider"] = provider.display_name
                 info["model"] = _read_configured_image_model() or (provider.default_model() or "")
@@ -1600,7 +1600,7 @@ def _active_image_capabilities() -> Dict[str, Any]:
                 if caps.get("max_reference_images"):
                     info["max_reference_images"] = int(caps["max_reference_images"])
                 return info
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     # In-tree FAL path (provider unset or == "fal").
@@ -1614,7 +1614,7 @@ def _active_image_capabilities() -> Dict[str, Any]:
         else:
             info["modalities"] = ["text"]
             info["max_reference_images"] = 0
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     return info
@@ -1626,7 +1626,7 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
 
     try:
         info = _active_image_capabilities()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {"description": _GENERIC_IMAGE_DESCRIPTION}
 
     provider = info.get("provider")

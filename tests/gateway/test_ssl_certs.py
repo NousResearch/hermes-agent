@@ -11,7 +11,7 @@ def _load_ensure_ssl():
     # but we need to be careful about side effects.  Instead, replicate the
     # logic in a controlled way.
     from types import ModuleType
-    import textwrap, ssl as _ssl  # noqa: F401
+    import textwrap, ssl as _ssl
 
     code = textwrap.dedent("""\
     import os, ssl

@@ -44,7 +44,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 # ─── UI Helpers (shared with setup.py) ────────────────────────────────────────
 
-from hermes_cli.cli_output import (  # noqa: E402 — late import block
+from hermes_cli.cli_output import (
     print_error as _print_error,
     print_info as _print_info,
     print_success as _print_success,
@@ -2059,7 +2059,7 @@ def _estimate_tool_tokens() -> Dict[str, int]:
 
     try:
         # Trigger full tool discovery (imports all tool modules).
-        import model_tools  # noqa: F401
+        import model_tools
         from tools.registry import registry
     except Exception:
         logger.debug("Tool registry unavailable; skipping token estimation")

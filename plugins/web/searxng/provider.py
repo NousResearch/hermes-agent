@@ -102,7 +102,7 @@ class SearXNGWebSearchProvider(WebSearchProvider):
 
         try:
             data = resp.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("SearXNG response parse error: %s", exc)
             return {
                 "success": False,

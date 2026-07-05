@@ -171,7 +171,7 @@ def _raw_frames(
                 break  # trailing transparent padding — real frames end here
             frames.append(frame)
         return tuple(frames)
-    except Exception as exc:  # noqa: BLE001 - cosmetic feature, never fatal
+    except Exception as exc:
         logger.debug("pet frame decode failed (%s, %s): %s", sheet_path, state_value, exc)
         return ()
 
@@ -236,7 +236,7 @@ def _union_alpha_bbox(frames) -> tuple[int, int, int, int] | None:
     for frame in frames:
         try:
             bbox = frame.getchannel("A").getbbox()
-        except Exception:  # noqa: BLE001 - cosmetic; fail open
+        except Exception:
             bbox = None
         if not bbox:
             continue
@@ -659,7 +659,7 @@ class PetRenderer:
             if self.mode == "sixel":
                 return _encode_sixel(frame)
             return _encode_unicode(frame, target_cols=self.unicode_cols)
-        except Exception as exc:  # noqa: BLE001 - degrade silently
+        except Exception as exc:
             logger.debug("pet frame encode failed (mode=%s): %s", self.mode, exc)
             return ""
 

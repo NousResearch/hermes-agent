@@ -157,7 +157,7 @@ class RelayAdapter(BasePlatformAdapter):
         # connector advertises for the platform this gateway actually fronts.
         try:
             descriptor = await self._transport.handshake()
-        except Exception as exc:  # noqa: BLE001 - a failed handshake = a failed connect
+        except Exception as exc:
             logger.warning("relay handshake failed: %s", exc)
             return False
         self._apply_descriptor(descriptor)
@@ -215,7 +215,7 @@ class RelayAdapter(BasePlatformAdapter):
         )
         try:
             await self._notify_fatal_error()
-        except Exception:  # noqa: BLE001 - notification is best-effort
+        except Exception:
             logger.debug("relay revocation fatal-error notify failed", exc_info=True)
 
     def _apply_descriptor(self, descriptor: CapabilityDescriptor) -> None:
@@ -272,7 +272,7 @@ class RelayAdapter(BasePlatformAdapter):
             user_id = getattr(src, "user_id", None)
             if user_id:
                 self._dm_user_by_chat[str(chat)] = str(user_id)
-        except Exception:  # noqa: BLE001 - scope tracking must never break inbound
+        except Exception:
             pass
 
     def _with_scope(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -365,7 +365,7 @@ class RelayAdapter(BasePlatformAdapter):
                 getattr(forward, "method", "?"),
                 getattr(forward, "path", "?"),
             )
-        except Exception:  # noqa: BLE001 - a bad forward must never break the reader
+        except Exception:
             logger.warning("relay passthrough_forward handling failed", exc_info=True)
 
     def _discord_interaction_to_event(self, forward):
@@ -384,7 +384,7 @@ class RelayAdapter(BasePlatformAdapter):
 
         try:
             payload = json.loads(bytes(getattr(forward, "body", b"")).decode("utf-8"))
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         if not isinstance(payload, dict):
             return None
@@ -420,7 +420,7 @@ class RelayAdapter(BasePlatformAdapter):
             self._revocation_monitor.cancel()
             try:
                 await self._revocation_monitor
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+            except (asyncio.CancelledError, Exception):
                 pass
             self._revocation_monitor = None
         if self._transport is not None:
@@ -440,7 +440,7 @@ class RelayAdapter(BasePlatformAdapter):
                     result: Any = go_idle()
                     if asyncio.iscoroutine(result):
                         await result
-                except Exception:  # noqa: BLE001 - going-idle is an optimization, never blocks drain
+                except Exception:
                     logger.debug("relay going_idle failed during drain", exc_info=True)
             await self._transport.disconnect()
 
@@ -467,7 +467,7 @@ class RelayAdapter(BasePlatformAdapter):
             if asyncio.iscoroutine(result):
                 return bool(await result)
             return bool(result)
-        except Exception:  # noqa: BLE001 - dormancy is best-effort, never blocks the idle path
+        except Exception:
             logger.debug("relay go_dormant failed", exc_info=True)
             return False
 

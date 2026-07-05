@@ -190,7 +190,7 @@ def run_oneshot(
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
                 )
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 # Capture anything that escapes the agent (including OSError
                 # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
                 # KeyboardInterrupt, SystemExit, etc.) so we can surface it on

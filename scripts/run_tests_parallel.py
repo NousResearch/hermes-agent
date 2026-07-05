@@ -761,7 +761,7 @@ def main() -> int:
 
         if args.include_integration:
             # Caller takes responsibility — typically used via explicit -k filter.
-            global _SKIP_PARTS  # noqa: PLW0603 — config knob
+            global _SKIP_PARTS
             _SKIP_PARTS = set()
 
         files = _discover_files(roots)
@@ -834,7 +834,7 @@ def main() -> int:
         n_tests = test_counts.get(file, 0)
         try:
             fpath, rc, output, summary, subproc_wall = fut.result()
-        except Exception as exc:  # noqa: BLE001 — must always advance counter
+        except Exception as exc:
             with lock:
                 files_done += 1
                 tests_done += n_tests

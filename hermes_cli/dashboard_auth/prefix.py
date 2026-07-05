@@ -161,7 +161,7 @@ def _load_dashboard_section() -> dict:
         return {}
     try:
         cfg = load_config()
-    except Exception as exc:  # noqa: BLE001 — broad catch is intentional
+    except Exception as exc:
         _log.debug(
             "dashboard-auth.prefix: load_config() raised %s; "
             "falling back to env-only configuration",

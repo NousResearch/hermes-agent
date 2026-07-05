@@ -125,12 +125,12 @@ _ensure_google_mocks()
 # (which targets bare ``import adapter`` / ``from adapter import …`` and
 # ``sys.path.insert`` into ``plugins/platforms/``) does not flag this
 # fully-qualified form.
-import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
+import plugins.platforms.google_chat.adapter as _gc_mod
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
-from plugins.platforms.google_chat.adapter import (  # noqa: E402
+from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.google_chat.adapter import (
     GoogleChatAdapter,
     _is_google_owned_host,
     _mime_for_message_type,

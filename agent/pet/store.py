@@ -189,7 +189,7 @@ def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TI
     if entry.pet_json_url and _is_petdex_host(entry.pet_json_url):
         try:
             meta = _download_json(entry.pet_json_url, timeout=timeout)
-        except Exception as exc:  # noqa: BLE001 - non-fatal, fall back below
+        except Exception as exc:
             logger.debug("pet.json fetch failed for %s: %s", slug, exc)
     if not isinstance(meta, dict) or not meta:
         meta = {"id": slug, "displayName": entry.display_name, "description": ""}
@@ -257,7 +257,7 @@ def register_local_pet(
     sprite_path = directory / "spritesheet.webp"
     try:
         _write_spritesheet(spritesheet, sprite_path)
-    except Exception as exc:  # noqa: BLE001 - normalize to one error type
+    except Exception as exc:
         raise PetStoreError(f"could not write spritesheet for '{slug}': {exc}") from exc
 
     meta = {
@@ -365,7 +365,7 @@ def thumbnail_png(slug: str, *, source_url: str = "", timeout: float = 30.0) -> 
             )
             resp.raise_for_status()
             sheet_bytes = resp.content
-        except Exception as exc:  # noqa: BLE001 - cosmetic, degrade to placeholder
+        except Exception as exc:
             logger.debug("thumb fetch failed for %s: %s", slug, exc)
 
     if not sheet_bytes:
@@ -385,7 +385,7 @@ def thumbnail_png(slug: str, *, source_url: str = "", timeout: float = 30.0) -> 
             buf = io.BytesIO()
             frame.save(buf, format="PNG")
             data = buf.getvalue()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("thumb crop failed for %s: %s", slug, exc)
         return None
 
@@ -485,7 +485,7 @@ def _download(url: str, dest: Path, *, timeout: float) -> None:
                 for chunk in resp.iter_bytes():
                     fh.write(chunk)
             tmp.replace(dest)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise PetStoreError(f"download failed for {url}: {exc}") from exc
 
 

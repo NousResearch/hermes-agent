@@ -46,7 +46,7 @@ import logging
 import os
 import threading
 import time
-from pathlib import Path  # noqa: F401 — used by test mocks
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
@@ -65,7 +65,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 #       (which is harmless — annotations aren't type-checked at runtime).
 # See tests/agent/test_auxiliary_client.py for patch patterns this supports.
 if TYPE_CHECKING:
-    from openai import OpenAI  # noqa: F401 — type hints only
+    from openai import OpenAI
 
 _OPENAI_CLS_CACHE: Optional[type] = None
 

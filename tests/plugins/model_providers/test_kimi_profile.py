@@ -23,7 +23,7 @@ def kimi_profile():
     if the registered class is ever swapped for a plain ``ProviderProfile`` the
     assertions below collapse.
     """
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("kimi-coding")

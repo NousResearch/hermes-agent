@@ -1034,7 +1034,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     :func:`agent.model_metadata.get_model_context_length` chain
     (models.dev, provider metadata, hardcoded family fallbacks).
     """
-    from hermes_cli.auth import _save_model_choice, deactivate_provider  # noqa: F401
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import (
         get_env_value,
         save_env_value,

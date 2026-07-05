@@ -9,9 +9,9 @@ from __future__ import annotations
 import pytest
 
 pytest.importorskip("PIL")
-from PIL import Image  # noqa: E402
+from PIL import Image
 
-from tui_gateway import server  # noqa: E402
+from tui_gateway import server
 
 
 def _png(path):

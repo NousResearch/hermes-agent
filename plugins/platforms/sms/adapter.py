@@ -47,7 +47,7 @@ DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 def check_sms_requirements() -> bool:
     """Check if SMS adapter dependencies are available."""
     try:
-        import aiohttp  # noqa: F401
+        import aiohttp
     except ImportError:
         return False
     return bool(os.getenv("TWILIO_ACCOUNT_SID") and os.getenv("TWILIO_AUTH_TOKEN"))

@@ -135,7 +135,7 @@ class XsignBootstrapE2E(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            import mautrix  # noqa: F401
+            import mautrix
         except ImportError:
             raise unittest.SkipTest("mautrix not installed")
         cls.first_tok = _first_time_token()

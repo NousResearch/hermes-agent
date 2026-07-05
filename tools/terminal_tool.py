@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 # The terminal tool polls this during command execution so it can kill
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
-from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
+from tools.interrupt import is_interrupted, _interrupt_event
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
@@ -2857,7 +2857,7 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "daytona":
-            from daytona import Daytona  # noqa: F401 — SDK presence check
+            from daytona import Daytona
             return os.getenv("DAYTONA_API_KEY") is not None
 
         else:

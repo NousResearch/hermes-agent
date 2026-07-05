@@ -1830,7 +1830,7 @@ class TestDiscordSkillCommands:
 # Discord skill commands grouped by category
 # ---------------------------------------------------------------------------
 
-from hermes_cli.commands import discord_skill_commands_by_category  # noqa: E402
+from hermes_cli.commands import discord_skill_commands_by_category
 
 
 class TestDiscordSkillCommandsByCategory:

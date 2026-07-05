@@ -175,7 +175,7 @@ def _passthrough_from_wire(raw: Dict[str, Any]) -> PassthroughForward:
     body_b64 = raw.get("bodyB64", "") or ""
     try:
         body = base64.b64decode(body_b64)
-    except Exception:  # noqa: BLE001 - a malformed body must not crash the reader
+    except Exception:
         body = b""
     headers_raw = raw.get("headers", []) or []
     headers: list[tuple[str, str]] = []
@@ -342,20 +342,20 @@ class WebSocketRelayTransport:
             self._supervisor.cancel()
             try:
                 await self._supervisor
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+            except (asyncio.CancelledError, Exception):
                 pass
             self._supervisor = None
         if self._reader is not None:
             self._reader.cancel()
             try:
                 await self._reader
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+            except (asyncio.CancelledError, Exception):
                 pass
             self._reader = None
         if self._ws is not None:
             try:
                 await self._ws.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._ws = None
         # Fail any in-flight outbound waiters so callers don't hang.
@@ -447,7 +447,7 @@ class WebSocketRelayTransport:
             await self._send({"type": "going_idle"})
             await asyncio.wait_for(self._going_idle_ack, timeout=timeout_s)
             return True
-        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - ack is best-effort
+        except (asyncio.TimeoutError, Exception):
             return False
         finally:
             self._going_idle_ack = None
@@ -492,7 +492,7 @@ class WebSocketRelayTransport:
         self._dormant = True
         try:
             await self._ws.close()
-        except Exception:  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
+        except Exception:
             logger.debug("relay go_dormant: ws.close() raised", exc_info=True)
         return acked
 
@@ -505,7 +505,7 @@ class WebSocketRelayTransport:
         """
         try:
             await self._send({"type": "inbound_ack", "bufferId": buffer_id})
-        except Exception:  # noqa: BLE001 - a failed ack just redelivers the entry next time
+        except Exception:
             logger.debug("relay: inbound_ack send failed for %s", buffer_id)
 
     async def _request_response(
@@ -560,7 +560,7 @@ class WebSocketRelayTransport:
                         await self._handle_frame(line)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection handled below
+        except Exception as exc:
             # Phase 7 Unit 7d-B: detect a 4401 (unauthorized) close. After a prior
             # successful handshake this is a REVOCATION (opt-out / deprovision) —
             # the per-gateway secret is gone, so reconnecting is futile. Latch a
@@ -635,7 +635,7 @@ class WebSocketRelayTransport:
                 return  # the fresh reader is running; supervisor's job is done
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - keep retrying on dial failure
+            except Exception as exc:
                 logger.warning("relay ws reconnect failed: %s", exc)
                 backoff = min(backoff * 2, self._reconnect_max_backoff_s)
 

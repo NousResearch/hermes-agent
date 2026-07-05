@@ -25,7 +25,7 @@ def ollama_cloud_profile():
     """
     # ``model_tools`` triggers plugin discovery on import, which is what
     # registers the Ollama Cloud profile in the global provider registry.
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("ollama-cloud")

@@ -423,7 +423,7 @@ class FALVideoGenProvider(VideoGenProvider):
     def is_available(self) -> bool:
         try:
             return _check_fal_video_available()
-        except Exception:  # noqa: BLE001 — never break the picker
+        except Exception:
             return False
 
     def list_models(self) -> List[Dict[str, Any]]:

@@ -95,7 +95,7 @@ class TestScanCronPrompt:
 # Skill-assembled cron prompt scanning (looser pattern set)
 # =========================================================================
 
-from tools.cronjob_tools import _scan_cron_skill_assembled  # noqa: E402
+from tools.cronjob_tools import _scan_cron_skill_assembled
 
 
 class TestScanCronSkillAssembled:
@@ -533,7 +533,7 @@ class TestUnifiedCronjobTool:
 # Per-job model/provider override resolution
 # =========================================================================
 
-from tools.cronjob_tools import _resolve_model_override  # noqa: E402
+from tools.cronjob_tools import _resolve_model_override
 
 
 class TestResolveModelOverride:

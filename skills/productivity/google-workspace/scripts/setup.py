@@ -96,8 +96,8 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
 def install_deps():
     """Install Google API packages if missing. Returns True on success."""
     try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
+        import googleapiclient
+        import google_auth_oauthlib
         print("Dependencies already installed.")
         return True
     except ImportError:
@@ -149,8 +149,8 @@ def install_deps():
 def _ensure_deps():
     """Check deps are available, install if not, exit on failure."""
     try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
+        import googleapiclient
+        import google_auth_oauthlib
     except ImportError:
         if not install_deps():
             sys.exit(1)

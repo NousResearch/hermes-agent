@@ -277,7 +277,7 @@ def _cmd_doctor(args) -> int:
         _print("  → pet display is disabled. Run: hermes pets select " + active.slug)
 
     try:
-        import PIL  # noqa: F401
+        import PIL
     except ImportError:
         _print("  ✗ Pillow not importable — sprite decoding will be unavailable")
         ok = False

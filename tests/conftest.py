@@ -526,7 +526,7 @@ def _ensure_current_event_loop(request):
 _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
 
 
-def pytest_configure(config):  # noqa: D401 — pytest hook
+def pytest_configure(config):
     """Register markers used by hermetic conftest."""
     config.addinivalue_line(
         "markers",

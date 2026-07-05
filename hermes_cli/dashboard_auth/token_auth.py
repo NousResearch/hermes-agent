@@ -130,7 +130,7 @@ def authenticate_token(
             if unreachable is None:
                 unreachable = provider.name
             continue
-        except Exception as e:  # noqa: BLE001 — a buggy provider must not 500 the gate
+        except Exception as e:
             _log.warning(
                 "dashboard-auth: token provider %r raised during verify: %s",
                 provider.name, e,

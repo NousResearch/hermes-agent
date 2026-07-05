@@ -144,7 +144,7 @@ class TestConcurrency:
                 info = consume_ticket(t)
                 with lock:
                     results.append(info)
-            except Exception as exc:  # noqa: BLE001 — collect for assert
+            except Exception as exc:
                 with lock:
                     errors.append(exc)
 

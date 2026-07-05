@@ -606,7 +606,7 @@ def _lint_json_inproc(content: str) -> tuple[bool, str]:
         return True, ""
     except _json.JSONDecodeError as e:
         return False, f"JSONDecodeError: {e.msg} (line {e.lineno}, column {e.colno})"
-    except Exception as e:  # noqa: BLE001 — any parse failure is a lint failure
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
@@ -625,7 +625,7 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
         return True, ""
     except _yaml.YAMLError as e:
         return False, f"YAMLError: {e}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
@@ -660,7 +660,7 @@ def _lint_python_inproc(content: str) -> tuple[bool, str]:
     except SyntaxError as e:
         loc = f" (line {e.lineno}, column {e.offset})" if e.lineno else ""
         return False, f"{type(e).__name__}: {e.msg}{loc}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
@@ -1805,7 +1805,7 @@ class ShellFileOperations(FileOperations):
             return False
         try:
             from tools.environments.local import LocalEnvironment
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
         return isinstance(env, LocalEnvironment)
 
@@ -1824,7 +1824,7 @@ class ShellFileOperations(FileOperations):
             return False
         try:
             from agent.lsp.servers import SERVERS
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
         ext_lower = ext.lower()
         for srv in SERVERS:
@@ -1853,17 +1853,17 @@ class ShellFileOperations(FileOperations):
             return False
         try:
             from agent.lsp import get_service
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
         try:
             svc = get_service()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
         if svc is None:
             return False
         try:
             return bool(svc.enabled_for(path))
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     def _snapshot_lsp_baseline(self, path: str) -> None:
@@ -1880,13 +1880,13 @@ class ShellFileOperations(FileOperations):
         try:
             from agent.lsp import get_service
             svc = get_service()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return
         if svc is None:
             return
         try:
             svc.snapshot_baseline(path)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     def _maybe_lsp_diagnostics(
@@ -1920,11 +1920,11 @@ class ShellFileOperations(FileOperations):
             return ""
         try:
             from agent.lsp import get_service
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ""
         try:
             svc = get_service()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ""
         if svc is None or not svc.enabled_for(path):
             return ""
@@ -1937,12 +1937,12 @@ class ShellFileOperations(FileOperations):
             try:
                 from agent.lsp.range_shift import build_line_shift
                 line_shift = build_line_shift(pre_content, post_content)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 line_shift = None
 
         try:
             diagnostics = svc.get_diagnostics_sync(path, delta=True, line_shift=line_shift)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ""
         if not diagnostics:
             return ""
@@ -1952,7 +1952,7 @@ class ShellFileOperations(FileOperations):
             if not block:
                 return ""
             return truncate("LSP diagnostics introduced by this edit:\n" + block)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ""
     
     # =========================================================================

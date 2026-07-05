@@ -234,7 +234,7 @@ def find_bws(*, install_if_missing: bool = False) -> Optional[Path]:
     if install_if_missing:
         try:
             return install_bws()
-        except Exception as exc:  # noqa: BLE001 — never block startup
+        except Exception as exc:
             logger.warning("bws auto-install failed: %s", exc)
             return None
     return None
@@ -351,7 +351,7 @@ def install_bws(*, force: bool = False) -> Path:
 def _http_download(url: str, dest: Path) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": "hermes-agent"})
     try:
-        with urllib.request.urlopen(req, timeout=_BWS_DOWNLOAD_TIMEOUT) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=_BWS_DOWNLOAD_TIMEOUT) as resp:
             with open(dest, "wb") as f:
                 shutil.copyfileobj(resp, f)
     except urllib.error.URLError as exc:
@@ -520,7 +520,7 @@ def _run_bws_list(
         env["BWS_SERVER_URL"] = server_url
 
     try:
-        proc = subprocess.run(  # noqa: S603 — bws path is trusted
+        proc = subprocess.run(
             cmd,
             env=env,
             capture_output=True,

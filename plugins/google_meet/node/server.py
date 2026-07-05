@@ -162,7 +162,7 @@ class NodeServer:
                     req_id,
                     {"ok": True, "enqueued": enqueued, "text": text},
                 )
-        except Exception as exc:  # noqa: BLE001 — surface any pm crash to client
+        except Exception as exc:
             return _proto.make_error(req_id, f"{type(exc).__name__}: {exc}")
 
         return _proto.make_error(req_id, f"unhandled type: {t!r}")

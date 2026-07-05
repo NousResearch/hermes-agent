@@ -321,7 +321,7 @@ class _FakeAzureIdentity:
         self.last_scope = None
         self.credential_count = 0
 
-    def DefaultAzureCredential(self, **kwargs):  # noqa: N802 — match SDK
+    def DefaultAzureCredential(self, **kwargs):
         self.last_credential_kwargs = kwargs
         self.credential_count += 1
         return SimpleNamespace(

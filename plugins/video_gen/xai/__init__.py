@@ -137,7 +137,7 @@ def _raise_if_blocked_local_input(ref: str) -> None:
     """
     try:
         from agent.file_safety import raise_if_read_blocked
-    except Exception as exc:  # noqa: BLE001 - guard must never break loading
+    except Exception as exc:
         logger.debug("xAI media input read guard unavailable: %s", exc)
         return
     raise_if_read_blocked(ref)

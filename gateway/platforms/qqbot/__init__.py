@@ -15,7 +15,7 @@ New modules:
 """
 
 # -- Adapter (original qqbot.py) ------------------------------------------
-from .adapter import (  # noqa: F401
+from .adapter import (
     QQAdapter,
     QQCloseError,
     check_qq_requirements,
@@ -24,25 +24,25 @@ from .adapter import (  # noqa: F401
 )
 
 # -- Onboard (QR-code scan-to-configure) -----------------------------------
-from .onboard import (  # noqa: F401
+from .onboard import (
     BindStatus,
     build_connect_url,
     qr_register,
 )
-from .crypto import decrypt_secret, generate_bind_key  # noqa: F401
+from .crypto import decrypt_secret, generate_bind_key
 
 # -- Utils -----------------------------------------------------------------
-from .utils import build_user_agent, get_api_headers, coerce_list  # noqa: F401
+from .utils import build_user_agent, get_api_headers, coerce_list
 
 # -- Chunked upload --------------------------------------------------------
-from .chunked_upload import (  # noqa: F401
+from .chunked_upload import (
     ChunkedUploader,
     UploadDailyLimitExceededError,
     UploadFileTooLargeError,
 )
 
 # -- Inline keyboards ------------------------------------------------------
-from .keyboards import (  # noqa: F401
+from .keyboards import (
     ApprovalRequest,
     ApprovalSender,
     InlineKeyboard,

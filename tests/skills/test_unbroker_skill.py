@@ -27,30 +27,30 @@ _CANDIDATES = [
 SCRIPTS = next((c for c in _CANDIDATES if (c / "pdd.py").exists()), _CANDIDATES[0])
 sys.path.insert(0, str(SCRIPTS))
 
-import autopilot        # noqa: E402
-import contextlib as _ctx  # noqa: E402
-import io as _io          # noqa: E402
-import json as _json      # noqa: E402
-import smtplib as _smtplib  # noqa: E402
-import time as _time      # noqa: E402
+import autopilot
+import contextlib as _ctx
+import io as _io
+import json as _json
+import smtplib as _smtplib
+import time as _time
 
-import badbool          # noqa: E402
-import brokers          # noqa: E402
-import cdp              # noqa: E402
-import config           # noqa: E402
-import crypto           # noqa: E402
-import dossier          # noqa: E402
-import email_modes      # noqa: E402
-import emailer          # noqa: E402
-import pdd              # noqa: E402
-import legal            # noqa: E402
-import ledger           # noqa: E402
-import paths            # noqa: E402
-import registry         # noqa: E402
-import report          # noqa: E402
-import storage          # noqa: E402
-import tiers            # noqa: E402
-import vectors          # noqa: E402
+import badbool
+import brokers
+import cdp
+import config
+import crypto
+import dossier
+import email_modes
+import emailer
+import pdd
+import legal
+import ledger
+import paths
+import registry
+import report
+import storage
+import tiers
+import vectors
 
 _AGE = bool(shutil.which("age") and shutil.which("age-keygen"))
 
@@ -1452,7 +1452,7 @@ if __name__ == "__main__":
         try:
             fn()
             print(f"PASS {name}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failures.append((name, exc))
             print(f"FAIL {name}: {exc!r}")
     print(f"\n{len(tests) - len(failures)}/{len(tests)} passed")

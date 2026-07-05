@@ -176,7 +176,7 @@ def _make_fake_mautrix():
     mautrix_crypto_store = types.ModuleType("mautrix.crypto.store")
 
     class MemoryCryptoStore:
-        def __init__(self, account_id="", pickle_key=""):  # noqa: S301
+        def __init__(self, account_id="", pickle_key=""):
             self.account_id = account_id
             self.pickle_key = pickle_key
 
@@ -201,7 +201,7 @@ def _make_fake_mautrix():
     class PgCryptoStore:
         upgrade_table = MagicMock()
 
-        def __init__(self, account_id="", pickle_key="", db=None):  # noqa: S301
+        def __init__(self, account_id="", pickle_key="", db=None):
             self.account_id = account_id
             self.pickle_key = pickle_key
             self.db = db

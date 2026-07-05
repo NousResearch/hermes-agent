@@ -39,7 +39,7 @@ def relay_url() -> Optional[str]:
         url = (cfg.get("gateway") or {}).get("relay_url", "").strip()
         if url:
             return url.rstrip("/")
-    except Exception:  # noqa: BLE001 - config absence/parse must never crash registration
+    except Exception:
         pass
     return None
 
@@ -91,7 +91,7 @@ def _relay_bot_ids_map() -> dict:
     try:
         parsed = json.loads(raw)
         return parsed if isinstance(parsed, dict) else {}
-    except Exception:  # noqa: BLE001 - a bad map must not crash boot
+    except Exception:
         logging.getLogger("gateway.relay").warning(
             "GATEWAY_RELAY_BOT_IDS is not valid JSON; treating as empty"
         )
@@ -140,7 +140,7 @@ def relay_connection_auth() -> tuple[Optional[str], Optional[str]]:
             cfg = (_load_gateway_config().get("gateway") or {})
             gateway_id = gateway_id or str(cfg.get("relay_id", "") or "").strip()
             secret = secret or str(cfg.get("relay_secret", "") or "").strip()
-        except Exception:  # noqa: BLE001 - config absence/parse must never crash registration
+        except Exception:
             pass
     return (gateway_id or None, secret or None)
 
@@ -166,7 +166,7 @@ def relay_endpoint() -> Optional[str]:
 
             cfg = (_load_gateway_config().get("gateway") or {})
             url = str(cfg.get("relay_endpoint", "") or "").strip()
-        except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+        except Exception:
             url = ""
     return url.rstrip("/") or None
 
@@ -192,7 +192,7 @@ def relay_route_keys() -> list[str]:
             if isinstance(val, (list, tuple)):
                 return [str(k).strip() for k in val if str(k).strip()]
             raw = str(val or "").strip()
-        except Exception:  # noqa: BLE001
+        except Exception:
             raw = ""
     return [k.strip() for k in raw.split(",") if k.strip()]
 
@@ -219,7 +219,7 @@ def relay_instance_id() -> Optional[str]:
 
             cfg = (_load_gateway_config().get("gateway") or {})
             value = str(cfg.get("relay_instance_id", "") or "").strip()
-        except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+        except Exception:
             value = ""
     return value or None
 
@@ -250,7 +250,7 @@ def relay_wake_url() -> Optional[str]:
 
             cfg = (_load_gateway_config().get("gateway") or {})
             value = str(cfg.get("relay_wake_url", "") or "").strip()
-        except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+        except Exception:
             value = ""
     return value.rstrip("/") or None
 
@@ -342,7 +342,7 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
             free_response = [str(c).strip() for c in frc if str(c).strip()]
         elif isinstance(frc, str) and frc.strip():
             free_response = [c.strip() for c in frc.split(",") if c.strip()]
-    except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+    except Exception:
         pass
 
     # allow_other_bots ← {PLATFORM}_ALLOW_BOTS in {"mentions","all"} (same gate as
@@ -492,7 +492,7 @@ def self_provision_relay() -> bool:
         from hermes_cli.auth import resolve_nous_access_token
 
         access_token = resolve_nous_access_token()
-    except Exception as exc:  # noqa: BLE001 - boot must survive a token failure
+    except Exception as exc:
         # No resolvable NAS identity (e.g. a self-hosted box that hasn't enrolled)
         # -> nothing to provision with; skip quietly and let the gateway boot.
         logger.warning("relay self-provision skipped: could not resolve Nous token (%s)", exc)
@@ -504,7 +504,7 @@ def self_provision_relay() -> bool:
 
     try:
         host = socket.gethostname().strip()
-    except Exception:  # noqa: BLE001
+    except Exception:
         host = ""
     gateway_id = os.environ.get("GATEWAY_RELAY_ID", "").strip() or f"gw-{host or 'hermes'}"
     endpoint = relay_endpoint()
@@ -652,7 +652,7 @@ def send_relay_policy() -> bool:
         from gateway.relay.auth import make_upgrade_token
 
         token = make_upgrade_token(gateway_id, secret)
-    except Exception as exc:  # noqa: BLE001 - boot must survive a token-build failure
+    except Exception as exc:
         logger.warning("relay policy declaration failed to build token (%s); connector keeps prior policy", exc)
         return False
 
@@ -665,7 +665,7 @@ def send_relay_policy() -> bool:
             continue
         try:
             status = _post_policy(policy_url=_policy_url(dial_url), token=token, policy=policy)
-        except Exception as exc:  # noqa: BLE001 - boot must survive a policy-declare failure
+        except Exception as exc:
             logger.warning(
                 "relay policy declaration failed for platform=%s (%s); continuing", platform, exc
             )

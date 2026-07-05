@@ -1484,7 +1484,7 @@ def check_requirements() -> bool:
     if not os.getenv("LINE_CHANNEL_SECRET"):
         return False
     try:
-        import aiohttp  # noqa: F401
+        import aiohttp
     except ImportError:
         return False
     return True

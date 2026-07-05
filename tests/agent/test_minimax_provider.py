@@ -165,13 +165,13 @@ class TestMinimaxAuxModel:
         # no longer in _API_KEY_PROVIDER_AUX_MODELS_FALLBACK after the
         # minimax-M3 default-aux-model cleanup, so the profile is
         # the only path to a non-empty aux value).
-        import model_tools  # noqa: F401
+        import model_tools
         from agent.auxiliary_client import _get_aux_model_for_provider
         assert _get_aux_model_for_provider("minimax") == "MiniMax-M3"
         assert _get_aux_model_for_provider("minimax-cn") == "MiniMax-M3"
 
     def test_minimax_aux_not_highspeed(self):
-        import model_tools  # noqa: F401
+        import model_tools
         from agent.auxiliary_client import _get_aux_model_for_provider
         assert "highspeed" not in _get_aux_model_for_provider("minimax")
         assert "highspeed" not in _get_aux_model_for_provider("minimax-cn")

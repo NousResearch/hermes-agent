@@ -48,13 +48,13 @@ sys.modules.setdefault("telegram", _tg)
 sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
-from gateway.platforms.base import (  # noqa: E402
+from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SessionSource,
     build_session_key,
 )
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL  # noqa: E402
+from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 
 
 # ──────────────────────────────────────────────────────────────────────

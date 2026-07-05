@@ -167,7 +167,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
             return _normalize_tavily_search_results(raw)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
-        except Exception as exc:  # noqa: BLE001 — including httpx errors
+        except Exception as exc:
             logger.warning("Tavily search error: %s", exc)
             return {"success": False, "error": f"Tavily search failed: {exc}"}
 
@@ -198,7 +198,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
             )
         except ValueError as exc:
             return [{"url": u, "title": "", "content": "", "error": str(exc)} for u in urls]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Tavily extract error: %s", exc)
             return [
                 {"url": u, "title": "", "content": "", "error": f"Tavily extract failed: {exc}"}

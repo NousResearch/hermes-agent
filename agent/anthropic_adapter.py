@@ -1443,7 +1443,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     try:
         from hermes_cli.auth import _can_open_graphical_browser as _can_open_gui
     except Exception:
-        _can_open_gui = lambda: True  # noqa: E731 — degrade to prior behavior
+        _can_open_gui = lambda: True
 
     if _can_open_gui():
         try:

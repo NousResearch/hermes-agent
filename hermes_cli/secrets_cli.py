@@ -122,7 +122,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             binary = bw.install_bws()
         version = _bws_version(binary)
         console.print(f"  [green]✓[/green] {binary}  ({version})")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console.print(f"  [red]✗ Could not install bws: {exc}[/red]")
         console.print(
             "  Manual install: "
@@ -243,7 +243,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             use_cache=False,
             server_url=server_url,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console.print(f"  [red]✗ Fetch failed: {exc}[/red]")
         return 1
 
@@ -368,7 +368,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             use_cache=False,
             server_url=server_url,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console.print(f"[red]Fetch failed: {exc}[/red]")
         return 1
 
@@ -433,7 +433,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         path = bw.install_bws(force=bool(args.force))
         console.print(f"[green]✓[/green] {path}  ({_bws_version(path)})")
         return 0
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console.print(f"[red]Install failed: {exc}[/red]")
         return 1
 

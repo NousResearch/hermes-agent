@@ -79,7 +79,7 @@ class DDGSWebSearchProvider(WebSearchProvider):
         ``hermes tools`` paint.
         """
         try:
-            import ddgs  # noqa: F401
+            import ddgs
 
             return True
         except ImportError:
@@ -99,7 +99,7 @@ class DDGSWebSearchProvider(WebSearchProvider):
         block the shared agent loop indefinitely (#36776).
         """
         try:
-            import ddgs  # type: ignore  # noqa: F401 — availability probe
+            import ddgs  # type: ignore
         except ImportError:
             return {
                 "success": False,
@@ -133,7 +133,7 @@ class DDGSWebSearchProvider(WebSearchProvider):
                         "or switch to a different search provider."
                     ),
                 }
-        except Exception as exc:  # noqa: BLE001 — ddgs raises its own exceptions
+        except Exception as exc:
             logger.warning("DDGS search error: %s", exc)
             return {"success": False, "error": f"DuckDuckGo search failed: {exc}"}
         finally:

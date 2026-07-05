@@ -47,7 +47,7 @@ class TestZombieReproduction:
                 assert _pid_alive(pid), f"PID {pid} should be alive after spawn"
 
             # Simulate "session end" by just dropping the reference
-            del proc  # noqa: F821
+            del proc
 
             # BUG: processes are still alive after reference is dropped
             for pid in pids:

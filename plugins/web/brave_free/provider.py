@@ -95,7 +95,7 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
 
         try:
             data = resp.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Brave Search response parse error: %s", exc)
             return {"success": False, "error": "Could not parse Brave Search response as JSON"}
 

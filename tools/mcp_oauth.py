@@ -505,7 +505,7 @@ def _make_callback_handler() -> tuple[type, dict]:
     result: dict[str, Any] = {"auth_code": None, "state": None, "error": None}
 
     class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             params = parse_qs(urlparse(self.path).query)
             code = params.get("code", [None])[0]
             state = params.get("state", [None])[0]

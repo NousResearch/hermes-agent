@@ -6468,7 +6468,7 @@ def _stub_urlopen(monkeypatch, *, ok: bool):
         def __exit__(self, *_):
             return False
 
-    def _opener(_url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+    def _opener(_url, timeout=2.0):
         if not ok:
             raise OSError("probe failed")
         return _Resp()
@@ -6490,7 +6490,7 @@ def _stub_urlopen_capture(monkeypatch, *, ok: bool):
         def __exit__(self, *_):
             return False
 
-    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+    def _opener(url, timeout=2.0):
         urls.append(url)
         if not ok:
             raise OSError("probe failed")
@@ -6537,7 +6537,7 @@ def test_browser_manage_status_does_not_call_get_cdp_override(monkeypatch):
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
 
     fake = types.SimpleNamespace(
-        _get_cdp_override=lambda: pytest.fail(  # noqa: PT015 — fail loudly if called
+        _get_cdp_override=lambda: pytest.fail(
             "_get_cdp_override must not run on /browser status (network I/O)"
         )
     )
@@ -6749,7 +6749,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
 
     attempts = {"n": 0}
 
-    def _opener(_url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+    def _opener(_url, timeout=2.0):
         attempts["n"] += 1
         if attempts["n"] < 3:
             raise OSError("not ready")

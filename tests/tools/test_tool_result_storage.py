@@ -548,7 +548,7 @@ class TestPerToolThresholds:
         from tools.registry import registry
         # Trigger import of terminal_tool to register the tool
         try:
-            import tools.terminal_tool  # noqa: F401
+            import tools.terminal_tool
             val = registry.get_max_result_size("terminal")
             assert val == 100_000
         except ImportError:
@@ -557,7 +557,7 @@ class TestPerToolThresholds:
     def test_read_file_result_size_cap(self):
         from tools.registry import registry
         try:
-            import tools.file_tools  # noqa: F401
+            import tools.file_tools
             val = registry.get_max_result_size("read_file")
             assert val == 100_000
         except ImportError:
@@ -567,7 +567,7 @@ class TestPerToolThresholds:
         """Regression test: read_file must have a 100_000 char registry cap (Layer 2 safety net)."""
         from tools.registry import registry
         try:
-            import tools.file_tools  # noqa: F401
+            import tools.file_tools
             val = registry.get_max_result_size("read_file")
             assert val == 100_000, (
                 f"read_file registry cap must be 100_000, got {val!r}. "
@@ -579,7 +579,7 @@ class TestPerToolThresholds:
     def test_search_files_threshold(self):
         from tools.registry import registry
         try:
-            import tools.file_tools  # noqa: F401
+            import tools.file_tools
             val = registry.get_max_result_size("search_files")
             assert val == 100_000
         except ImportError:

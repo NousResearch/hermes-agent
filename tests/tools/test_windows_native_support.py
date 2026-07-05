@@ -657,7 +657,7 @@ class TestTuiGatewayEntrySignalGuards:
         for mod in list(sys.modules):
             if mod.startswith("tui_gateway"):
                 del sys.modules[mod]
-        import tui_gateway.entry  # noqa: F401  # must not raise
+        import tui_gateway.entry  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -1086,8 +1086,8 @@ class TestWindowlessGatewayRestartSpec:
         # patch below — a fresh import would run gateway/status.py's
         # ``if sys.platform == "win32": import msvcrt`` branch and crash on
         # Linux CI with ModuleNotFoundError.
-        import hermes_cli.config  # noqa: F401
-        import hermes_cli.gateway  # noqa: F401
+        import hermes_cli.config
+        import hermes_cli.gateway
 
         argv = [
             "C:/venv/Scripts/python.exe",

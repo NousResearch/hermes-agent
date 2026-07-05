@@ -85,7 +85,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 @pytest.fixture(autouse=True)
@@ -453,7 +453,7 @@ def test_visibility_hide_tolerates_unsetable_command(adapter, caplog):
 
 
 # os import for test_visibility_hide_off_by_default_is_noop
-import os  # noqa: E402
+import os
 
 
 # ---------------------------------------------------------------------------

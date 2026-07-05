@@ -31,7 +31,7 @@ def minimax_profile(request):
     if someone later replaces the registered class with a plain
     ``ProviderProfile``, every assertion below collapses.
     """
-    import model_tools  # noqa: F401  -- triggers plugin discovery
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile(request.param)
@@ -69,7 +69,7 @@ class TestMinimaxAuxModelM3:
     def test_profile_advertises_expected_aux_model(
         self, provider_id, expected
     ):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile(provider_id)
@@ -108,7 +108,7 @@ class TestMinimaxAuxModelNotHighspeed:
 
     @pytest.mark.parametrize("provider_id", ["minimax", "minimax-cn", "minimax-oauth"])
     def test_default_aux_model_is_not_highspeed(self, provider_id):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile(provider_id)
@@ -124,7 +124,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
     """MiniMax-M3 on api.minimax.io/v1 gets MiniMax's OpenAI-compatible knobs."""
 
     def test_m3_openai_route_requests_reasoning_split_by_default(self):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile("minimax")
@@ -138,7 +138,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
         assert top_level == {}
 
     def test_m3_openai_route_maps_explicit_effort_to_adaptive_only(self):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile("minimax")
@@ -155,7 +155,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
         assert top_level == {}
 
     def test_m3_openai_route_does_not_send_reasoning_effort(self):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile("minimax")
@@ -171,7 +171,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
         }
 
     def test_m3_openai_route_can_disable_thinking(self):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile("minimax")
@@ -198,7 +198,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
     def test_non_m3_or_non_global_openai_routes_emit_no_openai_reasoning_knobs(
         self, model, base_url
     ):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile("minimax")
@@ -212,7 +212,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
         assert top_level == {}
 
     def test_transport_threads_base_url_to_profile(self):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
         from agent.transports.chat_completions import ChatCompletionsTransport
 

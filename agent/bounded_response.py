@@ -92,7 +92,7 @@ def read_streaming_error_body(
                     break
                 chunks.append(chunk)
                 total += len(chunk)
-        except Exception as exc:  # noqa: BLE001 - error path must not raise
+        except Exception as exc:
             logger.debug("bounded error-body read failed: %s", exc)
         finally:
             done.set()
@@ -128,7 +128,7 @@ def read_streaming_error_body(
 def _safe_close(response: httpx.Response) -> None:
     try:
         response.close()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 

@@ -572,9 +572,9 @@ def test_xai_adapter_retry_returns_none_for_unrelated_status(tmp_path, monkeypat
 # ---------------------------------------------------------------------------
 
 aiohttp = pytest.importorskip("aiohttp")
-from aiohttp import web  # noqa: E402
+from aiohttp import web
 
-from hermes_cli.proxy.server import create_app  # noqa: E402
+from hermes_cli.proxy.server import create_app
 
 
 class FakeAdapter(UpstreamAdapter):

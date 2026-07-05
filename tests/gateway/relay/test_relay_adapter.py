@@ -120,7 +120,7 @@ class _CaptureTransport:
         # No concrete fronted identities ⇒ _platform_is_fronted is a no-op here.
         self._identities = []
 
-    def set_inbound_handler(self, h):  # noqa: D401
+    def set_inbound_handler(self, h):
         self._h = h
 
     async def send_outbound(self, action, *, platform=None):
@@ -257,7 +257,7 @@ class _RevokedTransport:
     def __init__(self):
         self.auth_revoked = True
 
-    def set_inbound_handler(self, h):  # noqa: D401
+    def set_inbound_handler(self, h):
         self._h = h
 
 
@@ -287,7 +287,7 @@ async def test_no_revocation_no_fatal():
     class _LiveTransport:
         auth_revoked = False
 
-        def set_inbound_handler(self, h):  # noqa: D401
+        def set_inbound_handler(self, h):
             self._h = h
 
     a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=_LiveTransport())

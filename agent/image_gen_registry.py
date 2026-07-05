@@ -109,7 +109,7 @@ def get_active_provider() -> Optional[ImageGenProvider]:
         """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""
         try:
             return bool(p.is_available())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("image_gen provider %s.is_available() raised %s", p.name, exc)
             return False
 

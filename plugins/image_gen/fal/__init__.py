@@ -63,7 +63,7 @@ class FalImageGenProvider(ImageGenProvider):
         import tools.image_generation_tool as _it
         try:
             return bool(_it.check_fal_api_key())
-        except Exception:  # noqa: BLE001 — defensive; never break the picker
+        except Exception:
             return False
 
     def list_models(self) -> List[Dict[str, Any]]:
@@ -106,7 +106,7 @@ class FalImageGenProvider(ImageGenProvider):
 
         try:
             _model_id, meta = _it._resolve_fal_model()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return {"modalities": ["text"], "max_reference_images": 0}
         if meta.get("edit_endpoint"):
             return {
@@ -160,7 +160,7 @@ class FalImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
                 **passthrough,
             )
-        except Exception as exc:  # noqa: BLE001 — never raise out of generate
+        except Exception as exc:
             logger.warning("FAL image_generate_tool raised: %s", exc, exc_info=True)
             return {
                 "success": False,
@@ -174,7 +174,7 @@ class FalImageGenProvider(ImageGenProvider):
 
         try:
             response = json.loads(raw) if isinstance(raw, str) else raw
-        except Exception:  # noqa: BLE001
+        except Exception:
             response = {"success": False, "image": None, "error": "Invalid JSON from FAL pipeline"}
 
         if not isinstance(response, dict):
@@ -196,7 +196,7 @@ class FalImageGenProvider(ImageGenProvider):
             try:
                 model_id, _meta = _it._resolve_fal_model()
                 response["model"] = model_id
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         return response
 

@@ -555,7 +555,7 @@ async def auth_logout(request: Request):
         for provider in list_providers():
             try:
                 provider.revoke_session(refresh_token=rt)
-            except Exception as e:  # noqa: BLE001 — best-effort
+            except Exception as e:
                 _log.warning(
                     "dashboard-auth: revoke on %r failed: %s",
                     provider.name, e,

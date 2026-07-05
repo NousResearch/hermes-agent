@@ -29,7 +29,7 @@ def custom_profile():
     honest — if the registered class is ever downgraded to a plain
     ``ProviderProfile``, the assertions below collapse.
     """
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("custom")

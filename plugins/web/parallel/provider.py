@@ -57,7 +57,7 @@ def _ensure_parallel_sdk_installed() -> None:
         _lazy_ensure("search.parallel", prompt=False)
     except ImportError:
         pass
-    except Exception as exc:  # noqa: BLE001 — surface install hint as ImportError
+    except Exception as exc:
         raise ImportError(str(exc))
 
 
@@ -205,7 +205,7 @@ class ParallelWebSearchProvider(WebSearchProvider):
                 "success": False,
                 "error": f"Parallel SDK not installed: {exc}",
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Parallel search error: %s", exc)
             return {"success": False, "error": f"Parallel search failed: {exc}"}
 
@@ -269,7 +269,7 @@ class ParallelWebSearchProvider(WebSearchProvider):
                 {"url": u, "title": "", "content": "", "error": f"Parallel SDK not installed: {exc}"}
                 for u in urls
             ]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Parallel extract error: %s", exc)
             return [
                 {"url": u, "title": "", "content": "", "error": f"Parallel extract failed: {exc}"}

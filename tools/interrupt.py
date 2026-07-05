@@ -84,7 +84,7 @@ class _ThreadAwareEventProxy:
     def is_set(self) -> bool:
         return is_interrupted()
 
-    def set(self) -> None:  # noqa: A003
+    def set(self) -> None:
         set_interrupt(True)
 
     def clear(self) -> None:

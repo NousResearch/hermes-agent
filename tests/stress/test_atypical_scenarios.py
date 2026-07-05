@@ -52,7 +52,7 @@ def scenario(name):
                 if m.startswith(("hermes_cli", "plugins", "gateway")):
                     del sys.modules[m]
             sys.path.insert(0, str(WT))
-            from hermes_cli import kanban_db as kb  # noqa: F401
+            from hermes_cli import kanban_db as kb
             print(f"\n═══ {name} ═══")
             try:
                 fn(home, kb)
@@ -980,7 +980,7 @@ def _(home, kb):
     kb.init_db()
     # Set a session token so the ws check doesnt bomb on import
     try:
-        from hermes_cli import web_server as ws  # noqa
+        from hermes_cli import web_server as ws
     except Exception:
         pass
 

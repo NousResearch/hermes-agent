@@ -141,7 +141,7 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
             # that goes through _wait_for_process.
             try:
                 result_holder["result"] = env.execute("sleep 30", timeout=60)
-            except BaseException as e:  # noqa: BLE001 — we want to observe it
+            except BaseException as e:
                 result_holder["exception"] = type(e).__name__
 
         t = threading.Thread(target=worker, daemon=True)

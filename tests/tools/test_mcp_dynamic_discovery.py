@@ -125,7 +125,7 @@ class TestDeregister:
 
     def test_cleans_up_toolset_check(self):
         reg = ToolRegistry()
-        check = lambda: True  # noqa: E731
+        check = lambda: True
         reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
         assert reg.is_toolset_available("ts1")
         reg.deregister("foo")
@@ -134,7 +134,7 @@ class TestDeregister:
 
     def test_preserves_toolset_check_if_other_tools_remain(self):
         reg = ToolRegistry()
-        check = lambda: True  # noqa: E731
+        check = lambda: True
         reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
         reg.register(name="bar", toolset="ts1", schema={}, handler=lambda x: x)
         reg.deregister("foo")

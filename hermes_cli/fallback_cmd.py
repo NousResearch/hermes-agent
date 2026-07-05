@@ -104,7 +104,7 @@ def _restore_auth_active_provider(value: Any) -> None:
 # Subcommand handlers
 # ---------------------------------------------------------------------------
 
-def cmd_fallback_list(args) -> None:  # noqa: ARG001
+def cmd_fallback_list(args) -> None:
     """Print the current fallback chain."""
     from hermes_cli.config import load_config
 
@@ -236,7 +236,7 @@ def _restore_model_cfg(model_before: Any) -> None:
     save_config(cfg)
 
 
-def cmd_fallback_remove(args) -> None:  # noqa: ARG001
+def cmd_fallback_remove(args) -> None:
     """Pick an entry from the chain and remove it."""
     from hermes_cli.config import load_config, save_config
 
@@ -276,7 +276,7 @@ def cmd_fallback_remove(args) -> None:  # noqa: ARG001
     print()
 
 
-def cmd_fallback_clear(args) -> None:  # noqa: ARG001
+def cmd_fallback_clear(args) -> None:
     """Remove all fallback entries (with confirmation)."""
     from hermes_cli.config import load_config, save_config
 

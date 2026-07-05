@@ -58,7 +58,7 @@ def test_check_requirements_true_when_configured(monkeypatch):
     # check_requirements() gate also asserts the package imports.
     websockets_present = True
     try:
-        import websockets  # noqa: F401
+        import websockets
     except ImportError:
         websockets_present = False
     assert check_requirements() is websockets_present

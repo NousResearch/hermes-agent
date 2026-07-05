@@ -70,7 +70,7 @@ def _load_xai_web_config() -> Dict[str, Any]:
         web_section = cfg.get("web") if isinstance(cfg, dict) else None
         xai_section = web_section.get("xai") if isinstance(web_section, dict) else None
         return xai_section if isinstance(xai_section, dict) else {}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Could not load web.xai config: %s", exc)
         return {}
 
@@ -156,7 +156,7 @@ class XAIWebSearchProvider(WebSearchProvider):
 
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
-        except Exception:  # noqa: BLE001 — interrupt module is best-effort
+        except Exception:
             pass
 
         creds = resolve_xai_http_credentials()
@@ -278,7 +278,7 @@ class XAIWebSearchProvider(WebSearchProvider):
                             continue
                         # Refresh returned the same (or empty) token — no point
                         # in retrying. Fall through to the error return below.
-                    except Exception as refresh_exc:  # noqa: BLE001
+                    except Exception as refresh_exc:
                         logger.warning(
                             "xAI web search OAuth refresh after 401 failed: %s",
                             refresh_exc,
@@ -303,7 +303,7 @@ class XAIWebSearchProvider(WebSearchProvider):
 
         try:
             data = resp.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("xAI web search bad JSON: %s", exc)
             return {
                 "success": False,

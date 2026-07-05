@@ -10,6 +10,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
+import logging
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -17,6 +18,87 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+
+logger = logging.getLogger(__name__)
+
+_OUTPUT_CAP_CONTEXT_MARGIN_TOKENS = 1024
+
+
+def _rough_chars(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    return len(str(value))
+
+
+def _estimate_input_tokens_for_output_cap(api_kwargs: dict[str, Any]) -> int:
+    """Cheap estimate of non-output request tokens for max_tokens clamping.
+
+    This deliberately mirrors Hermes' rough char/4 budgeting rather than
+    provider tokenization. The clamp is a preflight guardrail: if it is still
+    too optimistic, provider error handling and compression remain as backup.
+    """
+    total_chars = 0
+    for key in ("messages", "tools", "extra_body", "response_format"):
+        total_chars += _rough_chars(api_kwargs.get(key))
+    return max(0, total_chars // 4)
+
+
+def _clamp_output_cap_to_context_window(
+    api_kwargs: dict[str, Any],
+    *,
+    context_length: Any,
+) -> None:
+    """Keep requested output budget inside the total context window.
+
+    Providers validate ``input_tokens + max_tokens <= context_length``. Hermes
+    used to clamp max_tokens only against the model's standalone output limit,
+    so a half-full 131k local model plus a 65k default output cap failed before
+    compression had a chance to run. Clamp the outgoing cap using the current
+    request estimate so long sessions survive model switches and large tools.
+    """
+    try:
+        ctx = int(context_length or 0)
+    except (TypeError, ValueError):
+        return
+    if ctx <= 0:
+        return
+
+    output_key = None
+    requested = None
+    for key in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
+        raw = api_kwargs.get(key)
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            output_key = key
+            requested = value
+            break
+    if not output_key or requested is None:
+        return
+
+    estimated_input = _estimate_input_tokens_for_output_cap(api_kwargs)
+    available = ctx - estimated_input - _OUTPUT_CAP_CONTEXT_MARGIN_TOKENS
+    safe_cap = max(1, available)
+    if requested <= safe_cap:
+        return
+
+    api_kwargs[output_key] = safe_cap
+    logger.info(
+        "Clamped %s from %s to %s for context_length=%s estimated_input=%s margin=%s",
+        output_key,
+        requested,
+        safe_cap,
+        ctx,
+        estimated_input,
+        _OUTPUT_CAP_CONTEXT_MARGIN_TOKENS,
+    )
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -236,6 +318,7 @@ class ChatCompletionsTransport(ProviderTransport):
             max_tokens: int | None — user-configured max tokens
             ephemeral_max_output_tokens: int | None — one-shot override
             max_tokens_param_fn: callable — returns {max_tokens: N} or {max_completion_tokens: N}
+            context_length: int | None — total model context window for output-cap clamping
             reasoning_config: dict | None
             request_overrides: dict | None
             session_id: str | None
@@ -454,6 +537,11 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
+        _clamp_output_cap_to_context_window(
+            api_kwargs,
+            context_length=params.get("context_length"),
+        )
+
         return api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
@@ -595,6 +683,11 @@ class ChatCompletionsTransport(ProviderTransport):
                 }
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
+
+        _clamp_output_cap_to_context_window(
+            api_kwargs,
+            context_length=params.get("context_length"),
+        )
 
         return api_kwargs
 

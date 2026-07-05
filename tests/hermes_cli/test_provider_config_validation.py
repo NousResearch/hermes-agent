@@ -10,6 +10,7 @@ import pytest
 
 from hermes_cli.config import (
     _PROVIDER_NORMALIZE_WARNED,
+    _custom_provider_entry_to_provider_config,
     _normalize_custom_provider_entry,
 )
 
@@ -238,6 +239,49 @@ class TestNormalizeCustomProviderEntry:
         result = _normalize_custom_provider_entry(entry)
         assert result is not None
         assert "models" not in result
+
+    def test_max_output_tokens_preserved(self, caplog):
+        """Per-provider output caps must survive compatibility normalization.
+
+        Regression: ``custom_providers[].max_output_tokens`` was accepted by
+        runtime resolution, but the compatibility normalizer stripped it before
+        the runtime resolver could lift it onto ``AIAgent.max_tokens``.
+        """
+        entry = {
+            "name": "spark-qwen",
+            "base_url": "http://spark.local:8001/v1",
+            "max_output_tokens": 16_384,
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["max_output_tokens"] == 16_384
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+
+    def test_legacy_max_tokens_normalized_to_max_output_tokens(self):
+        """Legacy provider-local ``max_tokens`` maps to the canonical output cap."""
+        entry = {
+            "name": "spark-qwen",
+            "base_url": "http://spark.local:8001/v1",
+            "max_tokens": 8_192,
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["max_output_tokens"] == 8_192
+        assert "max_tokens" not in result
+
+    def test_max_output_tokens_preserved_when_migrating_to_providers_shape(self):
+        """Legacy custom-provider migration must not drop output caps."""
+        result = _custom_provider_entry_to_provider_config(
+            {
+                "name": "spark-qwen",
+                "base_url": "http://spark.local:8001/v1",
+                "max_output_tokens": 16_384,
+            },
+            provider_key="spark-qwen",
+        )
+        assert result is not None
+        assert result["max_output_tokens"] == 16_384
 
     def test_env_var_placeholder_in_base_url_not_rejected(self):
         """A base_url that is an un-expanded ${ENV_VAR} placeholder must not be

@@ -411,6 +411,61 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_child_uses_override_max_tokens_over_uncapped_parent(self):
+        """Delegation-provider output caps must reach the child agent.
+
+        Regression: Codex parents often have max_tokens=None, but Spark/vLLM
+        children need a concrete cap so they do not request a 65K output budget
+        against a 128K context window.
+        """
+        parent = _make_mock_parent(depth=0)
+        parent.max_tokens = None
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use capped Spark child",
+                context=None,
+                toolsets=None,
+                model="/models/Qwen3.6-35B-A3B-NVFP4",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="custom:spark-qwen",
+                override_base_url="http://spark.local:8001/v1",
+                override_api_key="spark-test",
+                override_api_mode="chat_completions",
+                override_max_tokens=16_384,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["max_tokens"], 16_384)
+
+    def test_child_inherits_parent_max_tokens_without_override(self):
+        parent = _make_mock_parent(depth=0)
+        parent.max_tokens = 8_192
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Inherit parent cap",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["max_tokens"], 8_192)
+
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
         sink = MagicMock()
@@ -1112,6 +1167,28 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
+    def test_direct_endpoint_honors_configured_max_tokens(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "qwen2.5-coder",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "local-key",
+            "max_tokens": "8192",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["max_tokens"], 8192)
+
+    def test_direct_endpoint_honors_max_output_tokens_alias(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "qwen2.5-coder",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "local-key",
+            "max_output_tokens": 16_384,
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["max_tokens"], 16_384)
+
     def test_direct_endpoint_auto_detects_anthropic_messages_suffix(self):
         # Issue #10213: Azure AI Foundry exposes Anthropic-compatible models at
         # a /anthropic URL suffix. Subagents must pick anthropic_messages
@@ -1262,6 +1339,48 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         mock_resolve.assert_called_once_with(
             requested="crof.ai", target_model="deepseek-v4-pro-CEER"
         )
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolution_propagates_runtime_max_output_tokens(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "model": "/models/Qwen3.6-35B-A3B-NVFP4",
+            "base_url": "http://spark.local:8001/v1",
+            "api_key": "spark-test",
+            "api_mode": "chat_completions",
+            "max_output_tokens": 16_384,
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "/models/Qwen3.6-35B-A3B-NVFP4",
+            "provider": "custom:spark-qwen",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["provider"], "custom:spark-qwen")
+        self.assertEqual(creds["max_tokens"], 16_384)
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_configured_delegation_max_tokens_overrides_runtime_cap(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "model": "/models/Qwen3.6-35B-A3B-NVFP4",
+            "base_url": "http://spark.local:8001/v1",
+            "api_key": "spark-test",
+            "api_mode": "chat_completions",
+            "max_output_tokens": 65_536,
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "/models/Qwen3.6-35B-A3B-NVFP4",
+            "provider": "custom:spark-qwen",
+            "max_tokens": 8_192,
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["max_tokens"], 8_192)
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_standard_provider_not_overwritten_by_configured_name(self, mock_resolve):

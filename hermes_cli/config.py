@@ -4517,6 +4517,8 @@ def _normalize_custom_provider_entry(
         "apiKeyEnv": "key_env",  # alias — OpenClaw-compatible + docs variant
         "defaultModel": "default_model",
         "contextLength": "context_length",
+        "maxOutputTokens": "max_output_tokens",
+        "maxTokens": "max_tokens",
         "rateLimitDelay": "rate_limit_delay",
     }
     # api_key_env is a documented snake_case alias for key_env (see
@@ -4532,7 +4534,7 @@ def _normalize_custom_provider_entry(
         "provider",
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
-        "context_length", "rate_limit_delay",
+        "context_length", "max_output_tokens", "max_tokens", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
         "ssl_ca_cert", "ssl_verify",
@@ -4648,6 +4650,16 @@ def _normalize_custom_provider_entry(
     if isinstance(context_length, int) and context_length > 0:
         normalized["context_length"] = context_length
 
+    # Per-provider output caps are distinct from context_length: they limit the
+    # response budget for one turn, while context_length is input + output.
+    # Normalize both documented and legacy spellings to the canonical field so
+    # runtime provider resolution can safely pass the cap to AIAgent.max_tokens.
+    for output_key in ("max_output_tokens", "max_tokens"):
+        output_cap = entry.get(output_key)
+        if isinstance(output_cap, int) and output_cap > 0:
+            normalized["max_output_tokens"] = output_cap
+            break
+
     rate_limit_delay = entry.get("rate_limit_delay")
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
@@ -4701,6 +4713,7 @@ def _custom_provider_entry_to_provider_config(
         "key_env",
         "models",
         "context_length",
+        "max_output_tokens",
         "rate_limit_delay",
         "discover_models",
         "extra_body",

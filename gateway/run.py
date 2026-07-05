@@ -17899,14 +17899,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pdc = getattr(_status_adapter, "_post_delivery_callbacks", None)
                     if _pdc is not None:
                         _pdc[session_key] = _release_bg_review_messages
-            # Memory update notifications in chat.  Config: display.memory_notifications
+            # Memory update notifications in chat.
             #   off     — no chat notification (still logged to stdout)
             #   on      — generic "💾 Memory updated" (default)
             #   verbose — content preview: "💾 Memory ➕ Hermes Repo..."
-            _mem_notif = user_config.get("display", {}).get("memory_notifications")
-            if isinstance(_mem_notif, bool):
-                _mem_notif = "on" if _mem_notif else "off"
-            agent.memory_notifications = str(_mem_notif).lower() if _mem_notif else "on"
+            # Resolved PER-PLATFORM (display.platforms.<p>.memory_notifications)
+            # and layered under the proactive-push gate: a platform opted out of
+            # proactive push gets no memory notifications at all. This is a
+            # background/proactive push — interactive replies are never gated.
+            from gateway.display_config import effective_memory_notifications
+            agent.memory_notifications = effective_memory_notifications(
+                user_config, platform_key
+            )
 
             # ------------------------------------------------------------------
             # Clarify callback: present a clarify prompt and block on a response.

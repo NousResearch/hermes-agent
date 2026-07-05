@@ -312,3 +312,17 @@ def platform_accepts_proactive_push(user_config: dict, platform_key: str) -> boo
     through this gate — it guards only background/proactive delivery.
     """
     return bool(resolve_display_setting(user_config, platform_key, "proactive_push", True))
+
+
+def effective_memory_notifications(user_config: dict, platform_key: str) -> str:
+    """Per-platform memory-review notification mode, layered under proactive_push.
+
+    Returns ``"off"`` | ``"on"`` | ``"verbose"``. A memory-review notification is
+    delivered only when ``proactive_push != false`` AND
+    ``memory_notifications != off`` — so a platform opted out of proactive push
+    gets no memory notifications at all, regardless of its memory_notifications
+    setting (③ layered coexistence).
+    """
+    if not platform_accepts_proactive_push(user_config, platform_key):
+        return "off"
+    return str(resolve_display_setting(user_config, platform_key, "memory_notifications", "on"))

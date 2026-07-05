@@ -32,6 +32,8 @@ import contextlib as _ctx  # noqa: E402
 import io as _io          # noqa: E402
 import json as _json      # noqa: E402
 import smtplib as _smtplib  # noqa: E402
+import socket as _socket  # noqa: E402
+import ssl as _ssl        # noqa: E402
 import time as _time      # noqa: E402
 
 import badbool          # noqa: E402
@@ -750,7 +752,7 @@ class _FakeSMTP:
     def ehlo(self):
         pass
 
-    def starttls(self):
+    def starttls(self, context=None):
         pass
 
     def login(self, user, password):
@@ -1293,7 +1295,7 @@ class _FlakySMTP:
     def ehlo(self):
         pass
 
-    def starttls(self):
+    def starttls(self, context=None):
         pass
 
     def login(self, u, p):
@@ -1330,6 +1332,134 @@ def test_email_send_does_not_retry_permanent_error():
         pass
     else:
         raise AssertionError("auth failure must raise immediately, not retry")
+
+
+class _StripSMTP:
+    """Plaintext server whose EHLO does not offer STARTTLS (downgrade or bad relay)."""
+    constructed = 0
+    logins: list = []
+
+    def __init__(self, host, port, timeout=None):
+        _StripSMTP.constructed += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def ehlo(self):
+        pass
+
+    def starttls(self, context=None):
+        raise _smtplib.SMTPNotSupportedError("STARTTLS extension not supported by server.")
+
+    def login(self, u, p):
+        _StripSMTP.logins.append((u, p))
+
+    def send_message(self, m):
+        raise AssertionError("must never hand the message to a cleartext connection")
+
+
+class _ImplicitTLSSMTP:
+    """Already-TLS connection (an injected implicit-TLS factory): no STARTTLS needed."""
+    sent: list = []
+
+    def __init__(self, host, port, timeout=None):
+        self.sock = _ssl.create_default_context().wrap_socket(
+            _socket.socket(), do_handshake_on_connect=False,
+            server_hostname="mail.example")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.sock.close()
+        return False
+
+    def ehlo(self):
+        pass
+
+    def starttls(self, context=None):
+        raise _smtplib.SMTPNotSupportedError("already using TLS")
+
+    def login(self, u, p):
+        pass
+
+    def send_message(self, m):
+        _ImplicitTLSSMTP.sent.append(m)
+
+
+def test_email_send_refuses_login_when_starttls_is_stripped():
+    _StripSMTP.constructed, _StripSMTP.logins = 0, []
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "hunter2"}
+    broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
+    try:
+        emailer.send(broker, "Subject: s\n\nb", env=env, _smtp_factory=_StripSMTP,
+                     _sleep=lambda *_: None)
+    except _smtplib.SMTPNotSupportedError:
+        pass
+    else:
+        raise AssertionError("send must raise when the server will not STARTTLS")
+    assert _StripSMTP.logins == []       # the password never touched the socket
+    assert _StripSMTP.constructed == 1   # a downgrade is permanent, never retried
+
+
+def test_email_send_accepts_already_tls_connection():
+    _ImplicitTLSSMTP.sent = []
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "p"}
+    broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
+    out = emailer.send(broker, "Subject: s\n\nb", env=env,
+                       _smtp_factory=_ImplicitTLSSMTP, _sleep=lambda *_: None)
+    assert out["attempts"] == 1 and _ImplicitTLSSMTP.sent
+
+
+class _FakeSMTPSSL:
+    """Stand-in for smtplib.SMTP_SSL: implicit TLS from construction, no STARTTLS."""
+    sent: list = []
+    context = None
+
+    def __init__(self, host, port, timeout=None, context=None):
+        _FakeSMTPSSL.context = context
+        self.sock = _ssl.create_default_context().wrap_socket(
+            _socket.socket(), do_handshake_on_connect=False,
+            server_hostname="mail.example")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.sock.close()
+        return False
+
+    def ehlo(self):
+        pass
+
+    def starttls(self, context=None):
+        raise AssertionError("port 465 is already TLS, STARTTLS must not run")
+
+    def login(self, u, p):
+        pass
+
+    def send_message(self, m):
+        _FakeSMTPSSL.sent.append(m)
+
+
+def test_email_send_uses_implicit_tls_on_port_465(monkeypatch):
+    _FakeSMTPSSL.sent, _FakeSMTPSSL.context = [], None
+
+    def _forbidden_plaintext(*a, **k):
+        raise AssertionError("port 465 must connect with SMTP_SSL, not plaintext SMTP")
+
+    monkeypatch.setattr(emailer.smtplib, "SMTP_SSL", _FakeSMTPSSL)
+    monkeypatch.setattr(emailer.smtplib, "SMTP", _forbidden_plaintext)
+    env = {"EMAIL_ADDRESS": "agent@corp.example", "EMAIL_PASSWORD": "p",
+           "EMAIL_SMTP_HOST": "mail.corp.example", "EMAIL_SMTP_PORT": "465"}
+    broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
+    out = emailer.send(broker, "Subject: s\n\nb", env=env, _sleep=lambda *_: None)
+    assert out["attempts"] == 1 and _FakeSMTPSSL.sent
+    # The implicit-TLS connection is verified, matching the gateway adapter.
+    assert isinstance(_FakeSMTPSSL.context, _ssl.SSLContext)
 
 
 def _run(argv) -> dict:

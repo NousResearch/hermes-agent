@@ -1407,6 +1407,10 @@ class TestParseContextLimitFromError:
         ("maximum model length: 131072", 131072),
         ("maximum model length of 32768", 32768),
         ("the maximum model length of 131072", 131072),
+        # 'is' followed immediately by a delimiter (no space) must still parse —
+        # regression guard for the widened separator group.
+        ("maximum model length is: 131072", 131072),
+        ("maximum model length is=131072", 131072),
     ])
     def test_vllm_delimiter_variants(self, msg, expected):
         """vLLM emits the limit with various delimiters (space/colon/equals/

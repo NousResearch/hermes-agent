@@ -74,6 +74,10 @@ from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
+from agent.context_compressor import (
+    COMPRESSED_SUMMARY_METADATA_KEY,
+    ContextCompressor,
+)
 from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
@@ -976,13 +980,25 @@ class HermesACPAgent(acp.Agent):
         *,
         role: str,
         text: str,
+        is_compaction_summary: bool = False,
     ) -> UserMessageChunk | AgentMessageChunk | None:
-        """Build an ACP history replay update for a user/assistant message."""
+        """Build an ACP history replay update for a user/assistant message.
+
+        A context-compaction handoff is stored with ``role="user"`` but is not
+        something the user typed. Flag it under ``_meta.hermes.compactionSummary``
+        (ACP's extensibility channel) so frontends can render it as a summary
+        rather than a real user turn — without this the marker is dropped on the
+        wire and editors show the whole handoff as a user message.
+        """
         block = TextContentBlock(type="text", text=text)
+        field_meta = (
+            {"hermes": {"compactionSummary": True}} if is_compaction_summary else None
+        )
         if role == "user":
             return UserMessageChunk(
                 session_update="user_message_chunk",
                 content=block,
+                field_meta=field_meta,
             )
         if role == "assistant":
             return AgentMessageChunk(
@@ -1058,7 +1074,15 @@ class HermesACPAgent(acp.Agent):
             if role == "user":
                 text = self._history_message_text(message)
                 if text:
-                    update = self._history_message_update(role=role, text=text)
+                    # The in-process flag survives only while the session is
+                    # resident; a DB-reloaded session loses it, so fall back to
+                    # the compressor's content detector.
+                    is_summary = bool(
+                        message.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                    ) or ContextCompressor._is_context_summary_content(text)
+                    update = self._history_message_update(
+                        role=role, text=text, is_compaction_summary=is_summary
+                    )
                     if update is not None and not await _send(update):
                         return
                 continue

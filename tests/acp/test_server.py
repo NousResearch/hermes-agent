@@ -423,6 +423,44 @@ class TestSessionOps:
         assert "cli.py:42" in tool_updates[1].content[0].content.text
 
     @pytest.mark.asyncio
+    async def test_load_session_flags_compaction_summary_on_replayed_user_chunk(self, agent):
+        """A replayed compaction summary must carry _meta.hermes.compactionSummary.
+
+        The handoff is stored role="user" but is not a real user turn; without
+        the flag on the wire, ACP frontends render the whole summary as a user
+        message. Detection falls back to content, so this holds even for a
+        DB-reloaded session that lost the in-process metadata flag.
+        """
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        summary_text = SUMMARY_PREFIX + "\n\n## Active Task\nDo the thing."
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "user", "content": summary_text},
+            {"role": "user", "content": "wait 5s and reply ok"},
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        user_chunks = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), UserMessageChunk)
+        ]
+        assert len(user_chunks) == 2
+        # First user chunk is the summary → flagged; second is a real turn → not.
+        assert user_chunks[0].field_meta == {"hermes": {"compactionSummary": True}}
+        assert user_chunks[1].field_meta is None
+
+    @pytest.mark.asyncio
     async def test_load_session_replays_native_plan_for_persisted_todo_tool(self, agent):
         """Persisted todo tool results should rebuild Zed's native plan panel."""
         mock_conn = MagicMock(spec=acp.Client)

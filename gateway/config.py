@@ -526,12 +526,29 @@ class PlatformConfig:
                 if isinstance(ov_data, dict):
                     channel_overrides[str(cid)] = ChannelOverride.from_dict(ov_data)
 
+        # Normalize legacy boolean reply_to_mode values:
+        #   False -> "off"  (user meant "no replies")
+        #   True  -> "first" (user meant "default on")
+        # String values ("off", "first", "all") pass through unchanged.
+        #
+        # Primary remaining path: legacy ~/.hermes/gateway.json may store
+        # reply_to_mode as a JSON boolean. json.load preserves bool False,
+        # PlatformConfig.from_dict previously passed it through, and the
+        # Discord adapter's `or 'first'` fallback then discarded it.
+        # (Current config.yaml Discord settings are coerced to the
+        # DISCORD_REPLY_TO_MODE env var before adapter construction.)
+        _rtm_raw = data.get("reply_to_mode", "first")
+        if isinstance(_rtm_raw, bool):
+            _rtm = "off" if not _rtm_raw else "first"
+        else:
+            _rtm = _rtm_raw
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=_rtm,
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
             channel_overrides=channel_overrides,

@@ -8,7 +8,9 @@ description: "Autonomous evaluation and self-improvement — define tasks, bench
 
 The Evolution Engine (HAEE) gives Hermes the ability to **evaluate its own work, diagnose failures, and improve autonomously**. It closes the loop that every other agent leaves open: you define what "success" looks like, Hermes attempts the task, and the engine measures, analyzes, and fixes failures — without you having to re-explain or re-prompt.
 
-It is built on research from HarnessX (ICLR 2026), the SIA 3-agent loop, and the Darwin Gödel Machine. The engine is **disabled by default** — enable it when you want systematic evaluation and autonomous improvement.
+It is built on research from HarnessX (ICLR 2026), SIA, Darwin Gödel Machine, and HyperAgents (Meta, ICLR 2026). The engine is **disabled by default**. Enable it once — then use Hermes normally. HAEE watches, learns, and improves silently.
+
+**No separate API key needed.** HAEE uses your existing Hermes model through the standard auxiliary client — the same one used for context compression and session search.
 
 ## What it does
 
@@ -186,18 +188,78 @@ hermes evolution variants
 
 Shows active variants, their success rates, and which tasks they handle best.
 
+## Silent Operation (Auto-Trigger)
+
+You don't need to run commands. HAEE watches your conversations through the auto-trigger:
+
+1. You chat normally: "fix the login bug"
+2. Observer records tool sequences across sessions
+3. After 3+ similar sessions, a cluster forms
+4. When agent forgets verification, HAEE auto-creates a skill
+5. Skills evolve recursively — each generation gets smarter
+6. For code-level issues, HAEE asks before creating a PR branch
+
+**5 failure types auto-detected**: missing verification, user correction, loop detected, missing output, silent session.
+
+### Nudge Level
+
+Control how intrusive HAEE is:
+
+```yaml
+evolution:
+  nudge_level: notify   # silent | notify | approve | off
+```
+
+| Level | Skills | PR Branches |
+|-------|--------|-------------|
+| `silent` | Apply silently | Apply silently |
+| `notify` (default) | Apply + tell user | **Ask first** |
+| `approve` | Apply + tell user | **Ask first** |
+| `off` | Nothing | Nothing |
+
+PR branches are never created without permission unless `nudge_level: silent`.
+
+## Recursive Skill Evolution
+
+Skills don't just get created — they evolve. When a skill fails to prevent an issue:
+
+```
+Gen 0 (277 bytes): Basic "verify before complete"
+Gen 1 (607 bytes): + Concrete verification commands (`echo $?`)
+Gen 2 (964 bytes): + Anti-loop guidance + targeted prevention
+```
+
+Each generation adds specific procedures from real failure data. Skills get smarter, not just longer. Every patch passes through the 5 safety gates.
+
+## PR Proposer (HyperAgents)
+
+When HAEE detects a code-level issue (tool keeps failing the same way):
+
+1. LLM generates a code fix
+2. Staged evaluation validates it (compile → benchmark)
+3. Random candidate selection preserves diversity
+4. Evolution lineage tracked across generations
+5. User approves: `/evolution approve-pr <tool>`
+6. Git branch created with full PR body, diff, and safety report
+
+Paths excluded from modification: benchmarks/, tests/, evaluation code — prevents reward hacking.
+
 ## CLI Reference
 
 ```bash
-hermes evolution status              # Engine status, config, recent runs
+hermes evolution status              # Rich dashboard: runs, improvement, clusters, PRs
 hermes evolution define-task <file>  # Load task from YAML
 hermes evolution list-tasks          # List all defined tasks
-hermes evolution run <task>          # Run a task with evolution tracking
-hermes evolution benchmark [task]    # Run full benchmark suite
-hermes evolution history [task]      # Evolution run history with --verbose
+hermes evolution run <task>          # Run with --iterations N, --verbose
+hermes evolution benchmark [task]    # Full benchmark suite (10 pre-built tasks)
+hermes evolution history [task]      # Run history with --verbose
 hermes evolution variants            # Harness variant statistics
-hermes evolution enable              # Turn on the engine
-hermes evolution disable             # Turn off the engine
+hermes evolution suggest-tasks       # Auto-discover tasks from your usage
+hermes evolution improvement         # Statistical proof (Wilcoxon p-value, Cohen's d)
+hermes evolution export --all        # Export Atropos training data
+hermes evolution pr-status           # Pending code fix proposals
+hermes evolution approve-pr <tool>   # Approve and create PR branch
+hermes evolution enable | disable    # Toggle engine
 ```
 
 ### Run options

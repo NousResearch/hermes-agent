@@ -628,12 +628,35 @@ evolution:
   auxiliary_model: deepseek-chat
 ```
 
+**No separate API key needed.** HAEE uses your existing Hermes model through the standard auxiliary client — the same one used for context compression and session search. Optionally route to a different model:
+
+```yaml
+  # Optional: use a cheaper model for evolution work
+  auxiliary_provider: auto       # "auto" uses main model
+  auxiliary_model: auto
+```
+
+### Nudge Level
+
+Controls how intrusive auto-improvements are:
+
+```yaml
+  nudge_level: notify   # silent | notify | approve | off
+```
+
+- `silent` — skills apply silently, PR branches apply silently
+- `notify` — skills notify, **PR branches ask first** (default)
+- `approve` — skills notify, PR branches ask first
+- `off` — disable auto-trigger entirely
+
+PR branches are never created without permission unless set to `silent`.
+
 Enable it:
 ```bash
 hermes evolution enable
 ```
 
-Define a task, run benchmarks, and let the engine close the loop from failure to fix. Zero overhead when disabled.
+Then use Hermes normally. HAEE watches conversations, auto-discovers tasks, and improves silently. Zero overhead when disabled. 10 pre-built tasks ship with the engine — run `hermes evolution benchmark` to start.
 
 ## Memory Configuration
 

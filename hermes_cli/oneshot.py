@@ -122,11 +122,33 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     return valid, None
 
 
+def _parse_skills_list(skills: object = None) -> list[str] | None:
+    """Normalize a skills argument into a list of skill name strings.
+
+    Accepts:
+    - None / empty → None
+    - A comma-separated string ("a,b") → ["a", "b"]
+    - Already a list → returned as-is (future compat for nargs='+')
+
+    Returns None when there are no skills to load.
+    """
+    if not skills:
+        return None
+    if isinstance(skills, (list, tuple)):
+        return [s.strip() for s in skills if s and s.strip()] or None
+    if isinstance(skills, str):
+        return [s.strip() for s in skills.split(",") if s.strip()] or None
+    return [str(skills).strip()] or None
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    skills: Optional[str] = None,
+    ignore_rules: bool = False,
+    ignore_user_config: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,9 +159,29 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        skills: Optional comma-separated skill name list to preload.
+            Matches the chat mode ``--skills`` / ``-s`` flag behavior.
+        ignore_rules: If True, skip AGENTS.md/SOUL.md/.cursorrules injection,
+            memory entries, and config-driven preloaded skills.  Mirrors
+            ``--ignore-rules`` in chat mode.
+        ignore_user_config: If True, ignore ~/.hermes/config.yaml behavioral
+            settings (credentials in .env still loaded).  Mirrors
+            ``--ignore-user-config`` in chat mode.
+
+    All three new parameters fulfill the module docstring promise that
+    "Rules / memory / AGENTS.md / preloaded skills = same as a normal chat
+    turn" — they were accepted by argparse but silently dropped before this fix.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
+    # --ignore-user-config / --ignore-rules: set env vars BEFORE any
+    # downstream load_config() / AIAgent() picks them up, mirroring
+    # main.py:cmd_chat (lines 2328-2343).
+    if ignore_user_config:
+        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+    if ignore_rules:
+        os.environ["HERMES_IGNORE_RULES"] = "1"
+
     # Silence every stdlib logger for the duration.  AIAgent, tools, and
     # provider adapters all log to stderr through the root logger; file
     # handlers added by setup_logging() keep working (they're attached to
@@ -189,6 +231,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    skills=skills,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -253,6 +296,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    skills: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -349,6 +393,11 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        # --ignore-rules: skip context files (AGENTS.md, SOUL.md, .cursorrules)
+        # and memory injection.  Mirrors HermesCLI behavior where
+        # HERMES_IGNORE_RULES=1 sets skip_context_files=True, skip_memory=True.
+        skip_context_files=os.environ.get("HERMES_IGNORE_RULES") == "1",
+        skip_memory=os.environ.get("HERMES_IGNORE_RULES") == "1",
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction
@@ -368,6 +417,35 @@ def _run_agent(
     agent.suppress_status_output = True
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
+
+    # Inject preloaded skills into the system prompt, mirroring chat mode's
+    # --skills / -s behavior (cli.py:15190-15202).  Must happen BEFORE the
+    # first model call (agent.chat) so the skill body is part of the prompt.
+    #
+    # We use ``ephemeral_system_prompt`` (appended at API-call time) rather
+    # than ``_cached_system_prompt`` because the cached prompt is rebuilt by
+    # ``_restore_or_build_system_prompt()`` inside the conversation loop,
+    # which would overwrite any direct mutation.  ``ephemeral_system_prompt``
+    # is injected at line 490/815 of conversation_loop.py, after the cached
+    # prompt is resolved — same mechanism chat mode uses for the skills
+    # prompt passed via HermesCLI.system_prompt → ephemeral_system_prompt.
+    parsed_skills = _parse_skills_list(skills)
+    if parsed_skills:
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
+            parsed_skills,
+            task_id=getattr(agent, "session_id", None),
+        )
+        if missing_skills:
+            sys.stderr.write(
+                f"hermes -z: unknown skill(s): {', '.join(missing_skills)}\n"
+            )
+        if skills_prompt:
+            existing = getattr(agent, "ephemeral_system_prompt", None) or ""
+            agent.ephemeral_system_prompt = "\n\n".join(
+                part for part in (existing, skills_prompt) if part
+            ).strip()
 
     result = agent.run_conversation(prompt)
     return (result.get("final_response") or "", result)

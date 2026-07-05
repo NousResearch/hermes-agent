@@ -1295,6 +1295,53 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
     return "\n".join(lines)
 
 
+# Default values for JSON Schema types used in MCP elicitation schemas.
+_TYPE_DEFAULTS: dict[str, object] = {
+    "boolean": True,
+    "string": "",
+    "integer": 0,
+    "number": 0.0,
+}
+
+
+def _build_elicitation_content(schema: dict) -> dict[str, object]:
+    """Build a default content dict from a ``requested_schema``.
+
+    MCP form-mode elicitations require ``content`` to match the requested
+    schema when the user accepts.  We populate required fields (and any
+    field with an explicit ``default``) so the response is schema-valid.
+
+    Boolean fields default to ``True`` (the user accepted the prompt);
+    other types use conventional empty/zero defaults.  Enum fields pick
+    the first listed value.
+    """
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(props, dict):
+        return {}
+
+    required = set(schema.get("required") or ())
+    # When no required list is specified, populate all properties so the
+    # response is schema-valid.  With an explicit required list, only
+    # populate required fields plus any field with an explicit default.
+    populate_all = not required
+    content: dict[str, object] = {}
+    for name, spec in props.items():
+        if not isinstance(spec, dict):
+            continue
+        if populate_all or name in required or "default" in spec:
+            if "default" in spec:
+                content[name] = spec["default"]
+            else:
+                field_type = str(spec.get("type", "") or "")
+                if field_type == "boolean":
+                    content[name] = True
+                elif "enum" in spec and spec["enum"]:
+                    content[name] = spec["enum"][0]
+                else:
+                    content[name] = _TYPE_DEFAULTS.get(field_type, "")
+    return content
+
+
 class ElicitationHandler:
     """Handles ``elicitation/create`` requests for a single MCP server.
 
@@ -1444,7 +1491,8 @@ class ElicitationHandler:
 
         if answer == "accept":
             self.metrics["accepted"] += 1
-            return ElicitResult(action="accept", content={})
+            content = _build_elicitation_content(schema)
+            return ElicitResult(action="accept", content=content)
         if answer == "cancel":
             self.metrics["errors"] += 1
             return ElicitResult(action="cancel")

@@ -20,6 +20,7 @@ from mcp.types import ElicitResult  # noqa: E402  -- after importorskip
 
 from tools.mcp_tool import (  # noqa: E402
     ElicitationHandler,
+    _build_elicitation_content,
     _format_elicitation_schema_summary,
 )
 
@@ -68,6 +69,77 @@ class TestSchemaSummary:
         assert "recipient (string)" in out
 
 
+class TestBuildElicitationContent:
+    def test_empty_schema_returns_empty_dict(self):
+        assert _build_elicitation_content({}) == {}
+        assert _build_elicitation_content({"properties": {}}) == {}
+
+    def test_required_boolean_field_defaults_to_true(self):
+        schema = {
+            "properties": {"approved": {"type": "boolean"}},
+            "required": ["approved"],
+        }
+        assert _build_elicitation_content(schema) == {"approved": True}
+
+    def test_required_string_field_defaults_to_empty(self):
+        schema = {
+            "properties": {"reason": {"type": "string"}},
+            "required": ["reason"],
+        }
+        assert _build_elicitation_content(schema) == {"reason": ""}
+
+    def test_required_integer_field_defaults_to_zero(self):
+        schema = {
+            "properties": {"count": {"type": "integer"}},
+            "required": ["count"],
+        }
+        assert _build_elicitation_content(schema) == {"count": 0}
+
+    def test_optional_field_without_default_is_omitted(self):
+        schema = {
+            "properties": {
+                "approved": {"type": "boolean"},
+                "note": {"type": "string"},
+            },
+            "required": ["approved"],
+        }
+        assert _build_elicitation_content(schema) == {"approved": True}
+
+    def test_field_with_explicit_default_is_included(self):
+        schema = {
+            "properties": {
+                "level": {"type": "string", "default": "info"},
+            },
+            "required": [],
+        }
+        assert _build_elicitation_content(schema) == {"level": "info"}
+
+    def test_enum_field_picks_first_value(self):
+        schema = {
+            "properties": {
+                "mode": {"type": "string", "enum": ["read", "write"]},
+            },
+            "required": ["mode"],
+        }
+        assert _build_elicitation_content(schema) == {"mode": "read"}
+
+    def test_multiple_required_fields(self):
+        schema = {
+            "properties": {
+                "approved": {"type": "boolean"},
+                "amount": {"type": "number"},
+                "reason": {"type": "string"},
+            },
+            "required": ["approved", "amount"],
+        }
+        result = _build_elicitation_content(schema)
+        assert result == {"approved": True, "amount": 0.0}
+
+    def test_non_dict_schema_returns_empty(self):
+        assert _build_elicitation_content(None) == {}
+        assert _build_elicitation_content("bad") == {}
+
+
 class TestElicitationHandlerFormMode:
     def test_user_accepts_once_returns_accept(self):
         handler = ElicitationHandler("pay", {"timeout": 5})
@@ -81,7 +153,7 @@ class TestElicitationHandlerFormMode:
 
         assert isinstance(result, ElicitResult)
         assert result.action == "accept"
-        assert result.content == {}
+        assert result.content == {"approved": True}
         assert handler.metrics["accepted"] == 1
         assert handler.metrics["declined"] == 0
 

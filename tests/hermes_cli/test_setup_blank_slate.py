@@ -59,6 +59,52 @@ class TestBlankSlateMinimalToolsets:
         assert names == ["patch", "process", "read_file", "search_files",
                          "terminal", "write_file"]
 
+    def test_no_disabled_bundle_overlaps_kept_tools(self):
+        # Regression: ``coding`` is a bundle (defined via ``tools``, with an
+        # empty ``includes``) that re-lists ``terminal``/``read_file``/… .
+        # Listing it in disabled_toolsets strips those tools even though we mean
+        # to keep file+terminal, because get_tool_definitions() subtracts a
+        # disabled toolset at TOOL granularity. No disabled entry may share a
+        # tool with a kept toolset.
+        from toolsets import resolve_toolset
+        cfg = {}
+        _blank_slate_minimal_toolsets(cfg)
+        kept_tools = set()
+        for ts in cfg["platform_toolsets"]["cli"]:
+            kept_tools.update(resolve_toolset(ts))
+        for ts in cfg["agent"]["disabled_toolsets"]:
+            overlap = set(resolve_toolset(ts)) & kept_tools
+            assert not overlap, (
+                f"disabled toolset '{ts}' overlaps kept tools {sorted(overlap)}; "
+                "it would silently strip them from the blank-slate agent"
+            )
+
+    def test_real_agent_path_keeps_core_tools_with_disabled_applied(self):
+        # The bug this fixes: the live agent path (agent/agent_init.py) calls
+        # get_tool_definitions(enabled=<platform tools>, disabled=<agent
+        # .disabled_toolsets>). The earlier schema test passed disabled=None and
+        # so never exercised the subtraction that actually broke installs. Here
+        # we feed BOTH — as the runtime does — and assert file/terminal tools
+        # survive rather than being zeroed out by a disabled bundle.
+        import model_tools
+        from hermes_cli.tools_config import _get_platform_tools
+        cfg = {}
+        _blank_slate_minimal_toolsets(cfg)
+        _blank_slate_minimize_config(cfg)
+        enabled = sorted(_get_platform_tools(cfg, "cli"))
+        disabled = cfg["agent"]["disabled_toolsets"]
+        defs = model_tools.get_tool_definitions(
+            enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True
+        )
+        names = {
+            (d.get("function") or {}).get("name") or d.get("name") for d in defs
+        }
+        for core in ("terminal", "read_file", "write_file", "patch", "search_files"):
+            assert core in names, (
+                f"core tool '{core}' was stripped by disabled_toolsets "
+                f"{disabled}; agent left with {sorted(names)}"
+            )
+
 
 class TestBlankSlateMinimizeConfig:
     def test_optional_features_turned_off(self):

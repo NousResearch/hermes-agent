@@ -49,17 +49,20 @@ class TestDisabledToolsetsOverlapProtection:
         assert "search_files" in tool_names
 
     def test_disable_coding_strips_coding_only_tools(self):
-        """Disabling 'coding' should still remove tools unique to coding."""
+        """Disabling 'coding' should remove coding-only tools but keep terminal/file."""
         tools = model_tools._compute_tool_definitions(
-            enabled_toolsets=["terminal", "file"],
+            enabled_toolsets=["coding", "terminal", "file"],
             disabled_toolsets=["coding"],
             quiet_mode=True,
         )
         tool_names = {t["function"]["name"] for t in tools}
-        # These are only in 'coding', not in terminal/file
-        assert "web_search" not in tool_names
-        assert "browser_navigate" not in tool_names
-        assert "vision_analyze" not in tool_names
+        # Overlap tools are kept because terminal/file are explicitly enabled
+         assert "terminal" in tool_names
+         assert "read_file" in tool_names
+         # Coding-only tools (not in terminal/file) should be removed
+         assert "clarify" not in tool_names
+         assert "session_search" not in tool_names
+         assert "skills_list" not in tool_names
 
     def test_disable_coding_non_empty_result(self):
         """The most critical assertion: the model must not receive zero tools."""
@@ -102,7 +105,7 @@ class TestDisabledToolsetsOverlapProtection:
         """Disabling a toolset should still remove it when it overlaps."""
         tools = model_tools._compute_tool_definitions(
             enabled_toolsets=["browser", "terminal", "file"],
-            disabled_toolsets=["web_search"],
+            disabled_toolsets=["search"],
             quiet_mode=True,
         )
         tool_names = {t["function"]["name"] for t in tools}

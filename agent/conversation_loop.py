@@ -5056,26 +5056,12 @@ def run_conversation(
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
 
-                if (
-                    agent.valid_tool_names
-                    and action_preamble_continuations < 2
-                    and looks_like_action_preamble_stall(final_response, finish_reason, False)
-                ):
-                    action_preamble_continuations += 1
-                    agent._emit_status(
-                        "Action preamble ended without a tool call; continuing the turn"
-                    )
-                    interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
-                    interim_msg["_action_preamble_recovery"] = True
-                    messages.append(interim_msg)
-                    messages.append({
-                        "role": "user",
-                        "content": ACTION_PREAMBLE_RECOVERY_PROMPT,
-                        "_action_preamble_recovery": True,
-                    })
-                    agent._stream_needs_break = True
-                    continue
-
+                # The codex intermediate-ack gate owns codex_responses acks: it
+                # has a specialized detector and its own continuation prompt that
+                # tests/tooling depend on. Run it BEFORE the general
+                # action-preamble guardrail below, otherwise codex acks that also
+                # read like action preambles (e.g. "I'll inspect ...") get the
+                # generic recovery prompt instead of the ack continuation.
                 from agent.agent_runtime_helpers import (
                     intent_ack_continuation_mode,
                 )
@@ -5106,6 +5092,28 @@ def run_conversation(
                     }
                     messages.append(continue_msg)
                     agent._session_messages = messages
+                    continue
+
+                # Fallthrough for stalls the ack gate does not handle (non-codex
+                # providers, ack_mode="off", or acks its detector misses).
+                if (
+                    agent.valid_tool_names
+                    and action_preamble_continuations < 2
+                    and looks_like_action_preamble_stall(final_response, finish_reason, False)
+                ):
+                    action_preamble_continuations += 1
+                    agent._emit_status(
+                        "Action preamble ended without a tool call; continuing the turn"
+                    )
+                    interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+                    interim_msg["_action_preamble_recovery"] = True
+                    messages.append(interim_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": ACTION_PREAMBLE_RECOVERY_PROMPT,
+                        "_action_preamble_recovery": True,
+                    })
+                    agent._stream_needs_break = True
                     continue
 
                 codex_ack_continuations = 0

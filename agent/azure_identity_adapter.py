@@ -63,7 +63,7 @@ def has_azure_identity_installed() -> bool:
     Cheap check — does not walk the credential chain.
     """
     try:
-        import azure.identity  # noqa: F401
+        import azure.identity
         return True
     except Exception:
         return False

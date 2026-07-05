@@ -322,7 +322,7 @@ def raise_if_read_blocked(path: str) -> None:
     """
     try:
         blocked = get_read_block_error(path)
-    except Exception:  # noqa: BLE001 - guard must never break local-file loading
+    except Exception:
         return
     if blocked:
         raise ValueError(blocked)

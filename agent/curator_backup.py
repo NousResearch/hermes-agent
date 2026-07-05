@@ -528,7 +528,7 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
 
             if changed:
                 save_jobs(live_jobs)
-    except Exception as e:  # noqa: BLE001 — rollback must not die mid-restore
+    except Exception as e:
         logger.debug("Cron skill-link restore failed: %s", e, exc_info=True)
         report["error"] = f"restore failed mid-flight: {e}"
 

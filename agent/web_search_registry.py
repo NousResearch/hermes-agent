@@ -174,7 +174,7 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
         """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""
         try:
             return bool(p.is_available())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("provider %s.is_available() raised %s", p.name, exc)
             return False
 

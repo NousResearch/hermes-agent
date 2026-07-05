@@ -682,7 +682,7 @@ def init_agent(
                 try:
                     from hermes_cli.auth import build_minimax_oauth_token_provider
                     effective_key = build_minimax_oauth_token_provider()
-                except Exception as _mm_exc:  # noqa: BLE001 — never block startup on this
+                except Exception as _mm_exc:
                     import logging as _logging
                     _logging.getLogger(__name__).warning(
                         "MiniMax OAuth: failed to install per-request token provider "

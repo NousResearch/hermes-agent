@@ -149,6 +149,6 @@ class BedrockTransport(ProviderTransport):
 
 
 # Auto-register on import
-from agent.transports import register_transport  # noqa: E402
+from agent.transports import register_transport
 
 register_transport("bedrock_converse", BedrockTransport)

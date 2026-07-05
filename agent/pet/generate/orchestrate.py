@@ -74,7 +74,7 @@ def _harden_transparency(path: Path) -> Path:
         out = path.with_suffix(".png")
         keyed.save(out, format="PNG")
         return out
-    except Exception as exc:  # noqa: BLE001 - cosmetic; fall back to the raw image
+    except Exception as exc:
         logger.debug("base draft transparency hardening failed for %s: %s", path, exc)
         return path
 
@@ -120,7 +120,7 @@ def generate_base_drafts(
         prompt = prompts.build_base_prompt(concept, style=style, variation=variation)
         try:
             out = imagegen.generate(prompt, n=1, reference_images=refs, provider=sprite, prefix="pet_base")
-        except Exception as exc:  # noqa: BLE001 - tolerate a single failed draft
+        except Exception as exc:
             logger.warning("pet generate: draft %d failed after %.1fs: %s", index, time.monotonic() - t0, exc)
             return index, None, str(exc)
         if not out:
@@ -152,7 +152,7 @@ def generate_base_drafts(
             if on_draft is not None:
                 try:
                     on_draft(index, path)
-                except Exception as exc:  # noqa: BLE001 - progress is best-effort
+                except Exception as exc:
                     logger.debug("on_draft callback failed: %s", exc)
 
     drafts = [results[i] for i in sorted(results)]
@@ -268,7 +268,7 @@ def hatch_pet(
                     slug, state, time.monotonic() - t0, attempt + 1,
                 )
                 return state, frames
-            except Exception as exc:  # noqa: BLE001 - retried; one bad row is tolerated
+            except Exception as exc:
                 last_exc = exc
                 logger.warning(
                     "pet hatch %r: row %r attempt %d/%d failed: %s",

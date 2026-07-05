@@ -773,6 +773,10 @@ def content_hash(skill_path: Path) -> str:
     produce the same digest for the same skill (one operates on disk,
     one on an in-memory bundle), so any change to the hash shape MUST
     land in both places at once.
+
+    Line endings are normalized (CRLF → LF) before hashing so that
+    Windows checkouts (where git converts to CRLF) produce the same
+    hash as POSIX checkouts and in-memory bundles.
     """
     h = hashlib.sha256()
     if skill_path.is_dir():
@@ -782,11 +786,16 @@ def content_hash(skill_path: Path) -> str:
                     rel = f.relative_to(skill_path).as_posix()
                     h.update(rel.encode("utf-8"))
                     h.update(b"\x00")
-                    h.update(f.read_bytes())
+                    content = f.read_bytes()
+                    # Normalize CRLF → LF so Windows/POSIX hashes match
+                    content = content.replace(b"\r\n", b"\n")
+                    h.update(content)
                 except OSError:
                     continue
     elif skill_path.is_file():
-        h.update(skill_path.read_bytes())
+        content = skill_path.read_bytes()
+        content = content.replace(b"\r\n", b"\n")
+        h.update(content)
     return f"sha256:{h.hexdigest()[:16]}"
 
 

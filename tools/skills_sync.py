@@ -230,14 +230,21 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
 
 
 def _dir_hash(directory: Path) -> str:
-    """Compute a hash of all file contents in a directory for change detection."""
+    """Compute a hash of all file contents in a directory for change detection.
+
+    Line endings are normalized (CRLF → LF) before hashing so that
+    Windows checkouts produce the same hash as POSIX checkouts.
+    """
     hasher = hashlib.md5()
     try:
         for fpath in sorted(directory.rglob("*")):
             if fpath.is_file():
                 rel = fpath.relative_to(directory)
                 hasher.update(str(rel).encode("utf-8"))
-                hasher.update(fpath.read_bytes())
+                content = fpath.read_bytes()
+                # Normalize CRLF → LF so Windows/POSIX hashes match
+                content = content.replace(b"\r\n", b"\n")
+                hasher.update(content)
     except (OSError, IOError):
         pass
     return hasher.hexdigest()

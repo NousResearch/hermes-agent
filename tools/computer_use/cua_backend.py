@@ -73,7 +73,35 @@ logger = logging.getLogger(__name__)
 # only have *looked* like it pinned. For a reproducible version, point
 # `HERMES_CUA_DRIVER_CMD` at a specific binary instead.
 
-_CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
+def _resolve_cua_driver_cmd() -> str:
+    """Resolve the cua-driver binary path.
+
+    Priority order:
+    1. ``HERMES_CUA_DRIVER_CMD`` env var (absolute path or basename).
+    2. ``shutil.which("cua-driver")`` — PATH lookup.
+    3. Common install paths (``~/.local/bin``, ``~/.cargo/bin``) — handles
+       runtimes where the user's local bin directory isn't on PATH (e.g.
+       the Hermes desktop app's bundled Python).
+    """
+    cmd = os.environ.get("HERMES_CUA_DRIVER_CMD")
+    if cmd:
+        return cmd
+
+    resolved = shutil.which("cua-driver")
+    if resolved:
+        return resolved
+
+    for candidate in (
+        os.path.expanduser("~/.local/bin/cua-driver"),
+        os.path.expanduser("~/.cargo/bin/cua-driver"),
+    ):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    return "cua-driver"  # last resort — will fail with a clear error downstream
+
+
+_CUA_DRIVER_CMD = _resolve_cua_driver_cmd()
 _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
                             # driver doesn't expose `manifest` — see
                             # `_resolve_mcp_invocation` below)

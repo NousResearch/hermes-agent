@@ -28,14 +28,13 @@ as_hermes() { [ "$(id -u)" = 0 ] || { "$@"; return; }; s6-setuidgid hermes "$@";
 # arbitrary host UID (the classic `--user $(id -u):$(id -g)` invocation people
 # used in the tini era to make container-written files match their host user).
 #
-# Under s6-overlay this no longer works: the bootstrap (UID remap, volume +
-# build-tree chown, config seeding) all require root, and they're skipped when
-# the container starts non-root. The baked image trees (/opt/data, /opt/hermes/
-# .venv, ui-tui, node_modules) stay owned by the hermes build UID (10000), so an
-# arbitrary `--user` UID can't write them — the runtime then fails with EACCES
-# on a bind mount, or hard-crashes on a named volume (Docker initialises the
-# volume from the image as UID 10000, and the non-root start can't even `cd`
-# into $HERMES_HOME). See #34837 for the supervision-tree side of this.
+# Under s6-overlay this no longer works: the bootstrap (UID remap, data-volume
+# ownership, config seeding) requires root, and it is skipped when the container
+# starts non-root. The baked install tree under /opt/hermes is intentionally
+# root-owned and non-writable; mutable runtime state must live under
+# $HERMES_HOME. An arbitrary `--user` UID therefore cannot repair or populate
+# the data volume, and startup fails with EACCES. See #34837 for the
+# supervision-tree side of this.
 #
 # The supported way to match host-side ownership is to start as root (the image
 # default) and pass HERMES_UID/HERMES_GID — or the PUID/PGID aliases — which the
@@ -53,9 +52,10 @@ if [ "$cur_uid" != 0 ] && [ "$cur_uid" != "$(id -u hermes)" ]; then
 [stage2] ERROR: container started with --user $cur_uid (an arbitrary, non-hermes UID).
 
 This is not supported under the s6-overlay image. The container bootstrap
-(UID remap, volume ownership, dependency installs) needs to start as root,
-and the baked image directories are owned by the hermes user (UID $(id -u hermes)),
-so a pinned --user UID cannot write them — startup will fail.
+(UID remap, data-volume ownership, config seeding) needs to start as root,
+and the baked /opt/hermes install tree is intentionally root-owned and
+non-writable, so a pinned --user UID cannot repair startup state — startup
+will fail.
 
 To make container-written files match your HOST user, DON'T use --user.
 Start the container as root (the default) and pass your host UID/GID instead:
@@ -181,6 +181,45 @@ done
 # The canonical list of hermes-owned subdirs is the same one the s6-setuidgid
 # mkdir -p block below seeds. Keep them in sync if the seed list changes.
 actual_hermes_uid=$(id -u hermes)
+
+path_has_symlink_component() {
+    path="$1"
+    root="${2:-$HERMES_HOME}"
+    while [ -n "$path" ] && [ "$path" != "/" ]; do
+        if [ -L "$path" ]; then
+            return 0
+        fi
+        if [ "$path" = "$root" ]; then
+            break
+        fi
+        parent="$(dirname "$path")"
+        if [ "$parent" = "$path" ]; then
+            break
+        fi
+        path="$parent"
+    done
+    return 1
+}
+
+refuse_symlinked_path() {
+    action="$1"
+    target="$2"
+    if path_has_symlink_component "$target"; then
+        echo "[stage2] Warning: refusing $action through symlinked path $target — continuing"
+        return 0
+    fi
+    return 1
+}
+
+chown_hermes_tree() {
+    target="$1"
+    if refuse_symlinked_path "recursive chown" "$target"; then
+        return 0
+    fi
+    chown -R hermes:hermes "$target" 2>/dev/null || \
+        echo "[stage2] Warning: chown $target failed (rootless container?) — continuing"
+}
+
 needs_chown=false
 if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
     needs_chown=true
@@ -194,62 +233,40 @@ if [ "$needs_chown" = true ]; then
     # Top-level $HERMES_HOME: chown the directory itself (not its contents)
     # so hermes can mkdir new subdirs but bind-mounted host files keep
     # their existing ownership.
-    chown hermes:hermes "$HERMES_HOME" 2>/dev/null || \
-        echo "[stage2] Warning: chown $HERMES_HOME failed (rootless container?) — continuing"
+    if refuse_symlinked_path "chown" "$HERMES_HOME"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_HOME" 2>/dev/null || \
+            echo "[stage2] Warning: chown $HERMES_HOME failed (rootless container?) — continuing"
+    fi
     # Hermes-owned subdirs: recursive chown is safe here because these are
     # created and managed exclusively by hermes (see the s6-setuidgid mkdir
     # -p block below for the canonical list).
-    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing; do
+    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing lazy-packages; do
         if [ -e "$HERMES_HOME/$sub" ]; then
-            chown -R hermes:hermes "$HERMES_HOME/$sub" 2>/dev/null || \
-                echo "[stage2] Warning: chown $HERMES_HOME/$sub failed (rootless container?) — continuing"
+            chown_hermes_tree "$HERMES_HOME/$sub"
         fi
     done
 fi
 
-# --- Fix ownership of build trees under $INSTALL_DIR ---
-# Hermes-owned trees under $INSTALL_DIR must be re-chowned whenever the
-# runtime hermes UID no longer owns them — otherwise:
-#   - .venv: lazy_deps.py cannot install platform packages (discord.py,
-#     telegram, slack, etc.) with EACCES (#15012, #21100)
-#   - ui-tui: esbuild rebuilds dist/entry.js on every TUI launch (when
-#     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
-#     is set) and writes to ui-tui/dist/. Without this chown the new
-#     hermes UID can't write the build output (#28851).
-#   - gateway: Python writes __pycache__ and runtime artifacts beneath the
-#     gateway package on first import. After a UID remap those source-owned
-#     paths still belong to the build-time UID (10000) unless repaired here,
-#     producing EACCES for the supervised gateway (#27221).
-#   - node_modules: root-level dependencies (puppeteer, web tooling)
-#     that runtime code may walk/update.
-# The set mirrors the build-time `chown -R hermes:hermes` line in the
-# Dockerfile — keep them in sync if the Dockerfile chown set changes.
-# These are under $INSTALL_DIR (not $HERMES_HOME), so the bind-mount
-# concern doesn't apply — recursive is fine.
+# --- Immutable install tree ---
+# Do not chown runtime code or dependency trees under $INSTALL_DIR back to the
+# hermes user. Hosted/container instances keep mutable state under
+# $HERMES_HOME (/opt/data) and run with PYTHONDONTWRITEBYTECODE plus
+# HERMES_DISABLE_LAZY_INSTALLS=1. Keeping /opt/hermes root-owned and
+# non-writable prevents an agent session from self-modifying the installed
+# source, venv, TUI bundle, or node_modules and bricking the gateway.
 #
-# This MUST be gated independently of the $HERMES_HOME ownership check
-# above. `usermod -u <new> hermes` re-chowns the hermes home dir
-# ($HERMES_HOME == /opt/data) to the new UID as a side effect, so after a
-# HERMES_UID/PUID remap `stat $HERMES_HOME` always already matches the new
-# UID and `needs_chown` is false — but the build trees under /opt/hermes
-# are NOT touched by usermod and remain owned by the build-time UID
-# (10000). Gating them on $HERMES_HOME ownership (as #35027 did) silently
-# skipped this chown on the common PUID/NAS path, regressing lazy installs
-# and TUI rebuilds. Probe the build trees directly instead: chown only
-# when the venv is not already owned by the runtime hermes UID. Idempotent
-# and skips the expensive recursive chown on every restart once ownership
-# is settled.
-venv_owner=$(stat -c %u "$INSTALL_DIR/.venv" 2>/dev/null || echo "")
-if [ -n "$venv_owner" ] && [ "$venv_owner" != "$actual_hermes_uid" ]; then
-    echo "[stage2] Fixing ownership of build trees under $INSTALL_DIR to hermes ($actual_hermes_uid)"
-    chown -R hermes:hermes \
-        "$INSTALL_DIR/.venv" \
-        "$INSTALL_DIR/ui-tui" \
-        "$INSTALL_DIR/gateway" \
-        "$INSTALL_DIR/node_modules" \
-        2>/dev/null || \
-        echo "[stage2] Warning: chown of build trees failed (rootless container?) — continuing"
-fi
+# Lazy-installable optional backends (Firecrawl, Exa, Feishu, etc.) cannot
+# install into the sealed venv, so they are redirected to the writable
+# $HERMES_HOME/lazy-packages dir on the data volume (Dockerfile sets
+# HERMES_LAZY_INSTALL_TARGET). That dir is appended to the END of sys.path,
+# so a package installed there can only ADD modules — it can never shadow or
+# break a core module, which is what keeps the sealed-venv guarantee intact
+# even though installs are re-enabled. The dir is seeded + chowned to hermes
+# in the mkdir/chown blocks above so first-use installs succeed as the
+# unprivileged runtime user, and it persists across container recreates /
+# image updates (an ABI stamp wipes it if a rebuild bumps the interpreter).
 
 # Always reset ownership of $HERMES_HOME/profiles to hermes on every
 # boot. Profile dirs and files can land owned by root when commands
@@ -259,7 +276,15 @@ fi
 # the profiles dir. Idempotent; skipped on rootless containers where
 # chown would fail.
 if [ -d "$HERMES_HOME/profiles" ]; then
-    chown -R hermes:hermes "$HERMES_HOME/profiles" 2>/dev/null || true
+    chown_hermes_tree "$HERMES_HOME/profiles"
+fi
+
+# Always reset ownership of $HERMES_HOME/cron on every boot for the same
+# docker-exec/root-write reason as profiles/. The cron scheduler state
+# (jobs.json) must stay readable by the unprivileged hermes runtime even
+# after root-context maintenance commands or scheduler writes.
+if [ -d "$HERMES_HOME/cron" ]; then
+    chown_hermes_tree "$HERMES_HOME/cron"
 fi
 
 # Reset ownership of hermes-owned top-level state files on every boot.
@@ -285,7 +310,11 @@ for f in \
     gateway.pid gateway.lock gateway_state.json processes.json \
     active_profile; do
     if [ -e "$HERMES_HOME/$f" ]; then
-        chown hermes:hermes "$HERMES_HOME/$f" 2>/dev/null || true
+        if refuse_symlinked_path "chown" "$HERMES_HOME/$f"; then
+            :
+        else
+            chown hermes:hermes "$HERMES_HOME/$f" 2>/dev/null || true
+        fi
     fi
 done
 
@@ -293,8 +322,12 @@ done
 # Ensure config.yaml is readable by the hermes runtime user even if it
 # was edited on the host after initial ownership setup.
 if [ -f "$HERMES_HOME/config.yaml" ]; then
-    chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
-    chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    if refuse_symlinked_path "chown/chmod" "$HERMES_HOME/config.yaml"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
+        chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    fi
 fi
 
 # --- Seed directory structure as hermes user ---
@@ -305,9 +338,11 @@ fi
 # shell isn't a second interpreter — defends against $HERMES_HOME values
 # containing shell metacharacters. PR #30136 review item O2.
 as_hermes mkdir -p \
+    "$HERMES_HOME/backups" \
     "$HERMES_HOME/cron" \
     "$HERMES_HOME/sessions" \
     "$HERMES_HOME/logs" \
+    "$HERMES_HOME/logs/gateways" \
     "$HERMES_HOME/hooks" \
     "$HERMES_HOME/memories" \
     "$HERMES_HOME/skills" \
@@ -316,22 +351,39 @@ as_hermes mkdir -p \
     "$HERMES_HOME/workspace" \
     "$HERMES_HOME/home" \
     "$HERMES_HOME/pairing" \
-    "$HERMES_HOME/platforms/pairing"
+    "$HERMES_HOME/platforms/pairing" \
+    "$HERMES_HOME/lazy-packages"
 
-# --- Install-method stamp (read by detect_install_method() in hermes status) ---
-# Preserved from the tini-era entrypoint (PR #27843). Must be written as
-# the hermes user so ownership matches the file's documented owner.
-# tee is invoked directly via s6-setuidgid (no `sh -c` wrapper) for the
-# same shell-metacharacter safety described above.
-printf 'docker\n' | as_hermes tee "$HERMES_HOME/.install_method" >/dev/null \
-    || true
+# --- Install-method stamp ---
+# The 'docker' stamp is baked into the immutable install tree at
+# /opt/hermes/.install_method (see Dockerfile), NOT written here into
+# $HERMES_HOME. detect_install_method() reads the code-scoped stamp first.
+#
+# Why we no longer stamp $HERMES_HOME: it is a shared DATA volume, commonly
+# bind-mounted from the host (~/.hermes:/opt/data) and sometimes shared with a
+# host-side Desktop/CLI install. Stamping 'docker' here clobbered that host
+# install's marker, so its in-app updater read 'docker' and refused to run
+# 'hermes update'. To heal homes already poisoned by older images, remove a
+# stale 'docker' stamp from $HERMES_HOME if one is present (the host install's
+# own installer re-creates its code-scoped stamp; a genuine container relies on
+# the baked /opt/hermes stamp, so deleting the data-dir copy is safe).
+if [ -f "$HERMES_HOME/.install_method" ]; then
+    stamped="$(tr -d '[:space:]' < "$HERMES_HOME/.install_method" 2>/dev/null || true)"
+    if [ "$stamped" = "docker" ]; then
+        rm -f "$HERMES_HOME/.install_method" 2>/dev/null || true
+    fi
+fi
 
 # --- Seed config files (only on first boot) ---
 seed_one() {
     dest=$1
     src=$2
     if [ ! -f "$HERMES_HOME/$dest" ] && [ -f "$INSTALL_DIR/$src" ]; then
-        as_hermes cp "$INSTALL_DIR/$src" "$HERMES_HOME/$dest"
+        if refuse_symlinked_path "seed" "$HERMES_HOME/$dest"; then
+            :
+        else
+            as_hermes cp "$INSTALL_DIR/$src" "$HERMES_HOME/$dest"
+        fi
     fi
 }
 seed_one ".env" ".env.example"
@@ -342,8 +394,12 @@ seed_one "SOUL.md" "docker/SOUL.md"
 # unconditionally (not only on first-seed) so a host-mounted .env that was
 # created with a permissive umask gets tightened on every container start.
 if [ -f "$HERMES_HOME/.env" ]; then
-    chown hermes:hermes "$HERMES_HOME/.env" 2>/dev/null || true
-    chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
+    if refuse_symlinked_path "chown/chmod" "$HERMES_HOME/.env"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_HOME/.env" 2>/dev/null || true
+        chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
+    fi
 fi
 
 # --- Migrate persisted config schema ---
@@ -361,9 +417,13 @@ fi
 # pre-s6 entrypoint — the [ ! -f ] guard is critical to avoid clobbering
 # rotated refresh tokens on container restart.
 if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]; then
-    printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
-    chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
-    chmod 600 "$HERMES_HOME/auth.json"
+    if refuse_symlinked_path "seed" "$HERMES_HOME/auth.json"; then
+        :
+    else
+        printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
+        chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
+        chmod 600 "$HERMES_HOME/auth.json"
+    fi
 fi
 
 # gateway_state.json: declare the gateway's INITIAL supervised state on a
@@ -393,9 +453,13 @@ fi
 # bogus state the reconciler would treat as "no prior state" anyway.
 if [ ! -f "$HERMES_HOME/gateway_state.json" ] && \
         [ "${HERMES_GATEWAY_BOOTSTRAP_STATE:-}" = "running" ]; then
-    printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
-    chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
-    chmod 644 "$HERMES_HOME/gateway_state.json"
+    if refuse_symlinked_path "seed" "$HERMES_HOME/gateway_state.json"; then
+        :
+    else
+        printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
+        chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
+        chmod 644 "$HERMES_HOME/gateway_state.json"
+    fi
 fi
 
 # --- Sync bundled skills ---

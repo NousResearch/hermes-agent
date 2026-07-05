@@ -1,8 +1,10 @@
 """Shared utility functions for hermes-agent."""
 
+import errno
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -41,6 +43,34 @@ def _preserve_file_mode(path: Path) -> "int | None":
         return None
 
 
+def _preserve_file_owner(path: Path) -> "tuple[int, int] | None":
+    """Capture the owning uid/gid of *path* if the platform supports it."""
+    if os.name != "posix":
+        return None
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_uid, st.st_gid
+
+
+def _restore_file_owner(path: Path, owner: "tuple[int, int] | None") -> None:
+    """Re-apply uid/gid after an atomic replace when permitted.
+
+    Docker and NAS-backed installs often run some commands as root while the
+    persistent volume is owned by the runtime user. ``os.replace`` swaps in the
+    temp file's owner, so a root-run config write can leave ``config.yaml`` owned
+    by root. Best-effort chown preserves the existing owner for privileged
+    callers and is harmless for unprivileged callers that cannot chown.
+    """
+    if owner is None or not hasattr(os, "chown"):
+        return
+    try:
+        os.chown(path, owner[0], owner[1])
+    except OSError:
+        pass
+
+
 def _restore_file_mode(path: Path, mode: "int | None") -> None:
     """Re-apply *mode* to *path* after an atomic replace.
 
@@ -71,14 +101,38 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     This helper resolves the symlink first so ``os.replace`` writes to
     the real file in-place while the symlink survives.  For non-symlink
     and non-existent paths the behavior is identical to a plain
-    ``os.replace`` call.
+    ``os.replace`` call unless the rename fails with ``EXDEV`` or ``EBUSY``;
+    those cases fall back to copy/fsync/unlink for cross-device, bind-mount,
+    and busy-file deployments.
 
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
+    tmp_str = str(tmp_path)
+    try:
+        os.replace(tmp_str, real_path)
+    except OSError as exc:
+        if exc.errno not in (errno.EXDEV, errno.EBUSY):
+            raise
+        logger.debug(
+            "atomic_replace: %s -> %s failed with %s; falling back to copy",
+            tmp_str,
+            real_path,
+            errno.errorcode.get(exc.errno, exc.errno),
+        )
+        shutil.copyfile(tmp_str, real_path)
+        try:
+            shutil.copystat(tmp_str, real_path)
+        except OSError:
+            pass
+        try:
+            with open(real_path, "rb") as f:
+                os.fsync(f.fileno())
+        except OSError:
+            pass
+        os.unlink(tmp_str)
     return real_path
 
 
@@ -110,6 +164,7 @@ def atomic_json_write(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = None if mode is not None else _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -134,13 +189,15 @@ def atomic_json_write(
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
         if mode is not None:
             try:
-                os.chmod(real_path, mode)
+                os.chmod(real_path_obj, mode)
             except OSError:
                 pass
         else:
-            _restore_file_mode(Path(real_path), original_mode)
+            _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.
@@ -149,6 +206,22 @@ def atomic_json_write(
         except OSError:
             pass
         raise
+
+
+class IndentDumper(yaml.SafeDumper):
+    """PyYAML dumper that indents list items under mapping keys (2-space).
+
+    Default PyYAML emits "indentless" sequences — list items start at the
+    same column as their parent mapping key.  ``ruamel.yaml`` (used by
+    :func:`atomic_roundtrip_yaml_update`) emits 2-space-indented sequences.
+    Mixing both styles in the same ``config.yaml`` produces a file that
+    stricter parsers like ``js-yaml`` reject with ``bad indentation of a
+    mapping entry``.  Forcing ``indentless=False`` aligns the two
+    serializers so all write paths emit byte-identical layouts (#31999).
+    """
+
+    def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002
+        return super().increase_indent(flow, False)
 
 
 def atomic_yaml_write(
@@ -177,6 +250,7 @@ def atomic_yaml_write(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -185,14 +259,30 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
+            # allow_unicode=True writes emoji/kaomoji (e.g. personalities, skin
+            # cursors) as real UTF-8 instead of fragile escape sequences. Without
+            # it, PyYAML emits astral-plane chars as `\UXXXXXXXX` (8-digit) escapes
+            # inside multi-line double-quoted strings wrapped with `\`
+            # continuations — a structure that stricter/non-PyYAML parsers and
+            # hand-edits routinely break into unclosed quotes, corrupting the whole
+            # config (GitHub #51356).
+            yaml.dump(
+                data,
+                f,
+                Dumper=IndentDumper,
+                default_flow_style=default_flow_style,
+                sort_keys=sort_keys,
+                allow_unicode=True,
+            )
             if extra_content:
                 f.write(extra_content)
             f.flush()
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
-        _restore_file_mode(real_path, original_mode)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level
         # interruptions before we re-raise them.
@@ -247,6 +337,7 @@ def atomic_roundtrip_yaml_update(
     current[keys[-1]] = value
 
     original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -258,7 +349,9 @@ def atomic_roundtrip_yaml_update(
             f.flush()
             os.fsync(f.fileno())
         real_path = atomic_replace(tmp_path, path)
-        _restore_file_mode(real_path, original_mode)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -283,6 +376,34 @@ def safe_json_loads(text: str, default: Any = None) -> Any:
         return default
 
 
+# ── Fast YAML loading ────────────────────────────────────────────────────
+#
+# PyYAML's pure-Python SafeLoader is ~8x slower than the libyaml-backed
+# ``CSafeLoader`` C extension. Startup parses config.yaml and every plugin
+# manifest with the slow path, costing ~0.9s of cold-start time. The C loader
+# is a true drop-in for ``safe_load`` (same restricted tag set), so prefer it
+# and fall back to the pure-Python loader only when libyaml isn't compiled in.
+_fast_yaml_loader = None
+
+
+def _get_fast_yaml_loader():
+    global _fast_yaml_loader
+    if _fast_yaml_loader is None:
+        _fast_yaml_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
+    return _fast_yaml_loader
+
+
+def fast_safe_load(stream: Any) -> Any:
+    """``yaml.safe_load`` using the libyaml C loader when available.
+
+    Accepts the same inputs as ``yaml.safe_load`` (a ``str``/``bytes`` document
+    or a readable file object) and returns the same parsed structure. Falls
+    back to PyYAML's pure-Python ``SafeLoader`` when ``CSafeLoader`` isn't
+    available, so behavior is identical everywhere — only the speed differs.
+    """
+    return yaml.load(stream, Loader=_get_fast_yaml_loader())
+
+
 # ─── Environment Variable Helpers ─────────────────────────────────────────────
 
 
@@ -293,6 +414,17 @@ def env_int(key: str, default: int = 0) -> int:
         return default
     try:
         return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
+def env_float(key: str, default: float = 0.0) -> float:
+    """Read an environment variable as a float, with fallback."""
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
     except (ValueError, TypeError):
         return default
 
@@ -353,6 +485,44 @@ def base_url_hostname(base_url: str) -> str:
         return ""
     parsed = urlparse(raw if "://" in raw else f"//{raw}")
     return (parsed.hostname or "").lower().rstrip(".")
+
+
+# ─── Model Capability Detection ──────────────────────────────────────────────
+
+
+def model_forces_max_completion_tokens(model: str) -> bool:
+    """Return True for model families that require ``max_completion_tokens``.
+
+    OpenAI's newer families reject ``max_tokens`` on /v1/chat/completions with
+    HTTP 400 ``unsupported_parameter`` — the caller must send
+    ``max_completion_tokens`` instead. This covers:
+
+    - ``gpt-4o`` / ``gpt-4o-mini`` / ``gpt-4o-*``
+    - ``gpt-4.1`` / ``gpt-4.1-*``
+    - ``gpt-5`` / ``gpt-5.x`` / ``gpt-5-*``
+    - ``o1`` / ``o1-*``
+    - ``o3`` / ``o3-*``
+    - ``o4`` / ``o4-*``
+
+    Handles vendor prefixes like ``openai/gpt-5.4`` by stripping to the tail.
+    The URL-based check (``base_url_hostname == "api.openai.com"``) misses
+    third-party OpenAI-compatible endpoints (custom OpenAI gateways,
+    OpenRouter) that front these models and enforce the same parameter
+    constraint, so name-based detection is required as a fallback.
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return (
+        m.startswith("gpt-4o")
+        or m.startswith("gpt-4.1")
+        or m.startswith("gpt-5")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("o4")
+    )
 
 
 def base_url_host_matches(base_url: str, domain: str) -> bool:

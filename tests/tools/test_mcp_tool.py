@@ -47,6 +47,46 @@ def _make_mock_server(name, session=None, tools=None):
     return server
 
 
+class TestFilterMCPChildren:
+    def test_filters_gateway_children_by_argv_marker(self, monkeypatch):
+        """Non-MCP children start with an interpreter/binary, not the marker."""
+        import sys
+
+        import tools.mcp_tool as mcp_tool
+
+        cmdlines = {
+            101: [
+                "/usr/bin/python3",
+                "-m",
+                "tui_gateway.slash_worker",
+                "--session-key",
+                "abc",
+            ],
+            102: [
+                "/usr/bin/java",
+                "-jar",
+                "/opt/jdtls/plugins/org.eclipse.equinox.launcher_1.7.0.jar",
+            ],
+            103: ["/usr/bin/node", "server.js"],
+        }
+
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def cmdline(self):
+                return cmdlines[self.pid]
+
+        fake_psutil = SimpleNamespace(
+            Process=FakeProcess,
+            NoSuchProcess=ProcessLookupError,
+            AccessDenied=PermissionError,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        assert mcp_tool._filter_mcp_children({101, 102, 103}) == {103}
+
+
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
@@ -80,6 +120,56 @@ class TestLoadMCPConfig:
             from tools.mcp_tool import _load_mcp_config
             result = _load_mcp_config()
             assert result == {}
+
+
+class TestMCPStatus:
+    def test_status_distinguishes_configured_connecting_failed_and_disabled(
+        self, monkeypatch
+    ):
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setattr(
+            mcp_tool,
+            "_load_mcp_config",
+            lambda: {
+                "configured": {"command": "docker", "args": ["mcp", "gateway", "run"]},
+                "connecting": {"command": "slow-mcp"},
+                "failed": {"command": "bad-mcp"},
+                "disabled": {"command": "off-mcp", "enabled": False},
+            },
+        )
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_connecting = set(mcp_tool._server_connecting)
+            saved_errors = dict(mcp_tool._server_connect_errors)
+            mcp_tool._servers.clear()
+            mcp_tool._server_connecting.clear()
+            mcp_tool._server_connect_errors.clear()
+            mcp_tool._server_connecting.add("connecting")
+            mcp_tool._server_connect_errors["failed"] = "Connection closed"
+
+        try:
+            statuses = {
+                entry["name"]: entry
+                for entry in mcp_tool.get_mcp_status()
+            }
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._server_connecting.clear()
+                mcp_tool._server_connecting.update(saved_connecting)
+                mcp_tool._server_connect_errors.clear()
+                mcp_tool._server_connect_errors.update(saved_errors)
+
+        assert statuses["configured"]["status"] == "configured"
+        assert statuses["configured"]["connected"] is False
+        assert statuses["configured"]["disabled"] is False
+        assert statuses["connecting"]["status"] == "connecting"
+        assert statuses["failed"]["status"] == "failed"
+        assert statuses["failed"]["error"] == "Connection closed"
+        assert statuses["disabled"]["status"] == "disabled"
+        assert statuses["disabled"]["disabled"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +274,89 @@ class TestSchemaConversion:
 
         assert schema["parameters"]["properties"]["items"]["items"]["$ref"] == "#/$defs/Entry"
         assert schema["parameters"]["$defs"]["Entry"]["properties"]["child"]["$ref"] == "#/$defs/Child"
+
+    def test_definitions_as_property_name_is_preserved(self):
+        """A tool parameter literally named ``definitions`` must not be renamed.
+
+        Regression: the rewrite that promotes the legacy ``definitions``
+        meta-keyword to ``$defs`` used to fire for *any* key named
+        ``definitions`` anywhere in the tree, including inside ``properties``
+        dicts. That turned user-facing parameter names into ``$defs``, which
+        Anthropic and OpenAI both reject because ``$`` is not in the
+        ``^[a-zA-Z0-9_.-]{1,64}$`` property-name pattern. Real-world repro: a
+        CI/pipelines MCP tool whose ``definitions`` parameter is an array of
+        pipeline-definition IDs.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="pipelines_build",
+            description="List pipeline builds",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "definitions": {
+                        "description": "Array of build definition IDs to filter builds.",
+                    },
+                    "top": {"type": "integer"},
+                },
+            },
+        )
+
+        schema = _convert_mcp_schema("pipelines", mcp_tool)
+
+        props = schema["parameters"]["properties"]
+        assert "definitions" in props, "user-facing property name was renamed away"
+        assert "$defs" not in props, "user-facing property name was rewritten to $defs"
+        # And the meta-keyword promotion didn't happen at the root either,
+        # because there was no `definitions` meta-keyword to promote.
+        assert "$defs" not in schema["parameters"]
+        assert "definitions" not in schema["parameters"]
+
+    def test_definitions_property_and_meta_keyword_coexist(self):
+        """``definitions`` as both a property name AND a meta-keyword in the
+        same schema. The property name stays; the meta-keyword is promoted.
+
+        Note: Python source can't express both keys as literals (the second
+        would clobber the first), so build the dict explicitly.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        input_schema = {
+            "type": "object",
+            "properties": {
+                # User-facing parameter literally named "definitions".
+                "definitions": {
+                    "description": "Array of build definition IDs.",
+                },
+                "payload": {"$ref": "#/definitions/Payload"},
+            },
+        }
+        # Meta-keyword (legacy draft-07 reusable defs), set after the literal.
+        input_schema["definitions"] = {
+            "Payload": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+            },
+        }
+
+        mcp_tool = _make_mcp_tool(
+            name="mixed",
+            description="Schema with both forms of `definitions`",
+            input_schema=input_schema,
+        )
+
+        schema = _convert_mcp_schema("mixed", mcp_tool)
+
+        # Property name preserved.
+        assert "definitions" in schema["parameters"]["properties"]
+        assert "$defs" not in schema["parameters"]["properties"]
+        # Meta-keyword promoted at the root.
+        assert "$defs" in schema["parameters"]
+        assert "definitions" not in schema["parameters"]
+        # The $ref into the legacy location was rewritten too.
+        assert schema["parameters"]["properties"]["payload"]["$ref"] == "#/$defs/Payload"
 
     def test_missing_type_on_object_is_coerced(self):
         """Schemas that describe an object but omit ``type`` get type='object'."""
@@ -1378,6 +1551,33 @@ class TestBuildSafeEnv:
         assert "DATABASE_URL" not in result
         assert "API_SECRET" not in result
 
+    def test_windows_location_vars_passed_without_secrets(self):
+        """Windows launcher tools need location vars, but secrets stay filtered."""
+        from tools.mcp_tool import _build_safe_env
+
+        fake_env = {
+            "PATH": r"C:\Windows\System32",
+            "ProgramFiles": r"C:\Program Files",
+            "ProgramData": r"C:\ProgramData",
+            "ProgramW6432": r"C:\Program Files",
+            "LOCALAPPDATA": r"C:\Users\alice\AppData\Local",
+            "APPDATA": r"C:\Users\alice\AppData\Roaming",
+            "USERPROFILE": r"C:\Users\alice",
+            "GITHUB_TOKEN": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "OPENAI_API_KEY": "sk-proj-abc123",
+        }
+        with patch.dict("os.environ", fake_env, clear=True):
+            result = _build_safe_env(None)
+
+        assert result["ProgramFiles"] == r"C:\Program Files"
+        assert result["ProgramData"] == r"C:\ProgramData"
+        assert result["ProgramW6432"] == r"C:\Program Files"
+        assert result["LOCALAPPDATA"].endswith("Local")
+        assert result["APPDATA"].endswith("Roaming")
+        assert result["USERPROFILE"] == r"C:\Users\alice"
+        assert "GITHUB_TOKEN" not in result
+        assert "OPENAI_API_KEY" not in result
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_error
@@ -1807,7 +2007,7 @@ class TestConfigurableTimeouts:
 
         server = MCPServerTask("test_srv")
         assert server.tool_timeout == _DEFAULT_TOOL_TIMEOUT
-        assert server.tool_timeout == 120
+        assert server.tool_timeout == 300
 
     def test_custom_timeout(self):
         """Server with timeout=180 in config gets 180."""

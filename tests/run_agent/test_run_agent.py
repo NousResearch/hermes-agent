@@ -6625,6 +6625,9 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
+            def entries(self):
+                return []
+
             def mark_exhausted_and_rotate(
                 self, *, status_code, error_context=None, api_key_hint=None
             ):
@@ -6838,6 +6841,9 @@ class TestCredentialPoolRecovery:
         class _Pool:
             def current(self):
                 return SimpleNamespace(label="primary")
+
+            def entries(self):
+                return []
 
             def mark_exhausted_and_rotate(
                 self, *, status_code, error_context=None, api_key_hint=None

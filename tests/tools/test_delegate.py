@@ -111,6 +111,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn(f"up to {max_children}", desc)
         # Top-level description names the user's spawn-depth limit explicitly.
         self.assertIn(f"max_spawn_depth={max_depth}", desc)
+        # Top-level description advertises the per-session children budget.
+        self.assertIn("SESSION BUDGET", desc)
         # tasks parameter description repeats the concurrency cap.
         self.assertIn(f"up to {max_children}", tasks_desc)
         # role parameter description names the spawn-depth limit.
@@ -423,6 +425,193 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("Too many tasks", result["error"])
         mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_session_cap_blocks_repeated_calls(self, mock_run):
+        """A parent session must not spawn unbounded children across turns.
+
+        Regression for #52484: without a per-session total cap, a runaway model
+        can call delegate_task repeatedly and spawn dozens of independent
+        subagent sessions.
+        """
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        parent.session_id = "session-cap-test"
+        cap = 3
+        with patch("tools.delegate_tool._load_config") as mock_cfg:
+            mock_cfg.return_value = {"max_children_per_session": cap}
+
+            # First `cap` calls should succeed.
+            for i in range(cap):
+                result = json.loads(delegate_task(
+                    goal=f"Task {i}", parent_agent=parent
+                ))
+                self.assertIn("results", result, f"call {i} should succeed")
+                self.assertEqual(result["results"][0]["status"], "completed")
+
+            # The next call must be rejected with a clear session-cap error.
+            result = json.loads(delegate_task(
+                goal="Task over cap", parent_agent=parent
+            ))
+            self.assertIn("error", result)
+            self.assertIn("session", result["error"].lower())
+            self.assertIn(str(cap), result["error"])
+            # No new child should have been spawned.
+            self.assertEqual(mock_run.call_count, cap)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_session_cap_is_total_not_concurrent(self, mock_run):
+        """The cap is a per-session total, not a concurrency limit.
+
+        Regression for #52484: finished children must NOT free their slot,
+        otherwise a runaway model can spawn an unbounded total across turns.
+        """
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        parent.session_id = "session-total-test"
+        cap = 2
+        with patch("tools.delegate_tool._load_config") as mock_cfg:
+            mock_cfg.return_value = {"max_children_per_session": cap}
+            # Fill the cap.
+            for i in range(cap):
+                result = json.loads(delegate_task(
+                    goal=f"Task {i}", parent_agent=parent
+                ))
+                self.assertIn("results", result)
+                self.assertEqual(result["results"][0]["status"], "completed")
+
+            # Next call should be rejected.
+            result = json.loads(delegate_task(
+                goal="Over cap", parent_agent=parent
+            ))
+            self.assertIn("error", result)
+            self.assertIn("session", result["error"].lower())
+
+            # Even after the mocked children "finished" (mock_run already
+            # returned), the total count remains at the cap, so further calls
+            # are still rejected.
+            result = json.loads(delegate_task(
+                goal="After finish", parent_agent=parent
+            ))
+            self.assertIn("error", result)
+            self.assertIn("session", result["error"].lower())
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_session_cap_counts_batch_as_n_tasks(self, mock_run):
+        """A batch of N tasks consumes N slots from the per-session budget."""
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        parent.session_id = "session-batch-test"
+        cap = 3
+        with patch("tools.delegate_tool._load_config") as mock_cfg:
+            mock_cfg.return_value = {"max_children_per_session": cap}
+            # A batch of 2 consumes 2 slots; one more single should fit.
+            result = json.loads(delegate_task(
+                tasks=[{"goal": "A"}, {"goal": "B"}], parent_agent=parent
+            ))
+            self.assertIn("results", result)
+
+            result = json.loads(delegate_task(
+                goal="Single after batch", parent_agent=parent
+            ))
+            self.assertIn("results", result)
+
+            # A third single would exceed the cap (2 + 1 = 3 is already at cap;
+            # this 3rd single is the 4th slot).
+            result = json.loads(delegate_task(
+                goal="Over cap", parent_agent=parent
+            ))
+            self.assertIn("error", result)
+            self.assertIn("session", result["error"].lower())
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_session_cap_releases_budget_on_build_failure(self, mock_run, mock_build):
+        """If child construction fails, reserved budget slots must be released.
+
+        Regression safety: without the release, a failed batch would
+        permanently consume the session cap and block all future delegation.
+        """
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0,
+        }
+        mock_build.side_effect = [
+            MagicMock(),
+            RuntimeError("second child build failed"),
+        ]
+        parent = _make_mock_parent()
+        parent.session_id = "session-build-fail-test"
+        cap = 2
+        with patch("tools.delegate_tool._load_config") as mock_cfg:
+            mock_cfg.return_value = {"max_children_per_session": cap}
+            # The first child builds, but the second fails. Since dispatch only
+            # starts after every child is built, neither reservation is spent.
+            with self.assertRaises(RuntimeError):
+                delegate_task(
+                    tasks=[{"goal": "A"}, {"goal": "B"}], parent_agent=parent
+                )
+            mock_run.assert_not_called()
+
+            # A complete two-child retry must fit. Releasing only the unbuilt
+            # suffix would leave one phantom charge and reject this batch.
+            mock_build.side_effect = None
+            mock_build.return_value = MagicMock()
+            result = json.loads(delegate_task(
+                tasks=[{"goal": "C"}, {"goal": "D"}], parent_agent=parent
+            ))
+            self.assertIn("results", result)
+            self.assertEqual(len(result["results"]), 2)
+            self.assertTrue(
+                all(item["status"] == "completed" for item in result["results"])
+            )
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_cleanup_session_budget_removes_entry(self, mock_run):
+        """cleanup_session_budget() must drop the per-session budget entry.
+
+        Regression for #52484 follow-up: without cleanup, the module-level
+        _session_children_counts dict grows unbounded in long-running
+        gateway processes. The cleanup hook is called by hermes_state
+        session-delete paths.
+        """
+        from tools.delegate_tool import (
+            cleanup_session_budget,
+            _session_children_counts,
+            _session_children_lock,
+        )
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+        parent.session_id = "session-cleanup-test"
+        with patch("tools.delegate_tool._load_config") as mock_cfg:
+            mock_cfg.return_value = {"max_children_per_session": 5}
+            # Spawn one child to populate the budget.
+            result = json.loads(delegate_task(
+                goal="Task", parent_agent=parent
+            ))
+            self.assertIn("results", result)
+            # The budget entry must exist.
+            with _session_children_lock:
+                self.assertIn("session-cleanup-test", _session_children_counts)
+            # Cleanup must remove it.
+            cleanup_session_budget("session-cleanup-test")
+            with _session_children_lock:
+                self.assertNotIn("session-cleanup-test", _session_children_counts)
+            # Cleanup of an unknown session_id is a no-op (no error).
+            cleanup_session_budget("never-existed")
+            cleanup_session_budget("")
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_ignores_toplevel_goal(self, mock_run):

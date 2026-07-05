@@ -2389,6 +2389,11 @@ DEFAULT_CONFIG = {
                                        # delegation units. New async dispatches beyond the cap
                                        # fall back to synchronous execution. Floor of 1, no ceiling.
                                        # (Replaces the deprecated max_async_children.)
+        # Per-parent-session ceiling on the total number of subagent children that
+        # may be spawned across all delegate_task calls in the session. 0
+        # disables the cap. Prevents the runaway token-incineration scenario where
+        # a model calls delegate_task repeatedly without bound (issue #52484).
+        "max_children_per_session": 10,
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.

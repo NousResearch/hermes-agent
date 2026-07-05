@@ -886,7 +886,7 @@ def _clear_stale_cua_install_lock() -> None:
 
         if holder_pid is not None:
             try:
-                os.kill(holder_pid, 0)
+                os.kill(holder_pid, 0)  # windows-footgun: ok — function early-returns on win32
                 # Holder alive → a concurrent install is running; don't touch.
                 return
             except ProcessLookupError:
@@ -978,7 +978,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         import signal as _signal
         try:
             if not is_windows:
-                os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)  # windows-footgun: ok — POSIX branch only
             else:
                 proc.kill()
         except (OSError, ProcessLookupError):

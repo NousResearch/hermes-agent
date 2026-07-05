@@ -1813,6 +1813,7 @@ AUTHOR_MAP = {
     # batch salvage PR #35758 (perf micro-fixes)
     "116212274+amathxbt@users.noreply.github.com": "amathxbt",  # PR #22155 (cache tool_output_limits)
     "takis312@hotmail.com": "ErnestHysa",  # PRs #32636/#32708 (MCP asyncio.sleep + O(n^2) watcher drain)
+    "adrian@Adrians-MacBook-Pro.local": "alastraz",  # PR #41383 salvage (cua EAGAIN CLI-transport fallback)
     "me@simontaggart.com": "SiTaggart",  # PR #35583 (docker_forward_env empty-secret .env fallback)
     "2663402852@qq.com": "x1am1",  # PR #35098 (chown root-owned top-level HERMES_HOME state files)
     "nicsequenzy@gmail.com": "polnikale",  # PR #35717 (discover Playwright headless_shell browser)

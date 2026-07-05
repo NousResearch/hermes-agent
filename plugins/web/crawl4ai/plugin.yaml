@@ -1,0 +1,7 @@
+name: web-crawl4ai
+version: 1.0.0
+description: "Crawl4ai self-hosted web content extraction. Requires CRAWL4AI_URL and CRAWL4AI_API_TOKEN pointing at your instance."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - crawl4ai

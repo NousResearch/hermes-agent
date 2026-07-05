@@ -510,6 +510,59 @@ class TestWebServerEndpoints:
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
+    def test_put_moa_models_preserves_save_traces_and_trace_dir(self):
+        """PUT /api/model/moa round-trips save_traces and trace_dir."""
+        from hermes_cli.config import load_config
+
+        payload = {
+            "reference_models": [
+                {"provider": "openai-codex", "model": "gpt-5.5"},
+            ],
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+            "enabled": True,
+            "save_traces": True,
+            "trace_dir": "/tmp/moa-test-traces",
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        cfg = load_config()
+        assert cfg["moa"]["save_traces"] is True
+        assert cfg["moa"]["trace_dir"] == "/tmp/moa-test-traces"
+
+    def test_put_moa_models_preset_preserves_save_traces_and_trace_dir(self):
+        """PUT /api/model/moa preset branch round-trips save_traces and trace_dir."""
+        from hermes_cli.config import load_config
+
+        payload = {
+            "default_preset": "default",
+            "active_preset": "default",
+            "presets": {
+                "default": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5"},
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                    },
+                    "enabled": True,
+                    "save_traces": True,
+                    "trace_dir": "/tmp/moa-preset-traces",
+                },
+            },
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        cfg = load_config()
+        assert cfg["moa"]["save_traces"] is True
+        assert cfg["moa"]["trace_dir"] == "/tmp/moa-preset-traces"
+        assert cfg["moa"]["presets"]["default"]["save_traces"] is True
+        assert cfg["moa"]["presets"]["default"]["trace_dir"] == "/tmp/moa-preset-traces"
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

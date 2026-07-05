@@ -102,6 +102,8 @@ def _default_preset() -> dict[str, Any]:
         "reference_max_tokens": None,
         "fanout": "per_iteration",
         "enabled": True,
+        "save_traces": False,
+        "trace_dir": "",
     }
 
 
@@ -145,6 +147,8 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # aggregator gets their upfront plan-level advice, then acts alone
         # for the rest of the tool loop.
         "fanout": _coerce_fanout(raw.get("fanout")),
+        "save_traces": bool(raw.get("save_traces", False)),
+        "trace_dir": str(raw.get("trace_dir") or ""),
     }
 
 
@@ -193,6 +197,8 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "reference_max_tokens": active.get("reference_max_tokens"),
         "fanout": active.get("fanout", "per_iteration"),
         "enabled": active["enabled"],
+        "save_traces": active.get("save_traces", False),
+        "trace_dir": active.get("trace_dir", ""),
     }
 
 

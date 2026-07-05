@@ -482,7 +482,7 @@ def _env_enablement() -> dict | None:
     if home:
         seed["home_channel"] = {
             "chat_id": home,
-            "name": os.getenv("NTFY_HOME_CHANNEL_NAME", home),
+            "name": os.getenv("NTFY_HOME_CHANNEL_NAME", "").strip() or home,
         }
     return seed
 

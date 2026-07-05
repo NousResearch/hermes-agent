@@ -21,7 +21,7 @@ from hermes_cli.colors import Colors, color
 # ``_contains_gateway_lifecycle_command`` here for back-compat: ``tools/
 # terminal_tool.py`` imports it from this module to hard-block the same
 # commands at execution time when ``_HERMES_GATEWAY=1``.
-from cron.lifecycle_guard import (  # noqa: F401  (re-exported for terminal_tool)
+from cron.lifecycle_guard import (
     contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command,
 )
 

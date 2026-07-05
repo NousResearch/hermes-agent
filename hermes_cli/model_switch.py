@@ -1384,7 +1384,7 @@ def switch_model(
 # Process-level guard so the picker prewarm thread is spawned at most once per
 # process — mirrors run_agent's _openrouter_prewarm_done. Without a guard a
 # long-lived process (or repeated triggers) would leak one OS thread per call.
-import threading as _threading  # noqa: E402
+import threading as _threading
 
 _picker_prewarm_done = _threading.Event()
 

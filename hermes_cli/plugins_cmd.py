@@ -337,7 +337,7 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
     if not requires_env:
         return
 
-    from hermes_cli.config import get_env_value, save_env_value  # noqa: F811
+    from hermes_cli.config import get_env_value, save_env_value
     from hermes_constants import display_hermes_home
 
     # Normalise to list-of-dicts

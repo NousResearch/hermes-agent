@@ -6572,10 +6572,17 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    stream: bool = False,
+    stream_options: dict = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
     Same as call_llm() but async. See call_llm() for full documentation.
+
+    When ``stream=True``, returns the raw SDK ``AsyncStream`` iterator and
+    skips all response validation, temperature/max_tokens retry, and payment
+    fallback — mirroring the sync ``call_llm()`` streaming path. The caller
+    owns chunk reassembly, stale-stream detection, and non-streaming fallback.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
@@ -6656,6 +6663,15 @@ async def async_call_llm(
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+
+    # Streaming path: return the raw SDK AsyncStream iterator directly,
+    # mirroring the sync call_llm() streaming path. Skips all response
+    # validation, temperature/max_tokens retry, and payment fallback.
+    if stream:
+        kwargs["stream"] = True
+        if stream_options:
+            kwargs["stream_options"] = stream_options
+        return await client.chat.completions.create(**kwargs)
 
     try:
         # Retry ONCE on the same provider for a transient transport blip

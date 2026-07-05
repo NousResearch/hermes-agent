@@ -648,7 +648,7 @@ def _build_schema(
             "Call list_guilds first to discover guild_ids, then list_channels for "
             "channel_ids. Runtime errors will tell you if the bot lacks a specific "
             "per-guild permission (e.g. MANAGE_ROLES for add_role)."
-            f"{content_note}"
+            + content_note
         )
     else:
         description = (
@@ -657,7 +657,7 @@ def _build_schema(
             f"{manifest_block}\n\n"
             "Use the channel_id from the current conversation context. "
             "Use search_members to look up user IDs by name prefix."
-            f"{content_note}"
+            + content_note
         )
 
     properties: Dict[str, Any] = {

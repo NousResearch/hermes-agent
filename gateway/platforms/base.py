@@ -4595,6 +4595,13 @@ class BasePlatformAdapter(ABC):
 
         coerce_plaintext_gateway_command(event)
 
+        # Stamp source.profile from the adapter before session keying so
+        # multiplexed profiles get isolated sessions (agent:<profile>:…).
+        # Without this, build_session_key below uses the default namespace
+        # (agent:main) even when the adapter belongs to a secondary profile.
+        if not getattr(event.source, "profile", None):
+            event.source.profile = getattr(self, "profile_name", None)
+
         # Rewrite ``event.source.thread_id`` via the installed recovery hook
         # (Telegram DM topic mode) so the session key, guard checks, and
         # downstream delivery all agree on the same lane.

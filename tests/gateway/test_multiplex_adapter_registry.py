@@ -2,6 +2,7 @@
 import pytest
 
 from gateway.run import GatewayRunner
+from gateway.platforms.base import BasePlatformAdapter
 
 
 class _FakeAdapter:
@@ -260,3 +261,63 @@ class TestSlashCommandProfileRouting:
 
         assert secondary_tg.resumed == ["chat-2"]
         assert default_tg.resumed == []
+
+
+class _ConcreteAdapter(BasePlatformAdapter):
+    """Minimal concrete adapter for testing profile stamping."""
+    async def connect(self): pass
+    async def disconnect(self): pass
+    async def send(self, *a, **kw): pass
+    async def get_chat_info(self, *a, **kw): return {}
+
+
+class TestProfileStampingBeforeSessionKey:
+    """handle_message must stamp source.profile from adapter.profile_name
+    BEFORE computing the session key, so multiplexed profiles get isolated
+    sessions (agent:<profile>:…) instead of sharing agent:main:…."""
+
+    def _make_adapter(self, profile_name="secondary"):
+        from gateway.config import Platform, PlatformConfig
+        adapter = _ConcreteAdapter(PlatformConfig(enabled=True), Platform.TELEGRAM)
+        adapter.profile_name = profile_name
+        # Set a no-op handler so handle_message doesn't return early
+        async def _noop(event):
+            return None
+        adapter._message_handler = _noop
+        return adapter
+
+    def _make_source(self, profile=None):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="u1",
+            profile=profile,
+        )
+
+    def test_profile_stamped_from_adapter(self):
+        import asyncio
+        from gateway.platforms.base import MessageEvent
+
+        adapter = self._make_adapter("secondary")
+        source = self._make_source(profile=None)
+        assert source.profile is None  # not yet stamped
+
+        event = MessageEvent(source=source, text="/status")
+        asyncio.run(adapter.handle_message(event))
+
+        assert source.profile == "secondary"
+
+    def test_existing_profile_not_overwritten(self):
+        import asyncio
+        from gateway.platforms.base import MessageEvent
+
+        adapter = self._make_adapter("secondary")
+        source = self._make_source(profile="already-set")
+
+        event = MessageEvent(source=source, text="/status")
+        asyncio.run(adapter.handle_message(event))
+
+        assert source.profile == "already-set"  # not overwritten

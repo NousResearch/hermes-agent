@@ -17040,6 +17040,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             progress_msg_id = None   # ID of the current progress message to edit
             can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
+            _first_progress_seen_ts = None  # Short initial debounce to avoid orphaning the first tool bubble
+            _FIRST_PROGRESS_SEND_DELAY = 0.75 if source.platform == Platform.TELEGRAM else 0.0
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
             _progress_len_fn = (
@@ -17323,6 +17325,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # linearization regression after PR #7885.)
                         progress_msg_id = None
                         progress_lines = []
+                        _first_progress_seen_ts = None
                         last_progress_msg[0] = None
                         repeat_count[0] = 0
                         continue
@@ -17336,6 +17339,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _run_still_current():
                             await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
                         continue
+
+                    # Initial coalescing: don't send the very first progress
+                    # bubble immediately. In live chats that made the first
+                    # tool appear as its own orphan bubble, with the rest of
+                    # the turn accumulating below it. Hold the first send for
+                    # a short window so the first burst of tool.started events
+                    # lands in the same editable bubble. Later updates still
+                    # use the normal edit throttle below.
+                    if can_edit and progress_msg_id is None:
+                        _now = time.monotonic()
+                        if _first_progress_seen_ts is None:
+                            _first_progress_seen_ts = _now
+                        _remaining_initial = _FIRST_PROGRESS_SEND_DELAY - (_now - _first_progress_seen_ts)
+                        if _remaining_initial > 0:
+                            await asyncio.sleep(min(_remaining_initial, 0.3))
+                            continue
 
                     # Throttle edits: batch rapid tool updates into fewer
                     # API calls to avoid hitting Telegram flood control.
@@ -17463,6 +17482,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         pass
                                 progress_msg_id = None
                                 progress_lines = []
+                                _first_progress_seen_ts = None
                                 last_progress_msg[0] = None
                                 repeat_count[0] = 0
                             else:
@@ -17470,7 +17490,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 await _roll_progress_overflow_if_needed()
                         except Exception:
                             break
-                    # Final edit with all remaining tools (only if editing works)
+                    # Final send/edit with all remaining tools. If the task
+                    # finished during the initial coalescing delay, no progress
+                    # bubble exists yet; send the accumulated first burst once
+                    # instead of dropping it or leaving the first event alone.
+                    if can_edit and progress_lines and not progress_msg_id:
+                        await _roll_progress_overflow_if_needed()
+                    if can_edit and progress_lines and not progress_msg_id:
+                        try:
+                            result = await _send_progress_text(_progress_text(progress_lines))
+                            if result.success and result.message_id:
+                                progress_msg_id = result.message_id
+                        except Exception:
+                            pass
                     if can_edit and progress_lines and progress_msg_id:
                         await _roll_progress_overflow_if_needed()
                     if can_edit and progress_lines and progress_msg_id:

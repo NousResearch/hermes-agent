@@ -308,7 +308,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 terminal\n└ "pwd"',
+            "content": '💻 terminal\n└ "pwd"\n\n⚙️ browser_navigate\n└ "https://example.com"',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
@@ -793,6 +793,34 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_run_agent_coalesces_initial_progress_burst(monkeypatch, tmp_path):
+    """The first tool-progress message should not be orphaned by itself.
+
+    The gateway used to send the first tool line immediately, then accumulate
+    the rest of the turn in a later bubble. A short initial debounce should make
+    the first bubble already contain the initial burst of tool calls.
+    """
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DelayedProgressAgent,
+        session_id="sess-progress-initial-coalesce",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    first_content = adapter.sent[0]["content"]
+    assert "first command" in first_content
+    assert "second command" in first_content
 
 
 @pytest.mark.asyncio

@@ -605,9 +605,10 @@ def _consume_codex_event_stream(
             _raise_stream_error(event)
 
         # Track the phase of the active streamed message item.  Codex/Harmony
-        # ``commentary``/``analysis`` text is protocol/tool preamble, not the
-        # final answer.  We still collect completed output items for replay, but
-        # suppress those deltas from live user-visible callbacks.
+        # ``commentary``/``analysis`` text is mid-turn preamble/progress
+        # narration, never the final answer.  We still collect completed output
+        # items for replay, but route those deltas to the reasoning callback so
+        # they display like thinking text instead of assistant content.
         if event_type == "response.output_item.added":
             item = _event_field(event, "item")
             item_type = _item_field(item, "type", "")
@@ -623,7 +624,15 @@ def _consume_codex_event_stream(
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
             delta_text = _event_field(event, "delta", "")
             is_commentary_delta = active_message_phase in {"commentary", "analysis"}
-            if delta_text and not is_commentary_delta:
+            if delta_text and is_commentary_delta:
+                # Commentary streams through the reasoning channel, not the
+                # visible answer stream (and stays out of output_text).
+                if on_reasoning_delta is not None:
+                    try:
+                        on_reasoning_delta(delta_text)
+                    except Exception:
+                        logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+            elif delta_text:
                 collected_text_deltas.append(delta_text)
                 if not has_tool_calls:
                     if not first_delta_fired:

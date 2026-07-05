@@ -836,6 +836,13 @@ PLATFORM_HINTS = {
         "code fences). Treat this like a conversation, not a document. Keep responses "
         "brief and natural."
     ),
+    "caduceus": (
+        "You are chatting through Caduceus, a user-facing Hermes relay chat "
+        "client. Treat this as a human messaging conversation, not a raw API "
+        "request or batch job. Markdown is supported for concise bullets, links, "
+        "and code snippets when useful. Keep final responses natural and "
+        "user-facing."
+    ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "
         "Full Markdown rendering is supported — headings, bold, italic, code "

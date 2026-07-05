@@ -478,6 +478,54 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["model"] == "primary/model"
 
+    def test_create_agent_accepts_client_platform_but_keeps_api_server_toolsets(self, monkeypatch):
+        captured = {}
+        toolset_platforms = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {})
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: {}))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda _config, platform: toolset_platforms.append(platform) or {"terminal"},
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(session_id="api-session", presentation_platform="caduceus")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["platform"] == "caduceus"
+        assert captured["enabled_toolsets"] == ["terminal"]
+        assert toolset_platforms == ["api_server"]
+
+    def test_client_platform_header_normalizes_to_safe_lowercase(self, adapter):
+        request = MagicMock()
+        request.headers = {"X-Hermes-Client-Platform": " Caduceus "}
+
+        platform, err = adapter._parse_client_platform_header(request)
+
+        assert err is None
+        assert platform == "caduceus"
+
+    def test_client_platform_header_rejects_invalid_values(self, adapter):
+        request = MagicMock()
+        request.headers = {"X-Hermes-Client-Platform": "bad platform"}
+
+        platform, err = adapter._parse_client_platform_header(request)
+
+        assert platform is None
+        assert err is not None
+        assert err.status == 400
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -662,6 +710,40 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+
+    @pytest.mark.asyncio
+    async def test_run_agent_binds_client_platform_but_keeps_async_delivery_off(self, adapter):
+        captured = {}
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def run_conversation(**_kwargs):
+            from gateway.session_context import async_delivery_supported, get_session_env
+
+            captured["platform"] = get_session_env("HERMES_SESSION_PLATFORM")
+            captured["source"] = get_session_env("HERMES_SESSION_SOURCE")
+            captured["async_delivery"] = async_delivery_supported()
+            return {"final_response": "ok"}
+
+        mock_agent.run_conversation.side_effect = run_conversation
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent) as create_agent:
+            result, _usage = await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-123",
+                presentation_platform="caduceus",
+            )
+
+        assert result["final_response"] == "ok"
+        assert captured == {
+            "platform": "caduceus",
+            "source": "api_server",
+            "async_delivery": False,
+        }
+        assert create_agent.call_args.kwargs["presentation_platform"] == "caduceus"
 
 
 # ---------------------------------------------------------------------------

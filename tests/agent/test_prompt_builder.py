@@ -1029,7 +1029,14 @@ class TestPromptBuilderConstants:
         assert "cli" in PLATFORM_HINTS
         assert "tui" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
+        assert "caduceus" in PLATFORM_HINTS
         assert "webui" in PLATFORM_HINTS
+
+    def test_caduceus_hint_treats_relay_as_chat_surface(self):
+        hint = PLATFORM_HINTS["caduceus"].lower()
+        assert "human messaging conversation" in hint
+        assert "raw api" in hint
+        assert "user-facing" in hint
 
     def test_cli_and_tui_hints_flag_local_only_cron(self):
         """#51568 — cron jobs from CLI/TUI sessions don't deliver back into

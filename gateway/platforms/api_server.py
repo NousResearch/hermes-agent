@@ -545,7 +545,10 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, "
+        "X-Hermes-Session-Id, X-Hermes-Session-Key, X-Hermes-Client-Platform"
+    ),
 }
 
 
@@ -1084,6 +1087,14 @@ class APIServerAdapter(BasePlatformAdapter):
     # (e.g. ``agent:main:webui:dm:user-42``) while staying small enough
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
+    # Optional presentation-surface hint for API clients that are really
+    # user-facing chat adapters (for example Caduceus). The API server still
+    # owns the transport semantics (async delivery remains disabled), but the
+    # agent can receive the right platform hint and surface-aware policies such
+    # as verify-on-stop can treat the turn like human chat instead of a raw API
+    # request.
+    _CLIENT_PLATFORM_HEADER = "X-Hermes-Client-Platform"
+    _MAX_CLIENT_PLATFORM_HEADER_LEN = 64
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -1136,6 +1147,40 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         return raw, None
+
+    def _parse_client_platform_header(
+        self, request: Any
+    ) -> tuple[Optional[str], Any]:
+        """Extract an optional user-facing platform hint from the request.
+
+        ``X-Hermes-Client-Platform`` is intentionally separate from the API
+        server transport identity: it only changes prompt/display policy and
+        session context surface classification for this turn. Delivery remains
+        stateless because ``_bind_api_server_session`` always passes
+        ``async_delivery=False``.
+        """
+        raw = request.headers.get(self._CLIENT_PLATFORM_HEADER, "").strip()
+        if not raw:
+            return None, None
+
+        if re.search(r'[\r\n\x00]', raw):
+            return None, web.json_response(
+                _openai_error("Invalid client platform", code="invalid_client_platform"),
+                status=400,
+            )
+        if len(raw) > self._MAX_CLIENT_PLATFORM_HEADER_LEN:
+            return None, web.json_response(
+                _openai_error("Client platform too long", code="invalid_client_platform"),
+                status=400,
+            )
+
+        normalized = raw.lower()
+        if not re.fullmatch(r"[a-z0-9_.:-]+", normalized):
+            return None, web.json_response(
+                _openai_error("Invalid client platform", code="invalid_client_platform"),
+                status=400,
+            )
+        return normalized, None
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -1241,6 +1286,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        presentation_platform: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1256,11 +1302,14 @@ class APIServerAdapter(BasePlatformAdapter):
         key is meant to persist across transcripts so long-term memory
         providers (e.g. Honcho) can scope their per-chat state correctly
         — matching the semantics of the native gateway's ``session_key``.
-
         ``route`` is an optional ``model_routes`` entry (per-client model
         routing).  When set — and no session ``/model`` override exists for
         this session — its model/provider/api_key/base_url override the
         global defaults for this agent instance only.
+
+        ``presentation_platform`` optionally names the user-facing surface
+        behind the API call (for example ``caduceus``); the API-server
+        toolset remains selected from ``platform_toolsets.api_server``.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1351,7 +1400,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
-            platform="api_server",
+            platform=presentation_platform or "api_server",
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -1507,6 +1556,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
+                "client_platform_header": self._CLIENT_PLATFORM_HEADER,
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
@@ -1881,6 +1931,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        presentation_platform, platform_err = self._parse_client_platform_header(request)
+        if platform_err is not None:
+            return platform_err
         session_id = request.match_info["session_id"]
         _, err = self._get_existing_session_or_404(session_id)
         if err:
@@ -1901,6 +1954,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            presentation_platform=presentation_platform,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -1925,6 +1979,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        presentation_platform, platform_err = self._parse_client_platform_header(request)
+        if platform_err is not None:
+            return platform_err
         session_id = request.match_info["session_id"]
         _, err = self._get_existing_session_or_404(session_id)
         if err:
@@ -1992,6 +2049,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    presentation_platform=presentation_platform,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -2127,6 +2185,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        presentation_platform, platform_err = self._parse_client_platform_header(request)
+        if platform_err is not None:
+            return platform_err
 
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
@@ -2279,6 +2340,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                presentation_platform=presentation_platform,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2299,6 +2361,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                presentation_platform=presentation_platform,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2470,11 +2533,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
                 return time.monotonic()
 
-            # Stream content chunks as they arrive from the agent
+            # Stream content chunks as they arrive from the agent. Use the
+            # configured keepalive interval as the queue wait deadline instead
+            # of a fixed 500ms sleep so short test/client intervals cannot race
+            # against a quiet tool gap and miss the keepalive window.
             loop = asyncio.get_running_loop()
+
+            def _queue_wait_timeout() -> float:
+                remaining = CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS - (time.monotonic() - last_activity)
+                return max(0.0, min(0.5, remaining))
+
             while True:
                 try:
-                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=_queue_wait_timeout()))
                 except _q.Empty:
                     if agent_task.done():
                         # Drain any remaining items
@@ -2965,9 +3036,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         await _emit_text_delta(combined)
 
             loop = asyncio.get_running_loop()
+
+            def _queue_wait_timeout() -> float:
+                remaining = CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS - (time.monotonic() - last_activity)
+                return max(0.0, min(0.5, remaining))
+
             while True:
                 try:
-                    item = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    item = await loop.run_in_executor(None, lambda: stream_q.get(timeout=_queue_wait_timeout()))
                 except _q.Empty:
                     if agent_task.done():
                         # Drain remaining
@@ -3209,6 +3285,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        presentation_platform, platform_err = self._parse_client_platform_header(request)
+        if platform_err is not None:
+            return platform_err
 
         # Parse request body
         try:
@@ -3366,6 +3445,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                presentation_platform=presentation_platform,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -3400,6 +3480,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                presentation_platform=presentation_platform,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3992,16 +4073,17 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_id: str = "",
         session_key: str = "",
         session_id: str = "",
+        presentation_platform: Optional[str] = None,
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
         This is the SINGLE structural chokepoint every API-server agent-entry
-        path must use to seed session context — it hardwires
-        ``platform="api_server"`` and ``async_delivery=False`` so a new route
-        physically cannot reintroduce the silent-no-op bug (#10760) by
-        forgetting to mark the channel as non-delivering. There is no
-        ``async_delivery`` parameter to get wrong; the stateless HTTP path can
-        never wake the agent after the turn ends, on ANY route.
+        path must use to seed session context. It always sets
+        ``async_delivery=False`` so a new route physically cannot reintroduce
+        the silent-no-op bug (#10760) by forgetting to mark the channel as
+        non-delivering. The optional presentation platform is only a
+        user-facing surface hint; the stateless HTTP path can never wake the
+        agent after the turn ends, on ANY route.
 
         Returns reset tokens; pass them to ``clear_session_vars`` in a
         ``finally`` block (the binding is request-scoped and must not outlive
@@ -4011,7 +4093,8 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.session_context import set_session_vars
 
         return set_session_vars(
-            platform="api_server",
+            platform=presentation_platform or "api_server",
+            source="api_server",
             chat_id=chat_id,
             session_key=session_key,
             session_id=session_id,
@@ -4031,6 +4114,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        presentation_platform: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4056,6 +4140,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 chat_id=session_id or "",
                 session_key=gateway_session_key or session_id or "",
                 session_id=session_id or "",
+                presentation_platform=presentation_platform,
             )
             try:
                 agent = self._create_agent(
@@ -4067,6 +4152,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    presentation_platform=presentation_platform,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -4175,6 +4261,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        presentation_platform, platform_err = self._parse_client_platform_header(request)
+        if platform_err is not None:
+            return platform_err
 
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
@@ -4295,6 +4384,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    presentation_platform=presentation_platform,
                 )
                 self._active_run_agents[run_id] = agent
 
@@ -4343,6 +4433,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         approval_token = set_current_session_key(approval_session_key)
                         session_tokens = self._bind_api_server_session(
                             session_key=approval_session_key,
+                            presentation_platform=presentation_platform,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(

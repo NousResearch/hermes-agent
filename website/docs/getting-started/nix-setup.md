@@ -648,7 +648,7 @@ For pip-packaged plugins that register via `[project.entry-points."hermes_agent.
 
 ```nix
 services.hermes-agent.extraPythonPackages = [
-  (pkgs.python312Packages.buildPythonPackage {
+  (pkgs.python313Packages.buildPythonPackage {
     pname = "rtk-hermes";
     version = "1.0.0";
     src = pkgs.fetchFromGitHub {
@@ -658,7 +658,7 @@ services.hermes-agent.extraPythonPackages = [
       hash = "sha256-...";
     };
     format = "pyproject";
-    build-system = [ pkgs.python312Packages.setuptools ];
+    build-system = [ pkgs.python313Packages.setuptools ];
   })
 ];
 ```
@@ -722,7 +722,7 @@ A directory plugin with third-party Python dependencies needs both options:
 ```nix
 services.hermes-agent = {
   extraPlugins = [ my-plugin-src ];          # plugin source
-  extraPythonPackages = [ pkgs.python312Packages.redis ];  # its Python dep
+  extraPythonPackages = [ pkgs.python313Packages.redis ];  # its Python dep
   extraPackages = [ pkgs.redis ];            # system binary it needs
 };
 ```
@@ -883,7 +883,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraArgs` | `listOf str` | `[]` | Extra args for `hermes gateway` |
 | `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
-| `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Build with `python312Packages` |
+| `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Build with `python313Packages` |
 | `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["hindsight"]`). Resolved by uv — no collisions |
 | `restart` | `str` | `"always"` | systemd `Restart=` policy |
 | `restartSec` | `int` | `5` | systemd `RestartSec=` value |

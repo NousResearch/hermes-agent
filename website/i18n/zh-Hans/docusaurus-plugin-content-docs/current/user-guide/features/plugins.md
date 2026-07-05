@@ -252,7 +252,7 @@ services.hermes-agent = {
   # 目录插件（包含 plugin.yaml 的源码树）
   extraPlugins = [ (pkgs.fetchFromGitHub { ... }) ];
   # 入口点插件（pip 包）
-  extraPythonPackages = [ (pkgs.python312Packages.buildPythonPackage { ... }) ];
+  extraPythonPackages = [ (pkgs.python313Packages.buildPythonPackage { ... }) ];
   # 在 config 中启用
   settings.plugins.enabled = [ "my-plugin" ];
 };

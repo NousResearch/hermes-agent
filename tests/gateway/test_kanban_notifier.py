@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from pathlib import Path
 
 
@@ -10,9 +11,13 @@ from hermes_cli import kanban_db as kb
 class RecordingAdapter:
     def __init__(self):
         self.sent = []
+        self.handled = []
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def handle_message(self, event):
+        self.handled.append(event)
 
 
 class DisconnectedAdapters(dict):
@@ -292,6 +297,116 @@ def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypat
     # The claim is rewound (adapter resolved to None → treated as disconnected),
     # so the event is still unseen and will deliver once beta's adapter connects.
     assert [ev.kind for ev in _unseen_terminal_events_for(tid, "chat-beta")] == ["completed"]
+
+
+def test_notifier_wakeup_uses_subscription_chat_type(tmp_path, monkeypatch):
+    db_path = tmp_path / "chat-type-wakeup.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="dm requester",
+            assignee="worker",
+            session_id="origin-session",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-dm",
+            chat_type="dm",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
+    assert adapter.handled[0].source.chat_type == "dm"
+
+
+def test_auto_subscribe_persists_session_chat_type(tmp_path, monkeypatch):
+    db_path = tmp_path / "auto-sub-chat-type.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import kanban_tools
+
+    monkeypatch.setattr(
+        kanban_tools,
+        "load_config",
+        lambda: {"kanban": {"auto_subscribe_on_create": True}},
+    )
+
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="chat-dm",
+        chat_type="dm",
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="auto sub", assignee="worker")
+
+        assert kanban_tools._maybe_auto_subscribe(conn, tid) is True
+        [sub] = kb.list_notify_subs(conn, task_id=tid)
+        assert sub["chat_type"] == "dm"
+    finally:
+        conn.close()
+        clear_session_vars(tokens)
+
+
+def test_notify_sub_migration_adds_chat_type_to_legacy_table(tmp_path, monkeypatch):
+    db_path = tmp_path / "legacy-notify-sub.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+
+    legacy = sqlite3.connect(db_path)
+    try:
+        legacy.execute(
+            """
+            CREATE TABLE kanban_notify_subs (
+                task_id       TEXT NOT NULL,
+                platform      TEXT NOT NULL,
+                chat_id       TEXT NOT NULL,
+                thread_id     TEXT NOT NULL DEFAULT '',
+                user_id       TEXT,
+                notifier_profile TEXT,
+                created_at    INTEGER NOT NULL,
+                last_event_id INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (task_id, platform, chat_id, thread_id)
+            )
+            """
+        )
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(kanban_notify_subs)")
+        }
+        assert "chat_type" in cols
+
+        tid = kb.create_task(conn, title="legacy sub", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-dm",
+            chat_type="dm",
+        )
+        [sub] = kb.list_notify_subs(conn, task_id=tid)
+        assert sub["chat_type"] == "dm"
+    finally:
+        conn.close()
 
 
 def _unseen_terminal_events_for(tid, chat_id):

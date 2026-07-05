@@ -67,7 +67,7 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
         cwd=None,  # falls back to TERMINAL_CWD env var
         fields=("model", "context_pct", "cwd"),
     )
-    assert out == "gpt-5.4 · 68% · ~/projects/hermes"
+    assert out == "gpt-5.4 · ctx 68% · ~/projects/hermes"
 
 
 def test_format_footer_skips_missing_context_length():
@@ -92,7 +92,7 @@ def test_format_footer_context_pct_clamped_to_100():
         cwd="",
         fields=("context_pct",),
     )
-    assert out == "100%"
+    assert out == "ctx 100%"
 
 
 def test_format_footer_context_pct_never_negative():
@@ -124,7 +124,7 @@ def test_format_footer_drops_cwd_when_empty(monkeypatch):
         fields=("model", "context_pct", "cwd"),
     )
     # cwd silently dropped; model + pct remain
-    assert out == "gpt-5.4 · 50%"
+    assert out == "gpt-5.4 · ctx 50%"
 
 
 def test_format_footer_custom_field_order():
@@ -134,7 +134,7 @@ def test_format_footer_custom_field_order():
         cwd="/opt/project",
         fields=("context_pct", "model"),  # swapped + no cwd
     )
-    assert out == "50% · gpt-5.4"
+    assert out == "ctx 50% · gpt-5.4"
 
 
 def test_format_footer_unknown_field_silently_ignored():
@@ -144,7 +144,41 @@ def test_format_footer_unknown_field_silently_ignored():
         cwd="/x",
         fields=("model", "bogus", "context_pct"),
     )
-    assert out == "gpt-5.4 · 50%"
+    assert out == "gpt-5.4 · ctx 50%"
+
+
+def test_format_footer_labels_cache_context_and_session_fields():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50,
+        context_length=100,
+        cwd="",
+        fields=("context_pct", "hit_pct", "avg_hit_pct", "session_tokens", "turns"),
+        session_tokens=123456,
+        session_cache_read_tokens=300,
+        session_prompt_tokens=1000,
+        turn_count=5,
+        last_turn_prompt_tokens=200,
+        last_turn_cached_tokens=80,
+    )
+    assert out == "ctx 50% · hit 40% · avg hit 30% · sess 123,456T · 5轮"
+
+
+def test_format_footer_skips_zero_session_fields_and_clamps_hit_pct():
+    out = format_runtime_footer(
+        model="",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        fields=("hit_pct", "avg_hit_pct", "session_tokens", "turns"),
+        session_tokens=0,
+        session_cache_read_tokens=500,
+        session_prompt_tokens=100,
+        turn_count=0,
+        last_turn_prompt_tokens=100,
+        last_turn_cached_tokens=150,
+    )
+    assert out == "hit 100% · avg hit 100%"
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +262,7 @@ def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
     )
     (tmp_path / "proj").mkdir(exist_ok=True)
     assert "gpt-5.4" in out
-    assert "25%" in out
+    assert "ctx 25%" in out
 
 
 def test_build_footer_per_platform_off_suppresses():

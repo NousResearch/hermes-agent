@@ -11320,6 +11320,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    session_tokens=agent_result.get("session_tokens", 0) or 0,
+                    session_cache_read_tokens=agent_result.get("session_cache_read_tokens", 0) or 0,
+                    session_prompt_tokens=agent_result.get("session_prompt_tokens", 0) or 0,
+                    turn_count=agent_result.get("turn_count", 0) or 0,
+                    last_turn_prompt_tokens=agent_result.get("last_turn_prompt_tokens", 0) or 0,
+                    last_turn_cached_tokens=agent_result.get("last_turn_cached_tokens", 0) or 0,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -18359,6 +18365,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "session_tokens": getattr(_agent, "session_total_tokens", 0) if _agent else 0,
+                    "session_cache_read_tokens": getattr(_agent, "session_cache_read_tokens", 0) if _agent else 0,
+                    "session_prompt_tokens": getattr(_agent, "session_prompt_tokens", 0) if _agent else 0,
+                    "turn_count": getattr(_agent, "_user_turn_count", 0) if _agent else 0,
+                    "last_turn_prompt_tokens": getattr(_agent, "_last_turn_prompt_tokens", 0) if _agent else 0,
+                    "last_turn_cached_tokens": getattr(_agent, "_last_turn_cached_tokens", 0) if _agent else 0,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -18460,6 +18472,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
+                "session_tokens": getattr(_agent, "session_total_tokens", 0) if _agent else 0,
+                "session_cache_read_tokens": getattr(_agent, "session_cache_read_tokens", 0) if _agent else 0,
+                "session_prompt_tokens": getattr(_agent, "session_prompt_tokens", 0) if _agent else 0,
+                "turn_count": getattr(_agent, "_user_turn_count", 0) if _agent else 0,
+                "last_turn_prompt_tokens": getattr(_agent, "_last_turn_prompt_tokens", 0) if _agent else 0,
+                "last_turn_cached_tokens": getattr(_agent, "_last_turn_cached_tokens", 0) if _agent else 0,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
                 # Pass through the agent_persisted flag so the persistence block

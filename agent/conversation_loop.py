@@ -2112,6 +2112,9 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+                    # Track per-turn values for footer display
+                    agent._last_turn_prompt_tokens = prompt_tokens
+                    agent._last_turn_cached_tokens = canonical_usage.cache_read_tokens
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""

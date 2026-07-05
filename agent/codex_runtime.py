@@ -177,6 +177,8 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+    agent._last_turn_prompt_tokens = prompt_tokens
+    agent._last_turn_cached_tokens = canonical_usage.cache_read_tokens
 
     cost_result = estimate_usage_cost(
         agent.model,

@@ -1,15 +1,16 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
-appends it to the FINAL message of an agent turn when enabled.  Off by default
-to keep replies minimal.
+Renders a compact footer showing runtime state (model, context %, cache hit %,
+session tokens, turn count, cwd) and appends it to the FINAL message of an agent
+turn when enabled.  Off by default to keep replies minimal.
 
 Config (``~/.hermes/config.yaml``)::
 
     display:
       runtime_footer:
         enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        fields: [model, hit_pct, session_tokens, context_pct, turns, cwd]
+                                           # order shown; drop any to hide
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -51,6 +52,10 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _pct(numerator: int, denominator: int) -> int:
+    return max(0, min(100, round((numerator / denominator) * 100)))
 
 
 def resolve_footer_config(
@@ -95,6 +100,12 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    session_tokens: int = 0,
+    session_cache_read_tokens: int = 0,
+    session_prompt_tokens: int = 0,
+    turn_count: int = 0,
+    last_turn_prompt_tokens: int = 0,
+    last_turn_cached_tokens: int = 0,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -109,12 +120,25 @@ def format_runtime_footer(
                 parts.append(m)
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
-                pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                parts.append(f"{pct}%")
+                parts.append(f"ctx {_pct(context_tokens, context_length)}%")
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "hit_pct":
+            if last_turn_prompt_tokens > 0 and last_turn_cached_tokens >= 0:
+                parts.append(f"hit {_pct(last_turn_cached_tokens, last_turn_prompt_tokens)}%")
+        elif field == "avg_hit_pct":
+            if session_prompt_tokens > 0 and session_cache_read_tokens >= 0:
+                parts.append(f"avg hit {_pct(session_cache_read_tokens, session_prompt_tokens)}%")
+            elif last_turn_prompt_tokens > 0:
+                parts.append("avg hit 0%")
+        elif field == "session_tokens":
+            if session_tokens > 0:
+                parts.append(f"sess {session_tokens:,}T")
+        elif field == "turns":
+            if turn_count > 0:
+                parts.append(f"{turn_count}轮")
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +154,12 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    session_tokens: int = 0,
+    session_cache_read_tokens: int = 0,
+    session_prompt_tokens: int = 0,
+    turn_count: int = 0,
+    last_turn_prompt_tokens: int = 0,
+    last_turn_cached_tokens: int = 0,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -146,4 +176,10 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        session_tokens=session_tokens,
+        session_cache_read_tokens=session_cache_read_tokens,
+        session_prompt_tokens=session_prompt_tokens,
+        turn_count=turn_count,
+        last_turn_prompt_tokens=last_turn_prompt_tokens,
+        last_turn_cached_tokens=last_turn_cached_tokens,
     )

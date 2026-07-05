@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import mimetypes
@@ -217,6 +218,24 @@ class QQAdapter(BasePlatformAdapter):
             extra.get("group_allow_from") or extra.get("groupAllowFrom")
         )
 
+        # Group full-message mode: controls behavior when GROUP_MESSAGE_CREATE
+        # events arrive (group owner enabled "全部消息").
+        #   "smart"       — (default) only trigger agent when message starts
+        #                   with a trigger keyword (AI, 机器人, bot name, or
+        #                   custom patterns)
+        #   "respond_all" — trigger agent for every group message
+        #   "observe"     — receive but never trigger agent (log only)
+        self._group_full_message_mode: str = str(
+            extra.get("group_full_message_mode", "smart")
+        ).strip().lower()
+        if self._group_full_message_mode not in ("smart", "respond_all", "observe"):
+            self._group_full_message_mode = "smart"
+
+        # Custom trigger patterns for smart mode (prefix match, case-insensitive).
+        self._group_trigger_patterns: List[str] = self._parse_trigger_patterns(
+            extra.get("group_trigger_patterns")
+        )
+
         # Connection state
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -225,6 +244,7 @@ class QQAdapter(BasePlatformAdapter):
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
+        self._bot_username: Optional[str] = None  # extracted from READY event
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
@@ -278,7 +298,7 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Authenticate, obtain gateway URL, and open the WebSocket."""
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
@@ -835,6 +855,7 @@ class QQAdapter(BasePlatformAdapter):
 
         # op 0 = Dispatch
         if op == 0 and t:
+            logger.info("[%s] Dispatch event: t=%s", self._log_tag, t)
             if t == "READY":
                 self._handle_ready(d)
             elif t == "RESUMED":
@@ -842,6 +863,7 @@ class QQAdapter(BasePlatformAdapter):
             elif t in {
                     "C2C_MESSAGE_CREATE",
                     "GROUP_AT_MESSAGE_CREATE",
+                    "GROUP_MESSAGE_CREATE",
                     "DIRECT_MESSAGE_CREATE",
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
@@ -850,7 +872,7 @@ class QQAdapter(BasePlatformAdapter):
             elif t == "INTERACTION_CREATE":
                 self._create_task(self._on_interaction(d))
             else:
-                logger.debug("[%s] Unhandled dispatch: %s", self._log_tag, t)
+                logger.info("[%s] Unhandled dispatch: %s", self._log_tag, t)
             return
 
         # op 11 = Heartbeat ACK
@@ -886,10 +908,22 @@ class QQAdapter(BasePlatformAdapter):
         logger.debug("[%s] Unknown op: %s", self._log_tag, op)
 
     def _handle_ready(self, d: Any) -> None:
-        """Handle the READY event — store session_id for resume."""
+        """Handle the READY event — store session_id and bot username."""
         if isinstance(d, dict):
             self._session_id = d.get("session_id")
-            logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
+            user = d.get("user")
+            if isinstance(user, dict):
+                username = user.get("username")
+                if username:
+                    self._bot_username = username
+                    logger.info(
+                        "[%s] Ready, session_id=%s, bot_username=%s",
+                        self._log_tag, self._session_id, username,
+                    )
+                else:
+                    logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
+            else:
+                logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
 
     # ------------------------------------------------------------------
     # JSON helpers
@@ -926,23 +960,30 @@ class QQAdapter(BasePlatformAdapter):
         if not isinstance(d, dict):
             return
 
+        logger.info(
+            "[%s] _on_message: event_type=%s msg_id=%s",
+            self._log_tag, event_type, str(d.get("id", ""))[:20],
+        )
+
         # Extract common fields
         msg_id = str(d.get("id", ""))
-        if not msg_id or self._is_duplicate(msg_id):
+        content = str(d.get("content", "")).strip()
+        if not msg_id or self._is_duplicate(msg_id, content):
             logger.debug(
                 "[%s] Duplicate or missing message id: %s", self._log_tag, msg_id
             )
             return
 
         timestamp = str(d.get("timestamp", ""))
-        content = str(d.get("content", "")).strip()
         author = d.get("author") if isinstance(d.get("author"), dict) else {}
 
         # Route by event type
         if event_type == "C2C_MESSAGE_CREATE":
             await self._handle_c2c_message(d, msg_id, content, author, timestamp)
-        elif event_type in {"GROUP_AT_MESSAGE_CREATE",}:
-            await self._handle_group_message(d, msg_id, content, author, timestamp)
+        elif event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}:
+            await self._handle_group_message(
+                d, msg_id, content, author, timestamp, event_type=event_type
+            )
         elif event_type in {"GUILD_MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"}:
             await self._handle_guild_message(d, msg_id, content, author, timestamp)
         elif event_type == "DIRECT_MESSAGE_CREATE":
@@ -1304,8 +1345,9 @@ class QQAdapter(BasePlatformAdapter):
             content: str,
             author: Dict[str, Any],
             timestamp: str,
+            event_type: str = "GROUP_AT_MESSAGE_CREATE",
     ) -> None:
-        """Handle a group @-message event."""
+        """Handle a group message event (@-mention or full-message)."""
         group_openid = str(d.get("group_openid", ""))
         if not group_openid:
             return
@@ -1313,6 +1355,37 @@ class QQAdapter(BasePlatformAdapter):
                 group_openid, str(author.get("member_openid", ""))
         ):
             return
+
+        logger.info(
+            "[%s] Group message: event=%s group=%s user=%s msg=%s content_preview=%r",
+            self._log_tag, event_type, group_openid,
+            str(author.get("member_openid", ""))[:12],
+            msg_id[:20], content[:50],
+        )
+
+        # Smart trigger detection: decide whether to invoke the agent.
+        # GROUP_AT_MESSAGE_CREATE always triggers; GROUP_MESSAGE_CREATE
+        # is filtered by _should_trigger_agent based on mode + keywords.
+        #
+        # For voice messages, content is empty — the actual text comes from
+        # STT transcription in _process_attachments.  So for GROUP_MESSAGE_CREATE
+        # we defer the trigger check until after attachment processing, then
+        # test against the combined text (content + voice transcripts).
+        if not self._should_trigger_agent(event_type, content):
+            # Content-based check failed — but if this is a GROUP_MESSAGE_CREATE
+            # with attachments (e.g. voice), we need to process attachments first
+            # to get the transcribed text, then re-check.
+            if event_type != "GROUP_MESSAGE_CREATE":
+                logger.debug(
+                    "[%s] Skipping non-triggering group message "
+                    "(group=%s msg=%s mode=%s content_preview=%r)",
+                    self._log_tag, group_openid, msg_id,
+                    self._group_full_message_mode, content[:50],
+                )
+                return
+            # Defer check — process attachments to get voice transcript
+            # then re-evaluate trigger against the full text.
+            pass
 
         # Strip the @bot mention prefix from content
         text = self._strip_at_mention(content)
@@ -1334,6 +1407,31 @@ class QQAdapter(BasePlatformAdapter):
                 if text.strip()
                 else attachment_info
             )
+
+        # Re-strip @-mention and [Voice] prefix from the combined text.
+        # Voice transcripts may contain <@openid> or [Voice] prefix that
+        # needs to be cleaned before passing to the agent.
+        text = self._strip_at_mention(text)
+        if text.startswith("[Voice] "):
+            text = text[len("[Voice] "):].strip()
+
+        # Deferred smart-mode trigger check for GROUP_MESSAGE_CREATE:
+        # Now that we have the full text (including voice transcripts), re-check.
+        # But only re-check if the first check failed (i.e. this is a deferred
+        # voice/attachment message). If the first check already passed (e.g.
+        # <@openid> mention or keyword prefix), don't re-check — the strip
+        # removed the trigger prefix and re-checking would fail.
+        first_check_passed = self._should_trigger_agent(event_type, content)
+        if event_type == "GROUP_MESSAGE_CREATE" and not first_check_passed:
+            # First check failed — re-check with the full text (including STT)
+            if not self._should_trigger_agent(event_type, text):
+                logger.debug(
+                    "[%s] Skipping non-triggering group message after STT "
+                    "(group=%s msg=%s mode=%s text_preview=%r)",
+                    self._log_tag, group_openid, msg_id,
+                    self._group_full_message_mode, text[:50],
+                )
+                return
 
         # Merge any quoted-message context (message_type=103 → msg_elements[0]).
         quoted = await self._process_quoted_context(d)
@@ -3128,19 +3226,127 @@ class QQAdapter(BasePlatformAdapter):
         return urlparse(str(source)).scheme in {"http", "https"}
 
     def _guess_chat_type(self, chat_id: str) -> str:
-        """Determine chat type from stored inbound metadata, fallback to 'c2c'."""
+        """Determine chat type from stored inbound metadata, fallback to config."""
         if chat_id in self._chat_type_map:
             return self._chat_type_map[chat_id]
+        # Fallback: check if chat_id is in group allowlist
+        if self._group_policy == "open":
+            return "group"
+        if self._group_policy == "allowlist" and self._entry_matches(self._group_allow_from, chat_id):
+            return "group"
         return "c2c"
 
     @staticmethod
     def _strip_at_mention(content: str) -> str:
         """Strip the @bot mention prefix from group message content."""
-        # QQ group @-messages may have the bot's QQ/ID as prefix
         import re
 
-        stripped = re.sub(r"^@\S+\s*", "", content.strip())
+        stripped = content.strip()
+        # QQ group @-messages may have <@openid> prefix or @name prefix
+        stripped = re.sub(r"^<@\w+>\s*", "", stripped)
+        stripped = re.sub(r"^@\S+\s*", "", stripped)
         return stripped
+
+    # ------------------------------------------------------------------
+    # Smart-mode trigger detection for GROUP_MESSAGE_CREATE
+    # ------------------------------------------------------------------
+
+    # Default trigger keywords for smart mode.  The message must START
+    # with one of these (case-insensitive) to trigger the agent.
+    _DEFAULT_TRIGGER_PREFIXES = ["AI", "机器人"]
+
+    @staticmethod
+    def _parse_trigger_patterns(raw: Any) -> List[str]:
+        """Parse custom trigger patterns from config.
+
+        Accepts a list, a comma/newline-separated string, or a JSON list
+        string.  Returns a list of raw pattern strings.
+        """
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            return [str(p).strip() for p in raw if str(p).strip()]
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return []
+            try:
+                loaded = json.loads(text) if text.startswith("[") else None
+            except Exception:
+                loaded = None
+            if isinstance(loaded, list):
+                return [str(p).strip() for p in loaded if str(p).strip()]
+            return [
+                p.strip()
+                for line in text.splitlines()
+                for p in line.split(",")
+                if p.strip()
+            ]
+        return [str(raw).strip()]
+
+    def _should_trigger_agent(self, event_type: str, content: str) -> bool:
+        """Decide whether a group message should invoke the agent.
+
+        Rules:
+        1. ``GROUP_AT_MESSAGE_CREATE`` → always True (user explicitly @-mentioned the bot).
+        2. ``respond_all`` mode → always True.
+        3. ``observe`` mode → always False.
+        4. ``smart`` mode → True only when *content* **starts with** one of:
+           - An @-mention of the bot (``<@bot_openid>`` or ``@bot_name``)
+           - The bot's username (from READY event)
+           - A custom ``group_trigger_patterns`` entry
+           - A default prefix: "AI" or "机器人"
+        """
+        # @-messages always trigger
+        if event_type == "GROUP_AT_MESSAGE_CREATE":
+            return True
+
+        mode = self._group_full_message_mode
+        if mode == "respond_all":
+            return True
+        if mode == "observe":
+            return False
+
+        # --- smart mode ---
+        if not content or not content.strip():
+            return False
+
+        text = content.strip()
+
+        # Voice transcripts are prefixed with "[Voice] " — strip it so
+        # the trigger prefix check works on the actual spoken content.
+        if text.startswith("[Voice] "):
+            text = text[len("[Voice] "):].strip()
+        if not text:
+            return False
+
+        # If the message starts with <@openid> (QQ group @-mention format),
+        # treat it as an explicit mention → always trigger.
+        import re as _re
+        if _re.match(r"^<@\w+>", text):
+            return True
+
+        # Slash commands (e.g. /new, /help, /model) → always trigger
+        if text.startswith("/"):
+            return True
+
+        # 1. Bot username (prefix match, case-insensitive)
+        if self._bot_username:
+            username = self._bot_username.strip()
+            if username and text.lower().startswith(username.lower()):
+                return True
+
+        # 2. Custom trigger patterns (prefix match, case-insensitive)
+        for pat_str in self._group_trigger_patterns:
+            if text.lower().startswith(pat_str.lower()):
+                return True
+
+        # 3. Default prefix keywords
+        for prefix in self._DEFAULT_TRIGGER_PREFIXES:
+            if text.lower().startswith(prefix.lower()):
+                return True
+
+        return False
 
     def _open_dm_opted_in(self) -> bool:
         if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
@@ -3208,14 +3414,23 @@ class QQAdapter(BasePlatformAdapter):
             pass
         return datetime.now(tz=timezone.utc)
 
-    def _is_duplicate(self, msg_id: str) -> bool:
+    def _is_duplicate(self, msg_id: str, content: str = "") -> bool:
+        """Check if a message was already processed.
+
+        QQ's GROUP_MESSAGE_CREATE reuses the same msg_id for multiple
+        messages from the same user in the same group, so we include
+        the content hash in the dedup key to distinguish them.
+        """
         now = time.time()
         if len(self._seen_messages) > DEDUP_MAX_SIZE:
             cutoff = now - DEDUP_WINDOW_SECONDS
             self._seen_messages = {
                 key: ts for key, ts in self._seen_messages.items() if ts > cutoff
             }
-        if msg_id in self._seen_messages:
+        # Include content in dedup key — QQ reuses msg_id for different
+        # messages from the same user within a group session.
+        dedup_key = f"{msg_id}:{hashlib.md5(content.encode()).hexdigest()[:8]}" if content else msg_id
+        if dedup_key in self._seen_messages:
             return True
-        self._seen_messages[msg_id] = now
+        self._seen_messages[dedup_key] = now
         return False

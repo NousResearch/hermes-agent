@@ -1091,6 +1091,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
+                if "group_full_message_mode" in platform_cfg:
+                    bridged["group_full_message_mode"] = platform_cfg["group_full_message_mode"]
+                if "group_trigger_patterns" in platform_cfg:
+                    bridged["group_trigger_patterns"] = platform_cfg["group_trigger_patterns"]
                 if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:

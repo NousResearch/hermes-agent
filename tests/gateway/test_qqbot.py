@@ -1897,6 +1897,413 @@ class TestIdentifyIntents:
 
 
 # ---------------------------------------------------------------------------
+# GROUP_MESSAGE_CREATE dispatch + routing
+# ---------------------------------------------------------------------------
+
+class TestGroupMessageCreateDispatch:
+    """Verify GROUP_MESSAGE_CREATE events are dispatched and routed correctly."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    @pytest.mark.asyncio
+    async def test_group_message_create_routed_to_handler(self):
+        """GROUP_MESSAGE_CREATE should be routed to _handle_group_message."""
+        adapter = self._make_adapter(group_policy="open", group_full_message_mode="respond_all")
+        adapter._access_token = "fake_token"
+        adapter._token_expires_at = 9999999999.0
+        adapter._is_duplicate = lambda msg_id, content="": False
+
+        handler_called = []
+
+        async def fake_handle_group(d, msg_id, content, author, timestamp, **kw):
+            handler_called.append({
+                "msg_id": msg_id,
+                "content": content,
+                "group_openid": d.get("group_openid"),
+                "event_type": kw.get("event_type"),
+            })
+
+        adapter._handle_group_message = fake_handle_group
+
+        payload_d = {
+            "id": "ROBOT1.0_test_group_msg_001",
+            "author": {"member_openid": "MEMBER001", "member_role": "member"},
+            "content": "hello everyone",
+            "group_openid": "GROUP001",
+            "timestamp": "2026-07-05T11:00:00+08:00",
+        }
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload_d)
+
+        assert len(handler_called) == 1
+        assert handler_called[0]["content"] == "hello everyone"
+        assert handler_called[0]["group_openid"] == "GROUP001"
+        assert handler_called[0]["event_type"] == "GROUP_MESSAGE_CREATE"
+
+
+# ---------------------------------------------------------------------------
+# _handle_ready extracts bot username
+# ---------------------------------------------------------------------------
+
+class TestHandleReadyUsername:
+    """Verify _handle_ready stores the bot's username from READY event."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    def test_username_extracted(self):
+        adapter = self._make_adapter()
+        ready_payload = {
+            "session_id": "test-session-123",
+            "user": {
+                "id": "6158788878435714165",
+                "username": "群pro测试机器人",
+                "bot": True,
+            },
+        }
+        adapter._handle_ready(ready_payload)
+        assert adapter._session_id == "test-session-123"
+        assert adapter._bot_username == "群pro测试机器人"
+
+    def test_username_missing_is_safe(self):
+        adapter = self._make_adapter()
+        ready_payload = {"session_id": "test-session-456"}
+        adapter._handle_ready(ready_payload)
+        assert adapter._session_id == "test-session-456"
+        assert adapter._bot_username is None
+
+    def test_empty_ready_is_safe(self):
+        adapter = self._make_adapter()
+        adapter._handle_ready({})
+        assert adapter._session_id is None
+        assert adapter._bot_username is None
+
+
+# ---------------------------------------------------------------------------
+# group_full_message_mode and group_trigger_patterns config
+# ---------------------------------------------------------------------------
+
+class TestGroupFullMessageConfig:
+    """Test group_full_message_mode and group_trigger_patterns configuration."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_default_mode_is_smart(self):
+        adapter = self._make_adapter(group_policy="open")
+        assert adapter._group_full_message_mode == "smart"
+
+    def test_explicit_respond_all(self):
+        adapter = self._make_adapter(group_policy="open", group_full_message_mode="respond_all")
+        assert adapter._group_full_message_mode == "respond_all"
+
+    def test_explicit_observe(self):
+        adapter = self._make_adapter(group_policy="open", group_full_message_mode="observe")
+        assert adapter._group_full_message_mode == "observe"
+
+    def test_invalid_value_falls_back_to_smart(self):
+        adapter = self._make_adapter(group_policy="open", group_full_message_mode="invalid")
+        assert adapter._group_full_message_mode == "smart"
+
+    def test_default_trigger_patterns_empty(self):
+        adapter = self._make_adapter(group_policy="open")
+        assert adapter._group_trigger_patterns == []
+
+    def test_trigger_patterns_from_string(self):
+        adapter = self._make_adapter(
+            group_policy="open",
+            group_trigger_patterns="小助手, 帮我, 查一下",
+        )
+        assert len(adapter._group_trigger_patterns) == 3
+
+    def test_trigger_patterns_from_list(self):
+        adapter = self._make_adapter(
+            group_policy="open",
+            group_trigger_patterns=["小助手", "帮我"],
+        )
+        assert len(adapter._group_trigger_patterns) == 2
+
+    def test_trigger_patterns_from_json_string(self):
+        adapter = self._make_adapter(
+            group_policy="open",
+            group_trigger_patterns='["小助手", "帮我"]',
+        )
+        assert len(adapter._group_trigger_patterns) == 2
+
+
+# ---------------------------------------------------------------------------
+# _should_trigger_agent — smart mode trigger detection
+# ---------------------------------------------------------------------------
+
+class TestShouldTriggerAgent:
+    """Test the smart-mode trigger detection logic."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        kwargs = dict(app_id="a", client_secret="b", group_policy="open")
+        kwargs["group_full_message_mode"] = extra.pop("group_full_message_mode", "smart")
+        kwargs.update(extra)
+        adapter = QQAdapter(_make_config(**kwargs))
+        return adapter
+
+    # --- GROUP_AT_MESSAGE_CREATE always triggers ---
+
+    def test_at_message_always_triggers(self):
+        adapter = self._make_adapter()
+        assert adapter._should_trigger_agent("GROUP_AT_MESSAGE_CREATE", "随便说") is True
+
+    def test_at_message_triggers_even_in_observe(self):
+        """@-messages bypass observe mode too (they're explicit mentions)."""
+        adapter = self._make_adapter(group_full_message_mode="observe")
+        assert adapter._should_trigger_agent("GROUP_AT_MESSAGE_CREATE", "hello") is True
+
+    # --- respond_all mode ---
+
+    def test_respond_all_always_true(self):
+        adapter = self._make_adapter(group_full_message_mode="respond_all")
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "随便说") is True
+
+    # --- observe mode ---
+
+    def test_observe_mode_never_triggers_for_full_message(self):
+        adapter = self._make_adapter(group_full_message_mode="observe")
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "机器人你好") is False
+
+    # --- smart mode: prefix matching ---
+
+    def test_smart_triggers_on_ai_prefix(self):
+        adapter = self._make_adapter()
+        adapter._bot_username = None
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "AI 今天天气") is True
+
+    def test_smart_triggers_on_robot_prefix(self):
+        adapter = self._make_adapter()
+        adapter._bot_username = None
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "机器人你好") is True
+
+    def test_smart_triggers_on_bot_username_prefix(self):
+        adapter = self._make_adapter()
+        adapter._bot_username = "群pro测试机器人"
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "群pro测试机器人帮个忙") is True
+
+    def test_smart_triggers_on_custom_pattern_prefix(self):
+        adapter = self._make_adapter(group_trigger_patterns=["小助手"])
+        adapter._bot_username = None
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "小助手帮我查一下") is True
+
+    def test_smart_case_insensitive_ai(self):
+        adapter = self._make_adapter()
+        adapter._bot_username = None
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "ai what is this") is True
+
+    def test_smart_case_insensitive_bot_username(self):
+        adapter = self._make_adapter()
+        adapter._bot_username = "MyBot"
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "mybot come here") is True
+
+    # --- smart mode: non-matching messages ---
+
+    def test_smart_skips_irrelevant_message(self):
+        adapter = self._make_adapter()
+        adapter._bot_username = "测试机器人"
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "今天天气真好") is False
+
+    def test_smart_skips_ai_in_middle(self):
+        """AI must be at the START, not in the middle."""
+        adapter = self._make_adapter()
+        adapter._bot_username = None
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "我用的AI做的") is False
+
+    def test_smart_skips_robot_in_middle(self):
+        """机器人 must be at the START, not in the middle."""
+        adapter = self._make_adapter()
+        adapter._bot_username = None
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "这个机器人不错") is False
+
+    def test_smart_skips_empty_content(self):
+        adapter = self._make_adapter()
+        adapter._bot_username = "测试机器人"
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "") is False
+
+    def test_smart_skips_when_no_bot_username_and_no_match(self):
+        adapter = self._make_adapter()
+        adapter._bot_username = None
+        assert adapter._should_trigger_agent("GROUP_MESSAGE_CREATE", "hello world") is False
+
+
+# ---------------------------------------------------------------------------
+# Integration: _handle_group_message with smart mode
+# ---------------------------------------------------------------------------
+
+class TestHandleGroupMessageSmartMode:
+    """Integration test: _handle_group_message respects smart mode filtering."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        kwargs = dict(app_id="a", client_secret="b", group_policy="open")
+        kwargs["group_full_message_mode"] = extra.pop("group_full_message_mode", "smart")
+        kwargs.update(extra)
+        adapter = QQAdapter(_make_config(**kwargs))
+        adapter._access_token = "fake_token"
+        adapter._token_expires_at = 9999999999.0
+        adapter._is_duplicate = lambda msg_id, content="": False
+        adapter._bot_username = "测试机器人"
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_smart_triggers_on_bot_name_prefix(self):
+        adapter = self._make_adapter()
+        handle_called = []
+        async def fake_handle_message(event):
+            handle_called.append(event)
+        adapter.handle_message = fake_handle_message
+
+        payload_d = {
+            "id": "msg_001",
+            "author": {"member_openid": "MEMBER001"},
+            "content": "测试机器人，今天天气怎么样",
+            "group_openid": "GROUP001",
+            "timestamp": "2026-07-05T11:00:00+08:00",
+        }
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload_d)
+        assert len(handle_called) == 1
+
+    @pytest.mark.asyncio
+    async def test_smart_triggers_on_ai_prefix(self):
+        adapter = self._make_adapter()
+        handle_called = []
+        async def fake_handle_message(event):
+            handle_called.append(event)
+        adapter.handle_message = fake_handle_message
+
+        payload_d = {
+            "id": "msg_002",
+            "author": {"member_openid": "MEMBER001"},
+            "content": "AI 帮我写首诗",
+            "group_openid": "GROUP001",
+            "timestamp": "2026-07-05T11:01:00+08:00",
+        }
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload_d)
+        assert len(handle_called) == 1
+
+    @pytest.mark.asyncio
+    async def test_smart_skips_irrelevant_message(self):
+        adapter = self._make_adapter()
+        handle_called = []
+        async def fake_handle_message(event):
+            handle_called.append(event)
+        adapter.handle_message = fake_handle_message
+
+        payload_d = {
+            "id": "msg_003",
+            "author": {"member_openid": "MEMBER001"},
+            "content": "今天午饭吃什么",
+            "group_openid": "GROUP001",
+            "timestamp": "2026-07-05T11:02:00+08:00",
+        }
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload_d)
+        assert len(handle_called) == 0
+
+    @pytest.mark.asyncio
+    async def test_smart_skips_keyword_in_middle(self):
+        """Keyword in the middle should NOT trigger."""
+        adapter = self._make_adapter()
+        handle_called = []
+        async def fake_handle_message(event):
+            handle_called.append(event)
+        adapter.handle_message = fake_handle_message
+
+        payload_d = {
+            "id": "msg_004",
+            "author": {"member_openid": "MEMBER001"},
+            "content": "这个AI不错",
+            "group_openid": "GROUP001",
+            "timestamp": "2026-07-05T11:03:00+08:00",
+        }
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload_d)
+        assert len(handle_called) == 0
+
+    @pytest.mark.asyncio
+    async def test_at_message_always_triggers_in_smart_mode(self):
+        adapter = self._make_adapter()
+        handle_called = []
+        async def fake_handle_message(event):
+            handle_called.append(event)
+        adapter.handle_message = fake_handle_message
+
+        payload_d = {
+            "id": "msg_005",
+            "author": {"member_openid": "MEMBER001"},
+            "content": "@Bot 你好",
+            "group_openid": "GROUP001",
+            "timestamp": "2026-07-05T11:04:00+08:00",
+        }
+        await adapter._on_message("GROUP_AT_MESSAGE_CREATE", payload_d)
+        assert len(handle_called) == 1
+
+    @pytest.mark.asyncio
+    async def test_observe_mode_never_triggers(self):
+        adapter = self._make_adapter(group_full_message_mode="observe")
+        handle_called = []
+        async def fake_handle_message(event):
+            handle_called.append(event)
+        adapter.handle_message = fake_handle_message
+
+        payload_d = {
+            "id": "msg_006",
+            "author": {"member_openid": "MEMBER001"},
+            "content": "测试机器人你好",
+            "group_openid": "GROUP001",
+            "timestamp": "2026-07-05T11:05:00+08:00",
+        }
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload_d)
+        assert len(handle_called) == 0
+
+    @pytest.mark.asyncio
+    async def test_respond_all_mode_always_triggers(self):
+        adapter = self._make_adapter(group_full_message_mode="respond_all")
+        handle_called = []
+        async def fake_handle_message(event):
+            handle_called.append(event)
+        adapter.handle_message = fake_handle_message
+
+        payload_d = {
+            "id": "msg_007",
+            "author": {"member_openid": "MEMBER001"},
+            "content": "随便说点什么",
+            "group_openid": "GROUP001",
+            "timestamp": "2026-07-05T11:06:00+08:00",
+        }
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload_d)
+        assert len(handle_called) == 1
+
+
+# ---------------------------------------------------------------------------
+# _strip_at_mention safety for non-@ messages
+# ---------------------------------------------------------------------------
+
+class TestStripAtMentionSafety:
+    """Verify _strip_at_mention is a no-op for GROUP_MESSAGE_CREATE content."""
+
+    def _fn(self, content):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter._strip_at_mention(content)
+
+    def test_plain_chinese_text(self):
+        assert self._fn("今天天气真好") == "今天天气真好"
+
+    def test_at_in_middle_not_stripped(self):
+        assert self._fn("看看这个@用户说的") == "看看这个@用户说的"
+
+    def test_ai_prefix_not_stripped(self):
+        assert self._fn("AI帮我查一下") == "AI帮我查一下"
+
+
+# ---------------------------------------------------------------------------
 # _process_attachments: video/file path exposure
 # ---------------------------------------------------------------------------
 

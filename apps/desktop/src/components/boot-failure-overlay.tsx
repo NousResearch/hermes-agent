@@ -165,6 +165,17 @@ export function BootFailureOverlay() {
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
   const copy = t.boot.failure
+  const connectionLost = !remoteReauth && boot.failureKind === 'connection-lost'
+
+  const title = remoteReauth ? copy.remoteTitle : connectionLost ? copy.connectionLostTitle : copy.title
+
+  const description = remoteReauth
+    ? copy.remoteDescription
+    : connectionLost
+      ? copy.connectionLostDescription
+      : copy.description
+
+  const hint = remoteReauth ? copy.remoteSignInHint : connectionLost ? copy.connectionLostHint : copy.repairHint
 
   const label = signInLabel(remoteReauth, {
     identityProvider: copy.identityProvider,
@@ -179,10 +190,10 @@ export function BootFailureOverlay() {
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-              {remoteReauth ? copy.remoteTitle : copy.title}
+              {title}
             </h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {remoteReauth ? copy.remoteDescription : copy.description}
+              {description}
             </p>
           </div>
         </div>
@@ -205,7 +216,7 @@ export function BootFailureOverlay() {
                   {copy.retry}
                 </Button>
               )}
-              {!remoteReauth ? (
+              {!remoteReauth && !connectionLost ? (
                 <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="secondary">
                   {busy === 'repair' ? <Loader2 className="animate-spin" /> : <Wrench />}
                   {copy.repairInstall}
@@ -220,7 +231,7 @@ export function BootFailureOverlay() {
                 {copy.openLogs}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">{remoteReauth ? copy.remoteSignInHint : copy.repairHint}</p>
+            <p className="text-xs text-muted-foreground">{hint}</p>
           </div>
 
           {logs.length > 0 ? (

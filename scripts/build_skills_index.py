@@ -185,7 +185,7 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
                 # For now, just index by directory name
             elif path == "SKILL.md":
                 # Root-level SKILL.md
-                skill_paths["_root_"] = f"{repo}"
+                skill_paths["_root_"] = repo
 
         count = 0
         for entry in entries:

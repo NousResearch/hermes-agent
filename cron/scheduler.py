@@ -2038,7 +2038,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                     "The following data was collected by a pre-run script. "
                     "Use it as context for your analysis.\n\n"
                     f"```\n{script_output}\n```\n\n"
-                    f"{prompt}"
+                    + prompt
                 )
                 has_injected_data = True
             else:
@@ -2049,7 +2049,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 "## Script Error\n"
                 "The data-collection script failed. Report this to the user.\n\n"
                 f"```\n{script_output}\n```\n\n"
-                f"{prompt}"
+                + prompt
             )
             has_injected_data = True
 
@@ -2092,7 +2092,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                         "The following is the most recent output from a preceding "
                         "cron job. Use it as context for your analysis.\n\n"
                         f"```\n{latest_output}\n```\n\n"
-                        f"{prompt}"
+                        + prompt
                     )
                     has_injected_data = True
                 else:

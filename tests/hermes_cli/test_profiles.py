@@ -7,13 +7,18 @@ and shell completion generation.
 
 import json
 import io
+import os
+import shutil
+import sys
 import tarfile
+import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 import yaml
 
+from hermes_cli import profiles
 from hermes_cli.profiles import (
     normalize_profile_name,
     validate_profile_name,
@@ -26,6 +31,9 @@ from hermes_cli.profiles import (
     get_active_profile_name,
     resolve_profile_env,
     check_alias_collision,
+    create_wrapper_script,
+    remove_wrapper_script,
+    validate_alias_name,
     rename_profile,
     export_profile,
     import_profile,
@@ -575,12 +583,91 @@ class TestDeleteProfile:
         set_active_profile("coder")
 
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles.time.sleep"), \
              patch("hermes_cli.profiles.shutil.rmtree", side_effect=PermissionError("locked")):
             with pytest.raises(RuntimeError, match="Could not remove profile directory"):
                 delete_profile("coder", yes=True)
 
         assert profile_dir.is_dir()
         assert get_active_profile() == "default"
+
+    def test_stops_profile_bound_backends_before_removal(self, profile_env):
+        """A Desktop-spawned backend (not in gateway.pid) is stopped first."""
+        profile_dir = create_profile("coder", no_alias=True)
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._profile_bound_backend_pids", return_value=[4242]) as pids, \
+             patch("gateway.status.terminate_pid") as terminate, \
+             patch("gateway.status._pid_exists", return_value=False):
+            delete_profile("coder", yes=True)
+
+        pids.assert_called_once()
+        terminate.assert_any_call(4242)
+        assert not profile_dir.is_dir()
+
+    def test_rmtree_retries_transient_enotempty_then_succeeds(self, profile_env):
+        """A live writer racing rmtree (ENOTEMPTY) is absorbed by a retry."""
+        profile_dir = create_profile("coder", no_alias=True)
+        real_rmtree = shutil.rmtree
+        calls = {"n": 0}
+
+        def flaky_rmtree(path, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError(66, "Directory not empty")
+            return real_rmtree(path)
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._profile_bound_backend_pids", return_value=[]), \
+             patch("hermes_cli.profiles.time.sleep"), \
+             patch("hermes_cli.profiles.shutil.rmtree", side_effect=flaky_rmtree):
+            delete_profile("coder", yes=True)
+
+        assert calls["n"] == 2
+        assert not profile_dir.is_dir()
+
+    def test_backend_scan_only_matches_this_profile(self, profile_env, monkeypatch):
+        """The backend PID scan binds by --profile selector and skips self."""
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+
+        class FakeProc:
+            def __init__(self, pid, cmdline, username="me"):
+                self.pid = pid
+                self.info = {"pid": pid, "name": "python", "username": username, "cmdline": cmdline}
+
+            def parent(self):
+                return None
+
+            def username(self):
+                return "me"
+
+            def environ(self):
+                return {}
+
+        self_pid = os.getpid()
+        procs = [
+            # Backend bound to coder → matched.
+            FakeProc(101, ["python", "-m", "hermes_cli.main", "--profile", "coder", "serve"]),
+            # Interactive chat for coder → NOT a backend subcommand, skipped.
+            FakeProc(102, ["python", "-m", "hermes_cli.main", "--profile", "coder", "chat"]),
+            # Backend for a different profile → skipped.
+            FakeProc(103, ["python", "-m", "hermes_cli.main", "--profile", "other", "serve"]),
+            # This very process → skipped even if it matched.
+            FakeProc(self_pid, ["python", "-m", "hermes_cli.main", "--profile", "coder", "serve"]),
+        ]
+
+        fake_psutil = types.SimpleNamespace(
+            process_iter=lambda attrs=None: iter(procs),
+            Process=lambda pid=None: FakeProc(self_pid, []),
+            NoSuchProcess=Exception,
+            AccessDenied=Exception,
+            ZombieProcess=Exception,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
+        assert pids == [101]
 
 
 # ===================================================================
@@ -769,6 +856,14 @@ class TestAliasCollision:
             result = check_alias_collision("mybot")
         assert result is None  # our own wrapper, safe to overwrite
 
+    def test_traversal_alias_rejected_before_path_lookup(self, profile_env):
+        """A path-traversal alias is rejected without ever shelling out to which/where."""
+        with patch("subprocess.run") as mock_run:
+            result = check_alias_collision("../../.bashrc")
+        assert result is not None
+        assert "invalid alias name" in result.lower()
+        mock_run.assert_not_called()
+
 
 # ===================================================================
 # TestWrapperScript
@@ -848,6 +943,53 @@ class TestWrapperScript:
         assert "hermes -p redqueen" in content
         assert "%*" in content
         assert "#!/bin/sh" not in content
+
+
+# ===================================================================
+# TestWrapperScriptSecurity — path-traversal hardening
+# ===================================================================
+
+class TestWrapperScriptSecurity:
+    """A crafted alias name must not escape the wrapper directory."""
+
+    def test_validate_alias_name_rejects_traversal(self):
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            validate_alias_name("../../.bashrc")
+
+    def test_validate_alias_name_rejects_absolute_path(self, tmp_path):
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            validate_alias_name(str(tmp_path / "evil"))
+
+    def test_validate_alias_name_accepts_safe_identifier(self):
+        validate_alias_name("mybot")  # does not raise
+
+    def test_create_wrapper_rejects_traversal(self, profile_env):
+        sentinel = profile_env / ".bashrc"
+        sentinel.write_text("keep", encoding="utf-8")
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            create_wrapper_script("../../.bashrc", target="coder")
+        # The traversal target was not touched.
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+
+    def test_create_wrapper_rejects_absolute_path(self, profile_env, tmp_path):
+        target = tmp_path / "abs-wrapper"
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            create_wrapper_script(str(target))
+        assert not target.exists()
+
+    def test_remove_wrapper_rejects_traversal(self, profile_env):
+        sentinel = profile_env / ".bashrc"
+        sentinel.write_text("keep", encoding="utf-8")
+        assert remove_wrapper_script("../../.bashrc") is False
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+
+    def test_legit_alias_stays_inside_wrapper_dir(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import _get_wrapper_dir
+        wrapper = create_wrapper_script("mybot", target="coder")
+        assert wrapper is not None
+        assert wrapper.resolve().is_relative_to(_get_wrapper_dir().resolve())
+        assert 'hermes -p coder "$@"' in wrapper.read_text()
 
 
 # ===================================================================

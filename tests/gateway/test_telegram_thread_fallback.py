@@ -11,6 +11,7 @@ avoid retrying with a partial topic route that can render outside the lane.
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1336,6 +1337,46 @@ async def test_send_retries_pool_timeout():
     assert result.success is True
     assert result.message_id == "202"
     assert attempt[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_send_drains_general_request_pool_before_retrying_pool_timeout():
+    """Pool timeout should reset the send-message request pool before retrying."""
+    adapter = _make_adapter()
+    general_request = SimpleNamespace(
+        shutdown=AsyncMock(),
+        initialize=AsyncMock(),
+    )
+    polling_request = SimpleNamespace(
+        shutdown=AsyncMock(),
+        initialize=AsyncMock(),
+    )
+    adapter._app = SimpleNamespace(
+        bot=SimpleNamespace(_request=(polling_request, general_request))
+    )
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] == 1:
+            raise FakeTimedOut(
+                "Pool timeout: All connections in the connection pool are "
+                "occupied. Request was *not* sent to Telegram."
+            )
+        return SimpleNamespace(message_id=203)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "203"
+    assert attempt[0] == 2
+    general_request.shutdown.assert_awaited_once()
+    general_request.initialize.assert_awaited_once()
+    polling_request.shutdown.assert_not_awaited()
+    polling_request.initialize.assert_not_awaited()
 
 
 @pytest.mark.asyncio

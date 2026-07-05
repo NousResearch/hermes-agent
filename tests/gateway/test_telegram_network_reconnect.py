@@ -118,6 +118,43 @@ async def test_reconnect_does_not_self_schedule_when_fatal_error_set():
 
 
 @pytest.mark.asyncio
+async def test_reconnect_chained_retry_updates_polling_error_task():
+    """
+    When start_polling() fails and the handler self-schedules a retry, that
+    retry task must become the new `_polling_error_task` — otherwise the
+    reentrancy guard used by the heartbeat loop, the pending-updates probe,
+    and the PTB error callback goes stale while a recovery is still in
+    flight, letting a second concurrent recovery start for the same outage.
+
+    Regression test for the race behind the "half-destroyed adapter" bug
+    (gateway reports connected but silently stops processing messages).
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+    mock_updater.stop = AsyncMock()
+    mock_updater.start_polling = AsyncMock(side_effect=Exception("Timed out"))
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(Exception("Bad Gateway"))
+
+    assert adapter._polling_error_task is not None
+    assert not adapter._polling_error_task.done()
+
+    adapter._polling_error_task.cancel()
+    try:
+        await adapter._polling_error_task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+@pytest.mark.asyncio
 async def test_reconnect_success_resets_error_count():
     """
     When start_polling() succeeds, _polling_network_error_count should reset to 0.
@@ -681,3 +718,153 @@ async def test_disconnect_cancels_heartbeat_task():
 
     assert heartbeat_task.cancelled(), "Heartbeat task must be cancelled by disconnect()"
     assert adapter._polling_heartbeat_task is None
+
+
+# ── Bootstrap degradation: keep polling alive during outages (#47508) ────
+
+
+@pytest.mark.asyncio
+async def test_delete_webhook_network_error_is_recoverable():
+    """deleteWebhook timeouts must not fail gateway startup.
+
+    A transient Bot API outage during bootstrap should be treated as
+    recoverable and continue toward polling, so it never becomes a systemd
+    service failure.
+    """
+    adapter = _make_adapter()
+    mock_bot = MagicMock()
+    mock_bot.delete_webhook = AsyncMock(side_effect=ConnectionError("api.telegram.org timeout"))
+    adapter._bot = mock_bot
+
+    result = await adapter._delete_webhook_best_effort()
+
+    assert result is False
+    assert adapter._send_path_degraded is True
+    mock_bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    assert not adapter.has_fatal_error
+
+
+@pytest.mark.asyncio
+async def test_polling_bootstrap_network_error_schedules_background_recovery():
+    """Initial start_polling() network failure should degrade, not raise."""
+    adapter = _make_adapter()
+    mock_updater = MagicMock()
+    mock_updater.start_polling = AsyncMock(side_effect=ConnectionError("bootstrap timeout"))
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+    adapter._schedule_polling_recovery = MagicMock()
+
+    result = await adapter._start_polling_resilient(
+        drop_pending_updates=True,
+        error_callback=lambda error: None,
+    )
+
+    assert result is False
+    adapter._schedule_polling_recovery.assert_called_once()
+    err = adapter._schedule_polling_recovery.call_args.args[0]
+    assert isinstance(err, ConnectionError)
+    assert adapter._schedule_polling_recovery.call_args.kwargs["reason"] == "polling bootstrap"
+    assert not adapter.has_fatal_error
+
+
+@pytest.mark.asyncio
+async def test_polling_bootstrap_conflict_schedules_conflict_recovery_task():
+    """Initial 409 polling conflict should also be recovered in background."""
+    adapter = _make_adapter()
+    mock_updater = MagicMock()
+    mock_updater.start_polling = AsyncMock(
+        side_effect=Exception("Conflict: terminated by other getUpdates request")
+    )
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+    adapter._handle_polling_conflict = AsyncMock()
+
+    result = await adapter._start_polling_resilient(
+        drop_pending_updates=True,
+        error_callback=lambda error: None,
+    )
+
+    assert result is False
+    pending = [t for t in adapter._background_tasks if not t.done()]
+    assert pending, "expected background conflict recovery task"
+    for task in pending:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    assert not adapter.has_fatal_error
+
+
+@pytest.mark.asyncio
+async def test_schedule_polling_recovery_tracks_background_task():
+    """Background recovery task is registered so it isn't GC'd mid-flight."""
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    adapter._schedule_polling_recovery(ConnectionError("boom"), reason="unit test")
+
+    assert adapter._send_path_degraded is True
+    assert adapter._polling_error_task is not None
+    assert adapter._polling_error_task in adapter._background_tasks
+    await adapter._polling_error_task
+    adapter._handle_polling_network_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_polling_network_error_updater_stop_timeout():
+    """updater.stop() hanging (CLOSE-WAIT) must not block the reconnect ladder.
+
+    When the underlying TCP connection is in CLOSE-WAIT, PTB's polling task is
+    blocked on epoll on the dead socket.  updater.stop() awaits that task and
+    therefore hangs indefinitely.  The fix wraps stop() in asyncio.wait_for()
+    with a 15-second timeout so the reconnect always advances.
+
+    This test simulates the hang by making stop() sleep forever and verifies
+    that _drain_polling_connections() and start_polling() are still called
+    after the timeout fires.
+    Refs: NousResearch/hermes-agent#58270
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 0
+
+    # Build a fake app whose updater.stop() hangs forever.
+    app = MagicMock()
+    app.updater = MagicMock()
+    app.updater.running = True
+
+    async def _hanging_stop():
+        await asyncio.sleep(9999)  # simulate CLOSE-WAIT block
+
+    app.updater.stop = _hanging_stop
+    app.updater.start_polling = AsyncMock()
+    adapter._app = app
+
+    drain_called = []
+
+    async def _fake_drain():
+        drain_called.append(True)
+
+    adapter._drain_polling_connections = _fake_drain
+
+    start_polling_called = []
+
+    async def _fake_start_polling(**kwargs):
+        start_polling_called.append(True)
+
+    app.updater.start_polling = AsyncMock(side_effect=_fake_start_polling)
+
+    # Shrink the stop() watchdog bound so the test completes fast instead of
+    # waiting the full _UPDATER_STOP_TIMEOUT. Patching the named constant is
+    # cleaner than monkeypatching asyncio.wait_for process-wide.
+    import plugins.platforms.telegram.adapter as _mod
+
+    with patch.object(_mod, "_UPDATER_STOP_TIMEOUT", 0.05):
+        await adapter._handle_polling_network_error(OSError("CLOSE-WAIT test"))
+
+    # The reconnect ladder must have advanced past the hung stop().
+    assert drain_called, "_drain_polling_connections was not called after stop() timeout"
+    assert start_polling_called, "start_polling was not called after stop() timeout"
+

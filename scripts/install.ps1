@@ -1362,8 +1362,16 @@ function Install-Repository {
                 } else {
                     git -c windows.appendAtomically=false checkout $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
+                    # Managed installs should follow origin/$Branch exactly. If
+                    # the checkout has diverged (or has local-only commits),
+                    # ff-only pull cannot succeed — mirror ``hermes update`` and
+                    # reset to the fetched remote so bootstrap/install can recover.
                     git -c windows.appendAtomically=false pull --ff-only origin $Branch
-                    if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Warn "Fast-forward not possible; resetting managed install to origin/$Branch..."
+                        git -c windows.appendAtomically=false reset --hard "origin/$Branch"
+                        if ($LASTEXITCODE -ne 0) { throw "git reset --hard origin/$Branch failed (exit $LASTEXITCODE)" }
+                    }
                 }
 
                 if ($autostashRef) {
@@ -1594,7 +1602,12 @@ function Install-Venv {
     Write-Info "Creating virtual environment with Python $PythonVersion..."
     
     Push-Location $InstallDir
-    
+
+    # Tasks we disabled below and must re-enable no matter how this stage
+    # exits. Populated only with tasks that were ENABLED before we touched
+    # them, so a task the user deliberately disabled is never re-armed.
+    $gatewayTasksDisabled = @()
+    try {
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
         # On Windows, native Python extensions (e.g. _bcrypt.pyd, tornado's
@@ -1606,6 +1619,31 @@ function Install-Venv {
         if ($env:OS -eq "Windows_NT") {
             $myPid = $PID
             Write-Info "Stopping any running hermes processes before recreating venv..."
+            # Disarm the respawner FIRST: the gateway autostart Scheduled Task
+            # relaunches a killed gateway within seconds, and losing that race
+            # re-locks the venv's .pyd files between our kill sweep and
+            # Remove-Item (the July 2026 _brotlicffi.pyd incident). schtasks
+            # /End stops a running task instance; /Change /DISABLE stops it
+            # from re-firing mid-install. (The Startup-folder .vbs fallback is
+            # NOT touched: it only fires at logon, so it cannot respawn a
+            # gateway mid-install.) Re-enabled in the finally below — including
+            # on failure — but only for tasks that were enabled to begin with.
+            # Best-effort: a missing task just errors quietly.
+            try {
+                schtasks /Query /FO CSV 2>$null | ConvertFrom-Csv | Where-Object { $_.TaskName -like '*Hermes_Gateway*' } | ForEach-Object {
+                    $tn = $_.TaskName
+                    if ($_.Status -eq 'Disabled') {
+                        Write-Info "  gateway autostart task $tn is already disabled; leaving it that way"
+                        return
+                    }
+                    schtasks /End /TN $tn 2>$null | Out-Null
+                    schtasks /Change /TN $tn /DISABLE 2>$null | Out-Null
+                    $gatewayTasksDisabled += $tn
+                    Write-Info "  disabled gateway autostart task $tn for the duration of the install"
+                }
+            } catch {
+                Write-Warn "Could not enumerate gateway scheduled tasks: $($_.Exception.Message)"
+            }
             # The launcher CLI (hermes.exe) plus its child tree.
             & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
             # taskkill /IM hermes.exe is NOT enough: the gateway/agent that a
@@ -1624,27 +1662,68 @@ function Install-Venv {
             # ExecutablePath for a process it cannot inspect (a different session)
             # instead of throwing, so an unreadable process is skipped rather than
             # aborting the whole sweep.
+            #
+            # The sweep is a bounded LOOP, not single-shot: supervised processes
+            # (the Desktop app's backend, a watchdog-managed gateway) respawn in
+            # the window between one kill pass and the delete. Each pass re-
+            # enumerates; three consecutive clean passes (or the attempt cap)
+            # ends the loop.
             $venvPrefix = [System.IO.Path]::GetFullPath((Join-Path $InstallDir "venv")).TrimEnd('\') + '\'
-            try {
-                Get-CimInstance Win32_Process -ErrorAction Stop |
-                    Where-Object { $_.ProcessId -ne $myPid -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venvPrefix, [System.StringComparison]::OrdinalIgnoreCase) } |
-                    ForEach-Object {
-                        Write-Info "  stopping PID $($_.ProcessId) ($($_.Name)) running from venv"
-                        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-                    }
-            } catch {
-                Write-Warn "Could not enumerate venv processes: $($_.Exception.Message)"
+            $cleanPasses = 0
+            for ($sweep = 0; $sweep -lt 10 -and $cleanPasses -lt 3; $sweep++) {
+                $found = 0
+                try {
+                    Get-CimInstance Win32_Process -ErrorAction Stop |
+                        Where-Object { $_.ProcessId -ne $myPid -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venvPrefix, [System.StringComparison]::OrdinalIgnoreCase) } |
+                        ForEach-Object {
+                            $found++
+                            Write-Info "  stopping PID $($_.ProcessId) ($($_.Name)) running from venv"
+                            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                        }
+                } catch {
+                    Write-Warn "Could not enumerate venv processes: $($_.Exception.Message)"
+                    break
+                }
+                if ($found -eq 0) { $cleanPasses++ } else { $cleanPasses = 0 }
+                Start-Sleep -Milliseconds 400
             }
-            Start-Sleep -Milliseconds 800
         }
-        Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
-        # A killed process can take a moment to release its file handles, so a
-        # first Remove-Item may still hit a locked .pyd. Retry once after a short
-        # pause before giving up and letting the stage fail loudly.
-        if (Test-Path "venv") {
-            Start-Sleep -Seconds 2
-            Remove-Item -Recurse -Force "venv"
+        # Rename-then-delete: on Windows a directory RENAME succeeds even while
+        # files inside it are mapped as DLLs (only in-place delete/replace of
+        # the mapped file is denied, and only same-volume renames are atomic
+        # moves). Moving the old venv aside means `uv venv` can create a fresh
+        # one immediately even if some straggler still holds a .pyd from the
+        # old tree; the renamed dir is deleted best-effort (now, and by the
+        # cleanup pass below on the NEXT install if a handle outlives this one).
+        $staleName = "venv.stale.{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
+        $renamed = $false
+        try {
+            Rename-Item -Path "venv" -NewName $staleName -ErrorAction Stop
+            $renamed = $true
+        } catch {
+            Write-Warn "Could not rename venv aside ($($_.Exception.Message)); falling back to in-place delete"
         }
+        if ($renamed) {
+            Remove-Item -Recurse -Force $staleName -ErrorAction SilentlyContinue
+            if (Test-Path $staleName) {
+                Write-Warn "Old venv parked at $staleName (a process still holds files in it); it will be cleaned up on the next install"
+            }
+        } else {
+            Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
+            # A killed process can take a moment to release its file handles, so a
+            # first Remove-Item may still hit a locked .pyd. Retry once after a short
+            # pause before giving up and letting the stage fail loudly.
+            if (Test-Path "venv") {
+                Start-Sleep -Seconds 2
+                Remove-Item -Recurse -Force "venv"
+            }
+        }
+    }
+
+    # Clean up parked venvs from previous installs whose handles have since
+    # been released. Best-effort — a still-held tree just stays for next time.
+    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue | ForEach-Object {
+        Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
     }
     
     # uv creates the venv and pins the Python version in one step.  uv emits
@@ -1658,7 +1737,6 @@ function Install-Venv {
     # ok=true) when the venv was never created.
     $venvExitCode = $LASTEXITCODE
     if ($venvExitCode -ne 0) {
-        Pop-Location
         throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
     }
 
@@ -1673,9 +1751,23 @@ function Install-Venv {
     if (Test-Path $venvPythonExe) {
         $env:UV_PYTHON = $venvPythonExe
     }
+    } finally {
+        Pop-Location
+        # Re-arm the gateway autostart tasks disabled during the venv teardown
+        # — in a finally so a failed teardown/creation can never strand the
+        # user's gateway autostart in the disabled state. Same function scope,
+        # so the list survives even under the stage-per-process bootstrap.
+        # Deliberately NOT started here — dependencies aren't installed yet;
+        # the task fires normally on next logon and `hermes update` / the
+        # gateway resume path handles the immediate restart.
+        if ($gatewayTasksDisabled -and $gatewayTasksDisabled.Count -gt 0) {
+            foreach ($tn in $gatewayTasksDisabled) {
+                schtasks /Change /TN $tn /ENABLE 2>$null | Out-Null
+            }
+            Write-Info "Re-enabled gateway autostart task(s): $($gatewayTasksDisabled -join ', ')"
+        }
+    }
 
-    Pop-Location
-    
     Write-Success "Virtual environment ready (Python $PythonVersion)"
 }
 
@@ -1852,6 +1944,48 @@ except Exception:
             throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
         }
         Write-Success "Baseline imports verified in venv"
+    }
+
+    if (-not $NoVenv) {
+        # uv on Windows can register hermes.exe in dist-info/RECORD but fail to
+        # materialise the .exe (file lock during self-update, distlib edge case).
+        # Catch it here so a fresh install/update does not finish with a broken
+        # `hermes` command while hermes-agent.exe / hermes-acp.exe exist
+        $scriptsDir = Join-Path $InstallDir "venv\Scripts"
+        $pythonExe = Join-Path $scriptsDir "python.exe"
+        if ((Test-Path $scriptsDir) -and (Test-Path $pythonExe)) {
+            $scriptNames = & $pythonExe -c @"
+import tomllib
+with open('pyproject.toml', 'rb') as fh:
+    scripts = tomllib.load(fh).get('project', {}).get('scripts', {}) or {}
+print(','.join(scripts))
+"@ 2>$null
+            if ($LASTEXITCODE -eq 0 -and $scriptNames) {
+                $expected = @($scriptNames.Trim().Split(',') | Where-Object { $_ })
+                $missing = @()
+                foreach ($name in $expected) {
+                    $exe = Join-Path $scriptsDir "$name.exe"
+                    if (-not (Test-Path $exe)) { $missing += "$name.exe" }
+                }
+                if ($missing.Count -gt 0) {
+                    Write-Warn "Console entry point(s) missing: $($missing -join ', ')"
+                    Write-Info "Reinstalling entry points..."
+                    $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+                    Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install --reinstall -e . }
+                    $stillMissing = @()
+                    foreach ($name in $expected) {
+                        $exe = Join-Path $scriptsDir "$name.exe"
+                        if (-not (Test-Path $exe)) { $stillMissing += "$name.exe" }
+                    }
+                    if ($stillMissing.Count -gt 0) {
+                        Write-Warn "Entry points still missing after repair: $($stillMissing -join ', ')"
+                        Write-Info "Workaround: `"$pythonExe`" -m hermes_cli.main <command>"
+                    } else {
+                        Write-Success "Console entry points restored"
+                    }
+                }
+            }
+        }
     }
 
     # Verify the dashboard deps specifically -- they're the most common thing

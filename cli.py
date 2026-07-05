@@ -8225,6 +8225,55 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     # in config. (Native Windows now drives the modal normally — see #33961.)
     _DESTRUCTIVE_SKIP_TOKENS = frozenset({"now", "--yes", "-y"})
 
+    def _check_skin_reload(self) -> None:
+        """Detect display.skin changes in config.yaml and hot-reload the skin.
+
+        Called from process_loop alongside _check_config_mcp_changes.
+        When a change is detected, calls set_active_skin() so the new skin
+        takes effect immediately — no CLI restart needed.
+        """
+        CONFIG_WATCH_INTERVAL = 5.0
+
+        now = time.monotonic()
+        if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
+            return
+        self._last_config_check = now
+
+        from hermes_cli.config import get_config_path as _get_config_path
+        cfg_path = _get_config_path()
+        if not cfg_path.exists():
+            return
+
+        try:
+            mtime = cfg_path.stat().st_mtime
+        except OSError:
+            return
+
+        if mtime == self._config_mtime:
+            return  # File unchanged — fast path
+        self._config_mtime = mtime
+
+        try:
+            import yaml as _yaml
+            with open(cfg_path) as _f:
+                cfg = _yaml.safe_load(_f) or {}
+            display = cfg.get("display") or {}
+            new_skin = display.get("skin", "default")
+        except Exception:
+            return
+
+        if new_skin == self._last_skin_name:
+            return  # Skin value unchanged (file rebuild from cron)
+        self._last_skin_name = new_skin
+
+        try:
+            from hermes_cli.skin_engine import set_active_skin, get_active_skin_name
+            prev = get_active_skin_name()
+            if prev != new_skin:
+                _cprint(f"\n  {{_DIM}}♻️  Skin changed: {prev} \u2192 {new_skin} (config.yaml){{_RST}}")
+        except Exception:
+            pass
+
     @classmethod
     def _split_destructive_skip(cls, cmd_text: Optional[str]) -> tuple[str, bool]:
         """Split inline-skip tokens out of a destructive slash command.
@@ -10679,6 +10728,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         from hermes_cli.config import get_config_path as _get_config_path
         _cfg_path = _get_config_path()
         self._config_mtime: float = _cfg_path.stat().st_mtime if _cfg_path.exists() else 0.0
+        self._last_skin_name: str | None = None  # last known display.skin value
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
         self._last_config_check: float = 0.0  # monotonic time of last check
 
@@ -12538,6 +12588,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
+                            self._check_skin_reload()
                             # Check for background process notifications (completions
                             # and watch pattern matches) while agent is idle.
                             try:

@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from gateway.config import GatewayConfig
+from gateway.config import GatewayConfig, load_gateway_config
 from gateway.run import GatewayRunner
 
 
@@ -25,6 +25,18 @@ def test_top_level_stt_echo_transcripts_takes_precedence():
         "stt_echo_transcripts": False,
         "stt": {"echo_transcripts": True},
     })
+
+    assert cfg.stt_echo_transcripts is False
+
+
+def test_load_gateway_config_honors_top_level_stt_echo_transcripts(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "stt:\n  echo_transcripts: true\nstt_echo_transcripts: false\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_gateway_config()
 
     assert cfg.stt_echo_transcripts is False
 

@@ -75,7 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 class FakeTree:
@@ -107,6 +107,10 @@ def adapter():
         user=SimpleNamespace(id=99999, name="HermesBot"),
     )
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
+    # Slash auth is exercised in test_discord_slash_auth.py — bypass it here
+    # so registration / dispatch / thread behavior tests don't have to
+    # construct a full auth context (allowlist / channel scope).
+    adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
 
 
@@ -117,6 +121,10 @@ def adapter():
 
 @pytest.mark.asyncio
 async def test_registers_native_thread_slash_command(adapter):
+    # The /thread slash closure now delegates ALL the work — including
+    # defer() — to _handle_thread_create_slash so the auth gate can send
+    # an ephemeral rejection on the still-unresponded interaction. The
+    # closure should just forward.
     adapter._handle_thread_create_slash = AsyncMock()
     adapter._register_slash_commands()
 
@@ -127,7 +135,9 @@ async def test_registers_native_thread_slash_command(adapter):
 
     await command(interaction, name="Planning", message="", auto_archive_duration=1440)
 
-    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    # defer is now performed inside _handle_thread_create_slash, AFTER the
+    # auth check passes — not by the closure.
+    interaction.response.defer.assert_not_awaited()
     adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
 
 
@@ -283,6 +293,58 @@ async def test_plugin_command_name_conflict_skipped(adapter):
 
 
 # ------------------------------------------------------------------
+# 100-command cap (Discord error 30032 guard)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_slash_command_registration_stays_under_discord_limit(adapter):
+    """Registering far more commands than Discord allows must NOT push the
+    tree over the 100-command hard cap.
+
+    Discord rejects the ENTIRE command sync with error 30032 once the
+    desired set exceeds 100 global application commands, silently breaking
+    every slash command. The adapter must bound the desired set instead.
+    Regression guard for samuraiheart's recurring
+    "Maximum number of application commands reached (100)" sync failures.
+    """
+    from plugins.platforms.discord.adapter import _DISCORD_MAX_APP_COMMANDS
+
+    adapter._run_simple_slash = AsyncMock()
+
+    # 200 plugin commands — way past Discord's limit on their own.
+    many_plugins = {
+        f"plug{i:03d}": {
+            "handler": lambda _a: "ok",
+            "description": f"Plugin command {i}",
+            "args_hint": "",
+            "plugin": "stress-plugin",
+        }
+        for i in range(200)
+    }
+
+    with patch("hermes_cli.plugins.get_plugin_commands", return_value=many_plugins):
+        adapter._register_slash_commands()
+
+    tree_names = set(adapter._client.tree.commands.keys())
+
+    # Contract: never exceed Discord's hard cap.
+    assert len(tree_names) <= _DISCORD_MAX_APP_COMMANDS, (
+        f"registered {len(tree_names)} commands — exceeds Discord's "
+        f"{_DISCORD_MAX_APP_COMMANDS} limit and would fail sync with 30032"
+    )
+
+    # Native, high-priority commands are registered first and must survive
+    # the cap — they are the core UX, not droppable overflow.
+    for native in ("status", "stop", "new", "model", "help"):
+        assert native in tree_names, f"/{native} (native) was dropped by the cap"
+
+    # The cap must actually have dropped overflow — not every plugin fit.
+    registered_plugins = [n for n in tree_names if n.startswith("plug")]
+    assert len(registered_plugins) < 200, "cap did not drop any overflow commands"
+
+
+# ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
 
@@ -298,6 +360,7 @@ async def test_handle_thread_create_slash_reports_success(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
@@ -326,6 +389,7 @@ async def test_handle_thread_create_slash_dispatches_session_when_message_provid
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     adapter._dispatch_thread_session = AsyncMock()
@@ -348,6 +412,7 @@ async def test_handle_thread_create_slash_no_dispatch_without_message(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     adapter._dispatch_thread_session = AsyncMock()
@@ -371,6 +436,7 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
@@ -395,6 +461,7 @@ async def test_handle_thread_create_slash_reports_failure(adapter):
         channel_id=123,
         user=SimpleNamespace(display_name="Jezza", id=42),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "", 1440)
@@ -609,6 +676,13 @@ class _FakeTextChannel:
         self.guild = SimpleNamespace(name=guild_name, id=1)
         self.topic = None
 
+    def history(self, *args, **kwargs):
+        async def _empty():
+            return
+            yield  # pragma: no cover — make this an async generator
+
+        return _empty()
+
 
 class _FakeThreadChannel(_discord_mod.Thread):
     """isinstance(ch, discord.Thread) → True."""
@@ -620,6 +694,13 @@ class _FakeThreadChannel(_discord_mod.Thread):
         self.guild = SimpleNamespace(name=guild_name, id=1)
         self.topic = None
         self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
+
+    def history(self, *args, **kwargs):
+        async def _empty():
+            return
+            yield  # pragma: no cover — make this an async generator
+
+        return _empty()
 
 
 def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):

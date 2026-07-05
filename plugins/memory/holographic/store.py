@@ -127,7 +127,11 @@ class MemoryStore:
 
     def _init_db(self) -> None:
         """Create tables, indexes, and triggers if they do not exist. Enable WAL mode."""
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        # Use the shared WAL-fallback helper so memory_store.db degrades
+        # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same issue as
+        # state.db / kanban.db — see hermes_state._WAL_INCOMPAT_MARKERS).
+        from hermes_state import apply_wal_with_fallback
+        apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
         self._conn.executescript(_SCHEMA)
         # Migrate: add hrr_vector column if missing (safe for existing databases)
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
@@ -201,7 +205,14 @@ class MemoryStore:
             if not query:
                 return []
 
-            params: list = [query, min_trust]
+            # FTS5 AND-joins tokens by default, which zeroes out recall on
+            # natural-language queries. Reuse the retriever's sanitizer
+            # (stopword drop + OR-join content tokens). Imported lazily to
+            # avoid a store->retrieval import cycle.
+            from plugins.memory.holographic.retrieval import FactRetriever
+
+            match_query = FactRetriever._sanitize_fts_query(query)
+            params: list = [match_query, min_trust]
             category_clause = ""
             if category is not None:
                 category_clause = "AND f.category = ?"

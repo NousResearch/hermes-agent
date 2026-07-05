@@ -21,7 +21,12 @@ export function splitReasoning(input: string): SplitReasoning {
       return ''
     })
 
-    const unclosed = new RegExp(`<${tag}>([\\s\\S]*)$`, 'i')
+    // Anchor to start-of-input so a literal `<think>` mid-prose (model quoting
+    // the word, code blocks containing the tag, etc.) doesn't eat every
+    // paragraph after it. Real unclosed reasoning blocks always lead the
+    // message — that's how reasoning models stream. See test
+    // "does not strip trailing prose after a stray mid-text <think> mention".
+    const unclosed = new RegExp(`^\\s*<${tag}>([\\s\\S]*)$`, 'i')
     text = text.replace(unclosed, (_m, inner: string) => {
       const trimmed = inner.trim()
 

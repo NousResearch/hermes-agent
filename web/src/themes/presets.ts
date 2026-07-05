@@ -51,6 +51,7 @@ export const defaultTheme: DashboardTheme = {
   },
   typography: DEFAULT_TYPOGRAPHY,
   layout: DEFAULT_LAYOUT,
+  terminalBackground: "#000000",
 };
 
 export const midnightTheme: DashboardTheme = {
@@ -65,17 +66,16 @@ export const midnightTheme: DashboardTheme = {
     noiseOpacity: 0.8,
   },
   typography: {
+    ...DEFAULT_TYPOGRAPHY,
     fontSans: `"Inter", ${SYSTEM_SANS}`,
     fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
-    baseSize: "14px",
-    lineHeight: "1.6",
     letterSpacing: "-0.005em",
   },
   layout: {
+    ...DEFAULT_LAYOUT,
     radius: "0.75rem",
-    density: "comfortable",
   },
 };
 
@@ -91,17 +91,15 @@ export const emberTheme: DashboardTheme = {
     noiseOpacity: 1,
   },
   typography: {
+    ...DEFAULT_TYPOGRAPHY,
     fontSans: `"Spectral", Georgia, "Times New Roman", serif`,
     fontMono: `"IBM Plex Mono", ${SYSTEM_MONO}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap",
-    baseSize: "15px",
-    lineHeight: "1.6",
-    letterSpacing: "0",
   },
   layout: {
+    ...DEFAULT_LAYOUT,
     radius: "0.25rem",
-    density: "comfortable",
   },
   colorOverrides: {
     destructive: "#c92d0f",
@@ -121,17 +119,15 @@ export const monoTheme: DashboardTheme = {
     noiseOpacity: 0.6,
   },
   typography: {
+    ...DEFAULT_TYPOGRAPHY,
     fontSans: `"IBM Plex Sans", ${SYSTEM_SANS}`,
     fontMono: `"IBM Plex Mono", ${SYSTEM_MONO}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap",
-    baseSize: "13px",
-    lineHeight: "1.5",
-    letterSpacing: "0",
   },
   layout: {
+    ...DEFAULT_LAYOUT,
     radius: "0",
-    density: "compact",
   },
 };
 
@@ -147,17 +143,15 @@ export const cyberpunkTheme: DashboardTheme = {
     noiseOpacity: 1.2,
   },
   typography: {
+    ...DEFAULT_TYPOGRAPHY,
     fontSans: `"Share Tech Mono", "JetBrains Mono", ${SYSTEM_MONO}`,
     fontMono: `"Share Tech Mono", "JetBrains Mono", ${SYSTEM_MONO}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;700&display=swap",
-    baseSize: "14px",
-    lineHeight: "1.5",
-    letterSpacing: "0.02em",
   },
   layout: {
+    ...DEFAULT_LAYOUT,
     radius: "0",
-    density: "compact",
   },
   colorOverrides: {
     success: "#00ff88",
@@ -178,22 +172,66 @@ export const roseTheme: DashboardTheme = {
     noiseOpacity: 0.9,
   },
   typography: {
+    ...DEFAULT_TYPOGRAPHY,
     fontSans: `"Fraunces", Georgia, serif`,
     fontMono: `"DM Mono", ${SYSTEM_MONO}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=DM+Mono:wght@400;500&display=swap",
-    baseSize: "16px",
-    lineHeight: "1.7",
-    letterSpacing: "0",
   },
   layout: {
+    ...DEFAULT_LAYOUT,
     radius: "1rem",
+  },
+};
+
+/** Light mode — vivid Nous-blue accents on a cream canvas. */
+export const nousBlueTheme: DashboardTheme = {
+  name: "nous-blue",
+  label: "Nous Blue",
+  description: "Light mode — vivid Nous-blue accents on cream canvas",
+  palette: {
+    background: { hex: "#E8F2FD", alpha: 1 },
+    midground: { hex: "#0053FD", alpha: 1 },
+    foreground: { hex: "#170d02", alpha: 0 },
+    warmGlow: "rgba(0, 83, 253, 0.12)",
+    noiseOpacity: 0,
+  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: DEFAULT_LAYOUT,
+  terminalBackground: "#f5f8fc",
+  terminalForeground: "#170d02",
+  seriesColors: {
+    inputTokenAccent: "#001934",
+    outputTokenAccent: "#0053fd",
+  },
+  swatchColors: ["#170d02", "#0053FD", "#E8F2FD"],
+};
+
+/**
+ * Same look as ``defaultTheme`` but with a larger root font size, looser
+ * line-height, and ``spacious`` density so every rem-based size in the
+ * dashboard scales up. For users who find the default 15px UI too dense.
+ */
+export const defaultLargeTheme: DashboardTheme = {
+  name: "default-large",
+  label: "Hermes Teal (Large)",
+  description: "Hermes Teal with bigger fonts and roomier spacing",
+  palette: defaultTheme.palette,
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    baseSize: "18px",
+    lineHeight: "1.65",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
     density: "spacious",
   },
 };
 
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
+  "default-large": defaultLargeTheme,
+  "nous-blue": nousBlueTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

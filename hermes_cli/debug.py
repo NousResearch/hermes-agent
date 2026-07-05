@@ -1,16 +1,30 @@
-"""``hermes debug`` — debug tools for Hermes Agent.
+"""``hermes debug`` debug tools for Hermes Agent.
 
 Currently supports:
     hermes debug share    Upload debug report (system info + logs) to a
                           paste service and print a shareable URL.
+                          By default, log content is run through
+                          ``agent.redact.redact_sensitive_text`` with
+                          ``force=True`` before upload so credentials in
+                          ``~/.hermes/logs/*.log`` are not leaked into
+                          the public paste service. Pass ``--no-redact``
+                          to disable.
+                          Pass ``--nous`` to upload instead to Nous-internal
+                          storage (AWS S3) via a signed URL minted by the
+                          Nous account service: the bundle is private
+                          (viewable only by Nous staff / allowlisted mods via
+                          a Google-login-gated viewer) and auto-deletes after
+                          14 days, rather than going to a public paste.
 """
 
+import datetime
+import gzip
 import io
 import json
+import logging
+import re
 import sys
 import time
-import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +32,22 @@ from typing import Optional
 
 from hermes_constants import get_hermes_home
 from utils import atomic_replace
+
+logger = logging.getLogger(__name__)
+
+# Banner prepended to upload-bound log content when redaction is enabled.
+# Visible in the public paste so reviewers know the content was sanitized.
+# Kept short; the trailing newline guarantees the banner sits on its own line.
+_REDACTION_BANNER = (
+    "[hermes debug share: log content redacted at upload time. "
+    "run with --no-redact to disable]\n"
+)
+
+_EMAIL_ADDRESS_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+-])"
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+    r"(?![A-Za-z0-9._%+-])"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -166,15 +196,19 @@ def _best_effort_sweep_expired_pastes() -> None:
 # ---------------------------------------------------------------------------
 
 _PRIVACY_NOTICE = """\
-⚠️  This will upload the following to a public paste service:
-  • System info (OS, Python version, Hermes version, provider, which API keys
-    are configured — NOT the actual keys)
-  • Recent log lines (agent.log, errors.log, gateway.log — may contain
-    conversation fragments and file paths)
-  • Full agent.log and gateway.log (up to 512 KB each — likely contains
-    conversation content, tool outputs, and file paths)
+⚠️  This will upload system info + logs to a PUBLIC paste service.
 
-Pastes auto-delete after 6 hours.
+Cryptographic secrets (API keys, tokens, passwords) are redacted before
+upload, but the following personal data is NOT redacted and will be public:
+  • Your display name and persistent platform user ID
+  • Verbatim content of your recent messages (prompts, responses, tool output)
+  • Local filesystem paths
+  • Any other PII present in the logs
+
+The resulting URL is public to anyone who has the link. Pastes auto-delete
+after 6 hours, but may be archived by third parties in the meantime.
+
+Use --local to view the report without uploading.
 """
 
 _GATEWAY_PRIVACY_NOTICE = (
@@ -234,15 +268,6 @@ def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SEC
     policy handles cleanup.
     """
     _record_pending(urls, delay_seconds=delay_seconds)
-
-
-def _delete_hint(url: str) -> str:
-    """Return a one-liner delete command for the given paste URL."""
-    paste_id = _extract_paste_id(url)
-    if paste_id:
-        return f"hermes debug delete {url}"
-    # dpaste.com — no API delete, expires on its own.
-    return "(auto-expires per dpaste.com policy)"
 
 
 def _upload_paste_rs(content: str) -> str:
@@ -368,17 +393,41 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     return None
 
 
+def _redact_log_text(text: str) -> str:
+    """Run ``redact_sensitive_text`` with ``force=True`` over upload-bound text.
+
+    Uses ``force=True`` so redaction fires regardless of the operator's
+    ``security.redact_secrets`` setting. The local on-disk log file is
+    not modified; only the in-memory copy headed for the public paste
+    service is sanitized. Returns the redacted text (or the original
+    when empty / non-string).
+    """
+    if not text:
+        return text
+    from agent.redact import redact_sensitive_text
+
+    text = redact_sensitive_text(text, force=True)
+    return _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
+
+
 def _capture_log_snapshot(
     log_name: str,
     *,
     tail_lines: int,
     max_bytes: int = _MAX_LOG_BYTES,
+    redact: bool = True,
 ) -> LogSnapshot:
     """Capture a log once and derive summary/full-log views from it.
 
     The report tail and standalone log upload must come from the same file
     snapshot. Otherwise a rotation/truncate between reads can make the report
     look newer than the uploaded ``agent.log`` paste.
+
+    When ``redact`` is True (the default), both ``tail_text`` and
+    ``full_text`` are run through ``_redact_log_text`` so the snapshot
+    returned is upload-safe. The on-disk log file is never modified.
+    Pass ``redact=False`` to capture original log content (used by
+    ``hermes debug share --no-redact``).
     """
     log_path = _resolve_log_path(log_name)
     if log_path is None:
@@ -438,18 +487,40 @@ def _capture_log_snapshot(
         if truncated:
             full_text = f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{full_text}"
 
+        if redact:
+            tail_text = _redact_log_text(tail_text)
+            full_text = _redact_log_text(full_text)
+
         return LogSnapshot(path=log_path, tail_text=tail_text, full_text=full_text)
     except Exception as exc:
         return LogSnapshot(path=log_path, tail_text=f"(error reading: {exc})", full_text=None)
 
 
-def _capture_default_log_snapshots(log_lines: int) -> dict[str, LogSnapshot]:
-    """Capture all logs used by debug-share exactly once."""
+def _capture_default_log_snapshots(
+    log_lines: int, *, redact: bool = True
+) -> dict[str, LogSnapshot]:
+    """Capture all logs used by debug-share exactly once.
+
+    ``redact`` is forwarded to each ``_capture_log_snapshot`` call so all
+    captured logs share the same redaction policy for a given run.
+    """
     errors_lines = min(log_lines, 100)
     return {
-        "agent": _capture_log_snapshot("agent", tail_lines=log_lines),
-        "errors": _capture_log_snapshot("errors", tail_lines=errors_lines),
-        "gateway": _capture_log_snapshot("gateway", tail_lines=errors_lines),
+        "agent": _capture_log_snapshot(
+            "agent", tail_lines=log_lines, redact=redact
+        ),
+        "errors": _capture_log_snapshot(
+            "errors", tail_lines=errors_lines, redact=redact
+        ),
+        "gateway": _capture_log_snapshot(
+            "gateway", tail_lines=errors_lines, redact=redact
+        ),
+        "gui": _capture_log_snapshot(
+            "gui", tail_lines=errors_lines, redact=redact
+        ),
+        "desktop": _capture_log_snapshot(
+            "desktop", tail_lines=errors_lines, redact=redact
+        ),
     }
 
 
@@ -516,31 +587,52 @@ def collect_debug_report(
 
     buf.write(f"--- gateway.log (last {errors_lines} lines) ---\n")
     buf.write(log_snapshots["gateway"].tail_text)
+    buf.write("\n\n")
+
+    buf.write(f"--- gui.log (last {errors_lines} lines) ---\n")
+    buf.write(log_snapshots["gui"].tail_text)
+    buf.write("\n\n")
+
+    buf.write(f"--- desktop.log (last {errors_lines} lines) ---\n")
+    buf.write(log_snapshots["desktop"].tail_text)
     buf.write("\n")
 
     return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
-# CLI entry points
+# Shared bundle collection (used by both the paste.rs and Nous-S3 paths)
 # ---------------------------------------------------------------------------
 
-def run_debug_share(args):
-    """Collect debug report + full logs, upload each, print URLs."""
-    _best_effort_sweep_expired_pastes()
+# Bundle format identifier embedded in the Nous-S3 JSON envelope. The
+# discord-support viewer keys off this string to parse the bundle.
+_NOUS_BUNDLE_FORMAT = "hermes-debug-share/1"
 
-    log_lines = getattr(args, "lines", 200)
-    expiry = getattr(args, "expire", 7)
-    local_only = getattr(args, "local", False)
 
-    if not local_only:
-        print(_PRIVACY_NOTICE)
+def collect_share_bundle(
+    log_lines: int = 200,
+    redact: bool = True,
+) -> dict[str, str]:
+    """Collect the debug report + full logs as a label→text mapping.
 
-    print("Collecting debug report...")
+    Returns ``{"report": ..., "agent.log": ..., "gateway.log": ...,
+    "desktop.log": ...}`` where each value is the already-redacted (when
+    ``redact`` is True) text that would be uploaded.  Keys for logs that are
+    absent/empty are simply omitted.
 
-    # Capture dump once — prepended to every paste for context.
+    This is the single source of collection + redaction shared by both
+    destinations: the paste.rs path (:func:`build_debug_share`) and the
+    Nous-S3 path (``--nous``).  Centralising it guarantees the Nous bundle is
+    built from the *same* force-redacted snapshots as the public paste path —
+    redaction is the safety boundary, so the Nous path must never see raw
+    logs.
+
+    The dump header is prepended to each full log (mirroring the historical
+    paste behaviour) so every file is self-contained, and the redaction
+    banner is prepended when ``redact`` is True.
+    """
     dump_text = _capture_dump()
-    log_snapshots = _capture_default_log_snapshots(log_lines)
+    log_snapshots = _capture_default_log_snapshots(log_lines, redact=redact)
 
     report = collect_debug_report(
         log_lines=log_lines,
@@ -549,71 +641,318 @@ def run_debug_share(args):
     )
     agent_log = log_snapshots["agent"].full_text
     gateway_log = log_snapshots["gateway"].full_text
+    gui_log = log_snapshots["gui"].full_text
+    desktop_log = log_snapshots["desktop"].full_text
 
-    # Prepend dump header to each full log so every paste is self-contained.
+    # Prepend dump header to each full log so every file is self-contained.
     if agent_log:
         agent_log = dump_text + "\n\n--- full agent.log ---\n" + agent_log
     if gateway_log:
         gateway_log = dump_text + "\n\n--- full gateway.log ---\n" + gateway_log
+    if gui_log:
+        gui_log = dump_text + "\n\n--- full gui.log ---\n" + gui_log
+    if desktop_log:
+        desktop_log = dump_text + "\n\n--- full desktop.log ---\n" + desktop_log
 
-    if local_only:
-        print(report)
+    # Visible banner so reviewers know redaction was applied at upload time.
+    if redact:
+        report = _REDACTION_BANNER + report
         if agent_log:
-            print(f"\n\n{'=' * 60}")
-            print("FULL agent.log")
-            print(f"{'=' * 60}\n")
-            print(agent_log)
+            agent_log = _REDACTION_BANNER + agent_log
         if gateway_log:
-            print(f"\n\n{'=' * 60}")
-            print("FULL gateway.log")
-            print(f"{'=' * 60}\n")
-            print(gateway_log)
-        return
+            gateway_log = _REDACTION_BANNER + gateway_log
+        if gui_log:
+            gui_log = _REDACTION_BANNER + gui_log
+        if desktop_log:
+            desktop_log = _REDACTION_BANNER + desktop_log
 
-    print("Uploading...")
+    bundle: dict[str, str] = {"report": report}
+    if agent_log:
+        bundle["agent.log"] = agent_log
+    if gateway_log:
+        bundle["gateway.log"] = gateway_log
+    if gui_log:
+        bundle["gui.log"] = gui_log
+    if desktop_log:
+        bundle["desktop.log"] = desktop_log
+    return bundle
+
+
+def build_nous_bundle(bundle: dict[str, str], redact: bool = True) -> bytes:
+    """Gzip-compress a :func:`collect_share_bundle` mapping into the Nous envelope.
+
+    The JSON shape is what the discord-support viewer (Repo 3) parses::
+
+        {"format": "hermes-debug-share/1",
+         "redacted": <bool>,
+         "created": <iso8601>,
+         "files": {"report": ..., "agent.log": ..., ...}}
+    """
+    created = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    envelope = {
+        "format": _NOUS_BUNDLE_FORMAT,
+        "redacted": bool(redact),
+        "created": created,
+        "files": bundle,
+    }
+    return gzip.compress(json.dumps(envelope).encode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# CLI entry points
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DebugShareResult:
+    """Structured outcome of a ``debug share`` upload.
+
+    Returned by :func:`build_debug_share` so non-CLI callers (the dashboard
+    web server, gateway) can render the uploaded paste URLs as real links
+    instead of scraping printed text.
+    """
+
+    urls: dict  # label -> paste URL (e.g. {"Report": "...", "agent.log": "..."})
+    failures: list  # human-readable "label: error" strings for optional uploads
+    redacted: bool  # whether force-mode redaction was applied before upload
+    auto_delete_seconds: int  # how long until the pastes auto-delete
+    report: str = ""  # the summary report text (kept for local fallback)
+
+
+def build_debug_share(
+    *,
+    log_lines: int = 200,
+    expiry: int = 7,
+    redact: bool = True,
+) -> DebugShareResult:
+    """Collect the debug report + full logs, upload each, return the URLs.
+
+    This is the shared core behind ``hermes debug share`` (CLI) and the
+    dashboard ``POST /api/ops/debug-share`` endpoint. It performs blocking
+    network I/O (paste uploads) — callers inside an event loop must run it in
+    a worker thread.
+
+    The summary report upload is required: on failure this raises
+    ``RuntimeError``. Full-log uploads are best-effort; their errors are
+    collected into ``failures`` rather than raised.
+    """
+    _best_effort_sweep_expired_pastes()
+
+    # Collect the report + full logs (force-redacted when redact=True) via the
+    # shared collector so the paste.rs and Nous-S3 paths build identical,
+    # identically-redacted bundles. The dump header + redaction banner are
+    # applied inside collect_share_bundle.
+    bundle = collect_share_bundle(log_lines=log_lines, redact=redact)
+
+    if redact:
+        logger.info(
+            "hermes debug share: applied force-mode redaction to log snapshots before upload"
+        )
+
+    report = bundle["report"]
+
     urls: dict[str, str] = {}
     failures: list[str] = []
 
-    # 1. Summary report (required)
+    # 1. Summary report (required — raises on failure so callers can fall back)
+    urls["Report"] = upload_to_pastebin(report, expiry_days=expiry)
+
+    # 2-5. Full logs (optional — failures are collected, not raised)
+    for label in ("agent.log", "gateway.log", "gui.log", "desktop.log"):
+        content = bundle.get(label)
+        if not content:
+            continue
+        try:
+            urls[label] = upload_to_pastebin(content, expiry_days=expiry)
+        except Exception as exc:
+            failures.append(f"{label}: {exc}")
+
+    # Schedule auto-deletion after 6 hours.
+    _schedule_auto_delete(list(urls.values()))
+
+    return DebugShareResult(
+        urls=urls,
+        failures=failures,
+        redacted=redact,
+        auto_delete_seconds=_AUTO_DELETE_SECONDS,
+        report=report,
+    )
+
+
+def _confirm_upload(args) -> bool:
+    """Require explicit consent before any debug-share upload.
+
+    The privacy notice is printed by the caller. This gates the actual
+    upload: with ``--yes`` (or ``-y``) we proceed unprompted; otherwise we
+    ask an interactive ``[y/N]`` question. In a non-interactive context
+    (no TTY on stdin — scripts, CI, piped input) we refuse rather than
+    hang or upload silently, so debug data can't be exposed without a
+    deliberate ``--yes``.
+
+    Returns True to proceed with the upload, False to abort.
+    """
+    if bool(getattr(args, "yes", False)):
+        return True
+    if not sys.stdin.isatty():
+        print(
+            "ERROR: Non-interactive mode requires --yes to confirm upload.\n"
+            "       This prevents accidental exposure of personal data.\n"
+            "       Use --local to view the report without uploading.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     try:
-        urls["Report"] = upload_to_pastebin(report, expiry_days=expiry)
+        answer = input("Upload debug report? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer not in ("y", "yes"):
+        print("Aborted.")
+        return False
+    return True
+
+
+def run_debug_share(args):
+    """Collect debug report + full logs, upload each, print URLs."""
+    log_lines = getattr(args, "lines", 200)
+    expiry = getattr(args, "expire", 7)
+    local_only = getattr(args, "local", False)
+    nous = getattr(args, "nous", False)
+    redact = not getattr(args, "no_redact", False)
+
+    if local_only:
+        # Local-only path never uploads — render the report to stdout and bail
+        # before any network I/O. Reuses the shared collector so the rendered
+        # output matches exactly what would be uploaded.
+        _best_effort_sweep_expired_pastes()
+        print("Collecting debug report...")
+        bundle = collect_share_bundle(log_lines=log_lines, redact=redact)
+        print(bundle["report"])
+        for title, label in (
+            ("FULL agent.log", "agent.log"),
+            ("FULL gateway.log", "gateway.log"),
+            ("FULL gui.log", "gui.log"),
+            ("FULL desktop.log", "desktop.log"),
+        ):
+            body = bundle.get(label)
+            if body:
+                print(f"\n\n{'=' * 60}")
+                print(title)
+                print(f"{'=' * 60}\n")
+                print(body)
+        return
+
+    if nous:
+        _run_debug_share_nous(args, log_lines=log_lines, redact=redact)
+        return
+
+    print(_PRIVACY_NOTICE)
+    if not _confirm_upload(args):
+        return
+    print("Collecting debug report...")
+    print("Uploading...")
+
+    try:
+        result = build_debug_share(
+            log_lines=log_lines,
+            expiry=expiry,
+            redact=redact,
+        )
     except RuntimeError as exc:
         print(f"\nUpload failed: {exc}", file=sys.stderr)
-        print("\nFull report printed below — copy-paste it manually:\n")
-        print(report)
+        print("\nRun `hermes debug share --local` to print the report instead.\n")
         sys.exit(1)
 
-    # 2. Full agent.log (optional)
-    if agent_log:
-        try:
-            urls["agent.log"] = upload_to_pastebin(agent_log, expiry_days=expiry)
-        except Exception as exc:
-            failures.append(f"agent.log: {exc}")
-
-    # 3. Full gateway.log (optional)
-    if gateway_log:
-        try:
-            urls["gateway.log"] = upload_to_pastebin(gateway_log, expiry_days=expiry)
-        except Exception as exc:
-            failures.append(f"gateway.log: {exc}")
-
     # Print results
-    label_width = max(len(k) for k in urls)
-    print(f"\nDebug report uploaded:")
-    for label, url in urls.items():
+    label_width = max(len(k) for k in result.urls)
+    print("\nDebug report uploaded:")
+    for label, url in result.urls.items():
         print(f"  {label:<{label_width}}  {url}")
 
-    if failures:
-        print(f"\n  (failed to upload: {', '.join(failures)})")
+    if result.failures:
+        print(f"\n  (failed to upload: {', '.join(result.failures)})")
 
-    # Schedule auto-deletion after 6 hours
-    _schedule_auto_delete(list(urls.values()))
-    print(f"\n⏱  Pastes will auto-delete in 6 hours.")
+    hours = result.auto_delete_seconds // 3600
+    print(f"\n⏱  Pastes will auto-delete in {hours} hours.")
 
     # Manual delete fallback
-    print(f"To delete now:  hermes debug delete <url>")
+    print("To delete now:  hermes debug delete <url>")
 
-    print(f"\nShare these links with the Hermes team for support.")
+    print("\nShare these links with the Hermes team for support.")
+
+
+_NOUS_PRIVACY_NOTICE = """\
+⚠️  --nous: This uploads your debug bundle to Nous-INTERNAL storage (AWS S3),
+    NOT a public paste service. The following is included:
+  • System info (OS, Python/Hermes version, provider, which API keys are
+    configured — NOT the actual keys)
+  • Full agent.log, gateway.log, and desktop.log (up to 512 KB each — likely
+    contains conversation content, tool outputs, and file paths)
+
+  • The bundle is viewable only by Nous staff (and allowlisted Discord mods)
+    via a Google-login-gated viewer.
+  • It is NOT a public paste — there is no public URL to the contents.
+  • It auto-deletes after 14 days.
+"""
+
+
+def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
+    """Handle ``hermes debug share --nous``: upload the bundle to Nous-S3.
+
+    Collects the same force-redacted bundle as the paste path, gzips it into
+    the Nous envelope, requests a signed URL from NAS, uploads, and prints the
+    private viewer link. On any failure falls back to a clear error that
+    suggests ``--local``.
+    """
+    from hermes_cli.diagnostics_upload import share_to_nous
+
+    print(_NOUS_PRIVACY_NOTICE)
+    if not _confirm_upload(args):
+        return
+    if not redact:
+        print(
+            "⚠️  --no-redact is set: secrets in your logs will NOT be redacted "
+            "before upload.\n"
+        )
+    print("Collecting debug report...")
+    _best_effort_sweep_expired_pastes()
+
+    bundle = collect_share_bundle(log_lines=log_lines, redact=redact)
+    if redact:
+        logger.info(
+            "hermes debug share --nous: applied force-mode redaction before upload"
+        )
+    blob = build_nous_bundle(bundle, redact=redact)
+
+    print("Uploading to Nous diagnostics storage...")
+    try:
+        res = share_to_nous(blob)
+    except Exception as exc:
+        print(
+            f"\nNous upload failed: {exc}\n"
+            "\nThe Nous diagnostics service may be unavailable or not yet "
+            "provisioned.\n"
+            "Run `hermes debug share --local` to print the report instead, "
+            "or `hermes debug share` to upload to a public paste service.\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    view_url = res.get("viewUrl") or res.get("view_url")
+    print("\nDebug bundle uploaded to Nous (private):")
+    if view_url:
+        print(f"  View URL  {view_url}")
+    else:
+        print(f"  (no view URL returned; upload id: {res.get('id', '?')})")
+
+    expires_at = res.get("expiresAt") or res.get("expires_at")
+    if expires_at:
+        print(f"\n⏱  Auto-deletes at {expires_at} (14-day retention).")
+    else:
+        print("\n⏱  Auto-deletes after 14 days.")
+
+    print(
+        "\nShare this private link with the Nous team — only Nous staff "
+        "(via Google login) can open it."
+    )
 
 
 def run_debug_delete(args):
@@ -666,6 +1005,9 @@ def run_debug(args):
         print("  --lines N    Number of log lines to include (default: 200)")
         print("  --expire N   Paste expiry in days (default: 7)")
         print("  --local      Print report locally instead of uploading")
+        print("  --nous       Upload to Nous-internal storage (private, staff-only,")
+        print("               auto-deletes in 14 days) instead of a public paste")
+        print("  --no-redact  Disable upload-time secret redaction (default: redact)")
         print()
         print("Options (delete):")
         print("  <url> ...    One or more paste URLs to delete")

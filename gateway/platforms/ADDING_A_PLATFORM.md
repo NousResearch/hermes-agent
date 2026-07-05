@@ -1,9 +1,86 @@
 # Adding a New Messaging Platform
 
-Checklist for integrating a new messaging platform into the Hermes gateway.
-Use this as a reference when building a new adapter — every item here is a
-real integration point that exists in the codebase. Missing any of them will
-cause broken functionality, missing features, or inconsistent behavior.
+There are two ways to add a platform to the Hermes gateway:
+
+## Plugin Path (Recommended for Community/Third-Party)
+
+Create a plugin directory in `~/.hermes/plugins/` (or under `plugins/platforms/`
+for bundled plugins) with a `plugin.yaml` and `adapter.py`.  The adapter
+inherits from `BasePlatformAdapter` and registers via
+`ctx.register_platform()` in the `register(ctx)` entry point.  This requires
+**zero changes to core Hermes code**.
+
+The plugin system automatically handles: adapter creation, config parsing,
+user authorization, cron delivery, send_message routing, system prompt hints,
+status display, gateway setup, and more.
+
+**Optional hooks cover the edges most adapters need:**
+
+- `env_enablement_fn: () -> Optional[dict]` — seeds `PlatformConfig.extra`
+  (and an optional `home_channel` dict) from env vars BEFORE the adapter is
+  constructed.  Without this, env-only setups don't surface in
+  `hermes gateway status` or `get_connected_platforms()` until the SDK
+  instantiates.
+- `apply_yaml_config_fn: (yaml_cfg, platform_cfg) -> Optional[dict]` —
+  translate this platform's `config.yaml` keys into env vars and/or seed
+  `PlatformConfig.extra` directly.  Lets a plugin own its YAML schema
+  instead of growing core `gateway/config.py` boilerplate per platform.
+  Mutating `os.environ` is allowed (use `not os.getenv(...)` guards to
+  preserve env > YAML precedence); the returned dict is merged into
+  `PlatformConfig.extra`.  Called during `load_gateway_config()` after
+  the generic shared-key loop and before `_apply_env_overrides()`.
+- `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
+  set, `deliver=<name>` cron jobs route to this var without editing
+  `cron/scheduler.py`'s hardcoded sets.
+- `standalone_sender_fn: async (...) -> dict`: out-of-process delivery
+  for cron jobs that run separately from the gateway.  Without this, a
+  `deliver=<name>` job fires correctly but the actual send returns
+  `No live adapter for platform '<name>'`.  Pair with `cron_deliver_env_var`
+  for end-to-end cron support.  See the docsite for the signature.
+- `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
+  auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
+  wizard surfaces proper descriptions, prompts, password flags, and URLs.
+
+**Subclassing for platform-specific UX.** When a platform has a hard
+time-window constraint that the base adapter can't anticipate (LINE's
+60s single-use reply token, WhatsApp's 24h session window, etc.), an
+adapter can override `_keep_typing` to layer a mid-flight bubble at a
+threshold without expanding the kwarg surface. Always
+`await super()._keep_typing(...)` so the typing heartbeat keeps running,
+and tear down your side task in `finally`. See `plugins/platforms/line/`
+for the full pattern (Template Buttons postback at 45s, `RequestCache`
+state machine, `interrupt_session_activity` override for `/stop`
+orphans) and the developer-guide page for the prose walkthrough.
+
+**Sibling adapters that share behavior.** When a single platform has
+two transport modes the user picks between — unofficial vs official
+APIs, polling vs websocket, library A vs library B — the right
+structure is two adapters that share a behavior mixin. WhatsApp does
+this: `gateway/platforms/whatsapp.py` (Baileys bridge) and
+`gateway/platforms/whatsapp_cloud.py` (Meta Cloud API) both inherit
+from `WhatsAppBehaviorMixin` in `gateway/platforms/whatsapp_common.py`.
+The mixin owns gating, allow-lists, mention parsing, broadcast
+filters, and the WhatsApp-flavored markdown conversion — everything
+that's platform-protocol-agnostic. Each adapter owns its transport.
+Both register distinct `Platform.*` enum values so the gateway can run
+both simultaneously against different phone numbers. The mixin must
+come **first** in the bases list — `class WhatsAppAdapter(Mixin,
+BasePlatformAdapter)` — so the mixin's `format_message` overrides
+`BasePlatformAdapter`'s generic default.
+
+See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
+`plugins/platforms/google_chat/` for complete working examples, and
+`website/docs/developer-guide/adding-platform-adapters.md` for the full
+plugin guide with code examples and hook documentation.
+
+---
+
+## Built-in Path (Core Contributors Only)
+
+Checklist for integrating a platform directly into the Hermes core.
+Use this as a reference when building a built-in adapter — every item here
+is a real integration point. Missing any of them will cause broken
+functionality, missing features, or inconsistent behavior.
 
 ---
 
@@ -32,6 +109,19 @@ The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.
 | `send_video(chat_id, path, caption)` | Send a video |
 | `send_animation(chat_id, path, caption)` | Send a GIF/animation |
 | `send_image_file(chat_id, path, caption)` | Send image from local file |
+
+### Interactive UX (recommended if your platform supports tappable buttons)
+
+If your platform supports interactive button/menu messages, implement these for a more polished agent experience. They all degrade gracefully to plain text when not overridden:
+
+| Method | Purpose |
+|--------|---------|
+| `send_clarify(chat_id, question, choices, clarify_id, session_key, ...)` | Render the `clarify` tool's multi-choice question as tappable buttons. Pair with inbound dispatch that routes button taps to `tools.clarify_gateway.resolve_gateway_clarify`. |
+| `send_exec_approval(chat_id, command, session_key, description, ...)` | Render dangerous-command approval as Approve/Deny buttons. Inbound dispatch routes to `tools.approval.resolve_gateway_approval`. |
+| `send_slash_confirm(chat_id, title, message, session_key, confirm_id, ...)` | Render slash-command confirmations (e.g. `/reload-mcp`) as Once/Always/Cancel buttons. Inbound dispatch routes to `tools.slash_confirm.resolve`. |
+| `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram and Discord. |
+
+See `gateway/platforms/telegram.py`, `discord.py`, and `whatsapp_cloud.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
 
 ### Required function
 

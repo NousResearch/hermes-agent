@@ -176,9 +176,12 @@ def check_env_vars():
 
     # Load .env
     try:
-        from dotenv import load_dotenv
-        if ENV_FILE.exists():
-            load_dotenv(ENV_FILE)
+        from hermes_cli.env_loader import load_hermes_dotenv
+
+        load_hermes_dotenv(
+            hermes_home=ENV_FILE.parent,
+            project_env=PROJECT_ROOT / ".env",
+        )
     except ImportError:
         pass
 
@@ -239,7 +242,7 @@ def check_config(groq_key, eleven_key):
     if config_path.exists():
         try:
             import yaml
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
 
             stt_provider = cfg.get("stt", {}).get("provider", "local")

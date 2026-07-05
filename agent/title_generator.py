@@ -17,18 +17,41 @@ logger = logging.getLogger(__name__)
 # so silent-drops (e.g. OpenRouter 402 exhausting the fallback chain)
 # become visible instead of piling up as NULL session titles.
 FailureCallback = Callable[[str, BaseException], None]
+TitleCallback = Callable[[str], None]
 
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
+    "Write the title in the same language the user is writing in. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
+
+_TITLE_PROMPT_PINNED_LANGUAGE = (
+    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
+    "following exchange. The title should capture the main topic or intent. "
+    "Write the title in {language}. "
+    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+)
+
+
+def _title_language() -> str:
+    """Return configured title language, or empty string to match the user."""
+    try:
+        from hermes_cli.config import load_config
+
+        return str(
+            ((load_config() or {}).get("auxiliary") or {})
+            .get("title_generation", {})
+            .get("language", "")
+        ).strip()
+    except Exception:
+        return ""
 
 
 def generate_title(
     user_message: str,
     assistant_response: str,
-    timeout: float = 30.0,
+    timeout: Optional[float] = None,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
 ) -> Optional[str]:
@@ -47,8 +70,11 @@ def generate_title(
     user_snippet = user_message[:500] if user_message else ""
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
+    language = _title_language()
+    prompt = _TITLE_PROMPT_PINNED_LANGUAGE.format(language=language) if language else _TITLE_PROMPT
+
     messages = [
-        {"role": "system", "content": _TITLE_PROMPT},
+        {"role": "system", "content": prompt},
         {"role": "user", "content": f"User: {user_snippet}\n\nAssistant: {assistant_snippet}"},
     ]
 
@@ -61,7 +87,15 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        title = (response.choices[0].message.content or "").strip()
+        content = response.choices[0].message.content or ""
+        # Strip thinking/reasoning blocks that think-enabled models
+        # (MiniMax M2.7, DeepSeek, etc.) emit even for simple prompts like
+        # title generation. Without this the raw <think>...</think> XML
+        # leaks into session titles. Reuses the canonical scrubber so all
+        # tag variants (unterminated blocks, orphan closes, mixed case)
+        # are handled, not just a single literal <think> pair.
+        from agent.agent_runtime_helpers import strip_think_blocks
+        title = strip_think_blocks(None, content).strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
         if title.lower().startswith("title:"):
@@ -90,6 +124,7 @@ def auto_title_session(
     assistant_response: str,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
+    title_callback: Optional[TitleCallback] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -119,6 +154,11 @@ def auto_title_session(
     try:
         session_db.set_session_title(session_id, title)
         logger.debug("Auto-generated session title: %s", title)
+        if title_callback is not None:
+            try:
+                title_callback(title)
+            except Exception:
+                logger.debug("Auto-title callback failed", exc_info=True)
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
 
@@ -131,6 +171,7 @@ def maybe_auto_title(
     conversation_history: list,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
+    title_callback: Optional[TitleCallback] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
@@ -152,7 +193,11 @@ def maybe_auto_title(
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
-        kwargs={"failure_callback": failure_callback, "main_runtime": main_runtime},
+        kwargs={
+            "failure_callback": failure_callback,
+            "main_runtime": main_runtime,
+            "title_callback": title_callback,
+        },
         daemon=True,
         name="auto-title",
     )

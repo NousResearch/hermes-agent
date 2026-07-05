@@ -13,7 +13,7 @@ Config stored in ~/.hermes/config.yaml under:
 """
 from typing import List, Optional, Set
 
-from hermes_cli.config import load_config, save_config
+from hermes_cli.config import cfg_get, load_config, save_config
 from hermes_cli.colors import Colors, color
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS
 
@@ -25,15 +25,21 @@ PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 
 def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str]:
-    """Return disabled skill names. Platform-specific list falls back to global."""
+    """Return disabled skill names: the global list unioned with the
+    platform-specific list when a platform is given.
+
+    A globally-disabled skill stays disabled on every platform, so the
+    platform list adds to the global list rather than replacing it. This
+    mirrors ``agent.skill_utils.get_disabled_skill_names``.
+    """
     skills_cfg = config.get("skills", {})
     global_disabled = set(skills_cfg.get("disabled", []))
     if platform is None:
         return global_disabled
-    platform_disabled = skills_cfg.get("platform_disabled", {}).get(platform)
+    platform_disabled = cfg_get(skills_cfg, "platform_disabled", platform)
     if platform_disabled is None:
         return global_disabled
-    return set(platform_disabled)
+    return global_disabled | set(platform_disabled)
 
 
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):

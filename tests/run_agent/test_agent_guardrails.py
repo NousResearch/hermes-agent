@@ -108,6 +108,30 @@ class TestSanitizeApiMessages:
         assert len(out) == 2
         assert out[1]["tool_call_id"] == "c6"
 
+    def test_tool_result_with_leading_whitespace_preserved(self):
+        """Tool result IDs with leading/trailing whitespace should match assistant call IDs."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("functions.cronjob:24")]},
+            tool_result(" functions.cronjob:24"),  # leading whitespace
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        # Should NOT inject a stub — the tool result is valid after stripping
+        assert len(out) == 2
+        assert out[1]["role"] == "tool"
+        assert out[1]["content"] == "ok"
+
+    def test_truly_orphaned_with_whitespace_still_removed(self):
+        """Truly orphaned tool results with whitespace should still be removed."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("c_valid")]},
+            tool_result(" c_ORPHAN "),  # whitespace + no matching call
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert len(out) == 2  # assistant + stub for c_valid, orphan removed
+        tool_msgs = [m for m in out if m["role"] == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "c_valid"
+
 
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls
@@ -263,3 +287,34 @@ class TestGetToolCallIdStatic:
     def test_object_without_id_attr(self):
         tc = types.SimpleNamespace()
         assert AIAgent._get_tool_call_id_static(tc) == ""
+
+
+# ---------------------------------------------------------------------------
+# _get_tool_call_name_static
+# ---------------------------------------------------------------------------
+
+class TestGetToolCallNameStatic:
+
+    def test_dict_with_valid_name(self):
+        assert AIAgent._get_tool_call_name_static(
+            {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}
+        ) == "terminal"
+
+    def test_dict_with_missing_function(self):
+        assert AIAgent._get_tool_call_name_static({"id": "call_1"}) == ""
+
+    def test_dict_with_none_function(self):
+        assert AIAgent._get_tool_call_name_static({"id": "call_1", "function": None}) == ""
+
+    def test_dict_with_none_name(self):
+        assert AIAgent._get_tool_call_name_static(
+            {"function": {"name": None, "arguments": "{}"}}
+        ) == ""
+
+    def test_object_with_valid_name(self):
+        tc = make_tc("read_file")
+        assert AIAgent._get_tool_call_name_static(tc) == "read_file"
+
+    def test_object_without_function_attr(self):
+        tc = types.SimpleNamespace(id="call_1")
+        assert AIAgent._get_tool_call_name_static(tc) == ""

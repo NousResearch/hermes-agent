@@ -526,6 +526,11 @@ class TestCmdMigrate:
 class TestCmdCleanup:
     """Test the cleanup command handler."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_openclaw_running(self):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]):
+            yield
+
     def test_no_dirs_found(self, tmp_path, capsys):
         args = Namespace(source=None, dry_run=False, yes=False)
         with patch.object(claw_mod, "_find_openclaw_dirs", return_value=[]):

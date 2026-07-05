@@ -1,7 +1,9 @@
 import type {
   BrowserManageResponse,
+  CommandsCatalogResponse,
   DelegationPauseResponse,
   ProcessStopResponse,
+  ReloadEnvResponse,
   ReloadMcpResponse,
   RollbackDiffResponse,
   RollbackListResponse,
@@ -55,6 +57,10 @@ interface SkillsBrowseResponse {
   total_pages?: number
 }
 
+interface SkillsReloadResponse {
+  output?: string
+}
+
 export const opsCommands: SlashCommand[] = [
   {
     help: 'stop background processes',
@@ -75,14 +81,63 @@ export const opsCommands: SlashCommand[] = [
 
   {
     aliases: ['reload_mcp'],
-    help: 'reload MCP servers in the live session',
+    help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
-    run: (_arg, ctx) => {
+    run: (arg, ctx) => {
+      // Parse arg: `now` / `always` skip the confirmation gate.
+      // `always` additionally persists approvals.mcp_reload_confirm=false.
+      const a = (arg || '').trim().toLowerCase()
+
+      const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
+        session_id: ctx.sid
+      }
+
+      if (a === 'now' || a === 'approve' || a === 'once' || a === 'yes') {
+        params.confirm = true
+      } else if (a === 'always') {
+        params.confirm = true
+        params.always = true
+      }
+
       ctx.gateway
-        .rpc<ReloadMcpResponse>('reload.mcp', { session_id: ctx.sid })
+        .rpc<ReloadMcpResponse>('reload.mcp', params)
         .then(
           ctx.guarded<ReloadMcpResponse>(r => {
-            ctx.transcript.sys(r.status === 'reloaded' ? 'MCP servers reloaded' : 'reload complete')
+            if (r.status === 'confirm_required') {
+              ctx.transcript.sys(r.message || '/reload-mcp requires confirmation')
+
+              return
+            }
+
+            if (r.status === 'reloaded') {
+              ctx.transcript.sys(
+                params.always
+                  ? 'MCP servers reloaded · future /reload-mcp will run without confirmation'
+                  : 'MCP servers reloaded'
+              )
+
+              return
+            }
+
+            ctx.transcript.sys('reload complete')
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
+    name: 'reload',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<ReloadEnvResponse>('reload.env', {})
+        .then(
+          ctx.guarded<ReloadEnvResponse>(r => {
+            const n = Number(r.updated ?? 0)
+            const noun = n === 1 ? 'var' : 'vars'
+
+            ctx.transcript.sys(`reloaded .env (${n} ${noun} updated)`)
           })
         )
         .catch(ctx.guardedErr)
@@ -93,9 +148,8 @@ export const opsCommands: SlashCommand[] = [
     help: 'manage browser CDP connection [connect|disconnect|status]',
     name: 'browser',
     run: (arg, ctx) => {
-      const trimmed = arg.trim()
-      const [rawAction, ...rest] = trimmed ? trimmed.split(/\s+/) : ['status']
-      const action = (rawAction || 'status').toLowerCase()
+      const [rawAction = 'status', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
+      const action = rawAction.toLowerCase()
 
       if (!['connect', 'disconnect', 'status'].includes(action)) {
         return ctx.transcript.sys(
@@ -103,17 +157,23 @@ export const opsCommands: SlashCommand[] = [
         )
       }
 
-      const payload: Record<string, unknown> = { action }
-      const requested = rest.join(' ').trim()
+      const sid = ctx.sid ?? null
+      const url = action === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
 
-      if (action === 'connect') {
-        payload.url = requested || 'http://localhost:9222'
+      if (url) {
+        ctx.transcript.sys(`checking Chromium-family browser remote debugging at ${url}...`)
       }
 
       ctx.gateway
-        .rpc<BrowserManageResponse>('browser.manage', payload)
+        .rpc<BrowserManageResponse>('browser.manage', { action, session_id: sid, ...(url && { url }) })
         .then(
           ctx.guarded<BrowserManageResponse>(r => {
+            // Without a session we can't subscribe to streamed
+            // browser.progress events, so flush the bundled list.
+            if (!sid) {
+              r.messages?.forEach(message => ctx.transcript.sys(message))
+            }
+
             if (action === 'status') {
               return ctx.transcript.sys(
                 r.connected
@@ -122,18 +182,15 @@ export const opsCommands: SlashCommand[] = [
               )
             }
 
-            if (action === 'connect') {
-              if (r.connected) {
-                ctx.transcript.sys(`browser connected: ${r.url || '(url unavailable)'}`)
-                ctx.transcript.sys('next browser tool call will use this CDP endpoint')
-
-                return
-              }
-
-              return ctx.transcript.sys('browser connect failed')
+            if (action === 'disconnect') {
+              return ctx.transcript.sys('browser disconnected')
             }
 
-            ctx.transcript.sys('browser disconnected')
+            if (r.connected) {
+              ctx.transcript.sys('Browser connected to live Chromium-family browser via CDP')
+              ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
+              ctx.transcript.sys('next browser tool call will use this CDP endpoint')
+            }
           })
         )
         .catch(ctx.guardedErr)
@@ -269,6 +326,16 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['learning', 'memory-graph'],
+    help: 'open your learning journey — skills + memories on a timeline',
+    name: 'journey',
+    run: (_arg, ctx) => {
+      void ctx
+      patchOverlayState({ journey: true })
+    }
+  },
+
+  {
     help: 'replay a completed spawn tree · `/replay [N|last|list|load <path>]`',
     name: 'replay',
     run: (arg, ctx) => {
@@ -390,9 +457,43 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['reload_skills'],
+    help: 're-scan installed skills in the live TUI gateway',
+    name: 'reload-skills',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<SkillsReloadResponse>('skills.reload', {})
+        .then(
+          ctx.guarded<SkillsReloadResponse>(r => {
+            ctx.transcript.page(r.output || 'skills reloaded', 'Reload Skills')
+            ctx.gateway
+              .rpc<CommandsCatalogResponse>('commands.catalog', {})
+              .then(
+                ctx.guarded<CommandsCatalogResponse>(catalog => {
+                  if (!catalog?.pairs) {
+                    return
+                  }
+
+                  ctx.local.setCatalog({
+                    canon: (catalog.canon ?? {}) as Record<string, string>,
+                    categories: catalog.categories ?? [],
+                    pairs: catalog.pairs as [string, string][],
+                    skillCount: (catalog.skill_count ?? 0) as number,
+                    sub: (catalog.sub ?? {}) as Record<string, string[]>
+                  })
+                })
+              )
+              .catch(() => {})
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
     help: 'browse, inspect, install skills',
     name: 'skills',
-    run: (arg, ctx) => {
+    run: (arg, ctx, cmd) => {
       const text = arg.trim()
 
       if (!text) {
@@ -403,6 +504,23 @@ export const opsCommands: SlashCommand[] = [
       const query = rest.join(' ').trim()
       const { rpc } = ctx.gateway
       const { panel, sys } = ctx.transcript
+
+      const runViaSlashWorker = () => {
+        ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+          .then(r => {
+            if (ctx.stale()) {
+              return
+            }
+
+            const body = r?.output || '/skills: no output'
+            const formatted = r?.warning ? `warning: ${r.warning}\n${body}` : body
+            const long = formatted.length > 180 || formatted.split('\n').filter(Boolean).length > 2
+
+            long ? ctx.transcript.page(formatted, 'Skills') : ctx.transcript.sys(formatted)
+          })
+          .catch(ctx.guardedErr)
+      }
 
       if (sub === 'list') {
         rpc<SkillsListResponse>('skills.manage', { action: 'list' })
@@ -547,7 +665,35 @@ export const opsCommands: SlashCommand[] = [
         return
       }
 
-      sys('usage: /skills [list | inspect <n> | install <n> | search <q> | browse [page]]')
+      runViaSlashWorker()
+    }
+  },
+
+  {
+    help: 'view & toggle plugins (no arg opens the hub; enable/disable <name> for direct toggle)',
+    name: 'plugins',
+    run: (arg, ctx, cmd) => {
+      // No argument → open the interactive Plugins Hub overlay. Any
+      // subcommand (enable/disable/list/install/…) falls through to the
+      // text slash worker so it stays at parity with `hermes plugins`.
+      if (!arg.trim()) {
+        return patchOverlayState({ pluginsHub: true })
+      }
+
+      ctx.gateway.gw
+        .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+        .then(r => {
+          if (ctx.stale()) {
+            return
+          }
+
+          const body = r?.output || '/plugins: no output'
+          const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+          const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+          long ? ctx.transcript.page(text, 'Plugins') : ctx.transcript.sys(text)
+        })
+        .catch(ctx.guardedErr)
     }
   },
 

@@ -33,19 +33,24 @@ Configuration in config.yaml::
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
 import re
+import secrets
 import socket
+import stat
 import sys
 import threading
 import time
 import webbrowser
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from hermes_constants import secure_parent_dir
 
 logger = logging.getLogger(__name__)
 
@@ -53,19 +58,24 @@ logger = logging.getLogger(__name__)
 # Lazy imports -- MCP SDK with OAuth support is optional
 # ---------------------------------------------------------------------------
 
-_OAUTH_AVAILABLE = False
+_OAUTH_AVAILABLE=False
 try:
     from mcp.client.auth import OAuthClientProvider
     from mcp.shared.auth import (
         OAuthClientInformationFull,
         OAuthClientMetadata,
+        OAuthMetadata,
         OAuthToken,
     )
-    from pydantic import AnyUrl
 
-    _OAUTH_AVAILABLE = True
+    _OAUTH_AVAILABLE=True
 except ImportError:
     logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
+
+try:
+    from pydantic import AnyUrl
+except ImportError:
+    AnyUrl = None  # type: ignore[assignment, misc]
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +94,34 @@ class OAuthNonInteractiveError(RuntimeError):
 # Port used by the most recent build_oauth_auth() call.  Exposed so that
 # tests can verify the callback server and the redirect_uri share a port.
 _oauth_port: int | None = None
+# Interactivity gate for OAuth stdin prompts. A ContextVar (NOT threading.local)
+# is required: background MCP discovery sets this on the discovery thread, but
+# the actual connect+OAuth runs on the dedicated `mcp-event-loop` thread via
+# run_coroutine_threadsafe. asyncio copies the *calling context* into the
+# scheduled coroutine, so a ContextVar propagates across that boundary while a
+# threading.local would not — see #35927. Default True (interactive allowed).
+_oauth_interactive_enabled: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "_oauth_interactive_enabled", default=True
+)
+
+# Forces _is_interactive() past the stdin-TTY check for flows driven from a
+# GUI (dashboard/desktop REST): the browser + localhost callback server do all
+# the work there, and the stdin paste fallback degrades harmlessly (EOF is
+# swallowed by _paste_callback_reader). Suppression still wins — background
+# discovery must never start a browser flow.
+_oauth_interactive_forced: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "_oauth_interactive_forced", default=False
+)
+
+
+# Skip tokens accepted at the paste prompt — exit OAuth without auth.
+_SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
+
+# Sentinel value written to result["error"] when the user skipped via stdin.
+# _wait_for_callback maps this to OAuthNonInteractiveError ("user_skipped")
+# so the MCP setup path treats it as a non-fatal "continue without this
+# server" rather than a hard failure.
+_USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +157,61 @@ def _find_free_port() -> int:
 
 def _is_interactive() -> bool:
     """Return True if we can reasonably expect to interact with a user."""
+    if not _oauth_interactive_enabled.get():
+        return False
+    if _oauth_interactive_forced.get():
+        return True
     try:
         return sys.stdin.isatty()
     except (AttributeError, ValueError):
         return False
+
+
+def _raise_if_non_interactive(lead: str) -> None:
+    """Raise ``OAuthNonInteractiveError`` unless an interactive session exists.
+
+    ``lead`` is the boundary-specific first sentence; this helper appends the
+    shared, actionable ``hermes mcp login`` next-step so the guidance wording
+    lives in one place across every non-interactive OAuth boundary (#57836).
+    """
+    if not _is_interactive():
+        raise OAuthNonInteractiveError(
+            f"{lead} "
+            "Run `hermes mcp login <server>` interactively to (re)authorize, "
+            "then restart or reload the gateway."
+        )
+
+
+@contextmanager
+def force_interactive_oauth():
+    """Treat the current execution context as interactive despite no TTY.
+
+    For GUI-driven auth (dashboard/desktop REST endpoint): the user IS present
+    — just not on stdin. Opens the browser + localhost callback flow that the
+    TTY heuristic would otherwise refuse. Same ContextVar propagation story as
+    suppress_interactive_oauth() (#35927).
+    """
+    token = _oauth_interactive_forced.set(True)
+    try:
+        yield
+    finally:
+        _oauth_interactive_forced.reset(token)
+
+
+@contextmanager
+def suppress_interactive_oauth():
+    """Disable stdin-based OAuth prompts for the current execution context.
+
+    Uses a ContextVar so the suppression propagates from a background-discovery
+    thread onto the coroutine scheduled (via run_coroutine_threadsafe) on the
+    dedicated MCP event-loop thread — where the OAuth callback actually runs
+    (#35927). A threading.local would not cross that thread boundary.
+    """
+    token = _oauth_interactive_enabled.set(False)
+    try:
+        yield
+    finally:
+        _oauth_interactive_enabled.reset(token)
 
 
 def _can_open_browser() -> bool:
@@ -156,15 +245,39 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _write_json(path: Path, data: dict) -> None:
-    """Write a dict as JSON with restricted permissions (0o600)."""
+    """Write a dict as JSON with restricted permissions (0o600).
+
+    Uses ``os.open`` with ``O_EXCL`` and an explicit mode so the file is
+    created atomically at 0o600. The previous ``write_text`` + post-write
+    ``chmod`` opened a TOCTOU window where the temp file briefly inherited
+    the process umask (commonly 0o644 = world-readable), exposing OAuth
+    tokens to other local users between create and chmod. Mirrors the fix
+    in ``agent/google_oauth.py`` (#19673).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    # Tighten parent dir to 0o700 so siblings can't traverse to the creds.
+    # No-op on Windows (POSIX mode bits aren't enforced); ignore failures.
+    # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
+    secure_parent_dir(path)
+    # Per-process random suffix avoids collisions between concurrent
+    # writers and stale leftovers from a prior crashed write.
+    tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
     try:
-        tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        tmp.rename(path)
+        fd = os.open(
+            str(tmp),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, default=str)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
     except OSError:
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
 
 
@@ -180,6 +293,7 @@ class HermesTokenStorage:
 
         HERMES_HOME/mcp-tokens/<server_name>.json         -- tokens
         HERMES_HOME/mcp-tokens/<server_name>.client.json   -- client info
+        HERMES_HOME/mcp-tokens/<server_name>.meta.json     -- oauth server metadata
     """
 
     def __init__(self, server_name: str):
@@ -190,6 +304,9 @@ class HermesTokenStorage:
 
     def _client_info_path(self) -> Path:
         return _get_token_dir() / f"{self._server_name}.client.json"
+
+    def _meta_path(self) -> Path:
+        return _get_token_dir() / f"{self._server_name}.meta.json"
 
     # -- tokens ------------------------------------------------------------
 
@@ -268,12 +385,104 @@ class HermesTokenStorage:
         _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
         logger.debug("OAuth client info saved for %s", self._server_name)
 
+    # -- oauth server metadata --------------------------------------------
+    # The MCP SDK keeps discovered ``OAuthMetadata`` (token endpoint URL,
+    # etc.) in memory only. Persisting it here lets a restarted process
+    # refresh tokens without re-running metadata discovery. Without this,
+    # cold-start refresh requests fall back to the SDK's guessed
+    # ``{server_url}/token`` which returns 404 on most real providers and
+    # forces a full browser re-authorization.
+
+    def save_oauth_metadata(self, metadata: "OAuthMetadata") -> None:
+        _write_json(self._meta_path(), metadata.model_dump(exclude_none=True, mode="json"))
+        logger.debug("OAuth metadata saved for %s", self._server_name)
+
+    def load_oauth_metadata(self) -> "OAuthMetadata | None":
+        data = _read_json(self._meta_path())
+        if data is None:
+            return None
+        try:
+            return OAuthMetadata.model_validate(data)
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Corrupt OAuth metadata at %s -- ignoring: %s", self._meta_path(), exc)
+            return None
+
     # -- cleanup -----------------------------------------------------------
 
     def remove(self) -> None:
         """Delete all stored OAuth state for this server."""
-        for p in (self._tokens_path(), self._client_info_path()):
+        for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
             p.unlink(missing_ok=True)
+
+    def snapshot(self) -> dict[str, bytes]:
+        """Capture on-disk OAuth state so a failed re-auth can restore it.
+
+        Maps filename -> bytes for whichever of the three state files exist.
+        Feed back to ``restore()`` to undo an intervening ``remove()`` when a
+        re-authentication attempt fails, so a still-valid token isn't destroyed.
+        """
+        snap: dict[str, bytes] = {}
+        for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
+            try:
+                snap[p.name] = p.read_bytes()
+            except OSError:
+                pass
+        return snap
+
+    def restore(self, snapshot: dict[str, bytes]) -> None:
+        """Revert to a ``snapshot()`` capture (dropping any newer partial state)."""
+        self.remove()
+        if not snapshot:
+            return
+        token_dir = _get_token_dir()
+        token_dir.mkdir(parents=True, exist_ok=True)
+        for fname, data in snapshot.items():
+            path = token_dir / fname
+            try:
+                fd = os.open(
+                    str(path),
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                    stat.S_IRUSR | stat.S_IWUSR,
+                )
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+            except OSError as exc:
+                logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
+
+    def poison_client_registration(self) -> bool:
+        """Discard a dead dynamically-registered client so it gets re-created.
+
+        Called when the IdP rejects our cached ``client_id`` with
+        ``invalid_client`` on the token endpoint — proof the server-side
+        registration is gone (IdP redeploy / DB wipe / rebrand). Deleting
+        ``client.json`` makes the MCP SDK's ``async_auth_flow`` take the
+        ``if not client_info`` branch and re-run RFC 7591 dynamic client
+        registration on the next flow. The stale ``meta.json`` is dropped
+        too so discovery re-runs against a freshly fetched document.
+
+        Tokens are intentionally left in place — the subsequent
+        re-authorization overwrites them, and keeping them avoids losing a
+        still-valid refresh token if the re-registration never completes.
+
+        A single ``.bak`` copy of the client file is kept for recovery.
+        Returns True if a client file was present and removed.
+        """
+        client_path = self._client_info_path()
+        if not client_path.exists():
+            return False
+        backup = client_path.with_name(client_path.name + ".bak")
+        try:
+            backup.write_bytes(client_path.read_bytes())
+        except OSError as exc:  # non-fatal — proceed with the removal anyway
+            logger.warning("Could not back up client info at %s: %s", client_path, exc)
+        client_path.unlink(missing_ok=True)
+        self._meta_path().unlink(missing_ok=True)
+        logger.warning(
+            "MCP OAuth '%s': cached client registration rejected as invalid_client; "
+            "removed client.json + meta.json (backup at %s) to force re-registration",
+            self._server_name, backup.name,
+        )
+        return True
 
     def has_cached_tokens(self) -> bool:
         """Return True if we have tokens on disk (may be expired)."""
@@ -335,12 +544,52 @@ async def _redirect_handler(authorization_url: str) -> None:
     Opens the browser automatically when possible; always prints the URL
     as a fallback for headless/SSH/gateway environments.
     """
+    # Fail fast at the authorization boundary in non-interactive contexts
+    # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
+    # token (expired/revoked, refresh rejected) makes the SDK fall through to
+    # the authorization-code flow even though build_oauth_auth's token-file
+    # guard passed. Without this check we would print a URL and launch a
+    # browser flow no operator can complete, then block in _wait_for_callback
+    # for the full timeout. Raise before launching so gateway adapters start
+    # promptly and the caller can skip this server with an actionable warning.
+    # This intentionally re-checks interactivity here rather than trusting the
+    # token-file existence guard alone. See #57836.
+    _raise_if_non_interactive(
+        "MCP OAuth requires browser authorization but no interactive "
+        "session is available (non-interactive/background context)."
+    )
+
     msg = (
         f"\n  MCP OAuth: authorization required.\n"
         f"  Open this URL in your browser:\n\n"
         f"    {authorization_url}\n"
     )
     print(msg, file=sys.stderr)
+
+    # On a remote SSH session the OAuth provider redirects to
+    # http://127.0.0.1:<port>/callback, which reaches the callback server on
+    # the *remote* machine — not the user's local machine where the browser
+    # opened.  Two ways out: paste the redirect URL back (default fallback,
+    # offered by _wait_for_callback on interactive TTYs), or set up an SSH
+    # port forward so the redirect tunnels through.
+    if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
+        print(
+            f"  Remote session detected. After you authorize, the provider redirects to\n"
+            f"    http://127.0.0.1:{_oauth_port}/callback\n"
+            f"  which only the listener on THIS machine can receive. Two options:\n"
+            f"\n"
+            f"    1. Easiest — when your browser shows a connection error after\n"
+            f"       authorizing, copy the full URL from the address bar and paste\n"
+            f"       it at the prompt below. The pasted ``code=...&state=...`` is\n"
+            f"       enough to complete the flow.\n"
+            f"\n"
+            f"    2. Or forward the port first in a separate terminal:\n"
+            f"         ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
+            f"       then open the URL above and let it redirect normally.\n"
+            f"\n"
+            f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
+            file=sys.stderr,
+        )
 
     if _can_open_browser():
         try:
@@ -362,6 +611,12 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     before this is ever called.  Polls for the result without blocking the
     event loop.
 
+    On an interactive TTY, races the HTTP listener against a stdin paste
+    fallback so users without an SSH tunnel can copy the redirect URL (or
+    just the ``code=...&state=...`` query string) from a browser on another
+    machine and paste it back. The HTTP listener wins when the redirect
+    reaches it first; the paste fallback wins when it doesn't.
+
     Raises:
         OAuthNonInteractiveError: If the callback times out (no user present
             to complete the browser auth).
@@ -374,6 +629,22 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             "OAuth callback port not set — build_oauth_auth must be called "
             "before _wait_for_oauth_callback"
         )
+
+    # Reject before binding the callback listener in non-interactive contexts.
+    # Reaching here means the SDK entered the authorization-code flow (a valid
+    # or refreshable token would never call the callback handler), so a cached
+    # token file is present but unusable. Binding the listener here would block
+    # for the full 300s timeout and — on the next connection retry — collide
+    # with the still-bound/TIME_WAIT port, surfacing as
+    # ``OSError: [Errno 98] Address already in use``. Failing fast keeps
+    # gateway startup independent of an unusable optional MCP server. This
+    # guard holds "regardless of whether a token file exists" — the point the
+    # build_oauth_auth token-file guard cannot cover. See #57836.
+    _raise_if_non_interactive(
+        "OAuth callback requires an interactive session but none is "
+        "available (non-interactive/background context); skipping browser "
+        "authorization without binding a callback listener."
+    )
 
     # The callback server is already running (started in build_oauth_auth).
     # We just need to poll for the result.
@@ -393,6 +664,24 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     server_thread = threading.Thread(target=server.handle_request, daemon=True)
     server_thread.start()
 
+    # Optional paste-fallback thread: only on interactive TTYs. Reads one
+    # line from stdin and writes the parsed code/state into the shared
+    # result dict. The HTTP listener and this thread race for the result;
+    # whichever fills it first wins.
+    paste_thread: threading.Thread | None = None
+    if _is_interactive():
+        print(
+            "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` "
+            "portion) and press Enter. Type ``skip`` + Enter to continue "
+            "without this server:",
+            file=sys.stderr,
+            flush=True,
+        )
+        paste_thread = threading.Thread(
+            target=_paste_callback_reader, args=(result,), daemon=True
+        )
+        paste_thread.start()
+
     timeout = 300.0
     poll_interval = 0.5
     elapsed = 0.0
@@ -405,6 +694,8 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     finally:
         server.server_close()
 
+    if result["error"] == _USER_SKIPPED_SENTINEL:
+        raise OAuthNonInteractiveError("user_skipped")
     if result["error"]:
         raise RuntimeError(f"OAuth authorization failed: {result['error']}")
     if result["auth_code"] is None:
@@ -414,6 +705,90 @@ async def _wait_for_callback() -> tuple[str, str | None]:
         )
 
     return result["auth_code"], result["state"]
+
+
+def _paste_callback_reader(result: dict) -> None:
+    """Read one line from stdin, parse it as an OAuth redirect, write to result.
+
+    Accepts any of:
+      - Full redirect URL: ``http://127.0.0.1:37949/callback?code=...&state=...``
+      - The provider's own callback URL: ``https://mcp.example.com/callback?code=...&state=...``
+      - Just the query string: ``?code=...&state=...`` or ``code=...&state=...``
+      - A skip token (``skip``, ``cancel``, ``s``, ``n``, ``no``, ``q``, ``quit``)
+        — exits the OAuth flow cleanly without auth. Caller raises
+        :class:`OAuthNonInteractiveError` so MCP connection setup treats this
+        as a non-fatal "user opted out" and continues without that server.
+
+    Failures to parse, EOF, or interrupts are swallowed — this is best-effort
+    fallback alongside the HTTP listener, which remains the primary path.
+    """
+    try:
+        line = sys.stdin.readline()
+    except (KeyboardInterrupt, OSError, ValueError):
+        return
+    if not line:
+        return  # EOF
+    line = line.strip()
+    if not line:
+        return
+
+    # Skip if HTTP listener already won.
+    if result.get("auth_code") is not None or result.get("error") is not None:
+        return
+
+    # Skip token: user explicitly opted out of authorization. Mark the
+    # result with a sentinel error string that _wait_for_callback maps
+    # to OAuthNonInteractiveError (already handled by mcp_tool.py as a
+    # non-fatal "skip this server and continue startup" path).
+    if line.lower() in _SKIP_TOKENS:
+        if result.get("auth_code") is not None or result.get("error") is not None:
+            return
+        result["error"] = _USER_SKIPPED_SENTINEL
+        print(
+            "  OAuth skipped. Run `hermes mcp login <server>` later to "
+            "authenticate, or set ``enabled: false`` on that server in "
+            "config.yaml to disable persistently.",
+            file=sys.stderr,
+        )
+        return
+
+    # Strip a leading "?" if user pasted just a query string.
+    query = line
+    if "?" in line:
+        # Either a full URL or "?code=...". Take everything after the first "?".
+        query = line.split("?", 1)[1]
+    if query.startswith("?"):
+        query = query[1:]
+
+    try:
+        params = parse_qs(query)
+    except (ValueError, TypeError):
+        print(
+            "  Could not parse pasted input as an OAuth redirect — ignoring.",
+            file=sys.stderr,
+        )
+        return
+
+    code = params.get("code", [None])[0]
+    state = params.get("state", [None])[0]
+    error = params.get("error", [None])[0]
+
+    if not code and not error:
+        print(
+            "  Pasted input did not contain ``code=`` or ``error=`` — ignoring.",
+            file=sys.stderr,
+        )
+        return
+
+    # One more race-check before writing.
+    if result.get("auth_code") is not None or result.get("error") is not None:
+        return
+
+    result["auth_code"] = code
+    result["state"] = state
+    result["error"] = error
+    if code:
+        print("  Got authorization code from paste — completing flow.", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -551,12 +926,12 @@ def build_oauth_auth(
     storage = HermesTokenStorage(server_name)
 
     if not _is_interactive() and not storage.has_cached_tokens():
-        logger.warning(
-            "MCP OAuth for '%s': non-interactive environment and no cached tokens "
+        raise OAuthNonInteractiveError(
+            "MCP OAuth for "
+            f"'{server_name}': non-interactive environment and no cached tokens "
             "found. The OAuth flow requires browser authorization. Run "
-            "interactively first to complete the initial authorization, then "
-            "cached tokens will be reused.",
-            server_name,
+            f"`hermes mcp login {server_name}` interactively first to complete "
+            "initial authorization, then cached tokens will be reused."
         )
 
     _configure_callback_port(cfg)

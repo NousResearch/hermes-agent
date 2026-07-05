@@ -93,7 +93,7 @@ def poll_registration(device_code: str) -> dict:
     """
     data = _api_post("/app/registration/poll", {"device_code": device_code})
     status_raw = str(data.get("status", "")).strip().upper()
-    if status_raw not in ("WAITING", "SUCCESS", "FAIL", "EXPIRED"):
+    if status_raw not in {"WAITING", "SUCCESS", "FAIL", "EXPIRED"}:
         status_raw = "UNKNOWN"
     return {
         "status": status_raw,
@@ -257,7 +257,7 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
     print()
 
     if not render_qr_to_terminal(url):
-        print_warning(f"  QR code render failed, please open the link below to authorize:")
+        print_warning("  QR code render failed, please open the link below to authorize:")
 
     print()
     print_info(f"  Or open this link manually: {url}")

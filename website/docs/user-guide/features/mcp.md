@@ -20,12 +20,7 @@ If you have ever wanted Hermes to use a tool that already exists somewhere else,
 
 ## Quick start
 
-1. Install MCP support (already included if you used the standard install script):
-
-```bash
-cd ~/.hermes/hermes-agent
-uv pip install -e ".[mcp]"
-```
+1. MCP support ships with the standard install — no extra step needed.
 
 2. Add an MCP server to `~/.hermes/config.yaml`:
 
@@ -132,7 +127,12 @@ the hermes-agent repo, so Nous has reviewed each entry before it shipped —
 Manifests live at
 [`optional-mcps/<name>/manifest.yaml`](https://github.com/NousResearch/hermes-agent/tree/main/optional-mcps)
 on GitHub. The picker also prints the manifest's `source:` URL at install
-time so you can quickly verify the upstream repo.
+time so you can quickly verify the upstream repo. The web dashboard's MCP
+page surfaces the same detail per catalog entry — transport, auth type, the
+endpoint URL (HTTP) or command + args (stdio), the git install source/ref and
+bootstrap commands, and setup notes — with the `source:` rendered as a
+clickable link, so you can inspect exactly what an entry connects to or runs
+before clicking Install.
 
 ### Manifest version compatibility
 
@@ -245,6 +245,41 @@ Then run `hermes mcp login googledrive` — with the pre-registered client, Herm
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 
+## mTLS / client certificates
+
+Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Hermes passes the resolved certificate to the underlying HTTP client for the TLS handshake.
+
+`client_cert` accepts three shapes:
+
+- **A single combined PEM path** — one file holding both the certificate and the private key:
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: "~/.certs/mcp-client.pem"
+```
+
+- **A `[cert, key]` 2-tuple** — certificate and key in separate files (equivalent to setting `client_cert` + `client_key`):
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: ["~/.certs/mcp-client.crt", "~/.certs/mcp-client.key"]
+```
+
+- **A `[cert, key, password]` 3-tuple** — when the private key is encrypted, the third element is the key passphrase:
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: ["~/.certs/mcp-client.crt", "~/.certs/mcp-client.key", "${MCP_KEY_PASSWORD}"]
+```
+
+You can also keep the cert and key fully separate via `client_cert` (combined PEM) plus an explicit `client_key`. Paths support `~` expansion; a missing file raises a clear, server-scoped error rather than an opaque TLS handshake failure.
+
 ## Basic configuration reference
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
@@ -258,6 +293,8 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `env` | mapping | Environment variables passed to the stdio server |
 | `url` | string | HTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |
+| `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
+| `client_key` | string | Client private-key PEM path (when separate from `client_cert`) |
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
@@ -728,7 +765,7 @@ hermes mcp serve --verbose    # Debug logging on stderr
 
 ### How it works
 
-The MCP server reads conversation data directly from Hermes's session store (`~/.hermes/sessions/sessions.json` and the SQLite database). A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same `send_message` infrastructure as the Hermes agent itself.
+The MCP server reads conversation data directly from Hermes's session store (`~/.hermes/sessions/sessions.json` and the SQLite database). A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same internal send engine (`tools/send_message_tool.py`) that powers cron delivery and the `hermes send` CLI.
 
 The gateway does NOT need to be running for read operations (listing conversations, reading history, polling events). It DOES need to be running for send operations, since the platform adapters need active connections.
 

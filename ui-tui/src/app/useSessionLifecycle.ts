@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import { type RefObject, useCallback } from 'react'
+import { type RefObject, useCallback, useEffect, useRef } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
@@ -68,6 +68,34 @@ export const hydrateLiveSessionInflight = (inflight?: null | SessionInflightTurn
   turnController.hydrateStreamingText(assistant)
 }
 
+export const scheduleResumeScrollToBottom = (
+  scrollRef: RefObject<null | ScrollBoxHandle>,
+  delays: readonly number[] = [0, 80, 240]
+) => {
+  const startedAt = Date.now()
+  const timers = delays.map((delay, index) =>
+    setTimeout(() => {
+      const scroll = scrollRef.current
+
+      if (!scroll) {
+        return
+      }
+
+      const manuallyScrolledAfterResume = scroll.getLastManualScrollAt() > startedAt
+
+      if (!manuallyScrolledAfterResume && (index === 0 || scroll.isSticky())) {
+        scroll.scrollToBottom()
+      }
+    }, delay)
+  )
+
+  return () => {
+    for (const timer of timers) {
+      clearTimeout(timer)
+    }
+  }
+}
+
 const trimTail = (items: Msg[]) => {
   const q = [...items]
 
@@ -120,8 +148,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       targetSid ? rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : Promise.resolve(null),
     [rpc]
   )
+  const cancelResumeScrollRef = useRef<null | (() => void)>(null)
 
   const resetSession = useCallback(() => {
+    cancelResumeScrollRef.current?.()
+    cancelResumeScrollRef.current = null
     turnController.fullReset()
     setVoiceRecording(false)
     setVoiceProcessing(false)
@@ -134,6 +165,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     // the user resumes back to the prior session.
     evictInkCaches('half')
   }, [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt, setVoiceProcessing, setVoiceRecording])
+
+  useEffect(
+    () => () => {
+      cancelResumeScrollRef.current?.()
+      cancelResumeScrollRef.current = null
+    },
+    []
+  )
 
   const resetVisibleHistory = useCallback(
     (info: null | SessionInfo = null) => {
@@ -279,7 +318,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
-          setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
+          cancelResumeScrollRef.current?.()
+          cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
         .catch((e: Error) => {
           sys(`error: ${e.message}`)
@@ -302,38 +342,48 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           return
         }
 
-        closeSession(getUiState().sid === id ? null : getUiState().sid).then(() =>
-          gw
-            .request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
-            .then(raw => {
-              const r = asRpcResult<SessionResumeResponse>(raw)
+        const previousSid = getUiState().sid
 
-              if (!r) {
-                sys('error: invalid response: session.resume')
+        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
+          .then(raw => {
+            const r = asRpcResult<SessionResumeResponse>(raw)
 
-                return patchUiState({ status: 'ready' })
-              }
+            if (!r) {
+              sys('error: invalid response: session.resume')
 
-              resetSession()
-              setSessionStartedAt(Date.now())
+              return patchUiState({ status: 'ready' })
+            }
 
-              const resumed = toTranscriptMessages(r.messages)
+            const info = r.info ?? null
+            const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
-              setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
-              writeActiveSessionFile(r.resumed ?? r.session_id)
-              patchUiState({
-                info: r.info ?? null,
-                sid: r.session_id,
-                status: 'ready',
-                usage: usageFrom(r.info ?? null)
-              })
-              setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
+            resetSession()
+            setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
+
+            const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
+
+            setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
+            writeActiveSessionFile(r.resumed ?? r.session_id)
+            patchUiState({
+              busy: running,
+              info,
+              sid: r.session_id,
+              status: statusFromLiveSession(r.status, running),
+              usage: usageFrom(info)
             })
-            .catch((e: Error) => {
-              sys(`error: ${e.message}`)
-              patchUiState({ status: 'ready' })
-            })
-        )
+            hydrateLiveSessionInflight(r.inflight)
+            cancelResumeScrollRef.current?.()
+            cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
+
+            if (previousSid && previousSid !== r.session_id) {
+              void closeSession(previousSid)
+            }
+
+          })
+          .catch((e: Error) => {
+            sys(`error: ${e.message}`)
+            patchUiState({ status: 'ready' })
+          })
       })
     },
     [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]

@@ -8,8 +8,10 @@ import pytest
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
     _clean_text_for_capture,
+    _format_connection_summary,
     _format_prefetch_context,
     _load_supermemory_config,
+    _probe_supermemory_connection,
     _save_supermemory_config,
 )
 
@@ -50,8 +52,8 @@ class FakeClient:
     def forget_by_query(self, query, *, container_tag=None):
         return self.forget_by_query_response
 
-    def ingest_conversation(self, session_id, messages):
-        self.ingest_calls.append({"session_id": session_id, "messages": messages})
+    def ingest_conversation(self, session_id, messages, metadata=None):
+        self.ingest_calls.append({"session_id": session_id, "messages": messages, "metadata": metadata})
 
 
 @pytest.fixture
@@ -69,18 +71,31 @@ def test_is_available_false_without_api_key(monkeypatch):
     assert p.is_available() is False
 
 
-def test_is_available_false_when_import_missing(monkeypatch):
+def test_is_available_true_when_import_missing_but_key_set(monkeypatch):
+    # Regression: is_available() must NOT gate on the supermemory SDK being
+    # importable. The SDK is lazy-installed at client construction (see
+    # _SupermemoryClient.__init__ -> tools.lazy_deps.ensure). Gating here is a
+    # chicken-and-egg trap: on a sealed Docker venv the package isn't present
+    # until ensure() runs, but ensure() only runs once the provider loads —
+    # which this gates. So with the key set and the SDK absent, the provider
+    # must still report available. Mirrors honcho/mem0 (config-presence only).
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
 
     import builtins
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if name == "supermemory":
+        if name == "supermemory" or name.startswith("supermemory."):
             raise ImportError("missing")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
+    p = SupermemoryMemoryProvider()
+    assert p.is_available() is True
+
+
+def test_is_available_false_without_key(monkeypatch):
+    monkeypatch.delenv("SUPERMEMORY_API_KEY", raising=False)
     p = SupermemoryMemoryProvider()
     assert p.is_available() is False
 
@@ -136,23 +151,28 @@ def test_prefetch_skips_profile_between_frequency(provider):
     assert "User Profile (Persistent)" not in result
 
 
-def test_sync_turn_skips_trivial_message(provider):
+def test_sync_turn_buffers_short_messages(provider):
+    # Trivial filtering is no longer applied at sync time — every non-empty turn
+    # is buffered and only the full session is written at session boundaries.
     provider.sync_turn("ok", "sure", session_id="session-1")
+    assert provider._session_turns == [{"user": "ok", "assistant": "sure"}]
     assert provider._client.add_calls == []
 
 
-def test_sync_turn_persists_cleaned_exchange(provider):
+def test_sync_turn_buffers_cleaned_exchange(provider):
     provider.sync_turn(
         "Please remember this\n<supermemory-context>ignore</supermemory-context>",
         "Got it, storing the context",
         session_id="session-1",
     )
-    provider._sync_thread.join(timeout=1)
-    assert len(provider._client.add_calls) == 1
-    content = provider._client.add_calls[0]["content"]
-    assert "ignore" not in content
-    assert "[role: user]" in content
-    assert "[role: assistant]" in content
+    assert len(provider._session_turns) == 1
+    turn = provider._session_turns[0]
+    assert "ignore" not in turn["user"]
+    assert turn["user"].startswith("Please remember this")
+    assert turn["assistant"] == "Got it, storing the context"
+    # Buffering only — no per-turn writes to the client
+    assert provider._client.add_calls == []
+    assert provider._client.ingest_calls == []
 
 
 def test_on_session_end_ingests_clean_messages(provider):
@@ -169,6 +189,28 @@ def test_on_session_end_ingests_clean_messages(provider):
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi there"},
     ]
+    assert payload["metadata"]["type"] == "full_session"
+    assert payload["metadata"]["session_id"] == "session-1"
+    assert payload["metadata"]["message_count"] == 2
+    # Buffer is cleared after a normal session-end ingest.
+    assert provider._session_turns == []
+
+
+def test_merge_metadata_stamps_sm_source():
+    # sm_source routes Hermes writes into the "Hermes" Space in the Supermemory
+    # app (functional routing, not telemetry) — must always be present.
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    merged = client._merge_metadata({"type": "explicit_memory"})
+    assert merged["sm_source"] == "hermes"
+    assert merged["type"] == "explicit_memory"
+
+    # Legacy "source" is migrated into "type" when type is absent.
+    merged2 = client._merge_metadata({"source": "conversation_turn"})
+    assert merged2["sm_source"] == "hermes"
+    assert merged2["type"] == "conversation_turn"
+    assert "source" not in merged2
 
 
 def test_on_memory_write_tracks_thread(provider):
@@ -179,7 +221,7 @@ def test_on_memory_write_tracks_thread(provider):
     assert provider._client.add_calls[0]["metadata"]["type"] == "explicit_memory"
 
 
-def test_shutdown_joins_and_clears_threads(provider, monkeypatch):
+def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
@@ -196,15 +238,16 @@ def test_shutdown_joins_and_clears_threads(provider, monkeypatch):
 
     monkeypatch.setattr(provider._client, "add_memory", slow_add_memory)
 
+    # sync_turn now only buffers — no thread is spawned.
     provider.sync_turn(
         "Please remember this request in long-term memory",
         "Absolutely, I will keep that in long-term memory.",
         session_id="session-1",
     )
-    assert started.wait(timeout=1)
-    assert provider._sync_thread is not None
+    assert provider._sync_thread is None
+    assert len(provider._session_turns) == 1
 
-    started.clear()
+    # on_memory_write still runs on a background thread.
     provider.on_memory_write("add", "memory", "Jordan likes concise docs")
     assert started.wait(timeout=1)
     assert provider._write_thread is not None
@@ -212,10 +255,18 @@ def test_shutdown_joins_and_clears_threads(provider, monkeypatch):
     release.set()
     provider.shutdown()
 
+    # All tracked threads joined and cleared.
     assert provider._sync_thread is None
     assert provider._write_thread is None
     assert provider._prefetch_thread is None
-    assert len(provider._client.add_calls) == 2
+    # Explicit memory write went through.
+    assert len(provider._client.add_calls) == 1
+    # Buffered turn was flushed as a partial full-session ingest.
+    assert len(provider._client.ingest_calls) == 1
+    payload = provider._client.ingest_calls[0]
+    assert payload["session_id"] == "session-1"
+    assert payload["metadata"]["partial"] is True
+    assert payload["metadata"]["type"] == "full_session"
 
 
 def test_store_tool_returns_saved_payload(provider):
@@ -411,6 +462,157 @@ def test_get_config_schema_minimal():
     assert len(schema) == 1
     assert schema[0]["key"] == "api_key"
     assert schema[0]["secret"] is True
+
+
+def test_format_connection_summary_ok():
+    summary = _format_connection_summary({
+        "ok": True,
+        "container_tag": "hermes_coder",
+        "profile_facts": 12,
+        "auto_recall": True,
+        "auto_capture": False,
+    })
+    assert "✓ Connected" in summary
+    assert "container: hermes_coder" in summary
+    assert "12 profile facts" in summary
+    assert "auto_recall on" in summary
+    assert "auto_capture off" in summary
+
+
+def test_format_connection_summary_single_fact_and_error():
+    one = _format_connection_summary({
+        "ok": True,
+        "container_tag": "hermes",
+        "profile_facts": 1,
+        "auto_recall": True,
+        "auto_capture": True,
+    })
+    assert "1 profile fact" in one
+    assert "1 profile facts" not in one
+
+    err = _format_connection_summary({
+        "ok": False,
+        "error": "invalid API key",
+        "container_tag": "hermes",
+        "auto_recall": True,
+        "auto_capture": True,
+    })
+    assert "✗ invalid API key" in err
+    assert "container: hermes" in err
+
+
+def test_probe_supermemory_connection_missing_key(tmp_path):
+    status = _probe_supermemory_connection("", str(tmp_path))
+    assert status["ok"] is False
+    assert status["error"] == "SUPERMEMORY_API_KEY not set"
+    assert status["container_tag"] == "hermes"
+
+
+def _stub_supermemory_importable(monkeypatch):
+    """Make ``__import__("supermemory")`` succeed without the real package.
+
+    ``_probe_supermemory_connection`` guards on ``__import__("supermemory")``
+    before using the (mocked) client, so tests that mock ``_SupermemoryClient``
+    must also satisfy that import guard — otherwise they only pass in an
+    environment where the optional ``supermemory`` package happens to be
+    installed (and fail on a clean checkout / CI). Mirrors the inverse stub in
+    ``test_is_available_false_when_import_missing``.
+    """
+    import builtins
+    import types
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "supermemory":
+            return types.ModuleType("supermemory")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+def test_probe_supermemory_connection_success(monkeypatch, tmp_path):
+    _stub_supermemory_importable(monkeypatch)
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+
+    class CountingClient(FakeClient):
+        def get_profile(self, query=None, *, container_tag=None):
+            return {
+                "static": ["Prefers TypeScript"],
+                "dynamic": ["", "Working on Hermes"],
+                "search_results": [],
+            }
+
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", CountingClient)
+    status = _probe_supermemory_connection("test-key", str(tmp_path))
+    assert status["ok"] is True
+    assert status["profile_facts"] == 2
+    assert status["auto_recall"] is True
+
+
+def test_probe_supermemory_connection_client_error(monkeypatch, tmp_path):
+    _stub_supermemory_importable(monkeypatch)
+
+    class BrokenClient(FakeClient):
+        def get_profile(self, query=None, *, container_tag=None):
+            raise RuntimeError("API unavailable")
+
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", BrokenClient)
+    status = _probe_supermemory_connection("test-key", str(tmp_path))
+    assert status["ok"] is False
+    assert "API unavailable" in status["error"]
+
+
+def test_get_status_config_returns_summary(monkeypatch, tmp_path):
+    _stub_supermemory_importable(monkeypatch)
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr(
+        "hermes_constants.get_hermes_home",
+        lambda: tmp_path,
+    )
+    result = SupermemoryMemoryProvider().get_status_config({})
+    assert "summary" in result
+    assert "✓ Connected" in result["summary"]
+    assert "container: hermes" in result["summary"]
+
+
+def test_post_setup_writes_config_and_prints_summary(monkeypatch, tmp_path, capsys):
+    config: dict = {"memory": {}}
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "")
+    monkeypatch.setattr(
+        "hermes_cli.memory_setup._prompt",
+        lambda label, secret=True, default=None: "new-api-key",
+    )
+    monkeypatch.setattr(
+        "plugins.memory.supermemory._probe_supermemory_connection",
+        lambda api_key, hermes_home, **kwargs: {
+            "ok": True,
+            "container_tag": "hermes",
+            "profile_facts": 3,
+            "auto_recall": True,
+            "auto_capture": True,
+        },
+    )
+
+    saved: dict = {}
+
+    def fake_save_config(cfg):
+        saved.update(cfg)
+
+    monkeypatch.setattr("hermes_cli.config.save_config", fake_save_config)
+
+    SupermemoryMemoryProvider().post_setup(str(tmp_path), config)
+
+    assert config["memory"]["provider"] == "supermemory"
+    assert saved["memory"]["provider"] == "supermemory"
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "SUPERMEMORY_API_KEY=new-api-key" in env_text
+
+    out = capsys.readouterr().out
+    assert "✓ Connected" in out
+    assert "3 profile facts" in out
+    assert "Memory provider: supermemory" in out
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")

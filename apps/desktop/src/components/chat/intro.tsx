@@ -1,5 +1,7 @@
 import { type CSSProperties, useState } from 'react'
 
+import { capitalize, normalize } from '@/lib/text'
+
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
 type IntroCopy = {
@@ -42,14 +44,14 @@ const FALLBACK_COPY: IntroCopy[] = [
 ]
 
 function normalizeKey(value?: string): string {
-  return (value || '').trim().toLowerCase()
+  return normalize(value)
 }
 
 function titleize(value: string): string {
   return value
     .split(/[-_\s]+/)
     .filter(Boolean)
-    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .map(capitalize)
     .join(' ')
 }
 
@@ -142,6 +144,8 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
   return copies[Math.abs(seed) % copies.length] || FALLBACK_COPY[0]
 }
 
+const WORDMARK = 'HERMES AGENT'
+
 function resolveCopy(personality?: string, seed?: number): IntroCopy {
   const personalityKey = normalizeKey(personality)
 
@@ -158,20 +162,19 @@ export function Intro({ personality, seed }: IntroProps) {
 
   return (
     <div
-      className="pointer-events-none flex w-full min-w-0 flex-col items-center justify-center px-3 py-6 text-center text-muted-foreground sm:px-6 lg:px-8"
+      className="pointer-events-none flex w-full min-w-0 flex-col items-center justify-center px-0.5 py-6 text-center text-muted-foreground sm:px-6 lg:px-8"
       data-slot="aui_intro"
     >
       <div className="w-full min-w-0">
         <p
-          className="fit-text mx-auto mb-3 w-4/5 font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
-          style={
-            { '--fit-text-line-height': '0.9', '--fit-text-max': '8rem', '--fit-text-min': '2.75rem' } as CSSProperties
-          }
+          aria-label={WORDMARK}
+          className="fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
+          style={{ '--fit-min': '2.75rem' } as CSSProperties}
         >
           <span>
-            <span>HERMES AGENT</span>
+            <span>{WORDMARK}</span>
           </span>
-          <span aria-hidden="true">HERMES AGENT</span>
+          <span aria-hidden="true">{WORDMARK}</span>
         </p>
 
         <p className="m-0 text-center leading-normal tracking-tight">{copy.body}</p>

@@ -57,7 +57,7 @@ class TestQQAdapterInit:
 
     def test_dm_policy_default(self):
         adapter = self._make(app_id="a", client_secret="b")
-        assert adapter._dm_policy == "open"
+        assert adapter._dm_policy == "pairing"
 
     def test_dm_policy_explicit(self):
         adapter = self._make(app_id="a", client_secret="b", dm_policy="allowlist")
@@ -65,7 +65,7 @@ class TestQQAdapterInit:
 
     def test_group_policy_default(self):
         adapter = self._make(app_id="a", client_secret="b")
-        assert adapter._group_policy == "open"
+        assert adapter._group_policy == "pairing"
 
     def test_allow_from_parsing_string(self):
         adapter = self._make(app_id="a", client_secret="b", allow_from="x, y , z")
@@ -267,9 +267,15 @@ class TestDmAllowed:
         from gateway.platforms.qqbot import QQAdapter
         return QQAdapter(_make_config(**extra))
 
-    def test_open_policy(self):
+    def test_open_policy_requires_opt_in(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b", dm_policy="open")
+        assert adapter._is_dm_allowed("any_user") is False
+
+    def test_open_policy_with_opt_in(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
         adapter = self._make_adapter(app_id="a", client_secret="b", dm_policy="open")
         assert adapter._is_dm_allowed("any_user") is True
+        assert adapter._is_dm_intake_allowed("any_user") is True
 
     def test_disabled_policy(self):
         adapter = self._make_adapter(app_id="a", client_secret="b", dm_policy="disabled")
@@ -309,6 +315,19 @@ class TestGroupAllowed:
         adapter = self._make_adapter(app_id="a", client_secret="b", group_policy="allowlist", group_allow_from="grp1")
         assert adapter._is_group_allowed("grp2", "user1") is False
 
+    def test_pairing_default_blocks_groups(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        assert adapter._group_policy == "pairing"
+        assert adapter._is_group_allowed("grp1", "user1") is False
+
+    def test_pairing_default_strict_dm_auth_denies_unknown(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        assert adapter._dm_policy == "pairing"
+        assert adapter._is_dm_allowed("any_user") is False
+
+    def test_pairing_default_forwards_dm_to_gateway_intake(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        assert adapter._is_dm_intake_allowed("any_user") is True
 
 # ---------------------------------------------------------------------------
 # _resolve_stt_config
@@ -2196,3 +2215,27 @@ class TestCloseCodeClassification:
         assert 4014 in fatal_codes
         assert 4001 in fatal_codes
         assert 4915 in fatal_codes
+
+
+class TestReadEventsClosedWsGuard:
+    """Regression: a closed-but-non-None ws must raise on entry, not return
+    normally, so _listen_loop goes through reconnect/backoff instead of
+    busy-looping at 100% CPU (issues #31193 / #31771)."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_read_events_raises_when_ws_closed_on_entry(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=True)
+        with pytest.raises(RuntimeError):
+            asyncio.run(adapter._read_events())
+
+    def test_read_events_raises_when_ws_none(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = None
+        with pytest.raises(RuntimeError):
+            asyncio.run(adapter._read_events())

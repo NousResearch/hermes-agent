@@ -49,6 +49,7 @@ type PendingCall = {
 export interface GatewayClientOptions {
   closedErrorMessage?: string
   connectErrorMessage?: string
+  connectTimeoutMs?: number
   createRequestId?: (nextId: number) => GatewayRequestId
   requestIdPrefix?: string
   requestTimeoutMs?: number
@@ -58,6 +59,10 @@ export interface GatewayClientOptions {
 
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+// A reconnect after sleep/wake must not hang forever in 'connecting' (which
+// keeps the composer disabled and stuck on "Starting Hermes..."). If the open
+// handshake doesn't land in this window, fail to 'error' so callers can retry.
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 
 export class JsonRpcGatewayClient {
   private nextId = 0
@@ -73,8 +78,8 @@ export class JsonRpcGatewayClient {
     this.options = {
       closedErrorMessage: options.closedErrorMessage ?? 'WebSocket closed',
       connectErrorMessage: options.connectErrorMessage ?? 'WebSocket connection failed',
-      createRequestId:
-        options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
+      connectTimeoutMs: options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+      createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       notConnectedErrorMessage: options.notConnectedErrorMessage ?? 'gateway not connected',
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
@@ -97,35 +102,101 @@ export class JsonRpcGatewayClient {
     this.socket = socket
 
     socket.addEventListener('message', message => {
+      if (this.socket !== socket) {
+        return
+      }
+
       this.handleMessage(message.data)
     })
 
     socket.addEventListener('close', () => {
+      if (this.socket !== socket) {
+        return
+      }
+
+      this.socket = null
       this.setState('closed')
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
     })
 
     await new Promise<void>((resolve, reject) => {
-      const onOpen = () => {
+      let settled = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+
+      const cleanup = () => {
+        if (timer !== undefined) {
+          clearTimeout(timer)
+        }
+
+        socket.removeEventListener('open', onOpen)
         socket.removeEventListener('error', onError)
+      }
+
+      const onOpen = () => {
+        if (settled || this.socket !== socket) {
+          return
+        }
+
+        settled = true
+        cleanup()
         this.setState('open')
         resolve()
       }
 
       const onError = () => {
-        socket.removeEventListener('open', onOpen)
+        if (settled || this.socket !== socket) {
+          return
+        }
+
+        settled = true
+        cleanup()
         this.setState('error')
         reject(new Error(this.options.connectErrorMessage))
       }
 
       socket.addEventListener('open', onOpen, { once: true })
       socket.addEventListener('error', onError, { once: true })
+
+      if (this.options.connectTimeoutMs > 0) {
+        timer = setTimeout(() => {
+          if (settled) {
+            return
+          }
+
+          settled = true
+          cleanup()
+          // Drop the half-open socket so the next connect() starts clean
+          // instead of short-circuiting on a zombie 'connecting' state.
+          if (this.socket === socket) {
+            try {
+              socket.close()
+            } catch {
+              // ignore
+            }
+
+            this.socket = null
+          }
+          this.setState('error')
+          reject(new Error(this.options.connectErrorMessage))
+        }, this.options.connectTimeoutMs)
+      }
     })
   }
 
   close(): void {
-    this.socket?.close()
-    this.socket = null
+    const socket = this.socket
+
+    if (!socket) {
+      return
+    }
+
+    try {
+      socket.close()
+    } finally {
+      this.socket = null
+      this.setState('closed')
+      this.rejectAllPending(new Error(this.options.closedErrorMessage))
+    }
   }
 
   on<P = unknown>(type: GatewayEventName, handler: (event: GatewayEvent<P>) => void): () => void {
@@ -156,27 +227,65 @@ export class JsonRpcGatewayClient {
     return () => this.stateHandlers.delete(handler)
   }
 
-  request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs = this.options.requestTimeoutMs): Promise<T> {
+  request<T>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = this.options.requestTimeoutMs,
+    signal?: AbortSignal
+  ): Promise<T> {
     const socket = this.socket
 
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
+    if (signal?.aborted) {
+      return Promise.reject(new DOMException('Aborted', 'AbortError'))
+    }
+
     const id = this.options.createRequestId(++this.nextId)
 
     return new Promise<T>((resolve, reject) => {
+      let onAbort: (() => void) | undefined
+      const detach = () => {
+        if (onAbort && signal) {
+          signal.removeEventListener('abort', onAbort)
+        }
+      }
+
       const pending: PendingCall = {
-        reject,
-        resolve: value => resolve(value as T)
+        resolve: value => {
+          detach()
+          resolve(value as T)
+        },
+        reject: error => {
+          detach()
+          reject(error)
+        }
       }
 
       if (timeoutMs > 0) {
         pending.timer = setTimeout(() => {
           if (this.pending.delete(id)) {
+            detach()
             reject(new Error(`request timed out: ${method}`))
           }
         }, timeoutMs)
+      }
+
+      // Abort drops the pending call immediately (no dangling resolver/timer);
+      // server-side cancellation is a separate cooperative RPC where it matters.
+      if (signal) {
+        onAbort = () => {
+          const call = this.pending.get(id)
+          if (call?.timer) {
+            clearTimeout(call.timer)
+          }
+          this.pending.delete(id)
+          detach()
+          reject(new DOMException('Aborted', 'AbortError'))
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
       }
 
       this.pending.set(id, pending)
@@ -192,6 +301,7 @@ export class JsonRpcGatewayClient {
         )
       } catch (error) {
         this.clearPending(id)
+        detach()
         reject(error instanceof Error ? error : new Error(String(error)))
       }
     })

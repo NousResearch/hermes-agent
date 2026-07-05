@@ -10,6 +10,9 @@
  * steal focus from the composer effect.
  */
 
+import type { InlineRefInput } from './inline-refs'
+import { RICH_INPUT_SLOT } from './rich-editor'
+
 export type ComposerTarget = 'edit' | 'main'
 export type ComposerInsertMode = 'block' | 'inline'
 
@@ -23,8 +26,21 @@ interface InsertDetail {
   text: string
 }
 
+interface InsertRefsDetail {
+  refs: InlineRefInput[]
+  target: ComposerTarget
+}
+
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
+const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
+const SUBMIT_EVENT = 'hermes:composer-submit'
+const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
+
+interface SubmitDetail {
+  target: ComposerTarget
+  text: string
+}
 
 let activeTarget: ComposerTarget = 'main'
 
@@ -82,6 +98,44 @@ export const onComposerFocusRequest = (handler: (target: ComposerTarget) => void
 export const onComposerInsertRequest = (handler: (detail: InsertDetail) => void) =>
   subscribe<InsertDetail>(INSERT_EVENT, handler)
 
+/** Insert typed ref chips (carrying a display label) into a composer — the
+ * structured cousin of {@link requestComposerInsert}, used for session links. */
+export const requestComposerInsertRefs = (
+  refs: InlineRefInput[],
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => {
+  if (refs.length) {
+    dispatch<InsertRefsDetail>(INSERT_REFS_EVENT, { refs, target: resolve(target) })
+  }
+}
+
+export const onComposerInsertRefsRequest = (handler: (detail: InsertRefsDetail) => void) =>
+  subscribe<InsertRefsDetail>(INSERT_REFS_EVENT, handler)
+
+/** Submit a prompt through a composer as if the user typed + sent it. Lets
+ * external panels (e.g. the review pane's "let the agent ship it" button) hand
+ * the agent a task without the user round-tripping through the input. */
+export const requestComposerSubmit = (
+  text: string,
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => {
+  const trimmed = text.trim()
+
+  if (trimmed) {
+    dispatch<SubmitDetail>(SUBMIT_EVENT, { target: resolve(target), text: trimmed })
+  }
+}
+
+export const onComposerSubmitRequest = (handler: (detail: SubmitDetail) => void) =>
+  subscribe<SubmitDetail>(SUBMIT_EVENT, handler)
+
+/** Toggle the active composer's voice conversation — the `composer.voice`
+ *  hotkey (Ctrl+B) reaching into the composer that owns the voice state. */
+export const requestVoiceToggle = () => dispatch<{ at: number }>(VOICE_TOGGLE_EVENT, { at: Date.now() })
+
+export const onComposerVoiceToggleRequest = (handler: () => void) =>
+  subscribe<{ at: number }>(VOICE_TOGGLE_EVENT, () => handler())
+
 /**
  * Focus a composer input across React commit + browser focus restore.
  *
@@ -100,4 +154,13 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   focus()
   window.requestAnimationFrame(focus)
   window.setTimeout(focus, 0)
+}
+
+/** Drop focus from the main composer input (status-stack chrome, sidebar, etc.). */
+export const blurComposerInput = () => {
+  const el = document.querySelector(`[data-slot="${RICH_INPUT_SLOT}"]`) as HTMLElement | null
+
+  if (el && document.activeElement === el) {
+    el.blur()
+  }
 }

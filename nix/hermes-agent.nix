@@ -37,10 +37,14 @@
 }:
 let
   nodejs = nodejs_22;
-  hermesVenv = callPackage ./python.nix {
-    inherit uv2nix pyproject-nix pyproject-build-systems;
-    dependency-groups = [ "all" ] ++ extraDependencyGroups;
-  };
+  mkHermesVenv =
+    extraDependencyGroups:
+    callPackage ./python.nix {
+      inherit uv2nix pyproject-nix pyproject-build-systems;
+      dependency-groups = [ "all" ] ++ extraDependencyGroups;
+    };
+
+  hermesVenv = mkHermesVenv extraDependencyGroups;
 
   hermesNpmLib = callPackage ./lib.nix {
     inherit npm-lockfile-fix nodejs;
@@ -67,6 +71,21 @@ let
     filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
   };
 
+  # i18n locale catalogs (locales/*.yaml). Shipped into the store and pointed
+  # at by HERMES_BUNDLED_LOCALES so the wrapped binary always resolves human
+  # strings instead of raw i18n keys (#23943 / #27632 / #35374).
+  #
+  # Defense-in-depth, not load-bearing: the wheel already declares locales/ as
+  # setuptools data-files, so uv2nix materializes them into the venv's data
+  # scheme and agent/i18n.py resolves them with no env var. The wrapper override
+  # pins the store path so a future uv2nix change that drops data-files can't
+  # silently ship raw keys via `nix build` (checks don't run on a plain build).
+  # The bundled-locales flake check verifies BOTH paths independently.
+  #
+  # Plain cleanSource (no __pycache__ filter): locales/ is bare *.yaml, never
+  # compiled, so it never carries a __pycache__ dir to exclude.
+  bundledLocales = lib.cleanSource ../locales;
+
   runtimeDeps = [
     nodejs
     ripgrep
@@ -91,12 +110,6 @@ let
 
   pythonPath = lib.makeSearchPath sitePackagesPath allExtraPythonPackages;
 
-  pyprojectHash = builtins.hashString "sha256" (builtins.readFile ../pyproject.toml);
-  uvLockHash =
-    if builtins.pathExists ../uv.lock then
-      builtins.hashString "sha256" (builtins.readFile ../uv.lock)
-    else
-      "none";
   checkPackageCollisions = ''
     import pathlib, sys, re
 
@@ -151,6 +164,7 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p $out/share/hermes-agent $out/bin
     cp -r ${bundledSkills} $out/share/hermes-agent/skills
     cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
+    cp -r ${bundledLocales} $out/share/hermes-agent/locales
     cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
 
     mkdir -p $out/ui-tui
@@ -162,6 +176,7 @@ stdenv.mkDerivation (finalAttrs: {
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
+          --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
@@ -206,21 +221,10 @@ stdenv.mkDerivation (finalAttrs: {
     };
 
     devShellHook = ''
-      STAMP=".nix-stamps/hermes-agent"
-      STAMP_VALUE="${pyprojectHash}:${uvLockHash}"
-      if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
-        echo "hermes-agent: installing Python dependencies..."
-        uv venv .venv --python ${python312}/bin/python3 2>/dev/null || true
-        source .venv/bin/activate
-        uv pip install -e ".[all]"
-        [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
-        mkdir -p .nix-stamps
-        echo "$STAMP_VALUE" > "$STAMP"
-      else
-        source .venv/bin/activate
-        export HERMES_PYTHON=${hermesVenv}/bin/python3
-      fi
+      export HERMES_PYTHON=${hermesVenv}/bin/python3
     '';
+
+    devDeps = runtimeDeps ++ [ (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])) ];
   };
 
   meta = with lib; {

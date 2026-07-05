@@ -72,6 +72,9 @@ class TurnResult:
     error: Optional[str] = None  # Set if turn ended in a non-recoverable error
     turn_id: Optional[str] = None
     thread_id: Optional[str] = None
+    token_usage_last: Optional[dict[str, Any]] = None
+    token_usage_total: Optional[dict[str, Any]] = None
+    model_context_window: Optional[int] = None
     # Hint to the caller that the underlying codex subprocess is likely
     # wedged (turn-level timeout fired, post-tool watchdog tripped, or
     # token-refresh failure killed the child). The caller should retire
@@ -501,6 +504,7 @@ class CodexAppServerSession:
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
+                    _apply_token_usage_notification(result, pending)
                     self._track_pending_file_change(pending)
                     proj = projector.project(pending)
                     if proj.messages:
@@ -535,6 +539,8 @@ class CodexAppServerSession:
                     self._on_event(note)
                 except Exception:  # pragma: no cover - display callback
                     logger.debug("on_event callback raised", exc_info=True)
+
+            _apply_token_usage_notification(result, note)
 
             # Track in-progress fileChange items so the approval bridge
             # can surface a real change summary when codex requests
@@ -597,6 +603,19 @@ class CodexAppServerSession:
                             result.error = self._format_error_with_stderr(
                                 f"turn ended status={turn_status}", err_msg
                             )
+
+        if (
+            not turn_complete
+            and not result.interrupted
+            and result.final_text
+            and result.error is None
+        ):
+            logger.warning(
+                "codex app-server turn reached deadline after a completed "
+                "assistant message but before turn/completed; accepting "
+                "the assistant text as the terminal response"
+            )
+            turn_complete = True
 
         if not turn_complete and not result.interrupted:
             # Hit the deadline. Issue interrupt to stop wasted compute, and
@@ -800,6 +819,30 @@ class CodexAppServerSession:
         if not cached:
             return None
         return cached
+
+
+def _apply_token_usage_notification(result: TurnResult, note: dict) -> None:
+    """Capture Codex app-server token usage updates for caller accounting.
+
+    Codex does not put token usage on turn/completed. It emits a separate
+    thread/tokenUsage/updated notification containing cumulative totals and
+    the latest turn breakdown.
+    """
+    if not isinstance(note, dict) or note.get("method") != "thread/tokenUsage/updated":
+        return
+    params = note.get("params") or {}
+    token_usage = params.get("tokenUsage") or {}
+    if not isinstance(token_usage, dict):
+        return
+    last = token_usage.get("last")
+    total = token_usage.get("total")
+    if isinstance(last, dict):
+        result.token_usage_last = dict(last)
+    if isinstance(total, dict):
+        result.token_usage_total = dict(total)
+    window = token_usage.get("modelContextWindow")
+    if isinstance(window, int) and window > 0:
+        result.model_context_window = window
 
 
 def _approval_choice_to_codex_decision(choice: str) -> str:

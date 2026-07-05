@@ -1,31 +1,23 @@
 import type { ReactNode } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import { PAGE_INSET_X } from '../layout-constants'
+
 export function SettingsContent({ children }: { children: ReactNode }) {
   return (
     <section className="min-h-0 overflow-hidden">
-      <div className="h-full min-h-0 overflow-y-auto px-5 py-4 pb-20">
-        <div className="mx-auto w-full max-w-4xl">{children}</div>
-      </div>
+      <div className={cn('h-full min-h-0 overflow-y-auto pb-20', PAGE_INSET_X)}>{children}</div>
     </section>
   )
 }
 
 export function Pill({ tone = 'muted', children }: { tone?: 'muted' | 'primary'; children: ReactNode }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.6875rem]',
-        tone === 'primary' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
-      )}
-    >
-      {children}
-    </span>
-  )
+  return <Badge variant={tone === 'primary' ? 'default' : 'muted'}>{children}</Badge>
 }
 
 export function SectionHeading({ icon: Icon, title, meta }: { icon: IconComponent; title: string; meta?: string }) {
@@ -84,23 +76,28 @@ export function ListRow({
   wide?: boolean
 }) {
   return (
-    <div
-      className={cn(
-        'grid gap-3 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] sm:items-center',
-        wide && 'sm:grid-cols-1 sm:items-start'
-      )}
-    >
-      <div className="min-w-0">
-        <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
-        {description && (
-          <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {description}
-          </div>
+    // Container-queried, not viewport-queried: the label/control split keys on
+    // the row's own pane width, so a narrow detail column (messaging, split
+    // views) stacks instead of squishing the label against minmax(15rem,…).
+    <div className="@container">
+      <div
+        className={cn(
+          'grid gap-3 py-3',
+          !wide && '@2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center'
         )}
-        {hint && <div className="mt-1 block font-mono text-[0.68rem] text-muted-foreground/45">{hint}</div>}
-        {below}
+      >
+        <div className="min-w-0">
+          <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
+          {description && (
+            <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+              {description}
+            </div>
+          )}
+          {hint && <div className="mt-1 block font-mono text-[0.68rem] text-muted-foreground/45">{hint}</div>}
+          {below}
+        </div>
+        {action && <div className={cn('min-w-0', !wide && '@2xl:justify-self-end')}>{action}</div>}
       </div>
-      {action && <div className={cn('min-w-0', !wide && 'sm:justify-self-end')}>{action}</div>}
     </div>
   )
 }
@@ -109,13 +106,6 @@ export function LoadingState({ label }: { label: string }) {
   return <PageLoader label={label} />
 }
 
-export function EmptyState({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="grid min-h-48 place-items-center text-center">
-      <div>
-        <div className="text-sm font-medium">{title}</div>
-        <div className="mt-1 text-xs text-muted-foreground">{description}</div>
-      </div>
-    </div>
-  )
-}
+// Canonical implementation lives in components/ui; re-exported so the many
+// settings call sites keep their import path.
+export { EmptyState } from '@/components/ui/empty-state'

@@ -1,9 +1,11 @@
 import type { SessionInfo } from '@/hermes'
 import { getSessionMessages } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
 
 interface ExportSessionParams {
   sessionId: string
+  profile?: string | null
   title?: string | null
   session?: SessionInfo
 }
@@ -30,7 +32,8 @@ export async function exportSession(sessionId: string, params: Omit<ExportSessio
   }
 
   try {
-    const { messages } = await getSessionMessages(sessionId)
+    const profile = params.profile ?? params.session?.profile
+    const { messages } = await getSessionMessages(sessionId, profile)
 
     const payload = {
       exported_at: new Date().toISOString(),
@@ -49,8 +52,8 @@ export async function exportSession(sessionId: string, params: Omit<ExportSessio
     anchor.click()
     URL.revokeObjectURL(downloadUrl)
 
-    notify({ kind: 'success', message: 'Session exported', durationMs: 2_000 })
+    notify({ kind: 'success', message: translateNow('desktop.sessionExported'), durationMs: 2_000 })
   } catch (err) {
-    notifyError(err, 'Could not export session')
+    notifyError(err, translateNow('desktop.sessionExportFailed'))
   }
 }

@@ -4,9 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { RESIZE_COALESCE_MS } from '../config/timing.js'
+import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
-import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -22,9 +24,10 @@ import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
-import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
+import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
@@ -144,7 +147,15 @@ export function useMainApp(gw: GatewayClient) {
       return
     }
 
-    const sync = () => setCols(stdout.columns ?? 80)
+    // A drag-resize emits a burst of 'resize' events; syncing `cols` on every
+    // one remounts the visible transcript rows each tick (they're keyed on
+    // cols so yoga re-measures), turning a smooth drag into a flickering
+    // remount storm. Coalesce the burst with a leading+trailing throttle: the
+    // first event reflows immediately (the drag stays responsive), the rest
+    // collapse to at most one reflow per RESIZE_COALESCE_MS, and the trailing
+    // edge always applies the final width so the settled layout is exact.
+    const coalescer = createResizeCoalescer(() => setCols(stdout.columns ?? 80), RESIZE_COALESCE_MS)
+    const sync = () => coalescer.schedule()
 
     stdout.on('resize', sync)
 
@@ -153,6 +164,7 @@ export function useMainApp(gw: GatewayClient) {
     }
 
     return () => {
+      coalescer.cancel()
       stdout.off('resize', sync)
 
       if (stdout.isTTY) {
@@ -172,6 +184,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
+  const [lastTurnEndedAt, setLastTurnEndedAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
@@ -350,6 +363,14 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
+        leadGap: hasLeadGap(
+          prevRenderedMsg(i => virtualRows[i]?.msg, index, {
+            commandOverride: ui.detailsModeCommandOverride,
+            detailsMode: ui.detailsMode,
+            sections: ui.sections
+          }),
+          virtualRows[index]!.msg
+        ),
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
@@ -362,6 +383,9 @@ export function useMainApp(gw: GatewayClient) {
       thinkingDetailsVisible,
       toolsDetailsVisible,
       ui.compact,
+      ui.detailsMode,
+      ui.detailsModeCommandOverride,
+      ui.sections,
       ui.theme.brand.prompt,
       virtualRows
     ]
@@ -463,11 +487,14 @@ export function useMainApp(gw: GatewayClient) {
     process.exit(0)
   }, [exit, gw])
 
-  const dieWithCode = useCallback((code: number) => {
-    gw.kill(`app.dieWithCode:${code}`)
-    exit()
-    process.exit(code)
-  }, [exit, gw])
+  const dieWithCode = useCallback(
+    (code: number) => {
+      gw.kill(`app.dieWithCode:${code}`)
+      exit()
+      process.exit(code)
+    },
+    [exit, gw]
+  )
 
   const session = useSessionLifecycle({
     colsRef,
@@ -488,10 +515,14 @@ export function useMainApp(gw: GatewayClient) {
   useEffect(() => {
     if (ui.busy) {
       setTurnStartedAt(prev => prev ?? Date.now())
-    } else {
+    } else if (turnStartedAt != null) {
+      // Only stamp the idle marker when a turn was actually live — busy is
+      // also false on mount and we don't want a phantom "done" timestamp
+      // before the first turn has completed.
+      setLastTurnEndedAt(Date.now())
       setTurnStartedAt(null)
     }
-  }, [ui.busy])
+  }, [ui.busy, turnStartedAt])
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
 
@@ -510,7 +541,24 @@ export function useMainApp(gw: GatewayClient) {
           const result = asRpcResult<SessionActiveListResponse>(raw)
 
           if (!stopped && result?.sessions) {
-            patchUiState({ liveSessionCount: result.sessions.length })
+            const liveSessionCount = result.sessions.length
+
+            // Surface the current session's (auto-)title for the terminal
+            // titlebar. The active_list poll already carries it, so no extra
+            // round-trip is needed.
+            const currentSid = getUiState().sid
+
+            const sessionTitle = result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
+
+            // Only patch when something actually changed. patchUiState always
+            // produces a new state object, which notifies every $uiState
+            // subscriber; patching unconditionally on each 1.5s poll re-renders
+            // the whole TUI and causes idle flicker.
+            const prev = getUiState()
+
+            if (prev.liveSessionCount !== liveSessionCount || prev.sessionTitle !== sessionTitle) {
+              patchUiState({ liveSessionCount, sessionTitle })
+            }
           }
         })
         .catch(() => {})
@@ -526,13 +574,16 @@ export function useMainApp(gw: GatewayClient) {
   }, [gw, ui.sid])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
+  // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
   const marker = overlay.approval || overlay.sudo || overlay.secret || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
 
   const tabCwd = ui.info?.cwd
 
-  useTerminalTitle(model ? `${marker} ${model}${tabCwd ? ` · ${shortCwd(tabCwd, 24)}` : ''}` : 'Hermes')
+  useTerminalTitle(
+    model ? composeTabTitle(marker, ui.sessionTitle, model, tabCwd ? shortCwd(tabCwd, 24) : '') : 'Hermes'
+  )
 
   useEffect(() => {
     if (!ui.sid || !stdout) {
@@ -596,13 +647,19 @@ export function useMainApp(gw: GatewayClient) {
           appendMessage({ role: 'user', text: answer })
           patchUiState({ status: 'running…' })
         } else {
-          sys('prompt cancelled')
+          // Esc / Ctrl+C cancel: persist the question + options as a system
+          // line (not a transient "prompt cancelled" flash) so the prompt
+          // survives on screen as standard output, matching the timeout path.
+          appendMessage({
+            role: 'system',
+            text: formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled')
+          })
         }
 
         patchOverlayState({ clarify: null })
       })
     },
-    [appendMessage, overlay.clarify, rpc, sys]
+    [appendMessage, overlay.clarify, rpc]
   )
 
   const paste = useCallback(
@@ -715,7 +772,6 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      clearSelection,
       composerActions.setInput,
       gateway,
       panel,
@@ -789,6 +845,7 @@ export function useMainApp(gw: GatewayClient) {
         composer: {
           enqueue: composerActions.enqueue,
           hasSelection,
+          openEditor: composerActions.openEditor,
           paste,
           queueRef: composerRefs.queueRef,
           selection,
@@ -822,6 +879,7 @@ export function useMainApp(gw: GatewayClient) {
       composerActions,
       composerRefs,
       die,
+      dieWithCode,
       gateway,
       hasSelection,
       maybeWarn,
@@ -1010,10 +1068,7 @@ export function useMainApp(gw: GatewayClient) {
       closeLiveSession,
       newPromptSession,
       onModelSelect,
-      session.activateLiveSession,
-      session.guardBusySessionSwitch,
-      session.newLiveSession,
-      session.resumeById
+      session
     ]
   )
 
@@ -1051,6 +1106,7 @@ export function useMainApp(gw: GatewayClient) {
       // essentials and truncates this further on narrow terminals.
       cwdLabel: fmtCwdBranch(cwd, gitBranch, 28),
       goodVibesTick,
+      lastTurnEndedAt: ui.sid ? lastTurnEndedAt : null,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
@@ -1058,12 +1114,17 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
+      voiceLabel: voiceRecording
+        ? '● REC'
+        : voiceProcessing
+          ? '◉ STT'
+          : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
     }),
     [
       cwd,
       gitBranch,
       goodVibesTick,
+      lastTurnEndedAt,
       sessionStartedAt,
       stickyPrompt,
       turnStartedAt,

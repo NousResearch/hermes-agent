@@ -34,7 +34,7 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
@@ -61,7 +61,7 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
 
     result = json.loads(
@@ -98,7 +98,7 @@ def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
@@ -136,7 +136,7 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
     monkeypatch.setattr(process_registry_mod, "process_registry", registry)
 
@@ -149,11 +149,14 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     )
 
     assert result["exit_code"] == 0
+    # session_key falls back to the raw task_id when no gateway contextvar is set
+    # (it doesn't propagate to tool-worker threads), so process.kill / stop can
+    # still find and terminate this background process.
     assert registry.calls == [{
         "command": "sleep 1",
         "cwd": "/workspace/live",
         "task_id": task_id,
-        "session_key": "",
+        "session_key": task_id,
         "env_vars": {},
         "use_pty": False,
     }]
@@ -218,3 +221,27 @@ def test_registering_non_cwd_override_leaves_live_env_cwd_untouched(monkeypatch)
     terminal_tool.register_task_env_overrides(task_id, {"modal_image": "custom:latest"})
 
     assert fake_env.cwd == "/workspace/keep"
+
+
+def test_safe_getcwd_returns_real_cwd(monkeypatch):
+    monkeypatch.setattr(terminal_tool.os, "getcwd", lambda: "/home/user/project")
+    assert terminal_tool._safe_getcwd() == "/home/user/project"
+
+
+def test_safe_getcwd_falls_back_to_terminal_cwd_when_cwd_deleted(monkeypatch):
+    def _boom():
+        raise FileNotFoundError("[Errno 2] No such file or directory")
+
+    monkeypatch.setattr(terminal_tool.os, "getcwd", _boom)
+    monkeypatch.setenv("TERMINAL_CWD", "/srv/work")
+    assert terminal_tool._safe_getcwd() == "/srv/work"
+
+
+def test_safe_getcwd_falls_back_to_home_when_no_terminal_cwd(monkeypatch):
+    def _boom():
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(terminal_tool.os, "getcwd", _boom)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(terminal_tool.os.path, "expanduser", lambda p: "/home/me")
+    assert terminal_tool._safe_getcwd() == "/home/me"

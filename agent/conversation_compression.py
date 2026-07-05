@@ -690,6 +690,28 @@ def compress_context(
             compressed.append({"role": "user", "content": todo_snapshot})
         _ensure_compressed_has_user_turn(messages, compressed)
 
+        # Post-compression token estimate: if the compressed result plus
+        # todo snapshot and rebuilt system prompt still exceeds the
+        # threshold, the next turn will immediately re-trigger
+        # compression with no net progress (compression loop).  Log a
+        # clear warning so the operator can adjust threshold or
+        # protect_last_n before the session degrades.
+        try:
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            _comp_est = estimate_request_tokens_rough(compressed)
+            if _comp_est > agent.context_compressor.threshold_tokens * 0.95:
+                logger.warning(
+                    "Post-compression estimate %s tokens is near threshold "
+                    "%s — compression may not free enough context. "
+                    "Consider lowering protect_last_n or raising the "
+                    "compression threshold.",
+                    _comp_est,
+                    agent.context_compressor.threshold_tokens,
+                )
+        except Exception:
+            pass  # estimate is best-effort; never block compaction on it
+
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)
         agent._cached_system_prompt = new_system_prompt

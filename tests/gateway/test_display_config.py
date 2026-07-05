@@ -95,6 +95,42 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
 
+
+
+class TestToolProgressStyle:
+    """resolve_display_setting() for compact/semantic progress wording."""
+
+    def test_default_style_is_compact(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "tool_progress_style") == "compact"
+
+    def test_global_semantic_explain(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress_style": "semantic_explain"}}
+        assert resolve_display_setting(config, "telegram", "tool_progress_style") == "semantic_explain"
+
+    def test_platform_override_wins_for_style(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress_style": "compact",
+                "platforms": {"telegram": {"tool_progress_style": "semantic"}},
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "tool_progress_style") == "semantic"
+        assert resolve_display_setting(config, "discord", "tool_progress_style") == "compact"
+
+    def test_style_aliases_normalized(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({"display": {"tool_progress_style": "semantic-detailed"}}, "telegram", "tool_progress_style") == "semantic_explain"
+        assert resolve_display_setting({"display": {"tool_progress_style": "raw"}}, "telegram", "tool_progress_style") == "compact"
+        assert resolve_display_setting({"display": {"tool_progress_style": "bogus"}}, "telegram", "tool_progress_style") == "compact"
+
+
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides
 # ---------------------------------------------------------------------------

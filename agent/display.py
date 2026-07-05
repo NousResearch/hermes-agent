@@ -481,14 +481,35 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         preview = summarize_shell_command(str(command))
         return _truncate_preview(preview, max_len) if preview else None
 
+    if tool_name == "patch" and args.get("patch"):
+        patch_text = str(args.get("patch") or "")
+        for raw_line in patch_text.splitlines():
+            line = raw_line.strip()
+            for marker in (
+                "*** Update File: ",
+                "*** Add File: ",
+                "*** Delete File: ",
+            ):
+                if line.startswith(marker):
+                    return _truncate_preview(line[len(marker):], max_len)
+        preview = _oneline(patch_text)
+        return _truncate_preview(preview, max_len) if preview else None
+
     if tool_name == "read_file":
         path = args.get("path") or args.get("file") or args.get("filepath")
         if path is None:
             return None
         label = Path(str(path).replace("\\", "/")).name or str(path)
-        line_label = _read_file_line_label(args)
-        preview = f"{label} {line_label}".strip()
-        return _truncate_preview(preview, max_len) if preview else None
+        offset = args.get("offset")
+        limit = args.get("limit")
+        if offset is not None or limit is not None:
+            range_bits = []
+            if offset is not None:
+                range_bits.append(f"@{offset}")
+            if limit is not None:
+                range_bits.append(f"+{limit}")
+            label = f"{label} {''.join(range_bits)}"
+        return _truncate_preview(label, max_len) if label else None
 
     if tool_name == "session_search":
         query = _oneline(args.get("query", ""))
@@ -523,7 +544,13 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
                 break
 
     if not key or key not in args:
-        return None
+        for fallback_key, fallback_value in args.items():
+            if fallback_value in (None, "", [], {}):
+                continue
+            key = fallback_key
+            break
+        else:
+            return None
 
     value = args[key]
     if isinstance(value, list):
@@ -535,6 +562,190 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
+
+
+
+# =========================================================================
+# Gateway tool-progress presentation styles
+# =========================================================================
+_TOOL_PROGRESS_STYLES = {"compact", "semantic", "semantic_explain", "verbose"}
+
+
+def normalize_tool_progress_style(style: str | None) -> str:
+    """Return a supported gateway tool-progress presentation style."""
+    value = str(style or "compact").strip().lower().replace("-", "_")
+    if value in {"raw", "default"}:
+        return "compact"
+    if value in {"explain", "semantic_detailed", "detailed"}:
+        return "semantic_explain"
+    return value if value in _TOOL_PROGRESS_STYLES else "compact"
+
+
+def build_tool_progress_title(tool_name: str, style: str | None = "compact") -> str:
+    """Build the grouped header for gateway tool progress."""
+    style = normalize_tool_progress_style(style)
+    if style in {"compact", "verbose"}:
+        return tool_name
+    titles = {
+        "search_files": "Inspecting files",
+        "read_file": "Reading files",
+        "write_file": "Writing files",
+        "patch": "Editing files",
+        "terminal": "Using the shell",
+        "web_search": "Searching the web",
+        "web_extract": "Reading web pages",
+        "browser_navigate": "Opening a web page",
+        "browser_snapshot": "Inspecting the page",
+        "browser_click": "Interacting with the page",
+        "browser_type": "Entering text",
+        "browser_scroll": "Moving around the page",
+        "todo": "Updating the plan",
+        "session_search": "Recalling prior context",
+        "memory": "Updating memory",
+        "skill_view": "Loading a skill",
+        "skills_list": "Checking skills",
+        "skill_manage": "Managing skills",
+        "execute_code": "Running Python",
+        "delegate_task": "Delegating work",
+        "cronjob": "Managing schedules",
+        "clarify": "Asking for direction",
+        "vision_analyze": "Inspecting an image",
+        "image_generate": "Generating an image",
+        "text_to_speech": "Creating audio",
+    }
+    return titles.get(tool_name, tool_name.replace("_", " ").title())
+
+
+def _quote_progress_detail(text: str, max_len: int = 36) -> str:
+    text = _oneline(str(text or ""))
+    if len(text) > max_len:
+        text = text[: max_len - 3] + "..."
+    return f'“{text}”' if text else "the request"
+
+
+def _path_label_for_progress(path: Any) -> str:
+    raw = _oneline(str(path or ""))
+    if not raw:
+        return "the target file"
+    return raw.rsplit("/", 1)[-1] or raw
+
+
+def build_semantic_tool_progress_item(
+    tool_name: str,
+    args: dict | None,
+    *,
+    style: str | None = "compact",
+    preview: str | None = None,
+) -> str | None:
+    """Build a semantic tree item for gateway tool-progress bubbles.
+
+    ``semantic`` answers “what is happening?”; ``semantic_explain`` adds the
+    operational method/rationale without dumping full raw JSON arguments.
+    ``compact`` returns ``None`` so callers can keep the raw-ish preview path.
+    """
+    style = normalize_tool_progress_style(style)
+    if style in {"compact", "verbose"}:
+        return None
+    args = args if isinstance(args, dict) else {}
+    explain = style == "semantic_explain"
+    if tool_name == "search_files":
+        target = args.get("target", "content")
+        pattern = _quote_progress_detail(args.get("pattern"))
+        if target == "files":
+            return (
+                f"Finds filenames matching {pattern} so it can locate likely files before opening them"
+                if explain else f"Finding files matching {pattern}"
+            )
+        return (
+            f"Searches file contents for {pattern} so it can jump to relevant code or notes instead of guessing paths"
+            if explain else f"Searching files for {pattern}"
+        )
+    if tool_name == "read_file":
+        label = _path_label_for_progress(args.get("path"))
+        offset = args.get("offset")
+        limit = args.get("limit")
+        where = f" around line {offset}" if offset is not None else ""
+        if limit is not None and offset is not None:
+            where += f" ({limit} lines)"
+        return (
+            f"Opens {label}{where} to inspect the source content before deciding what to change"
+            if explain else f"Reading {label}{where}"
+        )
+    if tool_name == "write_file":
+        label = _path_label_for_progress(args.get("path"))
+        return (
+            f"Rewrites {label} directly with the prepared content and lets Hermes run file checks afterward"
+            if explain else f"Writing {label}"
+        )
+    if tool_name == "patch":
+        label = build_tool_preview("patch", args, max_len=48) or _path_label_for_progress(args.get("path"))
+        return (
+            f"Applies a targeted patch to {label} so only the intended section changes"
+            if explain else f"Patching {label}"
+        )
+    if tool_name == "terminal":
+        command = _quote_progress_detail(args.get("command"), 42)
+        return (
+            f"Runs a shell command ({command}) to get live system/repo output that cannot be inferred safely"
+            if explain else f"Running shell command {command}"
+        )
+    if tool_name == "web_search":
+        query = _quote_progress_detail(args.get("query"))
+        return (
+            f"Searches the web for {query} to ground the answer in current external sources"
+            if explain else f"Searching the web for {query}"
+        )
+    if tool_name == "web_extract":
+        urls = args.get("urls") or []
+        count = len(urls) if isinstance(urls, list) else 1
+        return (
+            f"Fetches {count} page(s) and extracts readable text so the answer can cite the source content"
+            if explain else f"Reading {count} web page(s)"
+        )
+    if tool_name == "session_search":
+        query = _quote_progress_detail(args.get("query"))
+        return (
+            f"Searches past Hermes sessions for {query} so you do not have to restate prior context"
+            if explain else f"Searching prior sessions for {query}"
+        )
+    if tool_name == "todo":
+        if args.get("todos") is None:
+            return "Reads the current task list to keep the next steps aligned" if explain else "Reading the task list"
+        verb = "updates" if args.get("merge") else "sets"
+        return (
+            f"{verb.capitalize()} the session task list so progress and remaining work stay explicit"
+            if explain else f"{verb.capitalize()} the task list"
+        )
+    if tool_name == "memory":
+        action = args.get("action") or ("batch" if args.get("operations") else "update")
+        target = args.get("target", "memory")
+        return (
+            f"Applies a durable {action} to {target} memory so stable preferences survive future sessions"
+            if explain else f"Updating {target} memory"
+        )
+    if tool_name in {"skill_view", "skills_list", "skill_manage"}:
+        name = args.get("name") or args.get("category") or "skills"
+        return (
+            f"Uses Hermes skill metadata ({name}) to follow established local procedures instead of improvising"
+            if explain else f"Checking {name}"
+        )
+    if tool_name == "execute_code":
+        return (
+            "Runs a short Python script through Hermes tooling to combine multiple checks without flooding the chat"
+            if explain else "Running a Python helper"
+        )
+    if tool_name == "delegate_task":
+        return (
+            "Starts an isolated subagent so a focused workstream can run without filling this context with intermediate noise"
+            if explain else "Starting a delegated workstream"
+        )
+    if preview:
+        detail = _quote_progress_detail(preview)
+        return (
+            f"Uses {tool_name} with {detail} to gather the next needed piece of evidence"
+            if explain else f"Using {tool_name} for {detail}"
+        )
+    return f"Uses {tool_name} to make progress" if explain else f"Using {tool_name}"
 
 
 # =========================================================================

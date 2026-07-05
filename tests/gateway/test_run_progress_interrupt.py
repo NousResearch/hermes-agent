@@ -128,6 +128,27 @@ class PartialTruncationAgent:
             "error": "Response truncated due to output length limit",
         }
 
+class MultiProgressAgent:
+    """Fires multiple progress events so accumulated rendering can be asserted."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+        self._interrupt_requested = False
+
+    @property
+    def is_interrupted(self) -> bool:
+        return self._interrupt_requested
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "search_files", "first pattern", {})
+        self.tool_progress_callback("tool.started", "search_files", "second pattern", {})
+        self.tool_progress_callback("tool.started", "read_file", "run.py @10+3", {})
+        self.tool_progress_callback("tool.started", "search_files", "third pattern", {})
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
@@ -216,6 +237,17 @@ async def test_partial_empty_agent_response_is_normalized(monkeypatch, tmp_path)
     assert result["final_response"] != "⚠️ Response truncated due to output length limit"
     assert result["partial"] is True
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_accumulated_progress_groups_consecutive_same_tool_calls(monkeypatch, tmp_path):
+    """Accumulated progress groups only consecutive same-tool calls."""
+    adapter, result = await _run_once(monkeypatch, tmp_path, MultiProgressAgent, "sess-multi")
+    assert result["final_response"] == "done"
+    combined = "\n".join(c["content"] for c in adapter.sent + adapter.edits)
+    assert 'search_files\n├ "first pattern"\n└ "second pattern"' in combined
+    assert 'read_file\n└ "run.py @10+3"' in combined
+    assert 'search_files\n└ "third pattern"' in combined
 
 
 @pytest.mark.asyncio

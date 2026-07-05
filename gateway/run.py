@@ -16605,6 +16605,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _phrase_err:
                 logger.debug("generic status phrase selection failed: %s", _phrase_err)
                 return "still on it" if kind in {"heartbeat", "waiting", "long_running", "status"} else "one sec"
+
+        # Tool progress wording style. ``tool_progress`` controls how much progress
+        # is emitted (off/new/all/verbose); this controls how each emitted call
+        # is phrased (compact/semantic/semantic_explain/verbose).
+        progress_style = resolve_display_setting(user_config, platform_key, "tool_progress_style") or "compact"
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
@@ -16640,8 +16645,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if needs_progress_queue else None
-        last_tool = [None]  # Mutable container for tracking in closure
-        last_progress_msg = [None]  # Track last message for dedup
+        last_tool: list[str | None] = [None]  # Mutable container for tracking in closure
+        last_progress_msg: list[str | None] = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
         # True when the previously enqueued progress line was a terminal
         # fenced code block — consecutive terminal calls then drop the
@@ -16850,20 +16855,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _cmd_short = _cmd_short + " ..."
                 _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
-            # Verbose mode: show detailed arguments, respects tool_preview_length
-            if progress_mode == "verbose":
+            from agent.display import (
+                build_semantic_tool_progress_item,
+                build_tool_progress_title,
+                get_tool_preview_max_len,
+                normalize_tool_progress_style,
+            )
+            _progress_style = normalize_tool_progress_style(progress_style)
+
+            # Verbose mode: show detailed arguments, respects tool_preview_length.
+            # ``tool_progress=verbose`` remains the legacy one-knob path;
+            # ``tool_progress_style=verbose`` is the style-only spelling.
+            if progress_mode == "verbose" or _progress_style == "verbose":
                 if _code_block_full is not None:
                     last_was_terminal_block[0] = True
                     progress_queue.put(_code_block_full)
                     return
                 last_was_terminal_block[0] = False
                 if args:
-                    from agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()
                     args_str = json.dumps(args, ensure_ascii=False, default=str)
                     # When tool_preview_length is 0 (default), don't truncate
                     # in verbose mode — the user explicitly asked for full
-                    # detail.  Platform message-length limits handle the rest.
+                    # detail. Platform message-length limits handle the rest.
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
                     msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
@@ -16873,57 +16887,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     msg = f"{emoji} {tool_name}..."
                 progress_queue.put(msg)
                 return
-            
-            # "all" / "new" modes: short preview, respects tool_preview_length
-            # config (defaults to 40 chars when unset to keep gateway messages
-            # compact — unlike CLI spinners, these persist as permanent messages).
-            # Terminal commands on markdown platforms get a single-line capped
-            # fenced block (built above) instead of the truncated preview.
+
+            # "all" / "new" modes: enqueue structured items so accumulated
+            # progress can render readable tree groups and merge consecutive
+            # same-tool calls. Terminal commands stay as compact fenced blocks
+            # on markdown platforms.
             if _code_block_short is not None:
-                msg = _code_block_short
+                title = build_tool_progress_title(tool_name, _progress_style)
+                msg = f"{emoji} {title}: {_cmd_short or ''}"
+                queue_item = ("__terminal_item__", emoji, title, _cmd_short or "")
                 last_was_terminal_block[0] = True
-            elif preview:
-                from agent.display import (
-                    get_tool_preview_max_len,
-                    get_tool_verb,
-                    tool_verb_connector,
-                    verb_drops_preview,
-                )
-                _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                # Friendly labels: render a human-phrased line for built-in
-                # tools ("🔍 Searching the web for ...") by prefixing the verb
-                # onto the preview the callback already computed (so the
-                # command/url/query is preserved).  Custom/plugin/MCP tools
-                # have no verb and fall back to the raw "tool_name: ..." form.
-                _verb = get_tool_verb(tool_name)
-                if _verb:
-                    if verb_drops_preview(tool_name):
-                        msg = f"{emoji} {_verb}"
-                    else:
-                        msg = f"{emoji} {_verb}{tool_verb_connector(tool_name)}{preview}"
-                else:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
-                last_was_terminal_block[0] = False
             else:
-                msg = f"{emoji} {tool_name}..."
                 last_was_terminal_block[0] = False
-            
+                semantic_item = build_semantic_tool_progress_item(
+                    tool_name,
+                    args,
+                    style=_progress_style,
+                    preview=preview,
+                )
+                if semantic_item:
+                    title = build_tool_progress_title(tool_name, _progress_style)
+                    item_text = semantic_item
+                else:
+                    title = tool_name
+                    if preview:
+                        _pl = get_tool_preview_max_len()
+                        _cap = _pl if _pl > 0 else 40
+                        if len(preview) > _cap:
+                            preview = preview[:_cap - 3] + "..."
+                        item_text = f'"{preview}"'
+                    else:
+                        item_text = "…"
+                msg = f"{emoji} {title}: {item_text}"
+                queue_item = ("__tool_item__", emoji, title, item_text)
+
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
             if msg == last_progress_msg[0]:
                 repeat_count[0] += 1
-                # Update the last line in progress_lines with a counter
-                # via a special "dedup" queue message.
                 progress_queue.put(("__dedup__", msg, repeat_count[0]))
                 return
             last_progress_msg[0] = msg
             repeat_count[0] = 0
-            
-            progress_queue.put(msg)
+
+            progress_queue.put(queue_item)
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
@@ -17074,14 +17082,116 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     kwargs["metadata"] = _progress_metadata
                 return await adapter.edit_message(**kwargs)
 
+            def _render_progress_entry(entry) -> str:
+                if isinstance(entry, dict) and entry.get("kind") == "terminal_group":
+                    commands = [str(cmd) for cmd in entry.get("commands") or []]
+                    header = f"{entry.get('emoji', '💻')} {entry.get('tool_name', 'terminal')}"
+                    if not commands:
+                        return header
+                    rendered_commands = [f"```\n{command}\n```" for command in commands]
+                    return header + "\n" + "\n".join(rendered_commands)
+                if isinstance(entry, dict) and entry.get("kind") == "tool_group":
+                    items = [str(item) for item in entry.get("items") or []]
+                    header = f"{entry.get('emoji', '⚙️')} {entry.get('tool_name', 'tool')}"
+                    if not items:
+                        return header
+                    rendered_items = []
+                    for idx, item in enumerate(items):
+                        branch = "└" if idx == len(items) - 1 else "├"
+                        rendered_items.append(f"{branch} {item}")
+                    return header + "\n" + "\n".join(rendered_items)
+                return str(entry)
+
             def _progress_text(lines: list) -> str:
-                return "\n".join(str(line) for line in lines)
+                # Keep accumulated tool-progress bubbles readable. Use a blank
+                # line between normal groups. Terminal groups render as their
+                # own fenced blocks, so separate the next group with only one
+                # newline to avoid an oversized visual gap after the last fence.
+                rendered_parts = []
+                for line in lines:
+                    rendered = _render_progress_entry(line)
+                    if not rendered_parts:
+                        rendered_parts.append(rendered)
+                        continue
+                    previous = lines[len(rendered_parts) - 1]
+                    separator = "\n" if (
+                        isinstance(previous, dict)
+                        and previous.get("kind") == "terminal_group"
+                    ) else "\n\n"
+                    rendered_parts.append(separator + rendered)
+                return "".join(rendered_parts)
+
+            def _append_tool_progress_item(emoji: str, tool_name: str, item: str) -> str:
+                """Append a normal tool preview, grouping consecutive same-tool calls."""
+                group = None
+                if progress_lines and isinstance(progress_lines[-1], dict):
+                    candidate = progress_lines[-1]
+                    if (
+                        candidate.get("kind") == "tool_group"
+                        and candidate.get("tool_name") == tool_name
+                    ):
+                        group = candidate
+                if group is None:
+                    group = {
+                        "kind": "tool_group",
+                        "emoji": emoji,
+                        "tool_name": tool_name,
+                        "items": [],
+                    }
+                    progress_lines.append(group)
+                group.setdefault("items", []).append(item)
+                return _render_progress_entry(group)
+
+            def _append_terminal_progress_item(emoji: str, tool_name: str, command: str) -> str:
+                """Append terminal previews into one fenced block with no blank gaps."""
+                group = None
+                if progress_lines and isinstance(progress_lines[-1], dict):
+                    candidate = progress_lines[-1]
+                    if candidate.get("kind") == "terminal_group" and candidate.get("tool_name") == tool_name:
+                        group = candidate
+                if group is None:
+                    group = {
+                        "kind": "terminal_group",
+                        "emoji": emoji,
+                        "tool_name": tool_name,
+                        "commands": [],
+                    }
+                    progress_lines.append(group)
+                if command:
+                    group.setdefault("commands", []).append(command)
+                return _render_progress_entry(group)
 
             def _split_progress_groups(lines: list) -> list[list]:
-                """Partition progress lines into platform-sized editable bubbles."""
+                """Partition progress lines into platform-sized editable bubbles.
+
+                Consecutive same-tool calls are stored as one grouped entry for
+                rendering, but rollover still needs to split inside those groups
+                when a platform limit is reached.
+                """
+                expanded: list = []
+                for line in lines:
+                    if isinstance(line, dict) and line.get("kind") == "tool_group":
+                        for item in line.get("items") or []:
+                            expanded.append({
+                                "kind": "tool_group",
+                                "emoji": line.get("emoji", "⚙️"),
+                                "tool_name": line.get("tool_name", "tool"),
+                                "items": [item],
+                            })
+                    elif isinstance(line, dict) and line.get("kind") == "terminal_group":
+                        for command in line.get("commands") or []:
+                            expanded.append({
+                                "kind": "terminal_group",
+                                "emoji": line.get("emoji", "💻"),
+                                "tool_name": line.get("tool_name", "terminal"),
+                                "commands": [command],
+                            })
+                    else:
+                        expanded.append(line)
+
                 groups: list[list] = []
                 current: list = []
-                for line in lines:
+                for line in expanded:
                     candidate = current + [line]
                     if current and _progress_len_fn(_progress_text(candidate)) > _PROGRESS_TEXT_LIMIT:
                         groups.append(current)
@@ -17178,8 +17288,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
                         if progress_lines:
-                            progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                        msg = progress_lines[-1] if progress_lines else base_msg
+                            last = progress_lines[-1]
+                            if isinstance(last, dict) and last.get("kind") == "tool_group" and last.get("items"):
+                                _base_item = re.sub(r" \(×\d+\)$", "", str(last["items"][-1]))
+                                last["items"][-1] = f"{_base_item} (×{count + 1})"
+                                msg = _render_progress_entry(last)
+                            elif isinstance(last, dict) and last.get("kind") == "terminal_group" and last.get("commands"):
+                                _base_command = re.sub(r"  # ×\d+$", "", str(last["commands"][-1]))
+                                last["commands"][-1] = f"{_base_command}  # ×{count + 1}"
+                                msg = _render_progress_entry(last)
+                            else:
+                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                                msg = progress_lines[-1]
+                        else:
+                            msg = base_msg
+                    elif isinstance(raw, tuple) and len(raw) == 4 and raw[0] == "__tool_item__":
+                        _, item_emoji, item_tool_name, item_text = raw
+                        msg = _append_tool_progress_item(item_emoji, item_tool_name, item_text)
+                    elif isinstance(raw, tuple) and len(raw) == 4 and raw[0] == "__terminal_item__":
+                        _, item_emoji, item_tool_name, command = raw
+                        msg = _append_terminal_progress_item(item_emoji, item_tool_name, command)
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
                         # the current tool-progress bubble so the next tool
@@ -17195,7 +17323,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         repeat_count[0] = 0
                         continue
                     else:
-                        msg = raw
+                        msg = str(raw)
                         progress_lines.append(msg)
 
                     if await _roll_progress_overflow_if_needed():
@@ -17223,7 +17351,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _progress_text(progress_lines)
                         result = await _edit_progress_message(progress_msg_id, full_text)
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
@@ -17263,7 +17391,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
+                            full_text = _progress_text(progress_lines)
                             result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=full_text,
@@ -17300,8 +17428,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                                 _, base_msg, count = raw
                                 if progress_lines:
-                                    progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                                    last = progress_lines[-1]
+                                    if isinstance(last, dict) and last.get("kind") == "tool_group" and last.get("items"):
+                                        _base_item = re.sub(r" \(×\d+\)$", "", str(last["items"][-1]))
+                                        last["items"][-1] = f"{_base_item} (×{count + 1})"
+                                    elif isinstance(last, dict) and last.get("kind") == "terminal_group" and last.get("commands"):
+                                        _base_command = re.sub(r"  # ×\d+$", "", str(last["commands"][-1]))
+                                        last["commands"][-1] = f"{_base_command}  # ×{count + 1}"
+                                    else:
+                                        progress_lines[-1] = f"{base_msg} (×{count + 1})"
                                     await _roll_progress_overflow_if_needed()
+                            elif isinstance(raw, tuple) and len(raw) == 4 and raw[0] == "__tool_item__":
+                                _, item_emoji, item_tool_name, item_text = raw
+                                _append_tool_progress_item(item_emoji, item_tool_name, item_text)
+                                await _roll_progress_overflow_if_needed()
+                            elif isinstance(raw, tuple) and len(raw) == 4 and raw[0] == "__terminal_item__":
+                                _, item_emoji, item_tool_name, command = raw
+                                _append_terminal_progress_item(item_emoji, item_tool_name, command)
+                                await _roll_progress_overflow_if_needed()
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                                 # Content-bubble marker during drain: close off
                                 # the current progress bubble and start a fresh
@@ -17318,7 +17462,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 last_progress_msg[0] = None
                                 repeat_count[0] = 0
                             else:
-                                progress_lines.append(raw)
+                                progress_lines.append(str(raw))
                                 await _roll_progress_overflow_if_needed()
                         except Exception:
                             break

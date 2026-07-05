@@ -81,11 +81,11 @@ class TestBuildToolPreview:
     def test_read_file_preview(self):
         result = build_tool_preview("read_file", {"path": "/tmp/test.py", "offset": 1})
         assert result is not None
-        assert result == "test.py L1"
+        assert result == "test.py @1"
 
     def test_read_file_preview_includes_requested_line_range(self):
         result = build_tool_preview("read_file", {"path": "./package.json", "offset": 1, "limit": 5})
-        assert result == "package.json L1-5"
+        assert result == "package.json @1+5"
 
     def test_browser_type_preview_redacts_api_key(self):
         secret = "sk-proj-ABCD1234567890EFGH"
@@ -123,9 +123,16 @@ class TestBuildToolPreview:
         assert "test query" in result
 
     def test_unknown_tool_no_matching_key(self):
-        """Unknown tool with no recognized keys should return None."""
+        """Unknown tool falls back to the first non-empty argument."""
         result = build_tool_preview("custom_tool", {"foo": "bar"})
-        assert result is None
+        assert result == "bar"
+
+    def test_patch_v4a_preview_uses_target_file(self):
+        result = build_tool_preview(
+            "patch",
+            {"mode": "patch", "patch": "*** Begin Patch\n*** Update File: gateway/run.py\n@@\n-old\n+new\n*** End Patch"},
+        )
+        assert result == "gateway/run.py"
 
     def test_long_value_truncated(self):
         """Preview should truncate long values."""

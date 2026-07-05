@@ -32,6 +32,7 @@ from typing import Any
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
+    "tool_progress_style": "compact",  # compact | semantic | semantic_explain | verbose
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
     "show_reasoning": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
@@ -70,6 +71,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
 
 _TIER_HIGH = {
     "tool_progress": "all",
+    "tool_progress_style": "compact",
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,  # follow global
@@ -80,6 +82,7 @@ _TIER_HIGH = {
 
 _TIER_MEDIUM = {
     "tool_progress": "new",
+    "tool_progress_style": "compact",
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,
@@ -90,6 +93,7 @@ _TIER_MEDIUM = {
 
 _TIER_LOW = {
     "tool_progress": "off",
+    "tool_progress_style": "compact",
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": False,
@@ -100,6 +104,7 @@ _TIER_LOW = {
 
 _TIER_MINIMAL = {
     "tool_progress": "off",
+    "tool_progress_style": "compact",
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": False,
@@ -244,6 +249,17 @@ def _normalise(setting: str, value: Any) -> Any:
         if val in {"true", "1", "yes", "on"}:
             return "all"
         return val if val in {"off", "new", "all", "verbose", "log"} else "all"
+    if setting == "tool_progress_style":
+        val = str(value).strip().lower().replace("-", "_")
+        aliases = {
+            "raw": "compact",
+            "default": "compact",
+            "explain": "semantic_explain",
+            "semantic_detailed": "semantic_explain",
+            "detailed": "semantic_explain",
+        }
+        val = aliases.get(val, val)
+        return val if val in ("compact", "semantic", "semantic_explain", "verbose") else "compact"
     if setting in {
         "show_reasoning",
         "streaming",

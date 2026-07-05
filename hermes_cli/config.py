@@ -1771,6 +1771,13 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # Gateway tool-progress wording style:
+        #   compact           = raw-ish grouped tool names/previews
+        #   semantic          = friendly "what is happening" labels
+        #   semantic_explain  = friendly labels plus how/why the tool helps
+        #   verbose           = raw/debug style (same intent as tool_progress=verbose)
+        # Per-platform override via display.platforms.<platform>.tool_progress_style.
+        "tool_progress_style": "compact",
         # Human-phrased tool status labels for built-in tools: "Searching the
         # web for ...", "Reading <file>", "Browsing <url>" instead of the raw
         # tool name. Applies to CLI spinner + gateway/desktop tool-progress.

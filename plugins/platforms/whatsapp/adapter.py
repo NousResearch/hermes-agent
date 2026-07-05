@@ -625,6 +625,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env = with_hermes_node_path()
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            try:
+                from hermes_cli.config import load_config
+
+                root_cfg = load_config()
+                hil_cfg = root_cfg.get("whatsapp_human_in_loop") or root_cfg.get("customer_handoff") or {}
+                if isinstance(hil_cfg, dict) and str(hil_cfg.get("enabled", True)).lower() not in {"false", "0", "no", "off"}:
+                    bridge_env["WHATSAPP_ALLOW_NON_SELF"] = "true"
+            except Exception:
+                # If config loading fails, keep the bridge's safe vanilla self-chat behavior.
+                pass
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
             # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges

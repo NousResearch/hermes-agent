@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { classifyInboundMessageGate } from './inbound_message_gate.js';
 import {
   buildPollPayload,
   buildLocationPayload,
@@ -101,6 +102,13 @@ try {
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
+// Human-in-the-loop handoff needs a hybrid mode: keep owner self-chat support,
+// but allow real incoming customer DMs to reach Python's pre_gateway_dispatch
+// plugin before the normal agent/auth path. Off by default so vanilla self-chat
+// remains protected from arbitrary stranger DMs.
+const WHATSAPP_ALLOW_NON_SELF = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.WHATSAPP_ALLOW_NON_SELF || '').toLowerCase(),
+);
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
@@ -556,27 +564,33 @@ async function startSocket() {
       // Python gateway, otherwise a pairing-code reply fires in response
       // to arbitrary incoming messages (#8389).
       if (!msg.key.fromMe) {
-        if (WHATSAPP_MODE === 'self-chat') {
+        const inboundDecision = classifyInboundMessageGate({
+          fromMe: msg.key.fromMe,
+          mode: WHATSAPP_MODE,
+          allowNonSelf: WHATSAPP_ALLOW_NON_SELF,
+          allowlistMatches: (id) => matchesAllowedUser(id, ALLOWED_USERS, SESSION_DIR),
+          senderId,
+        });
+        if (inboundDecision.action === 'drop') {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
+              reason: inboundDecision.reason,
               chatId,
               senderId,
             }));
           } catch {}
           continue;
         }
-        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        if (WHATSAPP_DEBUG && inboundDecision.reason) {
           try {
             console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'allowlist_mismatch',
+              event: 'accepted',
+              reason: inboundDecision.reason,
               chatId,
               senderId,
             }));
           } catch {}
-          continue;
         }
       }
 

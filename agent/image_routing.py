@@ -562,7 +562,7 @@ def _transcode_to_png(raw: bytes) -> Optional[bytes]:
     except Exception:
         pass
     try:
-        import pillow_avif  # type: ignore  # noqa: F401  -- registers AVIF on import
+        import pillow_avif  # type: ignore
     except Exception:
         pass
     try:

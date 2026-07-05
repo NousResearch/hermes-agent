@@ -464,6 +464,6 @@ class ResponsesApiTransport(ProviderTransport):
 
 
 # Auto-register on import
-from agent.transports import register_transport  # noqa: E402
+from agent.transports import register_transport
 
 register_transport("codex_responses", ResponsesApiTransport)

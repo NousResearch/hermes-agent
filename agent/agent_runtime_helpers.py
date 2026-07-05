@@ -1820,7 +1820,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             try:
                 from agent.credential_pool import load_pool
                 agent._credential_pool = load_pool(new_provider)
-            except Exception as _pool_exc:  # noqa: BLE001
+            except Exception as _pool_exc:
                 logger.warning(
                     "switch_model: credential pool reload failed for %s (%s); "
                     "continuing without pool rotation this turn",
@@ -1866,7 +1866,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 try:
                     from hermes_cli.auth import build_minimax_oauth_token_provider
                     effective_key = build_minimax_oauth_token_provider()
-                except Exception as _mm_exc:  # noqa: BLE001
+                except Exception as _mm_exc:
                     import logging as _logging
                     _logging.getLogger(__name__).warning(
                         "MiniMax OAuth: failed to install per-request token provider "
@@ -1929,7 +1929,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 continue
             try:
                 setattr(agent, _name, _value)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         raise
 

@@ -1127,6 +1127,39 @@ def _expand_routing_tokens(part: str) -> List[str]:
     return expanded
 
 
+def _filter_proactive_push_optout(targets: List[dict], job: dict) -> List[dict]:
+    """Drop delivery targets whose platform opted out of proactive push.
+
+    A cron response is an unsolicited/background push, so a platform with
+    ``display.platforms.<p>.proactive_push=false`` (or global
+    ``display.proactive_push=false``) is skipped — even for ``deliver=all`` or an
+    explicit ``platform:chat`` target (a platform-level "do not disturb" wins
+    over a job's routing intent). Each skip is logged. Fail-open: if config can't
+    be read, deliver as before rather than silently dropping.
+    """
+    if not targets:
+        return targets
+    try:
+        from hermes_cli.config import load_config
+        from gateway.display_config import platform_accepts_proactive_push
+
+        user_config = load_config()
+    except Exception:
+        return targets
+    kept = []
+    for t in targets:
+        pkey = str(t.get("platform", "")).lower()
+        if pkey and not platform_accepts_proactive_push(user_config, pkey):
+            logger.info(
+                "Job '%s': skipping proactive delivery to %s:%s — platform opted "
+                "out of proactive push (display.platforms.%s.proactive_push=false)",
+                job.get("id", "?"), t.get("platform"), t.get("chat_id"), pkey,
+            )
+            continue
+        kept.append(t)
+    return kept
+
+
 def _resolve_delivery_targets(job: dict) -> List[dict]:
     """Resolve all concrete auto-delivery targets for a cron job.
 
@@ -1157,7 +1190,8 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
             if key not in seen:
                 seen.add(key)
                 targets.append(target)
-    return targets
+    # Per-platform proactive-push gate: drop opted-out platforms (logs each).
+    return _filter_proactive_push_optout(targets, job)
 
 
 def _resolve_delivery_target(job: dict) -> Optional[dict]:

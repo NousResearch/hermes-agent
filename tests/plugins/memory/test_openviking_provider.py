@@ -2791,6 +2791,367 @@ def test_sync_turn_tracks_writer_under_session_id():
     assert provider._inflight_writers.get("sid-1", set()) == set()
 
 
+def test_initialize_recovers_pending_session_from_previous_process(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://test")
+
+    posts = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def health_payload(self):
+            return {"healthy": True}
+
+        def post(self, path, payload=None, **kwargs):
+            posts.append((path, payload))
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    previous = OpenVikingMemoryProvider()
+    previous.initialize("old-sid", hermes_home=str(tmp_path))
+    previous._spawn_writer = lambda sid, target, name: None
+    previous.sync_turn("u", "a")
+    previous.shutdown()
+
+    fresh = OpenVikingMemoryProvider()
+    fresh.initialize("new-sid", hermes_home=str(tmp_path))
+    assert fresh._drain_finalizers(timeout=2.0)
+
+    commit = ("/api/v1/sessions/old-sid/commit", {"keep_recent_count": 0})
+    assert posts.count(commit) == 1
+
+    later = OpenVikingMemoryProvider()
+    later.initialize("third-sid", hermes_home=str(tmp_path))
+    assert later._drain_finalizers(timeout=2.0)
+
+    assert posts.count(commit) == 1
+
+
+def test_initialize_skips_pending_session_owned_by_live_same_profile_provider(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://test")
+
+    posts = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def health_payload(self):
+            return {"healthy": True}
+
+        def post(self, path, payload=None, **kwargs):
+            posts.append((path, payload))
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    live_owner = OpenVikingMemoryProvider()
+    live_owner.initialize("owned-sid", hermes_home=str(tmp_path))
+    live_owner._spawn_writer = lambda sid, target, name: None
+    live_owner.sync_turn("u", "a")
+    marker = tmp_path / openviking_module._PENDING_SESSIONS_RELATIVE_DIR / "owned-sid.json"
+    assert json.loads(marker.read_text(encoding="utf-8"))["owner_run_id"] == live_owner._run_id
+
+    other_provider = OpenVikingMemoryProvider()
+    other_provider.initialize("other-sid", hermes_home=str(tmp_path))
+    assert other_provider._drain_finalizers(timeout=2.0)
+
+    assert (
+        "/api/v1/sessions/owned-sid/commit",
+        {"keep_recent_count": 0},
+    ) not in posts
+
+    live_owner.shutdown()
+    other_provider.shutdown()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX advisory locks")
+def test_initialize_recovers_free_owner_lock_once_and_cleans_marker(tmp_path, monkeypatch):
+    pytest.importorskip("fcntl")
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://test")
+
+    pending_dir = tmp_path / openviking_module._PENDING_SESSIONS_RELATIVE_DIR
+    pending_dir.mkdir(parents=True)
+    marker = pending_dir / "old-sid.json"
+    marker.write_text(
+        json.dumps({"session_id": "old-sid", "owner_run_id": "dead-owner"}),
+        encoding="utf-8",
+    )
+    owner_lock = tmp_path / "openviking" / "runs" / "dead-owner.lock"
+    owner_lock.parent.mkdir(parents=True)
+    owner_lock.write_text("", encoding="utf-8")
+
+    posts = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def health_payload(self):
+            return {"healthy": True}
+
+        def post(self, path, payload=None, **kwargs):
+            posts.append((path, payload))
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    fresh = OpenVikingMemoryProvider()
+    fresh.initialize("new-sid", hermes_home=str(tmp_path))
+    assert fresh._drain_finalizers(timeout=2.0)
+
+    commit = ("/api/v1/sessions/old-sid/commit", {"keep_recent_count": 0})
+    assert posts.count(commit) == 1
+    assert not marker.exists()
+    assert not owner_lock.exists()
+
+    later = OpenVikingMemoryProvider()
+    later.initialize("third-sid", hermes_home=str(tmp_path))
+    assert later._drain_finalizers(timeout=2.0)
+
+    assert posts.count(commit) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX advisory locks")
+def test_initialize_recovers_multiple_pending_sessions_for_one_dead_owner(tmp_path, monkeypatch):
+    import threading
+
+    pytest.importorskip("fcntl")
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://test")
+
+    pending_dir = tmp_path / openviking_module._PENDING_SESSIONS_RELATIVE_DIR
+    pending_dir.mkdir(parents=True)
+    owner_run_id = "dead-owner"
+    for sid in ("old-sid-a", "old-sid-b"):
+        (pending_dir / f"{sid}.json").write_text(
+            json.dumps({"session_id": sid, "owner_run_id": owner_run_id}),
+            encoding="utf-8",
+        )
+    owner_lock = tmp_path / "openviking" / "runs" / f"{owner_run_id}.lock"
+    owner_lock.parent.mkdir(parents=True)
+    owner_lock.write_text("", encoding="utf-8")
+
+    posts = []
+    first_commit_entered = threading.Event()
+    release_commit = threading.Event()
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def health_payload(self):
+            return {"healthy": True}
+
+        def post(self, path, payload=None, **kwargs):
+            posts.append((path, payload))
+            if path == "/api/v1/sessions/old-sid-a/commit":
+                first_commit_entered.set()
+                release_commit.wait(timeout=5.0)
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    fresh = OpenVikingMemoryProvider()
+    fresh.initialize("new-sid", hermes_home=str(tmp_path))
+
+    assert first_commit_entered.wait(timeout=2.0), "first recovery commit did not start"
+    release_commit.set()
+    assert fresh._drain_finalizers(timeout=2.0)
+
+    assert posts.count((
+        "/api/v1/sessions/old-sid-a/commit",
+        {"keep_recent_count": 0},
+    )) == 1
+    assert posts.count((
+        "/api/v1/sessions/old-sid-b/commit",
+        {"keep_recent_count": 0},
+    )) == 1
+    assert not (pending_dir / "old-sid-a.json").exists()
+    assert not (pending_dir / "old-sid-b.json").exists()
+    assert not owner_lock.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX advisory locks")
+def test_initialize_skips_multiple_pending_sessions_for_one_live_owner(tmp_path, monkeypatch):
+    import threading
+
+    pytest.importorskip("fcntl")
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://test")
+
+    commit_called = threading.Event()
+    release_commit = threading.Event()
+    posts = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def health_payload(self):
+            return {"healthy": True}
+
+        def post(self, path, payload=None, **kwargs):
+            posts.append((path, payload))
+            if path.endswith("/commit"):
+                commit_called.set()
+                release_commit.wait(timeout=5.0)
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    live_owner = OpenVikingMemoryProvider()
+    live_owner.initialize("owned-sid", hermes_home=str(tmp_path))
+
+    pending_dir = tmp_path / openviking_module._PENDING_SESSIONS_RELATIVE_DIR
+    pending_dir.mkdir(parents=True)
+    for sid in ("owned-sid-a", "owned-sid-b"):
+        (pending_dir / f"{sid}.json").write_text(
+            json.dumps({"session_id": sid, "owner_run_id": live_owner._run_id}),
+            encoding="utf-8",
+        )
+
+    other_provider = OpenVikingMemoryProvider()
+    other_provider.initialize("other-sid", hermes_home=str(tmp_path))
+    assert other_provider._drain_finalizers(timeout=2.0)
+
+    release_commit.set()
+    assert not commit_called.is_set()
+    assert (
+        "/api/v1/sessions/owned-sid-a/commit",
+        {"keep_recent_count": 0},
+    ) not in posts
+    assert (
+        "/api/v1/sessions/owned-sid-b/commit",
+        {"keep_recent_count": 0},
+    ) not in posts
+
+    live_owner.shutdown()
+    other_provider.shutdown()
+
+
+def test_initialize_recovers_legacy_pending_session_marker(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://test")
+
+    pending_dir = tmp_path / openviking_module._PENDING_SESSIONS_RELATIVE_DIR
+    pending_dir.mkdir(parents=True)
+    marker = pending_dir / "legacy-sid.json"
+    marker.write_text(json.dumps({"session_id": "legacy-sid"}), encoding="utf-8")
+
+    posts = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def health_payload(self):
+            return {"healthy": True}
+
+        def post(self, path, payload=None, **kwargs):
+            posts.append((path, payload))
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    fresh = OpenVikingMemoryProvider()
+    fresh.initialize("new-sid", hermes_home=str(tmp_path))
+    assert fresh._drain_finalizers(timeout=2.0)
+
+    assert posts.count((
+        "/api/v1/sessions/legacy-sid/commit",
+        {"keep_recent_count": 0},
+    )) == 1
+    assert not marker.exists()
+
+
+def test_initialize_skips_owned_pending_marker_when_fcntl_unavailable(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://test")
+    monkeypatch.setattr(openviking_module, "fcntl", None)
+
+    pending_dir = tmp_path / openviking_module._PENDING_SESSIONS_RELATIVE_DIR
+    pending_dir.mkdir(parents=True)
+    marker = pending_dir / "owned-sid.json"
+    marker.write_text(
+        json.dumps({"session_id": "owned-sid", "owner_run_id": "owner-run"}),
+        encoding="utf-8",
+    )
+    owner_lock = tmp_path / "openviking" / "runs" / "owner-run.lock"
+    owner_lock.parent.mkdir(parents=True)
+    owner_lock.write_text("", encoding="utf-8")
+    posts = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def health_payload(self):
+            return {"healthy": True}
+
+        def post(self, path, payload=None, **kwargs):
+            posts.append((path, payload))
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    fresh = OpenVikingMemoryProvider()
+    fresh.initialize("new-sid", hermes_home=str(tmp_path))
+    assert fresh._drain_finalizers(timeout=2.0)
+
+    assert (
+        "/api/v1/sessions/owned-sid/commit",
+        {"keep_recent_count": 0},
+    ) not in posts
+    assert marker.exists()
+
+
+def test_initialize_recovers_pending_session_without_blocking_startup(tmp_path, monkeypatch):
+    import threading
+
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://test")
+
+    post_entered = threading.Event()
+    release_post = threading.Event()
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def health_payload(self):
+            return {"healthy": True}
+
+        def post(self, path, payload=None, **kwargs):
+            if path == "/api/v1/sessions/old-sid/commit":
+                post_entered.set()
+                release_post.wait(timeout=5.0)
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    previous = OpenVikingMemoryProvider()
+    previous.initialize("old-sid", hermes_home=str(tmp_path))
+    previous._spawn_writer = lambda sid, target, name: None
+    previous.sync_turn("u", "a")
+    previous.shutdown()
+
+    start = time.monotonic()
+    fresh = OpenVikingMemoryProvider()
+    fresh.initialize("new-sid", hermes_home=str(tmp_path))
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 3.0, f"startup recovery blocked initialize() for {elapsed:.2f}s"
+    assert post_entered.wait(timeout=2.0), "recovery commit did not start"
+    release_post.set()
+    assert fresh._drain_finalizers(timeout=2.0)
+
+
 # ---------------------------------------------------------------------------
 # on_memory_write: explicit memory writes use content/write and stay outside
 # the session transcript/commit boundary.

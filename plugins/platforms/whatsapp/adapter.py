@@ -927,6 +927,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if resp.status == 200:
                         data = await resp.json()
                         last_message_id = data.get("messageId")
+                        if last_message_id:
+                            sent_message_ids.append(str(last_message_id))
                     else:
                         error = await resp.text()
                         return SendResult(success=False, error=error)
@@ -947,7 +949,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 success=True,
                 message_id=poll_message_id or last_message_id,
                 continuation_message_ids=tuple(sent_message_ids[:-1]),
-                raw_response={"messageIds": sent_message_ids, "pollMessageId": poll_message_id},
+                raw_response={
+                    "message_ids": sent_message_ids,
+                    "poll_message_id": poll_message_id,
+                },
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))

@@ -7,6 +7,9 @@
 
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
 
 import {
@@ -124,6 +127,32 @@ import {
   assert.equal(event.nativeType, 'documentMessage');
   assert.deepEqual(event.mediaUrls, ['/tmp/report.pdf']);
   console.log('  ✓ inbound document metadata preserves MIME and filename');
+}
+
+{
+  const cacheDir = mkdtempSync(path.join(tmpdir(), 'hermes-wa-doc-'));
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'doc-2', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: {
+        documentMessage: {
+          caption: 'see attached',
+          fileName: 'report',
+          mimetype: 'application/pdf',
+        },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    downloadMedia: async () => Buffer.from('pdf'),
+    cacheDirs: { document: cacheDir },
+  });
+
+  assert.equal(event.mediaUrls.length, 1);
+  assert.ok(event.mediaUrls[0].endsWith('_report.pdf'), event.mediaUrls[0]);
+  console.log('  ✓ MIME extension is preserved when document filename has none');
 }
 
 {

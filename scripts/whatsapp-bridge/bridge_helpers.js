@@ -223,7 +223,10 @@ function mediaExtForMime(mime, fallback) {
 
 function defaultWriteMediaFile({ buffer, dir, prefix, ext, fileName }) {
   mkdirSync(dir, { recursive: true });
-  const safeName = fileName ? `_${path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_')}` : '';
+  let safeName = fileName ? `_${path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_')}` : '';
+  if (safeName && ext && !path.extname(safeName)) {
+    safeName = `${safeName}${ext}`;
+  }
   const filePath = path.join(dir, `${prefix}_${randomBytes(6).toString('hex')}${safeName || ext}`);
   writeFileSync(filePath, buffer);
   return filePath;

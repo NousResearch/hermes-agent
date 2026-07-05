@@ -74,6 +74,24 @@ async def test_send_location_posts_to_bridge_location_endpoint():
     }
 
 
+@pytest.mark.asyncio
+async def test_send_tracks_text_chunk_message_ids_in_snake_case_raw_response():
+    adapter = _make_adapter()
+    first = MagicMock(status=200)
+    first.json = AsyncMock(return_value={"success": True, "messageId": "msg-1"})
+    second = MagicMock(status=200)
+    second.json = AsyncMock(return_value={"success": True, "messageId": "msg-2"})
+    adapter._http_session.post = MagicMock(side_effect=[_AsyncCM(first), _AsyncCM(second)])
+
+    result = await adapter.send("15551234567", "x" * (adapter.MAX_MESSAGE_LENGTH + 100))
+
+    assert result.success
+    assert result.message_id == "msg-2"
+    assert result.continuation_message_ids == ("msg-1",)
+    assert result.raw_response["message_ids"] == ["msg-1", "msg-2"]
+    assert "messageIds" not in result.raw_response
+
+
 def test_extract_location_directive_strips_visible_text():
     locations, cleaned = BasePlatformAdapter.extract_locations(
         "meet here\nLOCATION:41.015,28.979|HQ|Example Street\nthanks"

@@ -17,6 +17,7 @@ Covers three layers of the fix:
 """
 
 import asyncio
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -268,20 +269,55 @@ class TestStaleSessionLockSelfHeal:
             "stale lock trapped a normal message — split-brain not healed"
         )
 
-    def test_no_owner_task_is_not_treated_as_stale(self):
-        """If _session_tasks has no entry at all, the guard isn't stale.
+    def test_ownerless_fresh_guard_is_not_treated_as_stale_immediately(self):
+        """A just-created ownerless guard may be a transient command/drain handoff.
 
-        Tests and rare legitimate code paths install _active_sessions
-        entries directly.  Auto-healing those would break real fixtures.
+        Do not heal it on the same tick; give legitimate non-message guards a
+        short grace window before classifying the state as orphaned.
         """
         adapter = _make_adapter()
         sk = _session_key()
 
         adapter._active_sessions[sk] = asyncio.Event()
+        adapter._session_guard_started_at[sk] = time.monotonic()
         # No _session_tasks entry.
 
         assert adapter._session_task_is_stale(sk) is False
         assert adapter._heal_stale_session_lock(sk) is False
+        assert sk in adapter._active_sessions
+
+    @pytest.mark.asyncio
+    async def test_ownerless_old_guard_is_healed_on_next_message(self):
+        """An old active guard with no owner task is an orphaned lock.
+
+        This is the Sprout group-silence failure shape: addressed Telegram
+        messages are queued into _pending_messages forever because no owner
+        task remains to drain them.  The next inbound should heal and dispatch.
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+
+        adapter._active_sessions[sk] = asyncio.Event()
+        adapter._session_guard_started_at[sk] = time.monotonic() - 60.0
+        # No _session_tasks entry.
+
+        processed = []
+
+        async def _handler(event):
+            processed.append(event.text)
+            return f"handled:text:{event.text}"
+
+        adapter._message_handler = _handler
+
+        await adapter.handle_message(_make_event("hello after orphan"))
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        assert processed == ["hello after orphan"], (
+            "ownerless stale guard trapped the message instead of healing"
+        )
+        assert any("handled:text:hello after orphan" in r for r in adapter.sent_responses)
+        assert sk not in adapter._pending_messages
 
     def test_live_owner_task_is_not_stale(self):
         """When the owner task is alive, do NOT heal — agent is really busy."""

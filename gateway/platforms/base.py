@@ -2346,6 +2346,15 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # Creation/first-seen time for adapter guards.  Used only as a
+        # conservative fallback for ownerless guards: a guard with no
+        # _session_tasks owner may be a legitimate transient command/drain
+        # handoff for a moment, but if it survives past this grace window it is
+        # an orphaned lock and should self-heal on the next inbound message.
+        self._session_guard_started_at: Dict[str, float] = {}
+        self._ownerless_session_guard_grace_seconds: float = _float_env(
+            "HERMES_GATEWAY_OWNERLESS_SESSION_GUARD_GRACE_SECONDS", 5.0
+        )
         # Legacy busy_text_mode env var; when unset the runner syncs the
         # resolved value (driven by busy_input_mode) onto the adapter after
         # construction (gateway/run.py). Default to "interrupt" so a stray
@@ -4371,25 +4380,40 @@ class BasePlatformAdapter(ABC):
         """
         current_guard = self._active_sessions.get(session_key)
         if current_guard is None:
+            self._session_guard_started_at.pop(session_key, None)
             return
         if guard is not None and current_guard is not guard:
             return
         del self._active_sessions[session_key]
+        self._session_guard_started_at.pop(session_key, None)
 
     def _session_task_is_stale(self, session_key: str) -> bool:
-        """Return True if the owner task for ``session_key`` is done/cancelled.
+        """Return True if the adapter-level guard for ``session_key`` is stale.
 
-        A lock is "stale" when the adapter still has ``_active_sessions[key]``
-        AND a known owner task in ``_session_tasks`` that has already exited.
-        When there is no owner task at all, that usually means the guard was
-        installed by some path other than handle_message() (tests sometimes
-        install guards directly) — don't treat that as stale.  The on-entry
-        self-heal only needs to handle the production split-brain case where
-        an owner task was recorded, then exited without clearing its guard.
+        The normal stale shape is ``_active_sessions[key]`` plus a known owner
+        task in ``_session_tasks`` that has already exited.  A second production
+        failure shape is an ownerless guard: ``_active_sessions[key]`` exists but
+        no owner task remains to drain queued follow-ups.  Treat that as stale
+        only after a short grace window so legitimate transient command/drain
+        guards are not cleared on the same event-loop tick.
         """
+        if session_key not in self._active_sessions:
+            self._session_guard_started_at.pop(session_key, None)
+            return False
+
         task = self._session_tasks.get(session_key)
         if task is None:
-            return False
+            now = time.monotonic()
+            started_at = self._session_guard_started_at.get(session_key)
+            if started_at is None:
+                self._session_guard_started_at[session_key] = now
+                return False
+            grace = max(
+                0.0,
+                float(getattr(self, "_ownerless_session_guard_grace_seconds", 5.0)),
+            )
+            return (now - started_at) >= grace
+
         done = getattr(task, "done", None)
         return bool(done and done())
 
@@ -4417,6 +4441,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
+        self._session_guard_started_at.pop(session_key, None)
         self._discard_text_debounce(session_key)
         return True
 
@@ -4436,6 +4461,7 @@ class BasePlatformAdapter(ABC):
         """
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
+        self._session_guard_started_at[session_key] = time.monotonic()
 
         task = asyncio.create_task(self._process_message_background(event, session_key))
         self._session_tasks[session_key] = task
@@ -4549,6 +4575,7 @@ class BasePlatformAdapter(ABC):
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
+        self._session_guard_started_at[session_key] = time.monotonic()
         thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
         try:
@@ -4846,6 +4873,7 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        self._session_guard_started_at.setdefault(session_key, time.monotonic())
         
         # Start continuous typing indicator (refreshes every 2 seconds).
         # Gated per-platform: when typing_indicator=False the refresh loop is

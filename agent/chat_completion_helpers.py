@@ -1198,7 +1198,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # _fallback_index=0 and re-marshaling the whole context across every
         # provider again.  Guards the cross-turn replay storm in #24996.
         if (
-            len(agent._fallback_chain) > 0
+            agent._fallback_chain
             and reason not in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}
         ):
             _existing_cooldown = getattr(agent, "_rate_limited_until", 0) or 0

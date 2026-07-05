@@ -8,6 +8,21 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_ambient_env(monkeypatch):
+    """Keep these tests hermetic against the developer's real environment.
+
+    Importing ``run_agent`` (which other test modules in the same pytest
+    process legitimately do) loads the user's ``~/.hermes/.env`` into
+    ``os.environ`` as a side effect. ``HERMES_LLM_BASE_URL`` is the
+    resolver's highest-priority base-url override, so a developer machine
+    with a real local-proxy entry in ``.env`` makes dozens of these tests
+    fail depending on module import order. Clear it unconditionally; tests
+    that exercise the override set it explicitly via monkeypatch.
+    """
+    monkeypatch.delenv("HERMES_LLM_BASE_URL", raising=False)
+
+
 def _fake_invoke_jwt(ttl_seconds=3600):
     header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
     payload = base64.urlsafe_b64encode(

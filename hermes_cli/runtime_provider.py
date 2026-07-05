@@ -329,18 +329,16 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
         return "chat_completions"
 
 
-_VALID_API_MODES = {
-    "chat_completions",
-    "codex_responses",
-    "anthropic_messages",
-    "bedrock_converse",
-    # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
-    # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
-    # instead of Hermes' tool dispatch. Gated behind config key
-    # `model.openai_runtime == "codex_app_server"` AND provider in
-    # {"openai", "openai-codex"}. Default is unchanged.
-    "codex_app_server",
-}
+# Phase 5a Apply-2: this set is now derived from
+# ``agent.api_modes.API_MODES`` (the canonical single source of truth).
+# Both sets MUST contain exactly the same 5 values; the parity test
+# ``tests/agent/test_phase5a_apply2_runtime_wiring.py`` enforces that.
+# We preserve the original ``set`` type (not ``frozenset``) to keep
+# compatibility with callers that compare against plain sets.
+from agent.api_modes import API_MODES as _CANONICAL_API_MODES
+
+
+_VALID_API_MODES = set(_CANONICAL_API_MODES)
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:

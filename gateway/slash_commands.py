@@ -3632,6 +3632,13 @@ class GatewaySlashCommandsMixin:
         _pending_notes = getattr(self, "_pending_model_notes", None)
         if isinstance(_pending_notes, dict):
             _pending_notes.pop(session_key, None)
+        # Clear per-session model cache too, for the same reason — the
+        # resumed conversation must resolve from current config, not a
+        # stale value cached under this session_key before the switch
+        # (mirrors /new and the compression-exhausted auto-reset, #58403).
+        _lrm = getattr(self, "_last_resolved_model", None)
+        if isinstance(_lrm, dict):
+            _lrm.pop(session_key, None)
 
         # Evict any cached agent for this session so the next message
         # rebuilds with the correct session_id end-to-end — mirrors

@@ -212,6 +212,35 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_clears_last_resolved_model(self, tmp_path):
+        """Resume must also clear the resumed chat's cached last-resolved
+        model, so the restored conversation re-resolves from current config
+        instead of a value cached before the switch (mirrors /new and the
+        compression-exhausted auto-reset, #58403), while leaving other
+        chats' cache entries intact."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session_abc", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+
+        event = _make_event(text="/resume My Project")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        key = _session_key_for_event(event)
+        runner._last_resolved_model = {
+            key: "gpt-5",
+            "agent:main:telegram:dm:other": "keep-me",
+        }
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        assert key not in runner._last_resolved_model
+        assert runner._last_resolved_model["agent:main:telegram:dm:other"] == "keep-me"
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_nonexistent_name(self, tmp_path):
         """Returns error for unknown session name."""
         from hermes_state import SessionDB

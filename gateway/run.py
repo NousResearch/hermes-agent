@@ -7534,6 +7534,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self._set_session_reasoning_override(key, None)
                         if hasattr(self, "_pending_model_notes"):
                             self._pending_model_notes.pop(key, None)
+                        # Clear per-session model cache so a resumed turn
+                        # resolves from current config, not a stale fallback
+                        # cached before the session went idle (mirrors /new
+                        # and the compression-exhausted auto-reset, #58403).
+                        _lrm = getattr(self, "_last_resolved_model", None)
+                        if _lrm is not None:
+                            _lrm.pop(key, None)
                         _pending_approvals = getattr(self, "_pending_approvals", None)
                         if isinstance(_pending_approvals, dict):
                             _pending_approvals.pop(key, None)
@@ -10538,6 +10545,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
+            # Clear per-session model cache so the fresh session resolves
+            # from current config, not a stale fallback cached before the
+            # auto-reset (mirrors /new and the compression-exhausted
+            # auto-reset, #58403).
+            _lrm = getattr(self, "_last_resolved_model", None)
+            if _lrm is not None:
+                _lrm.pop(session_key, None)
             # Evict the cached agent so the fresh session does not inherit the
             # previous conversation's context_compressor._previous_summary —
             # the cache is keyed on the stable session_key, so an auto-reset

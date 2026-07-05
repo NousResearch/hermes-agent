@@ -35,6 +35,23 @@ def _redact_telegram_error_text(error: object) -> str:
         return "<telegram error redacted>"
 
 
+def _redact_proxy_url(proxy_url: str | None) -> str | None:
+    """Redact credentials from a proxy URL before logging."""
+    if not proxy_url:
+        return proxy_url
+    from urllib.parse import urlparse
+
+    parsed = urlparse(proxy_url)
+    if parsed.password:
+        # Reconstruct the URL with the password redacted
+        redacted = parsed._replace(
+            netloc=f"{parsed.username}:***@{parsed.hostname}"
+            + (f":{parsed.port}" if parsed.port else "")
+        ).geturl()
+        return redacted
+    return proxy_url
+
+
 def _consume_abandoned_task(task: asyncio.Task) -> None:
     """Observe a detached task's terminal exception to avoid noisy loop logs."""
     try:
@@ -3084,7 +3101,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     },
                 )
             elif proxy_url:
-                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
+                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, _redact_proxy_url(proxy_url))
                 request = HTTPXRequest(
                     **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
                 )

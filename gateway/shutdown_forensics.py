@@ -188,7 +188,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
                     ctx["planned_stop_marker"] = raw[:300]
                 except OSError:
                     pass
-    except Exception:  # noqa: BLE001 — never raise from a signal handler
+    except Exception:
         pass
 
     return ctx

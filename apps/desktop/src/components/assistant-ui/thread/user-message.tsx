@@ -303,7 +303,6 @@ export const UserMessage: FC<{
                     iconClassName="size-3.5"
                     label={copy.copy}
                     preventDefault
-                    side="top"
                     stopPropagation
                     text={messageText}
                   />

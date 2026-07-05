@@ -1,0 +1,15 @@
+name: forwarding
+label: Cross-channel Forwarding
+kind: plugin
+version: 1.0.0
+description: >
+  Declarative cross-channel message forwarding. Rules in
+  ``$HERMES_HOME/forwarding-rules.json`` relay inbound messages (text, and the
+  first image when ``media: true``) from one chat to another — across
+  platforms (e.g. WeCom group → WhatsApp group, WhatsApp group → Telegram).
+  Runs on the ``pre_gateway_dispatch`` hook; ``forward_only: true`` relays and
+  drops the message so the agent does not also reply. Best-effort: relay
+  failures are logged and never block the originating message.
+author: Hermes Agent contributors
+hooks:
+  - pre_gateway_dispatch

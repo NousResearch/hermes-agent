@@ -172,3 +172,91 @@ class TestAdapterForSource:
             profile = "default"
 
         assert runner._adapter_for_source(_Src()) == "profile-default-tg"
+
+
+class _TypingAdapter:
+    """Fake adapter that records resume_typing_for_chat calls."""
+    def __init__(self, name):
+        self.name = name
+        self.resumed = []
+
+    def resume_typing_for_chat(self, chat_id):
+        self.resumed.append(chat_id)
+
+
+class TestSlashCommandProfileRouting:
+    """Slash commands must route through _adapter_for_source, not adapters.get.
+
+    Regression: /approve, /deny, /status, /model, /goal used
+    self.adapters.get(source.platform) which ignores source.profile and
+    can resume/inspect the wrong profile's adapter.
+    """
+
+    def _make_runner(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._active_profile_name = lambda: "default"
+        default_tg = _TypingAdapter("default")
+        secondary_tg = _TypingAdapter("secondary")
+        runner.adapters = {"telegram": default_tg}
+        runner._profile_adapters = {"secondary": {"telegram": secondary_tg}}
+        return runner, default_tg, secondary_tg
+
+    def _make_src(self):
+        class _Src:
+            platform = "telegram"
+            chat_id = "chat-2"
+            profile = "secondary"
+            user_id = "u1"
+            thread_id = None
+        return _Src()
+
+    def _make_event(self):
+        src = self._make_src()
+        class _Event:
+            def __init__(self, s):
+                self.source = s
+            def get_command_args(self):
+                return ""
+        return _Event(src)
+
+    @pytest.mark.asyncio
+    async def test_approve_routes_to_secondary_adapter(self, monkeypatch):
+        """ /approve must resume typing on the secondary adapter, not default."""
+        runner, default_tg, secondary_tg = self._make_runner()
+        runner._pending_approvals = {}
+
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda *a, **kw: 1,  # one pending approval
+        )
+        monkeypatch.setattr(
+            "tools.approval.has_blocking_approval",
+            lambda *a, **kw: True,
+        )
+        runner._session_key_for_source = lambda s: "secondary-session"
+
+        result = await runner._handle_approve_command(self._make_event())
+
+        assert secondary_tg.resumed == ["chat-2"]
+        assert default_tg.resumed == []  # default adapter must NOT be touched
+
+    @pytest.mark.asyncio
+    async def test_deny_routes_to_secondary_adapter(self, monkeypatch):
+        """ /deny must resume typing on the secondary adapter, not default."""
+        runner, default_tg, secondary_tg = self._make_runner()
+        runner._pending_approvals = {}
+
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda *a, **kw: 1,
+        )
+        monkeypatch.setattr(
+            "tools.approval.has_blocking_approval",
+            lambda *a, **kw: True,
+        )
+        runner._session_key_for_source = lambda s: "secondary-session"
+
+        result = await runner._handle_deny_command(self._make_event())
+
+        assert secondary_tg.resumed == ["chat-2"]
+        assert default_tg.resumed == []

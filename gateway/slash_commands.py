@@ -485,7 +485,7 @@ class GatewaySlashCommandsMixin:
         is_running = agent is not None and agent is not _AGENT_PENDING_SENTINEL
 
         # Count pending /queue follow-ups (slot + overflow).
-        adapter = self.adapters.get(source.platform) if source else None
+        adapter = self._adapter_for_source(source) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
 
         def _clean_str(value: Any) -> str:
@@ -621,7 +621,7 @@ class GatewaySlashCommandsMixin:
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
         if source.platform == Platform.MATRIX:
-            adapter = self.adapters.get(Platform.MATRIX)
+            adapter = self._adapter_for_source(source)
             scope = getattr(adapter, "_matrix_session_scope", os.getenv("MATRIX_SESSION_SCOPE", "auto"))
             thread = source.thread_id or "none"
             lines.extend([
@@ -1458,7 +1458,7 @@ class GatewaySlashCommandsMixin:
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
-            adapter = self.adapters.get(source.platform)
+            adapter = self._adapter_for_source(source)
             has_picker = (
                 adapter is not None
                 and getattr(type(adapter), "send_model_picker", None) is not None
@@ -2183,7 +2183,7 @@ class GatewaySlashCommandsMixin:
             if state is None:
                 return t("gateway.goal.no_goal_set")
             try:
-                adapter = self.adapters.get(event.source.platform) if event.source else None
+                adapter = self._adapter_for_source(event.source) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if adapter and _quick_key:
                     self._clear_goal_pending_continuations(_quick_key, adapter)
@@ -2201,7 +2201,7 @@ class GatewaySlashCommandsMixin:
             had = mgr.has_goal()
             mgr.clear()
             try:
-                adapter = self.adapters.get(event.source.platform) if event.source else None
+                adapter = self._adapter_for_source(event.source) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if adapter and _quick_key:
                     self._clear_goal_pending_continuations(_quick_key, adapter)
@@ -2270,7 +2270,7 @@ class GatewaySlashCommandsMixin:
 
         # Queue the goal text as an immediate first turn so the agent
         # starts making progress. The post-turn hook takes over after.
-        adapter = self.adapters.get(event.source.platform) if event.source else None
+        adapter = self._adapter_for_source(event.source) if event.source else None
         _quick_key = self._session_key_for_source(event.source) if event.source else None
         if adapter and _quick_key:
             try:
@@ -2438,7 +2438,7 @@ class GatewaySlashCommandsMixin:
         platform = event.source.platform
         voice_key = self._voice_key(platform, chat_id)
 
-        adapter = self.adapters.get(platform)
+        adapter = self._adapter_for_source(event.source)
 
         if args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
@@ -2470,7 +2470,7 @@ class GatewaySlashCommandsMixin:
                 "all": t("gateway.voice.label_all"),
             }
             # Append voice channel info if connected
-            adapter = self.adapters.get(event.source.platform)
+            adapter = self._adapter_for_source(event.source)
             guild_id = self._get_guild_id(event)
             if guild_id and hasattr(adapter, "get_voice_channel_info"):
                 info = adapter.get_voice_channel_info(guild_id)
@@ -4344,7 +4344,7 @@ class GatewaySlashCommandsMixin:
             return t("gateway.approve.no_pending")
 
         # Resume typing indicator — agent is about to continue processing.
-        _adapter = self.adapters.get(source.platform)
+        _adapter = self._adapter_for_source(source)
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
@@ -4398,7 +4398,7 @@ class GatewaySlashCommandsMixin:
             return t("gateway.deny.no_pending")
 
         # Resume typing indicator — agent continues (with BLOCKED result).
-        _adapter = self.adapters.get(source.platform)
+        _adapter = self._adapter_for_source(source)
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 

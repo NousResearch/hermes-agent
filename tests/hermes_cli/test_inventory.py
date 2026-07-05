@@ -221,7 +221,10 @@ def test_build_models_payload_maps_legacy_custom_to_named_provider():
     assert payload["provider"] == "custom:taro"
     slugs = [row["slug"] for row in payload["providers"]]
     assert "custom" not in slugs
-    assert payload["providers"][0]["is_current"] is True
+    # The named custom row carries the checkmark. (``providers[0]`` is now the
+    # virtual ``moa`` baseline row, so key on the slug instead of the index.)
+    taro_row = next(r for r in payload["providers"] if r["slug"] == "custom:taro")
+    assert taro_row["is_current"] is True
 
 
 def test_build_models_payload_hides_shadow_custom_for_named_current():
@@ -244,7 +247,9 @@ def test_build_models_payload_hides_shadow_custom_for_named_current():
         payload = build_models_payload(ctx)
 
     assert payload["provider"] == "custom:taro"
-    assert [row["slug"] for row in payload["providers"]] == ["custom:taro"]
+    # The bare ``custom`` shadow row is hidden; the virtual ``moa`` row is the
+    # upstream baseline prepended to every inventory payload.
+    assert [row["slug"] for row in payload["providers"]] == ["moa", "custom:taro"]
 
 
 def test_build_models_payload_does_not_call_provider_model_ids():

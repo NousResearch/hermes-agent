@@ -507,6 +507,10 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     Telegram) edit the previous bubble for the same status_key instead of
     appending a new one. Adapters without the method fall back to plain send.
     """
+    metadata = dict(metadata or {})
+    # Status/thinking/progress bubbles are gateway chrome, not the final answer.
+    # Keep them single-unit on platforms with rich final-message delivery.
+    metadata["delivery_style"] = "single"
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)

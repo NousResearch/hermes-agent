@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +61,17 @@ def _make_adapter():
     adapter._allow_from = set()
     adapter._group_policy = "open"
     adapter._group_allow_from = set()
+    adapter._human_cascade_messages = True
+    adapter._human_cascade_max_bubbles = 3
+    adapter._human_cascade_delay_seconds = 0
+    adapter._human_cascade_delay_jitter_seconds = 0
+    adapter._human_cascade_max_total_chars = 900
+    adapter._human_cascade_min_total_chars = 320
+    adapter._human_cascade_min_lead_chars = 40
+    adapter._human_cascade_max_bubble_chars = 320
+    adapter._human_cascade_max_merged_bubble_chars = 640
+    adapter._human_cascade_groups = False
+    adapter._chunk_delay_seconds = 0
     return adapter
 
 
@@ -75,6 +86,27 @@ class _AsyncCM:
 
     async def __aexit__(self, *exc):
         return False
+
+
+def test_human_cascade_knobs_read_platform_extras():
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "human_cascade_messages": "false",
+                "human_cascade_max_bubbles": "5",
+                "human_cascade_delay_seconds": "0.2",
+                "human_cascade_groups": "true",
+            },
+        )
+    )
+
+    assert adapter._human_cascade_messages is False
+    assert adapter._human_cascade_max_bubbles == 5
+    assert adapter._human_cascade_delay_seconds == 0.2
+    assert adapter._human_cascade_groups is True
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +234,259 @@ class TestSendChunking:
         assert result.success
         # Only one call to bridge /send
         assert adapter._http_session.post.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_substantive_blank_line_paragraphs_send_as_human_cascade(self):
+        adapter = _make_adapter()
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        messages = [
+            "First thought has enough actual content to deserve its own bubble, because it frames the answer before the heavier detail arrives and gives the reader a clean starting point.",
+            "Second thought is also a real sentence with useful substance, so it reads like a natural follow-up instead of a random tiny ack split for no reason.",
+            "Third thought closes the answer with enough context for the reader, proving the cascade is being used for cadence rather than just reacting to blank lines.",
+        ]
+        result = await adapter.send("chat1", "\n\n".join(messages))
+
+        assert result.success
+        assert adapter._http_session.post.call_count == 3
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == messages
+        assert result.message_id == "msg3"
+        assert result.continuation_message_ids == ("msg1", "msg2")
+        assert result.raw_response["human_cascade"] is True
+
+    @pytest.mark.asyncio
+    async def test_metadata_delivery_style_single_suppresses_human_cascade(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        await adapter.send("chat1", "thinking\n\nstill checking", metadata={"delivery_style": "single"})
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == "thinking\n\nstill checking"
+
+    @pytest.mark.asyncio
+    async def test_extra_paragraphs_merge_into_final_cascade_bubble(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_total_chars = 2000
+        adapter._human_cascade_max_merged_bubble_chars = 1200
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        messages = [
+            "First paragraph is substantive enough to be worth a separate WhatsApp bubble.",
+            "Second paragraph keeps the cadence readable before the merged tail arrives.",
+            "Third paragraph is still short enough to fit as a clean lead-in bubble.",
+            ("The fourth paragraph is deliberately longer and should be merged with the final paragraph instead of creating a fifth bubble. " * 3).strip(),
+            ("The fifth paragraph continues the tail so the adapter proves it caps cascade count without collapsing everything into one wall. " * 3).strip(),
+        ]
+        result = await adapter.send("chat1", "\n\n".join(messages))
+
+        assert result.success
+        assert adapter._http_session.post.call_count == 3
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == [
+            messages[0],
+            messages[1],
+            messages[2] + "\n\n" + messages[3] + "\n\n" + messages[4],
+        ]
+        assert result.raw_response["human_cascade"] is True
+
+    @pytest.mark.asyncio
+    async def test_code_block_keeps_only_its_section_atomic(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_bubbles = 0
+        adapter._human_cascade_max_total_chars = 0
+        adapter._human_cascade_max_bubble_chars = 0
+        adapter._human_cascade_max_merged_bubble_chars = 0
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        intro = "plain intro can still be its own bubble"
+        code = "run this:\n\n```bash\necho hi\n\necho bye\n```"
+        tail = "plain tail can still be its own bubble"
+        await adapter.send("chat1", "\n\n".join([intro, code, tail]))
+
+        assert adapter._http_session.post.call_count == 3
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0]["message"] == intro
+        assert payloads[1]["message"] == code
+        assert payloads[2]["message"] == tail
+
+    @pytest.mark.asyncio
+    async def test_intro_list_then_later_prose_cascades_after_list_block(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_bubbles = 0
+        adapter._human_cascade_max_total_chars = 0
+        adapter._human_cascade_max_bubble_chars = 0
+        adapter._human_cascade_max_merged_bubble_chars = 0
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        first = "settings now are:\n• split prose blank lines\n• keep list sections together"
+        second = "plain later prose can still get its own follow-up bubble"
+        await adapter.send("chat1", "settings now are:\n\n• split prose blank lines\n• keep list sections together\n\n" + second)
+
+        assert adapter._http_session.post.call_count == 2
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0]["message"] == first
+        assert payloads[1]["message"] == second
+
+    @pytest.mark.asyncio
+    async def test_consecutive_list_sections_keep_local_context_only(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_bubbles = 0
+        adapter._human_cascade_max_total_chars = 0
+        adapter._human_cascade_max_bubble_chars = 0
+        adapter._human_cascade_max_merged_bubble_chars = 0
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3", "msg4"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        content = (
+            "first section:\n\n"
+            "• one\n"
+            "• two\n\n"
+            "plain bridge paragraph between list sections\n\n"
+            "second section:\n\n"
+            "• three\n"
+            "• four\n\n"
+            "final prose bubble"
+        )
+
+        await adapter.send("chat1", content)
+
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        messages = [payload["message"] for payload in payloads]
+        assert messages == [
+            "first section:\n• one\n• two",
+            "plain bridge paragraph between list sections",
+            "second section:\n• three\n• four",
+            "final prose bubble",
+        ]
+        assert all("\n\n•" not in message for message in messages)
+        assert all("\n\n-" not in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_group_chats_can_human_cascade_when_configured(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_groups = True
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        await adapter.send("test-group@g.us", "first\n\nsecond")
+
+        assert adapter._http_session.post.call_count == 2
+
+
+    @pytest.mark.asyncio
+    async def test_bridge_message_ids_array_stays_snake_case(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageIds": ["msg1", "msg2"], "messageId": "msg2"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("chat1", "short message")
+
+        assert result.success
+        assert result.message_id == "msg2"
+        assert result.continuation_message_ids == ("msg1",)
+        assert result.raw_response["message_ids"] == ["msg1", "msg2"]
+        assert "messageIds" not in result.raw_response
+
+    @pytest.mark.asyncio
+    async def test_machine_artifacts_do_not_human_cascade(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = "Here is the config to verify as one unit.\n\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: demo\n\nCopy this exactly into the config file."
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == content
+
+    @pytest.mark.asyncio
+    async def test_approval_gates_do_not_human_cascade(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = "I can restart the gateway.\n\nReply `/approve` to restart.\n\nRisk: brief downtime."
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert "Reply `/approve`" in payload["message"]
+
+    @pytest.mark.asyncio
+    async def test_group_chats_do_not_human_cascade_by_default(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        await adapter.send("test-group@g.us", "first\n\nsecond")
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == "first\n\nsecond"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_only_on_first_cascade_chunk_even_when_bridge_omits_message_id(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for _ in range(2):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        await adapter.send("chat1", "first paragraph\n\nsecond paragraph", reply_to="orig123")
+
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0].get("replyTo") == "orig123"
+        assert "replyTo" not in payloads[1]
 
     @pytest.mark.asyncio
     async def test_long_message_chunked(self):

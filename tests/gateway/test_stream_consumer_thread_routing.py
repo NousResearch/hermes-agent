@@ -103,7 +103,11 @@ class TestInitialReplyToId:
         await consumer._send_or_edit("Test")
 
         call_kwargs = adapter.send.call_args[1]
-        assert call_kwargs["metadata"] == {**metadata, "expect_edits": True}
+        assert call_kwargs["metadata"] == {
+            **metadata,
+            "expect_edits": True,
+            "delivery_style": "single",
+        }
         assert metadata == {"thread_id": "omt_topic789"}
 
     @pytest.mark.asyncio
@@ -140,7 +144,11 @@ class TestInitialReplyToId:
         await consumer._send_or_edit("Preview", finalize=False)
 
         metadata = adapter.send.call_args[1]["metadata"]
-        assert metadata == {"thread_id": "root_post_123", "expect_edits": True}
+        assert metadata == {
+            "thread_id": "root_post_123",
+            "expect_edits": True,
+            "delivery_style": "single",
+        }
 
 
 class TestOverflowFirstMessage:

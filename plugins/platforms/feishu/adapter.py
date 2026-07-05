@@ -4747,7 +4747,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._event_handler is None:
             raise RuntimeError("failed to build Feishu event handler")
         await self._hydrate_bot_identity()
-        app = web.Application()
+        # client_max_size backstops the bounded reader in
+        # _handle_webhook_request; aiohttp then enforces the same cap on
+        # every read path (#58536/#58902/#59180 pattern).
+        app = web.Application(client_max_size=_FEISHU_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post(self._webhook_path, self._handle_webhook_request)
         self._webhook_runner = web.AppRunner(app)
         await self._webhook_runner.setup()

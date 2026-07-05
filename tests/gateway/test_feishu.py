@@ -190,7 +190,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         runner = AsyncMock()
         site = AsyncMock()
         web_module = SimpleNamespace(
-            Application=lambda: SimpleNamespace(router=SimpleNamespace(add_post=lambda *_args, **_kwargs: None)),
+            Application=lambda **_kwargs: SimpleNamespace(router=SimpleNamespace(add_post=lambda *_args, **_kwargs: None)),
             AppRunner=lambda _app: runner,
             TCPSite=lambda _runner, host, port: SimpleNamespace(start=site.start, host=host, port=port),
         )

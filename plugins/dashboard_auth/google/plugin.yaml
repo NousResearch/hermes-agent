@@ -1,0 +1,9 @@
+name: google-oauth-auth-provider
+version: 1.0.0
+description: "Custom dashboard auth provider for Hermes that enables 'Sign in with Google'. Implements the OAuth 2.0 authorization-code flow with PKCE (S256), validates the returned access token via Google's tokeninfo endpoint, and stores the session in HttpOnly cookies. Requires HERMES_DASHBOARD_PUBLIC_URL, HERMES_DASHBOARD_GOOGLE_CLIENT_ID, HERMES_DASHBOARD_GOOGLE_CLIENT_SECRET and optionally HERMES_DASHBOARD_GOOGLE_ALLOWED_EMAILS to be configured before the provider registers itself."
+author: AiSolve.me
+kind: backend
+requires_env:
+  - HERMES_DASHBOARD_PUBLIC_URL
+  - HERMES_DASHBOARD_GOOGLE_CLIENT_ID
+  - HERMES_DASHBOARD_GOOGLE_CLIENT_SECRET

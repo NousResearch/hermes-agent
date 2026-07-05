@@ -196,6 +196,28 @@ def test_telegram_final_response_keeps_normal_answers():
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
 
 
+def test_chat_final_response_sanitizes_lone_surrogates():
+    """A lone surrogate in the delivered response must be replaced before it
+    reaches a chat surface. Telegram's per-reply length check encodes the text
+    as UTF-16, which raises UnicodeEncodeError on a lone surrogate and aborts
+    delivery; the stored history copy is already sanitized, so the delivered
+    copy must be too."""
+    from gateway.platforms.base import utf16_len
+
+    raw = "Here is your answer \ud800 done"
+    out = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+    assert "\ud800" not in out
+    # The downstream Telegram length check no longer crashes on the result.
+    assert utf16_len(out) >= 0
+
+
+def test_raw_text_surface_keeps_lone_surrogate_untouched():
+    """Programmatic surfaces keep raw text (their JSON/file consumers handle
+    surrogate escaping); the sanitizer only rewrites chat-surface replies."""
+    raw = "x\ud800y"
+    assert _sanitize_gateway_final_response(Platform.LOCAL, raw) == raw
+
+
 # Synthetic credential shapes from #23810. Bodies are placeholder gibberish —
 # never real tokens — but they match the canonical redaction patterns. The
 # outbound gateway redactor previously used a narrow local pattern subset that

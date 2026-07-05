@@ -524,7 +524,7 @@ def _dispatch_to_plugin_provider(
             # recovery pattern.
             _ensure_plugins_discovered(force=True)
             plugin_provider = get_provider(key)
-    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
+    except Exception as exc:
         logger.debug("tts plugin dispatch skipped (discovery failed): %s", exc)
         return None
     if plugin_provider is None:
@@ -579,7 +579,7 @@ def _plugin_provider_is_voice_compatible(provider: str) -> bool:
         if plugin_provider is None:
             return False
         return bool(plugin_provider.voice_compatible)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug(
             "tts plugin voice_compatible check failed for '%s': %s", key, exc,
         )

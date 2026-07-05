@@ -2032,6 +2032,47 @@ def _read_main_api_key() -> str:
     return ""
 
 
+def _read_main_base_url() -> str:
+    """Read the main model's base_url from the runtime override or config.
+
+    Same override-then-config pattern as ``_read_main_api_key``.
+    """
+    override = _RUNTIME_MAIN_BASE_URL
+    if isinstance(override, str) and override.strip():
+        return override.strip()
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            base = model_cfg.get("base_url", "")
+            if isinstance(base, str) and base.strip():
+                return base.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _read_main_api_key_if_same_host(aux_base_url: str) -> str:
+    """Return the main api_key only when *aux_base_url* points at the same
+    host as the main model's base_url.
+
+    The #9318 use case is an auxiliary task sharing the main model's
+    self-hosted gateway (same host, different model) with an empty per-task
+    api_key. Inheriting unconditionally would send the main credential to
+    ANY host a misconfigured aux base_url names — a cross-host credential
+    leak. A host mismatch keeps the previous fail-safe behavior
+    (``no-key-required`` → 401).
+    """
+    aux_host = base_url_hostname(aux_base_url)
+    if not aux_host:
+        return ""
+    main_host = base_url_hostname(_read_main_base_url())
+    if not main_host or aux_host != main_host:
+        return ""
+    return _read_main_api_key()
+
+
 # Process-local override set by AIAgent at session/turn start. Single-threaded
 # per turn — no lock needed. Cleared by ``clear_runtime_main()``.
 _RUNTIME_MAIN_PROVIDER: str = ""
@@ -4271,7 +4312,7 @@ def resolve_provider_client(
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
-                or _read_main_api_key()
+                or _read_main_api_key_if_same_host(custom_base)
                 or "no-key-required"  # local servers don't need auth
             )
             if not custom_base:

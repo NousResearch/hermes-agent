@@ -5196,18 +5196,26 @@ class TestCustomEndpointApiKeyInheritance:
     Without this fix, users on self-hosted gateways who share the same
     endpoint+credentials for both the main model and auxiliary tasks get 401
     auth errors because the placeholder key is sent instead of the real one.
+
+    Inheritance is host-gated: the main key is only inherited when the aux
+    base_url points at the same host as the main model's base_url, so a
+    misconfigured aux endpoint cannot leak the main credential cross-host.
     """
 
     def test_inherits_main_api_key_when_aux_key_empty(self, monkeypatch):
         """RED→GREEN: explicit_api_key is None, OPENAI_API_KEY unset →
-        model.api_key from config.yaml must be used."""
+        model.api_key from config.yaml must be used (same-host gateway)."""
         import agent.auxiliary_client as ac
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
         fake_config = {
-            "model": {"api_key": "sk-main-config-key", "default": "main-model"}
+            "model": {
+                "api_key": "sk-main-config-key",
+                "base_url": "https://gw.example.com/v1",
+                "default": "main-model",
+            }
         }
         captured: dict = {}
 
@@ -5293,6 +5301,7 @@ class TestCustomEndpointApiKeyInheritance:
             return MagicMock()
 
         with patch.object(ac, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key"), \
+             patch.object(ac, "_RUNTIME_MAIN_BASE_URL", "https://gw.example.com/v1"), \
              patch("hermes_cli.config.load_config", return_value={"model": {}}), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
@@ -5303,3 +5312,60 @@ class TestCustomEndpointApiKeyInheritance:
             )
 
         assert captured.get("api_key") == "sk-runtime-key"
+
+    def test_cross_host_aux_endpoint_does_not_inherit_main_key(self, monkeypatch):
+        """An aux base_url on a DIFFERENT host than the main model must NOT
+        inherit model.api_key — that would leak the main credential to
+        whatever host a misconfigured aux endpoint names. Falls back to the
+        fail-safe no-key-required placeholder instead."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        fake_config = {
+            "model": {
+                "api_key": "sk-main-config-key",
+                "base_url": "https://gw.example.com/v1",
+            }
+        }
+        captured: dict = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            client, model = resolve_provider_client(
+                "custom",
+                model="test-model",
+                explicit_base_url="https://other-host.example.net/v1",
+                explicit_api_key=None,
+            )
+
+        assert captured.get("api_key") == "no-key-required"
+
+    def test_no_main_base_url_does_not_inherit_main_key(self, monkeypatch):
+        """When the main model has no base_url (e.g. a first-class provider),
+        there is no 'same gateway' to match — do not inherit the key."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        fake_config = {"model": {"api_key": "sk-main-config-key"}}
+        captured: dict = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            client, model = resolve_provider_client(
+                "custom",
+                model="test-model",
+                explicit_base_url="https://gw.example.com/v1",
+                explicit_api_key=None,
+            )
+
+        assert captured.get("api_key") == "no-key-required"

@@ -1056,3 +1056,45 @@ def test_desktop_launch_options_survives_config_error():
         flags, gpu = cli_main._desktop_launch_options()
     assert flags == []
     assert gpu == "auto"
+
+
+def test_post_desktop_build_invokes_linux_sandbox_fixup():
+    """After Desktop package build (run by ``hermes update``), Linux
+    chrome-sandbox perms must be re-checked so the .desktop file (which
+    points at the raw unpacked binary, not through ``hermes desktop``)
+    opens the icon without a manual ``sudo chown`` (#58593).
+
+    Pin by source: ensure the build flow calls
+    ``_desktop_linux_sandbox_fixup`` right after
+    ``_desktop_macos_relaunchable_fixup`` so the launch-time helper is
+    also exercised at build time, not just at launch time.
+    """
+    import inspect
+
+    from hermes_cli import main as cli_main
+
+    src = inspect.getsource(cli_main.cmd_gui)
+    # Both helpers must appear inside the desktop-build flow.
+    assert "_desktop_macos_relaunchable_fixup" in src, (
+        "macOS build fixup helper no longer wired in cmd_gui — the "
+        "Linux fixup wiring would be unreachable too"
+    )
+    assert "_desktop_linux_sandbox_fixup" in src, (
+        "Linux sandbox fixup helper must be invoked from cmd_gui's "
+        "post-desktop-build flow so an in-place update restores "
+        "chrome-sandbox ownership/mode (#58593)"
+    )
+    # Source-order sanity: Linux fixup must come AFTER macOS fixup
+    # (it does; this is just an anti-regression sentence).
+    mac_pos = src.index("_desktop_macos_relaunchable_fixup")
+    lin_pos = src.index("_desktop_linux_sandbox_fixup")
+    assert mac_pos < lin_pos, (
+        "Linux sandbox fixup should follow the macOS one in the build "
+        "flow so platform-specific helpers are adjacent"
+    )
+    # And it must be gated on linux + a packaged executable so it
+    # doesn't run on macOS/Windows by accident.
+    assert 'sys.platform == "linux"' in src[mac_pos:lin_pos + 200], (
+        "Linux sandbox fixup must be gated on sys.platform == 'linux' "
+        "before being invoked"
+    )

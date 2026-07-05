@@ -342,14 +342,17 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         return true
       } catch (err) {
-        releaseBusy()
+        // A send that never made it past the gateway's concurrency guard should
+        // not become transcript history. Remove the optimistic user bubble and
+        // report "not accepted" so the composer restores the draft or keeps the
+        // queued entry for the next idle drain.
+        if (isSessionBusyError(err)) {
+          dropOptimistic(sessionId)
 
-        // A queued drain that raced a not-yet-settled turn gets a transient
-        // "session busy" (4009). Don't surface an error bubble/toast — the entry
-        // stays queued and the composer's bounded auto-drain retries when idle.
-        if (options?.fromQueue && isSessionBusyError(err)) {
           return false
         }
+
+        releaseBusy()
 
         const message = inlineErrorMessage(err, copy.promptFailed)
 

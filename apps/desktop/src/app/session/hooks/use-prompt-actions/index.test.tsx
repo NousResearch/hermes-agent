@@ -482,6 +482,7 @@ describe('usePromptActions desktop slash pickers', () => {
 describe('usePromptActions submit / queue drain semantics', () => {
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -624,6 +625,45 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
       false
     )
+  })
+
+  it('persistent "session busy" restores the draft instead of appending transcript bubbles', async () => {
+    vi.useFakeTimers()
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('4009: session busy')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const submitted = handle!.submitText('still running')
+    await vi.advanceTimersByTimeAsync(6_500)
+
+    expect(await submitted).toBe(false)
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'still running'
+    })
+
+    const finalState = seeds.at(-1)
+    const finalMessages = (finalState?.messages ?? []) as { error?: string; role?: string }[]
+
+    expect(finalMessages).toEqual([])
+    expect(finalState?.busy).toBe(false)
+    expect(finalState?.awaitingResponse).toBe(false)
   })
 
   it('a normal (non-queue) submit still respects the busyRef guard', async () => {

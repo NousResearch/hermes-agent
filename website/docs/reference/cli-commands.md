@@ -1365,6 +1365,7 @@ Subcommands:
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |
 | `prune` | Delete old sessions. |
+| `optimize` | Reclaim disk space: merge FTS5 segments + VACUUM (no data change). |
 | `stats` | Show session-store statistics. |
 | `rename <session-id> <title>` | Set or change a session title. |
 

@@ -616,12 +616,65 @@ def _discover(
     }, ensure_ascii=False)
 
 
+def _retrieval_scope_dict(retrieval_scope) -> Dict[str, Any]:
+    return retrieval_scope if isinstance(retrieval_scope, dict) else {}
+
+
+def _retrieval_scope_enabled(retrieval_scope) -> bool:
+    return bool(_retrieval_scope_dict(retrieval_scope).get("enabled"))
+
+
+def _retrieval_scope_blocked_response(reason: str) -> str:
+    return json.dumps({
+        "success": False,
+        "mode": "blocked",
+        "reason": reason,
+        "message": "Context Health HOLD: retrieval scope blocked unscoped or closed-task retrieval.",
+    }, ensure_ascii=False)
+
+
+def _retrieval_scope_allows_session(retrieval_scope, session_id: str) -> bool:
+    scope = _retrieval_scope_dict(retrieval_scope)
+    if not scope.get("enabled"):
+        return True
+    sid = str(session_id or "")
+    allowed = {str(v) for v in scope.get("allowed_session_ids") or []}
+    excluded = {str(v) for v in scope.get("excluded_session_ids") or []}
+    if sid in excluded and sid not in allowed:
+        return False
+    if allowed and sid not in allowed:
+        return False
+    return True
+
+
+def _retrieval_scope_filter_discovery_payload(payload: Dict[str, Any], retrieval_scope) -> Dict[str, Any]:
+    scope = _retrieval_scope_dict(retrieval_scope)
+    if not scope.get("enabled") or not isinstance(payload.get("results"), list):
+        return payload
+    allowed = {str(v) for v in scope.get("allowed_session_ids") or []}
+    excluded = {str(v) for v in scope.get("excluded_session_ids") or []}
+    filtered = []
+    for item in payload.get("results") or []:
+        sid = str(item.get("session_id") or "")
+        if sid in excluded and sid not in allowed:
+            continue
+        if allowed and sid not in allowed:
+            continue
+        filtered.append(item)
+    payload = dict(payload)
+    payload["query"] = "[scoped]"
+    payload["results"] = filtered
+    payload["count"] = len(filtered)
+    return payload
+
+
 def session_search(
     query: str = "",
     role_filter: str = None,
     limit: int = 3,
     db=None,
     current_session_id: str = None,
+    retrieval_scope: Dict[str, Any] = None,
     # Scroll shape
     session_id: str = None,
     around_message_id: int = None,
@@ -651,6 +704,10 @@ def session_search(
             from hermes_state import format_session_db_unavailable
             return tool_error(format_session_db_unavailable(), success=False)
 
+    scope = _retrieval_scope_dict(retrieval_scope)
+    if scope.get("enabled") and str(scope.get("relation") or "").lower() == "ambiguous":
+        return _retrieval_scope_blocked_response("ambiguous_prior_task_retrieval")
+
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
     # Session ids never contain "/", so a slash unambiguously means profile/id —
     # always strip the prefix off the id, and adopt the embedded profile only
@@ -677,6 +734,8 @@ def session_search(
 
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
+        if not _retrieval_scope_allows_session(retrieval_scope, session_id.strip()):
+            return _retrieval_scope_blocked_response("session_excluded_by_retrieval_scope")
         return _scroll(
             db=db,
             session_id=session_id,
@@ -688,6 +747,8 @@ def session_search(
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
         sid = session_id.strip()
+        if not _retrieval_scope_allows_session(retrieval_scope, sid):
+            return _retrieval_scope_blocked_response("session_excluded_by_retrieval_scope")
         result = _read_session(db, sid)
         if json.loads(result).get("success"):
             return result
@@ -718,6 +779,13 @@ def session_search(
     if not query or not isinstance(query, str) or not query.strip():
         return _list_recent_sessions(db, limit, current_session_id)
 
+    # Enabled discovery cannot safely execute broad FTS unless the DB layer can
+    # prove session-id-scoped search before retrieval.  Phase 6 forbids falling
+    # back to unscoped _discover(...) and then post-filtering, because closed
+    # task rows would already have been searched/materialized.
+    if _retrieval_scope_enabled(retrieval_scope):
+        return _retrieval_scope_blocked_response("discovery_requires_pre_retrieval_scope")
+
     # Parse role_filter
     role_list: Optional[List[str]] = None
     if isinstance(role_filter, str) and role_filter.strip():
@@ -730,7 +798,7 @@ def session_search(
         if candidate in ("newest", "oldest"):
             sort_norm = candidate
 
-    return _discover(
+    discover_result = _discover(
         db=db,
         query=query.strip(),
         role_filter=role_list,
@@ -738,6 +806,14 @@ def session_search(
         sort=sort_norm,
         current_session_id=current_session_id,
     )
+    if _retrieval_scope_enabled(retrieval_scope):
+        try:
+            payload = json.loads(discover_result)
+            payload = _retrieval_scope_filter_discovery_payload(payload, retrieval_scope)
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            return _retrieval_scope_blocked_response("retrieval_scope_filter_failure")
+    return discover_result
 
 
 def check_session_search_requirements() -> bool:

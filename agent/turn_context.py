@@ -38,6 +38,75 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 
+def _task_registry_enabled_for_policy(policy: Any) -> bool:
+    if not isinstance(policy, dict):
+        return False
+    if "context_health" in policy and isinstance(policy.get("context_health"), dict):
+        policy = policy.get("context_health") or {}
+    task_boundary = policy.get("task_boundary")
+    task_registry = policy.get("task_registry")
+    return bool(
+        policy.get("enabled")
+        and policy.get("runtime_behavior_enabled")
+        and isinstance(task_boundary, dict)
+        and task_boundary.get("enabled")
+        and isinstance(task_registry, dict)
+        and task_registry.get("enabled")
+    )
+
+
+def _task_boundary_firewall_enabled_for_policy(policy: Any) -> bool:
+    if not isinstance(policy, dict):
+        return False
+    if "context_health" in policy and isinstance(policy.get("context_health"), dict):
+        policy = policy.get("context_health") or {}
+    tbf = policy.get("task_boundary_firewall")
+    return bool(
+        policy.get("enabled")
+        and policy.get("runtime_behavior_enabled")
+        and isinstance(tbf, dict)
+        and tbf.get("enabled")
+    )
+
+
+def _retrieval_scope_enabled_for_policy(policy: Any) -> bool:
+    if not isinstance(policy, dict):
+        return False
+    if "context_health" in policy and isinstance(policy.get("context_health"), dict):
+        policy = policy.get("context_health") or {}
+    retrieval_scope = policy.get("retrieval_scope")
+    return bool(
+        policy.get("enabled")
+        and policy.get("runtime_behavior_enabled")
+        and isinstance(retrieval_scope, dict)
+        and retrieval_scope.get("enabled")
+    )
+
+
+def _safe_task_boundary_firewall_hold_response() -> str:
+    return (
+        "Context Health HOLD: Task Boundary Firewall failed closed before "
+        "the current turn was appended or sent to the provider."
+    )
+
+
+def _safe_retrieval_scope_hold_response() -> str:
+    return (
+        "Context Health HOLD: retrieval scope could not be verified safely; "
+        "no unscoped retrieval was executed."
+    )
+
+
+def _safe_task_registry_hold_response(exc: BaseException) -> str:
+    response = getattr(exc, "user_response", None)
+    if isinstance(response, str) and response:
+        return response
+    return (
+        "Context Health HOLD: durable task registry could not be resolved "
+        "safely, so Hermes did not fall back to unregistered task-id flow."
+    )
+
+
 def _compression_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
 ) -> bool:
@@ -114,6 +183,10 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Phase 2 Context Health pre-turn intake metadata when a long inbound
+    # prompt was replaced before append/persist. None in disabled/pass-through
+    # mode and for below-threshold prompts.
+    context_health_intake: Any = None
 
 
 def build_turn_context(
@@ -203,11 +276,101 @@ def build_turn_context(
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
     # Generate unique task_id if not provided to isolate VMs between tasks.
-    effective_task_id = task_id or str(uuid.uuid4())
+    # Phase 4 task registry, when explicitly enabled, must resolve the durable
+    # task id before Phase 2 intake writes any task-keyed intake packet.
+    task_registry_decision = None
+    task_registry_policy = getattr(agent, "context_health", None) or getattr(agent, "config", {}).get("context_health", {})
+    try:
+        from agent.task_registry import resolve_task_for_turn
+        _registry_decision = resolve_task_for_turn(
+            policy=task_registry_policy,
+            registry_root=getattr(agent, "_context_health_task_registry_dir", None),
+            session_id=agent.session_id,
+            incoming_task_id=task_id,
+            user_message=user_message if isinstance(user_message, str) else str(user_message or ""),
+        )
+        task_registry_decision = _registry_decision
+    except Exception as _registry_err:
+        if _task_registry_enabled_for_policy(task_registry_policy):
+            logger.warning(
+                "context health task registry resolution failed; fail-closed HOLD",
+                exc_info=True,
+            )
+            from agent.context_health_intake import PreTurnIntakeHold
+            raise PreTurnIntakeHold(
+                reason=getattr(_registry_err, "reason", "task_registry_resolution_error"),
+                user_response=_safe_task_registry_hold_response(_registry_err),
+            ) from _registry_err
+        logger.debug("context health task registry resolution skipped", exc_info=True)
+        task_registry_decision = None
+
+    if task_registry_decision is not None and getattr(task_registry_decision, "action", None) == "hold":
+        from agent.context_health_intake import PreTurnIntakeHold
+        raise PreTurnIntakeHold(
+            reason=getattr(task_registry_decision, "reason", "task_registry_hold"),
+            user_response=getattr(task_registry_decision, "hold_response", None)
+            or "Context Health HOLD: task relation is ambiguous; no provider call was made.",
+        )
+
+    resolved_task_id = getattr(task_registry_decision, "effective_task_id", None) if task_registry_decision is not None else None
+    effective_task_id = resolved_task_id or task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
     turn_id = f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     agent._current_turn_id = turn_id
     agent._current_api_request_id = ""
+    agent._context_health_task_registry_decision = task_registry_decision
+    agent._context_health_task_registry_snapshot = getattr(task_registry_decision, "registry_snapshot", None) if task_registry_decision is not None else None
+
+    # Phase 5 Task Boundary Firewall pre-append HOLD path. This is intentionally
+    # narrow: it only blocks ambiguous prior-task references before raw prompt
+    # append/persist/provider call. Provider-payload filtering remains in WCP.
+    try:
+        from agent.task_boundary_firewall import enforce_task_boundary_firewall
+        task_boundary_firewall_decision = enforce_task_boundary_firewall(
+            policy=task_registry_policy,
+            registry_snapshot=agent._context_health_task_registry_snapshot,
+            current_task_id=effective_task_id,
+            user_message=user_message if isinstance(user_message, str) else str(user_message or ""),
+            registry_decision=task_registry_decision,
+        )
+    except Exception:
+        if _task_boundary_firewall_enabled_for_policy(task_registry_policy):
+            task_boundary_firewall_decision = {
+                "action": "hold",
+                "reason": "task_boundary_firewall_failure",
+                "fail_closed": True,
+            }
+            agent._context_health_task_boundary_firewall_decision = task_boundary_firewall_decision
+            from agent.context_health_intake import PreTurnIntakeHold
+            raise PreTurnIntakeHold(
+                reason="task_boundary_firewall_failure",
+                user_response=_safe_task_boundary_firewall_hold_response(),
+            )
+        task_boundary_firewall_decision = None
+    agent._context_health_task_boundary_firewall_decision = task_boundary_firewall_decision
+    if task_boundary_firewall_decision is not None and getattr(task_boundary_firewall_decision, "action", None) == "hold":
+        from agent.context_health_intake import PreTurnIntakeHold
+        raise PreTurnIntakeHold(
+            reason=getattr(task_boundary_firewall_decision, "reason", "task_boundary_firewall_hold"),
+            user_response=getattr(task_boundary_firewall_decision, "hold_response", None)
+            or "Context Health HOLD: task relation is ambiguous; no provider call was made.",
+        )
+
+    # Phase 2 pre-turn intake hook: runs before raw prompt logging, append, or
+    # crash-resilience persistence. The adapter is fully pass-through unless
+    # context_health runtime behavior is explicitly enabled by policy.
+    from agent.context_health_intake import run_pre_turn_intake
+    context_health_intake = run_pre_turn_intake(
+        agent=agent,
+        user_message=user_message,
+        persist_user_message=persist_user_message,
+        session_id=agent.session_id,
+        task_id=effective_task_id,
+        turn_id=turn_id,
+    )
+    user_message = context_health_intake.user_message
+    persist_user_message = context_health_intake.persist_user_message
+    agent._persist_user_message_override = persist_user_message
 
     # Reset retry counters and iteration budget at the start of each turn.
     agent._invalid_tool_retries = 0
@@ -428,6 +591,41 @@ def build_turn_context(
                 if not _compressor.should_compress(_preflight_tokens):
                     break
 
+    retrieval_scope = {"enabled": False}
+    try:
+        from agent.retrieval_scope import build_retrieval_scope
+        retrieval_scope = build_retrieval_scope(
+            policy=task_registry_policy,
+            current_task_id=effective_task_id,
+            registry_snapshot=agent._context_health_task_registry_snapshot,
+            registry_decision=task_registry_decision,
+        )
+    except Exception:
+        if _retrieval_scope_enabled_for_policy(task_registry_policy):
+            retrieval_scope = {
+                "enabled": True,
+                "mode": "retrieval_scope_failure",
+                "reason": "retrieval_scope_failure",
+                "fail_closed": True,
+                "current_task_id": effective_task_id,
+                "allowed_task_ids": [],
+                "excluded_task_ids": [],
+                "allowed_session_ids": [],
+                "excluded_session_ids": [],
+            }
+            agent._context_health_retrieval_scope = retrieval_scope
+            logger.warning(
+                "context health retrieval scope build failed; fail-closed HOLD",
+                exc_info=True,
+            )
+            from agent.context_health_intake import PreTurnIntakeHold
+            raise PreTurnIntakeHold(
+                reason="retrieval_scope_failure",
+                user_response=_safe_retrieval_scope_hold_response(),
+            )
+        retrieval_scope = {"enabled": False}
+    agent._context_health_retrieval_scope = retrieval_scope
+
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
     try:
@@ -443,6 +641,7 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            retrieval_scope=retrieval_scope,
         )
         _ctx_parts: list[str] = []
         for r in _pre_results:
@@ -452,6 +651,12 @@ def build_turn_context(
                 _ctx_parts.append(r)
         if _ctx_parts:
             plugin_user_context = "\n\n".join(_ctx_parts)
+            try:
+                from agent.retrieval_scope import filter_text_by_scope
+                plugin_user_context = filter_text_by_scope(plugin_user_context, retrieval_scope)
+            except Exception:
+                if retrieval_scope.get("enabled"):
+                    plugin_user_context = ""
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
@@ -487,7 +692,26 @@ def build_turn_context(
     if agent._memory_manager:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            if retrieval_scope.get("enabled") and not getattr(agent._memory_manager, "supports_retrieval_scope", False):
+                ext_prefetch_cache = ""
+            elif retrieval_scope.get("enabled"):
+                ext_prefetch_cache = agent._memory_manager.prefetch_all(
+                    _query,
+                    session_id=agent.session_id or "",
+                    current_task_id=effective_task_id,
+                    allowed_task_ids=list(retrieval_scope.get("allowed_task_ids") or []),
+                    excluded_task_ids=list(retrieval_scope.get("excluded_task_ids") or []),
+                    allowed_session_ids=list(retrieval_scope.get("allowed_session_ids") or []),
+                    excluded_session_ids=list(retrieval_scope.get("excluded_session_ids") or []),
+                    retrieval_scope=retrieval_scope,
+                ) or ""
+                try:
+                    from agent.retrieval_scope import filter_text_by_scope
+                    ext_prefetch_cache = filter_text_by_scope(ext_prefetch_cache, retrieval_scope)
+                except Exception:
+                    ext_prefetch_cache = ""
+            else:
+                ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass
 
@@ -503,4 +727,7 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        context_health_intake=(
+            context_health_intake if context_health_intake.replaced else None
+        ),
     )

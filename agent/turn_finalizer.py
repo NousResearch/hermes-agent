@@ -27,6 +27,23 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+def _task_registry_enabled(policy):
+    if not isinstance(policy, dict):
+        return False
+    if "context_health" in policy and isinstance(policy.get("context_health"), dict):
+        policy = policy.get("context_health") or {}
+    task_boundary = policy.get("task_boundary")
+    task_registry = policy.get("task_registry")
+    return bool(
+        policy.get("enabled")
+        and policy.get("runtime_behavior_enabled")
+        and isinstance(task_boundary, dict)
+        and task_boundary.get("enabled")
+        and isinstance(task_registry, dict)
+        and task_registry.get("enabled")
+    )
+
+
 def finalize_turn(
     agent,
     *,
@@ -144,6 +161,24 @@ def finalize_turn(
     # are surfaced on the result dict via ``cleanup_errors`` rather than
     # killing the turn.
     _cleanup_errors = []
+
+    # Phase 4 task registry close-event hook. This is intentionally narrow:
+    # it only records a closed event when an already-known task-state path says
+    # completed, and it never mutates transcripts or session DB schema.
+    try:
+        _task_state_path = getattr(agent, "_context_health_active_task_state_path", None)
+        if completed and _task_state_path and _task_registry_enabled(getattr(agent, "context_health", None) or getattr(agent, "config", {}).get("context_health", {})):
+            from agent.task_registry import record_completed_workspec_state
+            record_completed_workspec_state(
+                registry_root=getattr(agent, "_context_health_task_registry_dir", None),
+                task_id=effective_task_id,
+                session_id=agent.session_id,
+                turn_id=turn_id,
+                task_state_path=_task_state_path,
+            )
+    except Exception as _registry_err:
+        _cleanup_errors.append(f"task_registry_close_event: {_registry_err}")
+        logger.error("finalize_turn: task registry close-event failed: %s", _registry_err, exc_info=True)
 
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.

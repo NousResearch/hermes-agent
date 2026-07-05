@@ -2589,7 +2589,7 @@ class TestOneShotDispatchClaim:
         order = []
         with patch("cron.scheduler.get_due_jobs", return_value=[self._oneshot()]), \
              patch("cron.scheduler.claim_dispatch", side_effect=lambda _id: order.append("claim") or True), \
-             patch("cron.scheduler.run_job", side_effect=lambda _j: order.append("run") or (True, "# out", "ok", None)), \
+             patch("cron.scheduler.run_job", side_effect=lambda _j, **_kw: order.append("run") or (True, "# out", "ok", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result"), \
              patch("cron.scheduler.mark_job_run"):
@@ -3010,7 +3010,7 @@ class TestParallelTick:
         barrier = threading.Barrier(2, timeout=5)
         call_order = []
 
-        def mock_run_job(job):
+        def mock_run_job(job, *, defer_agent_teardown=None):
             """Each job hits a barrier — both must be active simultaneously."""
             call_order.append(("start", job["id"]))
             barrier.wait()  # blocks until both threads reach here
@@ -3044,7 +3044,7 @@ class TestParallelTick:
         from gateway.session_context import get_session_env
         seen = {}
 
-        def mock_run_job(job):
+        def mock_run_job(job, *, defer_agent_teardown=None):
             origin = job.get("origin", {})
             # run_job sets ContextVars — verify each job sees its own
             from gateway.session_context import set_session_vars, clear_session_vars
@@ -3084,7 +3084,7 @@ class TestParallelTick:
         monkeypatch.setenv("HERMES_CRON_MAX_PARALLEL", "1")
         call_times = []
 
-        def mock_run_job(job):
+        def mock_run_job(job, *, defer_agent_teardown=None):
             import time
             call_times.append(("start", job["id"], time.monotonic()))
             time.sleep(0.05)

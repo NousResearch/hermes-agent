@@ -3608,7 +3608,7 @@ def run_conversation(
                             "failed": True,
                             "compression_exhausted": True,
                         }
-                    pre_compress_request_tokens = approx_request_tokens if approx_request_tokens > 0 else approx_tokens
+                    pre_compress_request_tokens = request_pressure_tokens if request_pressure_tokens > 0 else approx_tokens
                     agent._buffer_status(
                         f"🗜️ Context too large (~{pre_compress_request_tokens:,} request tokens) "
                         f"— compressing ({compression_attempts}/{max_compression_attempts})..."

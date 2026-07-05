@@ -1385,6 +1385,17 @@ class TestParseContextLimitFromError:
         msg = "prompt length 200000 exceeds maximum model length 131072"
         assert parse_context_limit_from_error(msg) == 131072
 
+    def test_vllm_maximum_model_length_of_format(self):
+        """vLLM's most common overflow wording joins the limit with 'of'
+        ("...maximum model length of 32768"), which the 'is/:/=' delimiter set
+        did not accept, so the parser returned None and the compressor never
+        learned the real window."""
+        msg = (
+            "The decoder prompt (length 40000) is longer than the maximum "
+            "model length of 32768. Make sure that max_model_len is no smaller..."
+        )
+        assert parse_context_limit_from_error(msg) == 32768
+
     @pytest.mark.parametrize("msg,expected", [
         ("max_model_len 32768", 32768),
         ("max_model_len: 32768", 32768),
@@ -1394,6 +1405,8 @@ class TestParseContextLimitFromError:
         ("maximum model length 131072", 131072),
         ("maximum model length is 131072", 131072),
         ("maximum model length: 131072", 131072),
+        ("maximum model length of 32768", 32768),
+        ("the maximum model length of 131072", 131072),
     ])
     def test_vllm_delimiter_variants(self, msg, expected):
         """vLLM emits the limit with various delimiters (space/colon/equals/

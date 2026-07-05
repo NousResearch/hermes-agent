@@ -1078,7 +1078,7 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     # Pattern: look for numbers near context-related keywords
     patterns = [
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
-        r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
+        r'maximum model length\s*(?:is\s+|of\s+)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is/of 131072", "length of 32768"
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',

@@ -5551,6 +5551,15 @@ async function startHermes() {
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
+    // Guard against orphaned backend processes: when connectionPromise was
+    // nulled (catch/reset) while the old process was still alive (e.g. model
+    // API errors causing a timeout — the child never crashed), the next
+    // startHermes() call would spawn a duplicate.  Kill any straggler first.
+    if (hermesProcess && hermesProcess.exitCode === null && !hermesProcess.killed) {
+      rememberLog('Killing orphaned backend process before spawning replacement')
+      stopBackendChild(hermesProcess)
+    }
+
     hermesProcess = spawn(
       backend.command,
       backend.args,

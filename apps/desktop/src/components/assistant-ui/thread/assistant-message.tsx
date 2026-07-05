@@ -45,6 +45,7 @@ interface MessageActionProps {
    *  streaming delta flush (the text changes ~30×/s), which profiling showed
    *  was a large slice of per-token script time on long transcripts. */
   getMessageText: () => string
+  getPromptResponseText?: () => string
   onBranchInNewChat?: (messageId: string) => void
 }
 
@@ -72,6 +73,19 @@ export const AssistantMessage: FC<{
   const completedText = useAuiState(s =>
     s.message.status?.type === 'running' ? '' : messageContentText(s.message.content)
   )
+  const previousUserText = useAuiState(s => {
+    const index = s.thread.messages.findIndex(message => message.id === s.message.id)
+
+    for (let i = index - 1; i >= 0; i--) {
+      const message = s.thread.messages[i]
+
+      if (message?.role === 'user') {
+        return messageContentText(message.content)
+      }
+    }
+
+    return ''
+  })
 
   const previewTargets = useMemo(() => {
     if (!completedText || !/(https?:\/\/|file:\/\/)/i.test(completedText)) {
@@ -82,6 +96,16 @@ export const AssistantMessage: FC<{
   }, [completedText])
 
   const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
+  const getPromptResponseText = useCallback(() => {
+    const prompt = previousUserText.trim()
+    const response = getMessageText().trim()
+
+    if (!prompt) {
+      return response
+    }
+
+    return `User prompt:\n${prompt}\n\nAssistant response:\n${response}`
+  }, [getMessageText, previousUserText])
 
   const enterRef = useEnterAnimation(isRunning, `assistant-message:${messageId}`)
 
@@ -131,13 +155,23 @@ export const AssistantMessage: FC<{
         </MessagePrimitive.Error>
       </div>
       {hasVisibleText && (
-        <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
+        <AssistantFooter
+          getMessageText={getMessageText}
+          getPromptResponseText={getPromptResponseText}
+          messageId={messageId}
+          onBranchInNewChat={onBranchInNewChat}
+        />
       )}
     </MessagePrimitive.Root>
   )
 }
 
-const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText, onBranchInNewChat }) => {
+const AssistantActionBar: FC<MessageActionProps> = ({
+  messageId,
+  getMessageText,
+  getPromptResponseText,
+  onBranchInNewChat
+}) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const [menuOpen, setMenuOpen] = useState(false)
@@ -172,6 +206,9 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" onCloseAutoFocus={e => e.preventDefault()} sideOffset={6}>
             <MessageTimestamp />
+            {getPromptResponseText && (
+              <CopyButton appearance="menu-item" label={copy.copyPromptAndResponse} text={getPromptResponseText} />
+            )}
             <DropdownMenuItem onSelect={() => onBranchInNewChat?.(messageId)}>
               <GitBranchIcon />
               {copy.branchNewChat}

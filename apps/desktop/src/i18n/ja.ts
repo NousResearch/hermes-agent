@@ -2205,6 +2205,7 @@ export const ja = defineLocale({
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,
       copy: 'コピー',
+      copyPromptAndResponse: 'プロンプトと応答をコピー',
       refresh: '更新',
       moreActions: 'その他のアクション',
       branchNewChat: '新しいチャットでブランチ',

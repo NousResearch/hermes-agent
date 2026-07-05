@@ -1861,6 +1861,7 @@ export interface Translations {
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string
+      copyPromptAndResponse: string
       refresh: string
       moreActions: string
       branchNewChat: string

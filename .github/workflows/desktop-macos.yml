@@ -84,17 +84,35 @@ jobs:
           chmod 600 "$RUNNER_TEMP/AuthKey.p8"
           head -c 27 "$RUNNER_TEMP/AuthKey.p8" | grep -q "BEGIN PRIVATE KEY" || head -2 "$RUNNER_TEMP/AuthKey.p8" | grep -q "BEGIN PRIVATE KEY" || { echo "APPLE_API_KEY secret does not look like a .p8"; exit 1; }
 
-      # builder = write-build-stamp + stage-install-script + stage-native-deps
-      # + tsc + vite, then electron-builder. afterSign (scripts/notarize.cjs)
-      # submits to notarytool with the API-key triple and staples the ticket;
-      # without the APPLE_* secrets it logs and skips (build stays signed).
+      # `npm run build` = assert-icon/root-install + write-build-stamp +
+      # stage-install-script + stage-native-deps + tsc + vite build — the
+      # renderer/dist, install-stamp.json and native-deps that electron-builder
+      # packs. `npm run builder` alone does NOT run it: on a clean runner that
+      # shipped an asar with NO dist/index.html (white screen on launch, caught
+      # 2026-07-05). afterSign (scripts/notarize.cjs) submits to notarytool and
+      # staples; without the APPLE_* secrets it logs and skips (stays signed).
       - name: Build, sign and notarize (${{ matrix.arch }})
         working-directory: apps/desktop
         env:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npm run builder -- --mac dmg zip --${{ matrix.arch }}
+        run: npm run build && npm run builder -- --mac dmg zip --${{ matrix.arch }}
+
+      # Packaged-content gate: electron-builder happily packs an asar missing
+      # the renderer (it does not validate inputs), which ships as a white
+      # screen. Fail loud if dist/index.html or install-stamp.json is absent.
+      - name: Assert packaged asar completeness
+        working-directory: apps/desktop
+        run: |
+          set -euo pipefail
+          APP="$(find release/mac* -maxdepth 1 -name '*.app' | head -1)"
+          ASAR="$APP/Contents/Resources/app.asar"
+          npx --yes @electron/asar list "$ASAR" > /tmp/asar-list.txt
+          for REQ in "/dist/index.html" "/install-stamp.json"; do
+            grep -qx "$REQ" /tmp/asar-list.txt || { echo "::error::app.asar missing $REQ — refusing to ship a white-screen build"; exit 1; }
+          done
+          echo "asar completeness OK ($(wc -l < /tmp/asar-list.txt) entries)"
 
       - name: Gatekeeper assessment (fails if not notarized)
         working-directory: apps/desktop

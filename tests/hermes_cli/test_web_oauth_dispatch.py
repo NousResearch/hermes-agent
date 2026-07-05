@@ -503,7 +503,7 @@ def test_copilot_acp_now_in_accounts():
 
 
 def test_oauth_catalog_marks_external_providers_not_disconnectable():
-    """External CLI credentials are visible in Accounts but cannot be removed by Hermes."""
+    """External CLI credentials visible in Accounts cannot be removed by Hermes."""
     resp = client.get("/api/providers/oauth", headers=HEADERS)
     assert resp.status_code == 200, resp.text
     providers = {p["id"]: p for p in resp.json()["providers"]}
@@ -515,14 +515,13 @@ def test_oauth_catalog_marks_external_providers_not_disconnectable():
     assert "provider's CLI" in providers["qwen-oauth"]["disconnect_hint"]
     assert providers["qwen-oauth"]["disconnect_command"] is None
 
-    # Claude Code: still not API-disconnectable, but we hand the GUI a runnable
-    # command (clears the keychain entry / credentials file) so it can offer a
-    # one-click "run in terminal" disconnect.
-    assert providers["claude-code"]["flow"] == "external"
-    assert providers["claude-code"]["disconnectable"] is False
-    assert providers["claude-code"]["disconnect_hint"]
-    cmd = providers["claude-code"]["disconnect_command"]
-    assert cmd and ".claude/.credentials.json" in cmd
+
+def test_accounts_hides_claude_code_external_credentials():
+    """Claude Code's ~/.claude credentials are owned externally, not a Hermes account."""
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+    assert "claude-code" not in providers
 
 
 def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):

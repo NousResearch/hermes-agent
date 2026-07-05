@@ -6419,9 +6419,9 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
        env during ``load_hermes_dotenv()``, so the same check covers them)
 
     Claude Code's ``~/.claude/.credentials.json`` is deliberately NOT read
-    here — it has its own dedicated catalog entry (``claude-code`` →
-    ``_claude_code_only_status``). Reporting it under the API-key entry
-    double-counts the token and shadows a real ANTHROPIC_API_KEY.
+    here. It is owned by Claude Code, not Hermes, and should not be shown as
+    a dashboard-managed OAuth account. Reporting it here would double-count
+    the token and shadow a real ANTHROPIC_API_KEY.
     """
     try:
         from agent.anthropic_adapter import (
@@ -6481,35 +6481,12 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     return {"logged_in": False, "source": None}
 
 
-def _claude_code_only_status() -> Dict[str, Any]:
-    """Surface Claude Code CLI credentials as their own provider entry.
-
-    Independent of the Anthropic entry above so users can see whether their
-    Claude Code subscription tokens are actively flowing into Hermes even
-    when they also have a separate Hermes-managed PKCE login.
-    """
-    try:
-        from agent.anthropic_adapter import read_claude_code_credentials
-        creds = read_claude_code_credentials()
-    except Exception:
-        creds = None
-    if creds and creds.get("accessToken"):
-        return {
-            "logged_in": True,
-            "source": "claude_code_cli",
-            "source_label": "~/.claude/.credentials.json",
-            "token_preview": _truncate_token(creds.get("accessToken")),
-            "expires_at": creds.get("expiresAt"),
-            "has_refresh_token": bool(creds.get("refreshToken")),
-        }
-    return {"logged_in": False, "source": None}
-
 
 def _copilot_acp_status() -> Dict[str, Any]:
     """Status for copilot-acp — credentials are owned by the Copilot CLI.
 
     There is no cheap programmatic credential probe for the ACP subprocess, so
-    this is a read-only "managed by the Copilot CLI" card (like claude-code):
+    this is a read-only "managed by the Copilot CLI" card:
     Hermes never claims a login state it can't verify.
     """
     return {
@@ -6528,9 +6505,10 @@ def _copilot_acp_status() -> Dict[str, Any]:
 # display order. They are the OVERRIDE BASE for ``_build_oauth_catalog()``,
 # which unions them with every accounts-tab provider in ``provider_catalog()``
 # so newly-added OAuth/external providers appear automatically (no hand edit).
-# This tuple also still includes two entries that are NOT catalog providers but
-# must show on the Accounts tab: the api-key Anthropic PKCE card and the
-# synthetic ``claude-code`` subscription row.
+# This tuple also still includes the api-key Anthropic PKCE card, which is not
+# an accounts-tab provider but must show on the Accounts tab. Claude Code's
+# external ``~/.claude/.credentials.json`` token is intentionally hidden here
+# because it is managed by Claude Code, not Hermes.
 # ``flow`` describes the OAuth shape so the modal can pick the right UI:
 # ``pkce`` = open URL + paste callback code, ``device_code`` = show code +
 # verification URL + poll, ``external`` = read-only (delegated to a third-party
@@ -6592,9 +6570,9 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "docs_url": "https://docs.github.com/en/copilot",
         "status_fn": _copilot_acp_status,
     },
-    # ── Anthropic / Claude entries sit at the bottom: the API-key path
-    # first, then the subscription OAuth path (which only works with extra
-    # usage credits on top of a Claude Max plan — see disclaimer in name).
+    # ── Anthropic sits at the bottom. This is the Hermes-managed API-key/PKCE
+    # path only; the external Claude Code credentials file is intentionally not
+    # displayed as a Hermes Accounts card.
     {
         "id": "anthropic",
         "name": "Anthropic API Key",
@@ -6602,14 +6580,6 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "hermes auth add anthropic",
         "docs_url": "https://docs.claude.com/en/api/getting-started",
         "status_fn": _anthropic_oauth_status,
-    },
-    {
-        "id": "claude-code",
-        "name": "Anthropic OAuth: Required Extra Usage Credits to Use Subscription",
-        "flow": "external",
-        "cli_command": "claude setup-token",
-        "docs_url": "https://docs.claude.com/en/docs/claude-code",
-        "status_fn": _claude_code_only_status,
     },
 )
 
@@ -6712,24 +6682,11 @@ def _oauth_provider_disconnect_command(provider: Dict[str, Any]) -> Optional[str
     """Shell command that clears an external provider's credentials.
 
     External providers store their credentials outside Hermes, so the disconnect
-    API deliberately refuses them (we never delete files another CLI owns on the
-    user's behalf via a silent API call). For the ones we know how to clear we
-    instead hand the GUI a command it can *run in the embedded terminal* — the
-    user sees exactly what executes, and Hermes then stops resolving the token.
-
-    Claude Code has no scriptable logout (only the interactive ``/logout``), so
-    we remove the credential the same way logout does: the macOS Keychain entry
-    (``Claude Code-credentials``) and/or the ``~/.claude/.credentials.json``
-    file — the two sources ``read_claude_code_credentials()`` consults. Returns
-    None for providers we can't safely clear (the GUI shows a manual hint).
+    API deliberately refuses them. For providers we can safely clear through a
+    transparent command, return it here; otherwise the GUI shows a manual hint.
     """
     if provider.get("flow") != "external":
         return None
-    if provider.get("id") == "claude-code":
-        rm_file = "rm -f ~/.claude/.credentials.json"
-        if sys.platform == "darwin":
-            return f'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; {rm_file}'
-        return rm_file
     return None
 
 
@@ -6752,8 +6709,7 @@ def _build_oauth_catalog() -> list[Dict[str, Any]]:
     MEMBERSHIP is the union of:
       1. ``_OAUTH_PROVIDER_CATALOG`` — the explicit, hand-tuned cards that carry
          bespoke flow / status_fn / cli_command (including the api-key Anthropic
-         PKCE card and the synthetic claude-code subscription row, which are not
-         catalog providers), and
+         PKCE card, which is not a catalog provider), and
       2. every accounts-tab provider in the unified ``provider_catalog()`` (the
          ``hermes model`` universe) — so any OAuth/external provider added as a
          plugin appears automatically, with sensible defaults, even if no
@@ -6874,8 +6830,7 @@ async def disconnect_oauth_provider(
             )
 
         # Anthropic clears only the Hermes-managed PKCE file and auth-store entry.
-        # The separate claude-code catalog row is external/read-only and rejected
-        # above so we never pretend to remove ~/.claude/* credentials owned by the CLI.
+        # We never touch ~/.claude/* credentials owned by Claude Code.
         if provider_id == "anthropic":
             cleared = False
             try:

@@ -19737,6 +19737,37 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
 
 
+# Upper bound for cooperatively draining the cron ticker on shutdown. The cron
+# thread delivers via ``safe_schedule_threadsafe`` and blocks on
+# ``future.result(timeout=60)`` (see cron/scheduler.py::_deliver_result), so a
+# single in-flight delivery unblocks within ~60s. The extra margin covers the
+# hop back through run_one_job's bookkeeping.
+_CRON_SHUTDOWN_DRAIN_TIMEOUT = 65.0
+
+
+async def _await_thread_exit(
+    thread: Optional[threading.Thread], timeout: float, poll: float = 0.1
+) -> bool:
+    """Wait for a daemon thread to exit WITHOUT blocking the event loop.
+
+    A synchronous ``thread.join()`` here would freeze the event loop — fatal
+    for the cron ticker, whose in-flight delivery is a coroutine scheduled onto
+    *this* loop via ``safe_schedule_threadsafe``. Blocking the loop deadlocks
+    that delivery (the loop can never run it), so ``join(timeout=5)`` always
+    times out and the message is silently dropped on restart (#58818).
+
+    Polling ``is_alive()`` with ``await asyncio.sleep`` keeps the loop running
+    so the pending delivery completes, then the ticker sees ``stop_event`` and
+    exits. Returns True if the thread exited within ``timeout``.
+    """
+    if thread is None:
+        return True
+    deadline = asyncio.get_running_loop().time() + max(0.0, timeout)
+    while thread.is_alive() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(poll)
+    return not thread.is_alive()
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -20231,14 +20262,26 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
     
-    # Stop cron scheduler + housekeeping cleanly
+    # Stop cron scheduler + housekeeping cleanly.
+    #
+    # These MUST be awaited cooperatively, not join()ed. A cron delivery in
+    # flight when the gateway restarts is a coroutine scheduled onto THIS event
+    # loop (safe_schedule_threadsafe); the ticker thread is blocked on its
+    # future.result(). A synchronous cron_thread.join() would block the loop,
+    # so that delivery could never run — it timed out and the message was
+    # silently dropped (#58818). Awaiting keeps the loop alive so the in-flight
+    # delivery finishes before we tear down.
     cron_stop.set()
     try:
         cron_provider.stop()
     except Exception as e:
         logger.debug("Cron provider stop() error: %s", e)
-    cron_thread.join(timeout=5)
-    housekeeping_thread.join(timeout=5)
+    if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
+        logger.warning(
+            "Cron ticker did not exit within %.0fs of shutdown — an in-flight "
+            "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT,
+        )
+    await _await_thread_exit(housekeeping_thread, timeout=5)
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()

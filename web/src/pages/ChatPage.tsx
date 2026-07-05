@@ -35,6 +35,10 @@ import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import {
+  DASHBOARD_CHAT_TERMINAL_FONT_FAMILY,
+  registerBengaliCharacterJoiner,
+} from "@/lib/bengali-shaping";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
@@ -481,8 +485,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const term = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
-      fontFamily:
-        "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
+      fontFamily: DASHBOARD_CHAT_TERMINAL_FONT_FAMILY,
       fontSize: terminalFontSizeForWidth(tierW0),
       lineHeight: terminalLineHeightForWidth(tierW0),
       letterSpacing: 0,
@@ -770,11 +773,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
     // hosts.  Wide layouts still get WebGL for crisp box-drawing.
     const useWebgl = terminalTierWidthPx(host) >= 768;
+    let deregisterBengaliJoiner: (() => void) | null = null;
     if (useWebgl) {
       try {
         const webgl = new WebglAddon();
         webgl.onContextLoss(() => webgl.dispose());
         term.loadAddon(webgl);
+        deregisterBengaliJoiner = registerBengaliCharacterJoiner(term);
       } catch (err) {
         console.warn(
           "[hermes-chat] WebGL renderer unavailable; falling back to default",
@@ -1171,6 +1176,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
+      deregisterBengaliJoiner?.();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

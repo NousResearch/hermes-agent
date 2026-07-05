@@ -1,0 +1,23 @@
+{
+  "name": "hermes-office-plugin",
+  "version": "0.1.0",
+  "description": "3D multi-agent workspace dashboard plugin for Hermes Agent",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "esbuild src/index.tsx --bundle --format=iife --outfile=../dashboard/dist/index.js --loader:.tsx=tsx --jsx=automatic --jsx-import-source=react --watch"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.169.0",
+    "@react-three/fiber": "^9.0.0",
+    "@react-three/drei": "^10.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "@types/react": "^19.0.0",
+    "@types/three": "^0.169.0",
+    "typescript": "^5.6.0"
+  }
+}

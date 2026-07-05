@@ -1,0 +1,14 @@
+{
+  "name": "office",
+  "label": "Office",
+  "description": "Live multi-agent workspace — see all profiles, sessions, kanban workers, and cron jobs at a glance",
+  "icon": "Building2",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/office",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": null,
+  "api": "plugin_api.py"
+}

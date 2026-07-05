@@ -6,7 +6,8 @@ import {
   type DragStartEvent,
   KeyboardSensor,
   type Modifier,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useSensor,
   useSensors
 } from '@dnd-kit/core'
@@ -157,7 +158,8 @@ export function ProfileRail() {
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 

@@ -435,7 +435,19 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     """
     try:
         from hermes_cli.config import cfg_get, load_config
-        user_headers = cfg_get(load_config(), "model", "default_headers")
+        _cfg = load_config()
+        user_headers = cfg_get(_cfg, "model", "default_headers")
+        # ``model.extra_headers`` is an accepted alias (matches the
+        # per-provider ``extra_headers`` key on providers/custom_providers
+        # entries). When both are set they merge, with ``extra_headers``
+        # winning. SECURITY: values may carry credentials — never log them.
+        alias_headers = cfg_get(_cfg, "model", "extra_headers")
+        if isinstance(alias_headers, dict) and alias_headers:
+            merged_user: dict = {}
+            if isinstance(user_headers, dict):
+                merged_user.update(user_headers)
+            merged_user.update(alias_headers)
+            user_headers = merged_user
     except Exception:
         return headers
     if not isinstance(user_headers, dict) or not user_headers:
@@ -866,6 +878,32 @@ class _CodexCompletionsAdapter:
             if converted:
                 resp_kwargs["tools"] = converted
 
+        # Stable prompt-cache routing for the Codex/Responses aux path, mirroring
+        # the main transport (agent/transports/codex.py::build_kwargs, which sets
+        # prompt_cache_key = _content_cache_key(instructions, tools)). Without
+        # this, MoA acting-aggregator and other auxiliary Responses calls stay
+        # cache-cold while the main Responses transport is warm (issue #53735).
+        # The key is content-addressed from the static prefix (instructions +
+        # tool schemas) so it stays warm across turns/fires. Guard the top-level
+        # field the same way the main transport does: xAI Responses takes the
+        # key in extra_body (not top-level) and GitHub/Copilot Responses opts
+        # out of cache-key routing entirely — for those hosts, skip it here.
+        try:
+            from agent.transports.codex import _content_cache_key
+            from utils import base_url_host_matches
+
+            _host_src = str(getattr(self._client, "base_url", "") or "")
+            _is_xai = base_url_host_matches(_host_src, "x.ai") or base_url_host_matches(_host_src, "api.x.ai")
+            _is_github = base_url_host_matches(_host_src, "githubcopilot.com")
+            if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
+                _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"))
+                if _cache_key:
+                    resp_kwargs["prompt_cache_key"] = _cache_key
+        except Exception:
+            logger.debug(
+                "Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True
+            )
+
         # Stream and collect the response
         text_parts: List[str] = []
         tool_calls_raw: List[Any] = []
@@ -1114,7 +1152,7 @@ class _AnthropicCompletionsAdapter:
         if _skip_mt:
             max_tokens = None
         else:
-            max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or 2000
+            max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
         temperature = kwargs.get("temperature")
 
         normalized_tool_choice = None
@@ -2304,11 +2342,19 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
         return None, None
 
     pool_present, entry = _select_pool_entry("anthropic")
-    if pool_present:
-        if entry is None:
-            return None, None
+    if pool_present and entry is not None:
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
+        # Pool absent, OR pool present but no usable entry (expired token +
+        # stale refresh_token, all entries exhausted, etc). Fall through to the
+        # legacy resolver instead of hard-failing: a temporarily dead pool
+        # entry must not wedge auxiliary tasks when a valid standalone
+        # credential (ANTHROPIC_TOKEN, credentials file, API key) exists. This
+        # matches the openrouter and codex paths, which already fall back to
+        # their env/auth-store credential on (True, None). Without this, the
+        # goal judge and every other Anthropic-routed side channel died with
+        # "no auxiliary client configured" while the main session stayed
+        # healthy (it resolves the env token directly).
         entry = None
         token = explicit_api_key or resolve_anthropic_token()
     if not token:
@@ -2667,7 +2713,7 @@ def _is_connection_error(exc: Exception) -> bool:
 
 
 def _is_transient_transport_error(exc: Exception) -> bool:
-    """Return True for a one-off transport blip worth retrying ONCE on the
+    """Return True for a one-off transport blip worth retrying ON the
     same provider before any provider/model fallback.
 
     Covers connection/streaming-close errors (via the canonical
@@ -2683,6 +2729,34 @@ def _is_transient_transport_error(exc: Exception) -> bool:
         getattr(exc, "response", None), "status_code", None
     )
     return isinstance(status, int) and (status == 408 or 500 <= status < 600)
+
+
+_DEFAULT_TRANSIENT_RETRIES = 2
+# Base for exponential backoff between transient retries (seconds). Overridable
+# so tests can zero it out and not sleep real wall-clock time.
+_TRANSIENT_RETRY_BACKOFF_BASE = 1.0
+
+
+def _transient_retry_count() -> int:
+    """Number of same-provider retries for a transient transport blip.
+
+    Read from ``auxiliary.transient_retries`` in config.yaml (default 2 →
+    3 total attempts). Clamped to [0, 6] to bound worst-case wall time. A
+    connection blip to a pinned auxiliary target (e.g. a MoA reference
+    advisor) has no meaningful provider fallback, so a couple of retries with
+    backoff is the difference between recovering and silently losing the call.
+    Best-effort: any config-read failure falls back to the default.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        val = cfg_get(load_config(), "auxiliary", "transient_retries")
+        if val is None:
+            return _DEFAULT_TRANSIENT_RETRIES
+        n = int(val)
+        return max(0, min(n, 6))
+    except Exception:
+        return _DEFAULT_TRANSIENT_RETRIES
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -4091,7 +4165,7 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    # ── xAI Grok OAuth (loopback PKCE → Responses API) ───────────────
+    # ── xAI Grok OAuth (device code → Responses API) ───────────────
     # Without this branch, an xai-oauth main provider falls through to the
     # generic ``oauth_external`` arm below and returns ``(None, None)``,
     # silently re-routing every auxiliary task (compression, web extract,
@@ -4336,7 +4410,11 @@ def resolve_provider_client(
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig is None:
-        logger.warning("resolve_provider_client: unknown provider %r", provider)
+        # Demoted from logger.warning to debug; dedup keyed by provider name
+        # so the first occurrence surfaces but repeated retries stay silent.
+        if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
+            _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
+            logger.debug("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
     if pconfig.auth_type == "api_key":
@@ -4478,9 +4556,47 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
-        logger.warning("resolve_provider_client: external-process provider %s not "
-                       "directly supported", provider)
+        if provider not in _LOGGED_UNSUPPORTED_EXTPROC_KEYS:
+            _LOGGED_UNSUPPORTED_EXTPROC_KEYS.add(provider)
+            logger.debug("resolve_provider_client: external-process provider %s not "
+                         "directly supported", provider)
         return None, None
+
+    elif pconfig.auth_type == "vertex":
+        # Google Vertex AI — Gemini via the OpenAI-compatible endpoint with an
+        # OAuth2 bearer token (NOT a static key). We build a standard OpenAI
+        # client pointed at the runtime-computed Vertex base_url with a fresh
+        # token; no custom SDK or message translation needed.
+        try:
+            from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+        except ImportError:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "google-auth not installed")
+            return None, None
+
+        if not has_vertex_credentials():
+            logger.debug("resolve_provider_client: vertex requested but "
+                         "no GCP credentials found")
+            return None, None
+
+        token, base_url = get_vertex_config()
+        if not token or not base_url:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "could not mint token / resolve project")
+            return None, None
+
+        default_model = "google/gemini-3-flash-preview"
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=token, base_url=base_url)
+        except Exception as exc:
+            logger.warning("resolve_provider_client: cannot create Vertex "
+                           "client: %s", exc)
+            return None, None
+        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
 
     elif pconfig.auth_type == "aws_sdk":
         # AWS SDK providers (Bedrock) — use the Anthropic Bedrock client via
@@ -4524,12 +4640,20 @@ def resolve_provider_client(
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
         # Other OAuth providers not directly supported
-        logger.warning("resolve_provider_client: OAuth provider %s not "
-                       "directly supported, try 'auto'", provider)
+        if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
+            _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)
+            logger.debug("resolve_provider_client: OAuth provider %s not "
+                         "directly supported, try 'auto'", provider)
         return None, None
 
-    logger.warning("resolve_provider_client: unhandled auth_type %s for %s",
-                   pconfig.auth_type, provider)
+    # Demoted from logger.warning to debug; dedup keyed on (auth_type,
+    # provider) so the first occurrence surfaces (real schema-drift bug) but
+    # per-call retries stay silent.
+    _auth_dedup_key = (pconfig.auth_type, provider)
+    if _auth_dedup_key not in _LOGGED_UNHANDLED_AUTHTYPE_KEYS:
+        _LOGGED_UNHANDLED_AUTHTYPE_KEYS.add(_auth_dedup_key)
+        logger.debug("resolve_provider_client: unhandled auth_type %s for %s",
+                     pconfig.auth_type, provider)
     return None, None
 
 
@@ -4774,9 +4898,35 @@ def resolve_vision_provider_client(
                     main_provider,
                 )
             else:
+                # Custom endpoints (``custom`` / ``custom:<name>``) carry no
+                # built-in base_url/api_key — resolve_provider_client("custom")
+                # would return None ("no endpoint credentials found") and the
+                # whole chain would fall through to the aggregators, breaking
+                # vision for every user on a custom provider that has no
+                # separate ``auxiliary.vision`` block.  Recover the live main
+                # endpoint that ``set_runtime_main()`` recorded for this turn so
+                # Step 1 can build a working client.
+                rpc_base_url = None
+                rpc_api_key = None
+                rpc_api_mode = resolved_api_mode
+                if main_provider == "custom" or main_provider.startswith("custom:"):
+                    if _RUNTIME_MAIN_BASE_URL:
+                        rpc_base_url = _RUNTIME_MAIN_BASE_URL
+                        rpc_api_key = _RUNTIME_MAIN_API_KEY or None
+                        rpc_api_mode = resolved_api_mode or _RUNTIME_MAIN_API_MODE or None
+                    else:
+                        # No live runtime recorded (non-gateway caller): fall
+                        # back to resolving the configured custom endpoint.
+                        custom_base, custom_key, custom_mode = _resolve_custom_runtime()
+                        if custom_base:
+                            rpc_base_url = custom_base
+                            rpc_api_key = custom_key
+                            rpc_api_mode = resolved_api_mode or custom_mode or None
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
-                    api_mode=resolved_api_mode,
+                    api_mode=rpc_api_mode,
+                    explicit_base_url=rpc_base_url,
+                    explicit_api_key=rpc_api_key,
                     is_vision=True)
                 if rpc_client is not None:
                     logger.info(
@@ -4910,6 +5060,7 @@ def _client_cache_key(
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
     task: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
@@ -4918,7 +5069,17 @@ def _client_cache_key(
     # old cache shape because the explicit provider/model tuple is sufficient.
     task_key = (task or "") if provider == "auto" else ""
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
-    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, task_key, pool_hint)
+    # The model MUST participate in the key. Two concurrent auxiliary calls to
+    # the SAME provider/base_url/key but DIFFERENT models (e.g. a MoA reference
+    # fan-out running opus + gpt-5.5 in parallel threads) would otherwise share
+    # one cache entry. On a cache MISS both build a client for the same key; the
+    # second's _store_cached_client sees the first as the "old" entry and CLOSES
+    # it — while the first call is still mid-request on it — yielding a spurious
+    # APIConnectionError that fails the sibling advisor (root cause of the run2
+    # double-advisor "Connection error" collapse). Keying on model gives each
+    # model its own client, so concurrent fan-out calls never cross-close.
+    model_key = model or ""
+    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key)
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
@@ -4974,6 +5135,7 @@ def _refresh_nous_auxiliary_client(
         api_mode=api_mode,
         main_runtime=main_runtime,
         is_vision=is_vision,
+        model=final_model,
     )
     _store_cached_client(cache_key, client, final_model, bound_loop=current_loop)
     return client, final_model
@@ -5150,6 +5312,7 @@ def _get_cached_client(
         main_runtime=main_runtime,
         is_vision=is_vision,
         task=task,
+        model=model,
     )
     with _client_cache_lock:
         if cache_key in _client_cache:
@@ -5723,7 +5886,7 @@ def call_llm(
     api_key: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
-    temperature: float = None,
+    temperature: Optional[float] = None,
     max_tokens: int = None,
     tools: list = None,
     timeout: float = None,
@@ -5879,15 +6042,22 @@ def call_llm(
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
     # then payment fallback.
     try:
-        # Retry ONCE on the same provider for a one-off transient transport
-        # blip (streaming-close / incomplete chunked read / 5xx / 408) before
-        # the except-chain below escalates to provider/model fallback. A
-        # single dropped connection shouldn't abandon an otherwise-healthy
-        # provider. A second failure (or any non-transient error) falls
-        # through to ``first_err`` and the existing fallback handling
-        # unchanged. This is the unified home for the transient retry that
-        # every auxiliary task (compression, memory flush, title-gen,
-        # session-search, vision) shares. (PR #16587)
+        # Retry on the same provider for a transient transport blip
+        # (connection reset / streaming-close / incomplete chunked read / 5xx /
+        # 408) before the except-chain below escalates to provider/model
+        # fallback. A dropped connection shouldn't abandon an otherwise-healthy
+        # provider — this especially matters for pinned auxiliary calls like MoA
+        # reference advisors, where "fallback to another provider" is not a
+        # meaningful recovery (the advisor is a specific model), so a transient
+        # blip that isn't retried simply loses that advisor for the turn (root
+        # of the run2 double-advisor "Connection error" collapse — a genuine
+        # upstream blip hitting both parallel advisors at once).
+        #
+        # Attempts are bounded and use exponential backoff. Count is configurable
+        # via auxiliary.transient_retries (default 2 retries → 3 total attempts);
+        # a second/third failure or any non-transient error falls through to
+        # ``first_err`` and the existing fallback handling unchanged. Unified home
+        # for the transient retry every auxiliary task shares. (PR #16587)
         try:
             return _validate_llm_response(
                 client.chat.completions.create(**kwargs), task)
@@ -6334,7 +6504,7 @@ async def async_call_llm(
     api_key: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
-    temperature: float = None,
+    temperature: Optional[float] = None,
     max_tokens: int = None,
     tools: list = None,
     timeout: float = None,

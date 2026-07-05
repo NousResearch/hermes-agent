@@ -674,6 +674,20 @@ def _run_review_in_thread(
             review_agent._user_profile_enabled = agent._user_profile_enabled
             review_agent._memory_nudge_interval = 0
             review_agent._skill_nudge_interval = 0
+            # PERSISTENCE ISOLATION (the curator-takeover root cause): the fork
+            # shares the parent's session_id (set below, for prompt-cache
+            # warmth), so without this it would write its harness turn ("Review
+            # the conversation above and update the skill library…") + its own
+            # response straight into the user's REAL session in state.db. On the
+            # user's next live turn the agent re-reads that injected user message
+            # as a standing instruction and "becomes" the curator, refusing the
+            # actual task. _persist_disabled hard-stops every DB write/lazy-open
+            # path (_flush_messages_to_session_db, _ensure_db_session,
+            # _get_session_db_for_recall); the review writes only to the skill
+            # and memory stores via its tools, which is all it needs.
+            review_agent._persist_disabled = True
+            review_agent._session_db = None
+            review_agent._session_json_enabled = False
             # Suppress all status/warning emits from the fork so the
             # user only sees the final successful-action summary.
             # Without this, mid-review "Iteration budget exhausted",

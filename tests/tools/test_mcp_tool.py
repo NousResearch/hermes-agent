@@ -47,6 +47,46 @@ def _make_mock_server(name, session=None, tools=None):
     return server
 
 
+class TestFilterMCPChildren:
+    def test_filters_gateway_children_by_argv_marker(self, monkeypatch):
+        """Non-MCP children start with an interpreter/binary, not the marker."""
+        import sys
+
+        import tools.mcp_tool as mcp_tool
+
+        cmdlines = {
+            101: [
+                "/usr/bin/python3",
+                "-m",
+                "tui_gateway.slash_worker",
+                "--session-key",
+                "abc",
+            ],
+            102: [
+                "/usr/bin/java",
+                "-jar",
+                "/opt/jdtls/plugins/org.eclipse.equinox.launcher_1.7.0.jar",
+            ],
+            103: ["/usr/bin/node", "server.js"],
+        }
+
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def cmdline(self):
+                return cmdlines[self.pid]
+
+        fake_psutil = SimpleNamespace(
+            Process=FakeProcess,
+            NoSuchProcess=ProcessLookupError,
+            AccessDenied=PermissionError,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        assert mcp_tool._filter_mcp_children({101, 102, 103}) == {103}
+
+
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------

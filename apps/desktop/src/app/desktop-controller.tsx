@@ -76,7 +76,7 @@ import {
   setRememberedSessionId
 } from '../store/session'
 import { onSessionsChanged } from '../store/session-sync'
-import { clearSessionTodos, setSessionTodos, todoListActive } from '../store/todos'
+import { clearSessionTodos, setSessionTodos, todosForHydration } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
 
@@ -164,6 +164,7 @@ export function DesktopController() {
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const messagingSessions = useStore($messagingSessions)
   const terminalTakeover = useStore($terminalTakeover)
   const reviewOpen = useStore($reviewOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
@@ -191,6 +192,7 @@ export function DesktopController() {
     currentView,
     openAgents,
     openCommandCenterSection,
+    openStarmap,
     profilesOpen,
     settingsOpen,
     starmapOpen,
@@ -483,13 +485,17 @@ export function DesktopController() {
             storedSessionId
           )
 
-          // Seed the status stack's todo group from history — but only while
-          // the plan is still in flight, so reopening an old chat doesn't pin
-          // its finished todo list above the composer forever.
-          const todos = latestSessionTodos(messages)
+          // Rehydration runs *after* a turn completes, so an "active" stored
+          // list (last `todo` still pending/in_progress) means the turn ended
+          // without a final update — it's stale, not in-flight. Re-seeding it
+          // would re-pin "Tasks N/M" above the composer and undo the turn-end
+          // clear (and survive restarts, since it's read back from history).
+          // todosForHydration restores only a *finished* list (its short linger
+          // shows the last checkmark); anything still active is dropped.
+          const restored = todosForHydration(latestSessionTodos(messages))
 
-          if (todos && todoListActive(todos)) {
-            setSessionTodos(runtimeSessionId, todos)
+          if (restored) {
+            setSessionTodos(runtimeSessionId, restored)
           } else {
             clearSessionTodos(runtimeSessionId)
           }
@@ -506,6 +512,42 @@ export function DesktopController() {
     },
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
+
+  const refreshActiveMessagingTranscript = useCallback(async () => {
+    const storedSessionId = selectedStoredSessionIdRef.current
+    const runtimeSessionId = activeSessionIdRef.current
+
+    if (!storedSessionId || !runtimeSessionId || busyRef.current) {
+      return
+    }
+
+    const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+
+    if (!stored || !isMessagingSource(stored.source)) {
+      return
+    }
+
+    try {
+      const latest = await getSessionMessages(storedSessionId, stored.profile)
+      const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
+      const sig = sessionMessagesSignature(latest.messages)
+
+      if (messagingTranscriptSignatureRef.current.get(signatureKey) === sig) {
+        return
+      }
+
+      messagingTranscriptSignatureRef.current.set(signatureKey, sig)
+      const messages = toChatMessages(latest.messages)
+
+      updateSessionState(
+        runtimeSessionId,
+        state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
+        storedSessionId
+      )
+    } catch {
+      // Non-fatal: next poll or manual refresh can hydrate.
+    }
+  }, [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState])
 
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,
@@ -739,6 +781,7 @@ export function DesktopController() {
     busyRef,
     createBackendSessionForSend,
     handleSkinCommand,
+    openMemoryGraph: openStarmap,
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeSession,
@@ -843,6 +886,58 @@ export function DesktopController() {
       document.removeEventListener('visibilitychange', tick)
     }
   }, [gatewayState, refreshCronJobs])
+
+  // Keep messaging-platform session lists live: inbound Telegram/WeChat/Discord
+  // turns are written by the gateway, not the desktop websocket, so they won't
+  // appear without polling.
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshMessagingSessions()
+      }
+    }
+
+    const intervalId = window.setInterval(tick, MESSAGING_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [gatewayState, refreshMessagingSessions])
+
+  // Only the open messaging transcript needs a poll — local chats are already
+  // live over the websocket, so arming a timer for them would just no-op every
+  // tick. Gate on the active session actually being a messaging source.
+  const activeIsMessaging =
+    !!selectedStoredSessionId &&
+    isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
+
+  // Keep the currently-viewed messaging transcript live.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !activeIsMessaging) {
+      return
+    }
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshActiveMessagingTranscript()
+      }
+    }
+
+    const intervalId = window.setInterval(tick, ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+    tick()
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [activeIsMessaging, gatewayState, refreshActiveMessagingTranscript])
 
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {

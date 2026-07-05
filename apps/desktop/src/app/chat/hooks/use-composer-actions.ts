@@ -30,13 +30,36 @@ const BLOB_MIME_EXTENSION: Record<string, string> = {
 }
 
 function blobExtension(blob: Blob): string {
-  const mime = blob.type.split(';')[0]?.trim().toLowerCase()
+  const mime = normalize(blob.type.split(';')[0])
 
-  return (mime && BLOB_MIME_EXTENSION[mime]) || '.png'
+  return BLOB_MIME_EXTENSION[mime] || '.png'
 }
 
 export function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSION_PATTERN.test(filePath)
+}
+
+/**
+ * Read an attachment's thumbnail preview, local disk first. Paperclip picks,
+ * clipboard saves, and OS drops always hand us paths on THIS machine — the
+ * remote-routed fs facade would 404 them against the gateway and toast a bogus
+ * "preview failed" even though the attach itself works (upload reads local
+ * bytes too). In-app drags from the remote project tree are the opposite case:
+ * the local read fails there, so fall back to the facade (remote fs bridge).
+ * In local mode the facade IS the local bridge, so this stays a single read.
+ */
+export async function attachmentPreviewDataUrl(filePath: string): Promise<string> {
+  try {
+    const local = await window.hermesDesktop?.readFileDataUrl?.(filePath)
+
+    if (local) {
+      return local
+    }
+  } catch {
+    // Not on this machine (or unreadable locally) — try the gateway.
+  }
+
+  return readDesktopFileDataUrl(filePath)
 }
 
 export interface DroppedFile {

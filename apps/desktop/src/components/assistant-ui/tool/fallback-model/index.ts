@@ -1,6 +1,7 @@
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
+import { capitalize, normalize } from '@/lib/text'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 import {
@@ -217,13 +218,7 @@ export const selectMessageRunning = (state: MessageRunningStateSlice) =>
 function titleForTool(name: string): string {
   const normalized = name.replace(/^browser_/, '').replace(/^web_/, '')
 
-  return (
-    normalized
-      .split('_')
-      .filter(Boolean)
-      .map(part => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`)
-      .join(' ') || name
-  )
+  return normalized.split('_').filter(Boolean).map(capitalize).join(' ') || name
 }
 
 const PREFIX_META: { icon?: string; labelKey: string; prefix: string; tone: ToolTone }[] = [
@@ -361,7 +356,7 @@ function countFromUnknown(value: unknown): null | number {
 }
 
 function singularizeNoun(noun: string): string {
-  const normalized = noun.trim().toLowerCase()
+  const normalized = normalize(noun)
 
   if (!normalized) {
     return ''
@@ -875,7 +870,7 @@ function cronjobSubtitle(argsRecord: Record<string, unknown>, resultRecord: Reco
 
   const action = firstStringField(argsRecord, ['action']) || 'manage'
   const name = firstStringField(resultRecord, ['name']) || firstStringField(argsRecord, ['name', 'job_id'])
-  const label = `${action[0]?.toUpperCase() ?? ''}${action.slice(1)}`
+  const label = capitalize(action)
 
   return name ? `${label} ${name}` : `Cron ${action}`
 }

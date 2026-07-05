@@ -31,6 +31,18 @@ _HARDLINE_BLOCK = [
     # rm -rf targeting root / system dirs / home
     "rm -rf /",
     "rm -rf /*",
+    # Shell-equivalent spellings of "rm -rf /": repeated slashes and
+    # current/parent-dir segments all collapse back to root, so they must
+    # hit the hardline floor too (regression: these used to slip through the
+    # root pattern's target group and fall to the softer DANGEROUS_PATTERNS
+    # rule, which --yolo / approvals.mode=off / cron approve-mode bypass).
+    "rm -rf //",
+    "rm -rf /.",
+    "rm -rf /./",
+    "rm -rf /..",
+    "rm -rf //*",
+    "rm -fr /./",
+    "ls && rm -rf //",
     "rm -rf /home",
     "rm -rf /home/*",
     "rm -rf /etc",
@@ -106,6 +118,23 @@ _HARDLINE_BLOCK = [
     "exec shutdown",
     "nohup reboot",
     "setsid poweroff",
+    # Bare subshell `(cmd)` and brace-group `{ cmd; }` openers put the trigger
+    # at a real command position, so they must hit the floor just like `$(…)`.
+    # These slipped through before the quote-aware command-start tokenizer
+    # learned to recognize `(` / `{` (issue: (reboot) walked past --yolo).
+    "(reboot)",
+    "( reboot )",
+    "(shutdown -h now)",
+    "(poweroff)",
+    "(halt)",
+    "(init 0)",
+    "(systemctl reboot)",
+    "(sudo reboot)",
+    "{ reboot; }",
+    "{ shutdown -h now; }",
+    "{ poweroff; }",
+    "true && (reboot)",
+    "echo hi; { reboot; }",
 ]
 
 

@@ -89,6 +89,22 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == mixed
 
+    def test_existing_named_profile_still_bootstraps_subdirs(self, tmp_path):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            ensure_hermes_home()
+            assert (profile_home / "cron").is_dir()
+            assert (profile_home / "sessions").is_dir()
+            assert (profile_home / "memories").is_dir()
+
+    def test_missing_named_profile_is_not_recreated(self, tmp_path):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+                ensure_hermes_home()
+        assert not profile_home.exists()
+
 
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):

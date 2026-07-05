@@ -306,7 +306,13 @@ def sanitize_tool_call_arguments(
             try:
                 json.loads(arguments)
             except json.JSONDecodeError:
-                tool_call_id = tool_call.get("id")
+                # Use the canonical ``call_id || id`` precedence so both the
+                # scan for an existing tool result and any inserted stub key
+                # on the same id the rest of the pipeline uses. Keying on bare
+                # ``id`` here would fail to find a result built with ``call_id``
+                # (Codex Responses format) and insert a duplicate stub that
+                # itself becomes an orphan (#58168).
+                tool_call_id = _ra().AIAgent._get_tool_call_id_static(tool_call) or None
                 function_name = function.get("name", "?")
                 preview = arguments[:80]
                 log.warning(
@@ -464,6 +470,21 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # Pass 1: drop stray tool messages that don't follow a known
     # assistant tool_call_id. Uses a rolling set of known ids refreshed
     # on each assistant message.
+    #
+    # Both ``id`` AND ``call_id`` are registered for every assistant
+    # tool_call. In the Codex Responses API format the two differ
+    # (``id`` = ``fc_...`` response-item id, ``call_id`` = ``call_...``
+    # the function-call id), and a tool result's ``tool_call_id`` may be
+    # matched against *either* depending on which code path built it
+    # (the OpenAI-compatible path stores ``tc.id``; codex paths store
+    # ``call_id``). Registering only ``id`` — as this pass did before —
+    # made a valid tool result look orphaned whenever the assistant
+    # tool_call carried a distinct ``call_id`` (or only ``call_id``); the
+    # pass then dropped it, leaving the assistant tool_call unanswered and
+    # producing an HTTP 400 on strict providers (DeepSeek, Kimi). Matching
+    # on the *superset* of both keys achieves the same tolerance as
+    # ``_get_tool_call_id_static``'s ``call_id || id`` — a match set must
+    # accept every legitimate reference, not just the canonical one (#58168).
     known_tool_ids: set = set()
     filtered: List[Dict] = []
     for msg in collapsed:
@@ -474,14 +495,23 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         if role == "assistant":
             known_tool_ids = set()
             for tc in (msg.get("tool_calls") or []):
-                tc_id = tc.get("id") if isinstance(tc, dict) else None
-                if tc_id:
-                    known_tool_ids.add(tc_id)
+                if not isinstance(tc, dict):
+                    continue
+                for key in ("id", "call_id"):
+                    tc_id = tc.get(key)
+                    if tc_id:
+                        known_tool_ids.add(tc_id)
             filtered.append(msg)
         elif role == "tool":
             tc_id = msg.get("tool_call_id")
             if tc_id and tc_id in known_tool_ids:
                 filtered.append(msg)
+                # Consume the id so a SECOND tool result carrying the same
+                # tool_call_id (duplicate from a retry/crash/session-resume
+                # glitch) falls into the drop branch below instead of being
+                # replayed — strict providers (DeepSeek) reject a duplicate
+                # tool_call_id with HTTP 400 (#58327). Credit: #55436.
+                known_tool_ids.discard(tc_id)
             else:
                 repairs += 1
         else:
@@ -1443,6 +1473,46 @@ def anthropic_prompt_cache_policy(
     eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
     eff_model = (model if model is not None else agent.model) or ""
 
+    # MoA virtual provider: the agent's model/provider are the preset name and
+    # "moa" — neither matches any caching branch, so the ACTING AGGREGATOR
+    # (often Claude on OpenRouter) silently lost prompt caching entirely
+    # (measured: 85% cache share solo vs 2% on the identical model via MoA —
+    # tens of millions of re-billed input tokens per benchmark run). Resolve
+    # the policy from the preset's real aggregator slot instead.
+    if eff_provider.strip().lower() == "moa":
+        try:
+            from hermes_cli.config import load_config as _load_moa_cfg
+            from hermes_cli.moa_config import resolve_moa_preset
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            _preset = resolve_moa_preset(
+                _load_moa_cfg().get("moa") or {}, eff_model or None
+            )
+            _agg = _preset.get("aggregator") or {}
+            _agg_provider = str(_agg.get("provider") or "").strip()
+            _agg_model = str(_agg.get("model") or "").strip()
+            if _agg_provider and _agg_model:
+                _agg_base_url = ""
+                _agg_api_mode = ""
+                try:
+                    _rt = resolve_runtime_provider(
+                        requested=_agg_provider, target_model=_agg_model
+                    )
+                    _agg_base_url = _rt.get("base_url") or ""
+                    _agg_api_mode = _rt.get("api_mode") or ""
+                except Exception:
+                    pass
+                return anthropic_prompt_cache_policy(
+                    agent,
+                    provider=_agg_provider,
+                    base_url=_agg_base_url,
+                    api_mode=_agg_api_mode,
+                    model=_agg_model,
+                )
+        except Exception as _moa_exc:  # pragma: no cover - defensive
+            logger.debug("MoA aggregator cache-policy resolution failed: %s", _moa_exc)
+        return False, False
+
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
@@ -1513,6 +1583,7 @@ def anthropic_prompt_cache_policy(
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+    from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only. Callers pass agent._client_kwargs (or shallow
     # copies of it) in; any in-place mutation leaks back into the stored dict and is
     # reused on subsequent requests. #10933 hit this by injecting an httpx.Client
@@ -1522,6 +1593,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
+    ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
+    httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
     if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
@@ -1545,7 +1619,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
             }
             if "http_client" not in safe_kwargs:
-                keepalive_http = agent._build_keepalive_http_client(base_url)
+                keepalive_http = agent._build_keepalive_http_client(
+                    base_url, verify=httpx_verify,
+                )
                 if keepalive_http is not None:
                     safe_kwargs["http_client"] = keepalive_http
             client = GeminiNativeClient(**safe_kwargs)
@@ -1574,7 +1650,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
     if "http_client" not in client_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
+        keepalive_http = agent._build_keepalive_http_client(
+            client_kwargs.get("base_url", ""), verify=httpx_verify,
+        )
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
     # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop,
@@ -1778,6 +1856,24 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "api_key": effective_key,
                 "base_url": effective_base,
             }
+            try:
+                from hermes_cli.config import (
+                    apply_custom_provider_tls_to_client_kwargs,
+                    get_compatible_custom_providers,
+                    load_config_readonly,
+                )
+
+                # Read custom_providers from live config (not the init-time
+                # snapshot on ``agent._custom_providers``) so ssl_ca_cert /
+                # ssl_verify edits are honored when switching mid-session,
+                # matching the context-length reload below (#15779).
+                apply_custom_provider_tls_to_client_kwargs(
+                    agent._client_kwargs,
+                    str(effective_base or ""),
+                    get_compatible_custom_providers(load_config_readonly()),
+                )
+            except Exception:
+                logger.debug("custom-provider TLS resolution skipped on switch_model", exc_info=True)
             _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
             if _sm_timeout is not None:
                 agent._client_kwargs["timeout"] = _sm_timeout
@@ -1963,12 +2059,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
 
-    # Check plugin hooks for a block directive before executing anything.
+    # Check plugin hooks for a block or approval directive before executing.
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
         try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
+            from hermes_cli.plugins import resolve_pre_tool_block
+            block_message = resolve_pre_tool_block(
                 function_name,
                 function_args,
                 task_id=effective_task_id or "",
@@ -1979,7 +2075,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 middleware_trace=list(_tool_middleware_trace),
             )
         except Exception:
-            pass
+            block_message = None
     if block_message is not None:
         result = json.dumps({"error": block_message}, ensure_ascii=False)
         try:
@@ -2352,6 +2448,50 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         _ra().logger.debug(
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
+        )
+
+    # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a
+    # payload where the same tool_call_id appears more than once with HTTP 400
+    # "Duplicate value for 'tool_call_id'" (#58327). Duplicates can arise from
+    # retries, crash/resume glitches, or a compression window that re-emits a
+    # tool result. This is the final pre-API chokepoint, so dedup defensively
+    # here even though repair_message_sequence also consumes matched ids.
+    #   (a) collapse duplicate tool_calls WITHIN an assistant message
+    #   (b) drop later tool result messages reusing an already-seen id
+    seen_assistant_call_ids: set = set()
+    seen_result_call_ids: set = set()
+    deduped: List[Dict[str, Any]] = []
+    removed_dupes = 0
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            kept_tcs = []
+            for tc in msg.get("tool_calls") or []:
+                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                if cid and cid in seen_assistant_call_ids:
+                    removed_dupes += 1
+                    continue
+                if cid:
+                    seen_assistant_call_ids.add(cid)
+                kept_tcs.append(tc)
+            if len(kept_tcs) != len(msg.get("tool_calls") or []):
+                msg = {**msg, "tool_calls": kept_tcs}
+            deduped.append(msg)
+        elif role == "tool":
+            cid = (msg.get("tool_call_id") or "").strip()
+            if cid and cid in seen_result_call_ids:
+                removed_dupes += 1
+                continue
+            if cid:
+                seen_result_call_ids.add(cid)
+            deduped.append(msg)
+        else:
+            deduped.append(msg)
+    if removed_dupes:
+        messages = deduped
+        _ra().logger.debug(
+            "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
+            removed_dupes,
         )
     return messages
 

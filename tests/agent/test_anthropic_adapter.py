@@ -507,12 +507,22 @@ class TestResolveAnthropicToken:
 
 
 class TestRefreshOauthToken:
-    def test_returns_none_without_refresh_token(self):
+    def test_returns_none_without_refresh_token(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        # Neutralize live Claude Code sources (macOS Keychain + ~/.claude file)
+        # so the adopt-already-refreshed branch can't short-circuit with a real
+        # credential on a dev/CI machine that happens to have Claude Code creds.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
         creds = {"accessToken": "expired", "refreshToken": "", "expiresAt": 0}
         assert _refresh_oauth_token(creds) is None
 
     def test_successful_refresh(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
 
         creds = {
             "accessToken": "old-token",
@@ -544,7 +554,11 @@ class TestRefreshOauthToken:
         assert written["claudeAiOauth"]["accessToken"] == "new-token-abc"
         assert written["claudeAiOauth"]["refreshToken"] == "new-refresh-456"
 
-    def test_failed_refresh_returns_none(self):
+    def test_failed_refresh_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
         creds = {
             "accessToken": "old",
             "refreshToken": "refresh-123",
@@ -995,6 +1009,57 @@ class TestConvertMessages:
         ]
         assert len(tool_results) == 1
         assert tool_results[0]["tool_use_id"] == "tc_valid"
+
+    def test_strips_tool_use_when_result_not_immediately_adjacent(self):
+        """A tool_use whose result appears LATER but not in the immediately
+        following user message must be stripped (adjacency, #52145).
+
+        The old logic matched tool_result ids globally across the whole
+        transcript, so it would wrongly KEEP such a tool_use; Anthropic then
+        400s because the result does not follow the tool_use turn. The adjacency
+        rewrite only honors a result in the next user message.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_late", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "user", "content": "actually, something else"},
+            {"role": "assistant", "content": "sure"},
+            {"role": "tool", "tool_call_id": "tc_late", "content": "late result"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        for m in result:
+            if m["role"] == "assistant" and isinstance(m["content"], list):
+                assert all(b.get("type") != "tool_use" for b in m["content"]), (
+                    "non-adjacent tool_use should have been stripped"
+                )
+        for m in result:
+            if m["role"] == "user" and isinstance(m["content"], list):
+                assert all(b.get("type") != "tool_result" for b in m["content"]), (
+                    "orphaned late tool_result should have been stripped"
+                )
+
+    def test_keeps_tool_use_when_result_immediately_adjacent(self):
+        """Control: an adjacent tool_use/result pair is preserved (no false strip)."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_ok", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_ok", "content": "good"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        asst = [m for m in result if m["role"] == "assistant"][0]
+        assert any(b.get("type") == "tool_use" for b in asst["content"])
+        user = [m for m in result if m["role"] == "user"][0]
+        assert any(b.get("type") == "tool_result" for b in user["content"])
 
     def test_system_with_cache_control(self):
         messages = [

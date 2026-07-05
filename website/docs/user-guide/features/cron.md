@@ -331,6 +331,63 @@ explicit other-chat deliveries) are never made continuable. The mirror is
 written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
 the conversation history alternation-safe across all model providers.
 
+#### Flat, in-channel continuation (Slack)
+
+The thread-preferred behaviour above mints a dedicated thread on every
+delivery. If you'd rather have a continuable job land **flat in the channel
+timeline** — no thread — set the Slack **continuable surface** to `in_channel`:
+
+```yaml
+# ~/.hermes/config.yaml
+slack:
+  cron_continuable_surface: in_channel   # default: thread
+  reply_in_thread: false                 # required pairing (see below)
+  require_mention: false                 # so a plain reply continues the job
+```
+
+In `in_channel` mode the brief is delivered as an ordinary top-level channel
+message (no thread is opened), and your reply continues the job via the
+channel's shared session. Three settings work together:
+
+- **`cron_continuable_surface: in_channel`** — skips thread creation on delivery.
+- **`reply_in_thread: false`** (required) — makes the bot answer your reply
+  *flat* in the channel and key it to the same whole-channel session the brief
+  was seeded into. Without it the continuation still works but arrives in a
+  thread (it falls back safely to thread-style continuation, never a dropped
+  reply — the gateway logs a warning at startup so you can spot the mismatch).
+- **`require_mention: false`** (or add the channel to `free_response_channels`)
+  — so you can reply with a plain message; otherwise the bot only wakes when you
+  `@`-mention it on each reply.
+
+Because the continuation is the **whole-channel** session, it is shared: other
+chatter in the channel — and a second continuable in-channel job — join the same
+rolling conversation. That is inherent to "flat in a channel" and is the same
+tradeoff `reply_in_thread: false` users already accept; use the default
+`thread` surface when you want each delivery's follow-up isolated.
+
+This is a Slack capability today. Other platforms accept the key but fall back
+to the `thread` surface (their continuation primitives differ); the choice is
+per-platform, set under each platform's config. It's a gateway-side config flag
+— a `/restart` picks it up; no Slack app reinstall is needed.
+
+:::note 1:1 DMs
+`cron_continuable_surface` is a **channel** setting — a 1:1 DM has no
+thread-vs-timeline split to choose between (the DM is already flat), so the key
+has no effect there. What governs whether a DM cron delivery is continuable is
+the separate, pre-existing knob **`slack.dm_top_level_threads_as_sessions`**:
+
+- **`false`** — all top-level DMs share one rolling DM session, so a continuable
+  cron brief and your reply land in the **same** session and the job continues in
+  context. This is what you want for continuable cron in a DM.
+- **`true`** (default) — each top-level DM message is its own session, so a reply
+  to a delivered brief starts a *fresh* session that has no record of the brief.
+  Continuation does not work in this mode (for cron or any other flat delivery).
+
+So for a continuable cron job delivered to a 1:1 DM, set
+`slack.dm_top_level_threads_as_sessions: false`. `cron_continuable_surface` is
+not required (and is ignored) for DMs.
+:::
+
 ### Silent suppression
 
 If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.

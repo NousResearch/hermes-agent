@@ -202,7 +202,7 @@ export function GatewayMenuPanel({
       )}
 
       {platforms.length > 0 && (
-        <div className="border-t border-border/50 px-3 py-2">
+        <Section>
           <SectionLabel>{copy.messagingPlatforms}</SectionLabel>
           <ul className="mt-1.5 space-y-1">
             {platforms.map(([name, platform]) => (
@@ -215,10 +215,14 @@ export function GatewayMenuPanel({
               </li>
             ))}
           </ul>
-        </div>
+        </Section>
       )}
     </div>
   )
+}
+
+function Section({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn('border-t border-border/50 px-3 py-2', className)}>{children}</div>
 }
 
 function SectionLabel({ children }: { children: string }) {

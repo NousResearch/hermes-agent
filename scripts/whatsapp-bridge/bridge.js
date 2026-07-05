@@ -10,6 +10,7 @@
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
+ *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
@@ -18,15 +19,15 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
@@ -119,7 +120,7 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function sendWithTimeout(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
+function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
   let timer;
   const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(
@@ -294,6 +295,57 @@ async function startSocket() {
     }
   });
 
+  sock.ev.on('messages.update', async (updates) => {
+    for (const { key, update } of updates || []) {
+      if (!update?.pollUpdates) continue;
+      const pollCreationId = key?.id || update.pollUpdates?.[0]?.pollCreationMessageKey?.id;
+      const pollCreation = messageStore.get(pollCreationId);
+      let aggregation = [];
+      let pollUpdates = update.pollUpdates;
+      try {
+        if (pollCreation) {
+          const meId = jidNormalizedUser(sock.user?.id || 'me');
+          pollUpdates = update.pollUpdates.map(pollUpdate => (
+            pollUpdateForAggregation({
+              pollUpdateMessage: pollUpdate,
+              pollUpdateMessageKey: pollUpdate.pollUpdateMessageKey,
+              pollCreation,
+              decryptPollVote,
+              getKeyAuthor,
+              meId,
+              pollCreatorJids: [
+                jidNormalizedUser(sock.user?.lid || ''),
+                jidNormalizedUser(sock.user?.id || ''),
+                getKeyAuthor(pollUpdate.pollCreationMessageKey || key, jidNormalizedUser(sock.user?.lid || '')),
+                getKeyAuthor(pollUpdate.pollCreationMessageKey || key, jidNormalizedUser(sock.user?.id || '')),
+              ],
+              voterJids: [
+                normalizeWhatsAppId(pollUpdate.pollUpdateMessageKey?.participant || ''),
+                normalizeWhatsAppId(pollUpdate.pollUpdateMessageKey?.remoteJid || key?.remoteJid || ''),
+              ],
+            }) || pollUpdate
+          ));
+          aggregation = getAggregateVotesInPollMessage({
+            message: pollCreation.message,
+            pollUpdates,
+          });
+        }
+      } catch (err) {
+        console.warn('[bridge] failed to aggregate poll update:', err.message);
+      }
+      const selectedOptions = normalizePollUpdateOptions(aggregation, pollUpdates?.[0]);
+      logPollUpdateDiagnostic({
+        sourcePath: 'messages.update',
+        pollId: pollCreationId,
+        pollCreation,
+        pollUpdates,
+        selectedOptions,
+        aggregation,
+      });
+      enqueuePollUpdateEvent({ key, update: { ...update, pollUpdates }, selectedOptions, aggregation });
+    }
+  });
+
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     // In self-chat mode, your own messages commonly arrive as 'append' rather
     // than 'notify'. Accept both and filter agent echo-backs below.
@@ -405,93 +457,83 @@ async function startSocket() {
       }
 
       const messageContent = getMessageContent(msg);
-      const contextInfo = getContextInfo(messageContent);
-      const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
-      const quotedMessageId = contextInfo?.stanzaId || null;
-      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
-      const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
-      const hasQuotedMessage = !!contextInfo?.quotedMessage;
-
-      // Extract message body
-      let body = '';
-      let hasMedia = false;
-      let mediaType = '';
-      const mediaUrls = [];
-
-      if (messageContent.conversation) {
-        body = messageContent.conversation;
-      } else if (messageContent.extendedTextMessage?.text) {
-        body = messageContent.extendedTextMessage.text;
-      } else if (messageContent.imageMessage) {
-        body = messageContent.imageMessage.caption || '';
-        hasMedia = true;
-        mediaType = 'image';
+      if (messageContent.pollUpdateMessage) {
+        const pollUpdateMessage = messageContent.pollUpdateMessage;
+        const pollKey = pollUpdateMessage.pollCreationMessageKey || {
+          id: pollUpdateMessage.key?.id || msg.key.id,
+          remoteJid: chatId,
+          participant: senderId,
+        };
+        const pollCreation = messageStore.get(pollKey.id);
+        let aggregation = [];
+        let pollUpdates = [pollUpdateMessage];
         try {
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          const mime = messageContent.imageMessage.mimetype || 'image/jpeg';
-          const extMap = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
-          const ext = extMap[mime] || '.jpg';
-          mkdirSync(IMAGE_CACHE_DIR, { recursive: true });
-          const filePath = path.join(IMAGE_CACHE_DIR, `img_${randomBytes(6).toString('hex')}${ext}`);
-          writeFileSync(filePath, buf);
-          mediaUrls.push(filePath);
+          if (pollCreation) {
+            const meId = jidNormalizedUser(sock.user?.id || 'me');
+            const pollUpdate = pollUpdateForAggregation({
+              pollUpdateMessage,
+              pollUpdateMessageKey: msg.key,
+              pollCreation,
+              decryptPollVote,
+              getKeyAuthor,
+              meId,
+              pollCreatorJids: [
+                jidNormalizedUser(sock.user?.lid || ''),
+                jidNormalizedUser(sock.user?.id || ''),
+                getKeyAuthor(pollUpdateMessage.pollCreationMessageKey || pollKey, jidNormalizedUser(sock.user?.lid || '')),
+                getKeyAuthor(pollUpdateMessage.pollCreationMessageKey || pollKey, jidNormalizedUser(sock.user?.id || '')),
+              ],
+              voterJids: [
+                normalizeWhatsAppId(msg.key?.participant || ''),
+                normalizeWhatsAppId(msg.key?.remoteJid || chatId || ''),
+                normalizeWhatsAppId(senderId || ''),
+              ],
+            });
+            if (pollUpdate) pollUpdates = [pollUpdate];
+            aggregation = getAggregateVotesInPollMessage({
+              message: pollCreation.message,
+              pollUpdates,
+            });
+          }
         } catch (err) {
-          console.error('[bridge] Failed to download image:', err.message);
+          console.warn('[bridge] failed to aggregate poll upsert:', err.message);
         }
-      } else if (messageContent.videoMessage) {
-        body = messageContent.videoMessage.caption || '';
-        hasMedia = true;
-        mediaType = 'video';
-        try {
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          const mime = messageContent.videoMessage.mimetype || 'video/mp4';
-          const ext = mime.includes('mp4') ? '.mp4' : '.mkv';
-          mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
-          const filePath = path.join(DOCUMENT_CACHE_DIR, `vid_${randomBytes(6).toString('hex')}${ext}`);
-          writeFileSync(filePath, buf);
-          mediaUrls.push(filePath);
-        } catch (err) {
-          console.error('[bridge] Failed to download video:', err.message);
-        }
-      } else if (messageContent.audioMessage || messageContent.pttMessage) {
-        hasMedia = true;
-        mediaType = messageContent.pttMessage ? 'ptt' : 'audio';
-        try {
-          const audioMsg = messageContent.pttMessage || messageContent.audioMessage;
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          const mime = audioMsg.mimetype || 'audio/ogg';
-          const ext = mime.includes('ogg') ? '.ogg' : mime.includes('mp4') ? '.m4a' : '.ogg';
-          mkdirSync(AUDIO_CACHE_DIR, { recursive: true });
-          const filePath = path.join(AUDIO_CACHE_DIR, `aud_${randomBytes(6).toString('hex')}${ext}`);
-          writeFileSync(filePath, buf);
-          mediaUrls.push(filePath);
-        } catch (err) {
-          console.error('[bridge] Failed to download audio:', err.message);
-        }
-      } else if (messageContent.documentMessage) {
-        body = messageContent.documentMessage.caption || '';
-        hasMedia = true;
-        mediaType = 'document';
-        const fileName = messageContent.documentMessage.fileName || 'document';
-        try {
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
-          const safeFileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
-          const filePath = path.join(DOCUMENT_CACHE_DIR, `doc_${randomBytes(6).toString('hex')}_${safeFileName}`);
-          writeFileSync(filePath, buf);
-          mediaUrls.push(filePath);
-        } catch (err) {
-          console.error('[bridge] Failed to download document:', err.message);
-        }
+        const selectedOptions = normalizePollUpdateOptions(aggregation, pollUpdates[0]);
+        logPollUpdateDiagnostic({
+          sourcePath: 'messages.upsert',
+          pollId: pollKey.id,
+          pollCreation,
+          pollUpdates,
+          selectedOptions,
+          aggregation,
+        });
+        enqueuePollUpdateEvent({
+          key: { ...pollKey, remoteJid: pollKey.remoteJid || chatId, participant: pollKey.participant || senderId },
+          update: { pollUpdates },
+          selectedOptions,
+          aggregation,
+        });
+        continue;
       }
 
-      // For media without caption, use a placeholder so the API message is never empty
-      if (hasMedia && !body) {
-        body = `[${mediaType} received]`;
-      }
+      const event = await extractBridgeEvent({
+        msg,
+        chatId,
+        senderId,
+        senderNumber,
+        botIds,
+        isGroup,
+        downloadMedia: async (mediaMsg) => downloadMediaMessage(mediaMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage }),
+        cacheDirs: {
+          image: IMAGE_CACHE_DIR,
+          document: DOCUMENT_CACHE_DIR,
+          audio: AUDIO_CACHE_DIR,
+        },
+      });
+      event.fromOwner = fromOwner;
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
-      if (msg.key.fromMe && ((REPLY_PREFIX && body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
+      if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
         if (WHATSAPP_DEBUG) {
           try { console.log(JSON.stringify({ event: 'ignored', reason: 'agent_echo', chatId, messageId: msg.key.id })); } catch {}
         }
@@ -499,7 +541,7 @@ async function startSocket() {
       }
 
       // Skip empty messages
-      if (!body && !hasMedia) {
+      if (!event.body && !event.hasMedia) {
         if (WHATSAPP_DEBUG) {
           try { 
             console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) })); 
@@ -595,8 +637,14 @@ app.post('/send', async (req, res) => {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
-      const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+      const { content: payload, options } = buildTextSendPayload(chunks[i], {
+        chatId,
+        replyTo: i === 0 ? replyTo : undefined,
+        messageStore,
+      });
+      const sent = await sendWithTimeout(chatId, payload, options);
       trackSentMessageId(sent);
+      messageStore.remember(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
       if (chunks.length > 1 && i < chunks.length - 1) {
         await sleep(CHUNK_DELAY_MS);
@@ -647,25 +695,6 @@ app.post('/edit', async (req, res) => {
   }
 });
 
-// MIME type map and media type inference for /send-media
-const MIME_MAP = {
-  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
-  webp: 'image/webp', gif: 'image/gif',
-  mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
-  mkv: 'video/x-matroska', '3gp': 'video/3gpp',
-  pdf: 'application/pdf',
-  doc: 'application/msword',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-};
-
-function inferMediaType(ext) {
-  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
-  if (['mp4', 'mov', 'avi', 'mkv', '3gp'].includes(ext)) return 'video';
-  if (['ogg', 'opus', 'mp3', 'wav', 'm4a'].includes(ext)) return 'audio';
-  return 'document';
-}
-
 // Send media (image, video, document) natively
 app.post('/send-media', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
@@ -689,10 +718,37 @@ app.post('/send-media', async (req, res) => {
 
     switch (type) {
       case 'image':
-        msgPayload = { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
+        if (ext === 'gif') {
+          // WhatsApp's native animated-GIF UX is an MP4 video payload with
+          // gifPlayback=true. Convert when ffmpeg is available; otherwise fall
+          // back to a truthful image/gif send instead of mislabeling GIF bytes
+          // as video/mp4.
+          let tmpGifMp4 = null;
+          try {
+            tmpGifMp4 = path.join(tmpdir(), `hermes_gif_${randomBytes(6).toString('hex')}.mp4`);
+            execFileSync(
+              'ffmpeg',
+              ['-y', '-i', filePath, '-movflags', 'faststart', '-pix_fmt', 'yuv420p', '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', tmpGifMp4],
+              { timeout: 30000, stdio: 'pipe' }
+            );
+            msgPayload = {
+              video: readFileSync(tmpGifMp4),
+              caption: caption || undefined,
+              mimetype: 'video/mp4',
+              gifPlayback: true,
+            };
+          } catch (gifErr) {
+            console.warn('[bridge] gif conversion failed, sending as image/gif:', gifErr.message);
+            msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
+          } finally {
+            try { if (tmpGifMp4 && existsSync(tmpGifMp4)) unlinkSync(tmpGifMp4); } catch (_) {}
+          }
+        } else {
+          msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
+        }
         break;
       case 'video':
-        msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
+        msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
         break;
       case 'audio': {
         // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
@@ -705,8 +761,9 @@ app.post('/send-media', async (req, res) => {
         if (needsConversion) {
           tmpPath = path.join(tmpdir(), `hermes_voice_${randomBytes(6).toString('hex')}.ogg`);
           try {
-            execSync(
-              `ffmpeg -y -i ${JSON.stringify(filePath)} -ar 48000 -ac 1 -c:a libopus ${JSON.stringify(tmpPath)}`,
+            execFileSync(
+              'ffmpeg',
+              ['-y', '-i', filePath, '-ar', '48000', '-ac', '1', '-c:a', 'libopus', tmpPath],
               { timeout: 30000, stdio: 'pipe' }
             );
             audioBuffer = readFileSync(tmpPath);
@@ -724,12 +781,7 @@ app.post('/send-media', async (req, res) => {
       }
       case 'document':
       default:
-        msgPayload = {
-          document: buffer,
-          fileName: fileName || path.basename(filePath),
-          caption: caption || undefined,
-          mimetype: MIME_MAP[ext] || 'application/octet-stream',
-        };
+        msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: 'document', caption, fileName });
         break;
     }
 
@@ -738,6 +790,52 @@ app.post('/send-media', async (req, res) => {
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Send poll primitive. Approval UX is intentionally not wired here; gateway
+// approvals need text fallback and explicit confirmation semantics above this
+// low-level transport helper.
+app.post('/send-poll', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, question, options, selectableCount } = req.body;
+  if (!chatId || !question || !Array.isArray(options)) {
+    return res.status(400).json({ error: 'chatId, question, and options are required' });
+  }
+
+  try {
+    const payload = buildPollPayload({ question, options, selectableCount });
+    const sent = await sendWithTimeout(chatId, payload);
+    trackSentMessageId(sent);
+    rememberSentMessage(sent, payload);
+    res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Send native WhatsApp location pin
+app.post('/send-location', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, latitude, longitude, name, address } = req.body;
+  if (!chatId || latitude === undefined || longitude === undefined) {
+    return res.status(400).json({ error: 'chatId, latitude, and longitude are required' });
+  }
+
+  try {
+    const payload = buildLocationPayload({ latitude, longitude, name, address });
+    const sent = await sendWithTimeout(chatId, payload);
+    trackSentMessageId(sent);
+    messageStore.remember(sent);
+    res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

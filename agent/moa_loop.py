@@ -490,6 +490,27 @@ def _extract_text(response: Any) -> str:
         return ""
 
 
+def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:
+    """Read an optional temperature from a preset.
+
+    Returns None when the key is absent, empty, or explicitly null — meaning
+    "don't send temperature; let the provider default apply", exactly like a
+    single-model Hermes agent (which never sends temperature unless
+    configured). The old coercion ``float(preset.get(key, 0.6) or 0.6)``
+    made unset impossible: absent, null, and even 0 all collapsed to the
+    hardcoded default, so MoA advisors/aggregator always ran at 0.6/0.4
+    while the same model running solo used the provider default.
+    """
+    value = preset.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning("ignoring non-numeric %s=%r in MoA preset", key, value)
+        return None
+
+
 def aggregate_moa_context(
     *,
     user_prompt: str,
@@ -535,7 +556,21 @@ def aggregate_moa_context(
     )
 
     agg_label = _slot_label(aggregator)
+    agg_runtime = _slot_runtime(aggregator)
     try:
+        # Same cache_control decoration as _run_reference's advisor calls
+        # (see _maybe_apply_moa_cache_control) — this synthesis call is a
+        # third, independent MoA call path that 22c5048d9 did not cover (it
+        # only restored caching for the acting-aggregator turn in the
+        # persistent `provider: moa` model and for advisor fan-out). Without
+        # it, the one-shot `/moa <prompt>` command's synthesis call re-bills
+        # its full input (system-less prompt containing every joined
+        # reference output) on every invocation with zero cache_control
+        # breakpoints, even when the resolved aggregator slot is a
+        # cache-honoring route (e.g. Claude on OpenRouter/native Anthropic).
+        agg_messages = _maybe_apply_moa_cache_control(
+            [{"role": "user", "content": synth_prompt}], agg_runtime
+        )
         response = call_llm(
             task="moa_aggregator",
             messages=[{"role": "user", "content": synth_prompt}],

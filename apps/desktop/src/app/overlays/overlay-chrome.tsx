@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 interface OverlayActionButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -37,15 +38,18 @@ interface OverlayIconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>
   children: ReactNode
 }
 
+// Overlay chrome icon action — same titlebar-sized ghost button as the overlay
+// close (X), so footer/header actions read identically across breakpoints.
 export function OverlayIconButton({ children, className, type = 'button', ...props }: OverlayIconButtonProps) {
   return (
-    <OverlayActionButton
-      className={cn('h-7 w-7 justify-center px-0 [&_svg]:size-4', className)}
-      tone="subtle"
+    <Button
+      className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
+      size="icon-titlebar"
       type={type}
+      variant="ghost"
       {...props}
     >
       {children}
-    </OverlayActionButton>
+    </Button>
   )
 }

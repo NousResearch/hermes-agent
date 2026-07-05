@@ -18,7 +18,6 @@ import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/t
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
 type DeviceStart = Extract<OAuthStartResponse, { flow: 'device_code' }>
-type LoopbackStart = Extract<OAuthStartResponse, { flow: 'loopback' }>
 
 export type OnboardingMode = 'apikey' | 'oauth'
 
@@ -27,10 +26,6 @@ export type OnboardingFlow =
   | { provider: OAuthProvider; status: 'starting' }
   | { code: string; provider: OAuthProvider; start: PkceStart; status: 'awaiting_user' }
   | { copied: boolean; provider: OAuthProvider; start: DeviceStart; status: 'polling' }
-  // Loopback PKCE (xAI Grok): browser opens, the local backend's 127.0.0.1
-  // listener catches the redirect, and we poll until the worker finishes.
-  // No code to paste and no user_code to show — just a waiting state.
-  | { provider: OAuthProvider; start: LoopbackStart; status: 'awaiting_browser' }
   | { provider: OAuthProvider; start: OAuthStartResponse; status: 'submitting' }
   | { copied: boolean; provider: OAuthProvider; status: 'external_pending' }
   | { provider: OAuthProvider; status: 'success' }
@@ -593,15 +588,6 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
       return
     }
 
-    if (start.flow === 'loopback') {
-      // No code to paste: the redirect lands on the backend's loopback
-      // listener. Just wait and poll the session until the worker finishes.
-      setFlow({ status: 'awaiting_browser', provider, start })
-      pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
-
-      return
-    }
-
     setFlow({ status: 'polling', provider, start, copied: false })
     pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
   } catch (error) {
@@ -609,10 +595,8 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   }
 }
 
-// Poll a session-backed flow (device_code or loopback) until it resolves.
-// Both shapes only need the session_id to poll; the start is threaded
-// through to the error flow so the user can retry from the same context.
-async function pollSession(provider: OAuthProvider, start: DeviceStart | LoopbackStart, ctx: OnboardingContext) {
+// Poll a session-backed device-code flow until it resolves.
+async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext) {
   try {
     const { error_message, status } = await pollOAuthSession(provider.id, start.session_id)
 

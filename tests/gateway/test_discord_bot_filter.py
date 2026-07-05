@@ -67,6 +67,11 @@ class TestDiscordBotFilter(unittest.TestCase):
             elif allow == "mentions":
                 if not self._self_is_explicitly_mentioned(message, client_user):
                     return False
+            if (
+                bots_require_inline_mention
+                and not self._self_is_raw_mentioned(message, client_user)
+            ):
+                return False
             # "all" falls through
         
         return True  # message accepted

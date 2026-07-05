@@ -566,7 +566,10 @@ def test_references_run_in_parallel(monkeypatch):
     elapsed = time.monotonic() - start
 
     # Two 0.5s sleeps run concurrently → well under the 1.0s serial floor.
-    assert elapsed < 0.9, f"references did not run in parallel (took {elapsed:.2f}s)"
+    # Threshold sits at 0.95s (not tight against 0.5s) to tolerate CI
+    # thread-pool startup jitter while still failing hard if the two calls
+    # ran serially (which would be ≥1.0s).
+    assert elapsed < 0.95, f"references did not run in parallel (took {elapsed:.2f}s)"
     # Output order matches input order (stable Reference N labelling).
     assert [label for label, _, _ in out] == ["p1:ok", "moa:preset", "p2:boom", "p3:ok"]
     assert "recursively reference MoA" in out[1][1]

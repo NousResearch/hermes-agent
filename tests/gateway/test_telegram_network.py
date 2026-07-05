@@ -354,6 +354,37 @@ class TestFallbackTransportInit:
         assert len(seen_kwargs) == 2
         assert all("proxy" not in kwargs for kwargs in seen_kwargs)
 
+    def test_forwards_limits_to_inner_transports(self, monkeypatch):
+        """Verify that caller-supplied limits reach the inner
+        AsyncHTTPTransport instances (#58790).  httpx ignores the
+        client-level limits kwarg when a custom transport is
+        supplied, so the limits must be forwarded via transport_kwargs.
+        """
+        seen_kwargs = []
+
+        def factory(**kwargs):
+            seen_kwargs.append(kwargs.copy())
+            return FakeTransport([], {})
+
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        custom_limits = httpx.Limits(
+            max_connections=42,
+            max_keepalive_connections=10,
+            keepalive_expiry=30.0,
+        )
+        transport = tnet.TelegramFallbackTransport(
+            ["149.154.167.220"], limits=custom_limits
+        )
+
+        # 1 primary + 1 fallback = 2 AsyncHTTPTransport instances
+        assert len(seen_kwargs) == 2
+        for kw in seen_kwargs:
+            assert "limits" in kw
+            assert kw["limits"] is custom_limits
+
 
 class TestFallbackTransportClose:
     @pytest.mark.asyncio

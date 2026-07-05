@@ -76,6 +76,64 @@ def normalize_url_for_request(url: str) -> str:
 
     return urlunsplit((parsed.scheme, netloc, path, query, fragment))
 
+
+# Query parameter names that are unambiguously credential-bearing. Kept
+# deliberately narrow: bare English words that double as normal page facets
+# (``code`` on promo/challenge pages, ``key``/``auth``/``session``/``sig`` as
+# search or routing params) are intentionally EXCLUDED to avoid blocking
+# ordinary browsing. Prefix-based token redaction (``is_safe_url``) still
+# catches recognizable vendor key shapes; this set is the belt-and-suspenders
+# for opaque secrets that carry an explicit credential-named parameter.
+_SENSITIVE_QUERY_PARAM_NAMES = frozenset({
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth_token",
+    "authorization",
+    "awsaccesskeyid",
+    "client_secret",
+    "credential",
+    "credentials",
+    "jwt",
+    "password",
+    "passwd",
+    "secret",
+    "session_id",
+    "signature",
+    "token",
+    "x_amz_security_token",
+    "x_amz_signature",
+    "x-amz-security-token",
+    "x-amz-signature",
+})
+
+
+def sensitive_query_param_name(url: str) -> Optional[str]:
+    """Return the first sensitive query parameter name in ``url``, if any.
+
+    Used before handing URLs to third-party fetch/browser backends. Prefix-based
+    token redaction catches known credential shapes; this catches opaque magic
+    links, OAuth codes, signed URL signatures, and custom ``?token=...`` values
+    that do not have a recognizable vendor prefix.
+    """
+    if not isinstance(url, str) or "?" not in url:
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.query:
+        return None
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if value and unquote(key).lower() in _SENSITIVE_QUERY_PARAM_NAMES:
+            return key
+    return None
+
+
+def has_sensitive_query_params(url: str) -> bool:
+    """Return True when ``url`` carries likely credential-bearing query params."""
+    return sensitive_query_param_name(url) is not None
+
 # Hostnames that should always be blocked regardless of IP resolution
 # or any config toggle.  These are cloud metadata endpoints that an
 # attacker could use to steal instance credentials.

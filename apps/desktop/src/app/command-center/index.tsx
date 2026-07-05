@@ -1,10 +1,12 @@
 import { useStore } from '@nanostores/react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -20,6 +22,7 @@ import {
   Trash2
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
+import { fmtDateTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
@@ -27,12 +30,17 @@ import { $sessions, sessionPinId } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
-import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
+import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
-export type CommandCenterSection = 'sessions' | 'system' | 'usage'
+import { MaintenancePanel } from './maintenance'
 
-const SECTIONS = ['sessions', 'system', 'usage'] as const satisfies readonly CommandCenterSection[]
+export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
+
+const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
+
+const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
+const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 
 const USAGE_PERIODS = [7, 30, 90] as const
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
@@ -57,7 +65,7 @@ function formatTimestamp(value?: number | null): string {
     return ''
   }
 
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+  return fmtDateTime.format(date)
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -125,6 +133,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
+  const [logFile, setLogFile] = useState<(typeof LOG_FILES)[number]>('agent')
+  const [logLevel, setLogLevel] = useState<(typeof LOG_LEVELS)[number]>('ALL')
+  const [logQuery, setLogQuery] = useState('')
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
   const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
@@ -165,8 +176,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       const [nextStatus, nextLogs] = await Promise.all([
         getStatus(),
         getLogs({
-          file: 'agent',
-          lines: 120
+          file: logFile,
+          level: logLevel,
+          lines: 200
         })
       ])
 
@@ -177,7 +189,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     } finally {
       setSystemLoading(false)
     }
-  }, [])
+  }, [logFile, logLevel])
 
   const refreshUsage = useCallback(async (days: UsagePeriod) => {
     const requestId = usageRequestRef.current + 1
@@ -203,10 +215,12 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   }, [])
 
   useEffect(() => {
-    if (section === 'system' && !status && !systemLoading) {
+    // Refetch when the panel opens and whenever the log file/level filters
+    // change (refreshSystem's identity tracks them).
+    if (section === 'system') {
       void refreshSystem()
     }
-  }, [refreshSystem, section, status, systemLoading])
+  }, [refreshSystem, section])
 
   useEffect(() => {
     if (section === 'usage') {
@@ -223,6 +237,17 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   })
 
   const sessionListHasResults = filteredSessions.length > 0
+
+  // Client-side substring filter over the fetched tail (matches `hermes logs --search`).
+  const visibleLogs = useMemo(() => {
+    const needle = logQuery.trim().toLowerCase()
+
+    if (!needle) {
+      return logs
+    }
+
+    return logs.filter(line => line.toLowerCase().includes(needle))
+  }, [logQuery, logs])
 
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
@@ -281,8 +306,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         </OverlaySidebar>
 
         <OverlayMain>
-          <header className="mb-4 flex items-center justify-between gap-3">
-            <div className="min-w-0">
+          <header className="mb-4 flex items-center justify-between gap-3 max-[47.5rem]:mb-2">
+            {/* Redundant on narrow — the nav dropdown already names the section. */}
+            <div className="min-w-0 max-[47.5rem]:hidden">
               <h2 className="text-[length:var(--conversation-text-font-size)] font-semibold text-foreground">
                 {cc.sections[section]}
               </h2>
@@ -368,17 +394,19 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               period={usagePeriod}
               usage={usage}
             />
+          ) : section === 'maintenance' ? (
+            <MaintenancePanel />
           ) : (
             <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4">
               <div>
                 {status ? (
                   <div className="grid gap-2">
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start justify-between gap-3 max-[47.5rem]:flex-col max-[47.5rem]:gap-2">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <span
                             className={cn(
-                              'size-2 rounded-full',
+                              'size-2 shrink-0 rounded-full',
                               status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
                             )}
                           />
@@ -390,7 +418,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                           {cc.hermesActiveSessions(status.version, status.active_sessions)}
                         </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">
                         <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
                           {cc.restartGateway}
                         </Button>
@@ -420,6 +448,29 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                   <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
                     {cc.recentLogs}
                   </span>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <ResponsiveTabs
+                      align="end"
+                      onChange={id => setLogFile(id as (typeof LOG_FILES)[number])}
+                      tabs={LOG_FILES.map(value => ({ id: value, label: value }))}
+                      value={logFile}
+                    />
+                    <ResponsiveTabs
+                      align="end"
+                      onChange={id => setLogLevel(id as (typeof LOG_LEVELS)[number])}
+                      tabs={LOG_LEVELS.map(value => ({
+                        id: value,
+                        label: value === 'ALL' ? 'all' : value.toLowerCase()
+                      }))}
+                      value={logLevel}
+                    />
+                    <SearchField
+                      containerClassName="w-44"
+                      onChange={next => setLogQuery(next)}
+                      placeholder={cc.logSearchPlaceholder}
+                      value={logQuery}
+                    />
+                  </div>
                   {systemError && (
                     <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
                       <AlertCircle className="size-3.5" />
@@ -427,12 +478,11 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                     </span>
                   )}
                 </div>
-                <pre
-                  className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)"
-                  data-selectable-text="true"
-                >
-                  {logs.length ? logs.join('\n') : cc.noLogs}
-                </pre>
+                <LogTail
+                  className="flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)"
+                  emptyLabel={cc.noLogs}
+                  lines={systemLoading && logs.length === 0 ? null : visibleLogs}
+                />
               </div>
             </div>
           )}
@@ -440,24 +490,6 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       </OverlaySplitLayout>
     </OverlayView>
   )
-}
-
-function formatTokens(value: null | number | undefined): string {
-  const num = Number(value || 0)
-
-  if (num >= 1_000_000) {
-    return `${(num / 1_000_000).toFixed(1)}M`
-  }
-
-  if (num >= 1_000) {
-    return `${(num / 1_000).toFixed(1)}K`
-  }
-
-  return num.toLocaleString()
-}
-
-function formatInteger(value: null | number | undefined): string {
-  return Number(value ?? 0).toLocaleString()
 }
 
 interface UsagePanelProps {
@@ -517,7 +549,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
         <UsageStat label={cc.statApiCalls} value={formatInteger(totals.total_api_calls)} />
         <UsageStat
           label={cc.statTokens}
-          value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
+          value={`${compactNumber(totals.total_input)} / ${compactNumber(totals.total_output)}`}
         />
       </div>
 
@@ -550,7 +582,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
                   <div
                     className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
                     key={entry.day}
-                    title={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
+                    title={`${entry.day} · in ${compactNumber(entry.input_tokens)} · out ${compactNumber(entry.output_tokens)}`}
                   >
                     <div
                       className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
@@ -578,7 +610,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           rows={byModel.slice(0, 6).map(entry => ({
             key: entry.model,
             label: entry.model,
-            value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))}`
+            value: `${compactNumber((entry.input_tokens || 0) + (entry.output_tokens || 0))}`
           }))}
           title={cc.topModels}
         />
@@ -587,7 +619,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           rows={topSkills.slice(0, 6).map(entry => ({
             key: entry.skill,
             label: entry.skill,
-            value: cc.actions(entry.total_count.toLocaleString())
+            value: cc.actions(compactNumber(entry.total_count))
           }))}
           title={cc.topSkills}
         />

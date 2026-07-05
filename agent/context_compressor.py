@@ -84,6 +84,46 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # poisoning every subsequent request in the session — a bare key like
 # "is_compressed_summary" would reach the wire and trip exactly that.
 COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+_DB_PERSISTED_MARKER = "_db_persisted"
+
+
+def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy a message for compaction assembly without persistence markers.
+
+    Live cached-gateway transcripts stamp ``_db_persisted`` during incremental
+    flushes.  Shallow ``.copy()`` propagates that marker into the post-rotation
+    compressed list, so ``_flush_messages_to_session_db`` skips every row when
+    writing to the new child session (#57491).
+
+    This strips at the copy site (clearest intent, and cheap), but the
+    authoritative guarantee is the single terminal sweep in ``compress()``
+    (``_strip_persistence_markers``): no message may leave ``compress()``
+    carrying ``_db_persisted`` regardless of how many intermediate copy sites
+    a future refactor adds.
+    """
+    fresh = msg.copy()
+    fresh.pop(_DB_PERSISTED_MARKER, None)
+    return fresh
+
+
+def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
+    """Enforce the compaction invariant: no assembled message carries a
+    session-store persistence marker.
+
+    ``compress()`` copies protected head/tail messages out of the live
+    cached-gateway transcript, which stamps ``_db_persisted`` on every message
+    over the life of the session.  If any copied dict keeps that marker, the
+    rotation flush to the child session skips it and the compacted transcript is
+    lost from ``state.db`` (#57491).  Stripping at each copy site is necessary
+    but *positional* — a copy site added after the assembly loops would re-leak.
+    This single terminal sweep makes the guarantee structural instead: run it
+    once on the fully-assembled list so the invariant holds no matter where the
+    copies happened.  Mutates in place (the dicts are compaction-local copies).
+    """
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg.pop(_DB_PERSISTED_MARKER, None)
+
 
 # Appended to every standalone summary message (and to the merged-into-tail
 # prefix) so the model has an unambiguous "summary ends here" boundary.
@@ -94,6 +134,15 @@ _SUMMARY_END_MARKER = (
     "--- END OF CONTEXT SUMMARY — "
     "respond to the message below, not the summary above ---"
 )
+
+# When the summary must be merged into the first tail message (the alternation
+# corner case where a standalone summary role would collide with both head and
+# tail), the tail message's own prior content is preserved BEFORE the summary,
+# wrapped in these delimiters so the model doesn't read it as a fresh message.
+# The summary prefix therefore lands AFTER _MERGED_SUMMARY_DELIMITER rather than
+# at the start of the message, so _is_context_summary_content must look past it.
+_MERGED_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT — for reference only; not a new message]"
+_MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
 
 # Handoff prefixes that shipped in earlier releases. A summary persisted under
 # one of these can be inherited into a resumed lineage (#35344); when it is
@@ -646,20 +695,138 @@ class ContextCompressor(ContextEngine):
         self.awaiting_real_usage_after_compression = False
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
-        """Clear per-session compaction state at a real session boundary.
+        """Clear all per-session compaction state at a real session boundary.
 
-        ``_previous_summary`` is per-session iterative-summary state. It is
-        cleared on ``on_session_reset()`` (/new, /reset), but session *end*
-        (CLI exit, gateway expiry, session-id rotation) goes through
-        ``on_session_end()`` instead — which inherited a no-op from
-        ``ContextEngine``. Without clearing here, a cron/background session's
-        summary could survive on a reused compressor instance and leak into the
-        next live session via the ``_generate_summary()`` iterative-update path
-        (#38788). ``compress()`` already guards the leak at the point of use;
-        this is defense-in-depth that drops the stale summary the moment the
-        owning session ends.
+        Session end (CLI exit, gateway expiry, session-id rotation) goes
+        through this method rather than ``on_session_reset()`` (/new, /reset).
+        The original fix (#38788) only cleared ``_previous_summary``, but the
+        same cross-session contamination risk applies to every per-session
+        variable that ``on_session_reset()`` clears: stale
+        ``_ineffective_compression_count`` can suppress compression in a
+        subsequent live session; ``_summary_failure_cooldown_until`` can block
+        summary generation; ``_last_compress_aborted`` can make callers think
+        compression is still aborted; ``_last_aux_model_failure_*`` can surface
+        stale error warnings; ``_last_summary_dropped_count`` /
+        ``_last_summary_fallback_used`` can produce misleading user warnings.
+
+        ``compress()`` already guards ``_previous_summary`` leakage at the
+        point of use; this is defense-in-depth that resets the full per-session
+        surface the moment the owning session ends.
         """
         self._previous_summary = None
+        self._last_summary_error = None
+        self._last_summary_dropped_count = 0
+        self._last_summary_fallback_used = False
+        self._last_aux_model_failure_error = None
+        self._last_aux_model_failure_model = None
+        self._last_compression_savings_pct = 100.0
+        self._ineffective_compression_count = 0
+        self._summary_failure_cooldown_until = 0.0
+        self._last_compress_aborted = False
+        self._context_probed = False
+        self._context_probe_persistable = False
+        self.last_real_prompt_tokens = 0
+        self.last_compression_rough_tokens = 0
+        self.last_rough_tokens_when_real_prompt_fit = 0
+        self.awaiting_real_usage_after_compression = False
+
+    def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
+        """Bind the current session row so durable cooldowns can round-trip."""
+        self._session_db = session_db
+        self._session_id = session_id or ""
+        self._summary_failure_cooldown_until = 0.0
+        self._last_summary_error = None
+        self.get_active_compression_failure_cooldown()
+
+    def on_session_start(self, session_id: str, **kwargs) -> None:
+        """Bind session-scoped compression state for a new or resumed session."""
+        super().on_session_start(session_id, **kwargs)
+        self.bind_session_state(kwargs.get("session_db", getattr(self, "_session_db", None)), session_id)
+
+    def get_active_compression_failure_cooldown(self) -> Optional[Dict[str, Any]]:
+        """Return the live compression-failure cooldown for the bound session."""
+        now_mono = time.monotonic()
+        if self._summary_failure_cooldown_until > now_mono:
+            return {
+                "cooldown_until": time.time() + (
+                    self._summary_failure_cooldown_until - now_mono
+                ),
+                "remaining_seconds": self._summary_failure_cooldown_until - now_mono,
+                "error": self._last_summary_error,
+            }
+
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if not session_db or not session_id:
+            return None
+
+        getter = getattr(session_db, "get_compression_failure_cooldown", None)
+        if getter is None:
+            return None
+        try:
+            state = getter(session_id)
+        except sqlite3.Error as exc:
+            logger.debug("compression failure cooldown lookup failed: %s", exc)
+            return None
+        except Exception:
+            return None
+        if not state:
+            return None
+
+        remaining_seconds = float(state.get("remaining_seconds") or 0.0)
+        if remaining_seconds <= 0:
+            return None
+
+        self._summary_failure_cooldown_until = now_mono + remaining_seconds
+        self._last_summary_error = state.get("error")
+        return {
+            "cooldown_until": float(state.get("cooldown_until") or 0.0),
+            "remaining_seconds": remaining_seconds,
+            "error": self._last_summary_error,
+        }
+
+    def _record_compression_failure_cooldown(
+        self,
+        cooldown_seconds: float,
+        error: Optional[str],
+    ) -> None:
+        cooldown_until = time.time() + cooldown_seconds
+        self._summary_failure_cooldown_until = time.monotonic() + cooldown_seconds
+        self._last_summary_error = error
+
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if not session_db or not session_id:
+            return
+
+        recorder = getattr(session_db, "record_compression_failure_cooldown", None)
+        if recorder is None:
+            return
+        try:
+            recorder(session_id, cooldown_until, error)
+        except sqlite3.Error as exc:
+            logger.debug("compression failure cooldown persist failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
+
+    def _clear_compression_failure_cooldown(self) -> None:
+        self._summary_failure_cooldown_until = 0.0
+        self._last_summary_error = None
+
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if not session_db or not session_id:
+            return
+
+        clearer = getattr(session_db, "clear_compression_failure_cooldown", None)
+        if clearer is None:
+            return
+        try:
+            clearer(session_id)
+        except sqlite3.Error as exc:
+            logger.debug("compression failure cooldown clear failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression failure cooldown clear failed (non-sqlite): %s", exc)
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
@@ -1986,6 +2153,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         stale directive it carried stays embedded in the body.
         """
         text = (summary or "").strip()
+        # Merge-into-tail summaries wrap prior tail content before the summary
+        # body. Drop everything up to and including the delimiter so only the
+        # real summary body is carried forward on re-compaction — otherwise the
+        # [PRIOR CONTEXT] header and stale tail content leak into the next
+        # summarizer prompt.
+        if _MERGED_SUMMARY_DELIMITER in text:
+            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].strip()
         for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
@@ -2006,6 +2180,13 @@ This compaction should PRIORITISE preserving all information related to the focu
     @staticmethod
     def _is_context_summary_content(content: Any) -> bool:
         text = _content_text_for_contains(content).lstrip()
+        # Merge-into-tail summaries wrap prior tail content before the summary,
+        # so the handoff prefix lands after _MERGED_SUMMARY_DELIMITER rather than
+        # at the start. Detect the summary in that region too, otherwise callers
+        # (auto-focus skip, carry-forward summary find, last-real-user anchor)
+        # mistake a merged summary message for a real user turn.
+        if _MERGED_SUMMARY_DELIMITER in text:
+            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
         if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
@@ -2790,7 +2971,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Phase 4: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
-            msg = messages[i].copy()
+            msg = _fresh_compaction_message_copy(messages[i])
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")
                 _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
@@ -2863,12 +3044,27 @@ This compaction should PRIORITISE preserving all information related to the focu
             })
 
         for i in range(compress_end, n_messages):
-            msg = messages[i].copy()
+            msg = _fresh_compaction_message_copy(messages[i])
             if _merge_summary_into_tail and i == compress_end:
-                merged_prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
+                # Merge the summary into the first tail message, but place
+                # the END MARKER at the very end so the model sees an
+                # unambiguous boundary. Old tail content is preserved as
+                # reference material BEFORE the summary, clearly delimited
+                # so it is not mistaken for a new message to respond to.
+                # Uses _append_text_to_content to safely handle both
+                # string and multimodal-list content types.
+                # Fixes ghost-message leakage across compaction boundaries
+                # where old head messages survived verbatim and appeared
+                # before the summary.
+                old_content = msg.get("content", "")
+                suffix = (
+                    "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n"
+                    + summary + "\n\n"
+                    + _SUMMARY_END_MARKER
+                )
                 msg["content"] = _append_text_to_content(
-                    msg.get("content"),
-                    merged_prefix,
+                    _append_text_to_content(old_content, suffix, prepend=False),
+                    _MERGED_PRIOR_CONTEXT_HEADER + "\n",
                     prepend=True,
                 )
                 # Mark the merged message so frontends can identify it as
@@ -2909,5 +3105,11 @@ This compaction should PRIORITISE preserving all information related to the focu
                 savings_pct,
             )
             logger.info("Compression #%d complete", self.compression_count)
+
+        # Enforced invariant (#57491): no compacted message may leave compress()
+        # carrying a session-store persistence marker. The per-site strips above
+        # are positional; this single terminal sweep makes it structural so a
+        # future copy site cannot re-leak the marker into the child-session flush.
+        _strip_persistence_markers(compressed)
 
         return compressed

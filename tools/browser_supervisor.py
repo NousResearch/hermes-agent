@@ -166,8 +166,8 @@ class PendingDialog:
         return {
             "id": self.id,
             "type": self.type,
-            "message": self.message,
-            "default_prompt": self.default_prompt,
+            "message": _redact_supervisor_text(self.message),
+            "default_prompt": _redact_supervisor_text(self.default_prompt),
             "opened_at": self.opened_at,
             "frame_id": self.frame_id,
         }
@@ -194,7 +194,7 @@ class DialogRecord:
         return {
             "id": self.id,
             "type": self.type,
-            "message": self.message,
+            "message": _redact_supervisor_text(self.message),
             "opened_at": self.opened_at,
             "closed_at": self.closed_at,
             "closed_by": self.closed_by,

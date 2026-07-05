@@ -90,15 +90,20 @@ class TestUntrustedWrapping:
         result = _maybe_wrap_untrusted("web_extract", "ok")
         assert result == "ok"
 
-    def test_does_not_wrap_non_string_content(self):
-        # Multimodal results (content lists with image_url parts) must
-        # pass through unmodified so the list structure stays valid.
+    def test_short_multimodal_text_passes_through_unchanged(self):
+        # Multimodal results (content lists with image_url parts): short
+        # text parts (under the wrap threshold) and non-text parts pass
+        # through with equal/identical values. The outer list is rebuilt
+        # (not returned by identity) since long text parts in the same
+        # list DO get wrapped -- see test_long_multimodal_text_gets_wrapped.
         multimodal = [
             {"type": "text", "text": "hello"},
             {"type": "image_url", "image_url": {"url": "data:..."}},
         ]
         result = _maybe_wrap_untrusted("browser_snapshot", multimodal)
-        assert result is multimodal  # exact pass-through
+        assert result == multimodal
+        assert result[0]["text"] == "hello"  # too short to wrap
+        assert result[1] is multimodal[1]  # non-text parts preserved by identity
 
     def test_embedded_closing_tag_cannot_break_out(self):
         # Attack: a poisoned page embeds the closing delimiter mid-content to
@@ -190,11 +195,31 @@ class TestMakeToolResultMessage:
         )
         assert SAMPLE_LONG_TEXT in msg["content"]
 
-    def test_high_risk_message_with_multimodal_content_unwrapped(self):
+    def test_high_risk_message_with_multimodal_short_text_unchanged(self):
         content_list = [{"type": "text", "text": "page contents"}]
         msg = make_tool_result_message("browser_snapshot", content_list, "call_3")
-        # List content stays a list — provider adapters need that shape.
-        assert msg["content"] is content_list
+        # List content stays a list — provider adapters need that shape —
+        # and short text parts pass through unchanged (no wrapping needed).
+        assert isinstance(msg["content"], list)
+        assert msg["content"] == content_list
+        assert msg["content"][0]["text"] == "page contents"
+
+    def test_high_risk_message_with_multimodal_long_text_wrapped(self):
+        # A screenshot-bearing browser result whose text part carries an
+        # injection payload: the list shape is preserved (image part intact)
+        # but the long text part gets the untrusted-data framing.
+        long_text = "attacker page content " * 5
+        content_list = [
+            {"type": "text", "text": long_text},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        msg = make_tool_result_message("browser_snapshot", content_list, "call_4")
+        assert isinstance(msg["content"], list)
+        assert msg["content"][0]["text"].startswith(
+            '<untrusted_tool_result source="browser_snapshot">'
+        )
+        assert long_text in msg["content"][0]["text"]
+        assert msg["content"][1] is content_list[1]  # image part untouched
 
     def test_brainworm_payload_in_web_extract_gets_data_framing(self):
         """The whole point: even if a webpage embeds the Brainworm payload,

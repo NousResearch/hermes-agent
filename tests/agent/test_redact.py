@@ -41,6 +41,12 @@ class TestKnownPrefixes:
         result = redact_sensitive_text(token)
         assert "a" * 14 not in result
 
+    def test_slack_app_token(self):
+        token = "xapp-1-A1234567890-B1234567890-C1234567890"
+        result = redact_sensitive_text(token)
+        assert "A1234567890-B1234567890-C1234567890" not in result
+        assert "xapp-1" in result
+
     def test_google_api_key(self):
         result = redact_sensitive_text("AIzaSyB-abc123def456ghi789jklmno012345")
         assert "abc123def456" not in result
@@ -52,6 +58,22 @@ class TestKnownPrefixes:
     def test_fal_key(self):
         result = redact_sensitive_text("fal_abc123def456ghi789jkl")
         assert "abc123def456" not in result
+
+    def test_fireworks_keys(self):
+        samples = [
+            "fw-" + "A" * 40,
+            "fw_" + "B" * 40,
+            "fpk_" + "C" * 40,
+        ]
+
+        for token in samples:
+            result = redact_sensitive_text(f"provider error {token}")
+            assert token not in result
+            assert "..." in result
+
+    def test_short_fireworks_like_words_unchanged(self):
+        text = "fw-tooshort fw_tooshort fpk_tooshort"
+        assert redact_sensitive_text(text) == text
 
     def test_notion_internal_integration_token(self):
         result = redact_sensitive_text("ntn_abc123def456ghi789jkl")
@@ -116,6 +138,52 @@ class TestEnvAssignments:
         assert result.startswith("export ")
         assert "SECRET_TOKEN=" in result
         assert "mypassword" not in result
+
+
+class TestEnvLookupPreserved:
+    """Programmatic env var lookups must not be corrupted (issue #2852)."""
+
+    def test_os_getenv_single_quote_uppercase_key(self):
+        text = "MY_API_KEY=os.getenv('OPENAI_API_KEY')"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_os_getenv_lowercase_config_key(self):
+        text = "ha_token=os.getenv('HOMEASSISTANT_TOKEN')"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_os_getenv_double_quote(self):
+        text = 'API_TOKEN=os.getenv("MY_API_TOKEN")'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_os_environ_get(self):
+        text = "HA_TOKEN=os.environ.get('HOMEASSISTANT_TOKEN')"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_os_environ_bracket(self):
+        text = "MY_SECRET=os.environ['MY_SECRET']"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_process_env(self):
+        text = "api_key=process.env.API_KEY"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_real_env_value_still_redacted(self):
+        text = "HOMEASSISTANT_TOKEN=eyJhbGciOiJIUzI1NiJ9.abc123.xyz"
+        result = redact_sensitive_text(text, force=True)
+        assert "eyJhbGciOiJIUzI1NiJ9" not in result
+
+    def test_real_lowercase_value_still_redacted(self):
+        text = "password=hunter2hunter2"
+        result = redact_sensitive_text(text, force=True)
+        assert "hunter2hunter2" not in result
+
+    def test_multiline_prose_with_code_snippet(self):
+        text = """Set it up like this:
+    HA_TOKEN=os.getenv('HOMEASSISTANT_TOKEN')
+    if not HA_TOKEN:
+        raise ValueError('Missing credentials')"""
+        result = redact_sensitive_text(text, force=True)
+        assert "os.getenv('HOMEASSISTANT_TOKEN')" in result
 
 
 class TestJsonFields:

@@ -561,6 +561,137 @@ def build_skill_invocation_message(
     )
 
 
+# ---------------------------------------------------------------------------
+# Stacked slash-skill invocations — `/skill-a /skill-b do XYZ` loads every
+# leading skill (up to _MAX_STACKED_SKILLS), not just the first.
+#
+# Inspired by Claude Code v2.1.199 (July 2, 2026): "Stacked slash-skill
+# invocations like /skill-a /skill-b do XYZ now load all leading skills
+# (up to 5), not just the first."
+#
+# The generated message deliberately reuses the BUNDLE scaffolding markers
+# ("skill bundle," header + "[Loaded as part of the " block prefix) so
+# extract_user_instruction_from_skill_message() recovers the user's
+# instruction without any new marker plumbing — memory providers keep
+# storing what the user actually asked, not N skill bodies.
+# ---------------------------------------------------------------------------
+_MAX_STACKED_SKILLS = 5
+
+
+def split_stacked_skill_commands(rest: str) -> tuple[list[str], str]:
+    """Consume additional leading ``/skill`` tokens from *rest*.
+
+    *rest* is the text that follows the FIRST matched skill command (the
+    caller has already resolved that one). Leading whitespace-delimited
+    tokens that start with ``/`` and resolve to installed skill commands are
+    consumed, up to ``_MAX_STACKED_SKILLS`` total leading skills (i.e. at
+    most ``_MAX_STACKED_SKILLS - 1`` extra keys here). Parsing stops at the
+    first token that is not a resolvable skill command — that token and
+    everything after it become the user instruction.
+
+    Returns:
+        ``(extra_cmd_keys, remaining_instruction)`` where ``extra_cmd_keys``
+        are canonical ``/slug`` keys from :func:`get_skill_commands`.
+    """
+    keys: list[str] = []
+    remaining = rest or ""
+    while len(keys) < _MAX_STACKED_SKILLS - 1:
+        stripped = remaining.lstrip()
+        if not stripped.startswith("/"):
+            break
+        parts = stripped.split(None, 1)
+        token = parts[0]
+        tail = parts[1] if len(parts) > 1 else ""
+        cmd_key = resolve_skill_command_key(token.lstrip("/"))
+        if cmd_key is None or cmd_key in keys:
+            break
+        keys.append(cmd_key)
+        remaining = tail
+    return keys, remaining.strip()
+
+
+def build_stacked_skill_invocation_message(
+    cmd_keys: list[str],
+    user_instruction: str = "",
+    task_id: str | None = None,
+) -> Optional[tuple[str, list[str], list[str]]]:
+    """Build the user message for a stacked multi-skill slash invocation.
+
+    Args:
+        cmd_keys: Canonical ``/slug`` keys, in the order the user typed them.
+        user_instruction: Text remaining after the leading skill commands.
+
+    Returns:
+        ``(message, loaded_skill_names, missing_skill_names)`` or ``None``
+        when no skill could be loaded at all.
+    """
+    commands = get_skill_commands()
+
+    loaded_names: list[str] = []
+    missing: list[str] = []
+    skill_blocks: list[str] = []
+    seen: set[str] = set()
+
+    for cmd_key in cmd_keys:
+        if not cmd_key or cmd_key in seen:
+            continue
+        seen.add(cmd_key)
+
+        skill_info = commands.get(cmd_key)
+        if not skill_info:
+            missing.append(cmd_key.lstrip("/"))
+            continue
+
+        loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
+        if not loaded:
+            missing.append(cmd_key.lstrip("/"))
+            continue
+        loaded_skill, skill_dir, skill_name = loaded
+
+        # Track active usage for Curator lifecycle management (#17782)
+        try:
+            from tools.skill_usage import bump_use
+            bump_use(skill_name)
+        except Exception:
+            pass  # Non-critical
+
+        # NOTE: must start with "[Loaded as part of the " — that prefix is
+        # the bundle block marker the memory-scaffolding extractor cuts on.
+        activation_note = (
+            f'[Loaded as part of the stacked skill invocation "{skill_name}".]'
+        )
+        skill_blocks.append(
+            _build_skill_message(
+                loaded_skill,
+                skill_dir,
+                activation_note,
+                session_id=task_id,
+            )
+        )
+        loaded_names.append(skill_name)
+
+    if not skill_blocks:
+        return None
+
+    # Header — must contain " skill bundle," so the bundle-format extractor
+    # in extract_user_instruction_from_skill_message() applies unchanged.
+    typed = " ".join(k for k in cmd_keys if k)
+    header_lines = [
+        f'[IMPORTANT: The user has invoked the "{typed}" stacked skill bundle, '
+        f"loading {len(loaded_names)} skills together. Treat every skill below "
+        "as active guidance for this turn.]",
+        "",
+        f"Skills loaded: {', '.join(loaded_names)}",
+    ]
+    if missing:
+        header_lines.append(f"Skills missing (skipped): {', '.join(missing)}")
+    if user_instruction:
+        header_lines.extend(["", f"User instruction: {user_instruction}"])
+
+    header = "\n".join(header_lines)
+    return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)
+
+
 def build_preloaded_skills_prompt(
     skill_identifiers: list[str],
     task_id: str | None = None,

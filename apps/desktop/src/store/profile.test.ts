@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
+import type { ProfileInfo } from '@/types/hermes'
 
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
@@ -17,7 +18,7 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, ensureGatewayProfile } = await import('./profile')
+const { $activeGatewayProfile, $profiles, ensureGatewayProfile, refreshProfiles } = await import('./profile')
 const { $connection } = await import('./session')
 const { queryClient } = await import('@/lib/query-client')
 
@@ -35,6 +36,7 @@ beforeEach(() => {
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
+  $profiles.set([])
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
   vi.mocked(queryClient.invalidateQueries).mockClear()
   resetStarmapGraph.mockClear()

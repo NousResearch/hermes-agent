@@ -11,6 +11,7 @@ This module is the single source of truth for the dangerous command system:
 import contextvars
 import fnmatch
 import functools
+import hashlib
 import logging
 import os
 import re
@@ -488,6 +489,18 @@ DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
+    # Windows shell front-ends have destructive built-ins that do not look like
+    # Unix `rm`. Gate only when they are executed through cmd/powershell so
+    # ordinary prose or filenames containing "del"/"rd" do not trip the guard.
+    (r'\bcmd(?:\.exe)?\s+/(?:c|k)\s+.*\b(?:del|erase|rd|rmdir)\b', "Windows cmd destructive delete"),
+    # PowerShell/pwsh: the destructive verb runs as the default positional
+    # argument, so `powershell Remove-Item ...` needs NO explicit -Command.
+    # Anchor the verb to the command position (right after the shell name,
+    # after any leading `-Flag` switches, and optionally after -Command/-c)
+    # so bare invocations are caught while a benign path arg containing
+    # "del"/"rm" (e.g. `-File c:\del-logs\run.ps1`) is not.
+    (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?(?:remove-item|rmdir|erase|del|rd|ri|rm)\b', "Windows PowerShell destructive delete"),
+    (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
@@ -637,6 +650,16 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # `-D` is shorthand for `-d --force`; the long-flag spellings
+    # (`--delete`, `--force`) are different tokens entirely, so they slip
+    # past the `-D\b` pattern above even though `git branch -d --force`
+    # and `git branch --delete --force` delete an unmerged branch exactly
+    # like `-D` does. Match delete+force in either order, bounded to the
+    # same command segment (not spanning `;`/`|`/`&`/newline) the same
+    # way the sudo patterns below do, to avoid contaminating an unrelated
+    # later command in the same script.
+    (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
+    (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
     # Script execution after chmod +x — catches the two-step pattern where
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
@@ -654,7 +677,14 @@ DANGEROUS_PATTERNS = [
     # are gated below. Lazy `[^;|&\n]*?` allows flag arguments (e.g.
     # `sudo -u root -S whoami`) without spanning command separators. See
     # #17873 category 4.
-    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--stdin\b|-a\b|--askpass\b)',
+    # sudo's own option parser (like git's) resolves unambiguous
+    # long-flag prefixes, so `sudo --stdi` runs identically to
+    # `sudo --stdin` and `sudo --ask` to `sudo --askpass` -- confirmed
+    # against a live sudo binary. `--st[a-z]*` and `--a[a-z]*` are safe
+    # to match broadly: per `man sudo`, `--stdin` is the only long option
+    # starting with "st" (siblings are --shell/--set-home) and
+    # `--askpass` is the only one starting with "a" at all.
+    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)',
      "sudo with privilege flag (stdin/askpass/shell/list)"),
     # Combined short-flag form: -nS, -ns, -sa, -las — sudo flags packed
     # into a single -X token. Catches the same threat class.
@@ -743,6 +773,18 @@ def _normalize_command_for_detection(command: str) -> str:
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
     command = re.sub(r"''|\"\"", '', command)
+    # Collapse $IFS / ${IFS} word-separator expansions to a literal space.
+    # In any POSIX shell the IFS variable defaults to <space><tab><newline>,
+    # so `rm${IFS}-rf${IFS}/` is executed as `rm -rf /`. Because the dangerous
+    # and hardline patterns anchor on literal whitespace (\s) between a command
+    # and its arguments, leaving the unexpanded `${IFS}` token in place lets an
+    # attacker slip past EVERY pattern — including the unconditional hardline
+    # floor (rm -rf /, mkfs, dd to raw device, shutdown/reboot). Substituting a
+    # space here mirrors the shell's own expansion so the patterns fire. The
+    # brace form also covers bash substring expansions like `${IFS:0:1}` (a
+    # single space). Same de-obfuscation class as the backslash/empty-quote
+    # handling above.
+    command = re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
     return command
 
 
@@ -1263,12 +1305,16 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result")
+    __slots__ = ("event", "data", "result", "reason")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+        # Optional free-text reason supplied with an explicit deny
+        # (``/deny <reason>``) so the agent can adapt instead of only
+        # hearing "denied". Ported from qwibitai/nanoclaw#2832.
+        self.reason: Optional[str] = None
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
@@ -1301,13 +1347,18 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
-                             resolve_all: bool = False) -> int:
+                             resolve_all: bool = False,
+                             reason: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
     When *resolve_all* is True every pending approval in the session is
     resolved at once (``/approve all``).  Otherwise only the oldest one
     is resolved (FIFO).
+
+    *reason* is an optional free-text explanation attached to an explicit
+    deny (``/deny <reason>``).  It is relayed back to the agent in the
+    BLOCKED message so it can adapt instead of only hearing "denied".
 
     Returns the number of approvals resolved (0 means nothing was pending).
     """
@@ -1325,6 +1376,8 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
     for entry in targets:
         entry.result = choice
+        if reason:
+            entry.reason = reason
         entry.event.set()
     return len(targets)
 
@@ -1663,6 +1716,27 @@ def _get_approval_mode() -> str:
     return _normalize_approval_mode(mode)
 
 
+def is_approval_bypass_active() -> bool:
+    """Return True when the user has opted out of Hermes approval prompts.
+
+    Collapses the canonical three-source bypass check used across the codebase
+    into one place:
+      - process-scoped ``--yolo`` / ``HERMES_YOLO_MODE`` (frozen at import time
+        so a mid-process skill can't flip it — a prompt-injection escalation
+        path; see ``_YOLO_MODE_FROZEN`` above),
+      - the session-scoped gateway ``/yolo`` toggle,
+      - ``approvals.mode: off`` in config.
+
+    This is the pure-bypass sub-expression only. Callers that also honor a
+    hardline blocklist / permanent allowlist must check those separately.
+    """
+    return (
+        _YOLO_MODE_FROZEN
+        or is_current_session_yolo_enabled()
+        or _get_approval_mode() == "off"
+    )
+
+
 def _get_approval_timeout() -> int:
     """Read the approval timeout from config. Defaults to 60 seconds."""
     try:
@@ -1865,71 +1939,111 @@ def check_dangerous_command(command: str, env_type: str,
     if not is_dangerous:
         return {"approved": True, "message": None}
 
-    session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
-        return {"approved": True, "message": None}
+    return _run_approval_gate(
+        pattern_key=pattern_key,
+        description=description,
+        display_target=command,
+        approval_callback=approval_callback,
+        cron_deny_message=(
+            f"BLOCKED: Command flagged as dangerous ({description}) "
+            "but cron jobs run without a user present to approve it. "
+            "Find an alternative approach that avoids this command. "
+            "To allow dangerous commands in cron jobs, set "
+            "approvals.cron_mode: approve in config.yaml."
+        ),
+        autoapprove_log_prefix=(
+            "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
+        ),
+    )
 
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
 
-    if not is_cli and not is_gateway:
-        # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
-                return {
-                    "approved": False,
-                    "message": (
-                        f"BLOCKED: Command flagged as dangerous ({description}) "
-                        "but cron jobs run without a user present to approve it. "
-                        "Find an alternative approach that avoids this command. "
-                        "To allow dangerous commands in cron jobs, set "
-                        "approvals.cron_mode: approve in config.yaml."
-                    ),
-                }
-        logger.warning(
-            "AUTO-APPROVED dangerous command in non-interactive non-gateway context "
-            "(pattern: %s): %s — set HERMES_INTERACTIVE or HERMES_GATEWAY_SESSION to require approval.",
-            description, command[:200],
-        )
-        return {"approved": True, "message": None}
+def request_tool_approval(
+    tool_name: str,
+    reason: str,
+    *,
+    rule_key: str = "",
+    approval_callback=None,
+) -> dict:
+    """Escalate an arbitrary tool call to the human-approval gate.
 
-    if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
-        submit_pending(session_key, {
-            "command": command,
-            "pattern_key": pattern_key,
-            "description": description,
-        })
-        return {
-            "approved": False,
-            "pattern_key": pattern_key,
-            "status": "approval_required",
-            "command": command,
-            "description": description,
-            "message": (
-                f"⚠️ This command is potentially dangerous ({description}). "
-                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
-            ),
-        }
+    This is the entry point for a plugin ``pre_tool_call`` hook that returns
+    ``{"action": "approve", "message": ...}``: instead of the plugin vetoing
+    the call (``action: block``) or silently allowing it, it asks the SAME
+    human gate that Tier-2 dangerous shell patterns use. The LLM cannot skip
+    or bypass this — the tool call is intercepted before execution.
 
-    choice = prompt_dangerous_approval(command, description,
-                                       approval_callback=approval_callback)
+    It reuses the existing approval primitives (session/permanent allowlist,
+    ``prompt_dangerous_approval`` for CLI, ``submit_pending`` for the gateway
+    callback, ``[o]nce/[s]ession/[a]lways/[d]eny``, timeout fail-closed) so
+    behavior is identical to a dangerous-command match — only the trigger
+    (a plugin rule on any tool) differs.
 
-    if choice == "deny":
-        return {
-            "approved": False,
-            "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
-            "pattern_key": pattern_key,
-            "description": description,
-        }
+    Args:
+        tool_name: The tool being gated (e.g. ``"write_file"``, ``"terminal"``).
+        reason: Human-facing message from the plugin explaining why approval
+            is needed (rendered in the prompt).
+        rule_key: Optional stable identifier the plugin can supply to control
+            the ``[a]lways`` allowlist grain. When empty, the key is derived
+            from ``tool_name`` + a hash of ``reason`` so that DISTINCT reasons
+            on the same tool persist independently (answering ``[a]lways`` to
+            "write to ~/.ssh" does NOT auto-approve a later "send email" rule
+            on the same tool).
+        approval_callback: Optional CLI callback for interactive prompts
+            (same contract as ``check_dangerous_command``).
 
-    if choice == "session":
-        approve_session(session_key, pattern_key)
-    elif choice == "always":
-        approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
+    Returns:
+        ``{"approved": True, "message": None}`` when allowed, or
+        ``{"approved": False, "message": <reason>, ...}`` when denied /
+        blocked. Shape matches ``check_dangerous_command`` so callers handle
+        both paths identically.
 
-    return {"approved": True, "message": None}
+    Non-interactive contexts: cron jobs honor ``approvals.cron_mode`` (parity
+    with dangerous commands); any OTHER non-interactive non-gateway context
+    (a bare script with no ``HERMES_INTERACTIVE``) fails CLOSED — a plugin-
+    flagged action never runs ungated without a human.
+    """
+    description = reason or f"Plugin requires approval for {tool_name}"
+    # Allowlist grain: an explicit plugin rule_key wins; otherwise derive from
+    # tool + a short hash of the reason so distinct reasons on the same tool
+    # get independent [a]lways entries (Finding: rule_key=tool_name alone was
+    # too coarse — one "always" would blanket every rule on that tool).
+    if rule_key:
+        key_suffix = rule_key
+    else:
+        _reason_hash = hashlib.sha256(description.encode("utf-8")).hexdigest()[:12]
+        key_suffix = f"{tool_name}:{_reason_hash}"
+    # Synthetic pattern key so plugin-rule approvals live in the same
+    # session/permanent allowlist machinery as command patterns, namespaced
+    # to avoid ever colliding with a real command pattern key.
+    pattern_key = f"plugin_rule:{key_suffix}"
+    # A synthetic "command" string for the display/allowlist layer. It never
+    # executes; it only labels the gate. Namespaced identically.
+    display_target = f"<{tool_name}> (plugin approval rule)"
+
+    return _run_approval_gate(
+        pattern_key=pattern_key,
+        description=description,
+        display_target=display_target,
+        approval_callback=approval_callback,
+        cron_deny_message=(
+            f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
+            "but cron jobs run without a user present to approve it. Find an "
+            "alternative approach. To allow flagged actions in cron jobs, set "
+            "approvals.cron_mode: approve in config.yaml."
+        ),
+        autoapprove_log_prefix=(
+            f"plugin-escalated tool call '{tool_name}' in "
+            "non-interactive non-gateway context"
+        ),
+        fail_closed_when_no_human=True,
+        no_human_block_message=(
+            f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
+            "but no interactive user or gateway is present to approve it. "
+            "A plugin flagged this action for human confirmation."
+        ),
+    )
 
 
 # =========================================================================
@@ -2078,7 +2192,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         surface=surface,
         choice=_outcome,
     )
-    return {"resolved": resolved, "choice": choice}
+    return {"resolved": resolved, "choice": choice, "reason": entry.reason}
 
 
 def check_all_command_guards(command: str, env_type: str,
@@ -2352,6 +2466,7 @@ def check_all_command_guards(command: str, env_type: str,
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]
+            deny_reason = decision.get("reason")
 
             if not resolved or choice is None or choice == "deny":
                 # Consent contract: silence is NOT consent, and an explicit
@@ -2367,21 +2482,28 @@ def check_all_command_guards(command: str, env_type: str,
                     reason = "denied by user"
                     timeout_addendum = ""
                     outcome = "denied"
+                # An explicit deny may carry a free-text reason
+                # (``/deny <reason>``) so the agent can adapt rather than only
+                # hearing "denied". Relayed verbatim; generic attribution.
+                reason_addendum = ""
+                if outcome == "denied" and deny_reason:
+                    reason_addendum = f' Reason given by the user: "{deny_reason}".'
                 return {
                     "approved": False,
                     "message": (
-                        f"BLOCKED: Command {reason}. The user has NOT consented "
-                        f"to this action. Do NOT retry this command, do NOT "
-                        f"rephrase it, and do NOT attempt the same outcome via "
-                        f"a different command. Stop the current workflow and "
-                        f"wait for the user to respond before taking any "
-                        f"further destructive or irreversible action."
-                        f"{timeout_addendum}"
+                        f"BLOCKED: Command {reason}.{reason_addendum} The user "
+                        f"has NOT consented to this action. Do NOT retry this "
+                        f"command, do NOT rephrase it, and do NOT attempt the "
+                        f"same outcome via a different command. Stop the "
+                        f"current workflow and wait for the user to respond "
+                        f"before taking any further destructive or "
+                        f"irreversible action.{timeout_addendum}"
                     ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
                     "outcome": outcome,
                     "user_consent": False,
+                    "deny_reason": deny_reason,
                 }
 
             # User approved — persist based on scope (same logic as CLI)
@@ -2645,22 +2767,27 @@ def check_execute_code_guard(code: str, env_type: str,
 
     resolved = decision["resolved"]
     choice = decision["choice"]
+    deny_reason = decision.get("reason")
 
     if not resolved or choice is None or choice == "deny":
         reason = "timed out without user response" if not resolved else "denied by user"
         addendum = " Silence is not consent." if not resolved else ""
+        reason_addendum = ""
+        if resolved and choice == "deny" and deny_reason:
+            reason_addendum = f' Reason given by the user: "{deny_reason}".'
         return {
             "approved": False,
             "message": (
-                f"BLOCKED: execute_code script {reason}. The user has NOT "
-                f"consented to running this code. Do NOT retry, do NOT rephrase "
-                f"the script, and do NOT attempt the same outcome via a "
-                f"different tool.{addendum}"
+                f"BLOCKED: execute_code script {reason}.{reason_addendum} The "
+                f"user has NOT consented to running this code. Do NOT retry, "
+                f"do NOT rephrase the script, and do NOT attempt the same "
+                f"outcome via a different tool.{addendum}"
             ),
             "pattern_key": pattern_key,
             "description": description,
             "outcome": "timeout" if not resolved else "denied",
             "user_consent": False,
+            "deny_reason": deny_reason,
         }
 
     # Approved — persist based on scope (same logic as check_all_command_guards).

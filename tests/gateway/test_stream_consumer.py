@@ -1464,6 +1464,16 @@ class TestFilterAndAccumulate:
         c._filter_and_accumulate("<THINKING>caps</THINKING>answer")
         assert c._accumulated == "answer"
 
+    @pytest.mark.parametrize(
+        "tag",
+        ["THINK", "Think", "ThInK", "THOUGHT", "REASONING", "Thinking"],
+    )
+    def test_reasoning_tags_are_case_insensitive(self, tag):
+        c = _make_consumer()
+        c._filter_and_accumulate(f"<{tag}>hidden reasoning</{tag}>Visible answer")
+        assert c._accumulated == "Visible answer"
+        assert "hidden reasoning" not in c._accumulated
+
     def test_prose_mention_not_stripped(self):
         """<think> mentioned mid-line in prose should NOT trigger filtering."""
         c = _make_consumer()

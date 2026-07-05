@@ -63,9 +63,13 @@ def _default_preset() -> dict[str, Any]:
     return {
         "reference_models": deepcopy(DEFAULT_MOA_REFERENCE_MODELS),
         "aggregator": deepcopy(DEFAULT_MOA_AGGREGATOR),
-        "reference_temperature": 0.6,
-        "aggregator_temperature": 0.4,
+        # None = temperature omitted from API calls (provider default),
+        # matching single-model agent behavior.
+        "reference_temperature": None,
+        "aggregator_temperature": None,
         "max_tokens": 4096,
+        "reference_max_tokens": None,
+        "fanout": "per_iteration",
         "enabled": True,
     }
 
@@ -139,6 +143,8 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "reference_temperature": active["reference_temperature"],
         "aggregator_temperature": active["aggregator_temperature"],
         "max_tokens": active["max_tokens"],
+        "reference_max_tokens": active.get("reference_max_tokens"),
+        "fanout": active.get("fanout", "per_iteration"),
         "enabled": active["enabled"],
     }
 

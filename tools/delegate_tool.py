@@ -111,24 +111,9 @@ def _get_subagent_approval_callback():
         return _subagent_auto_approve
     return _subagent_auto_deny
 
-# Build a description fragment listing toolsets available for subagents.
-# Excludes toolsets where ALL tools are blocked, composite/platform toolsets
-# (hermes-* prefixed), and scenario toolsets.
-#
-# NOTE: "delegation" is in this exclusion set so the subagent-facing
-# capability hint string (_TOOLSET_LIST_STR) doesn't advertise it as a
-# toolset to request explicitly — the correct mechanism for nested
-# delegation is role='orchestrator', which re-adds "delegation" in
-# _build_child_agent regardless of this exclusion.
-_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "rl"})
-_SUBAGENT_TOOLSETS = sorted(
-    name
-    for name, defn in TOOLSETS.items()
-    if name not in _EXCLUDED_TOOLSET_NAMES
-    and not name.startswith("hermes-")
-    and not all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
-)
-_TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
+# NOTE: nested delegation is granted by role='orchestrator' (which re-adds the
+# "delegation" toolset in _build_child_agent), NOT by the model naming toolsets
+# — the model has no toolsets argument. Subagents inherit the parent's toolsets.
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
@@ -1040,7 +1025,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-    # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
+    # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
     # Per-call role controlling whether the child can further delegate.
@@ -1240,8 +1225,11 @@ def _build_child_agent(
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
+        # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
+        # False (``reasoning_effort: false``) to "" and inherit the parent
+        # instead of disabling thinking for children.
+        delegation_effort = delegation_cfg.get("reasoning_effort")
+        if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
 
             parsed = parse_reasoning_effort(delegation_effort)
@@ -1872,7 +1860,11 @@ def _run_single_child(
         # result(timeout=None) blocks until the child finishes). Stuck-child
         # protection comes from the heartbeat staleness monitor instead.
         child_timeout = _get_child_timeout()
-        _timeout_executor = ThreadPoolExecutor(
+        # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
+        # below; a stdlib non-daemon worker would then block interpreter
+        # exit at atexit-join time if the child never unwinds.
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+        _timeout_executor = DaemonThreadPoolExecutor(
             max_workers=1,
             # Install a non-interactive approval callback in the worker thread
             # so dangerous-command prompts from the subagent don't fall back to
@@ -2322,11 +2314,8 @@ def _recover_tasks_from_json_string(
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
-    toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
-    acp_command: Optional[str] = None,
-    acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
@@ -2429,9 +2418,7 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
-        ]
+        task_list = [{"goal": goal, "context": context, "role": top_role}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2467,7 +2454,6 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
@@ -2475,7 +2461,9 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
+                # Subagents always inherit the parent's toolsets; the model
+                # cannot choose or narrow them (no model-facing toolsets arg).
+                toolsets=None,
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -2484,14 +2472,8 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
-                ),
+                override_acp_command=creds.get("command"),
+                override_acp_args=creds.get("args"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2521,7 +2503,11 @@ def delegate_task(
             completed_count = 0
             spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-            with ThreadPoolExecutor(max_workers=max_children) as executor:
+            # Daemon workers (tools.daemon_pool): the `with` block still joins
+            # normally, but if the parent is interrupted while a child is
+            # wedged, the abandoned worker must not block interpreter exit.
+            from tools.daemon_pool import DaemonThreadPoolExecutor
+            with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
@@ -2816,7 +2802,9 @@ def delegate_task(
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
-            toolsets=toolsets,
+            # Metadata for the completion block only; subagents inherit the
+            # parent's toolsets (no model-facing toolsets arg).
+            toolsets=None,
             role=top_role,
             model=creds["model"],
             session_key=_session_key,
@@ -2857,7 +2845,16 @@ def delegate_task(
             "batch synchronously instead.",
             dispatch.get("error", "rejected"),
         )
-        return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
+        _cap_result = _execute_and_aggregate()
+        if isinstance(_cap_result, dict):
+            _cap_result["note"] = (
+                "The background delegation pool was at capacity "
+                "(delegation.max_concurrent_children), so the subagent(s) ran "
+                "SYNCHRONOUSLY and the result is included above. Raise "
+                "delegation.max_concurrent_children in config.yaml to allow "
+                "more concurrent background delegations."
+            )
+        return json.dumps(_cap_result, ensure_ascii=False)
 
     # ----- Synchronous path -----
     return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
@@ -3355,18 +3352,6 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
-            "toolsets": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Toolsets to enable for this subagent. "
-                    "Default: inherits your enabled toolsets. "
-                    f"Available toolsets: {_TOOLSET_LIST_STR}. "
-                    "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['browser'] for web interaction, "
-                    "['terminal', 'file', 'web'] for full-stack tasks."
-                ),
-            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3376,24 +3361,6 @@ DELEGATE_TASK_SCHEMA = {
                         "context": {
                             "type": "string",
                             "description": "Task-specific context",
-                        },
-                        "toolsets": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
-                        },
-                        "acp_command": {
-                            "type": "string",
-                            "description": (
-                                "Per-task ACP command override (e.g. 'copilot'). "
-                                "Overrides the top-level acp_command for this task only. "
-                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
-                            ),
-                        },
-                        "acp_args": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Per-task ACP args override. Leave empty unless acp_command is set.",
                         },
                         "role": {
                             "type": "string",
@@ -3425,28 +3392,6 @@ DELEGATE_TASK_SCHEMA = {
                     "compatibility."
                 ),
             },
-            "acp_command": {
-                "type": "string",
-                "description": (
-                    "Override ACP command for child agents (e.g. 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Requires an ACP-compatible CLI "
-                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
-                    "See agent/copilot_acp_client.py for the implementation. "
-                    "IMPORTANT: Do NOT set this unless the user has explicitly told you "
-                    "a specific ACP-compatible CLI is installed and configured. "
-                    "Leave empty to use the parent's default transport (Hermes subagents)."
-                ),
-            },
-            "acp_args": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. "
-                    "Leave empty unless acp_command is explicitly provided."
-                ),
-            },
         },
         "required": [],
     },
@@ -3473,6 +3418,28 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     return not is_subagent
 
 
+_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
+
+
+def _strip_model_hidden_task_fields(tasks: Any) -> Any:
+    if not isinstance(tasks, list):
+        return tasks
+    stripped_tasks = []
+    changed = False
+    for task in tasks:
+        if not isinstance(task, dict):
+            stripped_tasks.append(task)
+            continue
+        stripped = {
+            key: value
+            for key, value in task.items()
+            if key not in _MODEL_HIDDEN_TASK_FIELDS
+        }
+        changed = changed or len(stripped) != len(task)
+        stripped_tasks.append(stripped)
+    return stripped_tasks if changed else tasks
+
+
 registry.register(
     name="delegate_task",
     toolset="delegation",
@@ -3480,11 +3447,8 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"),
         context=args.get("context"),
-        toolsets=args.get("toolsets"),
-        tasks=args.get("tasks"),
+        tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
-        acp_command=args.get("acp_command"),
-        acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),

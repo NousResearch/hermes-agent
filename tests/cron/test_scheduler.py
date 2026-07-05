@@ -3296,35 +3296,40 @@ class TestDeliverResultTimeoutCancelsFuture:
         standalone_send.assert_awaited_once()
         assert result is None, f"standalone should have delivered, got: {result!r}"
 
-    def test_live_adapter_private_dm_topic_routes_via_direct_messages_topic_id(self):
-        """#22773: a cron target to a PRIVATE Telegram chat with a numeric topic
-        id must be routed via ``direct_messages_topic_id`` (Bot API DM topics),
-        NOT a bare ``message_thread_id`` (which Bot API 10.0 rejects / mis-routes
-        to General).  The cron live-adapter path routes through the gateway
-        DeliveryRouter, which applies the same three-mode routing as live
-        messages.
+    def test_live_adapter_forum_topic_in_private_chat_routes_via_message_thread_id(self):
+        """#52060: a cron target to a PRIVATE Telegram chat with a numeric topic
+        id is a normal forum-style topic — it must route via ``message_thread_id``,
+        NOT ``direct_messages_topic_id``.  The #22773 heuristic inferred a Bot API
+        channel DM topic from positive chat_id + numeric thread and nulled
+        ``message_thread_id``, so deliveries landed in General.  We now probe the
+        live adapter's ``get_chat_info``; a non-channel chat routes via
+        ``message_thread_id``.
         """
         from gateway.config import Platform
         from gateway.platforms.base import SendResult
         from concurrent.futures import Future
 
         send_result = SendResult(success=True, message_id="42")
-        adapter = MagicMock()
+
+        class _ForumAdapter(MagicMock):
+            async def get_chat_info(self, chat_id):
+                return {"name": "Proyectos", "type": "forum", "is_forum": True}
+
+        adapter = _ForumAdapter()
         adapter.send = AsyncMock(return_value=send_result)
 
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        # DeliveryRouter consults the silence-narration config flag.
         mock_cfg.filter_silence_narration = False
 
         loop = MagicMock()
         loop.is_running.return_value = True
 
         job = {
-            "id": "dm-topic-job",
-            "deliver": "telegram:226252250:7072",  # private chat + numeric topic
+            "id": "forum-topic-job",
+            "deliver": "telegram:226252250:7072",  # private chat + numeric forum topic
         }
 
         def fake_run_coro(coro, _loop):
@@ -3352,16 +3357,256 @@ class TestDeliverResultTimeoutCancelsFuture:
         sent_metadata = adapter.send.call_args[1]["metadata"]
         assert sent_chat_id == "226252250"
         assert sent_text == "Hello world"
-        # The topic must be addressed via direct_messages_topic_id, and a bare
-        # message_thread_id must NOT be set (that is the Bot API 10.0 bug).
+        # Forum topics route via message_thread_id (thread_id in metadata), NOT
+        # direct_messages_topic_id.
+        assert not sent_metadata.get("direct_messages_topic_id")
+        assert str(sent_metadata.get("thread_id")) == "7072"
+
+    def test_live_adapter_ambiguous_topic_probe_failure_falls_back_to_message_thread_id(self):
+        """Fail SAFE: when the ``get_chat_info`` probe cannot resolve the chat
+        type (adapter with no usable probe / raising probe), an ambiguous
+        private-chat topic target defaults to ``message_thread_id`` — the common
+        forum-topic case and pre-#22773 behaviour, never the DM-topic route.
+        """
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(success=True, message_id="42")
+
+        # Plain MagicMock: its auto-created get_chat_info returns a MagicMock,
+        # not an awaitable, so the scheduled coroutine raises and the probe
+        # fails closed to message_thread_id.
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=send_result)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "probe-fail-job",
+            "deliver": "telegram:226252250:7072",
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None, f"expected clean delivery, got: {result!r}"
+        adapter.send.assert_called_once()
+        sent_metadata = adapter.send.call_args[1]["metadata"]
+        assert not sent_metadata.get("direct_messages_topic_id")
+        assert str(sent_metadata.get("thread_id")) == "7072"
+
+    def test_live_adapter_probe_returns_none_falls_back_to_message_thread_id(self):
+        """Fail SAFE when the probe yields a non-dict result. A relay/proxy
+        adapter (or a future ``get_chat_info`` variant) may return ``None``
+        rather than a dict; the ``isinstance(info, dict)`` guard must still route
+        via ``message_thread_id``, distinct from the raising-probe path.
+
+        (The real Telegram adapter returns a dict on every path — a
+        ``type="dm"`` dict with an ``error`` key on failure, covered separately
+        by ``..._adapter_error_dict_falls_back...`` — never ``None``. This test
+        locks the non-dict defensive branch for other adapters.)"""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(success=True, message_id="42")
+
+        class _NoneProbeAdapter(MagicMock):
+            async def get_chat_info(self, chat_id):
+                return None
+
+        adapter = _NoneProbeAdapter()
+        adapter.send = AsyncMock(return_value=send_result)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "none-probe-job",
+            "deliver": "telegram:226252250:7072",
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None, f"expected clean delivery, got: {result!r}"
+        adapter.send.assert_called_once()
+        sent_metadata = adapter.send.call_args[1]["metadata"]
+        assert not sent_metadata.get("direct_messages_topic_id")
+        assert str(sent_metadata.get("thread_id")) == "7072"
+
+    def test_live_adapter_error_dict_falls_back_to_message_thread_id(self):
+        """Fail SAFE on the REAL Telegram adapter error contract: on a failed
+        ``get_chat.get_chat`` the adapter returns ``{"type": "dm", "error": ...}``
+        (plugins/platforms/telegram/adapter.py::get_chat_info), NOT ``None`` and
+        NOT a raise. A ``type="dm"`` (or bot-missing ``{"type": "dm"}``) result
+        must route via ``message_thread_id`` — only a genuine ``type="channel"``
+        gets ``direct_messages_topic_id``. This locks the exact dict shape
+        production emits so a forum-topic cron never mis-routes to General."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(success=True, message_id="42")
+
+        class _ErrorDictAdapter(MagicMock):
+            async def get_chat_info(self, chat_id):
+                # Mirrors the real adapter's except-branch return shape.
+                return {"name": str(chat_id), "type": "dm", "error": "Chat not found"}
+
+        adapter = _ErrorDictAdapter()
+        adapter.send = AsyncMock(return_value=send_result)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "error-dict-job",
+            "deliver": "telegram:226252250:7072",
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None, f"expected clean delivery, got: {result!r}"
+        adapter.send.assert_called_once()
+        sent_metadata = adapter.send.call_args[1]["metadata"]
+        assert not sent_metadata.get("direct_messages_topic_id")
+        assert str(sent_metadata.get("thread_id")) == "7072"
+
+    def test_live_adapter_channel_dm_topic_routes_via_direct_messages_topic_id(self):
+        """#22773 (done right): a genuine Bot API 10.0 *channel* Direct-Messages
+        topic must be routed via ``direct_messages_topic_id`` (a bare
+        ``message_thread_id`` is rejected / mis-routed there).  We recognise it
+        from the real runtime signal — ``get_chat_info`` reports the chat as a
+        ``channel`` — not from a positive-chat-id + numeric-thread guess.
+        """
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(success=True, message_id="42")
+
+        class _ChannelAdapter(MagicMock):
+            async def get_chat_info(self, chat_id):
+                return {"name": "My Channel", "type": "channel", "is_forum": False}
+
+        adapter = _ChannelAdapter()
+        adapter.send = AsyncMock(return_value=send_result)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "channel-dm-topic-job",
+            "deliver": "telegram:226252250:7072",
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None, f"expected clean delivery, got: {result!r}"
+        adapter.send.assert_called_once()
+        sent_metadata = adapter.send.call_args[1]["metadata"]
+        # Genuine channel DM topic routes via direct_messages_topic_id, no bare
+        # message_thread_id.
         assert str(sent_metadata.get("direct_messages_topic_id")) == "7072"
         assert not sent_metadata.get("message_thread_id")
 
-    def test_live_adapter_private_dm_topic_media_routes_via_direct_messages_topic_id(self, tmp_path, monkeypatch):
-        """#22773 (media): MEDIA attachments to a private DM topic must also be
-        routed via ``direct_messages_topic_id``, not a bare ``message_thread_id``
-        — the media path previously used the bare thread_id and landed
-        attachments in the General lane."""
+    def test_live_adapter_forum_topic_media_routes_via_message_thread_id(self, tmp_path, monkeypatch):
+        """#52060 (media): MEDIA attachments to a forum-style topic in a private
+        chat must also route via ``thread_id`` (message_thread_id), not
+        ``direct_messages_topic_id``."""
         from gateway.config import Platform
         from gateway.platforms.base import SendResult
         from concurrent.futures import Future
@@ -3376,7 +3621,14 @@ class TestDeliverResultTimeoutCancelsFuture:
         )
         media_path = media_file.resolve()
 
-        adapter = AsyncMock()
+        probe_calls = {"n": 0}
+
+        class _ForumAdapter(AsyncMock):
+            async def get_chat_info(self, chat_id):
+                probe_calls["n"] += 1
+                return {"name": "Proyectos", "type": "forum", "is_forum": True}
+
+        adapter = _ForumAdapter()
         adapter.send.return_value = SendResult(success=True, message_id="1")
         adapter.send_image_file.return_value = SendResult(success=True, message_id="2")
 
@@ -3390,8 +3642,74 @@ class TestDeliverResultTimeoutCancelsFuture:
         loop.is_running.return_value = True
 
         job = {
-            "id": "dm-topic-media-job",
-            "deliver": "telegram:226252250:7072",  # private chat + numeric topic
+            "id": "forum-topic-media-job",
+            "deliver": "telegram:226252250:7072",  # private chat + numeric forum topic
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                f"Chart attached\nMEDIA:{media_path}",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        adapter.send_image_file.assert_called_once()
+        media_metadata = adapter.send_image_file.call_args[1]["metadata"]
+        assert str(media_metadata.get("thread_id")) == "7072"
+        assert not media_metadata.get("direct_messages_topic_id")
+        # Probe exactly once and reuse the result for BOTH the text and media
+        # sends — never re-probe per send (the "compute ONCE" contract).
+        assert probe_calls["n"] == 1
+
+    def test_live_adapter_channel_dm_topic_media_routes_via_direct_messages_topic_id(self, tmp_path, monkeypatch):
+        """#22773 (media, done right): MEDIA attachments to a genuine channel DM
+        topic must route via ``direct_messages_topic_id``."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        media_root = tmp_path / "media-cache"
+        media_file = media_root / "chart.png"
+        media_file.parent.mkdir(parents=True, exist_ok=True)
+        media_file.write_bytes(b"media")
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (media_root,),
+        )
+        media_path = media_file.resolve()
+
+        class _ChannelAdapter(AsyncMock):
+            async def get_chat_info(self, chat_id):
+                return {"name": "My Channel", "type": "channel", "is_forum": False}
+
+        adapter = _ChannelAdapter()
+        adapter.send.return_value = SendResult(success=True, message_id="1")
+        adapter.send_image_file.return_value = SendResult(success=True, message_id="2")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "channel-dm-topic-media-job",
+            "deliver": "telegram:226252250:7072",
         }
 
         def fake_run_coro(coro, _loop):
@@ -4142,3 +4460,328 @@ class TestCronDeliveryMirror:
             )
         store.get_or_create_session.assert_not_called()
         mirror_mock.assert_not_called()
+
+
+class TestCronContinuableSurfaceInChannel:
+    """cron_continuable_surface: in_channel — deliver a continuable cron FLAT
+    into a channel (no dedicated thread), so a plain channel reply continues the
+    job via the shared-channel session (platform, chat_id, None).
+
+    Design: decisions.md D1/D2/D6 + F5. The scheduler reads the per-platform key
+    generically from pconfig.extra; the in_channel branch is gated on the
+    adapter capability flag ``supports_inchannel_continuable`` (Slack=True,
+    others fail SAFE to thread). In in_channel mode the thread-open branch is
+    SKIPPED (thread_id stays None), then ``_seed_cron_channel_session`` CREATES
+    the flat shared-channel session and mirrors the brief into it (the shipped
+    mirror only APPENDS to an existing session, and the flat channel row is
+    otherwise absent for a chat_postMessage delivery).
+    """
+
+    def _slack_cfg(self, extra):
+        """A mock GatewayConfig with a Slack pconfig carrying ``extra``."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = extra
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+        return mock_cfg
+
+    def _run_inchannel_delivery(self, extra, adapter, *, mirror_ok=True, origin=None):
+        """Drive _deliver_result down the live-adapter path for a Slack
+        channel-origin job with the given ``extra`` config. Returns the
+        _open_continuable_cron_thread mock and the mirror_to_session mock."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        mock_cfg = self._slack_cfg(extra)
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            try:
+                import asyncio as _asyncio
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        job = {
+            "id": "brief-job",
+            "name": "Daily Brief",
+            "deliver": "origin",
+            # Channel origin: no thread_id (flat channel message scheduled it).
+            # Carries the scheduling user's id — the in_channel seed must key
+            # the flat channel session to THIS user (see build_session_key).
+            "origin": origin or {"platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN"},
+            # Opt into the continuable mirror.
+            "attach_to_session": True,
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._open_continuable_cron_thread") as open_thread_mock, \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("gateway.mirror.mirror_to_session", return_value=mirror_ok) as mirror_mock:
+            _deliver_result(
+                job, "Here is today's brief.",
+                adapters={Platform.SLACK: adapter}, loop=loop,
+            )
+        return open_thread_mock, mirror_mock
+
+    def _slack_adapter(self, supports_inchannel=True, with_store=True):
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        # Capability flag read via getattr in the scheduler.
+        adapter.supports_inchannel_continuable = supports_inchannel
+        # A live session store so the in_channel seed can CREATE the flat row
+        # (the real bug: without a create step the mirror no-ops on a missing
+        # session and the brief is lost). Use a plain MagicMock store.
+        if with_store:
+            adapter._session_store = MagicMock()
+        return adapter
+
+    def test_in_channel_skips_thread_open(self):
+        """G2: in_channel mode must NOT open a handoff thread."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        open_thread_mock.assert_not_called()
+
+    def test_in_channel_seeds_shared_channel_session_flat(self):
+        """G3 (the real fix): in_channel CREATES the flat channel session row
+        (thread_id=None) via the adapter's live store AND mirrors the brief into
+        it. The prior implementation relied on the bare mirror, which no-ops
+        when the flat row doesn't already exist — so the brief was silently lost
+        (verified live). This asserts the create-then-mirror handoff."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        _, mirror_mock = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        # The flat session row must be CREATED (this is what was missing).
+        adapter._session_store.get_or_create_session.assert_called_once()
+        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        assert seeded.thread_id is None, "seed must be flat (thread_id=None)"
+        assert seeded.chat_type == "group", "a channel (non-D) keys as group"
+        assert str(seeded.chat_id) == "C123"
+        assert str(seeded.user_id) == "U_HUMAN", (
+            "channel session key embeds user_id — the seed MUST use the origin "
+            "user's id or the inbound reply keys to a different session"
+        )
+        # Brief mirrored flat into that row.
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+        assert mirror_mock.call_args[0][0] == "slack"
+        assert mirror_mock.call_args[0][1] == "C123"
+        assert "Here is today's brief." in mirror_mock.call_args[0][2]
+
+    def test_in_channel_dm_seeds_dm_session(self):
+        """1:1 DM (chat_id starts with 'D'): the flat session is created with
+        chat_type='dm'. The DM session key does NOT embed user_id, so any
+        user_id resolves to the same session — but chat_type must be 'dm' so the
+        key prefix matches the inbound DM reply's key."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        _, mirror_mock = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+            origin={"platform": "slack", "chat_id": "D999", "user_id": "U_HUMAN"},
+        )
+        adapter._session_store.get_or_create_session.assert_called_once()
+        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        assert seeded.chat_type == "dm", "a DM (chat_id starts with 'D') keys as dm"
+        assert seeded.thread_id is None
+        assert str(seeded.chat_id) == "D999"
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+
+    def test_thread_mode_default_still_opens_thread(self):
+        """G1 regression: the default (thread) mode is byte-identical — the
+        thread-open branch still fires when no surface key is set."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery({}, adapter)
+        open_thread_mock.assert_called_once()
+
+    def test_explicit_thread_value_opens_thread(self):
+        """An explicit cron_continuable_surface: thread is the default path."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "thread"}, adapter,
+        )
+        open_thread_mock.assert_called_once()
+
+    def test_in_channel_on_unsupported_platform_fails_safe_to_thread(self):
+        """D6 fail-safe: in_channel on an adapter WITHOUT the capability flag
+        falls back to the thread path (a threaded continuation ≈ today), never
+        a dropped continuation."""
+        adapter = self._slack_adapter(supports_inchannel=False)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        # Capability absent → treated as thread → thread-open still attempted.
+        open_thread_mock.assert_called_once()
+
+    def test_unrecognised_surface_value_coerces_to_thread(self):
+        """Any non-'in_channel' value is the default thread path (fail safe)."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "bogus"}, adapter,
+        )
+        open_thread_mock.assert_called_once()
+
+    # --- _seed_cron_channel_session: the create-then-mirror unit + the
+    #     KEY-MATCH invariant (seed key must equal the inbound reply's key) ---
+
+    def test_seed_channel_session_key_matches_inbound_channel_reply(self):
+        """The whole point: the flat session the seed CREATES must be keyed
+        identically to what a plain inbound channel reply resolves to. Assert
+        the invariant directly via build_session_key, not just call args."""
+        from cron.scheduler import _seed_cron_channel_session
+        from gateway.session import build_session_key, SessionSource
+        from gateway.config import Platform
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            ok = _seed_cron_channel_session(
+                {"id": "j1", "name": "Brief"}, adapter, "slack", "C123",
+                "Daily brief", is_dm=False, user_id="U_HUMAN", chat_name="ops",
+            )
+        assert ok is True
+        seeded_source = store.get_or_create_session.call_args[0][0]
+        seed_key = build_session_key(seeded_source)
+
+        # What a plain top-level channel reply (reply_in_thread:false → thread
+        # None) from the same user resolves to:
+        inbound = SessionSource(
+            platform=Platform.SLACK, chat_id="C123", chat_type="group",
+            user_id="U_HUMAN", thread_id=None,
+        )
+        assert seed_key == build_session_key(inbound), (
+            f"seed key {seed_key} != inbound reply key {build_session_key(inbound)} "
+            "— the reply would NOT continue the seeded session"
+        )
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+        assert mirror_mock.call_args.kwargs.get("user_id") == "U_HUMAN"
+
+    def test_seed_channel_session_key_matches_inbound_dm_reply(self):
+        """DM case: seeded key (chat_type=dm) equals the inbound DM reply key.
+        The DM key ignores user_id, so a system id would also match — but
+        chat_type MUST be 'dm' so the prefix aligns."""
+        from cron.scheduler import _seed_cron_channel_session
+        from gateway.session import build_session_key, SessionSource
+        from gateway.config import Platform
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True):
+            _seed_cron_channel_session(
+                {"id": "j1"}, adapter, "slack", "D999", "Daily brief",
+                is_dm=True, user_id="U_HUMAN",
+            )
+        seeded_source = store.get_or_create_session.call_args[0][0]
+        inbound = SessionSource(
+            platform=Platform.SLACK, chat_id="D999", chat_type="dm",
+            user_id="U_HUMAN", thread_id=None,
+        )
+        assert build_session_key(seeded_source) == build_session_key(inbound)
+        assert seeded_source.chat_type == "dm"
+
+    def test_seed_channel_session_noop_on_empty_text(self):
+        from cron.scheduler import _seed_cron_channel_session
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+        with patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            ok = _seed_cron_channel_session(
+                {"id": "j1"}, adapter, "slack", "C123", "   ",
+                is_dm=False, user_id="U_HUMAN",
+            )
+        assert ok is False
+        store.get_or_create_session.assert_not_called()
+        mirror_mock.assert_not_called()
+
+
+class TestMultiTargetDeliveryContinuesOnFailure:
+    """When delivery to one target fails inside the standalone thread-pool
+    fallback, the loop must continue to the remaining targets (#47163).
+
+    The fallback runs inside the `except RuntimeError` block of
+    `_deliver_result`. Before the fix, an exception raised there (SMTP
+    ConnectionError, future.result timeout) escaped the function entirely —
+    it is NOT caught by the sibling `except Exception` — crashing the loop
+    and silently dropping every subsequent target.
+    """
+
+    def _email_cfg(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.EMAIL: pconfig}
+        return mock_cfg
+
+    def test_first_target_failure_does_not_crash_loop(self):
+        """First email target fails in the fallback; the second is still attempted."""
+        job = {
+            "id": "multi-email-job",
+            "deliver": "email:a@example.com,email:b@example.com",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=self._email_cfg()), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value = mock_pool
+
+            fail_future = MagicMock()
+            fail_future.result.side_effect = ConnectionError("SMTP connection refused")
+            ok_future = MagicMock()
+            ok_future.result.return_value = {"success": True}
+            mock_pool.submit.side_effect = [fail_future, ok_future]
+
+            result = _deliver_result(job, "Report content")
+
+        # Both targets attempted — the loop did not crash after the first failure.
+        assert mock_pool.submit.call_count == 2, (
+            f"expected 2 delivery attempts, got {mock_pool.submit.call_count}"
+        )
+        # First target's failure is surfaced in the returned error string.
+        assert result is not None
+        assert "a@example.com" in result
+        assert "SMTP connection refused" in result
+
+    def test_all_targets_fail_returns_combined_errors(self):
+        """When every target fails, the result reports all of them."""
+        job = {
+            "id": "all-fail-job",
+            "deliver": "email:a@example.com,email:b@example.com",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=self._email_cfg()), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value = mock_pool
+
+            fail_future = MagicMock()
+            fail_future.result.side_effect = ConnectionError("connection refused")
+            mock_pool.submit.return_value = fail_future
+
+            result = _deliver_result(job, "Report content")
+
+        assert result is not None
+        assert "a@example.com" in result
+        assert "b@example.com" in result
+        assert mock_pool.submit.call_count == 2

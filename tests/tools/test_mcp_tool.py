@@ -675,6 +675,57 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_forward_session_context_opt_in_adds_meta(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import (
+            _make_tool_handler,
+            _servers,
+            _session_context_forwarding_servers,
+            sanitize_mcp_name_component,
+        )
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("hello world", is_error=False)
+        )
+        server = _make_mock_server("mandate-edge", session=mock_session)
+        _servers["mandate-edge"] = server
+        _session_context_forwarding_servers.add(sanitize_mcp_name_component("mandate-edge"))
+        tokens = set_session_vars(
+            platform="discord",
+            chat_id="channel-123",
+            thread_id="thread-456",
+            user_id="user-789",
+            session_key="agent:main:discord:thread:thread-456:thread-456",
+            session_id="20260705_191621_abcd",
+            message_id="message-999",
+        )
+
+        try:
+            handler = _make_tool_handler("mandate-edge", "platform_submit_task", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"task": "smoke"}))
+            assert result["result"] == "hello world"
+            mock_session.call_tool.assert_called_once_with(
+                "platform_submit_task",
+                arguments={"task": "smoke"},
+                meta={
+                    "hermes/platform": "discord",
+                    "hermes/session_id": "20260705_191621_abcd",
+                    "hermes/session_key": "agent:main:discord:thread:thread-456:thread-456",
+                    "hermes/chat_id": "channel-123",
+                    "hermes/thread_id": "thread-456",
+                    "hermes/user_id": "user-789",
+                    "hermes/message_id": "message-999",
+                },
+            )
+        finally:
+            clear_session_vars(tokens)
+            _servers.pop("mandate-edge", None)
+            _session_context_forwarding_servers.discard(
+                sanitize_mcp_name_component("mandate-edge")
+            )
+
     def test_mcp_error_result(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 
@@ -4222,6 +4273,42 @@ class TestMcpParallelToolCalls:
             assert sanitize_mcp_name_component("default_srv") not in _parallel_safe_servers
             # Cleanup
             _parallel_safe_servers.discard(sanitize_mcp_name_component("parallel_srv"))
+
+    def test_register_mcp_servers_tracks_forward_session_context_flag(self):
+        """register_mcp_servers populates session-context forwarding opt-ins."""
+        from tools.mcp_tool import (
+            register_mcp_servers,
+            _session_context_forwarding_servers,
+            _lock,
+            sanitize_mcp_name_component,
+        )
+        fake_config = {
+            "mandate-edge": {
+                "command": "echo",
+                "forward_session_context": True,
+            },
+            "default_srv": {
+                "command": "echo",
+            },
+        }
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            register_mcp_servers(fake_config)
+
+        with _lock:
+            assert (
+                sanitize_mcp_name_component("mandate-edge")
+                in _session_context_forwarding_servers
+            )
+            assert (
+                sanitize_mcp_name_component("default_srv")
+                not in _session_context_forwarding_servers
+            )
+            _session_context_forwarding_servers.discard(
+                sanitize_mcp_name_component("mandate-edge")
+            )
 
     def test_register_mcp_servers_removes_parallel_flag_on_toggle(self):
         """Toggling supports_parallel_tool_calls to false removes server from the set."""

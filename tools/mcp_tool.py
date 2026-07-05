@@ -3027,6 +3027,22 @@ def _handle_session_expired_and_retry(
 # ``is_mcp_tool_parallel_safe()`` for the parallel-execution check in run_agent.
 _parallel_safe_servers: set = set()
 
+# Sanitized server names whose ``forward_session_context`` config is True.
+# These servers receive the current gateway invocation identity out-of-band via
+# MCP request ``_meta``. It is opt-in so third-party MCP servers never receive
+# chat/user/session identifiers unless explicitly configured.
+_session_context_forwarding_servers: set = set()
+
+_SESSION_CONTEXT_META_ENV_MAP = {
+    "hermes/platform": "HERMES_SESSION_PLATFORM",
+    "hermes/session_id": "HERMES_SESSION_ID",
+    "hermes/session_key": "HERMES_SESSION_KEY",
+    "hermes/chat_id": "HERMES_SESSION_CHAT_ID",
+    "hermes/thread_id": "HERMES_SESSION_THREAD_ID",
+    "hermes/user_id": "HERMES_SESSION_USER_ID",
+    "hermes/message_id": "HERMES_SESSION_MESSAGE_ID",
+}
+
 # Exact MCP tool-name provenance. MCP tool names are formatted as
 # ``mcp_{sanitized_server}_{sanitized_tool}``, which is ambiguous when server
 # names contain underscores (``mcp_a_b_tool`` could be server ``a`` + tool
@@ -3040,7 +3056,8 @@ _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
 # Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
-# _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
+# _parallel_safe_servers, _session_context_forwarding_servers,
+# _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
 
 # PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
@@ -3402,6 +3419,32 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+def _build_session_context_meta() -> Dict[str, str]:
+    """Build MCP host-plane metadata for the current gateway invocation.
+
+    The model only authors tool arguments. This metadata is attached by the
+    host at dispatch time and arrives at the MCP server as request ``_meta``.
+    Values come through ``gateway.session_context`` so concurrent gateway turns
+    never read another turn's session identifiers.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return {key: "" for key in _SESSION_CONTEXT_META_ENV_MAP}
+
+    meta: Dict[str, str] = {}
+    for meta_key, env_name in _SESSION_CONTEXT_META_ENV_MAP.items():
+        value = get_session_env(env_name, "")
+        meta[meta_key] = "" if value is None else str(value)
+    return meta
+
+
+def _should_forward_session_context(server_name: str) -> bool:
+    safe_name = sanitize_mcp_name_component(server_name)
+    with _lock:
+        return safe_name in _session_context_forwarding_servers
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -3475,7 +3518,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    call_kwargs = {"arguments": args}
+                    if _should_forward_session_context(server_name):
+                        call_kwargs["meta"] = _build_session_context_meta()
+                    result = await server.session.call_tool(tool_name, **call_kwargs)
                 finally:
                     server._pending_call_context = None
             # MCP CallToolResult has .content (list of content blocks) and .isError
@@ -4400,10 +4446,15 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             _server_connect_errors.pop(srv_name, None)
         # Track which servers opt-in to parallel tool calls (idempotent).
         for srv_name, srv_cfg in servers.items():
+            safe_srv_name = sanitize_mcp_name_component(srv_name)
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
-                _parallel_safe_servers.add(sanitize_mcp_name_component(srv_name))
+                _parallel_safe_servers.add(safe_srv_name)
             else:
-                _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
+                _parallel_safe_servers.discard(safe_srv_name)
+            if _parse_boolish(srv_cfg.get("forward_session_context", False), default=False):
+                _session_context_forwarding_servers.add(safe_srv_name)
+            else:
+                _session_context_forwarding_servers.discard(safe_srv_name)
 
     if not new_servers:
         return _existing_tool_names()
@@ -4907,6 +4958,8 @@ def shutdown_mcp_servers():
 
     # Fast path: nothing to shut down.
     if not servers_snapshot:
+        with _lock:
+            _session_context_forwarding_servers.clear()
         _stop_mcp_loop()
         return
 
@@ -4922,6 +4975,7 @@ def shutdown_mcp_servers():
                 )
         with _lock:
             _servers.clear()
+            _session_context_forwarding_servers.clear()
 
     with _lock:
         loop = _mcp_loop

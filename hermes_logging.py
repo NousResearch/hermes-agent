@@ -37,7 +37,7 @@ import sys
 import threading
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 # On Windows, stdlib ``RotatingFileHandler`` calls ``os.rename()`` in
 # ``doRollover()`` and fails with ``PermissionError [WinError 32]`` whenever
@@ -177,18 +177,38 @@ def clear_session_context() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Record factory — injects session_tag into every LogRecord at creation
+# Record factory — injects session_tag and sanitizes every LogRecord at creation
 # ---------------------------------------------------------------------------
 
+def _redact_log_record_value(value: Any) -> Any:
+    """Redact string values inside common logging payload containers."""
+    if isinstance(value, str):
+        try:
+            from agent.redact import redact_sensitive_text
+            return redact_sensitive_text(value)
+        except Exception:
+            return value
+    if isinstance(value, tuple):
+        return tuple(_redact_log_record_value(item) for item in value)
+    if isinstance(value, list):
+        return [_redact_log_record_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _redact_log_record_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
 def _install_session_record_factory() -> None:
-    """Replace the global LogRecord factory with one that adds ``session_tag``.
+    """Replace the global LogRecord factory with Hermes record defaults.
 
     Unlike a ``logging.Filter`` on a handler or logger, the record factory
     runs for EVERY record in the process — including records that propagate
     from child loggers and records handled by third-party handlers.  This
-    guarantees ``%(session_tag)s`` is always available in format strings,
-    eliminating the KeyError that would occur if a handler used our format
-    without having a ``_SessionFilter`` attached.
+    guarantees ``%(session_tag)s`` is always available in format strings and
+    ensures plain non-Hermes formatters receive already-sanitized ``msg`` and
+    ``args`` payloads.
 
     Idempotent — checks for a marker attribute to avoid double-wrapping if
     the module is reloaded.
@@ -201,9 +221,15 @@ def _install_session_record_factory() -> None:
         record = current_factory(*args, **kwargs)
         sid = getattr(_session_context, "session_id", None)
         record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
+        try:
+            record.msg = _redact_log_record_value(record.msg)
+            record.args = _redact_log_record_value(record.args)
+        except Exception:
+            pass
         return record
 
     _session_record_factory._hermes_session_injector = True  # type: ignore[attr-defined]
+    _session_record_factory._hermes_record_sanitizer = True  # type: ignore[attr-defined]
     logging.setLogRecordFactory(_session_record_factory)
 
 

@@ -996,7 +996,12 @@ def cron_delivery_targets() -> list[dict]:
     return targets
 
 
-def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
+def _resolve_single_delivery_target(
+    job: dict,
+    deliver_value: str,
+    *,
+    prefer_origin_for_bare_platform: bool = True,
+) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
     origin = _resolve_origin(job)
@@ -1062,7 +1067,11 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         }
 
     platform_name = deliver_value
-    if origin and origin.get("platform") == platform_name:
+    if (
+        prefer_origin_for_bare_platform
+        and origin
+        and origin.get("platform") == platform_name
+    ):
         return {
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
@@ -1142,16 +1151,32 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
         return []
 
     raw_parts = [p.strip() for p in deliver.split(",") if p.strip()]
+    origin = _resolve_origin(job)
+    has_explicit_origin = any(p.lower() == "origin" for p in raw_parts)
 
     # Expand routing intents.
-    parts: List[str] = []
+    parts: List[tuple[str, bool]] = []
     for raw in raw_parts:
-        parts.extend(_expand_routing_tokens(raw))
+        raw_is_routing_token = raw.lower() in _ROUTING_TOKENS
+        expanded_parts = _expand_routing_tokens(raw)
+        for part in expanded_parts:
+            if (
+                raw_is_routing_token
+                and has_explicit_origin
+                and origin
+                and str(origin.get("platform", "")).lower() == part.lower()
+            ):
+                continue
+            parts.append((part, not raw_is_routing_token))
 
     seen = set()
     targets = []
-    for part in parts:
-        target = _resolve_single_delivery_target(job, part)
+    for part, prefer_origin in parts:
+        target = _resolve_single_delivery_target(
+            job,
+            part,
+            prefer_origin_for_bare_platform=prefer_origin,
+        )
         if target:
             key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
             if key not in seen:

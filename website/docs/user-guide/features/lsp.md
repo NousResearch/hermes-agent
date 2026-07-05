@@ -21,7 +21,7 @@ install, no separate daemon to manage.
 ## When LSP runs
 
 LSP is gated on **git workspace detection**. When the agent's working
-directory (or the file being edited) is inside a git worktree, LSP
+directory (or the file being edited) is inside a git repository, LSP
 runs against that workspace. When neither is in a git repo, LSP
 stays dormant — useful for messaging gateways where the cwd is the
 user's home directory and there's no project to diagnose.
@@ -86,11 +86,34 @@ agent sees a syntax-clean file with semantic problems as
 | Prisma | `prisma language-server` | manual |
 | Kotlin | `kotlin-language-server` | manual |
 | Java | `jdtls` | manual |
+| PowerShell | `PowerShellEditorServices` (`pwsh` host) | manual (release zip) |
 
 For "manual" entries, install the server through whatever toolchain
 manager makes sense for that language (rustup, ghcup, opam, brew,
 …). Hermes auto-detects the binary on PATH or in
 `<HERMES_HOME>/lsp/bin/`.
+
+### PowerShell
+
+PowerShellEditorServices isn't a single binary — it's a PowerShell
+module bundle launched by a `pwsh` (PowerShell 7+) or `powershell`
+host. Setup:
+
+1. Install [PowerShell](https://github.com/PowerShell/PowerShell) so
+   `pwsh` (or Windows `powershell`) is on PATH.
+2. Download the latest release zip from
+   [PowerShellEditorServices releases](https://github.com/PowerShell/PowerShellEditorServices/releases)
+   and extract it.
+3. Point Hermes at the extracted bundle — the directory that contains
+   `PowerShellEditorServices/Start-EditorServices.ps1`. Either:
+   - set `lsp.servers.powershell.command: ["/path/to/bundle"]` in
+     `config.yaml`, or
+   - extract it to `<HERMES_HOME>/lsp/PowerShellEditorServices`, or
+   - export `PSES_BUNDLE_PATH=/path/to/bundle`.
+
+`hermes lsp status` reports `installed` once `pwsh` is found; if the
+bundle is missing you'll see a one-time warning in the logs with the
+download link.
 
 A few servers are installed alongside a peer dependency that npm
 won't auto-pull. The current case is `typescript-language-server`,
@@ -249,5 +272,6 @@ the next edit re-spawns.
 
 **Editing a file outside any git repo**
 
-By design, LSP only runs inside git worktrees. Run `git init` in the
-project, or accept the in-process syntax-only fallback.
+By design, LSP only runs inside a git repository. If the project isn't
+yet initialized, run `git init` to enable LSP diagnostics. Otherwise the
+in-process syntax-only fallback applies.

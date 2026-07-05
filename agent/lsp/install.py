@@ -102,12 +102,22 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # Lua — manual (LuaLS is platform-specific binaries from GitHub
     # releases; complex enough that we punt to the user)
     "lua-language-server": {"strategy": "manual", "pkg": "", "bin": "lua-language-server"},
+    # PowerShell — PowerShellEditorServices ships as a GitHub release
+    # zip driven by a pwsh bootstrap script, not a single binary.  We
+    # require a manual bundle install and probe for the pwsh host so
+    # `hermes lsp status` reports the host's presence.
+    "powershell": {"strategy": "manual", "pkg": "", "bin": "pwsh"},
 }
 
 
 _install_locks: Dict[str, threading.Lock] = {}
 _install_results: Dict[str, Optional[str]] = {}
 _install_lock_meta = threading.Lock()
+_WINDOWS_WRAPPER_SUFFIXES = (".cmd", ".exe", ".bat")
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
 
 
 def hermes_lsp_bin_dir() -> Path:
@@ -120,14 +130,33 @@ def hermes_lsp_bin_dir() -> Path:
     return p
 
 
+def _native_binary_candidates(base: Path) -> list[Path]:
+    """Return platform-native executable candidates for a staged binary."""
+    candidates = [base]
+    if _is_windows():
+        existing = {str(base).lower()}
+        for suffix in _WINDOWS_WRAPPER_SUFFIXES:
+            candidate = Path(str(base) + suffix)
+            key = str(candidate).lower()
+            if key not in existing:
+                candidates.append(candidate)
+                existing.add(key)
+    return candidates
+
+
 def _existing_binary(name: str) -> Optional[str]:
     """Probe the staging dir + PATH for a binary named ``name``."""
-    staged = hermes_lsp_bin_dir() / name
-    if staged.exists() and os.access(staged, os.X_OK):
-        return str(staged)
+    for staged in _native_binary_candidates(hermes_lsp_bin_dir() / name):
+        if staged.exists() and os.access(staged, os.X_OK):
+            return str(staged)
     on_path = shutil.which(name)
     if on_path:
         return on_path
+    if _is_windows():
+        for suffix in _WINDOWS_WRAPPER_SUFFIXES:
+            on_path = shutil.which(f"{name}{suffix}")
+            if on_path:
+                return on_path
     return None
 
 
@@ -151,7 +180,7 @@ def try_install(pkg: str, strategy: str = "auto") -> Optional[str]:
     same path (or ``None``) without reinstalling.  Concurrent calls
     are serialized.
     """
-    if strategy not in ("auto",):
+    if strategy not in {"auto",}:
         # Only ``auto`` triggers an actual install.  In manual/off,
         # we still check whether the binary already exists.
         recipe = INSTALL_RECIPES.get(pkg, {})
@@ -238,6 +267,7 @@ def _install_npm(
             capture_output=True,
             text=True,
             timeout=300,
+            stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             logger.warning(
@@ -250,12 +280,7 @@ def _install_npm(
 
     # Find the bin
     nm_bin = staging / "node_modules" / ".bin" / bin_name
-    if os.name == "nt":
-        # On Windows npm sometimes drops `.cmd` shims
-        candidates = [nm_bin, nm_bin.with_suffix(".cmd")]
-    else:
-        candidates = [nm_bin]
-    for c in candidates:
+    for c in _native_binary_candidates(nm_bin):
         if c.exists():
             # Symlink into our `lsp/bin/` for stable PATH access.
             link = hermes_lsp_bin_dir() / c.name
@@ -291,6 +316,7 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
             text=True,
             timeout=600,
             env=env,
+            stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             logger.warning(
@@ -301,7 +327,7 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
         logger.warning("[install] go install errored for %s: %s", pkg, e)
         return None
     bin_path = staging / bin_name
-    if os.name == "nt":
+    if _is_windows():
         bin_path = bin_path.with_suffix(".exe")
     if bin_path.exists():
         return str(bin_path)
@@ -328,6 +354,7 @@ def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
             capture_output=True,
             text=True,
             timeout=300,
+            stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             logger.warning(
@@ -337,19 +364,24 @@ def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.warning("[install] pip install errored for %s: %s", pkg, e)
         return None
-    # Look for the script
-    bin_path = pip_target / "bin" / bin_name
-    if bin_path.exists():
-        link = hermes_lsp_bin_dir() / bin_name
-        if not link.exists():
-            try:
-                link.symlink_to(bin_path)
-            except (OSError, NotImplementedError):
-                try:
-                    shutil.copy2(bin_path, link)
-                except OSError:
-                    return str(bin_path)
-        return str(link if link.exists() else bin_path)
+    # Look for the console script.  POSIX wheels generally write to bin/,
+    # while native Windows installs use Scripts/.
+    script_dirs = [pip_target / "bin"]
+    if _is_windows():
+        script_dirs.append(pip_target / "Scripts")
+    for script_dir in script_dirs:
+        for bin_path in _native_binary_candidates(script_dir / bin_name):
+            if bin_path.exists():
+                link = hermes_lsp_bin_dir() / bin_path.name
+                if not link.exists():
+                    try:
+                        link.symlink_to(bin_path)
+                    except (OSError, NotImplementedError):
+                        try:
+                            shutil.copy2(bin_path, link)
+                        except OSError:
+                            return str(bin_path)
+                return str(link if link.exists() else bin_path)
     return None
 
 

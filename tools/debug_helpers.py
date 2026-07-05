@@ -2,7 +2,7 @@
 
 Replaces the identical DEBUG_MODE / _log_debug_call / _save_debug_log /
 get_debug_session_info boilerplate previously duplicated across web_tools,
-vision_tools, mixture_of_agents_tool, and image_generation_tool.
+vision_tools, and image_generation_tool.
 
 Usage in a tool module:
 

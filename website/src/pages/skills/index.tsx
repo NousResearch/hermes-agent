@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
-import skills from "../../data/skills.json";
 import styles from "./styles.module.css";
 
 interface Skill {
@@ -18,9 +17,47 @@ interface Skill {
   envVars?: string[];
   commands?: string[];
   docsPath?: string;
+  identifier?: string;
+  installCmd?: string;
+  /** Clickable URL to the skill's origin (repo / detail page). Synthesized
+   *  in extract-skills.py for community skills that have no generated docs
+   *  page, so the expanded card always has somewhere to send the user. */
+  sourceUrl?: string;
+  /** Lowercase pre-joined haystack used by the search filter.
+   *  Built once at load time so per-keystroke filtering is a single
+   *  `.includes()` per skill instead of array-join + toLowerCase on
+   *  every render. Skipped on the wire — added in the loader. */
+  _search?: string;
 }
 
-const allSkills: Skill[] = skills as Skill[];
+const allSkills: Skill[] = [];
+
+interface IndexMeta {
+  extractedAt?: string;
+  indexGeneratedAt?: string;
+  totalSkills?: number;
+  externalSource?: string;
+  bySource?: Record<string, number>;
+}
+const indexMeta: IndexMeta = {};
+
+function formatRelativeTime(iso?: string): string | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return null;
+  const now = Date.now();
+  const diffMs = now - then;
+  if (diffMs < 0) return "just now";
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  const months = Math.floor(days / 30);
+  return `${months} month${months === 1 ? "" : "s"} ago`;
+}
 
 const CATEGORY_ICONS: Record<string, string> = {
   apple: "\u{f179}",
@@ -95,9 +132,104 @@ const SOURCE_CONFIG: Record<
     border: "rgba(167, 139, 250, 0.2)",
     icon: "\u{25A0}",
   },
+  "skills.sh": {
+    label: "skills.sh",
+    color: "#34d399",
+    bg: "rgba(52, 211, 153, 0.08)",
+    border: "rgba(52, 211, 153, 0.2)",
+    icon: "\u{2734}",
+  },
+  ClawHub: {
+    label: "ClawHub",
+    color: "#f472b6",
+    bg: "rgba(244, 114, 182, 0.08)",
+    border: "rgba(244, 114, 182, 0.2)",
+    icon: "\u{2726}",
+  },
+  "browse.sh": {
+    label: "browse.sh",
+    color: "#22d3ee",
+    bg: "rgba(34, 211, 238, 0.08)",
+    border: "rgba(34, 211, 238, 0.2)",
+    icon: "\u{29BF}",
+  },
+  OpenAI: {
+    label: "OpenAI",
+    color: "#10b981",
+    bg: "rgba(16, 185, 129, 0.08)",
+    border: "rgba(16, 185, 129, 0.2)",
+    icon: "\u{2737}",
+  },
+  HuggingFace: {
+    label: "HuggingFace",
+    color: "#fbbf24",
+    bg: "rgba(251, 191, 36, 0.08)",
+    border: "rgba(251, 191, 36, 0.2)",
+    icon: "\u{1F917}",
+  },
+  NVIDIA: {
+    label: "NVIDIA",
+    color: "#76b900",
+    bg: "rgba(118, 185, 0, 0.08)",
+    border: "rgba(118, 185, 0, 0.25)",
+    icon: "\u{25B6}",
+  },
+  VoltAgent: {
+    label: "VoltAgent",
+    color: "#facc15",
+    bg: "rgba(250, 204, 21, 0.08)",
+    border: "rgba(250, 204, 21, 0.2)",
+    icon: "\u{26A1}",
+  },
+  GitHub: {
+    label: "GitHub",
+    color: "#94a3b8",
+    bg: "rgba(148, 163, 184, 0.08)",
+    border: "rgba(148, 163, 184, 0.2)",
+    icon: "\u{2756}",
+  },
+  "Well-Known": {
+    label: "Well-Known",
+    color: "#818cf8",
+    bg: "rgba(129, 140, 248, 0.08)",
+    border: "rgba(129, 140, 248, 0.2)",
+    icon: "\u{2756}",
+  },
+  gstack: {
+    label: "gstack",
+    color: "#fb923c",
+    bg: "rgba(251, 146, 60, 0.08)",
+    border: "rgba(251, 146, 60, 0.2)",
+    icon: "\u{2756}",
+  },
+  MiniMax: {
+    label: "MiniMax",
+    color: "#f87171",
+    bg: "rgba(248, 113, 113, 0.08)",
+    border: "rgba(248, 113, 113, 0.2)",
+    icon: "\u{2756}",
+  },
 };
 
-const SOURCE_ORDER = ["all", "built-in", "optional", "Anthropic", "LobeHub", "Claude Marketplace"];
+const SOURCE_ORDER = [
+  "all",
+  "built-in",
+  "optional",
+  "Anthropic",
+  "OpenAI",
+  "HuggingFace",
+  "NVIDIA",
+  "skills.sh",
+  "ClawHub",
+  "browse.sh",
+  "LobeHub",
+  "Claude Marketplace",
+  "VoltAgent",
+  "Well-Known",
+  "GitHub",
+  "gstack",
+  "MiniMax",
+];
 
 function highlightMatch(text: string, query: string): React.ReactNode {
   if (!query || !text) return text;
@@ -109,6 +241,47 @@ function highlightMatch(text: string, query: string): React.ReactNode {
       <mark className={styles.highlight}>{text.slice(idx, idx + query.length)}</mark>
       {text.slice(idx + query.length)}
     </>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      navigator.clipboard?.writeText(text).then(
+        () => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        },
+        () => {},
+      );
+    },
+    [text],
+  );
+  return (
+    <button
+      className={styles.copyBtn}
+      onClick={onCopy}
+      title="Copy install command"
+      aria-label="Copy install command"
+    >
+      {copied ? (
+        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+          <path
+            fillRule="evenodd"
+            d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
+            clipRule="evenodd"
+          />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+          <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
+          <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
+        </svg>
+      )}
+      <span className={styles.copyBtnLabel}>{copied ? "Copied" : "Copy"}</span>
+    </button>
   );
 }
 
@@ -250,17 +423,32 @@ function SkillCard({
               </div>
             )}
             <div className={styles.installHint}>
-              <code>hermes skills install {skill.name}</code>
+              <code>{skill.installCmd || `hermes skills install ${skill.name}`}</code>
+              <CopyButton
+                text={skill.installCmd || `hermes skills install ${skill.name}`}
+              />
             </div>
-            {skill.docsPath && (
-              <a
-                className={styles.docsLink}
-                href={`/docs/user-guide/skills/${skill.docsPath}`}
-                onClick={(e) => e.stopPropagation()}
-              >
-                View full documentation →
-              </a>
-            )}
+            <div className={styles.cardLinks}>
+              {skill.docsPath ? (
+                <a
+                  className={styles.docsLink}
+                  href={`/docs/user-guide/skills/${skill.docsPath}`}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  View full documentation →
+                </a>
+              ) : skill.sourceUrl ? (
+                <a
+                  className={styles.docsLink}
+                  href={skill.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  View source ↗
+                </a>
+              ) : null}
+            </div>
           </div>
         )}
       </div>
@@ -281,8 +469,43 @@ function StatCard({ value, label, color }: { value: number; label: string; color
 
 const PAGE_SIZE = 60;
 
+// Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
+// `static/api/` ends up at `/docs/api/`. Hardcoding here is fine because the
+// same `baseUrl` is enforced repo-wide; if it ever changes, this is the only
+// place that needs to follow.
+const SKILLS_URL = "/docs/api/skills.json";
+const META_URL = "/docs/api/skills-meta.json";
+
+function buildSearchHaystack(s: Skill): string {
+  // Pre-compute the lowercase blob the search filter scans. Done once at
+  // load time instead of per-keystroke per-skill. With 50k+ skills the
+  // per-keystroke variant was unusably slow.
+  return [
+    s.name,
+    s.description,
+    s.overview,
+    s.categoryLabel,
+    s.author,
+    ...(s.tags || []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 export default function SkillsDashboard() {
+  // Lazy-loaded data. Was bundled into the JS chunk (~22 MB at 50k skills,
+  // which made the initial page load unusable on mobile). Now fetched on
+  // mount from the same CDN that serves the docs.
+  const [data, setData] = useState<{ skills: Skill[]; meta: IndexMeta } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   const [search, setSearch] = useState("");
+  // Debounced copy of `search` — used by the filter. Without the debounce,
+  // typing into the search box ran .filter() over the whole catalog on
+  // every keystroke, which on a 50k-item list felt like the page had
+  // hung. 150ms gives a snappy feel without lagging behind the user.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
@@ -290,6 +513,42 @@ export default function SkillsDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [sk, mt] = await Promise.all([
+          fetch(SKILLS_URL).then((r) => {
+            if (!r.ok) throw new Error(`skills.json HTTP ${r.status}`);
+            return r.json();
+          }),
+          fetch(META_URL).then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
+        ]);
+        if (cancelled) return;
+        const skillsArr = Array.isArray(sk) ? (sk as Skill[]) : [];
+        // Stamp the precomputed search haystack onto each row.
+        for (const s of skillsArr) s._search = buildSearchHaystack(s);
+        setData({ skills: skillsArr, meta: mt || {} });
+      } catch (err) {
+        if (cancelled) return;
+        setLoadError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Debounce the search input — 150ms feels instant while preventing the
+  // filter from running on every individual keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 150);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const allSkillsLocal: Skill[] = data?.skills ?? [];
+  const indexMetaLocal: IndexMeta = data?.meta ?? indexMeta;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -307,15 +566,15 @@ export default function SkillsDashboard() {
   }, []);
 
   const sources = useMemo(() => {
-    const set = new Set(allSkills.map((s) => s.source));
+    const set = new Set(allSkillsLocal.map((s) => s.source));
     return SOURCE_ORDER.filter((s) => s === "all" || set.has(s));
-  }, []);
+  }, [allSkillsLocal]);
 
   const categoryEntries = useMemo(() => {
     const pool =
       sourceFilter === "all"
-        ? allSkills
-        : allSkills.filter((s) => s.source === sourceFilter);
+        ? allSkillsLocal
+        : allSkillsLocal.filter((s) => s.source === sourceFilter);
     const map = new Map<string, { label: string; count: number }>();
     for (const s of pool) {
       const key = s.category || "uncategorized";
@@ -332,27 +591,25 @@ export default function SkillsDashboard() {
     return Array.from(map.entries())
       .sort((a, b) => b[1].count - a[1].count)
       .map(([key, { label, count }]) => ({ key, label, count }));
-  }, [sourceFilter]);
+  }, [sourceFilter, allSkillsLocal]);
 
   const filtered = useMemo(() => {
-    const q = search.toLowerCase().trim();
-    return allSkills.filter((s) => {
+    const q = debouncedSearch.toLowerCase().trim();
+    return allSkillsLocal.filter((s) => {
       if (sourceFilter !== "all" && s.source !== sourceFilter) return false;
       if (categoryFilter !== "all" && s.category !== categoryFilter) return false;
       if (q) {
-        const haystack = [s.name, s.description, s.overview, s.categoryLabel, s.author, ...(s.tags || [])]
-          .join(" ")
-          .toLowerCase();
-        return haystack.includes(q);
+        // _search is pre-built in the load effect — single .includes() per row.
+        return (s._search || "").includes(q);
       }
       return true;
     });
-  }, [search, sourceFilter, categoryFilter]);
+  }, [debouncedSearch, sourceFilter, categoryFilter, allSkillsLocal]);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
     setExpandedCard(null);
-  }, [search, sourceFilter, categoryFilter]);
+  }, [debouncedSearch, sourceFilter, categoryFilter]);
 
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
@@ -395,24 +652,42 @@ export default function SkillsDashboard() {
             <h1 className={styles.heroTitle}>Skills Hub</h1>
             <p className={styles.heroSub}>
               Discover, search, and install from{" "}
-              <strong className={styles.heroAccent}>{allSkills.length}</strong> skills
-              across {sources.length - 1} registries
+              <strong className={styles.heroAccent}>
+                {data ? allSkillsLocal.length.toLocaleString() : "…"}
+              </strong>{" "}
+              skills across {sources.length - 1} registries
+              {loadError && (
+                <span style={{ color: "#f87171", marginLeft: 8 }}>
+                  · failed to load catalog ({loadError})
+                </span>
+              )}
             </p>
+            {(indexMetaLocal?.indexGeneratedAt || indexMetaLocal?.extractedAt) && (
+              <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
+                Catalog refreshed{" "}
+                <span title={indexMetaLocal.indexGeneratedAt || indexMetaLocal.extractedAt}>
+                  {formatRelativeTime(
+                    indexMetaLocal.indexGeneratedAt || indexMetaLocal.extractedAt,
+                  ) || "recently"}
+                </span>
+                {" "}· auto-rebuilt twice daily
+              </p>
+            )}
 
             <div className={styles.statsRow}>
               <StatCard
-                value={allSkills.filter((s) => s.source === "built-in").length}
+                value={allSkillsLocal.filter((s) => s.source === "built-in").length}
                 label="Built-in"
                 color="#4ade80"
               />
               <StatCard
-                value={allSkills.filter((s) => s.source === "optional").length}
+                value={allSkillsLocal.filter((s) => s.source === "optional").length}
                 label="Optional"
                 color="#fbbf24"
               />
               <StatCard
                 value={
-                  allSkills.filter(
+                  allSkillsLocal.filter(
                     (s) => s.source !== "built-in" && s.source !== "optional"
                   ).length
                 }
@@ -420,7 +695,7 @@ export default function SkillsDashboard() {
                 color="#60a5fa"
               />
               <StatCard
-                value={new Set(allSkills.map((s) => s.category)).size}
+                value={new Set(allSkillsLocal.map((s) => s.category)).size}
                 label="Categories"
                 color="#a78bfa"
               />
@@ -464,8 +739,8 @@ export default function SkillsDashboard() {
               const conf = SOURCE_CONFIG[src];
               const count =
                 src === "all"
-                  ? allSkills.length
-                  : allSkills.filter((s) => s.source === src).length;
+                  ? allSkillsLocal.length
+                  : allSkillsLocal.filter((s) => s.source === src).length;
               return (
                 <button
                   key={src}
@@ -577,7 +852,15 @@ export default function SkillsDashboard() {
               </div>
             )}
 
-            {visible.length > 0 ? (
+            {!data && !loadError ? (
+              <div className={styles.empty}>
+                <div className={styles.loadingSpinner} />
+                <h3 className={styles.emptyTitle}>Loading the catalog…</h3>
+                <p className={styles.emptyDesc}>
+                  Fetching 88k+ skills across every registry. One moment.
+                </p>
+              </div>
+            ) : visible.length > 0 ? (
               <>
                 <div className={styles.grid}>
                   {visible.map((skill, i) => {

@@ -10,7 +10,6 @@ run silently.
 
 from __future__ import annotations
 
-from copy import deepcopy
 
 from hermes_cli.config import DEFAULT_CONFIG
 

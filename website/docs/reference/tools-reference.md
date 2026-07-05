@@ -8,10 +8,10 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~70 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 7 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
+**Quick counts (current registry):** ~73 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 3 terminal tools (`terminal`, `process`, `read_terminal`), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 9 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`).
 
 :::tip MCP Tools
-In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp_<server>_` (e.g., `mcp_github_create_issue` for the `github` MCP server). See [MCP Integration](/docs/user-guide/features/mcp) for configuration.
+In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp_<server>_` (e.g., `mcp_github_create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
 :::
 
 ## `browser` toolset
@@ -103,7 +103,7 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `computer_use` | Background macOS desktop control via cua-driver — screenshots (SOM / vision / AX), click / drag / scroll / type / key / wait, list_apps, focus_app. Does NOT steal the user's cursor or keyboard focus. Works with any tool-capable model. macOS only. | `cua-driver` on `$PATH` (install via `hermes tools`). |
+| `computer_use` | Background desktop control via cua-driver — screenshots (SOM / vision / AX), click / drag / scroll / type / key / wait, list_apps, focus_app. Does NOT steal the user's cursor or keyboard focus. Works with any tool-capable model. macOS, Windows, and Linux. | `cua-driver` on `$PATH` (install via `hermes tools`). |
 
 
 :::note
@@ -114,21 +114,33 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `image_generate` | Generate high-quality images from text prompts using FAL.ai. The underlying model is user-configured (default: FLUX 2 Klein 9B, sub-1s generation) and is not selectable by the agent. Returns a single image URL. Display it using… | FAL_KEY |
+| `image_generate` | Generate images from text prompts (text-to-image) or edit/transform an existing image (image-to-image) via the user-configured backend (FAL.ai, OpenAI, OpenAI Codex auth, xAI, Krea). Pass `image_url` to edit an image and `reference_image_urls` for style references; omit both for text-to-image. The model is user-configured and not selectable by the agent. Returns a single image URL or local path. | FAL_KEY / OPENAI_API_KEY / Codex OAuth / xAI OAuth / KREA_API_KEY |
 
 ## `kanban` toolset
 
-Registered only when the agent is spawned by the kanban dispatcher (`HERMES_KANBAN_TASK` env set). Lets workers mark tasks done with structured handoffs, block for human input, heartbeat during long ops, comment on threads, and (for orchestrators) fan out into child tasks. See [Kanban Multi-Agent](/docs/user-guide/features/kanban) for the full workflow.
+Registered when the agent is either (a) spawned by the kanban dispatcher (`HERMES_KANBAN_TASK` env set) or (b) running in a profile that explicitly enables the `kanban` toolset. Task-scoped workers use lifecycle tools for their assigned task; orchestrator profiles additionally get board-routing tools like `kanban_list` and `kanban_unblock`. See [Kanban Multi-Agent](/user-guide/features/kanban) for the full workflow.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `kanban_show` | Show the active kanban task assigned to this worker (title, description, comments, dependencies). | `HERMES_KANBAN_TASK` |
-| `kanban_complete` | Mark the current task done with a structured handoff payload (results, artifacts, follow-ups). | `HERMES_KANBAN_TASK` |
-| `kanban_block` | Block the current task on a question for the user — the dispatcher pauses, surfaces the question, and resumes once a human replies. | `HERMES_KANBAN_TASK` |
-| `kanban_heartbeat` | Send a progress heartbeat during a long-running operation so the dispatcher knows the worker is still alive. | `HERMES_KANBAN_TASK` |
-| `kanban_comment` | Add a comment to the task thread without changing its state — useful for surfacing intermediate findings. | `HERMES_KANBAN_TASK` |
-| `kanban_create` | (Orchestrator only) Fan out child tasks from the current task. | `HERMES_KANBAN_TASK` + orchestrator role |
-| `kanban_link` | (Orchestrator only) Link related tasks together (blocks/blocked-by/related). | `HERMES_KANBAN_TASK` + orchestrator role |
+| `kanban_show` | Show the active kanban task assigned to this worker (title, description, comments, dependencies). | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_list` | List board tasks with filters. Orchestrator-only; hidden from dispatcher-spawned task workers. | profile with `kanban` toolset |
+| `kanban_complete` | Mark the current task done with a structured handoff payload (results, artifacts, follow-ups). | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_block` | Block the current task on a question for the user — the dispatcher pauses, surfaces the question, and resumes once a human replies. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_heartbeat` | Send a progress heartbeat during a long-running operation so the dispatcher knows the worker is still alive. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_comment` | Add a comment to the task thread without changing its state — useful for surfacing intermediate findings. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_create` | Fan out child tasks from the current task. Used by orchestrators and follow-up-spawning workers. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_link` | Link tasks with a parent → child dependency edge. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_unblock` | Return a blocked task to `ready`. Orchestrator-only; hidden from dispatcher-spawned task workers. | profile with `kanban` toolset |
+
+## `project` toolset
+
+Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-folder workspaces. Registered when the `project` toolset is enabled (primarily the desktop app / dashboard surfaces).
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `project_create` | Create a desktop Project (a named workspace) and switch this chat into it. Pass `path` to anchor it to a repo/folder. | — |
+| `project_list` | List the desktop Projects and which one is active. | — |
+| `project_switch` | Switch this chat into an existing Project (by name, slug, or id); moves the session workspace to the project's primary folder. | — |
 
 ## `memory` toolset
 
@@ -136,38 +148,11 @@ Registered only when the agent is spawned by the kanban dispatcher (`HERMES_KANB
 |------|-------------|----------------------|
 | `memory` | Save important information to persistent memory that survives across sessions. Your memory appears in your system prompt at session start -- it's how you remember things about the user and your environment between conversations. WHEN TO SA… | — |
 
-## `messaging` toolset
-
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `send_message` | Send a message to a connected messaging platform, or list available targets. IMPORTANT: When the user asks to send to a specific channel or person (not just a bare platform name), call send_message(action='list') FIRST to see available tar… | — |
-
-## `moa` toolset
-
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `mixture_of_agents` | Route a hard problem through multiple frontier LLMs collaboratively. Makes 5 API calls (4 reference models + 1 aggregator) with maximum reasoning effort — use sparingly for genuinely difficult problems. Best for: complex math, advanced alg… | OPENROUTER_API_KEY |
-
-## `rl` toolset
-
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `rl_check_status` | Get status and metrics for a training run. RATE LIMITED: enforces 30-minute minimum between checks for the same run. Returns WandB metrics: step, state, reward_mean, loss, percent_correct. | TINKER_API_KEY, WANDB_API_KEY |
-| `rl_edit_config` | Update a configuration field. Use rl_get_current_config() first to see all available fields for the selected environment. Each environment has different configurable options. Infrastructure settings (tokenizer, URLs, lora_rank, learning_ra… | TINKER_API_KEY, WANDB_API_KEY |
-| `rl_get_current_config` | Get the current environment configuration. Returns only fields that can be modified: group_size, max_token_length, total_steps, steps_per_eval, use_wandb, wandb_name, max_num_workers. | TINKER_API_KEY, WANDB_API_KEY |
-| `rl_get_results` | Get final results and metrics for a completed training run. Returns final metrics and path to trained weights. | TINKER_API_KEY, WANDB_API_KEY |
-| `rl_list_environments` | List all available RL environments. Returns environment names, paths, and descriptions. TIP: Read the file_path with file tools to understand how each environment works (verifiers, data loading, rewards). | TINKER_API_KEY, WANDB_API_KEY |
-| `rl_list_runs` | List all training runs (active and completed) with their status. | TINKER_API_KEY, WANDB_API_KEY |
-| `rl_select_environment` | Select an RL environment for training. Loads the environment's default configuration. After selecting, use rl_get_current_config() to see settings and rl_edit_config() to modify them. | TINKER_API_KEY, WANDB_API_KEY |
-| `rl_start_training` | Start a new RL training run with the current environment and config. Most training parameters (lora_rank, learning_rate, etc.) are fixed. Use rl_edit_config() to set group_size, batch_size, wandb_project before starting. WARNING: Training… | TINKER_API_KEY, WANDB_API_KEY |
-| `rl_stop_training` | Stop a running training job. Use if metrics look bad, training is stagnant, or you want to try different settings. | TINKER_API_KEY, WANDB_API_KEY |
-| `rl_test_inference` | Quick inference test for any environment. Runs a few steps of inference + scoring using OpenRouter. Default: 3 steps x 16 completions = 48 rollouts per model, testing 3 models = 144 total. Tests environment loading, prompt construction, in… | TINKER_API_KEY, WANDB_API_KEY |
-
 ## `session_search` toolset
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `session_search` | Search your long-term memory of past conversations. This is your recall -- every past session is searchable, and this tool summarizes what happened. USE THIS PROACTIVELY when: - The user says 'we did this before', 'remember when', 'last ti… | — |
+| `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Three shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), browse (no args). | — |
 
 ## `skills` toolset
 
@@ -183,6 +168,7 @@ Registered only when the agent is spawned by the kanban dispatcher (`HERMES_KANB
 |------|-------------|----------------------|
 | `process` | Manage background processes started with terminal(background=true). Actions: 'list' (show all), 'poll' (check status + new output), 'log' (full output with pagination), 'wait' (block until done or timeout), 'kill' (terminate), 'write' (sen… | — |
 | `terminal` | Execute shell commands on a Linux environment. Filesystem persists between calls. Set `background=true` for long-running servers. Set `notify_on_complete=true` (with `background=true`) to get an automatic notification when the process finishes — no polling needed. Do NOT use cat/head/tail — use read_file. Do NOT use grep/rg/find — use search_files. | — |
+| `read_terminal` | Read what's currently shown in the in-app terminal pane of the Hermes desktop GUI (the embedded shell beside this chat). Desktop-app only. | — |
 
 ## `todo` toolset
 
@@ -194,7 +180,7 @@ Registered only when the agent is spawned by the kanban dispatcher (`HERMES_KANB
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `vision_analyze` | Analyze images using AI vision. Provides a comprehensive description and answers a specific question about the image content. | — |
+| `vision_analyze` | Analyze images using AI vision. On vision-capable main models, returns the raw image pixels as a multimodal tool result so the model sees them natively on its next turn. On text-only main models, falls back to an auxiliary vision model that describes the image and returns the description as text. Tool signature is identical either way. | — |
 
 ## `video` toolset
 
@@ -204,12 +190,33 @@ Opt-in toolset (not loaded in the default `hermes-cli` set). Add via `--toolsets
 |------|-------------|----------------------|
 | `video_analyze` | Analyze video content from a URL or file path — captions, scene breakdowns, key timestamps, and visual descriptions. | — |
 
+## `video_gen` toolset
+
+Opt-in toolset (not loaded in the default `hermes-cli` set). Add via `--toolsets video_gen` or enable it in `hermes tools` → Video Generation, which also walks you through picking a backend.
+
+Backends ship as plugins under `plugins/video_gen/<name>/`:
+
+- **xAI Grok-Imagine** — text-to-video and image-to-video (SuperGrok OAuth or `XAI_API_KEY`).
+- **FAL.ai** — Veo 3.1, Pixverse v6, Kling O3 (requires `FAL_KEY`).
+
+The single `video_generate` tool covers both modalities — pass `image_url` to animate a still, omit it to generate from text alone. The active backend auto-routes to the right endpoint. The tool's description is rebuilt at session start to reflect the active backend's actual capabilities (modalities, aspect ratios, resolutions, duration range, max reference images, audio support). See [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) for backend authoring.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `video_generate` | Generate a video from a text prompt (text-to-video) or animate a still image (image-to-video) using the user's configured video generation backend. Pass `image_url` to animate that image; omit it to generate from text alone. The backend auto-routes to the right endpoint. Returns either an HTTP URL or an absolute file path in the `video` field. | Active `video_gen` plugin + its credential (e.g. `XAI_API_KEY`, `FAL_KEY`) |
+
 ## `web` toolset
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `web_search` | Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. Accepts an optional `limit` (1-100, default 5). The query is passed through to the configured backend, so operators such as `site:domain`, `filetype:pdf`, `intitle:word`, `-term`, and `"exact phrase"` may work when the backend supports them. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
 | `web_extract` | Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
+
+## `x_search` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `x_search` | Search X (Twitter) posts, profiles, and threads using xAI's built-in `x_search` Responses tool. Use this for current discussion, reactions, or claims on X rather than general web pages. Off by default — opt in via `hermes tools` → 🐦 X (Twitter) Search. Schema is only registered when xAI credentials are configured (check_fn-gated). | XAI_API_KEY **or** xAI Grok OAuth (SuperGrok / Premium+) login |
 
 ## `tts` toolset
 

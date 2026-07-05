@@ -51,6 +51,8 @@ import {
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
+  markQueuedPromptAutoDrain,
+  markQueuedPromptsAutoDrain,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
@@ -178,6 +180,7 @@ const DRAFT_PERSIST_DEBOUNCE_MS = 400
 
 export function ChatBar({
   busy,
+  compacting = false,
   cwd,
   disabled,
   focusKey,
@@ -324,9 +327,10 @@ export function ChatBar({
   const stacked = expanded || narrow || tight
   const trimmedDraft = draft.trim()
   const hasComposerPayload = trimmedDraft.length > 0 || attachments.length > 0
+  const sendBlocked = busy || compacting
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
-  const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+  const busyAction = sendBlocked && hasComposerPayload ? 'queue' : 'stop'
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
@@ -1165,18 +1169,17 @@ export function ChatBar({
         return
       }
 
-      if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
+      if (!busy && !hasLivePayload && implicitQueueDrainAllowed()) {
         void drainNextQueued()
 
         return
       }
 
-      // Empty Enter while busy is a no-op — interrupting is explicit (Stop/Esc),
-      // never a stray Enter after sending. With a payload, submitDraft queues it.
-      // Gate on the live DOM payload (not the render-lagged composer state) so a
-      // message typed fast / via IME while busy still reaches submitDraft() and
-      // gets queued instead of being mistaken for an empty Enter.
-      if (busy && !hasLivePayload) {
+      // Empty Enter while busy/compacting is a no-op — interrupting is explicit
+      // (Stop/Esc), never a stray Enter after sending. With a payload,
+      // submitDraft queues it. Gate on the live DOM payload (not the render-
+      // lagged composer state) so fast/IME text still reaches submitDraft().
+      if (sendBlocked && !hasLivePayload) {
         return
       }
 
@@ -1512,7 +1515,7 @@ export function ChatBar({
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: textWithReplyContext(draft), attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: textWithReplyContext(draft), attachments, autoDrain: sendBlocked })) {
       return false
     }
 
@@ -1522,7 +1525,7 @@ export function ChatBar({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft, textWithReplyContext])
+  }, [activeQueueSessionKey, attachments, clearDraft, draft, sendBlocked, textWithReplyContext])
 
   // Steer the live turn (nudge without interrupting). Clears the draft up front
   // for snappy feedback; if the gateway rejects (no live tool window) the words
@@ -1539,7 +1542,7 @@ export function ChatBar({
 
     void Promise.resolve(onSteer(text)).then(accepted => {
       if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [], autoDrain: true })
       }
     })
   }, [activeQueueSessionKey, canSteer, clearDraft, onSteer])
@@ -1592,19 +1595,29 @@ export function ChatBar({
 
   const drainNextQueued = useCallback(() => runDrain(pickDrainHead), [pickDrainHead, runDrain])
 
+  const implicitQueueDrainAllowed = useCallback(() => {
+    const entry = pickDrainHead(queuedPrompts)
+
+    return shouldAutoDrain({ isBusy: sendBlocked, nextAutoDrain: Boolean(entry?.autoDrain), queueLength: queuedPrompts.length })
+  }, [pickDrainHead, queuedPrompts, sendBlocked])
+
   const sendQueuedNow = useCallback(
     (id: string) => {
       if (!activeQueueSessionKey || id === queueEdit?.entryId) {
         return false
       }
 
-      if (busy) {
+      if (sendBlocked) {
         // Promote to the head, then interrupt. The gateway always emits a
         // settle (message.complete + session.info running:false) when the
         // turn unwinds, and the busy→false auto-drain below sends this entry.
         promoteQueuedPrompt(activeQueueSessionKey, id)
+        markQueuedPromptAutoDrain(activeQueueSessionKey, id)
         triggerHaptic('selection')
-        void Promise.resolve(onCancel())
+
+        if (busy) {
+          void Promise.resolve(onCancel())
+        }
 
         return true
       }
@@ -1615,15 +1628,36 @@ export function ChatBar({
 
       return runDrain(entries => entries.find(e => e.id === id))
     },
-    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
+    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain, sendBlocked]
   )
+
+  const sendAllQueued = useCallback(() => {
+    if (!activeQueueSessionKey || queueEdit || queuedPrompts.length === 0) {
+      return false
+    }
+
+    queuedPrompts.forEach(entry => drainFailuresRef.current.delete(entry.id))
+    markQueuedPromptsAutoDrain(activeQueueSessionKey)
+
+    if (sendBlocked) {
+      triggerHaptic('selection')
+
+      if (busy) {
+        void Promise.resolve(onCancel())
+      }
+
+      return true
+    }
+
+    return drainNextQueued()
+  }, [activeQueueSessionKey, busy, drainNextQueued, onCancel, queueEdit, queuedPrompts, sendBlocked])
 
   // Edge-independent auto-drain: send the head whenever the session is idle and
   // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
   // a stale-session 404) can't strand the entry permanently nor spin-loop. The
   // drain lock serializes sends; a remount/reconnect resets the failure counts.
   const autoDrainNext = useCallback(() => {
-    if (busy || drainingQueueRef.current || !activeQueueSessionKey) {
+    if (sendBlocked || drainingQueueRef.current || !activeQueueSessionKey) {
       return
     }
 
@@ -1654,7 +1688,7 @@ export function ChatBar({
         }
       })
       .catch(onFail)
-  }, [activeQueueSessionKey, busy, pickDrainHead, queuedPrompts, runDrain, t])
+  }, [activeQueueSessionKey, pickDrainHead, queuedPrompts, runDrain, sendBlocked, t])
 
   // Re-key on a runtime session-id change. A stable stored id (queueSessionKey)
   // never churns, so a change there is a real session switch and must NOT
@@ -1671,14 +1705,14 @@ export function ChatBar({
     migrateQueuedPrompts(prev, activeQueueSessionKey)
   }, [activeQueueSessionKey, queueSessionKey])
 
-  // Queued turns flow whenever the session is idle — on the busy→false settle
-  // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't
-  // strand them. To cancel queued turns, the user deletes them from the panel.
+  // Auto-drain only live follow-up turns. Older persisted/manual queue entries
+  // stay visible until the user sends them, so reopening an idle session cannot
+  // fire stale queue contents into the wrong context.
   useEffect(() => {
-    if (shouldAutoDrain({ isBusy: busy, queueLength: queuedPrompts.length })) {
+    if (implicitQueueDrainAllowed()) {
       autoDrainNext()
     }
-  }, [autoDrainNext, busy, queuedPrompts.length])
+  }, [autoDrainNext, implicitQueueDrainAllowed])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.
@@ -1757,7 +1791,7 @@ export function ChatBar({
 
     if (queueEdit) {
       exitQueuedEdit('save')
-    } else if (busy) {
+    } else if (sendBlocked) {
       // Slash commands should execute immediately even while the agent is
       // busy — they're client-side operations (/yolo, /skin, /new, /help,
       // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
@@ -1765,19 +1799,22 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
+      if (busy && !attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
       } else if (payloadPresent) {
         queueCurrentDraft()
       } else {
-        // Stop button (the only way to reach here while busy with an empty
-        // composer — empty Enter is short-circuited in the keydown handler).
-        triggerHaptic('cancel')
-        void Promise.resolve(onCancel())
+        // Stop button (the only way to reach here while truly busy with an
+        // empty composer — empty Enter is short-circuited in the keydown
+        // handler). Compaction without payload has nothing to submit/cancel.
+        if (busy) {
+          triggerHaptic('cancel')
+          void Promise.resolve(onCancel())
+        }
       }
-    } else if (!payloadPresent && queuedPrompts.length > 0) {
+    } else if (!payloadPresent && implicitQueueDrainAllowed()) {
       void drainNextQueued()
     } else if (payloadPresent) {
       const submittedAttachments = cloneAttachments(attachments)
@@ -1884,7 +1921,7 @@ export function ChatBar({
 
   const controls = (
     <ComposerControls
-      busy={busy}
+      busy={busy || (compacting && hasComposerPayload)}
       busyAction={busyAction}
       canSteer={canSteer}
       canSubmit={canSubmit}
@@ -2074,6 +2111,7 @@ export function ChatBar({
                     }
                   }}
                   onEdit={beginQueuedEdit}
+                  onSendAll={() => void sendAllQueued()}
                   onSendNow={id => void sendQueuedNow(id)}
                 />
               ) : null

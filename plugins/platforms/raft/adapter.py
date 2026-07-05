@@ -513,6 +513,8 @@ class RaftAdapter(BasePlatformAdapter):
         logger.info("[raft] Raft channel listening on %s:%d%s", self._host, bound_port, self._path)
 
         self._spawn_bridge(bound_port)
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

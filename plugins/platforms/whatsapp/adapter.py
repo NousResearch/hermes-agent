@@ -660,6 +660,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     self._bridge_process = None  # Not managed by us
                                     self._http_session = aiohttp.ClientSession()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
+                                    # Plugin-registered native handlers.
+                                    self._wire_plugin_handlers(None)
                                     return True
                                 stale_reason = (
                                     f"running={running_hash or 'unversioned'}, disk={disk_hash}"
@@ -820,6 +822,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             
             self._mark_connected()
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
+            # Plugin-registered native handlers.
+            self._wire_plugin_handlers(None)
             return True
             
         except Exception as e:

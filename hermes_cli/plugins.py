@@ -3071,6 +3071,83 @@ class PluginContext:
         )
         return handle
 
+    # -- platform handler registration ----------------------------------------
+
+    def register_platform_handler(self, platform: str, factory: Callable) -> None:
+        """Register a native-client handler factory for a gateway platform.
+
+        The generic surface for plugins that need to receive platform
+        events the core adapter doesn't route (extra update types, native
+        button callbacks, reaction/member events, webhook routes, ...).
+
+        The adapter for ``platform`` invokes registered factories at
+        ``connect()`` time, after its native client object is built and
+        before (or as) its own handlers register. The factory receives
+        ``(native, adapter)``::
+
+            def _wire(native, adapter):
+                # native: the platform's client/app object (see table)
+                # adapter: the platform adapter instance (treat read-only)
+                ...
+
+            ctx.register_platform_handler("discord", _wire)
+
+        What ``native`` is per platform (None when the adapter has no
+        separate native client — the adapter itself is then the only
+        useful handle):
+
+        =============  ======================================================
+        telegram       python-telegram-bot ``Application`` (add_handler)
+        discord        ``discord.ext.commands.Bot`` (add_listener / events)
+        slack          ``slack_bolt.async_app.AsyncApp`` (event/action)
+        matrix         the Matrix client (event callbacks)
+        teams          Microsoft Teams ``App`` (on_message / on_card_action)
+        dingtalk       ``DingTalkStreamClient`` (register_callback_handler)
+        line           aiohttp ``web.Application`` (router)
+        others         ``None`` — connect-time hook with the adapter handle
+        =============  ======================================================
+
+        Notes:
+
+        * Factories are invoked lazily at connect time, so platform SDK
+          imports belong inside the factory body — ``register()`` keeps
+          working when the SDK isn't installed.
+        * Factories are isolated: an exception is logged and the platform
+          still connects.
+        * When hooking dispatch tables that stop at the first match
+          (e.g. PTB callback handlers), always scope your handler
+          (pattern prefixes, specific event types) so core flows keep
+          working.
+
+        Args:
+            platform: Gateway platform name, lowercase (``"telegram"``,
+                ``"discord"``, ``"slack"``, ...).
+            factory: Callable receiving ``(native, adapter)``.
+
+        Raises:
+            ValueError: if ``factory`` is not callable or ``platform`` is
+                empty.
+        """
+        if not callable(factory):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a platform "
+                f"handler factory with a non-callable factory."
+            )
+        key = (platform or "").strip().lower()
+        if not key:
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a platform "
+                f"handler factory with an empty platform name."
+            )
+        self._manager._platform_handler_factories.setdefault(key, []).append(
+            (factory, self.manifest.name)
+        )
+        logger.debug(
+            "Plugin %s registered %s handler factory: %s",
+            self.manifest.name, key,
+            getattr(factory, "__name__", repr(factory)),
+        )
+
     # -- telegram handler registration ---------------------------------------
 
     def register_telegram_handler(self, factory: Callable) -> None:
@@ -3114,19 +3191,9 @@ class PluginContext:
         Raises:
             ValueError: if ``factory`` is not callable.
         """
-        if not callable(factory):
-            raise ValueError(
-                f"Plugin '{self.manifest.name}' tried to register a Telegram "
-                f"handler factory with a non-callable factory."
-            )
-        self._manager._telegram_handler_factories.append(
-            (factory, self.manifest.name)
-        )
-        logger.debug(
-            "Plugin %s registered Telegram handler factory: %s",
-            self.manifest.name,
-            getattr(factory, "__name__", repr(factory)),
-        )
+        # Thin alias over the generic surface — kept for back-compat and
+        # for the Telegram-specific docs above.
+        self.register_platform_handler("telegram", factory)
 
     # -- hook registration --------------------------------------------------
 
@@ -3749,12 +3816,15 @@ class PluginManager:
         # full plugin loads.
         self._predeclared_modules: Dict[str, types.ModuleType] = {}
         self._predeclared_tools: Dict[str, List[str]] = {}
-        # Telegram handler factories registered by plugins. Each entry is
-        # (factory, plugin_name); the Telegram adapter invokes factories at
-        # connect() time with (application, adapter) so plugins can wire
-        # their own PTB handlers (pattern-scoped CallbackQueryHandler,
-        # BusinessMessageHandler, etc.) without touching core files.
-        self._telegram_handler_factories: List[tuple] = []
+        # Native platform handler factories registered by plugins, keyed by
+        # lowercase platform name. Each entry is (factory, plugin_name);
+        # the platform's adapter invokes factories at connect() time with
+        # (native_client, adapter) so plugins can wire their own handlers
+        # (PTB handlers, discord.py listeners, slack_bolt events, webhook
+        # routes, ...) without touching core files.
+        # ``register_telegram_handler`` is a thin alias writing into the
+        # "telegram" bucket.
+        self._platform_handler_factories: Dict[str, List[tuple]] = {}
 
     # -----------------------------------------------------------------------
     # Registration ledger internals
@@ -4101,7 +4171,7 @@ class PluginManager:
             self._slack_action_handlers.clear()
             self._predeclared_modules.clear()
             self._predeclared_tools.clear()
-            self._telegram_handler_factories.clear()
+            self._platform_handler_factories.clear()
             self._context_engine = None
             with self._hook_timeout_lock:
                 self._hook_running_callbacks.clear()
@@ -5957,21 +6027,28 @@ class PluginManager:
         return list(self._slack_action_handlers)
 
     # -----------------------------------------------------------------------
-    # Telegram handler factory accessor
+    # Platform handler factory accessors
     # -----------------------------------------------------------------------
 
-    def get_telegram_handler_factories(self) -> List[tuple]:
-        """Return the list of plugin-registered Telegram handler factories.
+    def get_platform_handler_factories(self, platform: str) -> List[tuple]:
+        """Return plugin-registered handler factories for one platform.
 
         Each entry is a ``(factory, plugin_name)`` tuple. Consumed by the
-        Telegram adapter at connect time; each factory is invoked with
-        ``(application, adapter)`` so plugins can wire their own PTB
-        handlers before the core handlers are added.
+        platform's adapter at connect time; each factory is invoked with
+        ``(native_client, adapter)`` so plugins can wire their own native
+        handlers before/alongside the core ones.
 
         Plugins register factories via
-        :meth:`PluginContext.register_telegram_handler`.
+        :meth:`PluginContext.register_platform_handler` (or the
+        Telegram-specific alias
+        :meth:`PluginContext.register_telegram_handler`).
         """
-        return list(self._telegram_handler_factories)
+        key = (platform or "").strip().lower()
+        return list(self._platform_handler_factories.get(key, []))
+
+    def get_telegram_handler_factories(self) -> List[tuple]:
+        """Back-compat alias for ``get_platform_handler_factories("telegram")``."""
+        return self.get_platform_handler_factories("telegram")
 
     # -----------------------------------------------------------------------
     # Introspection

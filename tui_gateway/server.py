@@ -9075,6 +9075,11 @@ def _decode_attach_base64(raw: str, *, mime_prefix: str) -> bytes | None:
     if m:
         cleaned = m.group(1)
     cleaned = _re.sub(r"\s+", "", cleaned)
+    remainder = len(cleaned) % 4
+    if remainder == 1:
+        return None
+    if remainder:
+        cleaned += "=" * (4 - remainder)
     try:
         return _base64.b64decode(cleaned, validate=True)
     except Exception:

@@ -1666,6 +1666,32 @@ class TestQuickSnapshot:
         # Cleanup the seeded escape source so the test is hermetic.
         escape_src.unlink()
 
+    def test_pre_update_snapshot_preserves_prior_snapshots(self, hermes_home):
+        """Pre-update snapshots must NOT use keep=1, which silently prunes ALL
+        previously retained quick snapshots (issue #58672)."""
+        from hermes_cli.backup import (
+            _QUICK_DEFAULT_KEEP,
+            create_quick_snapshot,
+            list_quick_snapshots,
+        )
+
+        # Create several snapshots before the pre-update one.
+        for i in range(5):
+            create_quick_snapshot(label=f"manual-{i}", hermes_home=hermes_home)
+
+        pre_count = len(list_quick_snapshots(limit=100, hermes_home=hermes_home))
+        assert pre_count == 5
+
+        # The pre-update snapshot (no keep override) should use default keep.
+        create_quick_snapshot(label="pre-update", hermes_home=hermes_home)
+
+        post = list_quick_snapshots(limit=100, hermes_home=hermes_home)
+        # All 5 prior + the new pre-update = 6 total (well under default keep=20).
+        assert len(post) == 6, (
+            f"pre-update snapshot pruned prior snapshots; "
+            f"expected 6, got {len(post)}"
+        )
+
 
 class TestQuickSnapshotProjectsKanban:
     """Regression for #52889: projects.db / kanban.db must survive an upgrade.

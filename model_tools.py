@@ -579,8 +579,23 @@ def _resolve_active_context_length() -> int:
         model_id = (model_cfg.get("model") or model_cfg.get("default") or "").strip()
         if not model_id:
             return 0
+        provider = str(model_cfg.get("provider") or "").strip()
+        base_url = str(model_cfg.get("base_url") or "").strip()
+        context_length = model_cfg.get("context_length")
+        try:
+            config_context_length = int(context_length) if context_length is not None else None
+        except (TypeError, ValueError):
+            config_context_length = None
         from agent.model_metadata import get_model_context_length
-        return int(get_model_context_length(model_id) or 0)
+        return int(
+            get_model_context_length(
+                model_id,
+                base_url=base_url,
+                provider=provider,
+                config_context_length=config_context_length,
+                custom_providers=cfg.get("custom_providers"),
+            ) or 0
+        )
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0

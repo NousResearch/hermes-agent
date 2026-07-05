@@ -108,10 +108,11 @@ SUPPORTED_POOL_STRATEGIES = {
 
 # Cooldown before retrying an exhausted credential.
 # Transient 401 auth failures cool down briefly so single-key setups can recover.
-# 429 (rate-limited), 402 (billing/quota), and other failures cool down after 1 hour.
+# 429 (rate-limited) cools down after 60 seconds for transient NIM rate limits.
+# 402 (billing/quota) and other failures cool down after 1 hour.
 # Provider-supplied reset_at timestamps override these defaults.
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
+EXHAUSTED_TTL_429_SECONDS = 60               # 60 seconds
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
 # Pool key prefix for custom OpenAI-compatible endpoints.

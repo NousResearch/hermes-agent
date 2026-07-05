@@ -2757,6 +2757,11 @@ DEFAULT_CONFIG = {
             "idle_timeout_minutes": 5,
         },
 
+        # When true, gateway stop/restart does not send lifecycle interruption,
+        # restart-complete, or startup-online notices. Interrupt/resume bookkeeping
+        # still runs; this only mutes the user-facing lifecycle broadcasts.
+        "silent_shutdown_notifications": False,
+
         # Auto-resume restart-loop breaker (#30719, defense-3). When the
         # gateway is killed mid-turn (SIGTERM) and revived by a supervisor
         # (launchd KeepAlive / systemd Restart=), it auto-resumes the

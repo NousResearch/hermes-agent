@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from gateway import run as gateway_run
 from gateway import shutdown_forensics as sf
 
 
@@ -116,6 +117,43 @@ class TestSnapshotShutdownContext:
         )
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert "planned_stop_marker" in ctx
+
+
+# ---------------------------------------------------------------------------
+# gateway.run systemd stop classification
+# ---------------------------------------------------------------------------
+
+class TestSystemdSignalClassification:
+    def test_systemd_sigterm_is_planned_stop_by_parent_name(self):
+        ctx = {"under_systemd": True, "parent": {"name": "systemd"}}
+
+        assert (
+            gateway_run._systemd_sigterm_is_planned_stop(signal.SIGTERM, ctx) is True
+        )
+
+    def test_systemd_sigterm_is_planned_stop_by_user_cmdline(self):
+        ctx = {
+            "under_systemd": True,
+            "parent": {"cmdline": "/usr/lib/systemd/systemd --user"},
+        }
+
+        assert (
+            gateway_run._systemd_sigterm_is_planned_stop(signal.SIGTERM, ctx) is True
+        )
+
+    def test_non_systemd_sigterm_remains_unplanned(self):
+        ctx = {"under_systemd": False, "parent": {"name": "bash"}}
+
+        assert (
+            gateway_run._systemd_sigterm_is_planned_stop(signal.SIGTERM, ctx) is False
+        )
+
+    def test_systemd_non_sigterm_remains_unplanned(self):
+        ctx = {"under_systemd": True, "parent": {"name": "systemd"}}
+
+        assert (
+            gateway_run._systemd_sigterm_is_planned_stop(signal.SIGINT, ctx) is False
+        )
 
 
 # ---------------------------------------------------------------------------

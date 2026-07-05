@@ -512,6 +512,26 @@ async def test_shutdown_notification_home_channel_suppressed_when_flag_disabled(
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notifications_globally_suppressed_when_configured():
+    """Global shutdown silence mutes both active-session and home-channel pings."""
+    from gateway.config import HomeChannel, Platform
+
+    runner, adapter = make_restart_runner()
+    runner.config.silent_shutdown_notifications = True
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    session_key = "agent:main:telegram:dm:999"
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
     """Shutdown notifications should route from persisted origin, not reparsed keys."""
     runner, adapter = make_restart_runner()

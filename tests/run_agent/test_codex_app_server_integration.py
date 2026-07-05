@@ -134,6 +134,36 @@ class TestRunConversationCodexPath:
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
 
+    def test_codex_app_server_usage_does_not_override_config_context_length(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-config-context-1",
+                thread_id="thread-config-context-1",
+                token_usage_last={
+                    "totalTokens": 10,
+                    "inputTokens": 7,
+                    "outputTokens": 3,
+                },
+                model_context_window=1_000_000,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-config-context-1",
+        )
+        agent = _make_codex_agent()
+        agent._config_context_length = 272_000
+        agent.context_compressor.context_length = 272_000
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert agent.context_compressor.context_length == 272_000
+
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()
         with patch.object(agent, "_spawn_background_review", return_value=None):
@@ -718,4 +748,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

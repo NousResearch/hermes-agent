@@ -224,6 +224,83 @@ def test_exhausted_entry_resets_after_ttl(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
+def test_429_entry_remains_unavailable_before_short_ttl(tmp_path, monkeypatch):
+    """429-exhausted credentials stay excluded during the short cooldown."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "nvidia": [
+                    {
+                        "id": "cred-1",
+                        "label": "rate-limited",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 30,
+                        "last_error_code": 429,
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "healthy",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "***",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nvidia")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.id == "cred-2"
+
+
+def test_429_entry_resets_after_short_ttl(tmp_path, monkeypatch):
+    """429-exhausted credentials recover after the local 60s cooldown."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "nvidia": [
+                    {
+                        "id": "cred-1",
+                        "label": "rate-limited",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 61,
+                        "last_error_code": 429,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nvidia")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
 def test_exhausted_402_entry_resets_after_one_hour(tmp_path, monkeypatch):
     """402-exhausted credentials recover after 1 hour, not 24."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -447,7 +524,7 @@ def test_token_invalidated_marks_credential_dead(tmp_path, monkeypatch):
 def test_dead_credential_never_re_enters_rotation_after_ttl(tmp_path, monkeypatch):
     """A DEAD credential must stay excluded regardless of how much time passes.
 
-    The exhausted TTL clears entries after 5 min (401) / 1 hour (429).
+    The exhausted TTL clears entries after 5 min (401), 60s (429), or 1 hour (default).
     A DEAD credential has no recovery TTL — it stays dead until either
     (a) an explicit re-auth write-side sync rewrites the tokens, or
     (b) the manual-prune TTL elapses (covered by separate tests below).
@@ -510,8 +587,8 @@ def test_dead_credential_never_re_enters_rotation_after_ttl(tmp_path, monkeypatc
 def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
     """429 rate limits must NOT be treated as terminal.
 
-    They should keep the existing 1-hour TTL cooldown semantics so the
-    credential re-enters rotation once the rate window resets.
+    NVIDIA NIM 429s are transient in this deployment, so credentials should
+    re-enter rotation after the locally configured short cooldown window.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

@@ -593,6 +593,10 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+    # When true, gateway stop/restart does not send lifecycle interruption,
+    # restart-complete, or startup-online notices. Interrupt/resume bookkeeping
+    # still runs; this only mutes the user-facing lifecycle broadcasts.
+    silent_shutdown_notifications: bool = False
     # Drop outbound "silence narration" messages (e.g. *(silent)*, 🔇, a bare
     # ".") pre-send. These are model hallucinations emitted when a persona has
     # nothing actionable to say; in bot-to-bot channels they mirror back and
@@ -725,6 +729,7 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "silent_shutdown_notifications": self.silent_shutdown_notifications,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
@@ -786,6 +791,9 @@ class GatewayConfig:
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        silent_shutdown_notifications = data.get("silent_shutdown_notifications")
+        if silent_shutdown_notifications is None and isinstance(nested_gateway, dict):
+            silent_shutdown_notifications = nested_gateway.get("silent_shutdown_notifications")
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -820,6 +828,10 @@ class GatewayConfig:
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
+            silent_shutdown_notifications=_coerce_bool(
+                silent_shutdown_notifications,
+                False,
+            ),
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
             ),
@@ -963,6 +975,16 @@ def load_gateway_config() -> GatewayConfig:
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+
+            gateway_section = yaml_cfg.get("gateway")
+            if isinstance(gateway_section, dict) and "silent_shutdown_notifications" in gateway_section:
+                gw_data["silent_shutdown_notifications"] = gateway_section[
+                    "silent_shutdown_notifications"
+                ]
+            if "silent_shutdown_notifications" in yaml_cfg:
+                gw_data["silent_shutdown_notifications"] = yaml_cfg[
+                    "silent_shutdown_notifications"
+                ]
 
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[

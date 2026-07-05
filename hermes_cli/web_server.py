@@ -4162,6 +4162,62 @@ _EMPTY_MODEL_INFO: dict = {
 }
 
 
+def _provider_aware_model_capabilities(
+    *,
+    model_name: str,
+    provider: str = "",
+    base_url: str = "",
+    config_context_length: int | None = None,
+) -> dict:
+    """Return capability metadata with the enforced context window.
+
+    models.dev reports the vendor-wide model window, which can differ from the
+    route Hermes is actually using.  For example, direct OpenAI/OpenRouter may
+    advertise gpt-5.5 as 1.05M while the ChatGPT Codex OAuth route enforces
+    272K.  Dashboard/API surfaces should show the enforced value as
+    ``context_window`` and keep the raw catalog value separately.
+    """
+    caps: dict[str, Any] = {}
+    catalog_context_window = 0
+
+    try:
+        from agent.models_dev import get_model_capabilities
+
+        mc = get_model_capabilities(provider=provider, model=model_name)
+        if mc is not None:
+            catalog_context_window = int(getattr(mc, "context_window", 0) or 0)
+            caps = {
+                "supports_tools": mc.supports_tools,
+                "supports_vision": mc.supports_vision,
+                "supports_reasoning": mc.supports_reasoning,
+                "context_window": catalog_context_window,
+                "catalog_context_window": catalog_context_window,
+                "max_output_tokens": mc.max_output_tokens,
+                "model_family": mc.model_family,
+            }
+    except Exception:
+        pass
+
+    try:
+        from agent.model_metadata import get_model_context_length
+
+        resolved_context_window = get_model_context_length(
+            model=model_name,
+            base_url=base_url,
+            provider=provider,
+            config_context_length=config_context_length,
+        )
+    except Exception:
+        resolved_context_window = 0
+
+    if resolved_context_window:
+        caps["context_window"] = int(resolved_context_window)
+        if catalog_context_window and "catalog_context_window" not in caps:
+            caps["catalog_context_window"] = catalog_context_window
+
+    return caps
+
+
 @app.get("/api/model/info")
 def get_model_info(profile: Optional[str] = None):
     """Return resolved model metadata for the currently configured model.
@@ -4210,22 +4266,12 @@ def get_model_info(profile: Optional[str] = None):
         # Effective is what the agent actually uses
         effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx
 
-        # Try to get model capabilities from models.dev
-        caps = {}
-        try:
-            from agent.models_dev import get_model_capabilities
-            mc = get_model_capabilities(provider=provider, model=model_name)
-            if mc is not None:
-                caps = {
-                    "supports_tools": mc.supports_tools,
-                    "supports_vision": mc.supports_vision,
-                    "supports_reasoning": mc.supports_reasoning,
-                    "context_window": mc.context_window,
-                    "max_output_tokens": mc.max_output_tokens,
-                    "model_family": mc.model_family,
-                }
-        except Exception:
-            pass
+        caps = _provider_aware_model_capabilities(
+            model_name=model_name,
+            provider=provider,
+            base_url=base_url,
+            config_context_length=effective_ctx,
+        )
 
         return {
             "model": model_name,
@@ -12244,7 +12290,8 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
     """Rich per-model analytics for the Models dashboard page.
 
     Returns token/cost/session breakdown per model plus capability metadata
-    from models.dev (context window, vision, tools, reasoning, etc.).
+    from models.dev, with ``context_window`` resolved through the same
+    provider-aware context resolver the agent uses.
     """
     db = _open_session_db_for_profile(profile)
     try:
@@ -12338,21 +12385,10 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
         for row in rows:
             provider = row.get("billing_provider") or ""
             model_name = row["model"]
-            caps = {}
-            try:
-                from agent.models_dev import get_model_capabilities
-                mc = get_model_capabilities(provider=provider, model=model_name)
-                if mc is not None:
-                    caps = {
-                        "supports_tools": mc.supports_tools,
-                        "supports_vision": mc.supports_vision,
-                        "supports_reasoning": mc.supports_reasoning,
-                        "context_window": mc.context_window,
-                        "max_output_tokens": mc.max_output_tokens,
-                        "model_family": mc.model_family,
-                    }
-            except Exception:
-                pass
+            caps = _provider_aware_model_capabilities(
+                model_name=model_name,
+                provider=provider,
+            )
 
             models.append({
                 "model": model_name,

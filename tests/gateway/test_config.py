@@ -90,6 +90,31 @@ class TestPlatformConfigRoundtrip:
         # extra; from_dict must honor it there too (mirrors _grn fallback).
         restored = PlatformConfig.from_dict({"extra": {"typing_indicator": False}})
         assert restored.typing_indicator is False
+
+
+class TestGatewayConfigRoundtrip:
+    def test_silent_shutdown_notifications_defaults_false(self):
+        assert GatewayConfig().silent_shutdown_notifications is False
+        assert GatewayConfig.from_dict({}).silent_shutdown_notifications is False
+
+    def test_silent_shutdown_notifications_roundtrip_true(self):
+        restored = GatewayConfig.from_dict(
+            GatewayConfig(silent_shutdown_notifications=True).to_dict()
+        )
+        assert restored.silent_shutdown_notifications is True
+
+    def test_silent_shutdown_notifications_coerces_quoted_true(self):
+        restored = GatewayConfig.from_dict({"silent_shutdown_notifications": "true"})
+        assert restored.silent_shutdown_notifications is True
+
+    def test_silent_shutdown_notifications_honors_nested_gateway(self):
+        restored = GatewayConfig.from_dict(
+            {"gateway": {"silent_shutdown_notifications": True}}
+        )
+        assert restored.silent_shutdown_notifications is True
+
+
+class TestChannelOverrideRoundtrip:
     def test_channel_overrides_roundtrip(self):
         pc = PlatformConfig(
             enabled=True,
@@ -451,6 +476,22 @@ class TestLoadGatewayConfig:
 
         assert Platform.RELAY in config.platforms
         assert config.platforms[Platform.RELAY].enabled is True
+
+    def test_bridges_silent_shutdown_notifications_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  silent_shutdown_notifications: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.silent_shutdown_notifications is True
 
     def test_bridges_group_sessions_per_user_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

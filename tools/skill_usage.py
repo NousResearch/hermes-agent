@@ -893,6 +893,50 @@ def agent_created_report() -> List[Dict[str, Any]]:
     return rows
 
 
+def skillopt_candidate_report(limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Rank curator-managed skills that are worth SkillOpt review.
+
+    The report is deterministic and read-only. It deliberately excludes pinned,
+    archived, non-persisted, and zero-signal skills so automated callers can use
+    it as a safe dry-run target list before any LLM/eval-heavy optimization.
+    """
+    rows: List[Dict[str, Any]] = []
+    for row in agent_created_report():
+        if not row.get("_persisted") or row.get("pinned") or row.get("state") == STATE_ARCHIVED:
+            continue
+        use_count = int(row.get("use_count") or 0)
+        view_count = int(row.get("view_count") or 0)
+        patch_count = int(row.get("patch_count") or 0)
+        reasons: List[str] = []
+        score = 0
+        if patch_count:
+            score += patch_count * 3
+            reasons.append("patched-often")
+        if use_count:
+            score += use_count * 2
+            reasons.append("used")
+        if view_count:
+            score += view_count
+            if not reasons:
+                reasons.append("viewed")
+        if not score:
+            continue
+        candidate = {
+            "name": row["name"],
+            "skillopt_score": score,
+            "reasons": reasons,
+            "use_count": use_count,
+            "view_count": view_count,
+            "patch_count": patch_count,
+            "last_activity_at": row.get("last_activity_at"),
+            "state": row.get("state"),
+            "pinned": bool(row.get("pinned")),
+        }
+        rows.append(candidate)
+    rows.sort(key=lambda r: (-int(r["skillopt_score"]), str(r["name"])))
+    return rows[:limit] if limit is not None else rows
+
+
 def provenance(skill_name: str) -> str:
     """Classify a skill's origin: 'hub', 'bundled', or 'agent'.
 

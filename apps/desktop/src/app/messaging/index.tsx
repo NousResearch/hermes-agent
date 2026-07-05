@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -20,7 +21,9 @@ import { ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, $profiles, normalizeProfileKey, refreshProfiles } from '@/store/profile'
 import { runGatewayRestart } from '@/store/system-actions'
+import type { ProfileInfo } from '@/types/hermes'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -112,6 +115,27 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
+  // Which profile's platforms this page is showing. null just means "the
+  // rail hasn't been touched, defer to $activeGatewayProfile for display" —
+  // it drives ONLY the rail's highlighted pill, never a request directly.
+  // Every actual read/write below uses effectiveScope, the resolved name,
+  // never `scope` itself: an implicit/empty profile on the backend means
+  // "whatever the primary backend process happens to be", which can drift
+  // from what this page displays as selected (e.g. a chat-session gateway
+  // swap moves $activeGatewayProfile without restarting the primary
+  // backend) — sending the resolved name instead avoids that class of bug.
+  // Non-default values are a page-local view only: this does NOT call
+  // selectProfile()/switch the app's active profile, same idea as
+  // GatewaySettings' scope.
+  const [scope, setScope] = useState<null | string>(null)
+  const profiles = useStore($profiles)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const effectiveScope = scope ?? normalizeProfileKey(activeGatewayProfile)
+
+  useEffect(() => {
+    void refreshProfiles()
+  }, [])
+
   const refreshPlatforms = useCallback(
     async (silent = false) => {
       if (!silent) {
@@ -119,7 +143,17 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       }
 
       try {
-        const result = await getMessagingPlatforms()
+        // Always send the resolved profile name, never scope directly.
+        // _profile_scope(None/""/"current") on the backend means "whatever
+        // profile the PRIMARY BACKEND PROCESS happens to be running as" —
+        // NOT necessarily the profile this page is displaying as selected.
+        // Those two can drift apart (e.g. a chat-session gateway swap moves
+        // $activeGatewayProfile without restarting the primary backend), so
+        // an implicit "current" can silently read/write the wrong profile's
+        // config. Passing the explicit name resolves unambiguously via
+        // _resolve_profile_dir() regardless of what the backend process
+        // itself is bound to.
+        const result = await getMessagingPlatforms(effectiveScope)
         setPlatforms(result.platforms)
       } catch (err) {
         if (!silent) {
@@ -131,7 +165,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }
     },
-    [m]
+    [m, effectiveScope]
   )
 
   useRefreshHotkey(() => void refreshPlatforms())
@@ -142,6 +176,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   // Auto-poll while the user is on the messaging page so connection status
   // updates without a manual "check" click. Pause when the tab is hidden.
+  // Only the selected profile is polled this way — the other profiles' pills
+  // show their last-known gateway_running state from $profiles, which is
+  // already being fetched for the profile switcher elsewhere in the app, so
+  // it costs nothing extra and doesn't multiply this poll across profiles.
   useEffect(() => {
     let cancelled = false
 
@@ -191,7 +229,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`enabled:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { enabled })
+      await updateMessagingPlatform(platform.id, { enabled, profile: effectiveScope })
       setPlatforms(
         current =>
           current?.map(row =>
@@ -227,7 +265,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`env:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { env })
+      await updateMessagingPlatform(platform.id, { env, profile: effectiveScope })
       setEdits(current => ({ ...current, [platform.id]: {} }))
       await refreshPlatforms()
       notify({
@@ -247,7 +285,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`clear:${key}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { clear_env: [key] })
+      await updateMessagingPlatform(platform.id, { clear_env: [key], profile: effectiveScope })
       setEdits(current => ({
         ...current,
         [platform.id]: {
@@ -267,6 +305,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   return (
     <PageSearchShell
       {...props}
+      filters={
+        profiles.length > 1 ? (
+          <ProfileRail
+            effectiveScope={effectiveScope}
+            onSelect={name => setScope(normalizeProfileKey(name) === normalizeProfileKey(activeGatewayProfile) ? null : name)}
+            platforms={platforms}
+            profiles={profiles}
+          />
+        ) : null
+      }
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
       searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
@@ -325,6 +373,58 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         </MasterDetail>
       )}
     </PageSearchShell>
+  )
+}
+
+// One pill per profile. Clicking re-scopes this page (not the app's active
+// profile — no global switch, no gateway swap) to that profile's platforms.
+// Only the selected pill's dot reflects real, just-fetched platform state;
+// every other pill shows gateway_running from $profiles (already loaded for
+// the profile switcher elsewhere, so this is free) — coarser, since a
+// running gateway can still have one dead platform inside it, but it never
+// claims health it hasn't actually checked.
+function ProfileRail({
+  effectiveScope,
+  onSelect,
+  platforms,
+  profiles
+}: {
+  effectiveScope: string
+  onSelect: (name: string) => void
+  platforms: MessagingPlatformInfo[] | null
+  profiles: ProfileInfo[]
+}) {
+  return (
+    <>
+      {profiles.map(profile => {
+        const isSelected = normalizeProfileKey(profile.name) === effectiveScope
+
+        const tone: StatusTone = isSelected
+          ? (platforms ?? []).some(p => p.enabled && ['bad', 'warn'].includes(stateTone(p)))
+            ? 'bad'
+            : 'good'
+          : profile.gateway_running
+            ? 'good'
+            : 'bad'
+
+        return (
+          <button
+            className={cn(
+              'flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[length:var(--conversation-caption-font-size)] transition',
+              isSelected
+                ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-foreground'
+                : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)'
+            )}
+            key={profile.name}
+            onClick={() => onSelect(profile.name)}
+            type="button"
+          >
+            <StatusDot tone={tone} />
+            {profile.name}
+          </button>
+        )
+      })}
+    </>
   )
 }
 

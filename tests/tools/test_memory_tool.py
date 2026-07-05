@@ -958,3 +958,26 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+
+class TestMemoryStoreCharLimits:
+    """Verifies that configured char limits are properly cast to int (issue #53834)."""
+
+    def test_char_limits_cast_to_int(self):
+        """MemoryStore should handle string-typed char limits from config."""
+        s = MemoryStore(memory_char_limit="20000", user_char_limit="30000")  # type: ignore[arg-type]
+        assert s.memory_char_limit == 20000
+        assert s.user_char_limit == 30000
+
+    def test_char_limits_int_passthrough(self):
+        """Int-typed char limits should pass through unchanged."""
+        s = MemoryStore(memory_char_limit=20000, user_char_limit=30000)
+        assert s.memory_char_limit == 20000
+        assert s.user_char_limit == 30000
+
+    def test_char_limit_target_resolution(self):
+        """_char_limit should resolve per-target limits correctly."""
+        s = MemoryStore(memory_char_limit=999, user_char_limit=444)
+        assert s._char_limit("memory") == 999
+        assert s._char_limit("user") == 444

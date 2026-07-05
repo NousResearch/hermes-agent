@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>04 · 暴露给模型:get_tool_definitions · 工具系统</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="container">
+<a class="back" href="index.html">返回模块导览</a>
+
+<div class="hero">
+  <span class="badge">第 4 篇 / 共 5 篇</span>
+  <h1>暴露给模型:get_tool_definitions</h1>
+  <div class="sub">上一篇把「哪些工具名该收录」算清楚了。这一篇讲最后一公里:<code>get_tool_definitions()</code> 如何把这些名字变成真正发给模型的 schema 列表——中间夹着 <code>check_fn</code> 可用性过滤、动态 schema、结果缓存、几处后处理重写,以及把海量 MCP/插件工具藏到 <code>tool_search</code> 背后的渐进式暴露。</div>
+</div>
+
+<h2 id="pipeline">全景:一条流水线</h2>
+<p>每轮调模型前,<code>conversation_loop</code> 都会拿到一份工具 schema 列表(<a href="../agent/03-llm-call.html">见 Agent 模块第 3 篇</a>)。这份列表就是 <code>get_tool_definitions()</code> 产出的。它是一条流水线:</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A["get_tool_definitions(enabled, disabled)"] --&gt; MEMO{quiet_mode 且<br/>缓存命中?}
+    MEMO -- 命中 --&gt; RET[直接返回缓存副本]
+    MEMO -- 未命中 --&gt; B["解析工具集 → 工具名集合<br/>(第 3 篇)"]
+    B --&gt; C["registry.get_definitions(names)<br/>① check_fn 过滤<br/>② dynamic_schema_overrides"]
+    C --&gt; D["后处理重写<br/>execute_code / discord / browser_navigate"]
+    D --&gt; E["schema 清洗<br/>(llama.cpp 兼容)"]
+    E --&gt; F["Tool Search 渐进式暴露<br/>(MCP/插件超阈值→藏到桥后)"]
+    F --&gt; G[返回最终 schema 列表]
+    G -.顺带更新.-&gt; H["_last_resolved_tool_names<br/>(进程全局)"]
+</pre>
+</div>
+<p>下面逐段拆。</p>
+
+<h2 id="checkfn">① check_fn 可用性过滤 + 30 秒 TTL 缓存</h2>
+<p>工具名集合交给 <code>registry.get_definitions(names)</code>。它对每个工具:若登记了 <code>check_fn</code>,就调一次看返回真假——<strong>假就跳过</strong>(不下发),这就是「缺 API key 的工具自动隐身」的实现:</p>
+<pre><code>for name in sorted(tool_names):
+    entry = entries_by_name.get(name)
+    if not entry: continue
+    if entry.check_fn:
+        if entry.check_fn not in check_results:
+            check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)  # 30s TTL 缓存
+        if not check_results[entry.check_fn]:
+            continue                       # check 没过 → 静默不下发
+    schema_with_name = {**entry.schema, "name": entry.name}
+    ... 应用 dynamic_schema_overrides ...
+    result.append({"type": "function", "function": schema_with_name})   # ← OpenAI 格式包装
+</code></pre>
+<div class="filehint">tools/registry.py · get_definitions()</div>
+<p>注意最后那层 <code>{"type": "function", "function": {...}}</code> 包装——这是 OpenAI 工具 schema 的标准外壳,模型 API 认的就是这个形状。</p>
+<h5>为什么 check_fn 要缓存:探测很贵</h5>
+<p>很多 <code>check_fn</code> 要<strong>探测外部状态</strong>:<code>check_terminal_requirements</code> 会 <code>subprocess.run(["docker","version"])</code>、浏览器工具探测 playwright 装没装、Modal SDK 在不在。对一个长期运行的 CLI/网关进程,<strong>每次生成 schema 都重探一遍纯属浪费</strong>——外部状态是按「人的时间尺度」变的。所以结果缓存约 30 秒:</p>
+<pre><code>_CHECK_FN_TTL_SECONDS = 30.0            # 缓存有效期
+_CHECK_FN_FAILURE_GRACE_SECONDS = 60.0 # 失败宽限窗口(见下)
+_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_check_fn_last_good: Dict[Callable, float] = {}   # 每个 check_fn 上次返回 True 的时刻
+</code></pre>
+<p>30 秒也够短:用户用 <code>hermes tools enable foo</code> 翻开关、或改了凭证文件,<strong>一两轮内</strong>就会生效,不用手动刷缓存。</p>
+<h5>关键设计:抖动宽限——别因一次超时就剃掉工具(#21658 / #5304)</h5>
+<p>这些探测会<strong>偶发抖动</strong>:负载高时一次 <code>docker version</code> 超时,<code>check_fn</code> 就返回一次 False。如果直接把这个 False 缓存下来,会在那一瞬间<strong>把整个 terminal+file 工具集从正在构建的 agent 上剃掉</strong>——最典型的受害者是刚 spawn 的 <code>delegate_task</code> 子 agent,它于是报「<code>Tool read_file does not exist</code>」。为此加了<strong>宽限逻辑</strong>:</p>
+<pre><code>if value:                       # 探测成功
+    _check_fn_last_good[fn] = now
+    _check_fn_cache[fn] = (now, True); return True
+# 探测失败:
+last_good = _check_fn_last_good.get(fn)
+if last_good is not None and now - last_good &lt; _CHECK_FN_FAILURE_GRACE_SECONDS:
+    # 距上次成功不到 60s → 判定为抖动:返回上次的 True,且【不缓存】这次失败
+    logger.warning("check_fn ... transient ... keeping tool(s) available")
+    return True
+# 没有近期成功(或宽限已过)→ 认这次失败,缓存 False
+_check_fn_cache[fn] = (now, False); return False
+</code></pre>
+<div class="filehint">tools/registry.py · _check_fn_cached()</div>
+<table>
+  <tr><th>情形</th><th>处理</th></tr>
+  <tr><td>探测成功</td><td>缓存 True(30s),并记下「上次成功时刻」</td></tr>
+  <tr><td>失败,但距上次成功 &lt; 60s</td><td><strong>判为抖动</strong>:返回上次的 True,<strong>不</strong>缓存失败(下次会重探)</td></tr>
+  <tr><td>失败,且距上次成功 ≥ 60s(或从没成功过)</td><td>认账:缓存 False,工具本轮不可用</td></tr>
+</table>
+<div class="box tip"><strong>拿捏的平衡:</strong>既要<strong>吸收瞬时抖动</strong>(不因一次超时就误伤工具),又<strong>不能钉死一个过时的「可用」</strong>(真的挂了得反映出来)。所以宽限只在「最近成功过」时生效、且<strong>失败不入缓存</strong>(下次立刻重探);后端要是真的宕了,超过宽限窗口就如实标不可用。改了配置想立即生效,还有 <code>invalidate_check_fn_cache()</code> 一把清空(<code>hermes tools</code> 改动后会调)。</div>
+
+<h2 id="dynamic">② dynamic_schema_overrides:描述随配置变</h2>
+<p>有些工具的 schema <strong>该反映当前配置</strong>。典型是 <code>delegate_task</code>:它的描述里要告诉模型「你最多能并发几个子任务、能嵌套几层」,而这些数字来自用户的 <code>delegation.max_concurrent_children</code> / <code>max_spawn_depth</code>。如果写死在静态 schema 里,用户改了配置、模型却被告知错的上限。</p>
+<p>所以 <code>register()</code> 支持传一个零参回调 <code>dynamic_schema_overrides</code>,在生成 schema 时调用、把返回的 dict 浅合并覆盖上去:</p>
+<pre><code>if entry.dynamic_schema_overrides is not None:
+    try:
+        overrides = entry.dynamic_schema_overrides()   # 读当前配置,返回 {描述/参数...}
+        if isinstance(overrides, dict):
+            schema_with_name.update(overrides)          # 浅合并覆盖
+    except Exception as exc:
+        logger.warning("... using static schema")       # fail-open:出错就用静态 schema
+</code></pre>
+<div class="box tip">它<strong>每次生成 schema 都会被调</strong>,所以能实时反映配置。而外层 <code>get_tool_definitions</code> 的缓存键里带了 <code>config.yaml</code> 的 mtime+大小指纹(见下),所以改了 <code>delegation.*</code>,缓存会自动失效、重算——动态描述和缓存不打架。</div>
+
+<h2 id="memo">③ 记忆化:代际号 + 配置指纹当缓存键</h2>
+<p>生成 schema 不便宜(要解析工具集、跑一堆 check_fn、做后处理)。而网关/agent 初始化是<strong>热路径</strong>。所以 <code>get_tool_definitions</code> 在 <code>quiet_mode=True</code> 时memo结果:</p>
+<pre><code>cache_key = (
+    frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
+    frozenset(disabled_toolsets) if disabled_toolsets else None,
+    registry._generation,          # ← 注册表一变(MCP刷新/插件加载)就失效(第1篇)
+    cfg_fp,                        # ← config.yaml 的 (mtime_ns, size),配置一改就失效
+    bool(os.environ.get("HERMES_KANBAN_TASK")),  # kanban worker 用不同缓存条目
+    bool(skip_tool_search_assembly),
+)
+</code></pre>
+<div class="filehint">model_tools.py · get_tool_definitions()</div>
+<ul>
+  <li><strong>只在 <code>quiet_mode</code> 缓存:</strong>非静默路径会打印工具选择日志,不走缓存。</li>
+  <li><strong><code>registry._generation</code>(第 1 篇那个代际号):</strong>任何工具增删都让它 +1,旧缓存自动作废——这就是代际计数器的用武之地。</li>
+  <li><strong>配置指纹 <code>cfg_fp</code>:</strong>不用给每个改配置的地方都挂失效钩子,靠文件 mtime+size 就能感知「影响动态 schema 的配置改了」。</li>
+  <li><strong>LRU 上限 8(#19251):</strong>长寿网关一辈子会见到很多不同的「工具集×配置」指纹,不设上限会无限膨胀。超过 8 条就淘汰最老的。</li>
+  <li><strong>返回浅拷贝(#17335):</strong>命中也返回 <code>list(cached)</code> 的浅拷贝——因为上层(<code>run_agent</code>)会往列表里 append 记忆/LCM 工具 schema,若直接返回缓存本体会被就地污染,导致长寿网关跨多次 agent 初始化<strong>累积重名工具</strong>,而 DeepSeek/Kimi 等强制工具名唯一的提供商会因此返回 HTTP 400。</li>
+</ul>
+
+<h2 id="postproc">④ 后处理:三处按运行时重写 schema</h2>
+<p>拿到 <code>registry.get_definitions</code> 的结果后,还有三处工具的 schema 要<strong>按此刻真实可用的工具重写</strong>。它们的共同动机:<strong>schema 里不能写死对「别的工具」的引用</strong>——那些工具可能此刻不可用,模型看到就会<strong>幻觉去调不存在的工具</strong>。</p>
+<pre><code>available_tool_names = {t["function"]["name"] for t in filtered_tools}  # 真正过了 check 的
+</code></pre>
+<table>
+  <tr><th>工具</th><th>按什么重写</th><th>不重写会怎样</th></tr>
+  <tr><td><code>execute_code</code></td><td>用 <code>SANDBOX_ALLOWED_TOOLS &amp; available</code> 重建 schema,只列<strong>沙箱里此刻真能用的工具</strong></td><td>模型以为沙箱里能 <code>web_search</code>,但 key 没配/工具集禁了 → 白调</td></tr>
+  <tr><td><code>discord</code> / <code>discord_admin</code></td><td>据 bot 的<strong>特权 intents</strong>(查 <code>/applications/@me</code>)+ 用户 allowlist 重建,隐藏 bot 不支持的动作</td><td>模型尝试 bot 权限不允许的操作 → 必失败;拿不到动态 schema 时干脆<strong>整个工具剔除</strong></td></tr>
+  <tr><td><code>browser_navigate</code></td><td>当 <code>web_search</code>/<code>web_extract</code> 不可用时,<strong>删掉</strong>描述里「优先用 web_search/web_extract」那句</td><td>描述引导模型去调不存在的 web 工具 → 幻觉调用</td></tr>
+</table>
+<pre><code># browser_navigate 的例子:web 工具都没有时,剥掉那句交叉引用
+if "browser_navigate" in available_tool_names:
+    if not ({"web_search","web_extract"} &amp; available_tool_names):
+        desc = desc.replace(" For simple information retrieval, prefer web_search or web_extract...", "")
+</code></pre>
+<div class="box warn"><strong>这就是 <code>AGENTS.md</code> 里那条铁规的落点:「工具 schema 描述里不要硬编码别的工具集里的工具名」。</strong>静态 schema 若写死「优先用 <code>web_search</code>」,一旦 web 工具集被禁/缺 key,模型就会<strong>点名一个不存在的工具</strong>。需要交叉引用时,不写进静态 schema,而是<strong>在 <code>get_tool_definitions</code> 这里根据「此刻真可用的工具」动态加</strong>——正是这三个后处理块的模式。</div>
+
+<h2 id="sanitize">⑤ schema 清洗:兼容各种后端</h2>
+<p>后处理完,过一遍 <code>sanitize_tool_schemas()</code>。不同推理后端对 schema 形状的容忍度不同:云厂商悄悄接受的一些形状(空 <code>{"type":"object"}</code> 无 properties、坏 MCP server 吐的字符串型 schema 节点),会被 <code>llama.cpp</code> 的 json-schema→GBNF 转换器<strong>拒绝</strong>(它要用 schema 生成工具调用的语法解析器)。清洗把这些形状规整成人人都吃的样子;已经规范的 schema 则原样通过(no-op)。出错也只 warning、不挡工具加载。</p>
+
+<h2 id="toolsearch">⑥ Tool Search:把海量 MCP/插件工具藏到桥后</h2>
+<p>流水线<strong>最后一步</strong>。装了一堆 MCP server / 插件后,可延迟暴露的工具 schema 可能<strong>吃掉大量上下文</strong>。Tool Search 做<strong>渐进式暴露</strong>:当「可延迟的工具」总量超过阈值(默认<strong>上下文窗口的 10%</strong>)时,把这些 MCP + 插件(非核心)工具<strong>替换成三个桥工具</strong>——<code>tool_search</code> / <code>tool_describe</code> / <code>tool_call</code>,模型需要时先「搜工具→看详情→调用」,而不是把几百个工具 schema 常驻在每次请求里。</p>
+<pre><code>if not skip_tool_search_assembly and ts_cfg.enabled != "off":
+    assembly = assemble_tool_defs(filtered_tools, context_length=..., config=ts_cfg)
+    filtered_tools = assembly.tool_defs   # MCP/插件被折叠成三个桥工具
+</code></pre>
+<div class="filehint">model_tools.py · tools/tool_search.py</div>
+<ul>
+  <li><strong>核心工具永不延迟:</strong><code>_HERMES_CORE_TOOLS</code> 里的工具<strong>从不</strong>被藏到桥后——它们太常用,常驻更划算。只延迟 MCP/插件这些「多而不一定用」的。</li>
+  <li><strong>幂等 + 最后做:</strong>放在清洗之后、返回之前,且装配是幂等的(即使有人重复调 <code>get_tool_definitions</code> 也不会叠加)。</li>
+  <li><strong><code>skip_tool_search_assembly</code>:</strong>三个桥工具的 handler 内部要读<strong>真实的完整目录</strong>(不是已折叠的),就靠这个参数拿到「装配前」的原始列表。外部调用方保持默认 False。</li>
+</ul>
+<div class="box tip">这是「窄腰」思想在暴露层的延伸:即使工具很多,<strong>常驻 schema 只放核心 + 三个桥</strong>,其余按需检索。既省 token,又不让模型在几百个工具里挑花眼。设计细节见 <code>tools/tool_search.py</code>。</div>
+
+<h2 id="lastresolved">顺带:_last_resolved_tool_names(进程全局)</h2>
+<p>流水线结尾,把最终工具名写进一个<strong>进程全局</strong> <code>_last_resolved_tool_names</code>(缓存命中路径也会更新,保持一致):</p>
+<pre><code>global _last_resolved_tool_names
+_last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+</code></pre>
+<p><code>execute_code</code> 靠它知道「沙箱里此刻能用哪些工具」。它是进程全局、<strong>会被最近一次 <code>get_tool_definitions</code> 覆盖</strong>——之所以安全,是因为 agent 循环是同步顺序执行的。<a href="../agent/04-tool-execution.html">Agent 模块第 4 篇</a>提过一个坑:<code>delegate_tool</code> 里 <code>_run_single_child()</code> 会在跑子 agent 前后<strong>保存并恢复</strong>这个全局,因为子 agent 运行期间它会被临时改写。</p>
+
+<h2 id="takeaway">本篇要点</h2>
+<div class="box">
+<ul>
+<li><code>get_tool_definitions()</code> 是条流水线:解析工具集 → <code>registry.get_definitions</code>(check_fn 过滤 + 动态 schema)→ 后处理重写 → schema 清洗 → Tool Search 装配 → 返回。</li>
+<li><strong><code>check_fn</code> 决定「此刻可不可用」</strong>,结果 30s TTL 缓存;<strong>60s 抖动宽限</strong>吸收探测偶发失败,避免误剃工具(delegate 子 agent「read_file 不存在」#21658/#5304)。</li>
+<li><code>dynamic_schema_overrides</code> 让 schema <strong>随配置变</strong>(如 delegate_task 的并发/嵌套上限);fail-open。</li>
+<li>结果<strong>记忆化</strong>:键含 <code>registry._generation</code> + config 指纹 + kanban env,LRU 上限 8(#19251),返回浅拷贝防污染(#17335)。</li>
+<li>三处<strong>后处理</strong>(execute_code / discord / browser_navigate)按运行时可用工具重写 schema——<strong>禁止在静态 schema 里硬编码跨工具引用</strong>,否则模型幻觉调不存在的工具。</li>
+<li><strong>Tool Search</strong> 把超阈值的 MCP/插件工具折叠成三个桥工具;<strong>核心工具永不延迟</strong>。</li>
+</ul>
+</div>
+
+<div class="docnav">
+  <a href="03-toolsets.html">
+    <div class="label">上一篇</div>
+    <div class="title">← 工具集与「注册 ≠ 暴露」</div>
+  </a>
+  <a class="next" href="05-dispatch.html">
+    <div class="label">下一篇</div>
+    <div class="title">分发与扩展:点名之后 + 新增工具 →</div>
+  </a>
+</div>
+
+<footer>工具系统 · 第 4 篇 · project-analysis/tools/ · 仅供本机学习</footer>
+</div>
+<script src="../vscode-links.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  try { mermaid.initialize({ startOnLoad:true, theme: dark?'dark':'base',
+    themeVariables: dark?{}:{ primaryColor:'#f5edd6', primaryBorderColor:'#b8860b', primaryTextColor:'#21252b',
+      lineColor:'#b8860b', secondaryColor:'#fffdf6', tertiaryColor:'#fff8c5' } }); } catch(e){}
+  const bar = document.getElementById('progress');
+  const onScroll = () => { const h=document.documentElement; const sc=h.scrollTop||document.body.scrollTop;
+    const max=h.scrollHeight-h.clientHeight; bar.style.width=(max>0?(sc/max)*100:0)+'%'; };
+  document.addEventListener('scroll', onScroll, { passive:true }); onScroll();
+</script>
+</body>
+</html>

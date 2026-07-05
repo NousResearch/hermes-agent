@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工具系统 · 模块导览</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="container">
+<a class="back" href="../index.html">返回架构总览</a>
+
+<div class="hero">
+  <span class="badge">模块 2 · 工具系统</span>
+  <h1>工具系统</h1>
+  <div class="sub">模型靠「调用工具」跟真实世界打交道:读文件、跑命令、搜网页、开浏览器。本模块讲清一件事——一个工具从 <code>tools/*.py</code> 里的一行 <code>registry.register()</code> 出发,如何一路被发现、分组、暴露给模型,再被点名执行。拆成 5 篇,建议按顺序读。</div>
+</div>
+
+<h2 id="map">这块代码在哪</h2>
+<p>工具系统的代码是「一个中央注册表 + 一层暴露/过滤 + 一个分发入口 + 一堆各自登记的工具文件」:</p>
+<table>
+<tr><th>文件</th><th>角色</th></tr>
+<tr><td><code>tools/registry.py</code></td><td><strong>中央注册表</strong>:<code>ToolRegistry</code> 单例、<code>register()</code>、自动发现、<code>check_fn</code> 缓存、<code>get_definitions()</code>、<code>dispatch()</code>——本模块的主角</td></tr>
+<tr><td><code>toolsets.py</code></td><td><strong>工具集</strong>:<code>TOOLSETS</code> 字典 + <code>_HERMES_CORE_TOOLS</code>,把零散工具打包成「每个平台用哪一套」</td></tr>
+<tr><td><code>model_tools.py</code></td><td><strong>暴露 + 分发</strong>:<code>get_tool_definitions()</code> 生成发给模型的 schema 列表,<code>handle_function_call()</code> 接住模型的点名</td></tr>
+<tr><td><code>tools/*.py</code></td><td>每个工具文件,模块顶层调一次 <code>registry.register()</code> 给自己上户口(终端、文件、网页、浏览器…)</td></tr>
+</table>
+<div class="box tip">阅读策略:<code>model_tools.py</code> 很大,别从头读。本模块只追两条主线——<strong>暴露</strong>(<code>get_tool_definitions</code>)和<strong>分发</strong>(<code>handle_function_call</code>);其余细节都挂在 <code>tools/registry.py</code> 这一个文件上。</div>
+
+<h2 id="bigpicture">一句话全貌</h2>
+<blockquote>每个工具文件在被 import 时调 <code>registry.register()</code> <strong>上户口</strong> → <code>discover_builtin_tools()</code> 用 AST 扫描把它们<strong>自动发现</strong>并 import → <code>toolsets.py</code> 把工具<strong>分组</strong>成「哪个平台用哪套」→ <code>get_tool_definitions()</code> 按工具集 + <code>check_fn</code> 过滤,生成发给模型的 <strong>schema 列表</strong> → 模型点名后 <code>handle_function_call()</code> <strong>分发</strong>到对应 handler 执行,结果以 JSON 字符串回灌。</blockquote>
+
+<div class="box warn">全模块最重要的一条铁律:<strong>「注册」不等于「暴露」</strong>。一个工具就算成功 <code>register()</code> 进了注册表,只要它的 <code>toolset</code> 没被列进当前启用的工具集(或 <code>check_fn</code> 没通过),模型就<strong>永远看不到它</strong>。这是内核「窄腰」设计的落点——每个工具都要在每次 API 调用时下发,所以默认只暴露该暴露的。</div>
+
+<h2 id="docs">本模块文档</h2>
+<div class="toc">
+  <a href="01-registry.html">
+    <div class="n">1</div>
+    <div class="tc-body">
+      <div class="tc-title">注册表:工具的中央户口</div>
+      <div class="tc-desc">register() 的完整参数、ToolEntry 存了什么、单例与 _generation 代际计数、override 防覆盖闸、工具集别名。</div>
+      <div class="tc-files">tools/registry.py</div>
+    </div>
+  </a>
+  <a href="02-discovery.html">
+    <div class="n">2</div>
+    <div class="tc-body">
+      <div class="tc-title">自动发现:tools/*.py 如何自己上户口</div>
+      <div class="tc-desc">discover_builtin_tools 用 AST 只认顶层 registry.register、排除哪些文件、何时运行、循环导入安全的 import 链。</div>
+      <div class="tc-files">tools/registry.py · model_tools.py</div>
+    </div>
+  </a>
+  <a href="03-toolsets.html">
+    <div class="n">3</div>
+    <div class="tc-body">
+      <div class="tc-title">工具集与「注册 ≠ 暴露」</div>
+      <div class="tc-desc">TOOLSETS 字典、_HERMES_CORE_TOOLS、resolve_toolset 递归展开、每平台 enable/disable、为什么上了户口还可能被隐身。</div>
+      <div class="tc-files">toolsets.py · model_tools.py</div>
+    </div>
+  </a>
+  <a href="04-exposure.html">
+    <div class="n">4</div>
+    <div class="tc-body">
+      <div class="tc-title">暴露给模型:get_tool_definitions</div>
+      <div class="tc-desc">check_fn 可用性检查与 30s TTL/宽限缓存、dynamic_schema_overrides、代际 + 配置指纹 memo、后处理块、tool_search 延迟暴露。</div>
+      <div class="tc-files">model_tools.py · tools/registry.py</div>
+    </div>
+  </a>
+  <a href="05-dispatch.html">
+    <div class="n">5</div>
+    <div class="tc-body">
+      <div class="tc-title">分发与扩展:点名之后 + 新增工具</div>
+      <div class="tc-desc">handle_function_call、agent 级工具的抢先拦截、dispatch/JSON 契约/错误清洗、MCP 动态刷新、插件 register_tool、如何加一个内置工具。</div>
+      <div class="tc-files">model_tools.py · tools/registry.py · 插件/MCP</div>
+    </div>
+  </a>
+</div>
+
+<div class="docnav">
+  <a href="../index.html">
+    <div class="label">上一级</div>
+    <div class="title">架构总览</div>
+  </a>
+  <a class="next" href="01-registry.html">
+    <div class="label">开始第一篇</div>
+    <div class="title">注册表:工具的中央户口 →</div>
+  </a>
+</div>
+
+<footer>工具系统 · 模块导览 · project-analysis/tools/ · 仅供本机学习</footer>
+</div>
+<script src="../vscode-links.js"></script>
+<script>
+  const bar = document.getElementById('progress');
+  const onScroll = () => { const h=document.documentElement; const sc=h.scrollTop||document.body.scrollTop;
+    const max=h.scrollHeight-h.clientHeight; bar.style.width=(max>0?(sc/max)*100:0)+'%'; };
+  document.addEventListener('scroll', onScroll, { passive:true }); onScroll();
+</script>
+</body>
+</html>

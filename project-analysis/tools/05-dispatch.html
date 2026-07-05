@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>05 · 分发与扩展 · 工具系统</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="container">
+<a class="back" href="index.html">返回模块导览</a>
+
+<div class="hero">
+  <span class="badge">第 5 篇 / 共 5 篇</span>
+  <h1>分发与扩展:点名之后 + 新增工具</h1>
+  <div class="sub">模型看到了工具、并在回复里点名要调其中一个。这一篇讲「点名之后」:请求怎么落到对应 handler、为什么有些工具走的是<strong>另一条</strong>路(agent 级拦截)、handler 的 JSON 契约与错误清洗;最后讲如何往这套系统里<strong>加东西</strong>——MCP 动态刷新、插件工具,以及给内核加一个内置工具的正确姿势。</div>
+</div>
+
+<h2 id="twopaths">点名之后:两条分发路</h2>
+<p>模型返回的 <code>tool_calls</code> 里每个都带 <code>name</code> + <code>arguments</code>。<a href="../agent/04-tool-execution.html">Agent 模块第 4 篇</a>讲了并发/串行怎么调度;这一篇聚焦「单个工具调用落到哪」。关键:<strong>不是所有工具都走 <code>registry.dispatch</code></strong>——有一批「agent 级工具」被<strong>抢先拦截</strong>:</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A["模型点名 name + args"] --&gt; B["invoke_tool(agent, name, args)<br/>agent/agent_runtime_helpers.py"]
+    B --&gt; C{name 是 agent 级工具?<br/>todo/memory/session_search<br/>/clarify/read_terminal/delegate_task}
+    C -- 是 --&gt; D["就地执行<br/>(要用 agent 的 store/回调/委派)"]
+    C -- 否(else 分支) --&gt; E["handle_function_call(name, args)<br/>model_tools.py"]
+    E --&gt; F["守卫/钩子/中间件/审批<br/>(第 4 篇 + Agent 第 4 篇)"]
+    F --&gt; G["registry.dispatch(name, args)<br/>tools/registry.py"]
+    G --&gt; H["entry.handler(args, **kw)<br/>→ JSON 字符串"]
+</pre>
+</div>
+
+<h2 id="agentlevel">路 A:agent 级工具的抢先拦截</h2>
+<p>有些工具<strong>离不开 agent 实例本身的状态</strong>——todo 列表存在 <code>agent._todo_store</code>、memory 存在 <code>agent._memory_store</code>、<code>clarify</code> 要回调前端、<code>delegate_task</code> 要 spawn 子 agent。这些没法用「无状态的 <code>registry.dispatch</code>」跑,所以在 <code>invoke_tool()</code> 里<strong>按名字分流、就地执行</strong>:</p>
+<pre><code># agent/agent_runtime_helpers.py · invoke_tool()
+if function_name == "todo":
+    def _execute(next_args):  # 用 agent._todo_store
+        from tools.todo_tool import todo_tool
+        return _finish_agent_tool(todo_tool(todos=..., store=agent._todo_store), next_args)
+elif function_name == "session_search":
+    ...  # 用 agent._get_session_db_for_recall()
+elif function_name == "memory":
+    def _execute(next_args):
+        result = memory_tool(action=..., store=agent._memory_store)
+        if agent._memory_manager:               # 成功写入还要镜像到外部记忆提供商
+            agent._memory_manager.notify_memory_tool_write(result, ...)
+        return _finish_agent_tool(result, next_args)
+elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
+    ...  # 记忆提供商注册的工具
+elif function_name == "clarify":
+    ...  # 用 agent.clarify_callback 回调前端
+elif function_name == "read_terminal":
+    ...  # 用 agent.read_terminal_callback
+elif function_name == "delegate_task":
+    def _execute(next_args):
+        return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)  # spawn 子 agent
+else:
+    def _execute(next_args):                    # ← 其余全部工具:落到 model_tools
+        return handle_function_call(function_name, next_args, effective_task_id, ...)
+</code></pre>
+<div class="filehint">agent/agent_runtime_helpers.py · invoke_tool()</div>
+<p>换句话说:<strong>agent 级工具在到达 <code>model_tools.handle_function_call</code> <u>之前</u>就被截胡了</strong>;只有 <code>else</code> 分支(绝大多数普通工具:终端、文件、网页、浏览器…)才继续往下走。</p>
+<div class="box tip"><strong>双保险:</strong><code>model_tools.py</code> 里有个 <code>_AGENT_LOOP_TOOLS = {"todo","memory","session_search","delegate_task"}</code>,并在 <code>handle_function_call</code> 开头<strong>兜底</strong>:万一这些名字真漏到了这里,直接返回 <code>{"error": "... must be handled by the agent loop"}</code>——它们<strong>本就不该</strong>在这层被执行,这是一道防止「走错路还静默出错」的护栏。</p></div>
+
+<h2 id="handle">路 B:handle_function_call → registry.dispatch</h2>
+<p>普通工具进 <code>handle_function_call()</code> 后,并不是立刻执行,中间还夹着<strong>好几道关</strong>(细节见第 4 篇与 Agent 模块第 4 篇):工具请求中间件(改参数)、<code>pre_tool_call</code> 插件钩子(可拦停)、ACP 编辑审批、越权/守卫评估……全过了,才用一个 <code>_dispatch</code> 闭包真正调注册表:</p>
+<pre><code>def _dispatch(next_args):
+    return registry.dispatch(function_name, next_args,
+                             task_id=task_id, session_id=session_id, user_task=user_task)
+
+result = run_tool_execution_middleware(function_name, function_args, _dispatch, ...)
+</code></pre>
+<div class="filehint">model_tools.py · handle_function_call()</div>
+<p>(<code>execute_code</code> 是特例:它的 <code>_dispatch</code> 会把「沙箱里可用的工具列表」也传进去,并<strong>优先用调用方给的列表</strong>,防止子 agent 通过进程全局 <code>_last_resolved_tool_names</code> 篡改父的工具集。)</p>
+
+<h2 id="dispatch">registry.dispatch:JSON 契约 + 异步桥接 + 错误清洗</h2>
+<p>最终执行落在注册表的 <code>dispatch()</code>。它很短,但把三件事定死了:</p>
+<pre><code>def dispatch(self, name, args, **kwargs) -&gt; str:
+    entry = self.get_entry(name)
+    if not entry:
+        return json.dumps({"error": f"Unknown tool: {name}"})   # 未知工具:统一错误形状
+    try:
+        if entry.is_async:
+            from model_tools import _run_async
+            return _run_async(entry.handler(args, **kwargs))      # 异步 handler 自动桥接
+        return entry.handler(args, **kwargs)                      # 同步直接调
+    except Exception as e:
+        logger.exception("Tool %s dispatch error: %s", name, e)
+        raw = f"Tool execution failed: {type(e).__name__}: {e}"
+        sanitized = _sanitize_tool_error(raw)                     # 清洗错误文本
+        return json.dumps({"error": sanitized})
+</code></pre>
+<div class="filehint">tools/registry.py · dispatch()</div>
+<table>
+  <tr><th>保证</th><th>说明</th></tr>
+  <tr><td><strong>永远返回 JSON 字符串</strong></td><td>成功由 handler 自己返回 JSON;未知工具/异常由 dispatch 包成 <code>{"error": ...}</code>。上层永远拿到<strong>可解析的字符串</strong>,不会因工具崩溃拿到裸异常</td></tr>
+  <tr><td><strong>异步自动桥接</strong></td><td><code>is_async=True</code> 的 handler 返回协程,<code>_run_async()</code> 在共享事件循环里跑完再返回结果——工具作者写 async 也能被同步的分发调用</td></tr>
+  <tr><td><strong>错误文本清洗</strong></td><td>异常字符串里可能混着 XML 标签 / 代码围栏 / CDATA 之类<strong>结构性噪声</strong>,直接喂给模型会被当成结构指令。<code>_sanitize_tool_error</code> 把这些框架 token 去掉,免得污染模型上下文</td></tr>
+</table>
+<div class="box warn"><strong>handler 的铁律:必须返回 JSON 字符串。</strong>这是整个工具系统的统一契约——第 1 篇的 <code>example_tool</code> 结尾 <code>return json.dumps({...})</code> 就是它。返回别的类型(dict、None、裸字符串)会在回灌给模型时出问题。注册表只在<strong>出错时</strong>替你兜底成 JSON,正常路径的 JSON 化是 handler 自己的责任。</div>
+
+<h2 id="mcp">扩展一:MCP 工具的运行时动态刷新</h2>
+<p>第 2 篇说过 <code>mcp_tool.py</code> 被排除在自动发现之外——因为 MCP 工具<strong>不是开机静态登记</strong>,而是<strong>运行时</strong>连上外部 MCP server、按它返回的清单动态注册,还能中途刷新。流程:</p>
+<ul>
+  <li>MCP 客户端收到 server 的 <code>notifications/tools/list_changed</code>;</li>
+  <li>对旧工具 <code>registry.deregister()</code>,对新工具 <code>registry.register(..., toolset="mcp-&lt;server&gt;", override=True, is_async=True)</code>;</li>
+  <li>MCP↔MCP 覆盖是<strong>被允许的</strong>(第 1 篇的防覆盖闸对 <code>mcp-*</code> 前缀放行);</li>
+  <li>每次增删都让 <code>_generation += 1</code> → 第 4 篇的 <code>get_tool_definitions</code> 缓存<strong>自动失效</strong>,下次重算就带上新工具。</li>
+</ul>
+<div class="box tip"><strong>为什么这套能安全并发:</strong>MCP 刷新会在<strong>一个线程</strong>里增删注册表,而别的线程可能正在<strong>读</strong>工具元数据生成 schema。注册表用一把 <code>RLock</code> 把所有 mutation 串行化,读方则通过 <code>_snapshot_entries()</code> 在锁内<strong>拿一份稳定快照</strong>再慢慢用。配合单调递增的 <code>_generation</code>,读方还能安全地 memo。这就是第 1 篇「代际号 + 锁 + 快照」三件套的完整用途。</div>
+
+<h2 id="plugin">扩展二:插件工具</h2>
+<p>插件不改核心代码,靠 <code>register(ctx)</code> 里的 <code>ctx.register_tool(...)</code> 把工具送进<strong>同一个注册表</strong>(底层还是 <code>registry.register</code>)。它们和内置工具走完全一样的暴露/分发路,只是多了一层<strong>越权保护</strong>(第 1 篇的 override 策略):</p>
+<ul>
+  <li>插件工具默认<strong>不能覆盖内置工具</strong>。想覆盖(比如把默认浏览器换成自家 CDP 后端),要 <code>override=True</code> <strong>且</strong>操作员在 config 里 <code>plugins.entries.&lt;id&gt;.allow_tool_override: true</code>;</li>
+  <li>授权靠 <code>_plugin_owner_of(handler)</code> 认定——绑定在 handler 的<strong>定义模块</strong>(<code>__globals__["__name__"]</code>)上,而非调用点,所以插件<strong>没法用回调洗白</strong>一次越权;</li>
+  <li>授权策略 <code>register_plugin_override_policy()</code> 是<strong>持久</strong>的,即便插件事后用线程/延迟回调再注册,也受同一条策略约束。</li>
+</ul>
+<div class="box warn"><strong>规矩(<code>AGENTS.md</code>):插件不得改核心文件。</strong>插件要的能力若框架没暴露,应该去<strong>拓宽通用插件面</strong>(加个 hook、加个 ctx 方法),而不是把插件专属逻辑硬塞进 <code>run_agent.py</code> / <code>model_tools.py</code> / 注册表。工具系统给插件留的口子就是 <code>ctx.register_tool</code> + 那套 override 策略——够用且受控。</div>
+
+<h2 id="addtool">如何新增一个内置工具</h2>
+<p>如果你是在给<strong>内核</strong>贡献一个新的核心工具(注意:<code>AGENTS.md</code> 的「Footprint Ladder」说大多数能力<strong>不该</strong>做成核心工具,优先 CLI+技能 / 服务门控 / 插件 / MCP),正确姿势是<strong>改两个文件</strong>:</p>
+<ol class="steps substeps">
+  <li>
+    <h4>建 tools/your_tool.py</h4>
+    <p>写好 handler(返回 JSON 字符串)+ 可选 <code>check_requirements</code>,<strong>模块顶层</strong>调一次 <code>registry.register(...)</code>(见第 1 篇范式)。放进 <code>tools/</code> 目录即被<strong>自动发现</strong>(第 2 篇),无需手写 import。</p>
+  </li>
+  <li>
+    <h4>把工具名加进 toolsets.py</h4>
+    <p>加到 <code>_HERMES_CORE_TOOLS</code>(所有平台可见)或某个具体工具集的 <code>tools</code> 列表。<strong>这一步是必须的、且是手动的</strong>——自动发现只负责登记 schema;工具要<u>暴露给 agent</u>,名字必须出现在某个被启用的工具集里(第 3 篇的「注册 ≠ 暴露」)。</p>
+  </li>
+</ol>
+<div class="box warn"><strong>最常踩的坑,再强调一次:</strong>只做了第 1 步、忘了第 2 步 —— 工具在注册表里、<code>get_errors</code> 无报错,但模型报「<code>Tool xxx does not exist</code>」。<code>_HERMES_CORE_TOOLS</code> 不是死代码,它是每个平台基础工具集继承的默认包;不把工具名加进去(或加进某个启用的工具集),它就永远隐身。</div>
+<div class="box tip"><strong>几个进阶点:</strong>schema 描述里若提到文件路径,用 <code>display_hermes_home()</code> 让它随 profile 变;工具要存持久状态,用 <code>get_hermes_home()</code> 而非硬编码 <code>~/.hermes</code>;<strong>agent 级</strong>工具(要用 agent 的 store/回调)不走这条路——它们在 <code>run_agent.py</code> / <code>invoke_tool()</code> 里被拦截(本篇路 A),参考 <code>tools/todo_tool.py</code> 的模式。</div>
+
+<h2 id="fulltrip">回到全貌</h2>
+<p>五篇串起来,一个工具的完整一生:</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    R["① register 上户口<br/>第 1 篇"] --&gt; D["② 自动发现<br/>第 2 篇"]
+    D --&gt; T["③ 收进工具集<br/>第 3 篇"]
+    T --&gt; E["④ 过滤+暴露给模型<br/>第 4 篇"]
+    E --&gt; C["⑤ 模型点名 → 分发执行<br/>第 5 篇"]
+    C --&gt; RES["结果 JSON 回灌<br/>(Agent 模块第 4 篇)"]
+</pre>
+</div>
+<p>工具系统就是内核那条「窄腰」的具体形态:注册表把所有工具备齐,但每一层都在<strong>克制暴露</strong>——按工具集收、按 <code>check_fn</code> 过、超量的藏到 <code>tool_search</code> 后。真正下发给模型的,永远只是「此时此地该有」的那一小撮。想加能力,先爬一遍 Footprint Ladder,大多数时候答案不是「加个核心工具」。</p>
+
+<h2 id="takeaway">本篇要点</h2>
+<div class="box">
+<ul>
+<li>点名后有<strong>两条路</strong>:<code>todo/memory/session_search/clarify/read_terminal/delegate_task</code> 等 <strong>agent 级工具在 <code>invoke_tool</code> 里被抢先拦截</strong>(要用 agent 的 store/回调/委派);其余走 <code>handle_function_call → registry.dispatch</code>。</li>
+<li><code>handle_function_call</code> 有个 <code>_AGENT_LOOP_TOOLS</code> 兜底:agent 级工具漏到这层直接报错(双保险)。</li>
+<li><code>registry.dispatch</code> 定死三条:<strong>永远返回 JSON 字符串</strong>、异步 handler 自动桥接、异常文本清洗后包成 <code>{"error":...}</code>。<strong>handler 必须自己返回 JSON。</strong></li>
+<li><strong>MCP</strong> 运行时动态 register/deregister(<code>mcp-*</code> 可互相覆盖),靠 <strong>RLock + 快照 + 代际号</strong>并发安全、缓存自动失效。</li>
+<li><strong>插件</strong>用 <code>ctx.register_tool</code> 进同一注册表,覆盖内置需操作员授权;插件不得改核心文件。</li>
+<li>新增<strong>内置</strong>工具改两个文件:<code>tools/your_tool.py</code>(自动发现)+ <code>toolsets.py</code>(手动接进工具集,否则不暴露)。加核心工具前先掂量 Footprint Ladder。</li>
+</ul>
+</div>
+
+<div class="docnav">
+  <a href="04-exposure.html">
+    <div class="label">上一篇</div>
+    <div class="title">← 暴露给模型</div>
+  </a>
+  <a class="next" href="index.html">
+    <div class="label">读完了</div>
+    <div class="title">返回模块导览 →</div>
+  </a>
+</div>
+
+<footer>工具系统 · 第 5 篇 · project-analysis/tools/ · 仅供本机学习</footer>
+</div>
+<script src="../vscode-links.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  try { mermaid.initialize({ startOnLoad:true, theme: dark?'dark':'base',
+    themeVariables: dark?{}:{ primaryColor:'#f5edd6', primaryBorderColor:'#b8860b', primaryTextColor:'#21252b',
+      lineColor:'#b8860b', secondaryColor:'#fffdf6', tertiaryColor:'#fff8c5' } }); } catch(e){}
+  const bar = document.getElementById('progress');
+  const onScroll = () => { const h=document.documentElement; const sc=h.scrollTop||document.body.scrollTop;
+    const max=h.scrollHeight-h.clientHeight; bar.style.width=(max>0?(sc/max)*100:0)+'%'; };
+  document.addEventListener('scroll', onScroll, { passive:true }); onScroll();
+</script>
+</body>
+</html>

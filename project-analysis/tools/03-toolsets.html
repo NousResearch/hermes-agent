@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03 · 工具集与「注册 ≠ 暴露」 · 工具系统</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="container">
+<a class="back" href="index.html">返回模块导览</a>
+
+<div class="hero">
+  <span class="badge">第 3 篇 / 共 5 篇</span>
+  <h1>工具集与「注册 ≠ 暴露」</h1>
+  <div class="sub">前两篇里,几十个工具都登记进了注册表。但不是每个前端都该拿到全部工具——CLI 要终端和文件,Telegram 网关就未必。<code>toolsets.py</code> 把工具<strong>分组打包</strong>成「哪个平台用哪一套」,并落实全模块最重要的一条铁律:<strong>注册 ≠ 暴露</strong>。</div>
+</div>
+
+<h2 id="what">工具集是什么:一个分组标签</h2>
+<p>「工具集(toolset)」就是<strong>一组工具的命名集合</strong>。定义全在 <code>toolsets.py</code> 的一个大字典 <code>TOOLSETS</code> 里,每个条目三个字段:</p>
+<pre><code>TOOLSETS = {
+    "web": {
+        "description": "Web research and content extraction tools",
+        "tools": ["web_search", "web_extract"],   # 直接包含的工具名
+        "includes": []                             # 组合进来的其它工具集
+    },
+    "browser": {
+        "description": "Browser automation...",
+        "tools": ["browser_navigate", "browser_snapshot", ...],
+        "includes": []
+    },
+    # ...
+}
+</code></pre>
+<div class="filehint">toolsets.py · TOOLSETS</div>
+<table>
+  <tr><th>字段</th><th>作用</th></tr>
+  <tr><td><code>description</code></td><td>人读说明(<code>hermes tools</code> 界面、doctor 会显示)</td></tr>
+  <tr><td><code>tools</code></td><td>本工具集<strong>直接</strong>包含的工具名列表</td></tr>
+  <tr><td><code>includes</code></td><td>把<strong>别的工具集</strong>整个并进来(组合),实现「大套装 = 小套装拼起来」</td></tr>
+</table>
+<p>当前的工具集键(节选):<code>web</code>、<code>search</code>、<code>vision</code>、<code>video</code>、<code>image_gen</code>、<code>terminal</code>、<code>file</code>、<code>browser</code>、<code>skills</code>、<code>memory</code>、<code>todo</code>、<code>session_search</code>、<code>clarify</code>、<code>code_execution</code>、<code>delegation</code>、<code>cronjob</code>、<code>homeassistant</code>、<code>kanban</code>、<code>discord</code> / <code>discord_admin</code>、<code>messaging</code>,以及一大批<strong>平台套装</strong> <code>hermes-cli</code> / <code>hermes-telegram</code> / <code>hermes-discord</code> / <code>hermes-slack</code> / <code>hermes-gateway</code> ……</p>
+
+<h2 id="core">_HERMES_CORE_TOOLS:每个平台共享的底座</h2>
+<p><code>toolsets.py</code> 顶部有一个列表 <code>_HERMES_CORE_TOOLS</code>——它是「几乎每个平台都该有的核心工具」的<strong>单一清单</strong>:web 搜索、终端、文件读写、技能、浏览器、todo、memory、委派、定时……改一处,所有平台同步更新。</p>
+<pre><code>_HERMES_CORE_TOOLS = [
+    "web_search", "web_extract",
+    "terminal", "process",
+    "read_file", "write_file", "patch", "search_files",
+    "skills_list", "skill_view", "skill_manage",
+    "browser_navigate", "browser_snapshot", ...,
+    "todo", "memory",
+    "session_search",
+    "execute_code", "delegate_task",
+    ...
+]
+</code></pre>
+<div class="filehint">toolsets.py · _HERMES_CORE_TOOLS</div>
+<p>平台套装就是「核心 + 该平台特有的少量工具」。比如 <code>hermes-cli</code> ≈ <code>_HERMES_CORE_TOOLS</code> 原样;messaging 平台在核心之上加 <code>send_message</code> 之类。这样每个平台的工具表都是「共享底座 + 各自的小 delta」。</p>
+<div class="box tip"><code>_HERMES_CORE_TOOLS</code> 不是死代码——它是每个平台基础工具集<strong>继承的默认包</strong>。第 5 篇讲「新增内置工具」时会看到:光 <code>register()</code> 还不够,得<strong>手动</strong>把工具名加进 <code>_HERMES_CORE_TOOLS</code>(或某个具体工具集),它才会被平台收录。</div>
+
+<h2 id="resolve">resolve_toolset:把套装递归展开成工具名</h2>
+<p>工具集之间能靠 <code>includes</code> 层层组合(套装含子套装),所以取「一个工具集到底有哪些工具」时要<strong>递归展开</strong>。这就是 <code>resolve_toolset()</code>:</p>
+<pre><code>def resolve_toolset(name, visited=None) -&gt; List[str]:
+    if visited is None: visited = set()
+    if name in {"all", "*"}:                       # 特殊别名:所有工具集的并集
+        ...
+        return sorted(all_tools)
+    if name in visited: return []                  # 环 / 菱形依赖:静默返回,避免重复/死循环
+    visited.add(name)
+    toolset = get_toolset(name)
+    if not toolset:
+        if name.startswith("hermes-"):             # 找不到定义,但形如 hermes-<平台>
+            ... 自动生成:_HERMES_CORE_TOOLS + 该插件平台注册的工具 ...
+        return []
+    tools = set(toolset.get("tools", []))          # 直接工具
+    for included in toolset.get("includes", []):   # 递归并入 includes
+        tools.update(resolve_toolset(included, visited))
+    return sorted(tools)
+</code></pre>
+<div class="filehint">toolsets.py · resolve_toolset()</div>
+<ul>
+  <li><strong><code>"all"</code> / <code>"*"</code>:</strong>返回所有工具集的并集——将来新增工具集会<strong>自动包含</strong>,不用改这里。</li>
+  <li><strong><code>visited</code> 集合:</strong>处理「环」和「菱形依赖」(A 含 B、A 含 C、B 和 C 都含 D)。已访问过就返回 <code>[]</code>,不重复展开、也不会无限递归。</li>
+  <li><strong>找不到定义、但名字是 <code>hermes-&lt;平台&gt;</code>:</strong><strong>自动生成</strong>一个工具集——给它 <code>_HERMES_CORE_TOOLS</code> + 该插件平台注册进同名工具集的工具。这样插件平台无需在 <code>TOOLSETS</code> 里预留条目,也能拿到核心工具。</li>
+</ul>
+
+<h2 id="pick">前端如何选工具集 + 启用/禁用</h2>
+<p>每个平台的适配器会挑一个<strong>基础工具集</strong>(如 Telegram 用 <code>messaging</code>、CLI 用 <code>hermes-cli</code>)。用户还能在 <code>config.yaml</code> 里用 <code>tools.&lt;platform&gt;.enabled</code> / <code>tools.&lt;platform&gt;.disabled</code>(或 <code>hermes tools</code> 那个 curses 界面)微调。最终这些汇成两个参数传给 <code>get_tool_definitions(enabled_toolsets=..., disabled_toolsets=...)</code>。解析规则(<code>model_tools._compute_tool_definitions</code>):</p>
+<pre><code># ① enabled 给了 → 只收这些工具集(逐个 validate + resolve,累加)
+if enabled_toolsets is not None:
+    for ts in effective_enabled_toolsets:
+        if validate_toolset(ts):
+            tools_to_include.update(resolve_toolset(ts))
+else:
+    # ② 没给 enabled → 默认收全部工具集
+    for ts in get_all_toolsets():
+        tools_to_include.update(resolve_toolset(ts))
+
+# ③ disabled 永远在最后做减法(即使某个大套装被 enable,disabled 里的照样剔除)
+if disabled_toolsets:
+    for ts in disabled_toolsets:
+        tools_to_include.difference_update(resolve_toolset(ts))
+</code></pre>
+<div class="filehint">model_tools.py · _compute_tool_definitions()</div>
+<div class="box warn"><strong>禁用「平台套装」的陷阱(#33924)——为什么不能直接减整包。</strong>平台套装(<code>hermes-*</code>)里含 <code>_HERMES_CORE_TOOLS</code>。如果用户把某个 <code>hermes-xxx</code> 塞进 <code>disabled_toolsets</code>,直接减掉整包会<strong>连 terminal / read_file 这些核心工具一起剃光</strong>,把模型的工具列表清空。所以对 <code>hermes-*</code> 的禁用改用 <code>bundle_non_core_tools()</code>——<strong>只减该套装「非核心的那部分 delta」,保留核心</strong>。禁用一个平台套装 = 去掉它的平台特有工具,核心不动。</div>
+<div class="box tip"><strong>kanban worker 的强制收录:</strong>被调度器 spawn 的看板 worker(设了 <code>HERMES_KANBAN_TASK</code> 环境变量)即使 profile 出于省 token 缩了工具集,也会被<strong>强行补上 <code>kanban</code> 工具集</strong>——否则它就没法 <code>kanban_complete</code>/<code>block</code>/<code>heartbeat</code> 上报进度了。</div>
+
+<h2 id="invariant">铁律:注册 ≠ 暴露</h2>
+<p>现在可以把这条铁律讲透了。一个工具要<strong>真正被模型看到</strong>,必须同时满足:</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A["① register 进注册表<br/>(第 1、2 篇:自动发现 + 上户口)"] --&gt; B{② 它的工具名<br/>在某个<b>被启用</b>的工具集里吗?}
+    B -- 否 --&gt; X1["❌ 模型看不到<br/>(登记了也白搭)"]
+    B -- 是 --&gt; C{③ 没落进<br/>disabled_toolsets?}
+    C -- 落进了 --&gt; X2[❌ 被减掉]
+    C -- 没有 --&gt; D{④ check_fn 通过?<br/>(第 4 篇)}
+    D -- 否 --&gt; X3["❌ 静默不可用<br/>(缺凭证/依赖没装)"]
+    D -- 是 --&gt; Y[✅ schema 下发给模型]
+</pre>
+</div>
+<p>注意 <code>register()</code> 时那个 <code>toolset="xxx"</code> 参数——它<strong>只是给工具贴了个组别标签</strong>,并<strong>不</strong>自动把工具塞进 <code>TOOLSETS["xxx"]</code>。要暴露,必须让这个工具名<strong>出现在某个会被 <code>resolve_toolset</code> 展开、且被平台启用的工具集的 <code>tools</code> 列表里</strong>。二者<strong>靠工具名字符串对上</strong>,不是自动关联的。</p>
+<table>
+  <tr><th>你做了什么</th><th>结果</th></tr>
+  <tr><td>只 <code>register(name="foo", toolset="bar")</code></td><td>foo 在注册表里,但<strong>模型看不到</strong>(除非恰好有个被启用的工具集列了 "foo")</td></tr>
+  <tr><td>再把 <code>"foo"</code> 加进 <code>_HERMES_CORE_TOOLS</code> 或某工具集的 <code>tools</code></td><td>✅ 该平台启用该工具集时,foo 被暴露</td></tr>
+  <tr><td>foo 有 <code>check_fn</code> 且返回 False</td><td>即便被收录,也<strong>静默不下发</strong>(如缺 API key)</td></tr>
+</table>
+<div class="box warn"><strong>这就是新手最常见的「我明明写了工具,模型却说 <code>Tool foo does not exist</code>」的根因。</strong>九成是漏了第 ② 步——没把工具名接进任何被启用的工具集。<code>register()</code> 成功、<code>get_errors</code> 无报错,都<strong>不代表</strong>模型能看到它。这是内核「窄腰」设计的直接后果:每个工具都要在<strong>每次 API 调用</strong>时下发,所以默认<u>不</u>暴露,必须显式接进工具集。</div>
+
+<h2 id="whynarrow">为什么要这么克制</h2>
+<p>因为「暴露给模型」是有<strong>成本</strong>的:每个工具的 schema 都会<strong>在每一次 API 调用里发给模型</strong>——占 prompt token(花钱)、占模型注意力(工具越多越容易点错)。所以工具系统的默认姿态是<strong>「按需暴露」</strong>:</p>
+<ul>
+  <li>平台只拿它<strong>用得上</strong>的工具集(网关不需要桌面 GUI 的 project 工具);</li>
+  <li>凭证没配的工具<strong>自动隐身</strong>(<code>check_fn</code>,下一篇);</li>
+  <li>大量 MCP/插件工具还能<strong>延迟到 <code>tool_search</code> 背后</strong>,不占常驻 schema(下一篇)。</li>
+</ul>
+<blockquote>「注册 ≠ 暴露」不是麻烦,而是<strong>成本纪律</strong>的落点。注册表尽管把所有工具都备齐;真正下发给模型的,永远只是「这个平台、这个会话、此刻可用」的那一小撮。</blockquote>
+
+<h2 id="takeaway">本篇要点</h2>
+<div class="box">
+<ul>
+<li>工具集是<strong>工具名的命名分组</strong>,定义在 <code>TOOLSETS</code>(<code>tools</code> 直接列 + <code>includes</code> 组合);<code>_HERMES_CORE_TOOLS</code> 是各平台共享的底座。</li>
+<li><code>resolve_toolset()</code> 递归展开 <code>includes</code>,处理环/菱形依赖,支持 <code>all/*</code>,并为 <code>hermes-&lt;平台&gt;</code> 自动生成套装。</li>
+<li>暴露 = <code>enabled_toolsets</code> 累加 → <code>disabled_toolsets</code> <strong>最后统一减</strong>;禁用 <code>hermes-*</code> 套装只减非核心 delta,保住核心工具(#33924)。</li>
+<li><strong>铁律:注册 ≠ 暴露。</strong><code>register(toolset=...)</code> 只贴标签,必须把工具名<strong>接进某个被启用的工具集</strong>,再通过 <code>check_fn</code>,模型才看得到。</li>
+<li>克制暴露是<strong>成本纪律</strong>:每个工具 schema 每次调用都下发,占 token 占注意力,所以默认按需暴露。</li>
+</ul>
+</div>
+
+<div class="docnav">
+  <a href="02-discovery.html">
+    <div class="label">上一篇</div>
+    <div class="title">← 自动发现</div>
+  </a>
+  <a class="next" href="04-exposure.html">
+    <div class="label">下一篇</div>
+    <div class="title">暴露给模型:get_tool_definitions →</div>
+  </a>
+</div>
+
+<footer>工具系统 · 第 3 篇 · project-analysis/tools/ · 仅供本机学习</footer>
+</div>
+<script src="../vscode-links.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  try { mermaid.initialize({ startOnLoad:true, theme: dark?'dark':'base',
+    themeVariables: dark?{}:{ primaryColor:'#f5edd6', primaryBorderColor:'#b8860b', primaryTextColor:'#21252b',
+      lineColor:'#b8860b', secondaryColor:'#fffdf6', tertiaryColor:'#fff8c5' } }); } catch(e){}
+  const bar = document.getElementById('progress');
+  const onScroll = () => { const h=document.documentElement; const sc=h.scrollTop||document.body.scrollTop;
+    const max=h.scrollHeight-h.clientHeight; bar.style.width=(max>0?(sc/max)*100:0)+'%'; };
+  document.addEventListener('scroll', onScroll, { passive:true }); onScroll();
+</script>
+</body>
+</html>

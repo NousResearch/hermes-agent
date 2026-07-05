@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01 · 注册表:工具的中央户口 · 工具系统</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="container">
+<a class="back" href="index.html">返回模块导览</a>
+
+<div class="hero">
+  <span class="badge">第 1 篇 / 共 5 篇</span>
+  <h1>注册表:工具的中央户口</h1>
+  <div class="sub">所有工具的信息(schema、handler、属于哪个工具集、可用性怎么查)都汇总在一个地方——<code>tools/registry.py</code> 里的 <code>ToolRegistry</code> 单例。这一篇讲清:一个工具文件里那行 <code>registry.register(...)</code> 到底做了什么,注册表替我们挡掉了哪些坑。</div>
+</div>
+
+<h2 id="why">为什么要有一个中央注册表</h2>
+<p>Hermes 有几十个工具,散落在 <code>tools/*.py</code> 几十个文件里。如果没有注册表,<code>model_tools.py</code> 就得维护一堆<strong>平行的字典</strong>:一个存 schema、一个存 handler、一个存「哪个工具属于哪个工具集」、一个存「怎么判断它可用」……每加一个工具都要改四五处,极易漏改、对不上。</p>
+<p>注册表把这些<strong>收成一处</strong>:每个工具文件在被 import 时,自己调一次 <code>registry.register(...)</code> 把「我叫什么、schema 长啥样、谁来执行我、我属于哪个工具集、怎么查我可不可用」一次性登记好。<code>model_tools.py</code> 之后只管<strong>查</strong>注册表,不再自己维护任何平行结构。</p>
+<blockquote>一句话:注册表是所有工具的<strong>中央户口本</strong>。工具文件负责「上户口」,其余所有子系统(暴露、分发、可用性、banner、doctor)都<strong>只读这一本</strong>。</blockquote>
+
+<h2 id="onecall">一行 register() 长什么样</h2>
+<p>先看一个真实工具文件的收尾——这是每个内置工具的固定套路(以 <code>example_tool</code> 为例):</p>
+<pre><code># tools/your_tool.py
+import json, os
+from tools.registry import registry            # ← 导入那个全局单例
+
+def check_requirements() -&gt; bool:               # 可选:这个工具现在可不可用?
+    return bool(os.getenv("EXAMPLE_API_KEY"))
+
+def example_tool(param: str, task_id: str = None) -&gt; str:
+    return json.dumps({"success": True, "data": "..."})   # 必须返回 JSON 字符串
+
+registry.register(                              # ← 模块顶层调用:import 时就执行
+    name="example_tool",
+    toolset="example",
+    schema={"name": "example_tool", "description": "...", "parameters": {...}},
+    handler=lambda args, **kw: example_tool(param=args.get("param",""), task_id=kw.get("task_id")),
+    check_fn=check_requirements,
+    requires_env=["EXAMPLE_API_KEY"],
+)
+</code></pre>
+<div class="filehint">tools/registry.py · registry.register()</div>
+<p>关键:<code>registry.register(...)</code> 是写在<strong>模块顶层</strong>的(不在任何函数里)。所以只要这个 <code>.py</code> 文件<strong>被 import 一次</strong>,登记就自动发生了——这也是下一篇「自动发现」能成立的前提。</p>
+
+<h2 id="params">register() 的完整参数</h2>
+<p><code>ToolRegistry.register()</code> 的签名(<code>tools/registry.py</code>):</p>
+<table>
+  <tr><th>参数</th><th>必填</th><th>作用</th></tr>
+  <tr><td><code>name</code></td><td>✅</td><td>工具名,模型点名时用的就是它;注册表里以它为主键(唯一)</td></tr>
+  <tr><td><code>toolset</code></td><td>✅</td><td>归到哪个<strong>工具集</strong>(分组标签)。<strong>决定了它能不能被暴露</strong>——见第 3 篇</td></tr>
+  <tr><td><code>schema</code></td><td>✅</td><td>OpenAI 格式的工具定义(name/description/parameters),发给模型的就是它</td></tr>
+  <tr><td><code>handler</code></td><td>✅</td><td>真正干活的可调用对象,签名 <code>(args: dict, **kwargs) -&gt; str</code>,<strong>必须返回 JSON 字符串</strong></td></tr>
+  <tr><td><code>check_fn</code></td><td>—</td><td>零参可调用,返回 <code>bool</code>。判断「此刻这工具可不可用」(有没有配 API key、Docker 在不在)。不传=永远可用</td></tr>
+  <tr><td><code>requires_env</code></td><td>—</td><td>这工具需要的环境变量名列表(供 <code>hermes tools</code>/setup 展示与提示,不影响运行)</td></tr>
+  <tr><td><code>is_async</code></td><td>—</td><td>handler 是不是协程。为 <code>True</code> 时 <code>dispatch()</code> 会自动用 <code>_run_async()</code> 桥接(见第 5 篇)</td></tr>
+  <tr><td><code>description</code></td><td>—</td><td>人读描述;不传则回退到 <code>schema["description"]</code></td></tr>
+  <tr><td><code>emoji</code></td><td>—</td><td>CLI/TUI 活动区显示这工具时的图标</td></tr>
+  <tr><td><code>max_result_size_chars</code></td><td>—</td><td>该工具结果的字符上限(超了截断/落盘),不传用全局默认</td></tr>
+  <tr><td><code>dynamic_schema_overrides</code></td><td>—</td><td>零参可调用,返回一个 dict,在<strong>生成 schema 时</strong>浅合并覆盖到基础 schema 上。用于「描述要反映当前配置」的场景(见第 4 篇)</td></tr>
+  <tr><td><code>override</code></td><td>—</td><td>显式允许<strong>覆盖已存在的同名工具</strong>。默认 <code>False</code> 会拒绝覆盖,防误伤</td></tr>
+</table>
+
+<h2 id="entry">登记后存进 ToolEntry</h2>
+<p>每次 <code>register()</code> 会把这些参数打包成一个 <code>ToolEntry</code>,塞进注册表内部的 <code>self._tools[name]</code> 字典。<code>ToolEntry</code> 用 <code>__slots__</code> 固定了字段(省内存 + 防止手滑加属性):</p>
+<pre><code>class ToolEntry:
+    """单个已注册工具的元数据。"""
+    __slots__ = (
+        "name", "toolset", "schema", "handler", "check_fn",
+        "requires_env", "is_async", "description", "emoji",
+        "max_result_size_chars", "dynamic_schema_overrides",
+    )
+</code></pre>
+<div class="filehint">tools/registry.py · class ToolEntry</div>
+<p>字段和 <code>register()</code> 的参数一一对应。之后所有子系统都通过 <code>registry.get_entry(name)</code> 拿到这个 <code>ToolEntry</code>,再取它的 <code>schema</code>(暴露)、<code>handler</code>(分发)、<code>check_fn</code>(可用性)、<code>toolset</code>(分组)。</p>
+
+<h2 id="singleton">单例:全进程只有一本户口</h2>
+<p>注册表是<strong>模块级单例</strong>——文件末尾实例化一次,整个进程共用:</p>
+<pre><code># tools/registry.py 末尾
+registry = ToolRegistry()
+</code></pre>
+<p>所以无论哪个工具文件 <code>from tools.registry import registry</code>,拿到的都是<strong>同一个对象</strong>。几十个工具文件各自 <code>register()</code>,最后都堆进这一个 <code>registry._tools</code> 里。</p>
+<div class="box tip"><strong>循环导入安全</strong>是这套设计的隐藏前提。<code>tools/registry.py</code> <u>不</u> import <code>model_tools</code> 或任何工具文件,所以它处在导入链的<strong>最底层</strong>:<br>
+<code>registry.py</code>(谁都不依赖)← <code>tools/*.py</code>(只从 registry 导入)← <code>model_tools.py</code>(导入 registry + 所有工具)← <code>run_agent.py / cli.py</code>。<br>
+方向永远单向朝上,不会成环。</div>
+
+<h2 id="guard">override 防覆盖闸:不许悄悄顶掉别人</h2>
+<p><code>register()</code> 最要紧的一段逻辑,是当<strong>同名工具已存在、且来自不同工具集</strong>时的处理。默认它<strong>拒绝覆盖</strong>——防止一个插件(或手滑)悄悄顶掉某个内置工具。判定链:</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A[register name, toolset, ...] --&gt; B{同名工具已存在<br/>且 toolset 不同?}
+    B -- 否 --&gt; Z[直接写入 _tools]
+    B -- 是 --&gt; C{两个都是 mcp-* ?}
+    C -- 是 --&gt; Z2[允许覆盖<br/>MCP 刷新/重名是合法的]
+    C -- 否 --&gt; D{override=True ?}
+    D -- 否 --&gt; R[❌ 拒绝并 return<br/>记 ERROR 日志]
+    D -- 是 --&gt; E{是插件 handler<br/>且没拿到操作员授权?}
+    E -- 是 --&gt; P[❌ 抛 PermissionError<br/>需 allow_tool_override]
+    E -- 否 --&gt; Z3[✅ 覆盖<br/>记 INFO 便于审计]
+</pre>
+</div>
+<pre><code>existing = self._tools.get(name)
+if existing and existing.toolset != toolset:
+    both_mcp = existing.toolset.startswith("mcp-") and toolset.startswith("mcp-")
+    if both_mcp:
+        ...  # MCP↔MCP:server 刷新或两个 server 重名,合法,放行
+    elif override:
+        _owner = self._plugin_owner_of(handler)          # 这 handler 是哪个插件写的?
+        if _owner is not None and not self._plugin_override_policy.get(_owner, False):
+            raise PermissionError(...)                    # 插件想覆盖内置,但没授权 → 拒
+        logger.info("... override=True opt-in")           # 授权了(或非插件调用)→ 覆盖
+    else:
+        logger.error("... would shadow existing tool ...") # 没 override → 拒绝,直接 return
+        return
+</code></pre>
+<div class="filehint">tools/registry.py · ToolRegistry.register()</div>
+<table>
+  <tr><th>情形</th><th>结果</th><th>为什么</th></tr>
+  <tr><td>同名同 toolset(纯重注册)</td><td>覆盖(不触发本闸)</td><td>同一工具重新登记是正常的(如重载)</td></tr>
+  <tr><td>两个都是 <code>mcp-*</code></td><td>允许覆盖</td><td>MCP server 刷新、或两个 server 有重名工具,都是合法的动态行为</td></tr>
+  <tr><td><code>override=False</code>(默认)顶掉别人</td><td>❌ 拒绝 + ERROR</td><td>防止插件/手滑悄悄替换内置工具</td></tr>
+  <tr><td><code>override=True</code> 但插件没授权</td><td>❌ 抛 <code>PermissionError</code></td><td>覆盖内置工具需操作员在 config 里 <code>allow_tool_override: true</code></td></tr>
+  <tr><td><code>override=True</code> 且已授权(或非插件)</td><td>✅ 覆盖 + INFO 审计</td><td>合法的替换(如把默认浏览器工具换成 headed-Chrome CDP 后端)</td></tr>
+</table>
+<div class="box warn"><strong>「谁写的 handler」绑定在定义处,骗不过去。</strong><code>_plugin_owner_of(handler)</code> 看的是 <code>handler.__globals__["__name__"]</code>——即这个函数<strong>定义在哪个模块</strong>,这是在定义时就固定的,不随调用点/线程/时机漂移。lambda 和嵌套函数继承定义模块的 globals,所以插件<strong>没法用回调「洗白」一次越权覆盖</strong>。授权策略(<code>register_plugin_override_policy</code>)是<strong>持久</strong>的、从不清除,即便插件事后用延迟/线程回调再 <code>register()</code>,也照样被同一条策略拦。</div>
+
+<h2 id="generation">_generation:一个会「涨」的版本号</h2>
+<p>注册表内部有个单调递增的<strong>代际计数器</strong> <code>_generation</code>,每次注册表<strong>发生变动</strong>(register / deregister / 注册别名 / MCP 刷新)就 +1:</p>
+<pre><code>self._tools[name] = ToolEntry(...)
+...
+self._generation += 1        # 每次 mutation 都涨一格
+</code></pre>
+<p>它的用途:让下游的<strong>缓存能安全 memo</strong>。第 4 篇会看到 <code>get_tool_definitions()</code> 把结果缓存起来,缓存键里就带着 <code>registry._generation</code>——只要注册表没变(代际号没涨),缓存就一直有效;一旦有工具增删(比如 MCP 动态刷新),代际号一变,旧缓存自动失效。这样既省了重复计算,又不会用到过时的工具列表。</p>
+<div class="box tip">为什么不用「时间戳」或「每次都重算」?代际计数器是<strong>精确失效</strong>:只有真正变动才 +1,读方拿 <code>(参数..., _generation)</code> 当缓存键即可,零猜测、零时钟依赖。这是并发安全的经典手法——所有 mutation 都在 <code>self._lock</code>(一把 <code>RLock</code>)里做,读方拿稳定快照,配合代际号就能放心缓存。</div>
+
+<h2 id="misc">还顺手记了两样:toolset check 与别名</h2>
+<p><strong>① toolset 的 check_fn 备案。</strong>注册时若带了 <code>check_fn</code>,注册表会把「这个工具集<strong>第一次</strong>出现的 check_fn」记进 <code>_toolset_checks[toolset]</code>:</p>
+<pre><code>if check_fn and toolset not in self._toolset_checks:
+    self._toolset_checks[toolset] = check_fn
+</code></pre>
+<p>注意:<strong>可用性现在是<u>逐工具</u>判定的</strong>(<code>_toolset_has_exposable_tools</code> 会遍历该工具集里每个工具各自的 <code>check_fn</code>),所以这个 <code>_toolset_checks</code> <u>不再</u>用来「一刀切」地关掉整个工具集。它只剩一个用途:给 <code>banner.py</code> 分类用——判断一个已不可用的工具集是「懒加载(有 check_fn,只是还没满足)」还是「彻底禁用」,<strong>只看有没有、从不真调</strong>。</p>
+<div class="box tip"><strong>为什么逐工具而非按工具集:</strong>有些工具集是<strong>混合</strong>的。比如 <code>terminal</code> 工具集里既有普通 <code>terminal</code>,又有只在桌面 GUI 才可用的 <code>read_terminal</code>(<code>check_fn</code> 探测 <code>HERMES_DESKTOP</code>)。若用「工具集里第一个 check_fn」一刀切,就会因为 <code>read_terminal</code> 不可用而<strong>误伤整个终端工具集</strong>。所以必须逐个工具查。</div>
+<p><strong>② 工具集别名。</strong><code>register_toolset_alias(alias, toolset)</code> 给一个规范工具集名登记一个别名(比如给某个 MCP server 的工具集起个用户友好的名字)。别名冲突会记 warning,并同样让 <code>_generation += 1</code>。第 3 篇讲工具集解析时会用到。</p>
+
+<h2 id="takeaway">本篇要点</h2>
+<div class="box">
+<ul>
+<li>注册表是所有工具的<strong>中央户口本</strong>:工具文件在<strong>模块顶层</strong>调一次 <code>registry.register()</code> 上户口,其余子系统只读这一本。</li>
+<li><code>register()</code> 把参数打包成 <code>ToolEntry</code>(<code>__slots__</code> 固定字段)存进单例 <code>registry</code>;三要素是 <code>name</code> / <code>toolset</code> / <code>schema</code> / <code>handler</code>,handler <strong>必须返回 JSON 字符串</strong>。</li>
+<li>注册表处在导入链<strong>最底层</strong>(不 import 任何工具或 model_tools),所以循环导入安全。</li>
+<li><strong>override 防覆盖闸</strong>:默认拒绝顶掉别人的同名工具;MCP↔MCP 例外;插件想覆盖内置需操作员 <code>allow_tool_override</code> 授权——授权绑定在 handler 的<strong>定义模块</strong>上,骗不过去。</li>
+<li><code>_generation</code> 代际计数器每次变动 +1,让下游缓存(第 4 篇)能<strong>精确失效</strong>。</li>
+<li><strong>划重点(下一篇继续):</strong>「注册进 <code>_tools</code>」只是上了户口,<u>还没</u>暴露给模型——那要等它的工具集被启用(第 3 篇)。</li>
+</ul>
+</div>
+
+<div class="docnav">
+  <a href="index.html">
+    <div class="label">返回</div>
+    <div class="title">模块导览</div>
+  </a>
+  <a class="next" href="02-discovery.html">
+    <div class="label">下一篇</div>
+    <div class="title">自动发现:tools/*.py 如何自己上户口 →</div>
+  </a>
+</div>
+
+<footer>工具系统 · 第 1 篇 · project-analysis/tools/ · 仅供本机学习</footer>
+</div>
+<script src="../vscode-links.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  try { mermaid.initialize({ startOnLoad:true, theme: dark?'dark':'base',
+    themeVariables: dark?{}:{ primaryColor:'#f5edd6', primaryBorderColor:'#b8860b', primaryTextColor:'#21252b',
+      lineColor:'#b8860b', secondaryColor:'#fffdf6', tertiaryColor:'#fff8c5' } }); } catch(e){}
+  const bar = document.getElementById('progress');
+  const onScroll = () => { const h=document.documentElement; const sc=h.scrollTop||document.body.scrollTop;
+    const max=h.scrollHeight-h.clientHeight; bar.style.width=(max>0?(sc/max)*100:0)+'%'; };
+  document.addEventListener('scroll', onScroll, { passive:true }); onScroll();
+</script>
+</body>
+</html>

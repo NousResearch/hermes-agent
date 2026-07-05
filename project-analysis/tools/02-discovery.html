@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>02 · 自动发现 · 工具系统</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="container">
+<a class="back" href="index.html">返回模块导览</a>
+
+<div class="hero">
+  <span class="badge">第 2 篇 / 共 5 篇</span>
+  <h1>自动发现:tools/*.py 如何自己上户口</h1>
+  <div class="sub">第 1 篇说「工具文件被 import 时会自动 register()」。可它们是<strong>谁</strong> import 的?几十个工具文件,没有哪张手写清单去逐个 <code>import</code>。这一篇讲 <code>discover_builtin_tools()</code>——用 AST 扫描把「凡是顶层调了 <code>registry.register</code> 的文件」自动找出来并 import。</div>
+</div>
+
+<h2 id="problem">要解决的问题:别维护 import 清单</h2>
+<p>朴素做法是在 <code>model_tools.py</code> 里写一长串:</p>
+<pre><code>import tools.terminal_tool
+import tools.file_tools
+import tools.web_tools
+# ... 再手写几十行 ...
+</code></pre>
+<p>问题显而易见:<strong>每加一个工具文件都要回来补一行</strong>,漏补就等于这工具不存在,而且没有任何报错——它只是<strong>静默地没被发现</strong>。Hermes 的做法是让发现<strong>自动化</strong>:扫 <code>tools/</code> 目录,谁在顶层调了 <code>registry.register()</code>,就 import 谁。</p>
+
+<h2 id="discover">discover_builtin_tools():扫目录、按需 import</h2>
+<pre><code>def discover_builtin_tools(tools_dir=None) -&gt; List[str]:
+    """Import 所有自注册的内置工具模块,返回它们的模块名。"""
+    tools_path = Path(tools_dir) if tools_dir else Path(__file__).resolve().parent
+    module_names = [
+        f"tools.{path.stem}"
+        for path in sorted(tools_path.glob("*.py"))            # 扫 tools/*.py
+        if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}  # 排除三个
+        and _module_registers_tools(path)                      # ← 顶层真的调了 register 吗?
+    ]
+    imported = []
+    for mod_name in module_names:
+        try:
+            importlib.import_module(mod_name)                  # import 触发它的 register()
+            imported.append(mod_name)
+        except Exception as e:
+            logger.warning("Could not import tool module %s: %s", mod_name, e)
+    return imported
+</code></pre>
+<div class="filehint">tools/registry.py · discover_builtin_tools()</div>
+<p>三步:<strong>①</strong> <code>glob("*.py")</code> 列出目录里所有 Python 文件;<strong>②</strong> 排除三个特殊文件 + 用 AST 判断这文件<strong>顶层是否真的调了 <code>registry.register</code></strong>;<strong>③</strong> 对筛出来的模块逐个 <code>import_module</code>——import 的动作就<strong>触发</strong>了那个文件顶层的 <code>register()</code>,工具自动上户口。单个模块 import 失败只记 warning、不连累其余(某个工具的可选依赖没装,不该拖垮整个工具系统)。</p>
+
+<h2 id="ast">为什么用 AST 检查,而不是「import 了再说」</h2>
+<p>关键在 <code>_module_registers_tools()</code>——它<strong>先读源码、解析成 AST、只看模块<u>顶层</u>语句</strong>里有没有 <code>registry.register(...)</code> 调用,而不是「先 import 进来看看」:</p>
+<pre><code>def _module_registers_tools(module_path: Path) -&gt; bool:
+    try:
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(module_path))
+    except (OSError, SyntaxError):
+        return False
+    return any(_is_registry_register_call(stmt) for stmt in tree.body)   # 只看 tree.body(顶层)
+
+def _is_registry_register_call(node) -&gt; bool:
+    """判断 node 是不是一句 registry.register(...) 调用表达式。"""
+    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+        return False
+    func = node.value.func
+    return (isinstance(func, ast.Attribute) and func.attr == "register"
+            and isinstance(func.value, ast.Name) and func.value.id == "registry")
+</code></pre>
+<div class="filehint">tools/registry.py · _module_registers_tools / _is_registry_register_call</div>
+<p>两个「为什么」:</p>
+<ul>
+  <li><strong>为什么先 AST 筛、而不是 import 全部:</strong>很多 <code>tools/</code> 下的文件是<strong>辅助模块</strong>(工具函数、解析器、helper),它们自己不是工具,但可能在<strong>某个函数体内部</strong>调 <code>registry.register()</code>(比如动态注册)。如果无脑 import 所有 <code>.py</code>,会把这些纯 helper 也拖进来、甚至误触发它们的副作用。AST 检查<strong>只认「顶层直接写着 <code>registry.register(...)</code>」的文件</strong>——<code>any(... for stmt in tree.body)</code> 里的 <code>tree.body</code> 就是模块顶层,函数体内部的调用<strong>不算</strong>。</li>
+  <li><strong>为什么解析失败就跳过:</strong><code>ast.parse</code> 遇到 <code>OSError</code>(读不了)或 <code>SyntaxError</code>(语法错)直接返回 <code>False</code>——一个语法坏掉的文件不会中断整个发现流程,只是被安静略过。</li>
+</ul>
+<div class="box tip"><strong>AST 检查是「静态」的——它<u>不执行</u>代码,只读文本、看结构。</strong>所以它能在「决定要不要 import」<u>之前</u>就判断出「这文件是不是一个工具」,避免了「为了知道该不该导入,只好先导入一遍」的鸡生蛋问题。</div>
+
+<h2 id="exclude">三个被排除的文件</h2>
+<table>
+  <tr><th>文件</th><th>为什么排除</th></tr>
+  <tr><td><code>__init__.py</code></td><td>包初始化文件,不是工具</td></tr>
+  <tr><td><code>registry.py</code></td><td>就是注册表自己。它<strong>定义</strong>了 <code>register</code>,但不<strong>调用</strong> <code>registry.register</code>(而且它处在导入链最底层,不能反过来依赖工具)</td></tr>
+  <tr><td><code>mcp_tool.py</code></td><td>MCP 工具是<strong>运行时动态注册</strong>的,不走「模块顶层 register」这条路。放进自动发现会和它的动态刷新机制打架(见第 5 篇)</td></tr>
+</table>
+<div class="box warn"><strong><code>mcp_tool.py</code> 的排除是理解 MCP 的钥匙。</strong>内置工具是「import 一次、静态登记、整个进程不变」;而 MCP 工具是「运行时连上外部 server、按 server 返回的清单动态 <code>register</code>/<code>deregister</code>、还能中途刷新」。两种生命周期完全不同,所以 MCP 不参与这套「开机自动发现」,由它自己的客户端在运行时往同一个注册表里增删(第 5 篇细讲)。</div>
+
+<h2 id="when">何时运行:import model_tools 的副作用</h2>
+<p>发现不是被谁「主动调用」的,而是 <code>model_tools.py</code> 在<strong>模块顶层</strong>就调了一次——只要有人 import 了 <code>model_tools</code>,发现就跑:</p>
+<pre><code># model_tools.py 顶层
+from tools.registry import discover_builtin_tools, registry
+...
+# ===== Tool Discovery(import 每个模块即触发它的 register 调用)=====
+discover_builtin_tools()
+</code></pre>
+<div class="filehint">model_tools.py · 模块顶层</div>
+<p>所以「谁 import model_tools,谁就触发了全套工具发现」。而 <code>run_agent.py</code> / <code>cli.py</code> / <code>batch_runner.py</code> 都会 import <code>model_tools</code>——于是不管从哪个前端进来,工具都在第一次用到工具系统时就<strong>全部登记就位</strong>了。</p>
+<div class="box tip"><strong>一个历史教训:MCP 发现<u>没</u>放在这里。</strong>源码注释记着——外部 MCP server 的发现曾经也放在这个模块顶层当副作用,但 <code>discover_mcp_tools()</code> 内部有个阻塞的 <code>future.result(timeout=120)</code>,而网关是<strong>在 asyncio 事件循环里</strong>、收到第一条用户消息时才懒加载 <code>model_tools</code> 的——结果只要有个配置的 MCP server 慢或连不上,就会把 Discord/Telegram 的心跳<strong>冻住最多 120 秒</strong>(#16856)。所以 MCP 发现被挪走了,只留内置工具的同步发现在这。</div>
+
+<h2 id="chain">回顾:循环导入安全的 import 链</h2>
+<p>把第 1 篇的单例、这一篇的发现串起来,整条依赖链是单向的:</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart BT
+    R["tools/registry.py<br/>(定义 registry 单例 + discover_builtin_tools)<br/>谁都不依赖"]
+    T["tools/*.py<br/>(顶层 registry.register 上户口)<br/>只从 registry 导入"]
+    M["model_tools.py<br/>(顶层调 discover_builtin_tools + 查注册表)"]
+    U["run_agent.py / cli.py / batch_runner.py"]
+    T --&gt; R
+    M --&gt; R
+    M -.import 触发.-&gt; T
+    U --&gt; M
+</pre>
+</div>
+<p>因为 <code>registry.py</code> 不 import 任何工具、也不 import <code>model_tools</code>,它永远在最底层,导入不会成环。<code>model_tools</code> 顶层的 <code>discover_builtin_tools()</code> 反过来<strong>动态</strong> import 那些工具文件(虚线),触发它们的 <code>register()</code>——这条「动态触发」不算静态依赖,不影响导入顺序。</p>
+
+<h2 id="notenough">发现了 ≠ 暴露了(重要伏笔)</h2>
+<p>到这里,所有内置工具都已经<strong>登记进注册表</strong>了。但请记住第 1 篇末尾那句:<strong>登记进 <code>_tools</code> 只是上了户口,模型还看不到它们。</strong>自动发现只保证「工具的 schema/handler 都在注册表里备好了」;至于<strong>哪些工具会被真正下发给模型</strong>,取决于<strong>工具集</strong>——它得先属于一个<strong>被当前平台启用的工具集</strong>,还要通过 <code>check_fn</code>。这正是下一篇的主题。</p>
+<div class="box warn"><strong>这是全模块最容易踩的坑:</strong>你新写了一个工具文件、<code>register()</code> 也调了、<code>get_errors</code> 也没报错,但模型死活不认它。九成是——你<strong>忘了把工具名加进 <code>toolsets.py</code> 的某个工具集</strong>。自动发现只做了一半,「接进工具集」是另一半、且是<strong>手动</strong>的(见第 3、5 篇)。</div>
+
+<h2 id="takeaway">本篇要点</h2>
+<div class="box">
+<ul>
+<li><code>discover_builtin_tools()</code> 扫 <code>tools/*.py</code>,用 <strong>AST</strong> 只挑出「<strong>顶层</strong>调了 <code>registry.register</code>」的文件并 import,触发它们上户口。</li>
+<li>用 AST 静态检查(不执行代码)是为了<strong>放过纯 helper 模块</strong>——只有顶层直接写着 register 的才算工具;函数体内部的 register 不算。</li>
+<li>排除 <code>__init__.py</code> / <code>registry.py</code> / <code>mcp_tool.py</code>;MCP 因为是<strong>运行时动态注册</strong>,不走这条静态发现路。</li>
+<li>发现是 <code>model_tools.py</code> <strong>模块顶层</strong>的一次性副作用——谁 import model_tools,谁就触发全套发现。</li>
+<li>整条 import 链单向朝上,<strong>循环导入安全</strong>。</li>
+<li><strong>发现 ≠ 暴露</strong>:登记进注册表后,还要「被启用的工具集收录 + 通过 check_fn」才会下发给模型——下一篇。</li>
+</ul>
+</div>
+
+<div class="docnav">
+  <a href="01-registry.html">
+    <div class="label">上一篇</div>
+    <div class="title">← 注册表:工具的中央户口</div>
+  </a>
+  <a class="next" href="03-toolsets.html">
+    <div class="label">下一篇</div>
+    <div class="title">工具集与「注册 ≠ 暴露」 →</div>
+  </a>
+</div>
+
+<footer>工具系统 · 第 2 篇 · project-analysis/tools/ · 仅供本机学习</footer>
+</div>
+<script src="../vscode-links.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  try { mermaid.initialize({ startOnLoad:true, theme: dark?'dark':'base',
+    themeVariables: dark?{}:{ primaryColor:'#f5edd6', primaryBorderColor:'#b8860b', primaryTextColor:'#21252b',
+      lineColor:'#b8860b', secondaryColor:'#fffdf6', tertiaryColor:'#fff8c5' } }); } catch(e){}
+  const bar = document.getElementById('progress');
+  const onScroll = () => { const h=document.documentElement; const sc=h.scrollTop||document.body.scrollTop;
+    const max=h.scrollHeight-h.clientHeight; bar.style.width=(max>0?(sc/max)*100:0)+'%'; };
+  document.addEventListener('scroll', onScroll, { passive:true }); onScroll();
+</script>
+</body>
+</html>

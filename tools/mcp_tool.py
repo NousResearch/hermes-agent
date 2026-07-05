@@ -4387,13 +4387,17 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("No explicit MCP servers provided")
         return []
 
-    # Only attempt servers that aren't already connected and are enabled
-    # (enabled: false skips the server entirely without removing its config)
+    # Only attempt servers that aren't already connected (or currently
+    # connecting) and are enabled.  Checking ``_server_connecting`` prevents
+    # duplicate subprocess spawns when ``discover_mcp_tools()`` is called
+    # from multiple entry-points before the first batch finishes (#58862).
     with _lock:
         new_servers = {
             k: v
             for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            if k not in _servers
+            and k not in _server_connecting
+            and _parse_boolish(v.get("enabled", True), default=True)
         }
         _server_connecting.update(new_servers)
         for srv_name in new_servers:

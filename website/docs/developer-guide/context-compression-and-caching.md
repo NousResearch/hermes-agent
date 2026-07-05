@@ -361,6 +361,16 @@ The marker is applied differently based on content type:
 4. **TTL selection**: Default is `5m` (5 minutes). Use `1h` for long-running
    sessions where the user takes breaks between turns.
 
+5. **Model identity is part of the cache key**: Provider-side caches are scoped
+   to the model (and account/API key) serving the request. Any mid-conversation
+   model change — an explicit `/model` switch, primary-model fallback, or a
+   credential-pool rotation onto a different account — means the next request
+   gets zero cache hits and re-reads the full conversation at undiscounted
+   input price. This is inherent to how provider caches work, not something
+   Hermes can avoid; user-facing docs for `/model`, fallback providers, and
+   credential pools carry cost warnings for this reason. Don't add features
+   that silently swap the model or credentials mid-session.
+
 ### Enabling Prompt Caching
 
 Prompt caching is automatically enabled when:

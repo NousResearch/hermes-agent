@@ -5635,7 +5635,7 @@ class AIAgent:
             function_result,
             failed=failed,
         )
-        if decision.action in {"warn", "halt"}:
+        if decision.action in {"warn", "redirect", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)

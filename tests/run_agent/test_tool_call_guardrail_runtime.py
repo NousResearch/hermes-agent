@@ -268,6 +268,127 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
 
 
+def test_tool_reported_loop_block_continues_same_turn_by_default():
+    agent = _make_agent("search_files", max_iterations=10)
+    args = {"pattern": "def.*drain", "path": "/repo", "target": "content"}
+    blocked_result = json.dumps(
+        {
+            "error": (
+                "BLOCKED: You have run this exact search 4 times in a row. "
+                "The results have NOT changed."
+            ),
+            "already_searched": 4,
+        }
+    )
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("search_files", json.dumps(args), "c-search")],
+        ),
+        _mock_response(content="done", finish_reason="stop", tool_calls=None),
+    ]
+
+    with (
+        patch("run_agent.handle_function_call", return_value=blocked_result) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("find the drain implementation")
+
+    mock_hfc.assert_called_once()
+    assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
+    assert result["api_calls"] == 2
+    assert result["final_response"] == "done"
+    assert "guardrail" not in result
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert any("Tool strategy redirect" in content for content in tool_contents)
+    assert any("tool_reported_loop_block" in content for content in tool_contents)
+
+
+def test_tool_reported_loop_block_halts_when_hard_stop_enabled():
+    agent = _make_agent("read_file", max_iterations=10, config=_hard_stop_config())
+    args = {"path": "/repo/agent.py"}
+    blocked_result = json.dumps(
+        {
+            "error": (
+                "BLOCKED: You have read this exact file region 3 times in a row. "
+                "The contents have NOT changed."
+            ),
+            "already_read": 3,
+        }
+    )
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("read_file", json.dumps(args), "c-read")],
+        ),
+    ]
+
+    with (
+        patch("run_agent.handle_function_call", return_value=blocked_result) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("read the file")
+
+    mock_hfc.assert_called_once()
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["final_response"]
+    assert result["guardrail"]["code"] == "tool_reported_loop_block"
+    assert result["guardrail"]["tool_name"] == "read_file"
+
+
+def test_action_preamble_without_tool_call_continues_same_turn():
+    agent = _make_agent("terminal", max_iterations=10)
+    preamble = (
+        "Now I have a clear picture. The task is to add a pre-dispatch "
+        "executable-state gate in subagent_dispatch_register_command that "
+        "checks if the linked task is in an executable state before registering "
+        "a dispatch. Currently the stale guard only runs post-dispatch during "
+        "drain and settlement. The goal is to prevent non-executable dispatches "
+        "from being registered in the first place. Let me look at the register "
+        "command's validation section and the _validate_subagent_dispatch_record "
+        "function:"
+    )
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content=preamble, finish_reason="stop", tool_calls=None),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "rg -n validate_subagent_dispatch_record tools"}),
+                    "c-terminal",
+                )
+            ],
+        ),
+        _mock_response(content="done", finish_reason="stop", tool_calls=None),
+    ]
+
+    with (
+        patch("run_agent.handle_function_call", return_value=json.dumps({"exit_code": 0, "stdout": "hit"})) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("fix the dispatch gate")
+
+    mock_hfc.assert_called_once()
+    assert result["api_calls"] == 3
+    assert result["final_response"] == "done"
+    recovery_prompts = [
+        msg for msg in result["messages"]
+        if msg.get("role") == "user" and msg.get("_action_preamble_recovery")
+    ]
+    assert len(recovery_prompts) == 1
+    assert "did not include the tool call" in recovery_prompts[0]["content"]
+
+
 def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
     agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
     same_args = {"query": "same"}

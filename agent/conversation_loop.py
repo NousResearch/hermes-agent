@@ -27,6 +27,10 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from agent.action_preamble import (
+    ACTION_PREAMBLE_RECOVERY_PROMPT,
+    looks_like_action_preamble_stall,
+)
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
@@ -603,6 +607,7 @@ def run_conversation(
     interrupted = False
     failed = False
     codex_ack_continuations = 0
+    action_preamble_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
@@ -5050,6 +5055,26 @@ def run_conversation(
                 # Successful content reached — drop any buffered retry
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
+
+                if (
+                    agent.valid_tool_names
+                    and action_preamble_continuations < 2
+                    and looks_like_action_preamble_stall(final_response, finish_reason, False)
+                ):
+                    action_preamble_continuations += 1
+                    agent._emit_status(
+                        "Action preamble ended without a tool call; continuing the turn"
+                    )
+                    interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+                    interim_msg["_action_preamble_recovery"] = True
+                    messages.append(interim_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": ACTION_PREAMBLE_RECOVERY_PROMPT,
+                        "_action_preamble_recovery": True,
+                    })
+                    agent._stream_needs_break = True
+                    continue
 
                 from agent.agent_runtime_helpers import (
                     intent_ack_continuation_mode,

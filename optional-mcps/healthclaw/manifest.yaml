@@ -1,0 +1,64 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: healthclaw
+description: >
+  Guardrailed access to FHIR health records — PHI redaction, immutable audit,
+  step-up authorization, and human-in-the-loop enforced server-side. Interpret
+  labs, check quality measures, fill intake forms, and share records via
+  encrypted SMART Health Links. Decision support, never diagnosis.
+source: https://github.com/aks129/HealthClawGuardrails
+
+# HealthClaw ships a remote MCP server (Streamable HTTP). The guardrails run
+# server-side, so no client configuration can bypass them. The public
+# `desktop-demo` tenant carries synthetic data only and needs no credentials —
+# zero-setup trial. For real records, users set their own tenant + token
+# headers (see post_install).
+transport:
+  type: http
+  url: https://mcp-server-production-5112.up.railway.app/mcp
+  headers:
+    X-Tenant-Id: desktop-demo
+
+# No auth for the synthetic demo tenant. Real tenants authenticate with a
+# tenant-bound step-up token header (X-Step-Up-Token) — write-tier tools
+# additionally require explicit human confirmation, enforced by the server
+# (HTTP 428 otherwise).
+
+# Curated default: the read-tier tools. Write tools (fhir_commit_write,
+# action_commit, shl_generate, questionnaire_extract, ...) stay opt-in at the
+# install checklist — they are proposal->human-confirm->commit flows by design.
+tools:
+  default_enabled:
+    - search
+    - fetch
+    - context_get
+    - fhir_read
+    - fhir_search
+    - fhir_validate
+    - fhir_stats
+    - fhir_lastn
+    - fhir_interpret_labs
+    - fhir_compiled_truth
+    - questionnaire_populate
+    - curatr_evaluate
+    - sources_check
+    - guardrail_conformance
+
+post_install: |
+  The default connection uses the public `desktop-demo` tenant — synthetic
+  records only, no credentials needed. Try:
+    "Search my health records for lab results and explain them in plain language."
+    "Run the guardrail conformance check and show me the scorecard."
+
+  To connect real records, self-host or use your own tenant, then set:
+    headers:
+      X-Tenant-Id: <your-tenant>
+      X-Step-Up-Token: <tenant-bound token>
+  Docs: https://github.com/aks129/HealthClawGuardrails#quick-start
+
+  The guardrails are verifiable, not asserted — the `guardrail_conformance`
+  tool (or GET /r6/fhir/$conformance on the backend) returns a graded A-F
+  scorecard across PHI redaction, audit, step-up auth, human-in-the-loop,
+  tenant isolation, and medical disclaimers.

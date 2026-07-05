@@ -42,25 +42,25 @@ import os
 import re
 import asyncio
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
-import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
+import httpx  # kept at module top so tests can patch tools.web_tools.httpx
 # After the web-provider plugin migration (PR #25182), the Firecrawl SDK
 # proxy, client construction, and response-shape normalizers all live in
 # plugins.web.firecrawl.provider. We re-export the names that external
 # code, integration tests, and unit-test patches reach for so the public
 # surface stays stable.
 if TYPE_CHECKING:
-    from firecrawl import Firecrawl  # noqa: F401 — type hints only
+    from firecrawl import Firecrawl  # type hints only
 from plugins.web.firecrawl.provider import (
-    Firecrawl,  # noqa: F401  # re-exported for tests that mock.patch("tools.web_tools.Firecrawl")
+    Firecrawl,  # re-exported for tests that mock.patch("tools.web_tools.Firecrawl")
     _firecrawl_backend_help_suffix,
-    _get_firecrawl_client,  # noqa: F401  # re-exported for tests that `from tools.web_tools import _get_firecrawl_client`
+    _get_firecrawl_client,  # re-exported for tests that `from tools.web_tools import _get_firecrawl_client`
     _get_firecrawl_gateway_url,
     _is_tool_gateway_ready,
     check_firecrawl_api_key,
 )
 # Tavily helpers re-exported for backward-compat with existing unit tests
 # (tests/tools/test_web_tools_tavily.py imports these names directly).
-from plugins.web.tavily.provider import (  # noqa: F401 — backward-compat names
+from plugins.web.tavily.provider import (  # backward-compat names
     _normalize_tavily_documents,
     _normalize_tavily_search_results,
     _tavily_request,
@@ -68,11 +68,11 @@ from plugins.web.tavily.provider import (  # noqa: F401 — backward-compat name
 # Parallel + Exa clients re-exported for backward-compat with existing
 # unit tests (tests/tools/test_web_tools_config.py imports _get_parallel_client
 # / _get_async_parallel_client / _get_exa_client directly).
-from plugins.web.parallel.provider import (  # noqa: F401 — backward-compat names
+from plugins.web.parallel.provider import (  # backward-compat names
     _get_async_parallel_client,
     _get_parallel_client,
 )
-from plugins.web.exa.provider import _get_exa_client  # noqa: F401
+from plugins.web.exa.provider import _get_exa_client
 
 # Module-level cache slots for the per-vendor clients. The plugins read/write
 # these via tools.web_tools so unit tests that reset
@@ -86,13 +86,13 @@ _exa_client: Optional[Any] = None
 from tools.debug_helpers import DebugSession
 # Imported solely so unit tests can monkeypatch these names on
 # tools.web_tools (the firecrawl plugin reads them via its own import chain).
-from tools.managed_tool_gateway import (  # noqa: F401 — backward-compat names for tests
+from tools.managed_tool_gateway import (  # backward-compat names for tests
     build_vendor_gateway_url,
     peek_nous_access_token as _peek_nous_access_token,
     read_nous_access_token as _read_nous_access_token,
     resolve_managed_tool_gateway,
 )
-from tools.tool_backend_helpers import (  # noqa: F401
+from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
@@ -168,7 +168,7 @@ def _registered_web_provider(backend: str):
         from agent.web_search_registry import get_provider
 
         return get_provider(backend)
-    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+    except Exception as exc:  # registry optional; never fatal
         logger.debug("web provider registry lookup failed for %r: %s", backend, exc)
         return None
 
@@ -185,7 +185,7 @@ def _registered_web_provider_available(backend: str):
         return None
     try:
         return bool(provider.is_available())
-    except Exception as exc:  # noqa: BLE001 — a broken provider is "unavailable"
+    except Exception as exc:  # a broken provider is "unavailable"
         logger.debug("web provider %r.is_available() raised: %s", backend, exc)
         return False
 
@@ -196,7 +196,7 @@ def _list_registered_web_providers():
         from agent.web_search_registry import list_providers
 
         return list_providers()
-    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+    except Exception as exc:  # registry optional; never fatal
         logger.debug("web provider registry list failed: %s", exc)
         return []
 
@@ -245,7 +245,7 @@ def _get_backend() -> str:
         try:
             if provider.is_available():
                 return provider.name
-        except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
+        except Exception as exc:  # a broken provider is skipped
             logger.debug("web provider %r.is_available() raised: %s", provider.name, exc)
 
     return "firecrawl"  # default (backward compat)
@@ -342,7 +342,7 @@ def _ddgs_package_importable() -> bool:
     (and tests can monkeypatch a single symbol).
     """
     try:
-        import ddgs  # noqa: F401
+        import ddgs
         return True
     except ImportError:
         return False
@@ -489,7 +489,7 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
             )
         path.write_text(content, encoding="utf-8")
         return str(path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Failed to store full web_extract text for %s: %s", url, exc)
         return None
 
@@ -589,7 +589,7 @@ def _ensure_web_plugins_loaded() -> None:
         from hermes_cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Warning, not debug: if a plugin import is genuinely broken the
         # user otherwise hits the misleading "No web extract provider
         # configured" error this helper is meant to eliminate, with no
@@ -986,7 +986,7 @@ def check_web_api_key() -> bool:
             get_active_search_provider() is not None
             or get_active_extract_provider() is not None
         )
-    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+    except Exception as exc:  # registry optional; never fatal
         logger.debug("web provider registry availability check failed: %s", exc)
         return False
 

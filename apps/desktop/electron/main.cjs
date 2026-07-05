@@ -93,6 +93,7 @@ const {
   isManagedEnabled,
   managedModelConfigYaml,
   ensurePluginsEnabledYaml,
+  ensureSkillsDisabledYaml,
   modelDisabledProvidersYaml,
   seedSkillsBlockYaml,
   seedPluginsBlockYaml,
@@ -4865,9 +4866,17 @@ function guardConfigYamlProductBlocks(reason) {
       fixed.push('model(moa-global)')
     }
 
-    if (!/^skills:/m.test(raw)) {
-      raw = raw.replace(/\n*$/, '\n') + seedSkillsBlockYaml()
-      fixed.push('skills')
+    // Skills: union the managed disabled names back in — add-only, so a user's
+    // enable-toggles (names they removed) survive. This is BOTH the "block was
+    // wiped entirely" heal AND the hc-406 UPGRADE path: an install seeded under
+    // v0.17 keeps its old 49-name skills.disabled after a bump to v0.18, so the
+    // newly-graded-OFF bundled skills (huggingface-hub / maps / plan) would ship
+    // ACTIVE without this reconcile. seedSkillsBlockYaml is the append when the
+    // block is wholly absent (ensureSkillsDisabledYaml delegates to it).
+    const skillsHeal = ensureSkillsDisabledYaml(raw)
+    if (skillsHeal.changed) {
+      raw = skillsHeal.next
+      fixed.push(`skills.disabled(+${skillsHeal.added.length})`)
     }
 
     if (!/^timezone:/m.test(raw)) {

@@ -31,6 +31,7 @@ const {
   isManagedEnabled,
   managedModelConfigYaml,
   ensurePluginsEnabledYaml,
+  ensureSkillsDisabledYaml,
   modelDisabledProvidersYaml,
   seedSkillsBlockYaml,
   seedPluginsBlockYaml,
@@ -319,11 +320,13 @@ test('modelDisabledProvidersYaml defaults to [copilot], indented under model:', 
   assert.equal(modelDisabledProvidersYaml(['  ']), '')
 })
 
-test('seedSkillsBlockYaml emits a top-level skills.disabled block with all 49 names', () => {
+test('seedSkillsBlockYaml emits a top-level skills.disabled block with all 50 v0.18 names', () => {
   const yaml = seedSkillsBlockYaml()
   assert.match(yaml, /^skills:\n {2}disabled:\n/m)
-  assert.equal(SEED_DISABLED_SKILLS.length, 49)
-  assert.equal(new Set(SEED_DISABLED_SKILLS).size, 49) // no dupes
+  // hc-406 v0.18 全集重分级: 50 disabled bundled skills (was 49 @ v0.17;
+  // +huggingface-hub/maps/plan, −dead kanban-orchestrator/kanban-worker).
+  assert.equal(SEED_DISABLED_SKILLS.length, 50)
+  assert.equal(new Set(SEED_DISABLED_SKILLS).size, 50) // no dupes
   // Every name is rendered as a 4-space-indented list item.
   for (const name of SEED_DISABLED_SKILLS) {
     assert.ok(yaml.includes(`\n    - ${name}\n`), `missing seeded skill: ${name}`)
@@ -333,9 +336,21 @@ test('seedSkillsBlockYaml emits a top-level skills.disabled block with all 49 na
   for (const n of ['serving-llms-vllm', 'evaluating-llms-harness', 'segment-anything-model', 'audiocraft-audio-generation']) {
     assert.ok(SEED_DISABLED_SKILLS.includes(n), `name-mismatch skill not seeded: ${n}`)
   }
-  // The 17 hard-cut skills are all in the disabled set.
-  for (const n of ['google-workspace', 'xurl', 'youtube-content', 'polymarket', 'teams-meeting-pipeline', 'claude-code', 'codex', 'opencode', 'notion', 'airtable', 'gif-search', 'arxiv', 'github-auth', 'github-code-review', 'github-issues', 'github-pr-workflow', 'github-repo-management']) {
+  // The hard-cut (D) walled/geo/competitor skills are all in the disabled set.
+  for (const n of ['google-workspace', 'xurl', 'youtube-content', 'polymarket', 'teams-meeting-pipeline', 'claude-code', 'codex', 'gif-search']) {
     assert.ok(SEED_DISABLED_SKILLS.includes(n), `cut skill not seeded: ${n}`)
+  }
+  // hc-406: the three newly-bundled skills graded OFF must be present.
+  for (const n of ['huggingface-hub', 'maps', 'plan']) {
+    assert.ok(SEED_DISABLED_SKILLS.includes(n), `new-v0.18 disabled skill not seeded: ${n}`)
+  }
+  // hc-406: the dead kanban orphans (no matching bundled skill anymore) are gone.
+  for (const n of ['kanban-orchestrator', 'kanban-worker']) {
+    assert.ok(!SEED_DISABLED_SKILLS.includes(n), `dead orphan should be dropped: ${n}`)
+  }
+  // hc-406: newly-bundled A/B skills we KEEP ACTIVE must NOT be disabled.
+  for (const n of ['computer-use', 'powerpoint', 'obsidian', 'ocr-and-documents', 'baoyu-infographic', 'yuanbao', 'apple-notes', 'imessage', 'llm-wiki', 'blogwatcher']) {
+    assert.ok(!SEED_DISABLED_SKILLS.includes(n), `A/B skill must stay active: ${n}`)
   }
   assert.equal(seedSkillsBlockYaml([]), '')
 })
@@ -486,6 +501,89 @@ test('ensurePluginsEnabledYaml never touches structurally unexpected shapes', ()
   assert.equal(r.next, exotic)
   // Empty managed list → no-op.
   assert.equal(ensurePluginsEnabledYaml('model: {}\n', []).changed, false)
+})
+
+// --- skills.disabled healer (hc-406 v0.18 upgrade path) ---
+// A config seeded under v0.17 keeps its old skills.disabled after a runtime
+// bump to v0.18; ensureSkillsDisabledYaml unions the newly-graded-OFF names in
+// so freshly-bundled skills we cut (huggingface-hub / maps / plan) don't ship
+// active. Add-only: user enable-toggles survive; nothing is ever removed.
+
+test('ensureSkillsDisabledYaml unions the v0.18-new disabled names into a v0.17 config', () => {
+  // A minimal v0.17-shaped block missing the three new names + carrying the two
+  // now-dead orphans and a user enable (notion removed to turn it on).
+  const v017 =
+    'skills:\n' +
+    '  disabled:\n' +
+    '    - google-workspace\n' +
+    '    - xurl\n' +
+    '    - kanban-orchestrator\n' +
+    '    - kanban-worker\n' +
+    'model:\n' +
+    '  default: x\n'
+  const r = ensureSkillsDisabledYaml(v017)
+  assert.equal(r.changed, true)
+  // The three new bundled-OFF skills are added…
+  for (const n of ['huggingface-hub', 'maps', 'plan']) {
+    assert.ok(r.added.includes(n), `should add ${n}`)
+    assert.ok(r.next.includes(`\n    - ${n}\n`), `should list ${n}`)
+  }
+  // …existing entries (incl. the dead orphans) are preserved, not removed…
+  assert.match(r.next, /- kanban-orchestrator\n {4}- kanban-worker/)
+  // …inserted INSIDE the skills block, before the next top-level key.
+  assert.ok(r.next.indexOf('- plan') < r.next.indexOf('model:'))
+  // …and no duplicates.
+  for (const n of ['huggingface-hub', 'maps', 'plan', 'google-workspace']) {
+    assert.equal((r.next.match(new RegExp(`- ${n}\\b`, 'g')) || []).length, 1, `duplicated: ${n}`)
+  }
+})
+
+test('ensureSkillsDisabledYaml never re-adds a name the user removed to enable a skill', () => {
+  // The full managed list minus one name (`powerpoint` was never disabled; the
+  // user here removed `maps` to enable it). Add-only means the healer WILL
+  // re-add `maps` — so to prove "respect a user enable" we pass a custom wanted
+  // list that omits it, mirroring how a future reclass would drop a name.
+  const seeded = seedSkillsBlockYaml(['google-workspace', 'xurl'])
+  // User turned xurl back on (removed it):
+  const userEdited = seeded.replace('    - xurl\n', '')
+  // Reconcile against the SAME reduced managed list → nothing missing → no-op.
+  const r = ensureSkillsDisabledYaml(userEdited, ['google-workspace'])
+  assert.equal(r.changed, false)
+  assert.equal(r.next, userEdited)
+})
+
+test('ensureSkillsDisabledYaml appends the whole block when skills: is absent', () => {
+  const raw = 'model:\n  default: x\nplugins:\n  enabled:\n    - apex-overlay\n'
+  const r = ensureSkillsDisabledYaml(raw)
+  assert.equal(r.changed, true)
+  assert.deepEqual(r.added, SEED_DISABLED_SKILLS)
+  assert.ok(r.next.startsWith(raw)) // append-only
+  assert.match(r.next, /^skills:\n {2}disabled:\n/m)
+  assert.equal((r.next.match(/^skills:/gm) || []).length, 1)
+})
+
+test('ensureSkillsDisabledYaml is idempotent on a fresh full seed (no-op)', () => {
+  const seed = seedSkillsBlockYaml()
+  const r = ensureSkillsDisabledYaml(seed)
+  assert.equal(r.changed, false)
+  assert.equal(r.next, seed)
+  assert.deepEqual(r.added, [])
+})
+
+test('ensureSkillsDisabledYaml handles PyYAML re-dump shapes (2-space items, [], null)', () => {
+  const redump = 'skills:\n  disabled:\n  - google-workspace\n  - user-kept\nmodel:\n  default: x\n'
+  const r = ensureSkillsDisabledYaml(redump, ['google-workspace', 'maps'])
+  assert.equal(r.changed, true)
+  assert.deepEqual(r.added, ['maps'])
+  assert.match(r.next, /- user-kept\n {2}- maps\nmodel:/)
+
+  for (const shape of ['  disabled: []\n', '  disabled: null\n', '  disabled:\n']) {
+    const r2 = ensureSkillsDisabledYaml(`skills:\n${shape}model:\n  default: x\n`, ['maps', 'plan'])
+    assert.equal(r2.changed, true, `shape: ${JSON.stringify(shape)}`)
+    assert.deepEqual(r2.added, ['maps', 'plan'])
+  }
+  // Empty managed list → no-op.
+  assert.equal(ensureSkillsDisabledYaml('skills:\n  disabled: []\n', []).changed, false)
 })
 
 // --- defaultModelPath ---

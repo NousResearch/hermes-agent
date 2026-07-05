@@ -14,6 +14,19 @@ const POSIX_SANE_PATH_ENTRIES = Object.freeze([
   '/bin'
 ])
 
+// hc-406: HuggingFace mirror for mainland China. faster-whisper (local STT,
+// the default speech-to-text provider) lazily downloads its ~150 MB Whisper
+// model from the Hub on first voice message; huggingface.co is blocked/slow in
+// CN, so a bare-network desktop hangs the whole transcription. huggingface_hub
+// (a faster-whisper transitive dep) resolves the Hub host from HF_ENDPOINT, so
+// exporting this into the backend subprocess env transparently routes every Hub
+// download (STT model, marker-pdf OCR models, the huggingface-hub skill's `hf`
+// CLI, …) through the official transparent CN mirror. Overridable: we only set
+// it when the parent env hasn't already (a power user / staging can point at
+// ModelScope or the real Hub). The runtime never reads HF_ENDPOINT itself; this
+// is purely for the Python libs it shells into.
+const HF_MIRROR_ENDPOINT = 'https://hf-mirror.com'
+
 function delimiterForPlatform(platform = process.platform) {
   return platform === 'win32' ? ';' : ':'
 }
@@ -89,7 +102,7 @@ function buildDesktopBackendEnv({
   const currentPythonPath = currentEnv?.PYTHONPATH || ''
   const key = pathEnvKey(currentEnv, platform)
 
-  return {
+  const env = {
     PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
     [key]: buildDesktopBackendPath({
       hermesHome,
@@ -99,9 +112,21 @@ function buildDesktopBackendEnv({
       pathModule
     })
   }
+
+  // hc-406: seed the CN HuggingFace mirror for the Python Hub-download path
+  // (faster-whisper STT model, marker-pdf OCR, the `hf` CLI). Add-only: never
+  // clobber an HF_ENDPOINT the parent env already set (staging / power-user /
+  // ModelScope override). The spawn merges `{ ...process.env, ...backend.env }`,
+  // so a value here wins over inheritance — hence the explicit passthrough of an
+  // existing value so an override survives.
+  const existingHfEndpoint = String(currentEnv?.HF_ENDPOINT || '').trim()
+  env.HF_ENDPOINT = existingHfEndpoint || HF_MIRROR_ENDPOINT
+
+  return env
 }
 
 module.exports = {
+  HF_MIRROR_ENDPOINT,
   POSIX_SANE_PATH_ENTRIES,
   appendUniquePathEntries,
   buildDesktopBackendEnv,

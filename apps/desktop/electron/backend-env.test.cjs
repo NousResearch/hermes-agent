@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const path = require('node:path')
 
 const {
+  HF_MIRROR_ENDPOINT,
   POSIX_SANE_PATH_ENTRIES,
   appendUniquePathEntries,
   buildDesktopBackendEnv,
@@ -108,4 +109,49 @@ test('appendUniquePathEntries drops empty entries and keeps first occurrence', (
     appendUniquePathEntries([':/a::/b', ['/a', '/c']], { delimiter: ':' }),
     '/a:/b:/c'
   )
+})
+
+// --- hc-406: HuggingFace CN mirror injection ---
+// The backend subprocess env carries HF_ENDPOINT so faster-whisper (local STT
+// default) and other huggingface_hub-backed downloads resolve the Hub through
+// the CN mirror. The spawn merges `{ ...process.env, ...backend.env }`, so a
+// value returned here wins over inheritance.
+
+test('buildDesktopBackendEnv seeds HF_ENDPOINT to the CN mirror by default', () => {
+  const env = buildDesktopBackendEnv({
+    hermesHome: '/Users/test/.hermes',
+    pythonPathEntries: ['/repo/hermes-agent'],
+    venvRoot: '/Users/test/.hermes/hermes-agent/venv',
+    currentEnv: { PATH: '/usr/bin:/bin' },
+    platform: 'darwin',
+    pathModule: path.posix
+  })
+  assert.equal(HF_MIRROR_ENDPOINT, 'https://hf-mirror.com')
+  assert.equal(env.HF_ENDPOINT, 'https://hf-mirror.com')
+})
+
+test('buildDesktopBackendEnv never clobbers an HF_ENDPOINT the parent env already set', () => {
+  const env = buildDesktopBackendEnv({
+    hermesHome: '/Users/test/.hermes',
+    venvRoot: '/Users/test/.hermes/hermes-agent/venv',
+    currentEnv: {
+      PATH: '/usr/bin:/bin',
+      HF_ENDPOINT: 'https://www.modelscope.cn'
+    },
+    platform: 'darwin',
+    pathModule: path.posix
+  })
+  // A power-user / staging override (e.g. ModelScope, or the real Hub) survives.
+  assert.equal(env.HF_ENDPOINT, 'https://www.modelscope.cn')
+})
+
+test('buildDesktopBackendEnv ignores a blank inherited HF_ENDPOINT and falls back to the mirror', () => {
+  const env = buildDesktopBackendEnv({
+    hermesHome: '/Users/test/.hermes',
+    venvRoot: '/Users/test/.hermes/hermes-agent/venv',
+    currentEnv: { PATH: '/usr/bin:/bin', HF_ENDPOINT: '   ' },
+    platform: 'darwin',
+    pathModule: path.posix
+  })
+  assert.equal(env.HF_ENDPOINT, HF_MIRROR_ENDPOINT)
 })

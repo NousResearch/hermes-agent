@@ -692,17 +692,20 @@ skills:
   # desktop Settings → Skills panel). We disable rather than delete the skill
   # files so upstream merges stay painless.
   #
-  # Two intents are folded into one mechanism (both = "off by default"):
+  # Grading = "does the skill depend ONLY on (a) local exec or (b) a
+  # CN-reachable, stable service?" — yes → active; no → disabled here. A
+  # 30s-timeout skill reads as "the agent is broken", so anything walled or
+  # HF/foreign-source-dependent stays off. Full 72-skill grade matrix + the
+  # A/B skills we deliberately KEEP ACTIVE live in
+  # hermes-cloud docs/DESKTOP-CHINA-SKILL-MATRIX.md. (hc-406 v0.18 全集重分级.)
   #
-  #   GROUP A — off for China + product focus (墙外必超时 / 国内不稳 / 竞品 dev).
-  #     These should usually stay off on mainland deployments. Re-enabling a
-  #     wall-blocked one (e.g. google-workspace) will time out without a proxy.
-  #
-  #   GROUP B — capable but niche (dev / research / heavy / internal). Hidden to
-  #     keep the default surface tight; flip on per-need from settings.
+  # MUST stay byte-for-list in sync with SEED_DISABLED_SKILLS in
+  # apps/desktop/electron/apex-managed.cjs (the desktop seed path). Names are the
+  # SKILL.md frontmatter `name:` (case-sensitive) — four differ from their
+  # folder (serving-llms-vllm, evaluating-llms-harness, segment-anything-model,
+  # audiocraft-audio-generation).
   disabled:
-    # ── GROUP A: China / product focus ──
-    # 墙外 + 竞品 coding agents
+    # ── D — walled / geo-blocked / competitor (无 VPN 必超时挂起) ──
     - google-workspace
     - xurl                       # X / Twitter
     - youtube-content
@@ -710,19 +713,39 @@ skills:
     - teams-meeting-pipeline
     - claude-code
     - codex
-    - opencode
-    # 借界转关:墙外协作 / Google 系 / GitHub 全家
+    - gif-search                 # Tenor = Google 系
+    # ── C — CN-slow / needs mirror or 国产源 before it's stable ──
+    # Cross-border SaaS (reachable-but-slow / needs foreign account)
     - notion
     - airtable
-    - gif-search                 # Tenor = Google 系
-    - arxiv
+    # github.com reachable-but-slow, raw.githubusercontent.com blocked
     - github-auth
     - github-code-review
     - github-issues
     - github-pr-workflow
     - github-repo-management
-    # ── GROUP B: capable but niche (toggle on per-need) ──
-    # dev
+    # HuggingFace / heavy-MLOps model discovery (HF blocked/slow; ModelScope
+    # route is the V0.2 localization roadmap. HF_ENDPOINT mirror is seeded by
+    # the desktop but these stay off as non-essential for a CN desktop assistant)
+    - huggingface-hub
+    - serving-llms-vllm          # folder: mlops/inference/vllm
+    - llama-cpp
+    - weights-and-biases
+    - evaluating-llms-harness    # folder: mlops/evaluation/lm-evaluation-harness
+    - segment-anything-model     # folder: mlops/models/segment-anything
+    - comfyui
+    - audiocraft-audio-generation  # folder: mlops/models/audiocraft
+    - heartmula
+    # OSM/OSRM: CN-slow + GCJ-02 ~500m offset + weak CN routing (AMap needed)
+    - maps
+    # export.arxiv.org reachable-but-slow / unstable
+    - arxiv
+    # ── DEV-B — capable but dev-niche; product-focus off (toggle on per-need) ──
+    # coding-agent / self-config
+    - opencode
+    - hermes-agent
+    - hermes-agent-skill-authoring
+    # dev workflow / debug / review
     - codebase-inspection
     - simplify-code
     - test-driven-development
@@ -731,23 +754,13 @@ skills:
     - node-inspect-debugger
     - python-debugpy
     - jupyter-live-kernel
+    - plan
+    - spike
+    # niche integrations / creative / research (local but seldom-needed)
     - himalaya
     - design-md
-    - hermes-agent
-    - hermes-agent-skill-authoring
-    # ML / research  (names below are the SKILL.md frontmatter `name:`,
-    # which differ from their folder names — that is what the toggle matches)
-    - serving-llms-vllm          # folder: mlops/inference/vllm
-    - llama-cpp
-    - weights-and-biases
-    - evaluating-llms-harness    # folder: mlops/evaluation/lm-evaluation-harness
     - research-paper-writing
     - pretext
-    - segment-anything-model     # folder: mlops/models/segment-anything
-    - comfyui
-    - audiocraft-audio-generation  # folder: mlops/models/audiocraft
-    # creative / 小众
-    - heartmula
     - songwriting-and-ai-music
     - songsee
     - manim-video
@@ -755,10 +768,7 @@ skills:
     - touchdesigner-mcp
     - openhue
     # internal / QA
-    - kanban-orchestrator
-    - kanban-worker
     - dogfood
-    - spike
 
   # Gate the background self-improvement review's skill writes.
   # The review forks the agent in a daemon thread with no user present; by

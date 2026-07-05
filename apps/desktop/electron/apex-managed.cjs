@@ -159,32 +159,96 @@ const MANAGED_PLUGIN_NAMES = [
 // Skills physically present in ~/.hermes/skills/ but kept INACTIVE by default
 // (never loaded until removed from this list in Settings → Skills). We disable
 // rather than delete so upstream merges stay painless. Names below are the
-// SKILL.md frontmatter `name:` (which the toggle matches) — note the four that
-// differ from their folder names (serving-llms-vllm, evaluating-llms-harness,
-// segment-anything-model, audiocraft-audio-generation). MUST stay in sync with
-// the `skills.disabled` list in cli-config.yaml.example (the pure-CLI path).
+// SKILL.md frontmatter `name:` (which the toggle matches, case-sensitive) —
+// note the four that differ from their folder names (serving-llms-vllm,
+// evaluating-llms-harness, segment-anything-model, audiocraft-audio-generation).
+// MUST stay in sync with the `skills.disabled` list in cli-config.yaml.example
+// (the pure-CLI path).
+//
+// ── hc-406 v0.18 全集重分级 ──────────────────────────────────────────────────
+// The runtime's bundled `skills/` (72 skills @ v0.18) auto-copy to
+// ~/.hermes/skills/ and are ACTIVE unless listed here; the ~101 opt-in
+// `optional-skills/` are NOT copied at setup (installed on demand via
+// `hermes skills install`), so they are already-off and never need seeding.
+// Grading matrix + full 72-skill table: hermes-cloud
+// docs/DESKTOP-CHINA-SKILL-MATRIX.md. Judge = "does the skill depend ONLY on
+// (a) local exec or (b) a CN-reachable, stable service?" — yes → active; no →
+// disabled here (a 30s-timeout skill reads as "the agent is broken").
+//
+// v0.18 delta vs v0.17: +3 disabled (huggingface-hub / maps / plan — all
+// new-bundled and C/dev-niche), −2 removed dead orphans (kanban-orchestrator /
+// kanban-worker — no longer a bundled skill; the successor is the opt-in
+// optional-skills/creative/kanban-video-orchestrator). The 22 newly-bundled
+// A/B skills we deliberately KEEP ACTIVE (computer-use, apple/*, powerpoint,
+// obsidian, ocr-and-documents, baoyu-infographic, yuanbao, …) are simply
+// absent from this list.
 const SEED_DISABLED_SKILLS = [
-  // GROUP A — China / product focus (墙外 / 国内不稳 / 竞品 dev)
+  // ── D — walled / geo-blocked / competitor (无 VPN 必超时挂起) ──────────────
   'google-workspace', 'xurl', 'youtube-content', 'polymarket',
-  'teams-meeting-pipeline', 'claude-code', 'codex', 'opencode',
-  'notion', 'airtable', 'gif-search', 'arxiv',
+  'teams-meeting-pipeline', 'claude-code', 'codex', 'gif-search',
+  // ── C — CN-slow / needs mirror or 国产源 before it's stable ────────────────
+  // Cross-border SaaS (reachable-but-slow / needs foreign account):
+  'notion', 'airtable',
+  // github.com reachable-but-slow, raw.githubusercontent.com blocked:
   'github-auth', 'github-code-review', 'github-issues',
   'github-pr-workflow', 'github-repo-management',
-  // GROUP B — capable but niche (toggle on per-need): dev
+  // HuggingFace / heavy-MLOps model discovery (HF blocked/slow; ModelScope
+  // route is the V0.2 localization roadmap — HF_ENDPOINT mirror is seeded but
+  // these stay off as non-essential for a CN desktop assistant):
+  'huggingface-hub', 'serving-llms-vllm', 'llama-cpp', 'weights-and-biases',
+  'evaluating-llms-harness', 'segment-anything-model', 'comfyui',
+  'audiocraft-audio-generation', 'heartmula',
+  // OSM/OSRM: CN-slow + GCJ-02 ~500m offset + weak CN routing (AMap needed):
+  'maps',
+  // arXiv: export.arxiv.org reachable-but-slow/unstable:
+  'arxiv',
+  // ── DEV-B — capable but dev-niche; product-focus off (toggle on per-need) ──
+  // Coding-agent / self-config:
+  'opencode', 'hermes-agent', 'hermes-agent-skill-authoring',
+  // Dev workflow / debug / review:
   'codebase-inspection', 'simplify-code', 'test-driven-development',
   'systematic-debugging', 'requesting-code-review', 'node-inspect-debugger',
-  'python-debugpy', 'jupyter-live-kernel', 'himalaya', 'design-md',
-  'hermes-agent', 'hermes-agent-skill-authoring',
-  // ML / research
-  'serving-llms-vllm', 'llama-cpp', 'weights-and-biases',
-  'evaluating-llms-harness', 'research-paper-writing', 'pretext',
-  'segment-anything-model', 'comfyui', 'audiocraft-audio-generation',
-  // creative / 小众
-  'heartmula', 'songwriting-and-ai-music', 'songsee', 'manim-video',
-  'p5js', 'touchdesigner-mcp', 'openhue',
-  // internal / QA
-  'kanban-orchestrator', 'kanban-worker', 'dogfood', 'spike'
+  'python-debugpy', 'jupyter-live-kernel', 'plan', 'spike',
+  // Niche integrations / creative / research (local but seldom-needed):
+  'himalaya', 'design-md', 'research-paper-writing', 'pretext',
+  'songwriting-and-ai-music', 'songsee', 'manim-video', 'p5js',
+  'touchdesigner-mcp', 'openhue',
+  // Internal / QA:
+  'dogfood'
 ]
+
+// ── hc-406: platform search / extraction gateway seed (待 S2/S3 上线) ─────────
+// The China desktop epic replaces the walled ddgs web-search (hc-408) and adds a
+// self-hosted Firecrawl web_extract leg (hc-414). Both are桌面-side config-only
+//接入 (zero overlay) — the runtime reads a top-level `web:` block + two env
+// vars. S2/S3's WORK-NOTES now pin the EXACT shape (hermes-cloud
+// docs/work-notes/WORK-NOTES-hc408.md ⭐ + WORK-NOTES-hc414.md §4):
+//
+//   web:
+//     search_backend: searxng      # hc-408 — only overrides search
+//     extract_backend: firecrawl   # hc-414 — only overrides extract
+//   env: SEARXNG_URL=https://api.apex-nodes.com/api/v1/search/searxng
+//        FIRECRAWL_API_URL=<公网 Firecrawl 走向 — 待定>
+//   (SEARXNG_URL has NO trailing /search — the fork provider appends it.)
+//
+// NOT emitted into the seed yet — two prerequisites are unmet, and seeding a
+// backend whose endpoint is absent would break desktop search/extract on every
+// fresh install:
+//   1. hc-408 (feat/hc408-relay-search) is NOT merged to cloud main → the
+//      `/api/v1/search/searxng/search` route is not on prod yet.
+//   2. hc-414 explicitly leaves the *public* Firecrawl URL undecided (§4: cloud
+//      Firecrawl binds 127.0.0.1 only; a nginx-fronted public走向 is a Kael/PM
+//      decision) → there is no FIRECRAWL_API_URL to write, and web_extract for
+//      desktop is opt-in ("若桌面暂不开 web_extract,S6 可跳过").
+//
+// TODO(hc408/hc414 seed activation): once both endpoints are live on prod, lift
+// the block above into a SEED_WEB_GATEWAY constant + a seedWebGatewayBlockYaml()
+// helper (top-level `web:` key, same pattern as seedSkillsBlockYaml), fold it
+// into seedDefaultModelConfig's composition, add the two env vars to the desktop
+// shell env (SEARXNG_URL alongside HF_ENDPOINT in backend-env.cjs), and add a
+// guard/heal pass in main.cjs guardConfigYamlProductBlocks (union the `web:`
+// keys, mirroring ensureSkillsDisabledYaml) so the upgrade path covers it too.
+// The env vars ride the same spawn merge (`{...process.env, ...backend.env}`).
 
 /**
  * Render the `model.disabled_providers` YAML lines (indented to sit INSIDE the
@@ -266,82 +330,137 @@ function seedPluginsBlockYaml(plugins = MANAGED_PLUGIN_NAMES) {
  * @returns {{ changed: boolean, next: string, added: string[] }}
  */
 function ensurePluginsEnabledYaml(raw, plugins = MANAGED_PLUGIN_NAMES) {
+  return ensureListBlockYaml(raw, {
+    blockKey: 'plugins',
+    listKey: 'enabled',
+    wanted: plugins,
+    seedBlock: seedPluginsBlockYaml
+  })
+}
+
+/**
+ * Ensure every managed skill name is present under `skills.disabled` in a raw
+ * config.yaml — the UPGRADE path for the hc-406 v0.18 reclassification. A
+ * fresh seed already carries the full list (seedDefaultModelConfig), but an
+ * install seeded under v0.17 keeps its old 49-name `skills.disabled` after a
+ * runtime bump to v0.18; without this, the newly-bundled skills we graded OFF
+ * (huggingface-hub / maps / plan) would ship ACTIVE on that upgraded machine.
+ *
+ * Same ADD-ONLY contract as the plugins healer: user toggles (a name the user
+ * REMOVED to enable a skill) are never re-added out from under them — this only
+ * unions in managed names that are wholly absent, and never removes anything
+ * (so stale entries like the dropped kanban-* orphans are left in place,
+ * harmless: they match no skill). Idempotent; structurally unexpected → no change.
+ *
+ * @param {string} raw config.yaml contents
+ * @param {string[]} [skills]
+ * @returns {{ changed: boolean, next: string, added: string[] }}
+ */
+function ensureSkillsDisabledYaml(raw, skills = SEED_DISABLED_SKILLS) {
+  return ensureListBlockYaml(raw, {
+    blockKey: 'skills',
+    listKey: 'disabled',
+    wanted: skills,
+    seedBlock: seedSkillsBlockYaml
+  })
+}
+
+/**
+ * Generic add-only union of `wanted` names into a top-level `${blockKey}:` →
+ * `${listKey}:` YAML list, by pure line surgery (no YAML round-trip — comments
+ * and formatting survive). Backs both ensurePluginsEnabledYaml and
+ * ensureSkillsDisabledYaml (identical block/list/list-of-scalars shape).
+ * Tolerant of the shapes we actually meet: the desktop / example seed (4-space
+ * list indent, comments inside the list), PyYAML re-dumps (2-space list items,
+ * `${listKey}: []` / flow lists / `null`), and hand edits.
+ *
+ * ADD-ONLY by contract: user-added entries and their order are always
+ * preserved; when every wanted name is already present the input is returned
+ * unchanged (idempotent), and anything structurally unexpected → no change
+ * (same philosophy as syncCustomProviderKeyYaml — never corrupt the file).
+ *
+ * @param {string} raw
+ * @param {{ blockKey: string, listKey: string, wanted: string[], seedBlock: (names: string[]) => string }} opts
+ * @returns {{ changed: boolean, next: string, added: string[] }}
+ */
+function ensureListBlockYaml(raw, { blockKey, listKey, wanted: wantedRaw, seedBlock }) {
   const source = String(raw || '')
-  const wanted = (Array.isArray(plugins) ? plugins : []).map(p => String(p || '').trim()).filter(Boolean)
+  const wanted = (Array.isArray(wantedRaw) ? wantedRaw : []).map(p => String(p || '').trim()).filter(Boolean)
   const unchanged = { changed: false, next: source, added: [] }
   if (!wanted.length) return unchanged
 
   const unquote = value => String(value || '').trim().replace(/^(["'])(.*)\1$/, '$2')
   // `- name  # comment` → name (a trailing comment needs whitespace before #).
   const itemName = text => unquote(String(text).replace(/\s+#.*$/, ''))
+  const blockRe = new RegExp(`^${blockKey}:`)
 
   const lines = source.split('\n')
   let blockLine = -1
   for (let i = 0; i < lines.length; i++) {
-    if (/^plugins:/.test(lines[i])) { blockLine = i; break }
+    if (blockRe.test(lines[i])) { blockLine = i; break }
   }
 
-  // ── no top-level plugins: block at all → append the full seed block ─────
+  // ── no top-level block: key at all → append the full seed block ─────────
   if (blockLine < 0) {
-    const next = source.replace(/\n*$/, '\n') + seedPluginsBlockYaml(wanted)
+    const next = source.replace(/\n*$/, '\n') + seedBlock(wanted)
     return { changed: true, next, added: wanted.slice() }
   }
 
-  const blockRest = lines[blockLine].slice('plugins:'.length).trim()
+  const blockRest = lines[blockLine].slice(`${blockKey}:`.length).trim()
   if (blockRest && !blockRest.startsWith('#')) {
-    // Inline value. `plugins: {}` (PyYAML's empty-map dump) is safely
+    // Inline value. `${blockKey}: {}` (PyYAML's empty-map dump) is safely
     // replaceable with the block form; any other inline shape is unexpected.
     if (!/^\{\s*\}(\s*#.*)?$/.test(blockRest)) return unchanged
-    const replacement = ['plugins:', '  enabled:']
+    const replacement = [`${blockKey}:`, `  ${listKey}:`]
     for (const name of wanted) replacement.push(`    - ${name}`)
     lines.splice(blockLine, 1, ...replacement)
     return { changed: true, next: lines.join('\n'), added: wanted.slice() }
   }
 
-  // ── find the end of the plugins: block and its `enabled:` key ───────────
+  // ── find the end of the block and its `${listKey}:` key ─────────────────
   let blockEnd = lines.length
-  let enabledLine = -1
-  let enabledIndent = ''
+  let listLine = -1
+  let listIndent = ''
   let childIndent = ''
   for (let i = blockLine + 1; i < lines.length; i++) {
     const line = lines[i]
     if (/^\S/.test(line)) { blockEnd = i; break } // next top-level key
     const key = line.match(/^(\s+)([A-Za-z0-9_-]+):(.*)$/)
     if (key && !childIndent) childIndent = key[1]
-    if (key && key[2] === 'enabled' && enabledLine < 0) {
-      enabledLine = i
-      enabledIndent = key[1]
+    if (key && key[2] === listKey && listLine < 0) {
+      listLine = i
+      listIndent = key[1]
     }
   }
 
-  if (enabledLine < 0) {
-    // plugins: exists but the enabled: list is gone — insert one at the top
-    // of the block, matching the block's child indent when it has one.
+  if (listLine < 0) {
+    // block exists but the list key is gone — insert one at the top of the
+    // block, matching the block's child indent when it has one.
     const indent = childIndent || '  '
-    const insert = [`${indent}enabled:`]
+    const insert = [`${indent}${listKey}:`]
     for (const name of wanted) insert.push(`${indent}  - ${name}`)
     lines.splice(blockLine + 1, 0, ...insert)
     return { changed: true, next: lines.join('\n'), added: wanted.slice() }
   }
 
-  const enabledMatch = lines[enabledLine].match(/^\s+enabled:(.*)$/)
-  const enabledRest = (enabledMatch ? enabledMatch[1] : '').trim()
-  if (enabledRest && !enabledRest.startsWith('#')) {
+  const listMatch = lines[listLine].match(new RegExp(`^\\s+${listKey}:(.*)$`))
+  const listRest = (listMatch ? listMatch[1] : '').trim()
+  if (listRest && !listRest.startsWith('#')) {
     // Inline value: [] / null / a flow list. Rewrite as a block list keeping
     // existing entries + order; anything else unexpected → no change.
     let existing
-    if (/^\[\s*\]$/.test(enabledRest) || /^(~|null)$/i.test(enabledRest)) {
+    if (/^\[\s*\]$/.test(listRest) || /^(~|null)$/i.test(listRest)) {
       existing = []
-    } else if (/^\[.*\]$/.test(enabledRest)) {
-      existing = enabledRest.slice(1, -1).split(',').map(itemName).filter(Boolean)
+    } else if (/^\[.*\]$/.test(listRest)) {
+      existing = listRest.slice(1, -1).split(',').map(itemName).filter(Boolean)
     } else {
       return unchanged
     }
     const missing = wanted.filter(name => !existing.includes(name))
     if (!missing.length) return unchanged
-    const replacement = [`${enabledIndent}enabled:`]
-    for (const name of existing.concat(missing)) replacement.push(`${enabledIndent}  - ${name}`)
-    lines.splice(enabledLine, 1, ...replacement)
+    const replacement = [`${listIndent}${listKey}:`]
+    for (const name of existing.concat(missing)) replacement.push(`${listIndent}  - ${name}`)
+    lines.splice(listLine, 1, ...replacement)
     return { changed: true, next: lines.join('\n'), added: missing }
   }
 
@@ -349,11 +468,11 @@ function ensurePluginsEnabledYaml(raw, plugins = MANAGED_PLUGIN_NAMES) {
   const existing = []
   let lastItemLine = -1
   let itemIndent = ''
-  for (let i = enabledLine + 1; i < blockEnd; i++) {
+  for (let i = listLine + 1; i < blockEnd; i++) {
     const line = lines[i]
     if (!line.trim() || /^\s*#/.test(line)) continue // blanks/comments inside the list
     const item = line.match(/^(\s*)-\s+(.*)$/)
-    if (item && item[1].length >= enabledIndent.length) {
+    if (item && item[1].length >= listIndent.length) {
       existing.push(itemName(item[2]))
       lastItemLine = i
       if (!itemIndent) itemIndent = item[1]
@@ -364,8 +483,8 @@ function ensurePluginsEnabledYaml(raw, plugins = MANAGED_PLUGIN_NAMES) {
 
   const missing = wanted.filter(name => !existing.includes(name))
   if (!missing.length) return unchanged
-  const indent = itemIndent || `${enabledIndent}  `
-  const insertAt = lastItemLine >= 0 ? lastItemLine + 1 : enabledLine + 1
+  const indent = itemIndent || `${listIndent}  `
+  const insertAt = lastItemLine >= 0 ? lastItemLine + 1 : listLine + 1
   lines.splice(insertAt, 0, ...missing.map(name => `${indent}- ${name}`))
   return { changed: true, next: lines.join('\n'), added: missing }
 }
@@ -877,6 +996,7 @@ module.exports = {
   seedSkillsBlockYaml,
   seedPluginsBlockYaml,
   ensurePluginsEnabledYaml,
+  ensureSkillsDisabledYaml,
   LOGIN_PATH,
   REGISTER_PATH,
   PROVISION_KEY_PATH,

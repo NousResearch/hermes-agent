@@ -248,9 +248,12 @@ class SignalAdapter(BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
     platform = Platform.SIGNAL
-    # signal-cli exposes Signal edit messages by reusing the ``send`` command
-    # with ``editTimestamp`` set to the original message timestamp.
+    # signal-cli exposes explicit message edits via send(editTimestamp=...).
+    # Keep high-frequency gateway streaming/tool-progress edits disabled: real
+    # clients surface each Signal edit as a visible edit event, so explicit edits
+    # are safe while stream-consumer cadence remains too noisy.
     SUPPORTS_MESSAGE_EDITING = True
+    SUPPORTS_STREAMING_EDITS = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
@@ -1043,22 +1046,22 @@ class SignalAdapter(BasePlatformAdapter):
     # Sending
     # ------------------------------------------------------------------
 
-    async def send(
+    async def _build_send_params(
         self,
         chat_id: str,
         content: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send a text message with native Signal formatting."""
-        await self._stop_typing_indicator(chat_id)
-
+        *,
+        edit_timestamp: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Build signal-cli JSON-RPC ``send`` params for text sends/edits."""
         plain_text, text_styles = self._markdown_to_signal(content)
 
         params: Dict[str, Any] = {
             "account": self.account,
             "message": plain_text,
         }
+        if edit_timestamp is not None:
+            params["editTimestamp"] = edit_timestamp
 
         if text_styles:
             if len(text_styles) == 1:
@@ -1071,7 +1074,31 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        logger.info("[Signal] Sending response (%d chars) to %s", len(plain_text), chat_id)
+        return params
+
+    @staticmethod
+    def _extract_send_timestamp(rpc_result: Any) -> Optional[str]:
+        """Return signal-cli's send timestamp as an editable message id."""
+        if isinstance(rpc_result, dict):
+            timestamp = rpc_result.get("timestamp")
+        else:
+            timestamp = None
+        if timestamp is None or timestamp == "":
+            return None
+        return str(timestamp)
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a text message with native Signal formatting."""
+        await self._stop_typing_indicator(chat_id)
+
+        params = await self._build_send_params(chat_id, content)
+        logger.info("[Signal] Sending response (%d chars) to %s", len(params["message"]), chat_id)
         result = await self._rpc("send", params)
 
         if result is not None:
@@ -1096,9 +1123,10 @@ class SignalAdapter(BasePlatformAdapter):
         """Edit a previously sent Signal message via signal-cli editTimestamp.
 
         signal-cli's JSON-RPC API mirrors the CLI's ``send --edit-timestamp``
-        option: edits are sent through the ``send`` method with
-        ``editTimestamp`` set to the original message timestamp. Hermes stores
-        that timestamp as ``message_id`` when ``send()`` succeeds.
+        option: edits are sent through ``send`` with ``editTimestamp`` set to
+        the current Signal timestamp stored as Hermes' ``message_id``.
+        signal-cli returns a new timestamp for the edit event; propagate that
+        fresh id so a chain of later edits targets the newest edit handle.
         """
         del finalize  # Signal edits have no explicit streaming finalization.
 
@@ -1122,10 +1150,14 @@ class SignalAdapter(BasePlatformAdapter):
         result = await self._rpc("send", params)
 
         if result is not None:
+            success, err_msg = self._validate_send_result(result)
+            if not success:
+                return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
-            # Keep returning the original timestamp so subsequent edits target
-            # the same Signal message rather than the edit event's timestamp.
-            return SendResult(success=True, message_id=str(message_id))
+            return SendResult(
+                success=True,
+                message_id=self._extract_send_timestamp(result) or str(message_id),
+            )
         return SendResult(success=False, error="RPC edit failed")
 
     def _track_sent_timestamp(self, rpc_result) -> None:

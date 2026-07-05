@@ -490,6 +490,20 @@ def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_mess
     return None
 
 
+def _adapter_supports_streaming_edits(adapter: Any) -> bool:
+    """Return whether adapter edits are safe for high-frequency streaming.
+
+    SUPPORTS_MESSAGE_EDITING means explicit user/operator edits are possible.
+    Streaming is a narrower capability: some platforms expose an edit API but
+    make every edit a visible high-frequency event, so they should opt out of
+    response-stream/progress editing while keeping explicit edit_message().
+    """
+    streaming_capability = getattr(adapter, "SUPPORTS_STREAMING_EDITS", None)
+    if streaming_capability is not None:
+        return bool(streaming_capability)
+    return bool(getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True))
+
+
 def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
     """Return True when display.platforms.<platform> explicitly sets setting."""
     display = user_config.get("display") if isinstance(user_config, dict) else None
@@ -16216,7 +16230,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _chat_id=source.chat_id,
                         ) -> None:
                             _adapter.pause_typing_for_chat(_chat_id)
-                    _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                    _adapter_supports_edit = _adapter_supports_streaming_edits(_adapter)
                     _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                     _buffer_only = False
                     if source.platform == Platform.MATRIX:
@@ -17544,7 +17558,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # without edit support, the consumer sends a partial
                         # first message that can never be updated, resulting in
                         # duplicate messages (partial + final).
-                        _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        _adapter_supports_edit = _adapter_supports_streaming_edits(_adapter)
                         if not _adapter_supports_edit:
                             raise RuntimeError("skip streaming for non-editable platform")
                         _effective_cursor = _scfg.cursor

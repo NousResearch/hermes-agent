@@ -1634,9 +1634,11 @@ class GatewayStreamConsumer:
                     )
                     if result.success:
                         self._already_sent = True
+                        _current_message_id = self._message_id
                         # Record any continuation fragments an oversized edit
                         # split off, so fresh-final can clean them all up.
                         self._track_preview_ids_from_result(result)
+                        _new_message_id = getattr(result, "message_id", None)
                         # Adapter may have split-and-delivered an oversized
                         # edit across the original message + N continuations.
                         # When that happens, ``message_id`` is the LAST visible
@@ -1651,15 +1653,22 @@ class GatewayStreamConsumer:
                         _continuation_ids = getattr(result, "continuation_message_ids", ()) or ()
                         if (
                             _continuation_ids
-                            and result.message_id
-                            and result.message_id != self._message_id
+                            and _new_message_id
+                            and str(_new_message_id) != str(_current_message_id)
                         ):
                             self._last_edit_overflowed = True
-                            self._message_id = str(result.message_id)
+                            self._message_id = str(_new_message_id)
                             self._message_created_ts = time.monotonic()
                             self._last_sent_text = ""
                             self._notify_new_message()
                         else:
+                            # Some edit APIs return a fresh identifier/timestamp
+                            # for the same visible message after every edit.
+                            # Adopt it so a later explicit edit/finalize targets
+                            # the newest platform handle instead of a stale one.
+                            if _new_message_id and str(_new_message_id) != str(_current_message_id):
+                                self._message_id = str(_new_message_id)
+                                self._message_created_ts = time.monotonic()
                             self._last_sent_text = text
                         # Successful edit — reset flood strike counter
                         self._flood_strikes = 0

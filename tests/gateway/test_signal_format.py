@@ -436,11 +436,11 @@ class TestMarkdownStripPatch:
 
 
 # ===========================================================================
-# signal-streaming-patch: SUPPORTS_MESSAGE_EDITING and send() behavior
+# Signal explicit edit support / streaming capability split
 # ===========================================================================
 
 class TestSignalStreamingPatch:
-    """Tests for Signal send/edit behavior used by streaming/tool progress."""
+    """Tests for Signal send/edit behavior and streaming guardrails."""
 
     def _adapter(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
@@ -451,10 +451,11 @@ class TestSignalStreamingPatch:
         }
         return SignalAdapter(config)
 
-    def test_signal_supports_message_editing(self, monkeypatch):
-        """SignalAdapter advertises edit support once edit_message is implemented."""
+    def test_signal_supports_explicit_edit_but_not_streaming_edits(self, monkeypatch):
+        """Explicit edit_message is separate from noisy stream-progress edits."""
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is True
+        assert SignalAdapter.SUPPORTS_STREAMING_EDITS is False
 
     @pytest.mark.asyncio
     async def test_send_returns_signal_timestamp_as_message_id(self, monkeypatch):
@@ -462,7 +463,7 @@ class TestSignalStreamingPatch:
         adapter = self._adapter(monkeypatch)
         calls = []
 
-        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+        async def mock_rpc(method, params, rpc_id=None):
             calls.append((method, params))
             return {"timestamp": 1234567890}
 
@@ -485,12 +486,12 @@ class TestSignalStreamingPatch:
         )]
 
     @pytest.mark.asyncio
-    async def test_edit_message_sends_dm_edit_timestamp_with_signal_formatting(self, monkeypatch):
-        """DM edits use JSON-RPC send + editTimestamp and preserve bodyRanges."""
+    async def test_edit_message_sends_dm_edit_timestamp_and_returns_new_ts(self, monkeypatch):
+        """DM edits use JSON-RPC send + editTimestamp and propagate the fresh ts."""
         adapter = self._adapter(monkeypatch)
         calls = []
 
-        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+        async def mock_rpc(method, params, rpc_id=None):
             calls.append((method, params))
             return {"timestamp": 1234567999}
 
@@ -504,7 +505,7 @@ class TestSignalStreamingPatch:
         )
 
         assert result.success is True
-        assert result.message_id == "1234567890"
+        assert result.message_id == "1234567999"
         method, params = calls[0]
         assert method == "send"
         assert params["account"] == "+155****4567"
@@ -519,7 +520,7 @@ class TestSignalStreamingPatch:
         adapter = self._adapter(monkeypatch)
         calls = []
 
-        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+        async def mock_rpc(method, params, rpc_id=None):
             calls.append((method, params))
             return {"timestamp": 1234567999}
 
@@ -532,7 +533,7 @@ class TestSignalStreamingPatch:
         )
 
         assert result.success is True
-        assert result.message_id == "1234567890"
+        assert result.message_id == "1234567999"
         assert calls == [(
             "send",
             {
@@ -545,11 +546,11 @@ class TestSignalStreamingPatch:
 
     @pytest.mark.asyncio
     async def test_edit_message_requires_message_id(self, monkeypatch):
-        """Signal edits need the original send timestamp as message_id."""
+        """Signal edits need the current send/edit timestamp as message_id."""
         adapter = self._adapter(monkeypatch)
         calls = []
 
-        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+        async def mock_rpc(method, params, rpc_id=None):
             calls.append((method, params))
             return {"timestamp": 1234567999}
 

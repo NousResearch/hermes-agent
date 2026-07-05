@@ -2287,6 +2287,18 @@ class BasePlatformAdapter(ABC):
     # set this to False to stay correct-by-default.
     supports_async_delivery: bool = True
 
+    # Whether this adapter supports explicit ``edit_message`` calls for
+    # previously sent messages.  Most chat platforms support this; non-editable
+    # adapters override to False so callers can avoid pretending a message can
+    # be mutated later.
+    SUPPORTS_MESSAGE_EDITING: bool = True
+
+    # Whether edit-based high-frequency response streaming/tool-progress is
+    # safe.  Defaults to SUPPORTS_MESSAGE_EDITING via gateway.run's helper; set
+    # explicitly when a platform can handle operator/user-requested edits but
+    # should not be driven by the stream consumer cadence.
+    SUPPORTS_STREAMING_EDITS: Optional[bool] = None
+
     # Whether this adapter's ``send()`` splits long content into multiple
     # messages via ``truncate_message()``.  When True, the delivery router
     # (gateway/delivery.py) skips gateway-level truncation and lets the

@@ -2363,3 +2363,31 @@ class TestStripOrphanCloseTags:
             assert tag not in consumer._accumulated
         assert "trailing prose" in consumer._accumulated
         assert "more" in consumer._accumulated
+
+
+class TestEditMessageIdPropagation:
+    @pytest.mark.asyncio
+    async def test_successful_edit_adopts_fresh_message_id(self):
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True,
+            message_id="ts-1",
+        ))
+        adapter.edit_message = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="ts-2"),
+            SimpleNamespace(success=True, message_id="ts-3"),
+        ])
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+
+        assert await consumer._send_or_edit("first") is True
+        assert consumer.message_id == "ts-1"
+
+        assert await consumer._send_or_edit("second") is True
+        assert consumer.message_id == "ts-2"
+
+        assert await consumer._send_or_edit("third") is True
+        assert consumer.message_id == "ts-3"
+        assert adapter.edit_message.call_args_list[1].kwargs["message_id"] == "ts-2"

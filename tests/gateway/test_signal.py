@@ -1059,16 +1059,36 @@ class TestSignalSendDocumentViaHelper:
 # ---------------------------------------------------------------------------
 
 class TestSignalStreamingCapabilities:
-    """Signal uses timestamp-based edit messages for streaming/tool progress."""
+    """Signal supports explicit edits but opts out of streaming edit cadence."""
 
-    def test_signal_declares_message_editing(self, monkeypatch):
+    def test_signal_declares_explicit_message_editing_only(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
 
         assert adapter.SUPPORTS_MESSAGE_EDITING is True
+        assert adapter.SUPPORTS_STREAMING_EDITS is False
+
+    def test_gateway_streaming_capability_uses_narrow_flag(self, monkeypatch):
+        from gateway.run import _adapter_supports_streaming_edits
+
+        adapter = _make_signal_adapter(monkeypatch)
+
+        assert _adapter_supports_streaming_edits(adapter) is False
+
+    def test_streaming_capability_falls_back_to_message_editing(self):
+        from gateway.run import _adapter_supports_streaming_edits
+
+        class EditableAdapter:
+            SUPPORTS_MESSAGE_EDITING = True
+
+        class NonEditableAdapter:
+            SUPPORTS_MESSAGE_EDITING = False
+
+        assert _adapter_supports_streaming_edits(EditableAdapter()) is True
+        assert _adapter_supports_streaming_edits(NonEditableAdapter()) is False
 
 
 class TestSignalSendReturnsMessageId:
-    """Signal send() returns the signal-cli timestamp as message_id when present."""
+    """Signal send() returns signal-cli timestamps when available."""
 
     @pytest.mark.asyncio
     async def test_send_returns_timestamp_message_id(self, monkeypatch):
@@ -1105,6 +1125,44 @@ class TestSignalSendReturnsMessageId:
 
         assert result.success is True
         assert result.message_id is None
+
+    @pytest.mark.asyncio
+    async def test_edit_message_returns_fresh_signal_timestamp(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345679000})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.edit_message(
+            chat_id="+155****4567",
+            message_id="1712345678000",
+            content="edited **hello**",
+        )
+
+        assert result.success is True
+        assert result.message_id == "1712345679000"
+        assert captured[0]["method"] == "send"
+        params = captured[0]["params"]
+        assert params["editTimestamp"] == 1712345678000
+        assert params["message"] == "edited hello"
+        assert params["recipient"] == ["+155****4567"]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_requires_numeric_message_id(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345679000})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.edit_message(
+            chat_id="+155****4567",
+            message_id="not-a-timestamp",
+            content="edited hello",
+        )
+
+        assert result.success is False
+        assert "numeric" in result.error
+        assert captured == []
 
 
 class TestSignalSendResultValidation:

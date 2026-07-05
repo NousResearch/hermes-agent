@@ -18088,9 +18088,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _slack_subagent_streams: Dict[str, Any] = {}
         _slack_subagent_tool_idx: Dict[str, int] = {}
         # FIFO gate serializing stream OPENS (main first, then children in
-        # relay order) — thread position is startStream completion order,
+        # open order) — thread position is startStream completion order,
         # so unserialized opens race and children can render above main.
+        # Card numbers are assigned inside the gate (open order == display
+        # order == thread order); per-child Events let tool/complete
+        # coroutines wait for the ordered open before touching the stream.
         _slack_subagent_open_lock = asyncio.Lock()
+        _slack_subagent_open_done: Dict[str, asyncio.Event] = {}
+        _slack_subagent_seq = [0]
 
         def _slack_task_event(event_type: str, tool_name: str, preview, args, kwargs) -> None:
             """Route a tool lifecycle event onto the Slack native task stream.
@@ -18216,7 +18221,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             sub = _slack_subagent_streams.get(key)
             if sub is None and event_type == "subagent.start":
                 from gateway.slack_task_stream import SlackTaskStream
-                _n = f"#{number}" if number is not None else ""
                 _short_goal = goal[:60] + ("…" if len(goal) > 60 else "")
                 sub = SlackTaskStream(
                     _slack_task_stream.client,
@@ -18225,25 +18229,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     task_display_mode=_slack_task_stream.task_display_mode,
                     recipient_team_id=_slack_task_stream.recipient_team_id,
                     recipient_user_id=_slack_task_stream.recipient_user_id,
-                    # Caps-lock identity + time first, then the goal —
-                    # per Minh 2026-07-06: "SUBAGENT 2 - time - then text".
-                    header_label=(
-                        f"🔀 SUBAGENT {_n} · {datetime.now().strftime('%H:%M')}"
-                        f" · {_short_goal}"
-                    ),
                 )
                 _slack_subagent_streams[key] = sub
-                # Thread position = startStream COMPLETION order, and the
-                # main + child streams otherwise race their first HTTP
-                # calls (observed live: SUBAGENT #2 rendered above main,
-                # #1 below). Open this child's stream NOW, in relay order,
-                # gated on: main open first, then children strictly by
-                # arrival (task order). asyncio.Lock is FIFO, so awaiting
-                # openers in schedule order serializes thread placement.
-                async def _open_ordered(s=sub):
-                    async with _slack_subagent_open_lock:
-                        await _slack_task_stream.ensure_started()
-                        await s.ensure_started()
+                _slack_subagent_open_done[key] = asyncio.Event()
+                # Thread position = startStream COMPLETION order. Opens are
+                # serialized behind a FIFO lock (main first), and the card
+                # NUMBER is assigned at open time from a counter — so the
+                # displayed #N always matches thread position by
+                # construction. (Numbering by task_index raced: relay
+                # arrival order is per-child worker-thread scheduling, and
+                # #2's thread can fire before #1's — observed live twice.)
+                async def _open_ordered(s=sub, k=key, g=_short_goal):
+                    try:
+                        async with _slack_subagent_open_lock:
+                            await _slack_task_stream.ensure_started()
+                            _slack_subagent_seq[0] += 1
+                            s.header_label = (
+                                f"🔀 SUBAGENT #{_slack_subagent_seq[0]}"
+                                f" · {datetime.now().strftime('%H:%M')} · {g}"
+                            )
+                            await s.ensure_started()
+                    finally:
+                        _slack_subagent_open_done[k].set()
                 _fut = safe_schedule_threadsafe(
                     _open_ordered(),
                     _voice_ack_loop,
@@ -18268,15 +18275,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
 
             # Child stream path: render the child's tools as first-class
-            # task entries on ITS card, exactly like the main turn.
+            # task entries on ITS card, exactly like the main turn. Every
+            # coroutine first waits for the ordered open (the task/finish
+            # paths would otherwise lazily open the stream themselves,
+            # bypassing the ordering gate).
+            _gate = _slack_subagent_open_done.get(key)
+
+            async def _gated(coro_factory):
+                if _gate is not None:
+                    try:
+                        await asyncio.wait_for(_gate.wait(), timeout=15)
+                    except asyncio.TimeoutError:
+                        pass  # open failed/slow — proceed, self-open fallback
+                await coro_factory()
+
             if event_type == "subagent.start":
-                coro = sub.task_started(0, "delegate_task", f"started — {goal[:120]}")
+                coro = _gated(lambda s=sub, g=goal: s.task_started(
+                    0, "delegate_task", f"started — {g[:120]}"))
             elif event_type == "subagent.tool" and tool_name:
                 idx = _slack_subagent_tool_idx.get(key, 0) + 1
                 _slack_subagent_tool_idx[key] = idx
                 # preview carries the child tool's arg summary (same string
                 # the main card shows) — full detail parity with main.
-                coro = sub.task_started(idx, str(tool_name), preview)
+                coro = _gated(lambda s=sub, i=idx, t=str(tool_name), p=preview:
+                              s.task_started(i, t, p))
             elif event_type == "subagent.complete":
                 # Settle every entry, put the child's result summary on the
                 # final entry (the relay carries summary/duration/status —
@@ -18308,7 +18330,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         summary="✅ completed" if okv else "failed",
                     )
                     await s.stop()
-                coro = _finish()
+                coro = _gated(_finish)
             else:
                 return
             _fut = safe_schedule_threadsafe(

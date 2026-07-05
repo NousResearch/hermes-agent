@@ -15847,8 +15847,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _store = getattr(self, "session_store", None)
             if _store is None:
                 return
-            _store._ensure_loaded()
-            entry = _store._entries.get(key)
+            # Snapshot the entry under the store's own lock instead of reaching
+            # into ``_entries`` unguarded — this runs on the eviction daemon
+            # thread, concurrently with request-handling threads that mutate
+            # the store. Use ``_ensure_loaded_locked`` (not ``_ensure_loaded``)
+            # since we already hold ``_lock`` here and it is not reentrant.
+            with _store._lock:
+                _store._ensure_loaded_locked()
+                entry = _store._entries.get(key)
             if entry is None:
                 return
             # Only compensate when the watcher would otherwise expect to find

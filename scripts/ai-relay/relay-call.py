@@ -12,7 +12,7 @@ v2.2:     เพิ่ม fable (สมองพิเศษ · --tool fable · 
           ยืนเดี่ยวไม่เข้าสาย coder) · เพดานรอบต่อ issue นับข้าม coder · cooldown ตัวที่พังซ้ำ ·
           อ่าน YAML ได้แม้ไม่มี PyYAML (ตัวอ่านสำรองในตัว)
 """
-import argparse, glob, json, os, re, shutil, socket, subprocess, sys, time
+import argparse, glob, json, os, re, shutil, signal, socket, subprocess, sys, threading, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,7 +71,9 @@ DEFAULT_ACCOUNTS = {
                # นาฬิกาปลุกต่อการเรียก 1 ครั้ง (วินาที) · เกินเวลา = ถือว่า "ค้าง" ตัดทิ้งแล้วสลับตัวถัดไป
                # ปรับได้ใน accounts.yaml (limits.call_timeout_seconds) หรือต่อ tool ใน adapters.yaml (timeout)
                # coder = 900 (15 นาที) · สมอง (brain: fable/opus) คิดนานกว่า = 1800 (30 นาที) แยกกัน
-               "call_timeout_seconds": 900, "brain_call_timeout_seconds": 1800},
+               "call_timeout_seconds": 900, "brain_call_timeout_seconds": 1800,
+               # ตัวจับเงียบ — ไม่มี output ใหม่เกินนี้ = ถือว่าค้าง ตัดเลย ไม่รอครบนาฬิกาใหญ่
+               "silence_timeout_seconds": 180},
     "cooldown": {"fail_threshold": 3, "window_seconds": 300, "minutes": 10},
     "ollama_models": {"default": "qwen3:8b", "code": "deepseek-r1:7b"},
 }
@@ -289,7 +291,47 @@ def resolve_timeout(spec, limits):
             pass
     return fallback
 
-def run_once(spec, prompt, cwd, model, timeout=900):
+def resolve_silence(spec, limits):
+    # ตัวจับเงียบต่อ coder · ต่อ tool ชนะก่อน → ค่ากลาง → ปริยาย 180
+    # สมอง (brain) อาจคิดเงียบนานได้จริง จึงปิดไว้ เว้นแต่ตั้งต่อ tool ชัดเจน
+    limits = limits or {}
+    if "silence_timeout" in spec:
+        v = spec.get("silence_timeout")
+    elif spec.get("brain"):
+        return None
+    elif "silence_timeout_seconds" in limits:
+        v = limits.get("silence_timeout_seconds")
+    else:
+        v = 180
+    try:
+        v = int(v)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+def _kill_process_group(p):
+    # timeout ต้องฆ่าทั้งกลุ่ม ไม่ใช่ฆ่าแค่ shell/coder ตัวหน้าแล้วปล่อยลูกหลานค้างเครื่อง
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+    except Exception:
+        try: p.kill()
+        except Exception: pass
+    try:
+        p.wait(timeout=3)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:
+        return
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+    except Exception:
+        try: p.kill()
+        except Exception: pass
+    try: p.wait(timeout=1)
+    except Exception: pass
+
+def run_once(spec, prompt, cwd, model, timeout=900, silence_timeout=None):
     cmd = [a.replace("{prompt}",prompt).replace("{cwd}",str(cwd)).replace("{model}",model or "") for a in spec["cmd"]]
     workdir = str(cwd) if spec.get("run_in_cwd") else None
     env = os.environ.copy()
@@ -297,13 +339,56 @@ def run_once(spec, prompt, cwd, model, timeout=900):
         # ตัด token org ที่ใช้ไม่ได้ เพื่อให้ claude ใช้ login ของเครื่องแทน (จับ path เต็มด้วย)
         env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
     try:
-        p = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout,
-                           stdin=subprocess.DEVNULL, env=env)  # ปิด stdin · กัน codex exec ค้างรออ่าน input
-        return p.returncode, p.stdout, p.stderr
+        # ไบนารีล้วน (ไม่ text=True) · อ่านเป็น chunk ด้วย read1 ให้ last_output ขยับทุกครั้งที่มี byte จริง
+        # แม้ coder พ่นบรรทัดยาวไม่มีขึ้นบรรทัดใหม่ (เช่น Grok output json ก้อนเดียว) ก็ไม่ถูกนับว่า "เงียบ"
+        p = subprocess.Popen(cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             stdin=subprocess.DEVNULL, env=env,
+                             start_new_session=True)  # ปิด stdin · กัน codex exec ค้างรออ่าน input
     except FileNotFoundError:
         return 127, "", "command not found"
-    except subprocess.TimeoutExpired:
-        return 124, "", TIMEOUT_MARK
+
+    out_buf, err_buf = [], []
+    start = time.monotonic()
+    last_output = [start]
+
+    def reader(pipe, buf):
+        try:
+            while True:
+                chunk = pipe.read1(65536) if hasattr(pipe, "read1") else pipe.read(65536)
+                if not chunk:
+                    break
+                buf.append(chunk)
+                last_output[0] = time.monotonic()  # มี byte ใหม่ = ยังไม่เงียบ (ไม่รอขึ้นบรรทัดใหม่)
+        finally:
+            try: pipe.close()
+            except Exception: pass
+
+    threads = [
+        threading.Thread(target=reader, args=(p.stdout, out_buf), daemon=True),
+        threading.Thread(target=reader, args=(p.stderr, err_buf), daemon=True),
+    ]
+    for t in threads: t.start()
+
+    def _dec(buf):  # รวม chunk ไบนารี → ข้อความ (กันอักขระหลายไบต์ขาดกลาง ด้วยการ decode ทีเดียวตอนจบ)
+        joined = b"".join(b if isinstance(b, bytes) else str(b).encode("utf-8", "replace") for b in buf)
+        return joined.decode("utf-8", "replace")
+
+    while True:
+        rc = p.poll()
+        if rc is not None:
+            for t in threads: t.join(timeout=1)
+            return rc, _dec(out_buf), _dec(err_buf)
+        now = time.monotonic()
+        if now - start > timeout:
+            _kill_process_group(p)
+            for t in threads: t.join(timeout=1)
+            # เก็บ stderr เดิมไว้ + ต่อป้าย TIMEOUT_MARK (ไม่ทิ้ง log วินิจฉัย · classify ยังจับ timeout ได้)
+            return 124, _dec(out_buf), _dec(err_buf) + TIMEOUT_MARK
+        if silence_timeout and now - last_output[0] > silence_timeout:
+            _kill_process_group(p)
+            for t in threads: t.join(timeout=1)
+            return 124, _dec(out_buf), _dec(err_buf) + TIMEOUT_MARK + ":silence"
+        time.sleep(0.5)
 
 # ---- ตัวนับงบระดับ session (ไฟล์เล็กใน cfg dir · ล็อกไฟล์กันนับพลาดเมื่อรันพร้อมกัน) ----
 def bump_counter(cwd: Path, name: str, session_hours=12):
@@ -487,8 +572,9 @@ def main():
             continue
         model = models.get("code") if tool == "ollama" else ""
         call_timeout = resolve_timeout(adapters[tool], limits)
+        silence_timeout = resolve_silence(adapters[tool], limits)
         relay_now("set", tool, a.task_id, "กำลังเขียนโค้ด")
-        code, out, err = run_once(adapters[tool], prompt, cwd, model, timeout=call_timeout)
+        code, out, err = run_once(adapters[tool], prompt, cwd, model, timeout=call_timeout, silence_timeout=silence_timeout)
         st = classify(code, out, err)
         tried.append(f"{tool}:{st}")
 

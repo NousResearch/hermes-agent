@@ -1509,7 +1509,7 @@ def run_conversation(
                     elif _resp_error_code == 504:
                         _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
                     elif _resp_error_code == 429:
-                        _failure_hint = f"rate limited by upstream provider (429)"
+                        _failure_hint = "rate limited by upstream provider (429)"
                     elif _resp_error_code in {500, 502}:
                         _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
                     elif _resp_error_code in {503, 529}:
@@ -2350,11 +2350,11 @@ def run_conversation(
                         agent._unicode_sanitization_passes += 1
                         if _surrogates_found:
                             agent._buffer_vprint(
-                                f"⚠️  Stripped invalid surrogate characters from messages. Retrying..."
+                                "⚠️  Stripped invalid surrogate characters from messages. Retrying..."
                             )
                         else:
                             agent._buffer_vprint(
-                                f"⚠️  Surrogate encoding error — retrying after full-payload sanitization..."
+                                "⚠️  Surrogate encoding error — retrying after full-payload sanitization..."
                             )
                         continue
                     if _is_ascii_codec:
@@ -2761,7 +2761,7 @@ def run_conversation(
                 ):
                     _retry.copilot_auth_retry_attempted = True
                     if agent._try_refresh_copilot_client_credentials():
-                        agent._buffer_vprint(f"🔐 Copilot credentials refreshed after 401. Retrying request...")
+                        agent._buffer_vprint("🔐 Copilot credentials refreshed after 401. Retrying request...")
                         continue
                 if (
                     agent.api_mode == "anthropic_messages"
@@ -2984,10 +2984,10 @@ def run_conversation(
                     )
                     if agent.providers_allowed:
                         agent._buffer_vprint(
-                            f"      Your provider_routing.only restriction is filtering out tool-capable providers."
+                            "      Your provider_routing.only restriction is filtering out tool-capable providers."
                         )
                         agent._buffer_vprint(
-                            f"      Try removing the restriction or adding providers that support tools for this model."
+                            "      Try removing the restriction or adding providers that support tools for this model."
                         )
                     agent._buffer_vprint(
                         f"      Check which providers support tools: https://openrouter.ai/models/{_model}"
@@ -4314,7 +4314,7 @@ def run_conversation(
             if has_incomplete_scratchpad(assistant_message.content or ""):
                 agent._incomplete_scratchpad_retries += 1
                 
-                agent._buffer_vprint(f"⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
+                agent._buffer_vprint("⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
                 
                 if agent._incomplete_scratchpad_retries <= 2:
                     agent._buffer_vprint(f"🔄 Retrying API call ({agent._incomplete_scratchpad_retries}/2)...")
@@ -4549,7 +4549,7 @@ def run_conversation(
                     else:
                         # Instead of returning partial, inject tool error results so the model can recover.
                         # Using tool results (not user messages) preserves role alternation.
-                        agent._buffer_vprint(f"⚠️  Injecting recovery tool results for invalid JSON...")
+                        agent._buffer_vprint("⚠️  Injecting recovery tool results for invalid JSON...")
                         agent._invalid_json_retries = 0  # Reset for next attempt
                         
                         # Append the assistant message with its (broken) tool_calls

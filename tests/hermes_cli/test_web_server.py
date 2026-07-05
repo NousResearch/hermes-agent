@@ -3196,7 +3196,7 @@ class TestConfigRoundTrip:
                 mismatches.append(f"{key}: expected bool, got {type(val).__name__}")
             elif expected == "list" and not isinstance(val, list):
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
-        assert not mismatches, f"Type mismatches:\n" + "\n".join(mismatches)
+        assert not mismatches, "Type mismatches:\n" + "\n".join(mismatches)
 
 
 # ---------------------------------------------------------------------------

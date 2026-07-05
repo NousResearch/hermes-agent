@@ -1438,7 +1438,7 @@ def _dump_subagent_timeout_diagnostic(
         def _w(line: str = "") -> None:
             lines.append(line)
 
-        _w(f"# Subagent timeout diagnostic — issue #14726")
+        _w("# Subagent timeout diagnostic — issue #14726")
         _w(f"# Generated: {_dt.datetime.now().isoformat()}")
         _w("")
         _w("## Timeout")

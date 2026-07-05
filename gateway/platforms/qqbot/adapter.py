@@ -2677,7 +2677,7 @@ class QQAdapter(BasePlatformAdapter):
 
         req = ApprovalRequest(
             session_key=session_key,
-            title=f"Execute this command?",
+            title="Execute this command?",
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,

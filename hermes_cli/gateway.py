@@ -3169,7 +3169,7 @@ def _require_service_installed(action: str, system: bool = False) -> None:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
         scope_flag = " --system" if system else ""
-        print(f"✗ Gateway service is not installed")
+        print("✗ Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         sys.exit(1)
 

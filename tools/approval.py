@@ -11,7 +11,6 @@ This module is the single source of truth for the dangerous command system:
 import contextvars
 import fnmatch
 import functools
-import hashlib
 import logging
 import os
 import re
@@ -449,6 +448,53 @@ def detect_hardline_command(command: str) -> tuple:
             if pattern_re.search(normalized):
                 return (True, description)
     return (False, None)
+
+
+def _match_user_deny_rule(command: str) -> str | None:
+    """Return the matching ``approvals.deny`` glob, or None.
+
+    ``approvals.deny`` in config.yaml is a user-defined list of fnmatch
+    globs that block a command unconditionally — like the hardline floor,
+    a deny match fires BEFORE the yolo / mode=off bypass. It is the
+    user-editable counterpart to the code-shipped hardline blocklist:
+    "never let the agent run this, even under yolo".
+
+    Matching is case-insensitive and runs over the same normalized /
+    deobfuscated command variants the dangerous-pattern detector uses, so
+    quoting tricks (``r\\m``, ``git st""atus``) can't sidestep a rule any
+    more easily than they sidestep detection. Empty/absent list = no-op.
+    """
+    try:
+        deny_patterns = _get_approval_config().get("deny") or []
+    except Exception:
+        return None
+    if not deny_patterns:
+        return None
+    globs = [p.strip() for p in deny_patterns
+             if isinstance(p, str) and p.strip()]
+    if not globs:
+        return None
+    for command_variant in _command_detection_variants(command):
+        candidate = command_variant.lower().strip()
+        for pattern in globs:
+            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+                return pattern
+    return None
+
+
+def _user_deny_block_result(pattern: str) -> dict:
+    """Build the standard block result for an ``approvals.deny`` match."""
+    return {
+        "approved": False,
+        "user_deny": True,
+        "message": (
+            f"BLOCKED: this command matches the user-defined deny rule "
+            f"'{pattern}' (approvals.deny in config.yaml). It cannot be "
+            "executed via the agent — not even with --yolo, /yolo, or "
+            "approvals.mode=off. Do NOT retry or rephrase this command; "
+            "the user has explicitly forbidden it."
+        ),
+    }
 
 
 def _hardline_block_result(description: str) -> dict:
@@ -1927,6 +1973,15 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    # User-defined deny rules (approvals.deny in config.yaml): like the
+    # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
+    # user saying "never, even under yolo".
+    deny_pattern = _match_user_deny_rule(command)
+    if deny_pattern is not None:
+        logger.warning("User deny rule %r blocked command: %s",
+                       deny_pattern, command[:200])
+        return _user_deny_block_result(deny_pattern)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
@@ -1939,111 +1994,71 @@ def check_dangerous_command(command: str, env_type: str,
     if not is_dangerous:
         return {"approved": True, "message": None}
 
-    return _run_approval_gate(
-        pattern_key=pattern_key,
-        description=description,
-        display_target=command,
-        approval_callback=approval_callback,
-        cron_deny_message=(
-            f"BLOCKED: Command flagged as dangerous ({description}) "
-            "but cron jobs run without a user present to approve it. "
-            "Find an alternative approach that avoids this command. "
-            "To allow dangerous commands in cron jobs, set "
-            "approvals.cron_mode: approve in config.yaml."
-        ),
-        autoapprove_log_prefix=(
-            "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
-        ),
-    )
+    session_key = get_current_session_key()
+    if is_approved(session_key, pattern_key):
+        return {"approved": True, "message": None}
 
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
 
-def request_tool_approval(
-    tool_name: str,
-    reason: str,
-    *,
-    rule_key: str = "",
-    approval_callback=None,
-) -> dict:
-    """Escalate an arbitrary tool call to the human-approval gate.
+    if not is_cli and not is_gateway:
+        # Cron sessions: respect cron_mode config
+        if env_var_enabled("HERMES_CRON_SESSION"):
+            if _get_cron_approval_mode() == "deny":
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Command flagged as dangerous ({description}) "
+                        "but cron jobs run without a user present to approve it. "
+                        "Find an alternative approach that avoids this command. "
+                        "To allow dangerous commands in cron jobs, set "
+                        "approvals.cron_mode: approve in config.yaml."
+                    ),
+                }
+        logger.warning(
+            "AUTO-APPROVED dangerous command in non-interactive non-gateway context "
+            "(pattern: %s): %s — set HERMES_INTERACTIVE or HERMES_GATEWAY_SESSION to require approval.",
+            description, command[:200],
+        )
+        return {"approved": True, "message": None}
 
-    This is the entry point for a plugin ``pre_tool_call`` hook that returns
-    ``{"action": "approve", "message": ...}``: instead of the plugin vetoing
-    the call (``action: block``) or silently allowing it, it asks the SAME
-    human gate that Tier-2 dangerous shell patterns use. The LLM cannot skip
-    or bypass this — the tool call is intercepted before execution.
+    if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
+        submit_pending(session_key, {
+            "command": command,
+            "pattern_key": pattern_key,
+            "description": description,
+        })
+        return {
+            "approved": False,
+            "pattern_key": pattern_key,
+            "status": "approval_required",
+            "command": command,
+            "description": description,
+            "message": (
+                f"⚠️ This command is potentially dangerous ({description}). "
+                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+            ),
+        }
 
-    It reuses the existing approval primitives (session/permanent allowlist,
-    ``prompt_dangerous_approval`` for CLI, ``submit_pending`` for the gateway
-    callback, ``[o]nce/[s]ession/[a]lways/[d]eny``, timeout fail-closed) so
-    behavior is identical to a dangerous-command match — only the trigger
-    (a plugin rule on any tool) differs.
+    choice = prompt_dangerous_approval(command, description,
+                                       approval_callback=approval_callback)
 
-    Args:
-        tool_name: The tool being gated (e.g. ``"write_file"``, ``"terminal"``).
-        reason: Human-facing message from the plugin explaining why approval
-            is needed (rendered in the prompt).
-        rule_key: Optional stable identifier the plugin can supply to control
-            the ``[a]lways`` allowlist grain. When empty, the key is derived
-            from ``tool_name`` + a hash of ``reason`` so that DISTINCT reasons
-            on the same tool persist independently (answering ``[a]lways`` to
-            "write to ~/.ssh" does NOT auto-approve a later "send email" rule
-            on the same tool).
-        approval_callback: Optional CLI callback for interactive prompts
-            (same contract as ``check_dangerous_command``).
+    if choice == "deny":
+        return {
+            "approved": False,
+            "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
+            "pattern_key": pattern_key,
+            "description": description,
+        }
 
-    Returns:
-        ``{"approved": True, "message": None}`` when allowed, or
-        ``{"approved": False, "message": <reason>, ...}`` when denied /
-        blocked. Shape matches ``check_dangerous_command`` so callers handle
-        both paths identically.
+    if choice == "session":
+        approve_session(session_key, pattern_key)
+    elif choice == "always":
+        approve_session(session_key, pattern_key)
+        approve_permanent(pattern_key)
+        save_permanent_allowlist(_permanent_approved)
 
-    Non-interactive contexts: cron jobs honor ``approvals.cron_mode`` (parity
-    with dangerous commands); any OTHER non-interactive non-gateway context
-    (a bare script with no ``HERMES_INTERACTIVE``) fails CLOSED — a plugin-
-    flagged action never runs ungated without a human.
-    """
-    description = reason or f"Plugin requires approval for {tool_name}"
-    # Allowlist grain: an explicit plugin rule_key wins; otherwise derive from
-    # tool + a short hash of the reason so distinct reasons on the same tool
-    # get independent [a]lways entries (Finding: rule_key=tool_name alone was
-    # too coarse — one "always" would blanket every rule on that tool).
-    if rule_key:
-        key_suffix = rule_key
-    else:
-        _reason_hash = hashlib.sha256(description.encode("utf-8")).hexdigest()[:12]
-        key_suffix = f"{tool_name}:{_reason_hash}"
-    # Synthetic pattern key so plugin-rule approvals live in the same
-    # session/permanent allowlist machinery as command patterns, namespaced
-    # to avoid ever colliding with a real command pattern key.
-    pattern_key = f"plugin_rule:{key_suffix}"
-    # A synthetic "command" string for the display/allowlist layer. It never
-    # executes; it only labels the gate. Namespaced identically.
-    display_target = f"<{tool_name}> (plugin approval rule)"
-
-    return _run_approval_gate(
-        pattern_key=pattern_key,
-        description=description,
-        display_target=display_target,
-        approval_callback=approval_callback,
-        cron_deny_message=(
-            f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
-            "but cron jobs run without a user present to approve it. Find an "
-            "alternative approach. To allow flagged actions in cron jobs, set "
-            "approvals.cron_mode: approve in config.yaml."
-        ),
-        autoapprove_log_prefix=(
-            f"plugin-escalated tool call '{tool_name}' in "
-            "non-interactive non-gateway context"
-        ),
-        fail_closed_when_no_human=True,
-        no_human_block_message=(
-            f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
-            "but no interactive user or gateway is present to approve it. "
-            "A plugin flagged this action for human confirmation."
-        ),
-    )
+    return {"approved": True, "message": None}
 
 
 # =========================================================================
@@ -2233,6 +2248,15 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # User-defined deny rules (approvals.deny in config.yaml): like the
+    # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny
+    # rule is the user saying "never, even under yolo".
+    deny_pattern = _match_user_deny_rule(command)
+    if deny_pattern is not None:
+        logger.warning("User deny rule %r blocked command: %s",
+                       deny_pattern, command[:200])
+        return _user_deny_block_result(deny_pattern)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

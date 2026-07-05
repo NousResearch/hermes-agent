@@ -576,6 +576,99 @@ class TestProbeEnvResolution:
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
 
+class TestProbeCapabilityGating:
+    """The ``details`` probe must not fire prompts/list or resources/list at
+    servers that either disabled them in config or never advertised them.
+
+    Regression for the Unreal MCP server case: it answers
+    ``Call to unknown method "prompts/list"``, so an unconditional probe logged
+    a hard error and ``tools.prompts: false`` (the documented workaround) had no
+    effect because the probe never consulted config or capabilities.
+    """
+
+    class _FakeTool:
+        name = "do_thing"
+        description = "a tool"
+
+    class _Caps:
+        def __init__(self, prompts=None, resources=None):
+            self.prompts = prompts
+            self.resources = resources
+
+    class _InitResult:
+        def __init__(self, caps):
+            self.capabilities = caps
+
+    def _make_server(self, called, caps):
+        outer = self
+
+        class _Result(list):
+            @property
+            def prompts(self):
+                return self
+
+            @property
+            def resources(self):
+                return self
+
+        class _Session:
+            async def list_prompts(self_inner):
+                called.append("prompts")
+                return _Result()
+
+            async def list_resources(self_inner):
+                called.append("resources")
+                return _Result()
+
+        class _FakeServer:
+            _tools = [outer._FakeTool()]
+            session = _Session()
+            initialize_result = outer._InitResult(caps)
+
+            async def shutdown(self_inner):
+                return None
+
+        return _FakeServer()
+
+    def _run_probe(self, monkeypatch, config, caps):
+        import hermes_cli.mcp_config as mc
+
+        called: list[str] = []
+
+        async def _fake_connect(name, cfg):
+            return self._make_server(called, caps)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        details: dict = {}
+        mc._probe_single_server("srv", config, details=details)
+        return called, details
+
+    def test_config_disables_prompts_probe(self, monkeypatch):
+        # Server advertises both, but user turned prompts off.
+        caps = self._Caps(prompts=object(), resources=object())
+        called, details = self._run_probe(
+            monkeypatch, {"url": "http://x/mcp", "tools": {"prompts": False}}, caps
+        )
+        assert "prompts" not in called
+        assert "resources" in called
+
+    def test_unadvertised_capability_not_probed(self, monkeypatch):
+        # Unreal case: no prompts capability advertised → never call it.
+        caps = self._Caps(prompts=None, resources=None)
+        called, _ = self._run_probe(monkeypatch, {"url": "http://x/mcp"}, caps)
+        assert called == []
+
+    def test_advertised_and_enabled_is_probed(self, monkeypatch):
+        caps = self._Caps(prompts=object(), resources=object())
+        called, details = self._run_probe(monkeypatch, {"url": "http://x/mcp"}, caps)
+        assert set(called) == {"prompts", "resources"}
+
+    def test_missing_capability_info_falls_back_to_probe(self, monkeypatch):
+        # No initialize_result captured → preserve legacy always-try behaviour.
+        called, _ = self._run_probe(monkeypatch, {"url": "http://x/mcp"}, None)
+        assert set(called) == {"prompts", "resources"}
+
+
 class TestStripBearerPrefix:
     """Pasted tokens that already include ``Bearer `` would otherwise produce
     ``Bearer Bearer <jwt>`` once the header template adds its own prefix."""

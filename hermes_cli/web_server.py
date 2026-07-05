@@ -6825,7 +6825,10 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 )
 
             normalized = normalize_moa_config(raw)
-            cfg["moa"] = normalized
+            # Merge instead of overwrite so that hand-edited keys not declared
+            # in MoaConfigPayload (e.g. save_traces, trace_dir) survive a GUI
+            # save.  See issue #58819.
+            cfg.setdefault("moa", {}).update(normalized)
             save_config(cfg)
             return {"ok": True, **normalized}
     except HTTPException:

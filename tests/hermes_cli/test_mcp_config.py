@@ -490,6 +490,27 @@ class TestEnvVarInterpolation:
         assert _interpolate_env_vars(True) is True
         assert _interpolate_env_vars(None) is None
 
+    def test_interpolate_cursor_env_prefix(self, monkeypatch):
+        """Cursor-style ${env:VAR} resolves the same secret as ${VAR}."""
+        monkeypatch.setenv("MY_KEY", "secret123")
+        from tools.mcp_tool import _interpolate_env_vars
+
+        assert _interpolate_env_vars("Bearer ${env:MY_KEY}") == "Bearer secret123"
+
+    def test_interpolate_cursor_env_prefix_missing(self, monkeypatch):
+        """An unset ${env:VAR} keeps its literal placeholder, like ${VAR}."""
+        monkeypatch.delenv("MISSING_VAR", raising=False)
+        from tools.mcp_tool import _interpolate_env_vars
+
+        assert _interpolate_env_vars("Bearer ${env:MISSING_VAR}") == "Bearer ${env:MISSING_VAR}"
+
+    def test_env_ref_name_strips_prefix(self):
+        from tools.mcp_tool import _env_ref_name
+
+        assert _env_ref_name("env:API_KEY") == "API_KEY"
+        assert _env_ref_name("API_KEY") == "API_KEY"
+        assert _env_ref_name(" env:API_KEY ") == "API_KEY"
+
 
 # ---------------------------------------------------------------------------
 # Tests: probe-path env resolution (#37792)
@@ -754,3 +775,98 @@ class TestMcpLogin:
 
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
+
+
+# ---------------------------------------------------------------------------
+# Tests: cmd_mcp_reauth (GH#36767)
+# ---------------------------------------------------------------------------
+
+class TestMcpReauth:
+    def test_reauth_all_visits_only_oauth_servers_in_order(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """--all re-auths every oauth server (skipping non-oauth), serially."""
+        _seed_config(tmp_path, {
+            "gh": {"url": "https://gh.example.com/mcp", "auth": "oauth"},
+            "jira": {"url": "https://jira.example.com/mcp", "auth": "oauth"},
+            "localstdio": {"command": "foo"},  # no url / no oauth → skipped
+            "apikey": {"url": "https://k.example.com/mcp", "headers": {"x": "y"}},
+        })
+        visited = []
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._reauth_oauth_server",
+            lambda name, cfg: visited.append(name) or True,
+        )
+        from hermes_cli.mcp_config import cmd_mcp_reauth
+
+        cmd_mcp_reauth(_make_args(name=None, all=True))
+        out = capsys.readouterr().out
+
+        assert visited == ["gh", "jira"]
+        assert "Re-authenticated 2/2 server(s)" in out
+
+    def test_reauth_all_reports_partial_failures(self, tmp_path, capsys, monkeypatch):
+        """A server that fails to re-auth is counted but doesn't abort the rest."""
+        _seed_config(tmp_path, {
+            "a": {"url": "https://a.example.com/mcp", "auth": "oauth"},
+            "b": {"url": "https://b.example.com/mcp", "auth": "oauth"},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._reauth_oauth_server",
+            lambda name, cfg: name == "a",  # only 'a' succeeds
+        )
+        from hermes_cli.mcp_config import cmd_mcp_reauth
+
+        cmd_mcp_reauth(_make_args(name=None, all=True))
+        out = capsys.readouterr().out
+
+        assert "Re-authenticated 1/2 server(s)" in out
+
+    def test_reauth_all_no_oauth_servers(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {"localstdio": {"command": "foo"}})
+        called = []
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._reauth_oauth_server",
+            lambda name, cfg: called.append(name) or True,
+        )
+        from hermes_cli.mcp_config import cmd_mcp_reauth
+
+        cmd_mcp_reauth(_make_args(name=None, all=True))
+        out = capsys.readouterr().out
+
+        assert "No OAuth-based MCP servers found" in out
+        assert called == []
+
+    def test_reauth_single_server(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "gh": {"url": "https://gh.example.com/mcp", "auth": "oauth"},
+        })
+        visited = []
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._reauth_oauth_server",
+            lambda name, cfg: visited.append(name) or True,
+        )
+        from hermes_cli.mcp_config import cmd_mcp_reauth
+
+        cmd_mcp_reauth(_make_args(name="gh", all=False))
+        assert visited == ["gh"]
+
+    def test_reauth_requires_name_or_all(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "gh": {"url": "https://gh.example.com/mcp", "auth": "oauth"},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_reauth
+
+        cmd_mcp_reauth(_make_args(name=None, all=False))
+        out = capsys.readouterr().out
+        assert "Specify a server name" in out
+
+    def test_reauth_unknown_server(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "gh": {"url": "https://gh.example.com/mcp", "auth": "oauth"},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_reauth
+
+        cmd_mcp_reauth(_make_args(name="ghost", all=False))
+        out = capsys.readouterr().out
+        assert "not found" in out

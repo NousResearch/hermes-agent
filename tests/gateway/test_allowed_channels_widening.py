@@ -24,7 +24,7 @@ from gateway.config import Platform, PlatformConfig
 # ---------------------------------------------------------------------------
 
 def _make_telegram_adapter(*, allowed_chats=None, require_mention=None, guest_mode=False):
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     extra = {"guest_mode": guest_mode}
     if allowed_chats is not None:
@@ -162,8 +162,8 @@ class TestTelegramAllowedChats:
 
 def _make_dingtalk_adapter(*, allowed_chats=None, require_mention=None):
     # Import lazily — DingTalk SDK may not be installed.
-    pytest.importorskip("gateway.platforms.dingtalk", reason="DingTalk adapter not importable")
-    from gateway.platforms.dingtalk import DingTalkAdapter
+    pytest.importorskip("plugins.platforms.dingtalk.adapter", reason="DingTalk adapter not importable")
+    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
     extra = {}
     if allowed_chats is not None:

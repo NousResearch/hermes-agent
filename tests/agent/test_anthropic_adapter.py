@@ -12,6 +12,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
+    _read_claude_code_credentials_from_keychain,
     _refresh_oauth_token,
     _to_plain_data,
     _write_claude_code_credentials,
@@ -278,6 +279,16 @@ class TestReadClaudeCodeCredentials:
         assert read_claude_code_credentials() is None
 
 
+class TestReadClaudeCodeCredentialsFromKeychain:
+    def test_returns_none_for_non_text_security_stdout(self):
+        result = MagicMock(returncode=0)
+
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), patch(
+            "agent.anthropic_adapter.subprocess.run", return_value=result
+        ):
+            assert _read_claude_code_credentials_from_keychain() is None
+
+
 class TestIsClaudeCodeTokenValid:
     def test_valid_token(self):
         creds = {"accessToken": "tok", "expiresAt": int(time.time() * 1000) + 3600_000}
@@ -293,6 +304,13 @@ class TestIsClaudeCodeTokenValid:
 
 
 class TestResolveAnthropicToken:
+    @pytest.fixture(autouse=True)
+    def no_keychain(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+
     def test_prefers_oauth_token_over_api_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
@@ -611,6 +629,13 @@ class TestWriteClaudeCodeCredentials:
 
 
 class TestResolveWithRefresh:
+    @pytest.fixture(autouse=True)
+    def no_keychain(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+
     def test_auto_refresh_on_expired_creds(self, monkeypatch, tmp_path):
         """When cred file has expired token + refresh token, auto-refresh is attempted."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -658,6 +683,13 @@ class TestResolveWithRefresh:
 
 
 class TestRunOauthSetupToken:
+    @pytest.fixture(autouse=True)
+    def no_keychain(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+
     def test_raises_when_claude_not_installed(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda _: None)
         with pytest.raises(FileNotFoundError, match="claude.*CLI.*not installed"):

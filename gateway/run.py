@@ -14344,6 +14344,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
+            # Per-platform proactive-push gate: a restart notice is an
+            # unsolicited push, so honour display.platforms.<p>.proactive_push
+            # (unifies with the existing gateway_restart_notification flag).
+            try:
+                from hermes_cli.config import load_config as _load_push_cfg
+                from gateway.display_config import platform_accepts_proactive_push
+                if not platform_accepts_proactive_push(_load_push_cfg(), _platform_config_key(platform)):
+                    logger.info(
+                        "Restart notification suppressed: %s opted out of proactive push",
+                        platform_str,
+                    )
+                    return None
+            except Exception:
+                pass  # fail-open
+
             platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
@@ -14409,6 +14424,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             home = self.config.get_home_channel(platform)
             if not home or not home.chat_id:
                 continue
+
+            # Per-platform proactive-push gate (startup broadcast is a proactive
+            # push). Unifies with the existing gateway_restart_notification flag.
+            try:
+                from hermes_cli.config import load_config as _load_push_cfg
+                from gateway.display_config import platform_accepts_proactive_push
+                if not platform_accepts_proactive_push(_load_push_cfg(), _platform_config_key(platform)):
+                    logger.info(
+                        "Home-channel startup notification suppressed: %s opted out of proactive push",
+                        platform.value,
+                    )
+                    continue
+            except Exception:
+                pass  # fail-open
 
             platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:

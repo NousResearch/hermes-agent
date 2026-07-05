@@ -73,15 +73,54 @@ platforms:
       dm_policy: "open"          # open | allowlist | disabled
       allow_from:
         - "user_openid_1"
-      group_policy: "open"       # open | allowlist | disabled
+      group_policy: "open"       # open | allowlist | disabled (default: disabled)
       group_allow_from:
         - "group_openid_1"
+      # ── Group activation mode (always vs mention) ──
+      group_require_mention: true  # true = reply only when @-ed (default);
+                                   # false = "always" mode, any group message
+                                   # may trigger a reply (needs the "receive all
+                                   # group messages" permission on the QQ platform)
+      groups:                      # optional per-group override (group > global)
+        "group_openid_1":
+          require_mention: false   # force always mode for this group only
+      # ── Group session sharing ──
+      group_sessions_per_user: true  # true (default) = each member gets an
+                                     # isolated session; set false so ALL members
+                                     # of a group share ONE conversation session
+      group_history_limit: 20        # (mention mode) non-@ messages buffered per
+                                     # group and injected as CONTEXT ONLY on the
+                                     # next @-reply; <=0 disables buffering
       stt:
         provider: "zai"          # zai (GLM-ASR), openai (Whisper), etc.
         baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
         apiKey: "your-stt-key"
         model: "glm-asr"
 ```
+
+## Group Activation Mode
+
+QQ groups support two independent axes:
+
+- **Server push mode** (configured on the QQ platform): mention-only, context, or
+  full. Mention-only/context deliver `GROUP_AT_MESSAGE_CREATE`; full delivers
+  `GROUP_MESSAGE_CREATE` for every message (with a per-message "is this bot
+  @-ed" marker). Full mode requires the **"receive all group messages"**
+  permission granted on the QQ platform.
+- **Plugin activation mode** (`group_require_mention`):
+  - **mention** (default): the bot replies only when explicitly @-ed.
+  - **always** (`group_require_mention: false`): any group message may trigger a
+    reply — the agent decides whether to respond.
+
+The two axes are orthogonal, so all six combinations work. Whatever events
+arrive are run through the same pipeline: the bot detects whether it was
+@-mentioned (via the `GROUP_AT` event, a `mentions[].is_you` flag, or an
+`<@!app_id>` tag) and then applies the activation gate. `group_require_mention`
+can be overridden per group under `groups.{group_openid}.require_mention`.
+
+Group ACL (`group_policy` / `group_allow_from`) is a separate, group-level
+concern applied before activation — it decides *which groups* the bot serves,
+not which members.
 
 ## Voice Messages (STT)
 
@@ -113,7 +152,7 @@ This usually means:
 
 - Verify the bot's **intents** are enabled at q.qq.com
 - Check `QQ_ALLOWED_USERS` if DM access is restricted
-- For group messages, ensure the bot is **@mentioned** (group policy may require allowlisting)
+- For group messages, ensure the bot is **@mentioned** (default mention mode), or enable **always mode** via `group_require_mention: false` (group policy may also require allowlisting)
 - Check `QQBOT_HOME_CHANNEL` for cron/notification delivery
 
 ### Connection errors

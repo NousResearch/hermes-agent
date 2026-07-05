@@ -65,7 +65,7 @@ class TestQQAdapterInit:
 
     def test_group_policy_default(self):
         adapter = self._make(app_id="a", client_secret="b")
-        assert adapter._group_policy == "pairing"
+        assert adapter._group_policy == "disabled"
 
     def test_allow_from_parsing_string(self):
         adapter = self._make(app_id="a", client_secret="b", allow_from="x, y , z")
@@ -272,6 +272,150 @@ class TestStripAtMention:
     def test_only_mention(self):
         assert self._fn("@Someone  ") == ""
 
+    def test_strips_explicit_mention_tag(self):
+        # Full-push GROUP_MESSAGE_CREATE may carry the <@!id> tag form.
+        assert self._fn("<@!1903885637> hello there") == "hello there"
+
+    def test_strips_tag_midstring(self):
+        assert self._fn("hey <@!123> how are you") == "hey  how are you"
+
+
+# ---------------------------------------------------------------------------
+# Group rich media / markdown parity (2.3)
+# ---------------------------------------------------------------------------
+
+class TestGroupMediaMarkdown:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        extra.setdefault("app_id", "1903885637")
+        extra.setdefault("client_secret", "b")
+        extra.setdefault("group_policy", "open")
+        return QQAdapter(_make_config(**extra))
+
+    @pytest.mark.asyncio
+    async def test_group_inbound_image_populates_media_urls(self):
+        adapter = self._make_adapter(group_require_mention=False)  # always
+        captured = []
+
+        async def fake_process(_a):
+            return {"image_urls": ["/tmp/x.jpg"],
+                    "image_media_types": ["image/jpeg"],
+                    "voice_transcripts": [], "attachment_info": ""}
+
+        async def fake_quote(_d):
+            return {"quote_block": "", "image_urls": [], "image_media_types": []}
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+        adapter._process_quoted_context = fake_quote  # type: ignore[assignment]
+        adapter.handle_message = fake_handle  # type: ignore[assignment]
+
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "look",
+             "attachments": [{"content_type": "image/jpeg", "url": "u"}]},
+            "m1", "look", {"member_openid": "u1"}, "", "GROUP_MESSAGE_CREATE",
+        )
+        assert len(captured) == 1
+        assert captured[0].media_urls == ["/tmp/x.jpg"]
+        assert captured[0].media_types == ["image/jpeg"]
+
+    @pytest.mark.asyncio
+    async def test_group_markdown_send_routes_to_group_endpoint(self):
+        adapter = self._make_adapter(markdown_support=True)
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["g1"] = "group"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "sent1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        result = await adapter.send("g1", "**bold** reply")
+        assert result.success
+        assert calls and calls[0][1] == "/v2/groups/g1/messages"
+        # markdown_support=True → markdown msg_type (2).
+        assert calls[0][2]["msg_type"] == 2
+        assert calls[0][2]["markdown"]["content"] == "**bold** reply"
+
+    @pytest.mark.asyncio
+    async def test_group_plaintext_send_routes_to_group_endpoint(self):
+        # Default markdown_support=False → plain text msg_type (0).
+        adapter = self._make_adapter(markdown_support=False)
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["g1"] = "group"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "sent2"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        result = await adapter.send("g1", "plain reply", reply_to="mm1")
+        assert result.success
+        assert calls[0][1] == "/v2/groups/g1/messages"
+        assert calls[0][2]["msg_type"] == 0
+        assert calls[0][2]["content"] == "plain reply"
+        assert calls[0][2].get("msg_id") == "mm1"
+
+    @pytest.mark.asyncio
+    async def test_group_media_send_posts_msg_type_media(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["g1"] = "group"
+        calls = []
+
+        async def fake_upload(chat_type, chat_id, file_type, **kw):
+            return {"file_info": "FILEINFO"}
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "media1"}
+
+        adapter._upload_media = fake_upload  # type: ignore[assignment]
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        result = await adapter._send_media(
+            "g1", "https://example.com/x.jpg", 1, "image",
+        )
+        assert result.success
+        assert calls and calls[0][1] == "/v2/groups/g1/messages"
+        assert calls[0][2]["msg_type"] == 7  # MSG_TYPE_MEDIA
+        assert calls[0][2]["media"]["file_info"] == "FILEINFO"
+
+
+# ---------------------------------------------------------------------------
+# Reserved runtime mode-switch hook (2.2.3)
+# ---------------------------------------------------------------------------
+
+class TestGroupModeRuntimeOverride:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        extra.setdefault("app_id", "a")
+        extra.setdefault("client_secret", "b")
+        return QQAdapter(_make_config(**extra))
+
+    def test_override_takes_effect(self):
+        from gateway.platforms.qqbot.group_activation import resolve_require_mention
+        adapter = self._make_adapter(group_require_mention=True)
+        adapter._set_group_mode_override("g1", require_mention=False)
+        assert adapter._group_mode_runtime_overrides == {"g1": False}
+        # resolve should now honour the runtime override for g1.
+        eff = resolve_require_mention(
+            "g1",
+            global_default=adapter._group_require_mention,
+            per_group=adapter._group_mode_overrides,
+            runtime_overrides=adapter._group_mode_runtime_overrides,
+        )
+        assert eff is False
+
 
 # ---------------------------------------------------------------------------
 # _is_dm_allowed
@@ -331,8 +475,17 @@ class TestGroupAllowed:
         assert adapter._is_group_allowed("grp2", "user1") is False
 
     def test_pairing_default_blocks_groups(self):
+        # group_policy default is now "disabled" (Feishu-aligned: no
+        # "pairing" mode for groups). Any group message is denied by default.
         adapter = self._make_adapter(app_id="a", client_secret="b")
-        assert adapter._group_policy == "pairing"
+        assert adapter._group_policy == "disabled"
+        assert adapter._is_group_allowed("grp1", "user1") is False
+
+    def test_unknown_group_policy_falls_back_to_disabled(self):
+        adapter = self._make_adapter(
+            app_id="a", client_secret="b", group_policy="pairing",  # no longer valid
+        )
+        assert adapter._group_policy == "disabled"
         assert adapter._is_group_allowed("grp1", "user1") is False
 
     def test_pairing_default_strict_dm_auth_denies_unknown(self):
@@ -2254,3 +2407,483 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+# ---------------------------------------------------------------------------
+# Group activation mode — mention detection (group_activation.detect_mentioned)
+# ---------------------------------------------------------------------------
+
+class TestDetectMentioned:
+    def test_group_at_event_always_mentioned(self):
+        from gateway.platforms.qqbot.group_activation import detect_mentioned
+        assert detect_mentioned("GROUP_AT_MESSAGE_CREATE", {}, "hi", "app1") is True
+
+    def test_mentions_is_you_true(self):
+        from gateway.platforms.qqbot.group_activation import detect_mentioned
+        d = {"mentions": [{"member_openid": "x"}, {"is_you": True}]}
+        assert detect_mentioned("GROUP_MESSAGE_CREATE", d, "hi", "app1") is True
+
+    def test_explicit_tag_for_our_app_id(self):
+        from gateway.platforms.qqbot.group_activation import detect_mentioned
+        assert detect_mentioned(
+            "GROUP_MESSAGE_CREATE", {}, "<@!1903885637> hello", "1903885637"
+        ) is True
+
+    def test_tag_for_other_member_not_mentioned(self):
+        from gateway.platforms.qqbot.group_activation import detect_mentioned
+        # @ of a different member must NOT count as addressing the bot.
+        assert detect_mentioned(
+            "GROUP_MESSAGE_CREATE", {}, "<@!99999> hello", "1903885637"
+        ) is False
+
+    def test_plain_message_not_mentioned(self):
+        from gateway.platforms.qqbot.group_activation import detect_mentioned
+        assert detect_mentioned(
+            "GROUP_MESSAGE_CREATE", {}, "just chatting", "1903885637"
+        ) is False
+
+    def test_generic_at_prefix_not_treated_as_bot(self):
+        from gateway.platforms.qqbot.group_activation import detect_mentioned
+        # Conservative: a bare "@alice " prefix is NOT a bot mention.
+        assert detect_mentioned(
+            "GROUP_MESSAGE_CREATE", {}, "@alice look here", "1903885637"
+        ) is False
+
+
+# ---------------------------------------------------------------------------
+# Group activation mode — require_mention resolution
+# ---------------------------------------------------------------------------
+
+class TestResolveRequireMention:
+    def test_global_default_true(self):
+        from gateway.platforms.qqbot.group_activation import resolve_require_mention
+        assert resolve_require_mention("g1", global_default=True) is True
+
+    def test_global_default_false(self):
+        from gateway.platforms.qqbot.group_activation import resolve_require_mention
+        assert resolve_require_mention("g1", global_default=False) is False
+
+    def test_per_group_overrides_global(self):
+        from gateway.platforms.qqbot.group_activation import resolve_require_mention
+        # global always, but g1 forced to mention.
+        assert resolve_require_mention(
+            "g1", global_default=False, per_group={"g1": True}
+        ) is True
+        # other group still follows global.
+        assert resolve_require_mention(
+            "g2", global_default=False, per_group={"g1": True}
+        ) is False
+
+    def test_runtime_override_wins(self):
+        from gateway.platforms.qqbot.group_activation import resolve_require_mention
+        assert resolve_require_mention(
+            "g1", global_default=True, per_group={"g1": True},
+            runtime_overrides={"g1": False},
+        ) is False
+
+
+# ---------------------------------------------------------------------------
+# Group activation mode — config parsing + gate (_handle_group_message)
+# ---------------------------------------------------------------------------
+
+class TestGroupActivationMode:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        extra.setdefault("app_id", "1903885637")
+        extra.setdefault("client_secret", "b")
+        extra.setdefault("group_policy", "open")
+        return QQAdapter(_make_config(**extra))
+
+    def test_default_mode_is_mention(self):
+        adapter = self._make_adapter()
+        assert adapter._group_require_mention is True
+
+    def test_always_mode_from_config(self):
+        adapter = self._make_adapter(group_require_mention=False)
+        assert adapter._group_require_mention is False
+
+    def test_per_group_override_parsed(self):
+        adapter = self._make_adapter(
+            group_require_mention=False,
+            groups={"grp_a": {"require_mention": True}},
+        )
+        assert adapter._group_mode_overrides == {"grp_a": True}
+
+    def _drive(self, adapter):
+        """Stub the assembly path and capture handle_message events."""
+        captured = []
+
+        async def fake_process(_a):
+            return {"image_urls": [], "image_media_types": [],
+                    "voice_transcripts": [], "attachment_info": ""}
+
+        async def fake_quote(_d):
+            return {"quote_block": "", "image_urls": [], "image_media_types": []}
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+        adapter._process_quoted_context = fake_quote  # type: ignore[assignment]
+        adapter.handle_message = fake_handle  # type: ignore[assignment]
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_mention_mode_skips_non_mention_group_message(self):
+        adapter = self._make_adapter()  # default mention
+        captured = self._drive(adapter)
+        d = {"group_openid": "g1", "content": "hello everyone"}
+        await adapter._handle_group_message(
+            d, "m1", "hello everyone", {"member_openid": "u1"}, "",
+            "GROUP_MESSAGE_CREATE",
+        )
+        assert captured == []  # skipped, no reply
+
+    @pytest.mark.asyncio
+    async def test_mention_mode_handles_at_message(self):
+        adapter = self._make_adapter()  # default mention
+        captured = self._drive(adapter)
+        d = {"group_openid": "g1", "content": "hi bot"}
+        await adapter._handle_group_message(
+            d, "m1", "hi bot", {"member_openid": "u1"}, "",
+            "GROUP_AT_MESSAGE_CREATE",
+        )
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "g1"
+        assert captured[0].source.chat_type == "group"
+
+    @pytest.mark.asyncio
+    async def test_always_mode_handles_non_mention_group_message(self):
+        adapter = self._make_adapter(group_require_mention=False)  # always
+        captured = self._drive(adapter)
+        d = {"group_openid": "g1", "content": "just chatting"}
+        await adapter._handle_group_message(
+            d, "m1", "just chatting", {"member_openid": "u1"}, "",
+            "GROUP_MESSAGE_CREATE",
+        )
+        assert len(captured) == 1
+        assert captured[0].text == "just chatting"
+
+    @pytest.mark.asyncio
+    async def test_per_group_mention_override_blocks_in_always_global(self):
+        adapter = self._make_adapter(
+            group_require_mention=False,
+            groups={"g1": {"require_mention": True}},
+        )
+        captured = self._drive(adapter)
+        # g1 forced to mention -> non-@ skipped.
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "hey"}, "m1", "hey",
+            {"member_openid": "u1"}, "", "GROUP_MESSAGE_CREATE",
+        )
+        assert captured == []
+        # g2 follows global always -> handled.
+        await adapter._handle_group_message(
+            {"group_openid": "g2", "content": "hey"}, "m2", "hey",
+            {"member_openid": "u1"}, "", "GROUP_MESSAGE_CREATE",
+        )
+        assert len(captured) == 1
+
+    @pytest.mark.asyncio
+    async def test_group_acl_blocks_before_gate(self):
+        adapter = self._make_adapter(group_policy="disabled",
+                                     group_require_mention=False)
+        captured = self._drive(adapter)
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "hi"}, "m1", "hi",
+            {"member_openid": "u1"}, "", "GROUP_MESSAGE_CREATE",
+        )
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_group_acl_reject_emits_debug_log(self, caplog):
+        # ACL rejection must leave an operator-visible breadcrumb explaining
+        # both the cause (policy=disabled) and how to unblock it.
+        import logging
+        adapter = self._make_adapter(group_policy="disabled")
+        self._drive(adapter)
+        with caplog.at_level(logging.DEBUG, logger="gateway.platforms.qqbot"):
+            await adapter._handle_group_message(
+                {"group_openid": "gX", "content": "hi"}, "m1", "hi",
+                {"member_openid": "u1"}, "", "GROUP_AT_MESSAGE_CREATE",
+            )
+        log_text = " ".join(r.message for r in caplog.records)
+        assert "blocked by ACL" in log_text
+        assert "gX" in log_text
+        assert "policy=disabled" in log_text
+        assert "group_policy" in log_text  # hint on how to unblock
+
+    def test_default_history_limit_is_20(self):
+        adapter = self._make_adapter()
+        assert adapter._group_history_limit == 20
+
+
+# ---------------------------------------------------------------------------
+# Group shared session (2.1) — group_sessions_per_user key behaviour
+# ---------------------------------------------------------------------------
+
+class TestGroupSharedSession:
+    def _source(self):
+        from gateway.session import SessionSource
+        from gateway.config import Platform
+        return SessionSource(
+            platform=Platform.QQBOT,
+            chat_id="group_openid_1",
+            chat_type="group",
+            user_id="member_openid_1",
+        )
+
+    def test_isolated_key_includes_participant_by_default(self):
+        from gateway.session import build_session_key
+        key = build_session_key(self._source(), group_sessions_per_user=True)
+        assert key.endswith(":member_openid_1")
+
+    def test_shared_key_excludes_participant(self):
+        from gateway.session import build_session_key
+        key = build_session_key(self._source(), group_sessions_per_user=False)
+        assert "member_openid_1" not in key
+        assert key.endswith(":group_openid_1")
+
+
+# ---------------------------------------------------------------------------
+# Group context buffer (2.2.1) — GroupContextBuffer unit tests
+# ---------------------------------------------------------------------------
+
+class TestGroupContextBuffer:
+    def _buf(self, **kw):
+        from gateway.platforms.qqbot.group_context import GroupContextBuffer
+        return GroupContextBuffer(**kw)
+
+    def test_record_and_drain_in_order(self):
+        buf = self._buf(limit=10)
+        buf.record("g1", sender="u1", text="first")
+        buf.record("g1", sender="u2", text="second")
+        entries = buf.drain("g1")
+        assert [e.text for e in entries] == ["first", "second"]
+        assert [e.sender for e in entries] == ["u1", "u2"]
+
+    def test_drain_clears(self):
+        buf = self._buf(limit=10)
+        buf.record("g1", sender="u1", text="hi")
+        assert buf.drain("g1")
+        assert buf.drain("g1") == []
+
+    def test_limit_truncates_oldest(self):
+        buf = self._buf(limit=2)
+        buf.record("g1", sender="u", text="a")
+        buf.record("g1", sender="u", text="b")
+        buf.record("g1", sender="u", text="c")
+        entries = buf.drain("g1")
+        assert [e.text for e in entries] == ["b", "c"]  # oldest "a" dropped
+
+    def test_disabled_when_limit_zero(self):
+        buf = self._buf(limit=0)
+        assert buf.enabled is False
+        buf.record("g1", sender="u", text="hi")
+        assert buf.drain("g1") == []
+
+    def test_group_isolation(self):
+        buf = self._buf(limit=10)
+        buf.record("g1", sender="u", text="a")
+        buf.record("g2", sender="u", text="b")
+        assert [e.text for e in buf.drain("g1")] == ["a"]
+        assert [e.text for e in buf.drain("g2")] == ["b"]
+
+    def test_empty_text_no_attachment_not_recorded(self):
+        buf = self._buf(limit=10)
+        buf.record("g1", sender="u", text="   ")
+        assert buf.drain("g1") == []
+
+    def test_attachment_tag_recorded_when_no_text(self):
+        buf = self._buf(limit=10)
+        buf.record("g1", sender="u", text="", attachment_tag="[image]")
+        entries = buf.drain("g1")
+        assert entries and entries[0].text == "[image]"
+
+    def test_max_groups_lru_eviction(self):
+        buf = self._buf(limit=5, max_groups=2)
+        buf.record("g1", sender="u", text="a")
+        buf.record("g2", sender="u", text="b")
+        buf.record("g3", sender="u", text="c")  # evicts g1 (LRU)
+        assert buf.drain("g1") == []
+        assert [e.text for e in buf.drain("g3")] == ["c"]
+
+    def test_format_context_wraps_with_tags(self):
+        from gateway.platforms.qqbot.group_context import (
+            GroupContextBuffer, HistoryEntry, HISTORY_CTX_START, HISTORY_CTX_END,
+        )
+        entries = [HistoryEntry(sender="u1", text="hello"),
+                   HistoryEntry(sender="u2", text="world")]
+        out = GroupContextBuffer.format_context(entries, "please summarize")
+        assert HISTORY_CTX_START in out
+        assert "u1: hello" in out
+        assert "u2: world" in out
+        assert HISTORY_CTX_END in out
+        assert out.endswith("please summarize")
+
+    def test_format_context_empty_returns_current(self):
+        from gateway.platforms.qqbot.group_context import GroupContextBuffer
+        assert GroupContextBuffer.format_context([], "just this") == "just this"
+
+    def test_summarize_attachments(self):
+        from gateway.platforms.qqbot.group_context import summarize_attachments
+        assert summarize_attachments(None) == ""
+        assert summarize_attachments([]) == ""
+        assert summarize_attachments([{"content_type": "image/png"}]) == "[image]"
+        assert summarize_attachments([{"content_type": "audio/silk"}]) == "[voice]"
+        assert summarize_attachments(
+            [{"content_type": "application/zip", "filename": "a.zip"}]
+        ) == "[file: a.zip]"
+
+
+# ---------------------------------------------------------------------------
+# Group context buffer — integration through _handle_group_message
+# ---------------------------------------------------------------------------
+
+class TestGroupContextIntegration:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        extra.setdefault("app_id", "1903885637")
+        extra.setdefault("client_secret", "b")
+        extra.setdefault("group_policy", "open")
+        return QQAdapter(_make_config(**extra))
+
+    def _drive(self, adapter):
+        captured = []
+
+        async def fake_process(_a):
+            return {"image_urls": [], "image_media_types": [],
+                    "voice_transcripts": [], "attachment_info": ""}
+
+        async def fake_quote(_d):
+            return {"quote_block": "", "image_urls": [], "image_media_types": []}
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+        adapter._process_quoted_context = fake_quote  # type: ignore[assignment]
+        adapter.handle_message = fake_handle  # type: ignore[assignment]
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_mention_mode_buffers_then_injects_on_at(self):
+        adapter = self._make_adapter()  # mention mode, default limit 50
+        captured = self._drive(adapter)
+        # non-@ message → buffered, no reply.
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "the sky is blue"}, "m1",
+            "the sky is blue", {"member_openid": "alice"}, "",
+            "GROUP_MESSAGE_CREATE",
+        )
+        assert captured == []
+        # @ message → reply with buffered context injected.
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "what did she say"}, "m2",
+            "what did she say", {"member_openid": "bob"}, "",
+            "GROUP_AT_MESSAGE_CREATE",
+        )
+        assert len(captured) == 1
+        text = captured[0].text
+        assert "CONTEXT ONLY" in text
+        assert "alice: the sky is blue" in text
+        assert text.endswith("what did she say")
+
+    @pytest.mark.asyncio
+    async def test_buffer_cleared_after_injection(self):
+        adapter = self._make_adapter()
+        captured = self._drive(adapter)
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "ctx"}, "m1", "ctx",
+            {"member_openid": "alice"}, "", "GROUP_MESSAGE_CREATE",
+        )
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "q1"}, "m2", "q1",
+            {"member_openid": "bob"}, "", "GROUP_AT_MESSAGE_CREATE",
+        )
+        # second @ has no stale context.
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "q2"}, "m3", "q2",
+            {"member_openid": "bob"}, "", "GROUP_AT_MESSAGE_CREATE",
+        )
+        assert len(captured) == 2
+        assert "CONTEXT ONLY" not in captured[1].text
+        assert captured[1].text == "q2"
+
+    @pytest.mark.asyncio
+    async def test_always_mode_no_buffering(self):
+        adapter = self._make_adapter(group_require_mention=False)
+        captured = self._drive(adapter)
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "hello"}, "m1", "hello",
+            {"member_openid": "alice"}, "", "GROUP_MESSAGE_CREATE",
+        )
+        assert len(captured) == 1
+        assert captured[0].text == "hello"  # no context wrapper
+        # nothing left buffered.
+        assert adapter._group_context.drain("g1") == []
+
+    @pytest.mark.asyncio
+    async def test_history_limit_zero_disables_buffer(self):
+        adapter = self._make_adapter(group_history_limit=0)
+        captured = self._drive(adapter)
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "ctx"}, "m1", "ctx",
+            {"member_openid": "alice"}, "", "GROUP_MESSAGE_CREATE",
+        )
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "q"}, "m2", "q",
+            {"member_openid": "bob"}, "", "GROUP_AT_MESSAGE_CREATE",
+        )
+        assert len(captured) == 1
+        assert "CONTEXT ONLY" not in captured[0].text
+        assert captured[0].text == "q"
+
+    @pytest.mark.asyncio
+    async def test_empty_at_message_still_flushes_context(self):
+        # A bare @ (empty body after strip) must still flush + inject pending
+        # context, not early-return and strand the buffer.
+        adapter = self._make_adapter()
+        captured = self._drive(adapter)
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "background note"}, "m1",
+            "background note", {"member_openid": "alice"}, "",
+            "GROUP_MESSAGE_CREATE",
+        )
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": ""}, "m2", "",
+            {"member_openid": "bob"}, "", "GROUP_AT_MESSAGE_CREATE",
+        )
+        assert len(captured) == 1
+        assert "alice: background note" in captured[0].text
+        # buffer cleared.
+        assert adapter._group_context.drain("g1") == []
+
+    @pytest.mark.asyncio
+    async def test_injection_keeps_current_message_with_attachments_last(self):
+        # Lock the order: buffered context first, current message (incl. its
+        # appended attachment_info) last.
+        adapter = self._make_adapter()
+        captured = self._drive(adapter)
+
+        async def fake_process(_a):
+            return {"image_urls": [], "image_media_types": [],
+                    "voice_transcripts": [], "attachment_info": "[file: doc.pdf]"}
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "earlier"}, "m1", "earlier",
+            {"member_openid": "alice"}, "", "GROUP_MESSAGE_CREATE",
+        )
+        # NB: alice's non-@ message uses the light attachment tag, not the full
+        # processor; the @ message below exercises the full path.
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "see attached"}, "m2",
+            "see attached", {"member_openid": "bob"}, "",
+            "GROUP_AT_MESSAGE_CREATE",
+        )
+        text = captured[0].text
+        assert text.index("earlier") < text.index("see attached")
+        assert text.index("see attached") < text.index("[file: doc.pdf]")
+        assert "CONTEXT ONLY" in text

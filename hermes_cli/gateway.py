@@ -5813,9 +5813,110 @@ def _setup_qqbot():
             save_env_value("QQBOT_HOME_CHANNEL", home_channel.strip())
             print_success(f"  Home channel set to {home_channel.strip()}")
 
+    # ── QQBot-only feature knobs (persist under platforms.qqbot.extra.*) ──
+    # Unlike DM ACL / home channel (env-var driven), the QQBot adapter reads
+    # group_policy / group_require_mention / streaming_enabled ONLY from
+    # config.yaml under ``platforms.qqbot.extra``. We write there directly.
+    _configure_qqbot_extra_settings()
+
     print()
     print_success("🐧 QQ Bot configured!")
     print_info(f"  App ID: {credentials['app_id']}")
+
+
+def _write_qqbot_extra(field: str, value) -> None:
+    """Persist a single field under ``platforms.qqbot.extra.<field>``.
+
+    Uses the raw config file (not the merged loaded config) so we only
+    touch values the user explicitly asked us to change — preserving any
+    existing hand-edited keys under ``platforms.qqbot`` verbatim.
+    """
+    from hermes_cli.config import (
+        ensure_hermes_home,
+        get_config_path,
+        read_raw_config,
+    )
+    from utils import atomic_yaml_write
+
+    cfg = read_raw_config() or {}
+    platforms = cfg.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        cfg["platforms"] = platforms
+    qqbot_cfg = platforms.setdefault("qqbot", {})
+    if not isinstance(qqbot_cfg, dict):
+        qqbot_cfg = {}
+        platforms["qqbot"] = qqbot_cfg
+    extra = qqbot_cfg.setdefault("extra", {})
+    if not isinstance(extra, dict):
+        extra = {}
+        qqbot_cfg["extra"] = extra
+    extra[field] = value
+
+    ensure_hermes_home()
+    atomic_yaml_write(get_config_path(), cfg, sort_keys=False)
+
+
+def _configure_qqbot_extra_settings() -> None:
+    """Interactive prompts for QQBot's config.yaml-only feature knobs.
+
+    Writes to ``platforms.qqbot.extra`` under keys the QQBot adapter reads
+    at startup (see ``gateway/platforms/qqbot/adapter.py``):
+
+    * ``group_policy``          — open | allowlist | disabled (ACL gate).
+    * ``group_allow_from``      — allow-list of group openids (list[str]).
+    * ``group_require_mention`` — True: only respond when @-ed; False:
+      respond to every group message (requires the "receive all group
+      messages" permission on the QQ platform).
+    """
+    # ── Group policy ───────────────────────────────────────────────────
+    print()
+    group_choices = [
+        "Disable group chats (default, safest)",
+        "Allow all groups the bot is in",
+        "Only allow listed group OpenIDs",
+    ]
+    group_idx = prompt_choice(
+        "  How should group chats be handled?", group_choices, 0
+    )
+    if group_idx == 0:
+        _write_qqbot_extra("group_policy", "disabled")
+        _write_qqbot_extra("group_allow_from", [])
+        print_info("  Group chats disabled.")
+        return  # mention/allow-list irrelevant when disabled
+    elif group_idx == 1:
+        _write_qqbot_extra("group_policy", "open")
+        _write_qqbot_extra("group_allow_from", [])
+        print_warning("  Open group access enabled for QQ Bot.")
+    else:
+        allow_groups_raw = prompt(
+            "  Allowed group OpenIDs (comma-separated)", password=False
+        ).replace(" ", "")
+        allow_groups = [g for g in allow_groups_raw.split(",") if g]
+        _write_qqbot_extra("group_policy", "allowlist")
+        _write_qqbot_extra("group_allow_from", allow_groups)
+        print_success(
+            f"  Group allowlist saved ({len(allow_groups)} entries)."
+        )
+
+    # ── @-mention requirement (only meaningful when groups are enabled) ─
+    print()
+    print_info(
+        "  Mention mode: bot only replies when explicitly @-ed."
+    )
+    print_info(
+        "  Always mode: bot may reply to every group message (requires"
+    )
+    print_info(
+        "  the 'receive all group messages' permission on q.qq.com)."
+    )
+    require_mention = prompt_yes_no(
+        "  Require @mention to trigger replies?", True
+    )
+    _write_qqbot_extra("group_require_mention", bool(require_mention))
+    print_success(
+        f"  group_require_mention = {'true' if require_mention else 'false'}"
+    )
 
 
 def _setup_signal():

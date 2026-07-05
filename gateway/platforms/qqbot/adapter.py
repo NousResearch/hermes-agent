@@ -14,7 +14,7 @@ Configuration in config.yaml:
           markdown_support: true           # enable QQ markdown (msg_type 2)
           dm_policy: "pairing"             # open | allowlist | disabled | pairing
           allow_from: ["openid_1"]
-          group_policy: "pairing"          # open | allowlist | disabled | pairing
+          group_policy: "disabled"         # open | allowlist | disabled
           group_allow_from: ["group_openid_1"]
           stt:                             # Voice-to-text config (optional)
             provider: "zai"                # zai (GLM-ASR), openai (Whisper), etc.
@@ -134,6 +134,14 @@ from gateway.platforms.qqbot.keyboards import (
     parse_interaction_event,
     parse_update_prompt_button_data,
 )
+from gateway.platforms.qqbot.group_activation import (
+    detect_mentioned,
+    resolve_require_mention,
+)
+from gateway.platforms.qqbot.group_context import (
+    GroupContextBuffer,
+    summarize_attachments,
+)
 
 
 def check_qq_requirements() -> bool:
@@ -212,10 +220,49 @@ class QQAdapter(BasePlatformAdapter):
         self._allow_from = _coerce_list(
             extra.get("allow_from") or extra.get("allowFrom")
         )
-        self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
+        # Group ACL policy — mirrors Feishu (open | allowlist | disabled).
+        # Default is "disabled" (safe-by-default: no group receives replies
+        # until explicitly enabled). QQ does not implement a group "pairing"
+        # handshake, so pairing is intentionally not offered for groups
+        # (unlike dm_policy, where QQ C2C supports pairing).
+        raw_group_policy = str(extra.get("group_policy", "disabled")).strip().lower()
+        if raw_group_policy not in {"open", "allowlist", "disabled"}:
+            logger.warning(
+                "[%s] Unknown group_policy=%r; falling back to 'disabled'. "
+                "Supported: open | allowlist | disabled.",
+                self._log_tag, raw_group_policy,
+            )
+            raw_group_policy = "disabled"
+        self._group_policy = raw_group_policy
         self._group_allow_from = _coerce_list(
             extra.get("group_allow_from") or extra.get("groupAllowFrom")
         )
+
+        # Group activation mode (always vs mention). Default: mention — the bot
+        # only replies when @-ed (aligns with openclaw requireMention default).
+        # always mode (require_mention=False) lets any group message trigger a
+        # reply; it also needs the "receive all group messages" permission on
+        # the QQ platform to actually receive GROUP_MESSAGE_CREATE events.
+        self._group_require_mention = bool(extra.get("group_require_mention", True))
+        # Per-group override: groups.{group_openid}.require_mention (group > global).
+        self._group_mode_overrides: Dict[str, bool] = {}
+        _groups_cfg = extra.get("groups")
+        if isinstance(_groups_cfg, dict):
+            for _gid, _gcfg in _groups_cfg.items():
+                if isinstance(_gcfg, dict) and "require_mention" in _gcfg:
+                    self._group_mode_overrides[str(_gid)] = bool(
+                        _gcfg["require_mention"]
+                    )
+        # Reserved for a future runtime mode-switch command (solution 2.2.3):
+        # a /-command would write here and persist via cli.save_config_value.
+        # Empty in this release.
+        self._group_mode_runtime_overrides: Dict[str, bool] = {}
+
+        # Group context buffer (mention mode): non-@ messages are remembered per
+        # group and injected as CONTEXT ONLY on the next @-reply. Default 20;
+        # group_history_limit <= 0 disables buffering.
+        self._group_history_limit = int(extra.get("group_history_limit", 20))
+        self._group_context = GroupContextBuffer(limit=self._group_history_limit)
 
         # Connection state
         self._session: Optional[aiohttp.ClientSession] = None
@@ -850,6 +897,7 @@ class QQAdapter(BasePlatformAdapter):
             elif t in {
                     "C2C_MESSAGE_CREATE",
                     "GROUP_AT_MESSAGE_CREATE",
+                    "GROUP_MESSAGE_CREATE",
                     "DIRECT_MESSAGE_CREATE",
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
@@ -949,8 +997,10 @@ class QQAdapter(BasePlatformAdapter):
         # Route by event type
         if event_type == "C2C_MESSAGE_CREATE":
             await self._handle_c2c_message(d, msg_id, content, author, timestamp)
-        elif event_type in {"GROUP_AT_MESSAGE_CREATE",}:
-            await self._handle_group_message(d, msg_id, content, author, timestamp)
+        elif event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}:
+            await self._handle_group_message(
+                d, msg_id, content, author, timestamp, event_type
+            )
         elif event_type in {"GUILD_MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"}:
             await self._handle_guild_message(d, msg_id, content, author, timestamp)
         elif event_type == "DIRECT_MESSAGE_CREATE":
@@ -1312,18 +1362,64 @@ class QQAdapter(BasePlatformAdapter):
             content: str,
             author: Dict[str, Any],
             timestamp: str,
+            event_type: str = "GROUP_AT_MESSAGE_CREATE",
     ) -> None:
-        """Handle a group @-message event."""
+        """Handle a group message event.
+
+        Handles both ``GROUP_AT_MESSAGE_CREATE`` (bot @-ed) and, when the QQ
+        platform pushes full group traffic and/or the bot runs in always mode,
+        ``GROUP_MESSAGE_CREATE`` (any group message). The activation decision
+        is:
+
+        1. group-level ACL (``_is_group_allowed``; user_id is intentionally not
+           used — per-user filtering is out of scope);
+        2. mention detection (``detect_mentioned``);
+        3. mode resolution (``resolve_require_mention``: global +
+           per-group override);
+        4. gate: mention mode + not-mentioned → skip (no reply); otherwise
+           process and reply.
+        """
         group_openid = str(d.get("group_openid", ""))
         if not group_openid:
             return
-        if not self._is_group_allowed(
-                group_openid, str(author.get("member_openid", ""))
-        ):
+        member_openid = str(author.get("member_openid", ""))
+        # (1) ACL — group-level (per-user filtering intentionally out of scope).
+        if not self._is_group_allowed(group_openid, member_openid):
+            logger.debug(
+                "[%s] Group message blocked by ACL: group=%r "
+                "policy=%s (set platforms.qqbot.extra.group_policy=open, or "
+                "'allowlist' with this group in group_allow_from, to enable).",
+                self._log_tag, group_openid, self._group_policy,
+            )
             return
 
-        # Strip the @bot mention prefix from content
-        text = self._strip_at_mention(content)
+        # (2) mention detection + (3) mode resolution + (4) activation gate.
+        mentioned = detect_mentioned(event_type, d, content, self._app_id)
+        require_mention = resolve_require_mention(
+            group_openid,
+            global_default=self._group_require_mention,
+            per_group=self._group_mode_overrides,
+            runtime_overrides=self._group_mode_runtime_overrides,
+        )
+        if require_mention and not mentioned:
+            # mention mode + message not addressed to the bot → do not reply,
+            # but remember it as pending context for the next @-reply (2.2.1).
+            self._group_context.record(
+                group_openid,
+                sender=member_openid,
+                text=content,
+                msg_id=msg_id,
+                attachment_tag=summarize_attachments(d.get("attachments")),
+            )
+            logger.debug(
+                "[%s] Group %s: buffered non-mention message (mention mode, event=%s)",
+                self._log_tag, group_openid, event_type,
+            )
+            return
+
+        # (5) pass: assemble the message (reuse the existing media / quote /
+        # markdown path). Only strip the @bot prefix when actually mentioned.
+        text = self._strip_at_mention(content) if mentioned else content
         att_result = await self._process_attachments(d.get("attachments"))
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
@@ -1349,6 +1445,15 @@ class QQAdapter(BasePlatformAdapter):
         if quoted["image_urls"]:
             image_urls = image_urls + quoted["image_urls"]
             image_media_types = image_media_types + quoted["image_media_types"]
+
+        # (6) mention-mode @-activation: prepend any buffered non-@ messages as
+        # CONTEXT ONLY, then clear the group's buffer (2.2.1). Done BEFORE the
+        # empty check so an @-message with no body (e.g. a bare @) still flushes
+        # and injects the pending context. In always mode the buffer is empty
+        # (nothing was recorded), so drain is a harmless no-op.
+        pending = self._group_context.drain(group_openid)
+        if pending:
+            text = GroupContextBuffer.format_context(pending, text)
 
         if not text.strip() and not image_urls:
             return
@@ -3151,12 +3256,39 @@ class QQAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _strip_at_mention(content: str) -> str:
-        """Strip the @bot mention prefix from group message content."""
-        # QQ group @-messages may have the bot's QQ/ID as prefix
+        """Strip @bot mention markers from group message content.
+
+        Handles both forms QQ may deliver:
+
+        - the explicit ``<@!123>`` mention tag (full-push GROUP_MESSAGE_CREATE),
+          aligning with openclaw ``MENTION_TAG_RE``;
+        - the legacy leading ``@name `` prefix (GROUP_AT_MESSAGE_CREATE where the
+          platform already rendered the tag as plain text).
+        """
         import re
 
-        stripped = re.sub(r"^@\S+\s*", "", content.strip())
-        return stripped
+        # Remove explicit mention tags anywhere in the content.
+        stripped = re.sub(r"<@!?\d+>", "", content).strip()
+        # Remove a leading "@name " prefix if present.
+        stripped = re.sub(r"^@\S+\s*", "", stripped)
+        return stripped.strip()
+
+    def _set_group_mode_override(
+        self, group_openid: str, require_mention: bool
+    ) -> None:
+        """Set an in-memory activation-mode override for a single group.
+
+        Reserved integration point for a future runtime mode-switch command
+        (solution 2.2.3). It updates the highest-priority override consulted by
+        :func:`resolve_require_mention`. A command handler would call this and
+        then persist the change via ``cli.save_config_value`` — persistence and
+        the command wiring are intentionally out of scope this round because a
+        ``/``-command requires changes to the shared command framework.
+        """
+        if group_openid:
+            self._group_mode_runtime_overrides[str(group_openid)] = bool(
+                require_mention
+            )
 
     def _open_dm_opted_in(self) -> bool:
         if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
@@ -3191,8 +3323,6 @@ class QQAdapter(BasePlatformAdapter):
             return False
         if self._group_policy == "allowlist":
             return self._entry_matches(self._group_allow_from, group_id)
-        if self._group_policy == "pairing":
-            return False
         if self._group_policy == "open":
             return True
         return False

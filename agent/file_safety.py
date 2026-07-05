@@ -158,6 +158,17 @@ _BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
 }
 
 
+def is_project_env_basename(name: str) -> bool:
+    """True if ``name`` is a secret-bearing project env filename.
+
+    Shared by the read guard (:func:`get_read_block_error`, which blocks reading
+    these anywhere on disk) and the media-delivery denylist
+    (``gateway/platforms/base.validate_media_delivery_path``) so the delivery /
+    exfil side can't drift from the read side. Case-insensitive basename match.
+    """
+    return name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES
+
+
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 

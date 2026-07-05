@@ -2867,3 +2867,66 @@ class TestCuaToolCoverageExpansion:
         backend.call_tool("get_cursor_position")
         name, args = backend._session.call_tool.call_args.args
         assert args == {"session": backend._session_id}
+
+
+class TestStartupTimeoutPhaseDetail:
+    """Issue #57025: the ready-timeout error must report which startup phase
+    wedged, so 'doctor passes but wrapper times out' reports are diagnosable."""
+
+    def test_timeout_error_includes_startup_phase(self):
+        import threading
+        from typing import Any, cast
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._lock = threading.Lock()
+        session._ready_event = threading.Event()  # never set → timeout path
+        session._setup_error = None
+        session._shutdown_event = None
+        session._startup_phase = "mcp-initialize"
+        session._signal_shutdown_locked = lambda: None
+
+        fake_bridge = MagicMock()
+        fake_bridge._loop = MagicMock()
+        session._bridge = fake_bridge
+
+        import asyncio
+        from unittest.mock import patch as _patch
+        with _patch.object(session._ready_event, "wait", return_value=False), \
+             _patch.object(asyncio, "run_coroutine_threadsafe", return_value=MagicMock()), \
+             _patch.object(_CuaDriverSession, "_lifecycle_coro", lambda self: None):
+            try:
+                session._start_lifecycle_locked()
+                assert False, "expected RuntimeError"
+            except RuntimeError as e:
+                msg = str(e)
+                assert "stuck in phase: mcp-initialize" in msg
+                assert "computer-use doctor" in msg
+
+    def test_timeout_error_defaults_to_unknown_phase(self):
+        import threading
+        from typing import Any, cast
+        from unittest.mock import MagicMock, patch as _patch
+        import asyncio
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._lock = threading.Lock()
+        session._ready_event = threading.Event()
+        session._setup_error = None
+        session._shutdown_event = None
+        # no _startup_phase attribute at all
+        session._signal_shutdown_locked = lambda: None
+        fake_bridge = MagicMock()
+        fake_bridge._loop = MagicMock()
+        session._bridge = fake_bridge
+
+        with _patch.object(session._ready_event, "wait", return_value=False), \
+             _patch.object(asyncio, "run_coroutine_threadsafe", return_value=MagicMock()), \
+             _patch.object(_CuaDriverSession, "_lifecycle_coro", lambda self: None):
+            try:
+                session._start_lifecycle_locked()
+                assert False, "expected RuntimeError"
+            except RuntimeError as e:
+                assert "stuck in phase: unknown" in str(e)

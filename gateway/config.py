@@ -1699,10 +1699,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     }
     msgraph_webhook_port = _profile_secret("MSGRAPH_WEBHOOK_PORT")
     msgraph_webhook_client_state = _profile_secret("MSGRAPH_WEBHOOK_CLIENT_STATE", "")
-    msgraph_webhook_resources = os.getenv("MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES", "")
-    msgraph_webhook_allowed_cidrs = os.getenv(
-        "MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS", ""
-    )
+    msgraph_webhook_resources = _profile_secret_str("MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES", "")
+    msgraph_webhook_allowed_cidrs = _profile_secret_str("MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS", "")
     if (
         msgraph_webhook_enabled
         or Platform.MSGRAPH_WEBHOOK in config.platforms
@@ -1748,8 +1746,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 ] = cidrs
 
     # DingTalk
-    dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")
-    dingtalk_client_secret = os.getenv("DINGTALK_CLIENT_SECRET")
+    dingtalk_client_id = _profile_secret("DINGTALK_CLIENT_ID")
+    dingtalk_client_secret = _profile_secret("DINGTALK_CLIENT_SECRET")
     if dingtalk_client_id and dingtalk_client_secret:
         if Platform.DINGTALK not in config.platforms:
             config.platforms[Platform.DINGTALK] = PlatformConfig()
@@ -1758,18 +1756,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "client_id": dingtalk_client_id,
             "client_secret": dingtalk_client_secret,
         })
-        dingtalk_home = os.getenv("DINGTALK_HOME_CHANNEL")
+        dingtalk_home = _profile_secret("DINGTALK_HOME_CHANNEL")
         if dingtalk_home:
             config.platforms[Platform.DINGTALK].home_channel = HomeChannel(
                 platform=Platform.DINGTALK,
                 chat_id=dingtalk_home,
-                name=os.getenv("DINGTALK_HOME_CHANNEL_NAME", "Home"),
-                thread_id=os.getenv("DINGTALK_HOME_CHANNEL_THREAD_ID") or None,
+                name=_profile_secret_str("DINGTALK_HOME_CHANNEL_NAME", "Home"),
+                thread_id=_profile_secret("DINGTALK_HOME_CHANNEL_THREAD_ID") or None,
             )
 
     # Feishu / Lark
-    feishu_app_id = os.getenv("FEISHU_APP_ID")
-    feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
+    feishu_app_id = _profile_secret("FEISHU_APP_ID")
+    feishu_app_secret = _profile_secret("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
         if Platform.FEISHU not in config.platforms:
             config.platforms[Platform.FEISHU] = PlatformConfig()
@@ -1777,27 +1775,27 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.FEISHU].extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,
-            "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
-            "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
+            "domain": _profile_secret_str("FEISHU_DOMAIN", "feishu"),
+            "connection_mode": _profile_secret_str("FEISHU_CONNECTION_MODE", "websocket"),
         })
-        feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+        feishu_encrypt_key = _profile_secret_str("FEISHU_ENCRYPT_KEY", "")
         if feishu_encrypt_key:
             config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key
-        feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+        feishu_verification_token = _profile_secret_str("FEISHU_VERIFICATION_TOKEN", "")
         if feishu_verification_token:
             config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
-        feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
+        feishu_home = _profile_secret("FEISHU_HOME_CHANNEL")
         if feishu_home:
             config.platforms[Platform.FEISHU].home_channel = HomeChannel(
                 platform=Platform.FEISHU,
                 chat_id=feishu_home,
-                name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
-                thread_id=os.getenv("FEISHU_HOME_CHANNEL_THREAD_ID") or None,
+                name=_profile_secret_str("FEISHU_HOME_CHANNEL_NAME", "Home"),
+                thread_id=_profile_secret("FEISHU_HOME_CHANNEL_THREAD_ID") or None,
             )
 
     # WeCom (Enterprise WeChat)
-    wecom_bot_id = os.getenv("WECOM_BOT_ID")
-    wecom_secret = os.getenv("WECOM_SECRET")
+    wecom_bot_id = _profile_secret("WECOM_BOT_ID")
+    wecom_secret = _profile_secret("WECOM_SECRET")
     if wecom_bot_id and wecom_secret:
         if Platform.WECOM not in config.platforms:
             config.platforms[Platform.WECOM] = PlatformConfig()
@@ -1806,21 +1804,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "bot_id": wecom_bot_id,
             "secret": wecom_secret,
         })
-        wecom_ws_url = os.getenv("WECOM_WEBSOCKET_URL", "")
+        wecom_ws_url = _profile_secret_str("WECOM_WEBSOCKET_URL", "")
         if wecom_ws_url:
             config.platforms[Platform.WECOM].extra["websocket_url"] = wecom_ws_url
-        wecom_home = os.getenv("WECOM_HOME_CHANNEL")
+        wecom_home = _profile_secret("WECOM_HOME_CHANNEL")
         if wecom_home:
             config.platforms[Platform.WECOM].home_channel = HomeChannel(
                 platform=Platform.WECOM,
                 chat_id=wecom_home,
-                name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
-                thread_id=os.getenv("WECOM_HOME_CHANNEL_THREAD_ID") or None,
+                name=_profile_secret_str("WECOM_HOME_CHANNEL_NAME", "Home"),
+                thread_id=_profile_secret("WECOM_HOME_CHANNEL_THREAD_ID") or None,
             )
 
     # WeCom callback mode (self-built apps)
-    wecom_callback_corp_id = os.getenv("WECOM_CALLBACK_CORP_ID")
-    wecom_callback_corp_secret = os.getenv("WECOM_CALLBACK_CORP_SECRET")
+    wecom_callback_corp_id = _profile_secret("WECOM_CALLBACK_CORP_ID")
+    wecom_callback_corp_secret = _profile_secret("WECOM_CALLBACK_CORP_SECRET")
     if wecom_callback_corp_id and wecom_callback_corp_secret:
         if Platform.WECOM_CALLBACK not in config.platforms:
             config.platforms[Platform.WECOM_CALLBACK] = PlatformConfig()
@@ -1828,16 +1826,16 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.WECOM_CALLBACK].extra.update({
             "corp_id": wecom_callback_corp_id,
             "corp_secret": wecom_callback_corp_secret,
-            "agent_id": os.getenv("WECOM_CALLBACK_AGENT_ID", ""),
-            "token": os.getenv("WECOM_CALLBACK_TOKEN", ""),
-            "encoding_aes_key": os.getenv("WECOM_CALLBACK_ENCODING_AES_KEY", ""),
-            "host": os.getenv("WECOM_CALLBACK_HOST", "0.0.0.0"),
+            "agent_id": _profile_secret_str("WECOM_CALLBACK_AGENT_ID", ""),
+            "token": _profile_secret_str("WECOM_CALLBACK_TOKEN", ""),
+            "encoding_aes_key": _profile_secret_str("WECOM_CALLBACK_ENCODING_AES_KEY", ""),
+            "host": _profile_secret_str("WECOM_CALLBACK_HOST", "0.0.0.0"),
             "port": env_int("WECOM_CALLBACK_PORT", 8645),
         })
 
     # Weixin (personal WeChat via iLink Bot API)
-    weixin_token = os.getenv("WEIXIN_TOKEN")
-    weixin_account_id = os.getenv("WEIXIN_ACCOUNT_ID")
+    weixin_token = _profile_secret("WEIXIN_TOKEN")
+    weixin_account_id = _profile_secret("WEIXIN_ACCOUNT_ID")
     if weixin_token or weixin_account_id:
         if Platform.WEIXIN not in config.platforms:
             config.platforms[Platform.WEIXIN] = PlatformConfig()
@@ -1847,39 +1845,39 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         extra = config.platforms[Platform.WEIXIN].extra
         if weixin_account_id:
             extra["account_id"] = weixin_account_id
-        weixin_base_url = os.getenv("WEIXIN_BASE_URL", "").strip()
+        weixin_base_url = _profile_secret_str("WEIXIN_BASE_URL", "").strip()
         if weixin_base_url:
             extra["base_url"] = weixin_base_url.rstrip("/")
-        weixin_cdn_base_url = os.getenv("WEIXIN_CDN_BASE_URL", "").strip()
+        weixin_cdn_base_url = _profile_secret_str("WEIXIN_CDN_BASE_URL", "").strip()
         if weixin_cdn_base_url:
             extra["cdn_base_url"] = weixin_cdn_base_url.rstrip("/")
-        weixin_dm_policy = os.getenv("WEIXIN_DM_POLICY", "").strip().lower()
+        weixin_dm_policy = _profile_secret_str("WEIXIN_DM_POLICY", "").strip().lower()
         if weixin_dm_policy:
             extra["dm_policy"] = weixin_dm_policy
-        weixin_group_policy = os.getenv("WEIXIN_GROUP_POLICY", "").strip().lower()
+        weixin_group_policy = _profile_secret_str("WEIXIN_GROUP_POLICY", "").strip().lower()
         if weixin_group_policy:
             extra["group_policy"] = weixin_group_policy
-        weixin_allowed_users = os.getenv("WEIXIN_ALLOWED_USERS", "").strip()
+        weixin_allowed_users = _profile_secret_str("WEIXIN_ALLOWED_USERS", "").strip()
         if weixin_allowed_users:
             extra["allow_from"] = weixin_allowed_users
-        weixin_group_allowed_users = os.getenv("WEIXIN_GROUP_ALLOWED_USERS", "").strip()
+        weixin_group_allowed_users = _profile_secret_str("WEIXIN_GROUP_ALLOWED_USERS", "").strip()
         if weixin_group_allowed_users:
             extra["group_allow_from"] = weixin_group_allowed_users
-        weixin_split_multiline = os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES", "").strip()
+        weixin_split_multiline = _profile_secret_str("WEIXIN_SPLIT_MULTILINE_MESSAGES", "").strip()
         if weixin_split_multiline:
             extra["split_multiline_messages"] = weixin_split_multiline
-        weixin_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+        weixin_home = _profile_secret_str("WEIXIN_HOME_CHANNEL", "").strip()
         if weixin_home:
             config.platforms[Platform.WEIXIN].home_channel = HomeChannel(
                 platform=Platform.WEIXIN,
                 chat_id=weixin_home,
-                name=os.getenv("WEIXIN_HOME_CHANNEL_NAME", "Home"),
-                thread_id=os.getenv("WEIXIN_HOME_CHANNEL_THREAD_ID") or None,
+                name=_profile_secret_str("WEIXIN_HOME_CHANNEL_NAME", "Home"),
+                thread_id=_profile_secret("WEIXIN_HOME_CHANNEL_THREAD_ID") or None,
             )
 
     # BlueBubbles (iMessage)
-    bluebubbles_server_url = os.getenv("BLUEBUBBLES_SERVER_URL")
-    bluebubbles_password = os.getenv("BLUEBUBBLES_PASSWORD")
+    bluebubbles_server_url = _profile_secret("BLUEBUBBLES_SERVER_URL")
+    bluebubbles_password = _profile_secret("BLUEBUBBLES_PASSWORD")
     if bluebubbles_server_url and bluebubbles_password:
         if Platform.BLUEBUBBLES not in config.platforms:
             config.platforms[Platform.BLUEBUBBLES] = PlatformConfig()
@@ -1887,17 +1885,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.BLUEBUBBLES].extra.update({
             "server_url": bluebubbles_server_url.rstrip("/"),
             "password": bluebubbles_password,
-            "webhook_host": os.getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
+            "webhook_host": _profile_secret_str("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
             "webhook_port": env_int("BLUEBUBBLES_WEBHOOK_PORT", 8645),
-            "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
+            "webhook_path": _profile_secret_str("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
             "send_read_receipts": env_var_enabled("BLUEBUBBLES_SEND_READ_RECEIPTS", "true"),
         })
-        bluebubbles_require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")
+        bluebubbles_require_mention = _profile_secret("BLUEBUBBLES_REQUIRE_MENTION")
         if bluebubbles_require_mention is not None:
             config.platforms[Platform.BLUEBUBBLES].extra["require_mention"] = (
                 bluebubbles_require_mention.lower() in {"true", "1", "yes", "on"}
             )
-        bluebubbles_mention_patterns = os.getenv("BLUEBUBBLES_MENTION_PATTERNS")
+        bluebubbles_mention_patterns = _profile_secret("BLUEBUBBLES_MENTION_PATTERNS")
         if bluebubbles_mention_patterns:
             try:
                 parsed_patterns = json.loads(bluebubbles_mention_patterns)
@@ -1908,18 +1906,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     if part.strip()
                 ]
             config.platforms[Platform.BLUEBUBBLES].extra["mention_patterns"] = parsed_patterns
-    bluebubbles_home = os.getenv("BLUEBUBBLES_HOME_CHANNEL")
+    bluebubbles_home = _profile_secret("BLUEBUBBLES_HOME_CHANNEL")
     if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:
         config.platforms[Platform.BLUEBUBBLES].home_channel = HomeChannel(
             platform=Platform.BLUEBUBBLES,
             chat_id=bluebubbles_home,
-            name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
-            thread_id=os.getenv("BLUEBUBBLES_HOME_CHANNEL_THREAD_ID") or None,
+            name=_profile_secret_str("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
+            thread_id=_profile_secret("BLUEBUBBLES_HOME_CHANNEL_THREAD_ID") or None,
         )
 
     # QQ (Official Bot API v2)
-    qq_app_id = os.getenv("QQ_APP_ID")
-    qq_client_secret = os.getenv("QQ_CLIENT_SECRET")
+    qq_app_id = _profile_secret("QQ_APP_ID")
+    qq_client_secret = _profile_secret("QQ_CLIENT_SECRET")
     if qq_app_id or qq_client_secret:
         if Platform.QQBOT not in config.platforms:
             config.platforms[Platform.QQBOT] = PlatformConfig()
@@ -1929,17 +1927,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             extra["app_id"] = qq_app_id
         if qq_client_secret:
             extra["client_secret"] = qq_client_secret
-        qq_allowed_users = os.getenv("QQ_ALLOWED_USERS", "").strip()
+        qq_allowed_users = _profile_secret_str("QQ_ALLOWED_USERS", "").strip()
         if qq_allowed_users:
             extra["allow_from"] = qq_allowed_users
-        qq_group_allowed = os.getenv("QQ_GROUP_ALLOWED_USERS", "").strip()
+        qq_group_allowed = _profile_secret_str("QQ_GROUP_ALLOWED_USERS", "").strip()
         if qq_group_allowed:
             extra["group_allow_from"] = qq_group_allowed
-        qq_home = os.getenv("QQBOT_HOME_CHANNEL", "").strip()
+        qq_home = _profile_secret_str("QQBOT_HOME_CHANNEL", "").strip()
         qq_home_name_env = "QQBOT_HOME_CHANNEL_NAME"
         if not qq_home:
             # Back-compat: accept the pre-rename name and log a one-time warning.
-            legacy_home = os.getenv("QQ_HOME_CHANNEL", "").strip()
+            legacy_home = _profile_secret_str("QQ_HOME_CHANNEL", "").strip()
             if legacy_home:
                 qq_home = legacy_home
                 qq_home_name_env = "QQ_HOME_CHANNEL_NAME"
@@ -1951,17 +1949,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.QQBOT].home_channel = HomeChannel(
                 platform=Platform.QQBOT,
                 chat_id=qq_home,
-                name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
+                name=_profile_secret("QQBOT_HOME_CHANNEL_NAME") or _profile_secret_str(qq_home_name_env, "Home"),
                 thread_id=(
-                    os.getenv("QQBOT_HOME_CHANNEL_THREAD_ID")
-                    or os.getenv("QQ_HOME_CHANNEL_THREAD_ID")
+                    _profile_secret("QQBOT_HOME_CHANNEL_THREAD_ID")
+                    or _profile_secret("QQ_HOME_CHANNEL_THREAD_ID")
                     or None
                 ),
             )
 
     # Yuanbao — YUANBAO_APP_ID preferred
-    yuanbao_app_id = os.getenv("YUANBAO_APP_ID") or os.getenv("YUANBAO_APP_KEY")
-    yuanbao_app_secret = os.getenv("YUANBAO_APP_SECRET")
+    yuanbao_app_id = _profile_secret("YUANBAO_APP_ID") or _profile_secret("YUANBAO_APP_KEY")
+    yuanbao_app_secret = _profile_secret("YUANBAO_APP_SECRET")
     if yuanbao_app_id and yuanbao_app_secret:
         if Platform.YUANBAO not in config.platforms:
             config.platforms[Platform.YUANBAO] = PlatformConfig()
@@ -1969,36 +1967,36 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         extra = config.platforms[Platform.YUANBAO].extra
         extra["app_id"] = yuanbao_app_id
         extra["app_secret"] = yuanbao_app_secret
-        yuanbao_bot_id = os.getenv("YUANBAO_BOT_ID")
+        yuanbao_bot_id = _profile_secret("YUANBAO_BOT_ID")
         if yuanbao_bot_id:
             extra["bot_id"] = yuanbao_bot_id
-        yuanbao_ws_url = os.getenv("YUANBAO_WS_URL")
+        yuanbao_ws_url = _profile_secret("YUANBAO_WS_URL")
         if yuanbao_ws_url:
             extra["ws_url"] = yuanbao_ws_url
-        yuanbao_api_domain = os.getenv("YUANBAO_API_DOMAIN")
+        yuanbao_api_domain = _profile_secret("YUANBAO_API_DOMAIN")
         if yuanbao_api_domain:
             extra["api_domain"] = yuanbao_api_domain
-        yuanbao_route_env = os.getenv("YUANBAO_ROUTE_ENV")
+        yuanbao_route_env = _profile_secret("YUANBAO_ROUTE_ENV")
         if yuanbao_route_env:
             extra["route_env"] = yuanbao_route_env
-        yuanbao_home = os.getenv("YUANBAO_HOME_CHANNEL")
+        yuanbao_home = _profile_secret("YUANBAO_HOME_CHANNEL")
         if yuanbao_home:
             config.platforms[Platform.YUANBAO].home_channel = HomeChannel(
                 platform=Platform.YUANBAO,
                 chat_id=yuanbao_home,
-                name=os.getenv("YUANBAO_HOME_CHANNEL_NAME", "Home"),
-                thread_id=os.getenv("YUANBAO_HOME_CHANNEL_THREAD_ID") or None,
+                name=_profile_secret_str("YUANBAO_HOME_CHANNEL_NAME", "Home"),
+                thread_id=_profile_secret("YUANBAO_HOME_CHANNEL_THREAD_ID") or None,
             )
-        yuanbao_dm_policy = os.getenv("YUANBAO_DM_POLICY")
+        yuanbao_dm_policy = _profile_secret("YUANBAO_DM_POLICY")
         if yuanbao_dm_policy:
             extra["dm_policy"] = yuanbao_dm_policy.strip().lower()
-        yuanbao_dm_allow_from = os.getenv("YUANBAO_DM_ALLOW_FROM")
+        yuanbao_dm_allow_from = _profile_secret("YUANBAO_DM_ALLOW_FROM")
         if yuanbao_dm_allow_from:
             extra["dm_allow_from"] = yuanbao_dm_allow_from
-        yuanbao_group_policy = os.getenv("YUANBAO_GROUP_POLICY")
+        yuanbao_group_policy = _profile_secret("YUANBAO_GROUP_POLICY")
         if yuanbao_group_policy:
             extra["group_policy"] = yuanbao_group_policy.strip().lower()
-        yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
+        yuanbao_group_allow_from = _profile_secret("YUANBAO_GROUP_ALLOW_FROM")
         if yuanbao_group_allow_from:
             extra["group_allow_from"] = yuanbao_group_allow_from
 
@@ -2035,6 +2033,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # noisy retry-forever errors.  ``_platform_status`` was already fixed
     # for the same bug class in commit 7849a3d73; this is the runtime
     # counterpart.
+    #
+    # When a profile secret scope is active (multiplex mode), skip the
+    # is_connected() probe for platforms NOT already explicitly configured
+    # in YAML/env.  Plugin ``is_connected()`` implementations read
+    # ``os.getenv()`` directly (not ``_profile_secret``), so in a
+    # multiplexer they would see the *default* profile's credentials in
+    # ``os.environ`` and wrongly enable the platform on a secondary profile
+    # that has no matching credentials in its own scope.  The
+    # ``_profile_secret`` reads above already correctly skipped these — the
+    # only way the platform can still be enabled here is the probe.  By
+    # skipping the probe when a scope is active, we preserve credential
+    # isolation: a secondary profile only gets platforms it explicitly
+    # configured in YAML or whose credentials are in its own ``.env`` scope.
+    from agent.secret_scope import is_multiplex_active, current_secret_scope
+    _scope_active = is_multiplex_active() and current_secret_scope() is not None
+
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
@@ -2082,7 +2096,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # explicitly configured in YAML / env (existing_cfg with
             # enabled=True means the user wrote it themselves or another
             # env-var bridge enabled it — keep that decision).
-            if existing_cfg is None or not existing_cfg.enabled:
+            #
+            # Skip the probe entirely when a profile secret scope is active
+            # (multiplex mode): is_connected() reads os.getenv() directly and
+            # would see the default profile's credentials, breaking isolation.
+            if (existing_cfg is None or not existing_cfg.enabled) and not _scope_active:
                 if entry.is_connected is not None:
                     try:
                         # Probe with ``enabled=True`` since we're asking
@@ -2128,6 +2146,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                             entry.name,
                         )
                         continue
+            # When a profile secret scope is active (multiplex mode), skip
+            # auto-enablement for platforms not already explicitly configured.
+            # The is_connected() probe was already skipped above; without it,
+            # check_fn() alone would enable every platform with an installed
+            # SDK, ignoring credential isolation entirely.
+            if _scope_active and (existing_cfg is None or not existing_cfg.enabled):
+                continue
             # Verify dependencies LAST — only for platforms that are already
             # enabled or passed the credential gate above.  For adapter plugins
             # ``check_fn`` lazy-INSTALLS the platform SDK (pip) as a side

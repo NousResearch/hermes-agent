@@ -394,3 +394,45 @@ class TestProfileStampingBeforeSessionKey:
         asyncio.run(adapter.handle_message(event))
 
         assert source.profile == "already-set"  # not overwritten
+
+
+class TestNonTelegramCredentialIsolation:
+    """Verify that non-Telegram platform credentials (e.g. DingTalk) do not
+    leak from the default profile's os.environ into a secondary profile when
+    multiplexing is active and the secondary profile's secret scope has no
+    matching credential."""
+
+    def test_dingtalk_not_inherited_from_default_env(self, monkeypatch):
+        from agent.secret_scope import (
+            set_multiplex_active,
+            set_secret_scope,
+            reset_secret_scope,
+        )
+        from gateway.config import GatewayConfig, _apply_env_overrides
+
+        # Simulate the default profile's credentials in os.environ.
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "default-dingtalk-id")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "default-dingtalk-secret")
+
+        # Activate multiplex mode.
+        set_multiplex_active(True)
+        try:
+            # Install a secondary-profile secret scope WITHOUT DingTalk creds.
+            token = set_secret_scope({})
+            try:
+                config = GatewayConfig()
+                _apply_env_overrides(config)
+            finally:
+                reset_secret_scope(token)
+
+            # DingTalk should NOT be enabled — the secondary profile's scope
+            # has no DINGTALK_* entries, and the default's os.environ values
+            # must not leak through.
+            from gateway.platforms.base import Platform
+            assert Platform.DINGTALK not in config.platforms, (
+                "DingTalk was enabled from the default profile's os.environ "
+                "credentials even though the secondary profile's secret scope "
+                "had no DINGTALK_* entries — credential isolation is broken."
+            )
+        finally:
+            set_multiplex_active(False)

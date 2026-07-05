@@ -460,8 +460,14 @@ def _moa_provider_row(current_provider: str = "") -> dict | None:
         from hermes_cli.config import load_config
         from hermes_cli.moa_config import normalize_moa_config
 
-        cfg = normalize_moa_config(load_config().get("moa") or {})
+        raw_moa = load_config().get("moa") or {}
+        cfg = normalize_moa_config(raw_moa)
         models = list(cfg.get("presets", {}).keys())
+        models = [
+            name
+            for name in models
+            if cfg.get("presets", {}).get(name, {}).get("enabled", True)
+        ]
         if not models:
             return None
         return {

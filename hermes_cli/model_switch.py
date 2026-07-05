@@ -1397,6 +1397,42 @@ def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     return normalize_extra_headers(entry.get("extra_headers"))
 
 
+def _model_picker_allowlists() -> tuple[set[str], dict[str, set[str]]]:
+    """Return provider/model allowlists from config.model_picker, if any."""
+    try:
+        from hermes_cli.config import load_config
+
+        picker_cfg = (load_config() or {}).get("model_picker") or {}
+    except Exception:
+        return set(), {}
+    if not isinstance(picker_cfg, dict):
+        return set(), {}
+
+    raw_providers = picker_cfg.get("allowed_providers") or []
+    allowed_providers = {
+        str(item).strip().lower()
+        for item in raw_providers
+        if str(item).strip()
+    }
+
+    allowed_models: dict[str, set[str]] = {}
+    raw_models = picker_cfg.get("allowed_models") or {}
+    if isinstance(raw_models, dict):
+        for provider, models in raw_models.items():
+            if not isinstance(models, list):
+                continue
+            allowed_models[str(provider).strip().lower()] = {
+                str(model).strip()
+                for model in models
+                if str(model).strip()
+            }
+    return allowed_providers, allowed_models
+
+
+def _model_picker_provider_allowed(slug: str, allowed_providers: set[str]) -> bool:
+    return not allowed_providers or str(slug or "").strip().lower() in allowed_providers
+
+
 def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     """Warm the provider-models disk cache in a background daemon thread.
 
@@ -1521,6 +1557,13 @@ def list_authenticated_providers(
     # https://coding-intl.dashscope.aliyuncs.com/v1 collides with the built-in
     # alibaba-coding-plan row when DASHSCOPE_API_KEY is present). Fixes #16970.
     _builtin_endpoints: set = set()
+    _picker_allowed_providers, _ = _model_picker_allowlists()
+    _user_provider_keys = {
+        str(key).strip().lower()
+        for key in (user_providers or {})
+        if str(key).strip()
+    } if isinstance(user_providers, dict) else set()
+    _picker_user_only = bool(_picker_allowed_providers) and _picker_allowed_providers <= _user_provider_keys
 
     def _norm_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
@@ -1586,28 +1629,29 @@ def list_authenticated_providers(
         except Exception:
             return False
 
-    data = fetch_models_dev()
+    data = {} if _picker_user_only else fetch_models_dev()
 
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
-    curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" pulls from the remote model-catalog manifest published at
-    # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
-    # newly added Portal models surface in the /model picker without
-    # requiring a Hermes release. Falls back to the in-repo
-    # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
-    curated["nous"] = get_curated_nous_model_ids()
-    # Ollama Cloud uses dynamic discovery (no static curated list)
-    if "ollama-cloud" not in curated:
-        from hermes_cli.models import fetch_ollama_cloud_models
-        curated["ollama-cloud"] = fetch_ollama_cloud_models()
+    if not _picker_user_only:
+        curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
+        # "nous" pulls from the remote model-catalog manifest published at
+        # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
+        # newly added Portal models surface in the /model picker without
+        # requiring a Hermes release. Falls back to the in-repo
+        # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
+        curated["nous"] = get_curated_nous_model_ids()
+        # Ollama Cloud uses dynamic discovery (no static curated list)
+        if "ollama-cloud" not in curated:
+            from hermes_cli.models import fetch_ollama_cloud_models
+            curated["ollama-cloud"] = fetch_ollama_cloud_models()
     # LM Studio has no static catalog — probe its native /api/v1/models
     # endpoint live so the picker reflects whatever the user has loaded.
     # Base URL precedence: LM_BASE_URL env var > active config's base_url
     # (when current provider is lmstudio) > 127.0.0.1 default.
     # On auth rejection or unreachable server, fall back to the caller-supplied
     # current model so the picker still shows something when offline / mis-keyed.
-    if "lmstudio" not in curated and (
+    if not _picker_user_only and "lmstudio" not in curated and (
         os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or current_provider.strip().lower() == "lmstudio"
     ):
         from hermes_cli.models import fetch_lmstudio_models
@@ -1653,6 +1697,8 @@ def list_authenticated_providers(
         # kimi-coding and kimi-coding-cn both → kimi-for-coding).
         # The first one with valid credentials wins (#10526).
         if mdev_id in seen_mdev_ids:
+            continue
+        if not _model_picker_provider_allowed(hermes_id, _picker_allowed_providers):
             continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
@@ -1734,6 +1780,8 @@ def list_authenticated_providers(
         # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
         hermes_slug = _mdev_to_hermes.get(pid, pid)
         if hermes_slug.lower() in seen_slugs:
+            continue
+        if not _model_picker_provider_allowed(hermes_slug, _picker_allowed_providers):
             continue
 
         # Check if credentials exist
@@ -1892,6 +1940,8 @@ def list_authenticated_providers(
     for _cp in _canon_provs:
         if _cp.slug.lower() in seen_slugs:
             continue
+        if not _model_picker_provider_allowed(_cp.slug, _picker_allowed_providers):
+            continue
 
         # Check credentials via PROVIDER_REGISTRY (auth.py)
         _cp_config = _auth_registry.get(_cp.slug)
@@ -1965,6 +2015,8 @@ def list_authenticated_providers(
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
+                continue
+            if not _model_picker_provider_allowed(ep_name, _picker_allowed_providers):
                 continue
             # Skip if this slug was already emitted (e.g. canonical provider
             # with the same name) or will be picked up by section 4.
@@ -2067,6 +2119,7 @@ def list_authenticated_providers(
     _current_provider_norm = str(current_provider or "").strip().lower()
     if (
         _current_provider_norm == "custom"
+        and _model_picker_provider_allowed("custom", _picker_allowed_providers)
         and current_base_url
         and "custom" not in seen_slugs
         and not any(
@@ -2124,6 +2177,10 @@ def list_authenticated_providers(
             ).strip().rstrip("/")
             if not raw_name or not api_url:
                 continue
+            if _picker_allowed_providers:
+                custom_slug = custom_provider_slug(raw_name).lower()
+                if custom_slug not in _picker_allowed_providers and raw_name.lower() not in _picker_allowed_providers:
+                    continue
             inline_api_key = (entry.get("api_key") or "").strip()
             key_env = (entry.get("key_env") or "").strip()
             api_key = inline_api_key or (
@@ -2334,7 +2391,58 @@ def list_authenticated_providers(
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
-    return results
+    return _apply_model_picker_allowlist(results)
+
+
+def _apply_model_picker_allowlist(results: List[dict]) -> List[dict]:
+    """Restrict picker rows when config.model_picker defines an allowlist."""
+    try:
+        from hermes_cli.config import load_config
+
+        picker_cfg = (load_config() or {}).get("model_picker") or {}
+    except Exception:
+        return results
+    if not isinstance(picker_cfg, dict):
+        return results
+
+    raw_providers = picker_cfg.get("allowed_providers") or []
+    allowed_providers = {
+        str(item).strip().lower()
+        for item in raw_providers
+        if str(item).strip()
+    }
+    raw_models = picker_cfg.get("allowed_models") or {}
+    allowed_models: dict[str, set[str]] = {}
+    if isinstance(raw_models, dict):
+        for provider, models in raw_models.items():
+            if not isinstance(models, list):
+                continue
+            allowed_models[str(provider).strip().lower()] = {
+                str(model).strip()
+                for model in models
+                if str(model).strip()
+            }
+
+    if not allowed_providers and not allowed_models:
+        return results
+
+    filtered: List[dict] = []
+    for row in results:
+        slug = str(row.get("slug") or "").strip().lower()
+        if allowed_providers and slug not in allowed_providers:
+            continue
+        model_allowlist = allowed_models.get(slug)
+        if model_allowlist is not None:
+            row = dict(row)
+            row["models"] = [
+                model
+                for model in (row.get("models") or [])
+                if str(model).strip() in model_allowlist
+            ]
+            row["total_models"] = len(row["models"])
+        if row.get("models"):
+            filtered.append(row)
+    return filtered
 
 
 def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = "") -> List[dict]:

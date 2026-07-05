@@ -214,6 +214,38 @@ class TestHonchoDoctorConfigDetection:
         assert not doctor._honcho_is_configured_for_doctor()
 
 
+def test_run_doctor_accepts_moa_as_internal_provider(monkeypatch, tmp_path):
+    """MoA is a valid internal meta-provider, not a broken user config."""
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    project_root.mkdir()
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "model:\n  provider: moa\n  default: diagnosis\n"
+        "moa:\n  presets:\n    diagnosis:\n      aggregator:\n"
+        "        provider: openai-codex\n        model: gpt-5.5\n"
+        "      reference_models: []\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'moa' is not a recognised provider" not in out
+    assert "model.provider 'moa' is unknown" not in out
+
+
 def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
     """Doctor should present CLI-gated tools as available in CLI context."""
     project_root = tmp_path / "project"

@@ -654,6 +654,60 @@ class TestEscapeNormalizedNewString:
         assert '\tvalue = "line1\\nline2"' in new
         assert '"line1\nline2"' not in new
 
+    def test_newline_escape_match_preserves_inserted_string_literal_escape(self):
+        """Structural ``\\n`` separators are unescaped, but inserted string
+        literal escapes remain literal.
+        """
+        content = 'def f():\n    value = "old"\n    return value\n'
+        old_string = 'def f():\\n    value = "old"\\n    return value\\n'
+        new_string = 'def f():\\n    value = "line1\\nline2"\\n    return value\\n'
+
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert new == 'def f():\n    value = "line1\\nline2"\n    return value\n'
+        assert '"line1\nline2"' not in new
+
+    def test_newline_escape_after_word_apostrophe_is_structural(self):
+        content = "It's fine\nsecond\n"
+        old_string = "It's fine\\nsecond"
+        new_string = "It's great\\nsecond"
+
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert new == "It's great\nsecond\n"
+        assert "great\\nsecond" not in new
+
+    def test_newline_escape_after_unbalanced_apostrophe_is_structural(self):
+        content = "don't forget\nsecond line\n"
+        old_string = "don't forget\\nsecond line"
+        new_string = "don't forget\\nsecond line updated"
+
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert new == "don't forget\nsecond line updated\n"
+        assert "forget\\nsecond" not in new
+
+    def test_unbalanced_quote_does_not_protect_later_newline_escape(self):
+        content = 'quote starts here\nnext line\n'
+        old_string = 'quote starts here\\nnext line'
+        new_string = '"quote starts here\\nnext line'
+
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert new == '"quote starts here\nnext line\n'
+
     def test_mixed_tab_and_newline_only_tab_unescaped(self):
         """When new_string contains both \\t and \\n, only \\t is converted."""
         content = "def foo():\n\tpass\n"

@@ -309,9 +309,9 @@ def _maybe_unescape_new_string(new_string: str,
     tab, so we leave new_string alone.
 
     ``\\n`` is only unescaped when the caller knows the matching strategy
-    unescaped ``old_string`` the same way. Rewriting backslash-n for exact or
-    unrelated fuzzy matches would corrupt source-code escape sequences in
-    string literals far more often than it would help.
+    needed newline escape conversion for ``old_string``. Even then, only
+    backslash-n sequences outside quoted string literals are converted; literal
+    source escapes such as ``"line1\\nline2"`` must survive.
     """
     # Cheap pre-check — bail out unless new_string actually contains one of
     # the suspect sequences. Keeps the common case free.
@@ -325,12 +325,90 @@ def _maybe_unescape_new_string(new_string: str,
     matched_regions = "".join(content[start:end] for start, end in matches)
     out = new_string
     if unescape_newlines and "\\n" in out and "\n" in matched_regions:
-        out = out.replace("\\n", "\n")
+        out = _unescape_newlines_outside_quotes(out)
     if "\\t" in out and "\t" in matched_regions:
         out = out.replace("\\t", "\t")
     if "\\r" in out and "\r" in matched_regions:
         out = out.replace("\\r", "\r")
     return out
+
+
+def _unescape_newlines_outside_quotes(value: str) -> str:
+    """Convert structural ``\\n`` separators while preserving string literals.
+
+    This is a heuristic for replacement text, not a full language parser:
+    only balanced quote spans are protected, apostrophes inside words do not
+    start single-quoted spans, and unbalanced quotes are treated as ordinary
+    text so one stray quote cannot suppress later structural newline fixes.
+    """
+    protected_spans = _balanced_quote_spans(value)
+    out: List[str] = []
+    i = 0
+    span_idx = 0
+    while i < len(value):
+        if (
+            span_idx < len(protected_spans)
+            and i == protected_spans[span_idx][0]
+        ):
+            start, end = protected_spans[span_idx]
+            out.append(value[start:end])
+            i = end
+            span_idx += 1
+            continue
+
+        ch = value[i]
+        nxt = value[i + 1] if i + 1 < len(value) else ""
+
+        if ch == "\\" and nxt == "n":
+            out.append("\n")
+            i += 2
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
+def _balanced_quote_spans(value: str) -> List[Tuple[int, int]]:
+    """Return balanced single/double-quoted spans to leave untouched."""
+    spans: List[Tuple[int, int]] = []
+    i = 0
+    while i < len(value):
+        quote = value[i]
+        if quote not in {"'", '"'} or _is_word_apostrophe(value, i):
+            i += 1
+            continue
+
+        start = i
+        i += 1
+        while i < len(value):
+            ch = value[i]
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                spans.append((start, i + 1))
+                i += 1
+                break
+            i += 1
+        else:
+            # No closing quote: do not protect the rest of the replacement.
+            # Resume after the opener so later balanced spans can still count.
+            i = start + 1
+
+    return spans
+
+
+def _is_word_apostrophe(value: str, index: int) -> bool:
+    """Return True for apostrophes in words like ``It's`` or ``don't``."""
+    return (
+        value[index] == "'"
+        and index > 0
+        and index + 1 < len(value)
+        and value[index - 1].isalnum()
+        and value[index + 1].isalnum()
+    )
 
 
 def _escape_normalized_used_newline_escape(

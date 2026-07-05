@@ -119,7 +119,10 @@ class SmsAdapter(BasePlatformAdapter):
                 self._webhook_port,
             )
 
-        app = web.Application()
+        # client_max_size bounds every read path — including chunked bodies
+        # with no Content-Length — before the handler's own 413 checks run
+        # (#58536/#58902/#59180 pattern).
+        app = web.Application(client_max_size=_TWILIO_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
 

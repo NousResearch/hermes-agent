@@ -104,6 +104,7 @@ class ClassifiedError:
 _BILLING_PATTERNS = [
     "insufficient credits",
     "insufficient_quota",
+        "insufficient account balance",
     "insufficient balance",
     "credit balance",
     "credits exhausted",
@@ -140,6 +141,10 @@ _RATE_LIMIT_PATTERNS = [
     "throttlingexception",
     "too many concurrent requests",
     "servicequotaexceededexception",
+    # Chinese provider patterns
+    "限流",
+    "小时限制",
+    "每周限制",
 ]
 
 # Patterns that indicate provider-side overload, NOT a per-credential rate
@@ -173,6 +178,11 @@ _USAGE_LIMIT_PATTERNS = [
     "quota",
     "limit exceeded",
     "key limit exceeded",
+    # Chinese provider patterns (Alibaba Bailian, Qianfan, Volcengine, etc.)
+    "超过套餐",
+    "用量已超过",
+    "配额",
+    "额度",
 ]
 
 # Patterns confirming usage limit is transient (not billing)
@@ -185,6 +195,9 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "requests remaining",
     "periodic",
     "window",
+    # Chinese provider transient signals
+    "请等用量刷新",
+    "刷新后使用",
 ]
 
 # Payload-too-large patterns detected from message text (no status_code attr).
@@ -394,6 +407,9 @@ _AUTH_PATTERNS = [
     "token expired",
     "token revoked",
     "access denied",
+    # Coding Plan gateway auth failures (Alibaba Bailian, etc.)
+    "remote validation failed",
+    "authentication requests failed",
 ]
 
 # Anthropic thinking block signature patterns
@@ -450,6 +466,7 @@ _SERVER_DISCONNECT_PATTERNS = [
     "network connection lost",
     "unexpected eof",
     "incomplete chunked read",
+    "bad gateway",
 ]
 
 # SSL certificate verification failures — deterministic, NOT transient.
@@ -1260,6 +1277,7 @@ def _classify_by_error_code(
 
     if code_lower in {
         "insufficient_quota",
+        "insufficient account balance",
         "billing_not_active",
         "payment_required",
         "insufficient_credits",

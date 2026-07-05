@@ -303,6 +303,33 @@ def build_turn_context(
             should_review_memory = True
             agent._turns_since_memory = 0
 
+    # Plugin hook: pre_persist_user_message — agent-path ingress. Fragments
+    # returned here are appended to user_message BEFORE it is persisted (:329),
+    # so they land on the wire (the agent-path analogue of gateway's
+    # pre_gateway_dispatch event.text mutation).
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _pp = _invoke_hook(
+            "pre_persist_user_message",
+            session_id=agent.session_id or "",
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=user_message,
+            conversation_history=list(messages),
+            platform=getattr(agent, "platform", None) or "",
+            sender_id=getattr(agent, "_user_id", None) or "",
+        )
+        _pp_parts = []
+        for r in _pp:
+            if isinstance(r, dict) and r.get("context"):
+                _pp_parts.append(str(r["context"]))
+            elif isinstance(r, str) and r.strip():
+                _pp_parts.append(r)
+        if _pp_parts:
+            user_message = user_message + "\n\n" + "\n\n".join(_pp_parts)
+    except Exception as exc:
+        logger.warning("pre_persist_user_message hook failed: %s", exc)
+
     # Add user message.
     user_msg = {"role": "user", "content": user_message}
     messages.append(user_msg)

@@ -8,6 +8,7 @@ and implement the required methods.
 import asyncio
 import inspect
 import ipaddress
+import json
 import logging
 import os
 import random
@@ -1484,6 +1485,18 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+)'''
     r'''[`"']?\s*''',
+    re.IGNORECASE,
+)
+
+# Structured directive for native media captions (videos and images). The
+# legacy markdown-image path (![alt](https://...)) is not intercepted; this
+# directive is opt-in per media file and requires an explicit "type".
+# Examples:
+#   MEDIA_CAPTION:{"path":"/tmp/tour.mp4","caption":"Tour do decorado.","type":"video"}
+#   MEDIA_CAPTION:{"path":"/tmp/planta.jpg","caption":"Planta do 2 quartos.","type":"image"}
+MEDIA_CAPTION_RE = re.compile(
+    r'MEDIA_CAPTION:\s*'
+    r'(?P<payload>\{[^}]*?"type"\s*:\s*"(?:video|image)"[^}]*\})',
     re.IGNORECASE,
 )
 
@@ -3686,13 +3699,114 @@ class BasePlatformAdapter(ABC):
         """
         if (
             "MEDIA:" not in text
+            and "MEDIA_CAPTION:" not in text
             and "[[audio_as_voice]]" not in text
             and "[[as_document]]" not in text
         ):
             return text
         cleaned = _strip_media_tag_directives(text)
+        cleaned = MEDIA_CAPTION_RE.sub("", cleaned)
+        cleaned = re.sub(r'[ \t]+$', '', cleaned, flags=re.MULTILINE)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         return cleaned.rstrip()
+
+    @staticmethod
+    def extract_captioned_media(content: str) -> Tuple[List[Dict[str, Any]], str]:
+        """Extract safe local videos/images carrying an explicit native caption.
+
+        Each accepted item requires an explicit ``"type"`` ("video" or
+        "image") whose declared type must agree with the file extension.
+        The legacy markdown-image path (``![alt](https://...)``) is not
+        intercepted, so existing flows are unaffected unless a tool opts in
+        by emitting ``MEDIA_CAPTION:`` directives.
+        """
+        if "MEDIA_CAPTION:" not in content:
+            return [], content
+
+        items: List[Dict[str, Any]] = []
+        valid_spans: List[Tuple[int, int]] = []
+        scan_content = BasePlatformAdapter._mask_protected_spans(content)
+        exts_by_type = {
+            "video": {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp', '.m4v'},
+            "image": {'.jpg', '.jpeg', '.png', '.webp', '.gif'},
+        }
+
+        for match in MEDIA_CAPTION_RE.finditer(scan_content):
+            payload_text = content[match.start("payload"):match.end("payload")]
+            try:
+                payload = json.loads(payload_text)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+
+            raw_path = str(payload.get("path") or "").strip()
+            media_type = str(payload.get("type") or "").strip().lower()
+            if not raw_path:
+                continue
+            allowed_exts = exts_by_type.get(media_type)
+            if not allowed_exts:
+                continue
+            if Path(raw_path).suffix.lower() not in allowed_exts:
+                continue
+
+            safe_path = validate_media_delivery_path(os.path.expanduser(raw_path))
+            if not safe_path:
+                logger.warning(
+                    "Skipping unsafe MEDIA_CAPTION %s path: %s",
+                    media_type,
+                    _log_safe_path(raw_path),
+                )
+                continue
+
+            items.append({
+                "path": safe_path,
+                "type": media_type,
+                "caption": str(payload.get("caption") or "").strip() or None,
+            })
+            valid_spans.append((match.start(), match.end()))
+
+        if not valid_spans:
+            return [], content
+
+        chars = list(content)
+        for start, end in valid_spans:
+            for idx in range(start, end):
+                if chars[idx] != '\n':
+                    chars[idx] = ' '
+        cleaned = ''.join(chars)
+        # Blanked directive spans leave whitespace-only lines behind; strip
+        # trailing spaces per line so the remaining text has no floating gaps.
+        cleaned = re.sub(r'[ \t]+$', '', cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        return items, cleaned
+
+    @staticmethod
+    def split_captioned_media_text(content: str) -> Tuple[str, str]:
+        """Split text around MEDIA_CAPTION directives into (opening, closing).
+
+        Captioned media are delivered as native media bubbles between the
+        text that precedes the first directive and the text that follows the
+        last one. Callers use the pair to keep the natural reading order:
+        [opening] [media+caption ...] [closing]. Both segments come back
+        display-cleaned (no residual directives). Returns ("", "") when the
+        content carries no MEDIA_CAPTION directive.
+        """
+        if "MEDIA_CAPTION:" not in content:
+            return "", ""
+        scan_content = BasePlatformAdapter._mask_protected_spans(content)
+        matches = list(MEDIA_CAPTION_RE.finditer(scan_content))
+        if not matches:
+            return "", ""
+        opening = content[:matches[0].start()]
+        closing = content[matches[-1].end():]
+        # strip_media_directives_for_display early-returns unchanged when the
+        # segment carries no directive, so strip the border whitespace left by
+        # the removed directive spans ourselves — otherwise the opening bubble
+        # keeps a trailing blank line and the closing message leads with one.
+        opening = BasePlatformAdapter.strip_media_directives_for_display(opening).strip()
+        closing = BasePlatformAdapter.strip_media_directives_for_display(closing).strip()
+        return opening, closing
 
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:
@@ -4900,6 +5014,10 @@ class BasePlatformAdapter(ABC):
                 # Pre-extract snapshot for the #29346 recovery/invariant below.
                 _response_pre_extract = response
 
+                # Extract captioned media first. This is intentionally separate
+                # from extract_images(), preserving the established image path.
+                captioned_media, response = self.extract_captioned_media(response)
+
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
@@ -4929,7 +5047,7 @@ class BasePlatformAdapter(ABC):
                 # empty text with no attachment, and the `if text_content` guard
                 # below then drops it silently. Recover on every platform (#33842
                 # was Discord-only); the guard avoids duplicating an attachment.
-                if not (text_content or images or local_files or media_files):
+                if not (text_content or images or local_files or media_files or captioned_media):
                     # Recover from the post-extract_media `response`, not the raw
                     # snapshot: extract_media already stripped MEDIA (incl. spaced
                     # paths) with its full grammar, so no fragment can leak.
@@ -5134,11 +5252,46 @@ class BasePlatformAdapter(ABC):
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 
+                # Captioned media use the native adapter methods so the caption
+                # rides on the media bubble itself. Preserves item order.
+                for item in captioned_media:
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
+                    try:
+                        if item.get("type") == "image":
+                            result = await self.send_image_file(
+                                chat_id=event.source.chat_id,
+                                image_path=item["path"],
+                                caption=item.get("caption"),
+                                metadata=_final_thread_metadata,
+                            )
+                        else:
+                            result = await self.send_video(
+                                chat_id=event.source.chat_id,
+                                video_path=item["path"],
+                                caption=item.get("caption"),
+                                metadata=_final_thread_metadata,
+                            )
+                        if not result.success:
+                            logger.warning(
+                                "[%s] Failed to send captioned %s: %s",
+                                self.name,
+                                item.get("type"),
+                                result.error,
+                            )
+                    except Exception as media_err:
+                        logger.warning(
+                            "[%s] Error sending captioned %s: %s",
+                            self.name,
+                            item.get("type"),
+                            media_err,
+                        )
+
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.
                 _anything_delivered = (
                     delivery_attempted or _tts_caption_delivered
-                    or images or local_files or media_files
+                    or images or local_files or media_files or captioned_media
                 )
                 if not _anything_delivered and _response_pre_extract.strip():
                     logger.error(

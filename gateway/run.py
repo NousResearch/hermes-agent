@@ -11667,6 +11667,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                        # Closing text deferred by the captioned-media reorder
+                        # (see the suppress/transform branches): it must land
+                        # after the media bubbles to keep the reading order
+                        # [opening] [media+caption ...] [closing].
+                        _mc_trailing = agent_result.get("media_caption_trailing")
+                        if _mc_trailing:
+                            try:
+                                await _media_adapter.send(
+                                    source.chat_id,
+                                    _mc_trailing,
+                                    metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                )
+                            except Exception as _mc_e:
+                                logger.warning(
+                                    "Captioned-media trailing text send failed: %s",
+                                    _mc_e,
+                                )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
@@ -12703,6 +12720,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
+            captioned_media, response = adapter.extract_captioned_media(response)
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Chain the cleaned text through each extractor (extract_media →
@@ -12717,6 +12735,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+
+            # Captioned media ride the native adapter methods so the caption
+            # stays attached to the media bubble itself. Preserves item order.
+            for item in captioned_media:
+                try:
+                    if item.get("type") == "image":
+                        result = await adapter.send_image_file(
+                            chat_id=event.source.chat_id,
+                            image_path=item["path"],
+                            caption=item.get("caption"),
+                            metadata=_thread_meta,
+                        )
+                    else:
+                        result = await adapter.send_video(
+                            chat_id=event.source.chat_id,
+                            video_path=item["path"],
+                            caption=item.get("caption"),
+                            metadata=_thread_meta,
+                        )
+                    if not getattr(result, "success", False):
+                        logger.warning(
+                            "[%s] Post-stream captioned media delivery failed: %s",
+                            adapter.name,
+                            getattr(result, "error", None),
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "[%s] Post-stream captioned media delivery failed: %s",
+                        adapter.name,
+                        e,
+                    )
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -19354,16 +19403,69 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _content_delivered,
                 )
                 response["already_sent"] = True
+                # Captioned-media reading order: the streamed bubble shows the
+                # whole display text (opening + closing merged, directives
+                # stripped) while the media itself only lands afterwards via
+                # _deliver_media_from_response. Shrink the bubble to the text
+                # that precedes the first MEDIA_CAPTION directive and defer
+                # the text that follows the last one to a trailing message
+                # sent after the media (see the already_sent path), restoring
+                # [opening] [media+caption ...] [closing].
+                _mc_final = response.get("final_response") or ""
+                if _sc is not None and "MEDIA_CAPTION:" in _mc_final:
+                    from gateway.platforms.base import BasePlatformAdapter as _BPA_mc
+                    _mc_pre, _mc_post = _BPA_mc.split_captioned_media_text(_mc_final)
+                    _mc_msg_id = _sc.message_id
+                    if _mc_msg_id and _mc_pre.strip():
+                        try:
+                            await _sc.adapter.edit_message(
+                                chat_id=source.chat_id,
+                                message_id=_mc_msg_id,
+                                content=_mc_pre,
+                                finalize=True,
+                            )
+                            if _mc_post.strip():
+                                response["media_caption_trailing"] = _mc_post
+                        except Exception as _mc_err:
+                            # Keep the merged bubble on failure — media still
+                            # arrives right after, just without the reorder.
+                            logger.warning(
+                                "Captioned-media bubble reorder failed for session %s: %s",
+                                session_key or "?", _mc_err,
+                            )
             elif not _is_empty_sentinel and _transformed and _sc is not None:
                 # Plugin hooks transformed the response after streaming — edit the
                 # existing streamed message instead of sending a duplicate.
+                # Strip media directives (MEDIA:/MEDIA_CAPTION:) before editing:
+                # the edit is display-only, and the media itself is delivered by
+                # _deliver_media_from_response right after (already_sent path).
+                from gateway.platforms.base import BasePlatformAdapter as _BPA_edit
+                _display_final = _BPA_edit.strip_media_directives_for_display(
+                    response["final_response"]
+                )
+                # Same reading-order fix as the non-transformed branch above:
+                # keep only the opening text in the edited bubble and defer the
+                # closing text until after the captioned media is delivered.
+                if "MEDIA_CAPTION:" in response["final_response"]:
+                    _mc_pre, _mc_post = _BPA_edit.split_captioned_media_text(
+                        response["final_response"]
+                    )
+                    if _mc_pre.strip():
+                        _display_final = _mc_pre
+                        if _mc_post.strip():
+                            response["media_caption_trailing"] = _mc_post
                 _sc_msg_id = _sc.message_id
-                if _sc_msg_id:
+                if _sc_msg_id and not _display_final.strip():
+                    # Transformed response is pure media directives — nothing
+                    # textual to edit in; keep the streamed text and let the
+                    # media delivery below handle the attachments.
+                    response["already_sent"] = True
+                elif _sc_msg_id:
                     try:
                         await _sc.adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
-                            content=response["final_response"],
+                            content=_display_final,
                             finalize=True,
                         )
                         response["already_sent"] = True

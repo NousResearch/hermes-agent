@@ -906,6 +906,20 @@ platform_toolsets:
 # CLI override: hermes chat --toolsets terminal,web,file
 
 # =============================================================================
+# Tool Search (progressive disclosure for large tool schemas)
+# =============================================================================
+# Keeps the model-facing schema smaller by loading selected verbose tool
+# schemas on demand through tool_search/tool_describe/tool_call.
+tools:
+  tool_search:
+    enabled: auto                 # auto, on, or off
+    threshold_pct: 10             # context percentage, capped by auto_token_threshold
+    auto_token_threshold: 8000    # activate auto mode once deferred schemas exceed this
+    defer_core_tools: true        # selected verbose built-ins may defer; false = MCP/plugin only
+    search_default_limit: 5
+    max_search_limit: 20
+
+# =============================================================================
 # MCP (Model Context Protocol) Servers
 # =============================================================================
 # Connect to external MCP servers to add tools from the MCP ecosystem.

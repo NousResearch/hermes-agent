@@ -1062,6 +1062,21 @@ def init_agent(
         agent._tool_snapshot_generation = _snapshot_registry._generation
     except Exception:
         agent._tool_snapshot_generation = 0
+    try:
+        _full_scope_tools = _ra().get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        agent.available_tool_names = {
+            tool["function"]["name"]
+            for tool in (_full_scope_tools or [])
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        }
+    except Exception:
+        agent.available_tool_names = set()
+
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
@@ -1072,6 +1087,8 @@ def init_agent(
     agent.valid_tool_names = set()
     if agent.tools:
         agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
+        if not agent.available_tool_names:
+            agent.available_tool_names = set(agent.valid_tool_names)
         tool_names = sorted(agent.valid_tool_names)
         if not agent.quiet_mode:
             print(f"🛠️  Loaded {len(agent.tools)} tools: {', '.join(tool_names)}")
@@ -1801,6 +1818,7 @@ def init_agent(
             _wrapped = {"type": "function", "function": _schema}
             agent.tools.append(_wrapped)
             agent.valid_tool_names.add(_tname)
+            agent.available_tool_names.add(_tname)
             agent._context_engine_tool_names.add(_tname)
             _existing_tool_names.add(_tname)
 

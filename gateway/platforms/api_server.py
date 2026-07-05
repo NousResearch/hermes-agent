@@ -1206,17 +1206,41 @@ class APIServerAdapter(BasePlatformAdapter):
         Does not require API key authentication: the headers carry no identity
         claim that could enable impersonation (group_id is metadata, not an
         auth credential). Sender display name is decorative context only.
+
+        All values are sanitized before use — these strings are embedded into
+        the (system) prompt block, so control characters / newlines would be a
+        prompt-injection and log/formatting hazard. Values containing
+        \\r/\\n/\\x00 or exceeding the length cap are dropped (treated as absent)
+        rather than passed through.
         """
         from gateway.platforms.base import GroupContext
-        group_id = request.headers.get("X-Hermes-Group-Id", "").strip()
+
+        def _clean(header_name: str) -> Optional[str]:
+            raw = request.headers.get(header_name, "").strip()
+            if not raw:
+                return None
+            if re.search(r'[\r\n\x00]', raw):
+                logger.warning(
+                    "%s dropped: contains control characters", header_name
+                )
+                return None
+            if len(raw) > self._MAX_SESSION_HEADER_LEN:
+                logger.warning(
+                    "%s dropped: exceeds %d chars",
+                    header_name, self._MAX_SESSION_HEADER_LEN,
+                )
+                return None
+            return raw
+
+        group_id = _clean("X-Hermes-Group-Id")
         if not group_id:
             return None
         return GroupContext(
             platform="api_server",
             group_id=group_id,
-            group_name=request.headers.get("X-Hermes-Group-Name", "").strip() or None,
+            group_name=_clean("X-Hermes-Group-Name"),
             sender_display=(
-                request.headers.get("X-Hermes-Sender-Display", "").strip()
+                _clean("X-Hermes-Sender-Display")
                 or gateway_user_id
                 or None
             ),
@@ -1461,8 +1485,6 @@ class APIServerAdapter(BasePlatformAdapter):
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
         )
-        if gateway_user_id:
-            agent._user_id = gateway_user_id
         return agent
 
     # ------------------------------------------------------------------
@@ -4191,13 +4213,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 # which bypasses gateway/run.py's MessageEvent processing).
                 _effective_esp = ephemeral_system_prompt
                 if group_context is not None:
-                    from gateway.platforms.base import GroupContext as _GC
+                    # Defensive normalization: collapse any control chars to
+                    # single-line before embedding into the system prompt.
+                    # Headers are already validated at parse time, but system-
+                    # prompt injection is higher-impact than user-message
+                    # injection, so we strip \r/\n/\x00 here as belt-and-suspenders.
+                    def _oneline(s):
+                        if not s:
+                            return s
+                        return re.sub(r'[\r\n\x00]+', ' ', s).strip()
+                    _g_name = _oneline(group_context.group_name)
+                    _g_id = _oneline(group_context.group_id)
+                    _g_sender = _oneline(group_context.sender_display)
+                    _g_platform = _oneline(group_context.platform)
                     _parts = [
-                        f"You are in a {group_context.platform} group: "
-                        f"{group_context.group_name or group_context.group_id}",
+                        f"You are in a {_g_platform} group: {_g_name or _g_id}",
                     ]
-                    if group_context.sender_display:
-                        _parts.append(f"Current speaker: {group_context.sender_display}")
+                    if _g_sender:
+                        _parts.append(f"Current speaker: {_g_sender}")
                     _parts.append(
                         "Multiple people may be present. "
                         "Respond only when your voice genuinely adds something."

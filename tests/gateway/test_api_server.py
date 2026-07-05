@@ -413,11 +413,20 @@ class TestAdapterInit:
                 captured.update(kwargs)
 
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        # Runtime dict carries its own 'model' (the fallback provider's model).
+        # _create_agent must pop it and use it as the effective model. If the
+        # pop regresses, AIAgent(model=..., **runtime_kwargs) raises TypeError
+        # ("got multiple values for keyword argument 'model'").
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
-            lambda: {"provider": "openai", "base_url": "https://example.test/v1", "api_mode": "chat_completions"},
+            lambda: {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+                "model": "anthropic/claude-fallback",  # collides if not popped
+            },
         )
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "primary/model")
         monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
         monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: {}))
         monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
@@ -427,9 +436,13 @@ class TestAdapterInit:
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
 
+        # Must not raise TypeError on the duplicate 'model' kwarg.
         agent = adapter._create_agent(session_id="test")
         assert isinstance(agent, FakeAgent)
-        assert captured.get("provider") == "openai"
+        assert captured.get("provider") == "openrouter"
+        # The runtime dict's model overrides the config model — mirrors the
+        # native gateway fallback path.
+        assert captured.get("model") == "anthropic/claude-fallback"
 
     def test_create_agent_sets_user_id_from_gateway_user_id(self, monkeypatch):
         """gateway_user_id must land on agent._user_id so the interlocutor
@@ -531,6 +544,106 @@ class TestUserIdHeader:
         assert uid is None
         assert err is not None
         assert err.status == 400
+
+
+# ---------------------------------------------------------------------------
+# X-Hermes-Group-* header parsing (GroupContext sidecar)
+# ---------------------------------------------------------------------------
+
+
+class TestGroupContextHeaders:
+    def _adapter(self, api_key=None):
+        cfg = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(cfg)
+        adapter._api_key = api_key
+        return adapter
+
+    def _request(self, headers):
+        class FakeRequest:
+            def __init__(self, headers):
+                self.headers = headers
+        return FakeRequest(headers)
+
+    def test_absent_group_id_returns_none(self):
+        # No X-Hermes-Group-Id → not a group context; return None.
+        adapter = self._adapter()
+        ctx = adapter._parse_group_context_headers(self._request({}))
+        assert ctx is None
+
+    def test_group_id_only_activates_context(self):
+        adapter = self._adapter()
+        ctx = adapter._parse_group_context_headers(
+            self._request({"X-Hermes-Group-Id": "room-42"})
+        )
+        assert ctx is not None
+        assert ctx.platform == "api_server"
+        assert ctx.group_id == "room-42"
+        assert ctx.group_name is None
+
+    def test_full_headers_populate_context(self):
+        adapter = self._adapter()
+        ctx = adapter._parse_group_context_headers(
+            self._request({
+                "X-Hermes-Group-Id": "room-42",
+                "X-Hermes-Group-Name": "The Green Room",
+                "X-Hermes-Sender-Display": "Alice",
+            })
+        )
+        assert ctx.group_id == "room-42"
+        assert ctx.group_name == "The Green Room"
+        assert ctx.sender_display == "Alice"
+
+    def test_no_auth_required(self):
+        # Group metadata carries no impersonation risk, so — unlike
+        # X-Hermes-User-Id — it does NOT require API_SERVER_KEY.
+        adapter = self._adapter(api_key=None)
+        ctx = adapter._parse_group_context_headers(
+            self._request({"X-Hermes-Group-Id": "room-42"})
+        )
+        assert ctx is not None
+
+    def test_sender_display_falls_back_to_gateway_user_id(self):
+        adapter = self._adapter()
+        ctx = adapter._parse_group_context_headers(
+            self._request({"X-Hermes-Group-Id": "room-42"}),
+            gateway_user_id="donald",
+        )
+        assert ctx.sender_display == "donald"
+
+    def test_control_chars_in_group_id_drop_context(self):
+        # Group id is embedded into the system prompt — control chars are a
+        # prompt-injection hazard. A malformed group id drops the whole context.
+        adapter = self._adapter()
+        ctx = adapter._parse_group_context_headers(
+            self._request({"X-Hermes-Group-Id": "room\n42"})
+        )
+        assert ctx is None
+
+    def test_control_chars_in_optional_fields_drop_that_field(self):
+        # Malformed optional fields are dropped individually; group_id survives.
+        adapter = self._adapter()
+        ctx = adapter._parse_group_context_headers(
+            self._request({
+                "X-Hermes-Group-Id": "room-42",
+                "X-Hermes-Group-Name": "bad\nname",
+                "X-Hermes-Sender-Display": "bad\x00sender",
+            })
+        )
+        assert ctx is not None
+        assert ctx.group_id == "room-42"
+        assert ctx.group_name is None
+        assert ctx.sender_display is None
+
+    def test_overlong_values_dropped(self):
+        adapter = self._adapter()
+        ctx = adapter._parse_group_context_headers(
+            self._request({
+                "X-Hermes-Group-Id": "room-42",
+                "X-Hermes-Group-Name": "y" * 300,
+            })
+        )
+        assert ctx is not None
+        assert ctx.group_name is None
 
 
 # ---------------------------------------------------------------------------

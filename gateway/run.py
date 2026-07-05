@@ -10234,7 +10234,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        # Legacy sender prefix — only when the GroupContext sidecar is NOT
+        # present. When an adapter populated event.group_context, the sidecar
+        # is the single authoritative injection path (Layer 2 below), so
+        # applying this legacy prefix too would double-prefix the message
+        # (e.g. "[Alice] [Alice]: msg") on shared group sessions.
+        if (
+            _is_shared_multi_user
+            and source.user_name
+            and getattr(event, "group_context", None) is None
+        ):
             message_text = f"[{source.user_name}] {message_text}"
 
         # GroupContext sidecar — unified group context injection.

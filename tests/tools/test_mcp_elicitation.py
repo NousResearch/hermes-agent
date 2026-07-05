@@ -20,6 +20,7 @@ from mcp.types import ElicitResult  # noqa: E402  -- after importorskip
 
 from tools.mcp_tool import (  # noqa: E402
     ElicitationHandler,
+    _accepted_elicitation_content,
     _format_elicitation_schema_summary,
 )
 
@@ -85,6 +86,48 @@ class TestElicitationHandlerFormMode:
         assert handler.metrics["accepted"] == 1
         assert handler.metrics["declined"] == 0
 
+    def test_accept_required_boolean_approval_returns_schema_content(self):
+        handler = ElicitationHandler("singularity", {"timeout": 5})
+        params = _form_params(
+            "Approve Singularity write operation?",
+            {
+                "type": "object",
+                "properties": {
+                    "approved": {
+                        "type": "boolean",
+                        "description": "Approve this write operation.",
+                    }
+                },
+                "required": ["approved"],
+            },
+        )
+
+        with patch("tools.approval.request_elicitation_consent", return_value="accept"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "accept"
+        assert result.content == {"approved": True}
+        assert handler.metrics["accepted"] == 1
+        assert handler.metrics["declined"] == 0
+
+    def test_accept_unsupported_required_form_field_declines_fail_closed(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "Provide payment metadata",
+            {
+                "type": "object",
+                "properties": {"memo": {"type": "string"}},
+                "required": ["memo"],
+            },
+        )
+
+        with patch("tools.approval.request_elicitation_consent", return_value="accept"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "decline"
+        assert handler.metrics["accepted"] == 0
+        assert handler.metrics["declined"] == 1
+
     def test_user_denies_returns_decline(self):
         handler = ElicitationHandler("pay", {"timeout": 5})
         params = _form_params()
@@ -109,6 +152,25 @@ class TestElicitationHandlerFormMode:
 
         assert result.action == "cancel"
         assert handler.metrics["errors"] == 1
+
+
+class TestAcceptedElicitationContent:
+    def test_single_value_enum_and_const_are_synthesized(self):
+        assert _accepted_elicitation_content({
+            "type": "object",
+            "properties": {
+                "mode": {"enum": ["approve"]},
+                "confirmed": {"const": True},
+            },
+            "required": ["mode", "confirmed"],
+        }) == {"mode": "approve", "confirmed": True}
+
+    def test_non_approval_boolean_name_is_not_guessed(self):
+        assert _accepted_elicitation_content({
+            "type": "object",
+            "properties": {"remember": {"type": "boolean"}},
+            "required": ["remember"],
+        }) is None
 
 
 class TestElicitationHandlerFailureModes:

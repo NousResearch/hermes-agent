@@ -1295,6 +1295,75 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
     return "\n".join(lines)
 
 
+_ELICITATION_BOOLEAN_APPROVAL_FIELDS = frozenset({
+    "accept",
+    "accepted",
+    "approve",
+    "approved",
+    "authorize",
+    "authorized",
+    "confirm",
+    "confirmed",
+    "consent",
+    "consented",
+})
+
+
+def _accepted_elicitation_content(schema: dict) -> Optional[dict]:
+    """Build schema-compatible content for approval-only form elicitations.
+
+    Hermes approval surfaces currently collect a yes/no decision, not arbitrary
+    form fields. Returning ``accept`` with invalid empty content is worse than
+    failing closed, so synthesize only values that are unambiguous from an
+    approval click.
+    """
+    if not isinstance(schema, dict) or not schema:
+        return {}
+
+    props = schema.get("properties")
+    if props is None:
+        return {}
+    if not isinstance(props, dict):
+        return None
+
+    required_raw = schema.get("required") or []
+    if not isinstance(required_raw, list):
+        return None
+    required = [field for field in required_raw if isinstance(field, str)]
+    if len(required) != len(required_raw):
+        return None
+    if not required:
+        return {}
+
+    content: dict = {}
+    for field in required:
+        spec = props.get(field)
+        if not isinstance(spec, dict):
+            return None
+
+        if "const" in spec:
+            content[field] = spec["const"]
+            continue
+
+        enum = spec.get("enum")
+        if isinstance(enum, list) and len(enum) == 1:
+            content[field] = enum[0]
+            continue
+
+        if "default" in spec:
+            content[field] = spec["default"]
+            continue
+
+        field_type = spec.get("type")
+        if field_type == "boolean" and field.lower() in _ELICITATION_BOOLEAN_APPROVAL_FIELDS:
+            content[field] = True
+            continue
+
+        return None
+
+    return content
+
+
 class ElicitationHandler:
     """Handles ``elicitation/create`` requests for a single MCP server.
 
@@ -1443,8 +1512,18 @@ class ElicitationHandler:
             return ElicitResult(action="decline")
 
         if answer == "accept":
+            content = _accepted_elicitation_content(schema)
+            if content is None:
+                logger.warning(
+                    "MCP server '%s' elicitation accepted by user, but "
+                    "requested schema requires form content Hermes cannot "
+                    "collect on this approval surface; declining fail-closed",
+                    self.server_name,
+                )
+                self.metrics["declined"] += 1
+                return ElicitResult(action="decline")
             self.metrics["accepted"] += 1
-            return ElicitResult(action="accept", content={})
+            return ElicitResult(action="accept", content=content)
         if answer == "cancel":
             self.metrics["errors"] += 1
             return ElicitResult(action="cancel")

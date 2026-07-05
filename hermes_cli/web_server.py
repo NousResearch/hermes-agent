@@ -3585,6 +3585,23 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+# Per-row fields that no session LIST consumer reads but that dominate the
+# payload. ``system_prompt`` is the fully rendered prompt — tens of KB per
+# row — and made a 21-row /api/sessions response 528KB (96% dead weight),
+# re-fetched by the desktop sidebar on every refresh. The desktop's
+# SessionInfo type doesn't declare either field and the web UI never touches
+# them; ``GET /api/sessions/{id}`` detail reads stay complete. List callers
+# that genuinely need the full rows can pass ``?full=1``.
+_SESSION_LIST_HEAVY_FIELDS = ("system_prompt", "model_config")
+
+
+def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    for s in sessions:
+        for key in _SESSION_LIST_HEAVY_FIELDS:
+            s.pop(key, None)
+    return sessions
+
+
 @app.get("/api/sessions")
 async def get_sessions(
     limit: int = 20,
@@ -3595,6 +3612,7 @@ async def get_sessions(
     source: str = None,
     exclude_sources: str = None,
     cwd_prefix: str = None,
+    full: bool = False,
     profile: Optional[str] = None,
 ):
     """List sessions.
@@ -3608,6 +3626,9 @@ async def get_sessions(
     start time) or ``recent`` (by latest activity across the compression
     chain). ``recent`` keeps a long-running conversation on the first page
     after it auto-compresses into a fresh continuation id.
+
+    Rows omit ``system_prompt``/``model_config`` (the payload-dominating
+    fields no list UI reads) unless ``full=1`` is passed.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
@@ -3664,6 +3685,8 @@ async def get_sessions(
                     s["is_default_profile"] = profile_name == "default"
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
+            if not full:
+                _strip_session_list_rows(sessions)
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
@@ -3684,6 +3707,7 @@ def get_profiles_sessions(
     profile: str = "all",
     source: str = None,
     exclude_sources: str = None,
+    full: bool = False,
 ):
     """Unified, read-only session list aggregated across ALL profiles.
 
@@ -3693,6 +3717,9 @@ def get_profiles_sessions(
     browsable list and only spins up a profile's backend when the user actually
     interacts (sends a message). A user with a single (default) profile gets the
     same rows as ``/api/sessions``, just tagged ``profile="default"``.
+
+    Rows omit ``system_prompt``/``model_config`` unless ``full=1`` — same
+    list projection as ``/api/sessions``.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(status_code=400, detail="archived must be one of: exclude, only, include")
@@ -3783,6 +3810,8 @@ def get_profiles_sessions(
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
     window = merged[offset:offset + limit]
+    if not full:
+        _strip_session_list_rows(window)
     return {
         "sessions": window,
         "total": total,

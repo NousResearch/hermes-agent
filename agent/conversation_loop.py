@@ -3149,8 +3149,7 @@ def run_conversation(
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
-                    # for the single-credential-pool and CloudCode-quota
-                    # exceptions.  Fixes #11314 and #13636.
+                    # for the single-credential-pool exception.  Fixes #11314.
                     #
                     # Exception: an upstream-aggregator 429 — the credential
                     # pool can't help when the *upstream* model (DeepSeek,
@@ -3161,8 +3160,6 @@ def run_conversation(
                         False if _is_upstream
                         else _ra()._pool_may_recover_from_rate_limit(
                             agent._credential_pool,
-                            provider=agent.provider,
-                            base_url=getattr(agent, "base_url", None),
                         )
                     )
                     if not pool_may_recover:

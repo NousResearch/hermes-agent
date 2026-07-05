@@ -6,7 +6,7 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
-import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
+import subprocess
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()

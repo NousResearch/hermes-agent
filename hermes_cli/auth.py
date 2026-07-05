@@ -2531,7 +2531,7 @@ def _make_spotify_callback_handler(expected_path: str) -> tuple[type[BaseHTTPReq
     }
 
     class _SpotifyCallbackHandler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path != expected_path:
                 self.send_response(404)
@@ -2554,7 +2554,7 @@ def _make_spotify_callback_handler(expected_path: str) -> tuple[type[BaseHTTPReq
                 body = "<html><body><h1>Spotify authorization received.</h1>You can close this tab.</body></html>"
             self.wfile.write(body.encode("utf-8"))
 
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+        def log_message(self, format: str, *args: Any) -> None:
             return
 
     return _SpotifyCallbackHandler, result

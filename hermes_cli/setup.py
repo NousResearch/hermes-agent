@@ -158,13 +158,13 @@ def print_header(title: str):
     print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
 
 
-from hermes_cli.cli_output import (  # noqa: E402
+from hermes_cli.cli_output import (
     print_error,
     print_info,
     print_success,
     print_warning,
 )
-from hermes_cli.secret_prompt import masked_secret_prompt  # noqa: E402
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 def is_interactive_stdin() -> bool:

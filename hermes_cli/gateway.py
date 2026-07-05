@@ -4470,7 +4470,7 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
         from hermes_constants import get_default_hermes_root
         default_root = get_default_hermes_root()
         # (b) Is the default-profile gateway running?
-        from gateway.status import get_running_pid as _default_running_pid  # noqa
+        from gateway.status import get_running_pid as _default_running_pid
     except Exception:
         return
 
@@ -6304,7 +6304,7 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
         service_name = f"gateway-{profile}"
         try:
             fn(service_name)
-        except Exception as exc:  # noqa: BLE001 — report and continue
+        except Exception as exc:
             errors.append((profile, exc))
     succeeded = len(profiles) - len(errors)
     verb = "stopped" if action == "stop" else "restarted"

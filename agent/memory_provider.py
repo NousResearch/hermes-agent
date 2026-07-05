@@ -200,6 +200,25 @@ class MemoryProvider(ABC):
         callers may omit this field: ``old_text`` alone is not authoritative identity.
         """
 
+    def on_skill_write(
+        self,
+        action: str,
+        name: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Called when the built-in skill_manage tool writes a skill/file.
+
+        action: 'create', 'edit', 'patch', 'delete', 'write_file', 'remove_file'
+        name: skill name (e.g. 'my-skill') or relative file path
+        content: the file/skill content written
+        metadata: structured provenance for the write. Common keys include
+          ``write_origin``, ``execution_context``, ``session_id``,
+          ``parent_session_id``, ``platform``, and ``tool_name``.
+
+        Use to mirror built-in skill writes to your backend.
+        """
+
     def backup_paths(self) -> List[str]:
         """Absolute paths of provider state OUTSIDE HERMES_HOME for ``hermes backup``/``import``
         (paths outside the home dir are skipped). MUST work without ``initialize()`` or network."""

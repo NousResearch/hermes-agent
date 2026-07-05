@@ -27,6 +27,7 @@ Optional hooks (override to opt in):
   on_session_switch(new_session_id, **kwargs) — mid-process session_id rotation
   on_pre_compress(messages) -> str       — extract before context compression
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
+  on_skill_write(action, name, content, metadata=None) — mirror built-in skill_manage writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
   backup_paths() -> list[str]            — extra on-disk paths to include in `hermes backup`
 """
@@ -294,6 +295,25 @@ class MemoryProvider(ABC):
           ``parent_session_id``, ``platform``, and ``tool_name``.
 
         Use to mirror built-in memory writes to your backend.
+        """
+
+    def on_skill_write(
+        self,
+        action: str,
+        name: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Called when the built-in skill_manage tool writes a skill/file.
+
+        action: 'create', 'edit', 'patch', 'delete', 'write_file', 'remove_file'
+        name: skill name (e.g. 'my-skill') or relative file path
+        content: the file/skill content written
+        metadata: structured provenance for the write. Common keys include
+          ``write_origin``, ``execution_context``, ``session_id``,
+          ``parent_session_id``, ``platform``, and ``tool_name``.
+
+        Use to mirror built-in skill writes to your backend.
         """
 
     def backup_paths(self) -> List[str]:

@@ -955,11 +955,41 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    def on_skill_write(
+        self,
+        action: str,
+        name: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Notify external providers when the built-in skill_manage tool writes.
+
+        Skips the builtin provider itself (it's the source of the write).
+        """
+        for provider in self._providers:
+            if provider.name == "builtin":
+                continue
+            try:
+                provider.on_skill_write(action, name, content, metadata=dict(metadata or {}))
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' on_skill_write failed: %s",
+                    provider.name, e,
+                )
+
     # Actions the bridge mirrors to external providers. The built-in memory
     # tool can also return non-mutating shapes (errors, staged-for-approval
     # records); those are filtered out by ``notify_memory_tool_write`` before
     # we ever reach a provider.
     _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+
+    # Mutating skill_manage actions that external providers may care about.
+    # Read-only actions (read, list, search, etc.) are excluded — providers
+    # only need to know about writes they should mirror.
+    _MIRRORED_SKILL_ACTIONS = {
+        "create", "edit", "patch", "delete",
+        "write_file", "remove_file",
+    }
 
     @staticmethod
     def _memory_tool_result_succeeded(result: Any) -> bool:
@@ -1035,6 +1065,42 @@ class MemoryManager:
                 )
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
+
+    def notify_skill_tool_write(
+        self,
+        tool_result: Any,
+        tool_args: Dict[str, Any],
+        *,
+        build_metadata: Optional[Callable[[], Dict[str, Any]]] = None,
+    ) -> None:
+        """Mirror a built-in skill_manage tool call to external providers.
+
+        This is the single entry point the agent loop calls after running the
+        built-in ``skill_manage`` tool. All the decisions about *whether* and
+        *what* to mirror live here, behind the manager interface — the loop
+        only hands over the raw tool result and args:
+
+        * gate on a committed (non-staged, successful) write,
+        * keep only mutating actions (create/edit/patch/delete/write_file/remove_file),
+        * build provenance metadata.
+
+        ``build_metadata`` is an optional agent-side callable (the loop knows
+        session/task/tool-call provenance the manager does not).
+        """
+        if not self._memory_tool_result_succeeded(tool_result):
+            return
+
+        action = str(tool_args.get("action") or "")
+        if action not in self._MIRRORED_SKILL_ACTIONS:
+            return
+
+        name = str(tool_args.get("name") or "")
+        content = str(tool_args.get("content") or "")
+        try:
+            metadata = dict(build_metadata() if build_metadata else {})
+            self.on_skill_write(action, name, content, metadata=metadata)
+        except Exception as e:
+            logger.debug("notify_skill_tool_write failed for action %s: %s", action, e)
 
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:

@@ -111,6 +111,78 @@ class TestResolveAutoMainFirst:
         # aggregator's base_url.
         assert mock_resolve.call_args.kwargs.get("explicit_base_url") in (None, "")
 
+    def test_auto_resolution_keeps_moa_aggregator_model_over_runtime_preset(
+        self, monkeypatch, tmp_path
+    ):
+        """resolve_provider_client('auto') must not reuse the MoA preset name.
+
+        ``resolve_provider_client`` pre-fills a missing model from
+        ``_read_main_model`` before it reaches the auto branch. For MoA that
+        runtime model is the preset name (for example ``default``), while
+        ``_resolve_auto`` returns the preset aggregator's real model id.
+        """
+        import yaml
+
+        from agent import auxiliary_client as aux
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "moa": {
+                        "default_preset": "default",
+                        "presets": {
+                            "default": {
+                                "aggregator": {
+                                    "provider": "openrouter",
+                                    "model": "anthropic/claude-opus-4.8",
+                                },
+                                "reference_models": [
+                                    {"provider": "openrouter", "model": "openai/gpt-5.5"}
+                                ],
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        mock_client = MagicMock()
+
+        aux.clear_runtime_main()
+        aux.set_runtime_main(
+            "moa",
+            "default",
+            base_url="moa://local",
+            api_key="moa-virtual-provider",
+            api_mode="chat_completions",
+        )
+        try:
+            with patch.object(aux, "_resolve_auto") as mock_auto:
+                mock_auto.return_value = (mock_client, "anthropic/claude-opus-4.8")
+
+                client, model = aux.resolve_provider_client("auto", None)
+        finally:
+            aux.clear_runtime_main()
+
+        assert client is mock_client
+        assert model == "anthropic/claude-opus-4.8"
+
+    def test_auto_resolution_preserves_explicit_model_override(self):
+        """A caller-provided auto model still wins over detected defaults."""
+        from agent import auxiliary_client as aux
+
+        mock_client = MagicMock()
+        with patch.object(aux, "_resolve_auto") as mock_auto:
+            mock_auto.return_value = (mock_client, "provider-default-model")
+
+            client, model = aux.resolve_provider_client("auto", "explicit-model")
+
+        assert client is mock_client
+        assert model == "explicit-model"
+
     def test_nous_main_uses_main_model_for_aux(self, monkeypatch):
         """Nous Portal main user → aux uses their picked Nous model, not free-tier MiMo."""
         # No OPENROUTER_API_KEY → ensures if main failed we'd fall to chain

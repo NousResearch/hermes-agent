@@ -2993,6 +2993,28 @@ DEFAULT_CONFIG = {
     # reports 384MB+ databases with 68K+ messages, which slows down FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
+        # Desktop sidebar hygiene: soft-archive older, inactive chats at
+        # startup so a heavy local state.db does not leave thousands of old
+        # conversations in the default Sessions list. This never deletes data:
+        # archived chats stay recoverable from Settings -> Archived Chats.
+        "auto_archive": True,
+        # Keep at least this many most-recent surfaced conversations
+        # unarchived. Pinned/active ids sent by the desktop are preserved even
+        # when they fall outside this cap.
+        "auto_archive_keep_recent": 100,
+        # Also archive inactive surfaced conversations older than this many
+        # days, even when the recent cap has not been exceeded. 0 disables the
+        # age cutoff while leaving the keep_recent cap active.
+        "auto_archive_after_days": 14,
+        # Avoid sweeping state.db on every renderer refresh.
+        "auto_archive_min_interval_hours": 6,
+        # Match the desktop sidebar's normal min_messages=1 list so empty
+        # abandoned drafts are left to the explicit empty-session cleanup.
+        "auto_archive_min_messages": 1,
+        # Sessions with ended_at=NULL and activity inside this window are
+        # presumed live and never auto-archived. Matches the web API's existing
+        # active-session heuristic.
+        "auto_archive_active_grace_seconds": 300,
         # When true, prune ended sessions older than retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
         # Only touches ended sessions — active sessions are always preserved.

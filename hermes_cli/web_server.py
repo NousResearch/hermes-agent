@@ -9445,12 +9445,79 @@ def _session_latest_descendant(session_id: str, db):
 # templated ``/api/sessions/{session_id}`` family that follows. FastAPI/
 # Starlette match routes in registration order, and the ``{session_id}``
 # pattern is unconstrained — it would otherwise swallow e.g.
-# ``DELETE /api/sessions/empty``, ``POST /api/sessions/bulk-delete``, or
-# ``GET /api/sessions/stats`` as "operate on the session with id
-# 'empty'" / "'bulk-delete'" / "'stats'", which would 404 (or worse,
-# succeed and delete the wrong row). Same story as the older
-# ``/api/sessions/search`` endpoint up at line ~1191. If you split or
-# reorder this block, move every route in it together.
+# ``DELETE /api/sessions/empty``, ``POST /api/sessions/bulk-delete``,
+# ``POST /api/sessions/auto-archive``, or ``GET /api/sessions/stats`` as
+# "operate on the session with id 'empty'" / "'bulk-delete'" /
+# "'auto-archive'" / "'stats'", which would 404 (or worse, succeed and
+# update the wrong row). Same story as the older ``/api/sessions/search``
+# endpoint up at line ~1191. If you split or reorder this block, move every
+# route in it together.
+class AutoArchiveSessions(BaseModel):
+    preserve_ids: Optional[List[str]] = None
+    keep_recent: Optional[int] = None
+    older_than_days: Optional[int] = None
+    min_interval_hours: Optional[float] = None
+
+
+@app.post("/api/sessions/auto-archive")
+async def auto_archive_sessions_endpoint(body: AutoArchiveSessions):
+    """Soft-archive old sessions so desktop restarts stay uncluttered.
+
+    Desktop owns pinned-session state in localStorage, so it sends the ids to
+    preserve on each startup/refresh. The backend persists the archive flag in
+    state.db; archived sessions disappear from normal `/api/sessions` results
+    but remain recoverable from the Archived Sessions settings panel.
+    """
+    preserve_ids = [
+        str(sid).strip()
+        for sid in (body.preserve_ids or [])
+        if str(sid).strip()
+    ]
+    if len(preserve_ids) > 5000:
+        raise HTTPException(
+            status_code=400,
+            detail="preserve_ids must contain at most 5000 entries",
+        )
+
+    cfg = (load_config().get("sessions") or {})
+    if not cfg.get("auto_archive", True):
+        return {"ok": True, "skipped": True, "archived": 0, "reason": "disabled"}
+
+    keep_recent = (
+        body.keep_recent
+        if body.keep_recent is not None
+        else cfg.get("auto_archive_keep_recent", 100)
+    )
+    older_than_days = (
+        body.older_than_days
+        if body.older_than_days is not None
+        else cfg.get("auto_archive_after_days", 14)
+    )
+    min_interval_hours = (
+        body.min_interval_hours
+        if body.min_interval_hours is not None
+        else cfg.get("auto_archive_min_interval_hours", 6)
+    )
+    min_message_count = int(cfg.get("auto_archive_min_messages", 1))
+    active_grace_seconds = int(cfg.get("auto_archive_active_grace_seconds", 300))
+
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        result = db.maybe_auto_archive_old_sessions(
+            keep_recent=max(0, int(keep_recent or 0)),
+            older_than_days=max(0, int(older_than_days or 0)),
+            min_interval_hours=max(0.0, float(min_interval_hours or 0)),
+            min_message_count=max(0, min_message_count),
+            preserve_ids=preserve_ids,
+            active_grace_seconds=max(0, active_grace_seconds),
+        )
+        return {"ok": True, **result}
+    finally:
+        db.close()
+
+
 class BulkDeleteSessions(BaseModel):
     ids: List[str]
     profile: Optional[str] = None

@@ -4239,6 +4239,150 @@ class TestAutoMaintenance:
         )
         db._conn.commit()
 
+    def _make_archivable_session(
+        self,
+        db,
+        sid: str,
+        *,
+        last_active: float,
+        ended: bool = True,
+    ):
+        db.create_session(session_id=sid, source="cli")
+        db.append_message(session_id=sid, role="user", content=f"hello {sid}")
+        if ended:
+            db.end_session(sid, end_reason="done")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+            (
+                last_active - 10,
+                last_active if ended else None,
+                sid,
+            ),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (last_active, sid),
+        )
+        db._conn.commit()
+
+    def test_auto_archive_hides_sessions_beyond_recent_cap(self, db):
+        now = time.time()
+        for idx in range(5):
+            self._make_archivable_session(
+                db,
+                f"s{idx}",
+                last_active=now - idx * 60,
+            )
+
+        archived = db.archive_old_sessions(
+            keep_recent=2,
+            older_than_days=0,
+        )
+
+        assert archived == 3
+        assert db.session_count(include_archived=False) == 2
+        assert db.session_count(archived_only=True) == 3
+        assert db.get_session("s0")["archived"] == 0
+        assert db.get_session("s1")["archived"] == 0
+        assert db.get_session("s2")["archived"] == 1
+        assert db.get_session("s4")["archived"] == 1
+
+    def test_auto_archive_preserves_requested_and_recent_live_sessions(self, db):
+        now = time.time()
+        self._make_archivable_session(db, "recent", last_active=now)
+        self._make_archivable_session(db, "old-preserved", last_active=now - 500)
+        self._make_archivable_session(db, "old-archive", last_active=now - 600)
+        self._make_archivable_session(
+            db,
+            "live-recent",
+            last_active=now - 700,
+            ended=False,
+        )
+
+        archived = db.archive_old_sessions(
+            keep_recent=1,
+            older_than_days=0,
+            preserve_ids=["old-preserved"],
+            active_grace_seconds=3600,
+        )
+
+        assert archived == 1
+        assert db.get_session("recent")["archived"] == 0
+        assert db.get_session("old-preserved")["archived"] == 0
+        assert db.get_session("live-recent")["archived"] == 0
+        assert db.get_session("old-archive")["archived"] == 1
+
+    def test_auto_archive_syncs_hidden_descendants_not_visible_branches(self, db):
+        now = time.time()
+        self._make_archivable_session(db, "archived-root", last_active=now - 500)
+        db.set_session_archived("archived-root", True)
+        db.create_session(
+            session_id="hidden-child",
+            source="cli",
+            parent_session_id="archived-root",
+        )
+        db.append_message("hidden-child", role="user", content="child")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 490, "hidden-child"),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (now - 490, "hidden-child"),
+        )
+
+        db.create_session(session_id="branch-parent", source="cli")
+        db.append_message("branch-parent", role="user", content="parent")
+        db.end_session("branch-parent", end_reason="branched")
+        db.set_session_archived("branch-parent", True)
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+            (now - 400, now - 390, "branch-parent"),
+        )
+        db.create_session(
+            session_id="visible-branch",
+            source="cli",
+            parent_session_id="branch-parent",
+        )
+        db.append_message("visible-branch", role="user", content="branch")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 380, "visible-branch"),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (now - 380, "visible-branch"),
+        )
+        db._conn.commit()
+
+        archived = db.archive_old_sessions(keep_recent=100, older_than_days=14)
+
+        assert archived == 1
+        assert db.get_session("hidden-child")["archived"] == 1
+        assert db.get_session("visible-branch")["archived"] == 0
+
+    def test_maybe_auto_archive_uses_interval_marker(self, db):
+        now = time.time()
+        self._make_archivable_session(db, "old1", last_active=now - 100)
+
+        first = db.maybe_auto_archive_old_sessions(
+            keep_recent=0,
+            older_than_days=1,
+            min_interval_hours=24,
+        )
+        assert first["skipped"] is False
+        assert first["archived"] == 0
+
+        self._make_archivable_session(db, "old2", last_active=now - 200)
+        second = db.maybe_auto_archive_old_sessions(
+            keep_recent=1,
+            older_than_days=0,
+            min_interval_hours=24,
+        )
+        assert second["skipped"] is True
+        assert second["archived"] == 0
+        assert db.get_session("old2")["archived"] == 0
+
     def test_first_run_prunes_and_vacuums(self, db):
         self._make_old_ended(db, "old1", days_old=100)
         self._make_old_ended(db, "old2", days_old=100)

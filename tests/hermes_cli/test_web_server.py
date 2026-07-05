@@ -1114,6 +1114,58 @@ class TestWebServerEndpoints:
         restored = self.client.get("/api/sessions").json()
         assert any(s["id"] == "arch-me" for s in restored["sessions"])
 
+    def test_auto_archive_endpoint_preserves_ids_and_hides_old_sessions(self):
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        def _seed(db, sid: str, last_active: float):
+            db.create_session(session_id=sid, source="cli")
+            db.append_message(session_id=sid, role="user", content=f"hello {sid}")
+            db.end_session(sid, end_reason="done")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (last_active - 10, last_active, sid),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                (last_active, sid),
+            )
+
+        now = _time.time()
+        db = SessionDB()
+        try:
+            _seed(db, "recent", now)
+            _seed(db, "old-preserved", now - 200)
+            _seed(db, "old-archive", now - 300)
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.post(
+            "/api/sessions/auto-archive",
+            json={
+                "preserve_ids": ["old-preserved"],
+                "keep_recent": 1,
+                "older_than_days": 0,
+                "min_interval_hours": 0,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["archived"] == 1
+
+        listed = self.client.get("/api/sessions?limit=10").json()["sessions"]
+        listed_ids = {s["id"] for s in listed}
+        assert "recent" in listed_ids
+        assert "old-preserved" in listed_ids
+        assert "old-archive" not in listed_ids
+
+        archived = self.client.get(
+            "/api/sessions?archived=only&limit=10"
+        ).json()["sessions"]
+        assert any(s["id"] == "old-archive" for s in archived)
+
     def test_patch_session_without_fields_is_400(self):
         """An existing session + empty body is a bad request, not a 404."""
         from hermes_state import SessionDB
@@ -1336,6 +1388,28 @@ class TestWebServerEndpoints:
         # ...carrying the durable lineage root so the desktop can match pins.
         tip = next(r for r in rows if r["id"] == "tip-new")
         assert tip.get("_lineage_root_id") == "root-old"
+
+    def test_get_sessions_total_counts_surfaced_conversations(self):
+        """Hidden child rows must not inflate the desktop session total."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="root-visible", source="cli")
+            db.append_message("root-visible", role="user", content="root")
+            db.create_session(
+                session_id="hidden-child",
+                source="cli",
+                parent_session_id="root-visible",
+            )
+            db.append_message("hidden-child", role="user", content="child")
+        finally:
+            db.close()
+
+        data = self.client.get("/api/sessions?limit=10&min_messages=1").json()
+        ids = [row["id"] for row in data["sessions"]]
+        assert ids == ["root-visible"]
+        assert data["total"] == 1
 
     def test_search_dedupes_compression_lineage_to_tip(self):
         """A conversation that auto-compresses leaves the matched term in both

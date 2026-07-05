@@ -28,6 +28,7 @@ Session context:
 """
 
 import atexit
+import copy
 import io
 import logging
 import os
@@ -562,6 +563,13 @@ _log_queue: "Optional[queue.SimpleQueue]" = None
 _queue_listener: Optional[QueueListener] = None
 _queued_file_handlers: list = []
 _queue_atexit_registered = False
+# Guards every read-modify-write of the four globals above. setup_logging()
+# holds no lock and its _logging_initialized guard runs AFTER handler
+# registration, so _register_queued_handler() can run concurrently with a
+# flush/reset from another thread (gateway init racing a plugin/CLI path).
+# Without this, two threads can interleave listener.stop()/reassign/start()
+# and leave the queue with two live listeners or an orphaned worker thread.
+_queue_state_lock = threading.Lock()
 
 
 class _NonFormattingQueueHandler(QueueHandler):
@@ -569,16 +577,23 @@ class _NonFormattingQueueHandler(QueueHandler):
 
     Stdlib ``prepare()`` formats the record and drops ``args``/``exc_info`` so it
     can be pickled to another process.  Our queue is in-process, so we skip that
-    and pass the raw record through — the target file handlers must apply their
+    and hand the target file handlers an unformatted record — they apply their
     own ``RedactingFormatter`` and component filters on the listener thread.
+
+    We return a **shallow copy** rather than the original record: the same
+    record is still owned by the emitting thread (and any synchronous handler
+    on it, e.g. a ``StreamHandler``), which may format/mutate ``record.message``
+    while our listener thread reads it. Copying preserves ``msg``/``args``/
+    ``exc_info`` for the deferred format while removing the cross-thread
+    mutation race on a shared object.
     """
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
-        return record
+        return copy.copy(record)
 
 
-def _stop_queue_listener() -> None:
-    """Flush and stop the background log listener (idempotent)."""
+def _stop_queue_listener_locked() -> None:
+    """Stop the listener assuming ``_queue_state_lock`` is already held."""
     global _queue_listener
     listener, _queue_listener = _queue_listener, None
     if listener is not None:
@@ -588,47 +603,92 @@ def _stop_queue_listener() -> None:
             pass
 
 
+def _stop_queue_listener() -> None:
+    """Flush and stop the background log listener (idempotent, thread-safe).
+
+    This is the atexit hook, so it must acquire the state lock itself.
+    """
+    with _queue_state_lock:
+        _stop_queue_listener_locked()
+
+
 def _register_queued_handler(handler: logging.Handler) -> None:
     """Route *handler* through the shared async queue instead of attaching it to
     *root* directly, so emitting threads never block on file I/O or the
     cross-process rotation lock.  The ``QueueListener`` applies each handler's
     own level and filters on its worker thread."""
     global _log_queue, _queue_listener, _queue_atexit_registered
-    if _log_queue is None:
-        _log_queue = queue.SimpleQueue()
-        qh = _NonFormattingQueueHandler(_log_queue)
-        qh._hermes_queue = True  # type: ignore[attr-defined]
-        # Always funnel through the root logger so records from any logger
-        # (production passes root here; callers may pass a child) reach the
-        # queue via propagation.
-        logging.getLogger().addHandler(qh)
-    _queued_file_handlers.append(handler)
-    # Rebuild the listener with the full target set.  This only happens while
-    # init_logging() adds handlers (2-3 times, queue empty), so stop() returns
-    # immediately.
-    if _queue_listener is not None:
-        _queue_listener.stop()
-    _queue_listener = QueueListener(
-        _log_queue, *_queued_file_handlers, respect_handler_level=True
-    )
-    _queue_listener.start()
-    if not _queue_atexit_registered:
-        # Runs before logging.shutdown (registered earlier at import time), so
-        # the listener stops before its file handlers are closed.
-        atexit.register(_stop_queue_listener)
-        _queue_atexit_registered = True
+    with _queue_state_lock:
+        if _log_queue is None:
+            _log_queue = queue.SimpleQueue()
+            qh = _NonFormattingQueueHandler(_log_queue)
+            qh._hermes_queue = True  # type: ignore[attr-defined]
+            # Always funnel through the root logger so records from any logger
+            # (production passes root here; callers may pass a child) reach the
+            # queue via propagation.
+            logging.getLogger().addHandler(qh)
+        _queued_file_handlers.append(handler)
+        # Rebuild the listener with the full target set.  This only happens
+        # while init_logging() adds handlers (2-3 times, queue empty), so
+        # stop() returns immediately.
+        if _queue_listener is not None:
+            _queue_listener.stop()
+        _queue_listener = QueueListener(
+            _log_queue, *_queued_file_handlers, respect_handler_level=True
+        )
+        _queue_listener.start()
+        if not _queue_atexit_registered:
+            # Runs before logging.shutdown (registered earlier at import time),
+            # so the listener stops before its file handlers are closed.
+            atexit.register(_stop_queue_listener)
+            _queue_atexit_registered = True
 
 
 def flush_log_queue() -> None:
     """Block until all queued records have been written, then resume.
 
     Draining is done by stopping the listener (which processes every pending
-    record before joining) and restarting it.  Used at shutdown and by tests
-    that read a log file right after emitting to it."""
+    record before joining) and restarting it.  Used by tests that read a log
+    file right after emitting to it.
+
+    NOTE: ``stop()`` joins the worker thread, so this blocks until the queue
+    is empty. Do NOT call this on a hard-exit path where the listener may be
+    wedged on the rotation lock — use ``drain_log_queue()`` there instead,
+    which bounds the wait.
+    """
+    with _queue_state_lock:
+        listener = _queue_listener
+        if listener is not None:
+            listener.stop()
+            listener.start()
+
+
+def drain_log_queue(timeout: float = 1.0) -> None:
+    """Best-effort, time-bounded drain for hard-exit paths (no restart).
+
+    Unlike ``flush_log_queue()``, this stops the listener WITHOUT restarting it
+    (the process is about to exit) and bounds the drain: if the listener's
+    worker thread is wedged on the cross-process rotation lock — the very
+    failure this async-logging change exists to survive — an unbounded
+    ``stop()``/join would re-freeze the shutdown path. We run ``stop()`` on a
+    throwaway thread and only wait ``timeout`` seconds for it; if it hasn't
+    drained by then we abandon the last few records and let ``os._exit``
+    proceed. Availability beats the last log line when the disk is already
+    wedged.
+    """
     listener = _queue_listener
-    if listener is not None:
-        listener.stop()
-        listener.start()
+    if listener is None:
+        return
+
+    def _drain() -> None:
+        try:
+            listener.stop()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_drain, name="hermes-log-drain", daemon=True)
+    t.start()
+    t.join(timeout)
 
 
 def rotating_file_handlers() -> list:
@@ -643,18 +703,19 @@ def rotating_file_handlers() -> list:
 def _reset_queued_handlers() -> None:
     """Tear down the async logging queue + listener (test-isolation helper)."""
     global _log_queue
-    _stop_queue_listener()
-    root = logging.getLogger()
-    for h in list(root.handlers):
-        if getattr(h, "_hermes_queue", False):
-            root.removeHandler(h)
-    for h in list(_queued_file_handlers):
-        try:
-            h.close()
-        except Exception:
-            pass
-    _queued_file_handlers.clear()
-    _log_queue = None
+    with _queue_state_lock:
+        _stop_queue_listener_locked()
+        root = logging.getLogger()
+        for h in list(root.handlers):
+            if getattr(h, "_hermes_queue", False):
+                root.removeHandler(h)
+        for h in list(_queued_file_handlers):
+            try:
+                h.close()
+            except Exception:
+                pass
+        _queued_file_handlers.clear()
+        _log_queue = None
 
 
 def _add_rotating_handler(

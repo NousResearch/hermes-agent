@@ -3989,7 +3989,9 @@ class SessionDB:
                 msg["tool_name"] = row["tool_name"]
             if row["tool_calls"]:
                 try:
-                    msg["tool_calls"] = json.loads(row["tool_calls"])
+                    parsed = json.loads(row["tool_calls"])
+                    if parsed:  # only set if non-empty
+                        msg["tool_calls"] = parsed
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
                     msg["tool_calls"] = []

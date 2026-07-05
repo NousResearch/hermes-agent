@@ -5540,6 +5540,11 @@ class AIAgent:
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
+        if not tool_calls:
+            # Empty array rejected by strict providers (DeepSeek, Mistral, etc.)
+            # with HTTP 400. Strip the key so the message has no tool_calls field.
+            api_msg.pop("tool_calls", None)
+            return api_msg
         from agent.transports.chat_completions import _model_consumes_thought_signature
         _STRIP_KEYS = {"call_id", "response_item_id"}
         if not _model_consumes_thought_signature(model):

@@ -101,6 +101,12 @@ _CAPTURE_ON = ("auto", "on", "true", "1")
 # safe ceiling well above any real extraction.
 _CAPTURE_SCRUB_MAX_ROWS = 500
 
+# Max combined user+assistant characters an auto-captured turn may have. Above this a turn is a
+# system/review/tool-dump prompt (no durable user facts) that the extraction provider rejects as
+# malformed (HTTP 502) — capturing it just poison-loops the queue. ~16k chars is far above any real
+# conversational exchange but below the multi-KB review prompts that trip the provider.
+_CAPTURE_MAX_TURN_CHARS = 16000
+
 # W3-TEMPORAL defaults (all overridable via $HERMES_HOME/mem0.json).
 # tz = the calendar-day reference zone for "the 20th"/"yesterday" (PT, matching the
 # digest's DST-correct PT-day bounds). overfetch = how many candidates to pull from
@@ -1404,6 +1410,25 @@ class Mem0MemoryProvider(MemoryProvider):
         """
         if not capture_is_on(self._live_capture()):
             return
+        # SIZE CAP (Greptile P1: don't drop a user fact just because the ASSISTANT side is large).
+        # The poison case the provider rejects (HTTP 502 "provider rejected as malformed") is a giant
+        # *input* — a pasted multi-KB review/system/tool-dump prompt with no durable user facts. That
+        # lives in user_content. A normal turn with a small user fact ("my DNS is AdGuard") but a huge
+        # assistant/tool response is legitimate and MUST still be captured. So:
+        #   - if the USER side alone exceeds the cap -> skip (true poison prompt, can't succeed), else
+        #   - keep the turn but TRUNCATE the assistant side to the remaining budget, preserving the
+        #     user fact while staying under the provider's malformed-payload ceiling.
+        user_content = user_content or ""
+        assistant_content = assistant_content or ""
+        if len(user_content) > _CAPTURE_MAX_TURN_CHARS:
+            logger.debug("mem0 sync_turn: user content exceeds capture size cap (%d chars) — skipped",
+                         len(user_content))
+            return
+        budget = _CAPTURE_MAX_TURN_CHARS - len(user_content)
+        if len(assistant_content) > budget:
+            logger.debug("mem0 sync_turn: assistant content truncated %d->%d chars to fit size cap "
+                         "(user fact preserved)", len(assistant_content), budget)
+            assistant_content = assistant_content[:budget]
         pipe = self._get_capture_pipeline()
         if pipe is None:
             return

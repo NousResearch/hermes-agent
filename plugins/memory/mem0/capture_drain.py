@@ -23,11 +23,70 @@ custom_instructions) — same as mem0 cloud. The worker is the client-side relia
 from __future__ import annotations
 
 import logging
+import re as _re
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# HTTP status appearing in an add() error string. Two anchored shapes, so a stray 3-digit number in
+# the body (a memory id fragment, a byte count) can't be misread as a status:
+#   (a) after an explicit marker:  "HTTP 400: ...", "HTTPError 413", "status_code=422", "status: 400"
+#   (b) inside an httpx/requests-style quoted status phrase, where the code is followed by a
+#       recognised HTTP reason word: "Client error '400 Bad Request' for url ...",
+#       "Server error \"502 Bad Gateway\"".  We require the reason word so a quoted '404 files' in
+#       free text can't trip it.
+_STATUS_MARKER_RE = _re.compile(
+    r"(?:http(?:\s*error)?|status(?:[_ ]?code)?)\s*[:=]?\s*(\d{3})", _re.IGNORECASE)
+_STATUS_QUOTED_RE = _re.compile(
+    r"['\"]\s*(\d{3})\s+(?:bad request|unauthorized|forbidden|not found|method not allowed|"
+    r"not acceptable|request timeout|conflict|gone|length required|precondition|payload too large|"
+    r"request entity too large|uri too long|unsupported media|unprocessable|too many requests|"
+    r"internal server error|not implemented|bad gateway|service unavailable|gateway timeout)",
+    _re.IGNORECASE)
+# Words that indicate the request never left the client (nothing was written -> bounded retry is safe).
+_NOT_SENT_MARKERS = (
+    "refused", "name or service", "nodename", "no route", "getaddrinfo",
+    "failed to establish", "cannot connect", "connection error",
+    "connection reset", "connection aborted", "broken pipe on send",
+)
+
+
+def _status_from_msg(msg: str):
+    """Extract an HTTP status code from an error string, or None. Tries the explicit-marker shape
+    first, then the quoted httpx/requests reason-phrase shape."""
+    m = _STATUS_MARKER_RE.search(msg) or _STATUS_QUOTED_RE.search(msg)
+    return int(m.group(1)) if m else None
+
+
+def _classify_add_error(exc: Exception) -> str:
+    """Classify an add() exception into one of three fail-closed buckets. THE SAFETY BIAS: only an
+    EXPLICIT 4xx client status is treated as "nothing written / retrying is pointless"; everything
+    ambiguous defaults to 'possibly_written' so a maybe-committed row is never abandoned (Greptile P1).
+
+      'deterministic_client_error' -> the server rejected the payload (explicit 4xx, except 408/429):
+          nothing stored AND the same payload can never succeed -> bounded/dead-letter (poison row).
+      'not_sent'                   -> the request never reached the server (connection-level failure):
+          nothing stored, but a RETRY may succeed -> bounded retry.
+      'possibly_written'           -> anything else (timeout, 5xx, opaque error): the add MAY have
+          committed on the server -> requeue fail-closed forever, never dead-letter (never abandon a
+          possible secret-bearing row).
+    """
+    msg = f"{type(exc).__name__} {exc}".lower()
+    code = _status_from_msg(msg)
+    if code is not None:
+        # 408 Request Timeout / 429 Too Many Requests are transient 4xx -> retryable, and the
+        # server may have partially processed -> treat as possibly_written (fail-closed).
+        if code in (408, 429):
+            return "possibly_written"
+        if 400 <= code < 500:
+            return "deterministic_client_error"
+        return "possibly_written"  # 5xx (incl. 502 gateway/provider) -> maybe committed
+    # No explicit status: only a clear connection-level pre-send failure is safe to bounded-retry.
+    if any(k in msg for k in _NOT_SENT_MARKERS):
+        return "not_sent"
+    return "possibly_written"  # unknown/opaque -> fail closed
 
 
 class CaptureDrainWorker:
@@ -190,16 +249,17 @@ class CaptureDrainWorker:
         except Exception as e:
             self._q.record_verdict(key, "fault")
             attempts = int(row.get("attempts", 0)) + 1
-            # AMBIGUOUS-WRITE FAIL-CLOSED (Greptile P1): a timeout / read error / broken pipe can
-            # occur AFTER the server already committed /memories, so the add may be live+unscanned.
-            # We cannot dead-letter and abandon it. Only a clearly PRE-SEND failure (connection
-            # refused / name resolution / no route) means nothing was written -> bounded retry is
-            # safe. Everything else is treated as "maybe written" -> requeue forever + escalate.
-            msg = f"{type(e).__name__} {e}".lower()
-            clearly_not_sent = any(m in msg for m in (
-                "refused", "name or service", "nodename", "no route", "getaddrinfo",
-                "failed to establish", "cannot connect", "connection error"))
-            if not clearly_not_sent:
+            # FAIL-CLOSED classification (Greptile P1). A timeout / read error / 5xx / opaque error can
+            # occur AFTER the server already committed /memories, so the add may be live+unscanned — we
+            # must NOT dead-letter and abandon it. Only two classes are provably safe to bound/dead-
+            # letter (nothing was written, no secret to abandon):
+            #   - 'not_sent'    : a connection-level PRE-SEND failure -> bounded retry (may recover), and
+            #   - 'deterministic_client_error' : the server rejected the payload with an explicit 4xx
+            #     -> nothing stored AND retrying the identical payload can never succeed -> DEAD-LETTER
+            #     immediately (poison row; e.g. a malformed/oversized payload).
+            # Everything else defaults to 'possibly_written' -> requeue forever + escalate, never dead.
+            klass = _classify_add_error(e)
+            if klass == "possibly_written":
                 backoff = min(self._backoff * (2 ** min(attempts - 1, 12)), self._scrub_backoff_cap_s)
                 self._q.mark_scrub_retry(key, backoff_s=backoff, error=f"add-ambiguous: {str(e)[:270]}")
                 self.stats["retried"] += 1
@@ -212,6 +272,16 @@ class CaptureDrainWorker:
                 logger.warning("capture add failed AMBIGUOUSLY (maybe committed); requeued "
                                "fail-closed (never dead-letter): %s", e)
                 return True
+            if klass == "deterministic_client_error":
+                # Nothing written + never-succeeds -> dead-letter now (max_attempts=1 forces it at the
+                # current attempt) rather than spinning bounded retries on a payload the server refuses.
+                self._q.mark_retry(key, backoff_s=0.0, max_attempts=1,
+                                   error=f"deterministic-reject: {str(e)[:270]}")
+                self.stats["dead"] += 1
+                logger.warning("capture turn dead-lettered (deterministic client rejection, nothing "
+                               "written, retry cannot succeed): %s", e)
+                return True
+            # klass == "not_sent": pre-send connection failure, safe to bounded-retry then dead-letter.
             status = self._q.mark_retry(key, backoff_s=self._backoff * (2 ** (attempts - 1)),
                                         error=str(e)[:300], max_attempts=self._max_attempts)
             if status == "dead":

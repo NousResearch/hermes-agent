@@ -146,6 +146,42 @@ def test_live_capture_flip_is_immediate_no_lag(monkeypatch, tmp_path):
     assert p._live_capture() == "off"   # picked up immediately, no restart / no TTL wait
 
 
+def test_sync_turn_skips_oversized_turn(monkeypatch, tmp_path):
+    """A very large turn (system/review/tool-dump prompt) has no durable facts and the extraction
+    provider rejects it as malformed — sync_turn must skip enqueue rather than poison-loop the queue."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MEM0_HOST", "http://mem0.test")
+    monkeypatch.setenv("MEM0_ADMIN_API_KEY", "admin-key")
+    monkeypatch.setenv("MEM0_USER_ID", "ace")
+    monkeypatch.setenv("MEM0_AGENT_ID", "apollo")
+    monkeypatch.setenv("MEM0_CAPTURE", "auto")
+    p = Mem0MemoryProvider()
+    p.initialize("test-session")
+    enq_calls = []
+    # stub the pipeline so we can see whether enqueue_turn was reached
+    class _Pipe:
+        def enqueue_turn(self, *a, **k): enq_calls.append((a, k))
+    monkeypatch.setattr(p, "_get_capture_pipeline", lambda: _Pipe())
+    # a normal turn DOES enqueue
+    p.sync_turn("User's DNS is AdGuard.", "noted", session_id="s")
+    assert len(enq_calls) == 1
+    # an oversized USER turn (system/review/tool-dump prompt pasted as input) is SKIPPED before enqueue
+    from plugins.memory.mem0 import _CAPTURE_MAX_TURN_CHARS
+    p.sync_turn("X" * (_CAPTURE_MAX_TURN_CHARS + 1), "y", session_id="s")
+    assert len(enq_calls) == 1   # unchanged — the big user prompt did not enqueue
+
+    # Greptile P1: a SMALL user fact with a HUGE assistant/tool response must STILL be captured — the
+    # user fact is preserved and the assistant side is truncated to fit, not dropped.
+    fact = "My pipecat hub is at 192.168.1.176."
+    p.sync_turn(fact, "Z" * (_CAPTURE_MAX_TURN_CHARS * 3), session_id="s")
+    assert len(enq_calls) == 2                       # the fact-bearing turn WAS enqueued
+    (a, _k) = enq_calls[1]
+    enq_user, enq_asst = a[0], a[1]
+    assert enq_user == fact                          # user fact preserved verbatim
+    assert len(enq_user) + len(enq_asst) <= _CAPTURE_MAX_TURN_CHARS   # under the provider ceiling
+    assert len(enq_asst) < _CAPTURE_MAX_TURN_CHARS * 3                # assistant side was truncated
+
+
 def test_remember_writes_infer_false_with_review_origin(monkeypatch, tmp_path):
     calls = []
 

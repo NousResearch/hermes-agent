@@ -173,6 +173,59 @@ def test_ambiguous_add_fault_never_deadletters(q):
     assert any("ADD AMBIGUOUS" in a for a in alerts), f"expected escalation, got {alerts}"
 
 
+def test_deterministic_reject_dead_letters(q):
+    """A DETERMINISTIC client rejection (explicit 4xx — payload malformed/too-large) means nothing was
+    written AND retrying the identical payload can never succeed -> dead-letter immediately (poison
+    row), not an infinite ambiguous requeue."""
+    store = FakeStore(fail_times=99,
+                      fail_error=RuntimeError("HTTP 400 Bad Request: payload malformed"))
+    w = make_worker(q, store, max_attempts=3)
+    _enq(q, "a giant review prompt that the extractor rejects")
+    w.drain_once()
+    assert q.counts()["dead"] == 1                 # poison row dead-lettered on the FIRST attempt
+    assert w.stats["dead"] >= 1
+
+
+def test_502_with_malformed_wording_is_ambiguous_not_deadlettered(q):
+    """Greptile P1: a 5xx gateway/provider error that merely CONTAINS the word 'malformed' or
+    'provider rejected' is AMBIGUOUS (the server may have committed) — it must NEVER be dead-lettered
+    on substring wording. Only an explicit 4xx is deterministic."""
+    store = FakeStore(fail_times=99,
+                      fail_error=RuntimeError("HTTP 502 Bad Gateway: Provider rejected the request as malformed"))
+    w = make_worker(q, store, max_attempts=3)
+    _enq(q, "a turn that hits a flaky 502 gateway")
+    for _ in range(4):
+        w.drain_once()
+        q._connect().execute("UPDATE capture_queue SET next_attempt_at=0 WHERE status='pending'")
+    assert q.counts()["dead"] == 0                 # never abandoned — 502 may have committed
+    assert q.counts()["pending"] == 1              # still retriable forever
+
+
+def test_classify_add_error_status_codes():
+    """Unit-cover the status-code classifier: explicit 4xx (except 408/429) = deterministic; 5xx and
+    408/429 = possibly_written; connection-level = not_sent; opaque = possibly_written (fail-closed)."""
+    from capture_drain import _classify_add_error as C
+    assert C(RuntimeError("HTTP 400: Bad Request")) == "deterministic_client_error"
+    assert C(RuntimeError("HTTPError 413 Request Entity Too Large")) == "deterministic_client_error"
+    assert C(RuntimeError("status_code=422 unprocessable")) == "deterministic_client_error"
+    assert C(RuntimeError("HTTP 408 Request Timeout")) == "possibly_written"   # transient 4xx
+    assert C(RuntimeError("HTTP 429 Too Many Requests")) == "possibly_written"
+    assert C(RuntimeError("HTTP 502 Bad Gateway: provider rejected as malformed")) == "possibly_written"
+    assert C(RuntimeError("HTTP 500 Internal Server Error")) == "possibly_written"
+    assert C(ConnectionRefusedError("Connection refused")) == "not_sent"
+    assert C(RuntimeError("getaddrinfo failed: nodename nor servname")) == "not_sent"
+    # httpx/requests-style QUOTED status phrase (Greptile P1): code lives inside "'400 Bad Request'",
+    # not after an HTTP/status marker — must still classify as deterministic.
+    assert C(RuntimeError("Client error '400 Bad Request' for url 'https://mem0/memories'")) == "deterministic_client_error"
+    assert C(RuntimeError("Server error '502 Bad Gateway' for url ...")) == "possibly_written"
+    assert C(RuntimeError("httpx.HTTPStatusError: Client error '413 Request Entity Too Large'")) == "deterministic_client_error"
+    # a quoted 3-digit number WITHOUT an HTTP reason word must NOT be read as a status (fail-closed)
+    assert C(RuntimeError("could not open '404 files' in the batch")) == "possibly_written"
+    # opaque error with a stray 3-digit number that is NOT an HTTP status -> fail-closed, not 4xx
+    assert C(RuntimeError("read timed out after processing id 404abcdef")) == "possibly_written"
+    assert C(RuntimeError("something totally opaque")) == "possibly_written"
+
+
 def test_post_write_scrub_forgets_secret_bearing_memory(q):
     store = FakeStore()
     w = make_worker(q, store)

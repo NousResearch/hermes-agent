@@ -54,6 +54,22 @@ class TestResolveDisplaySetting:
         # Unknown platform, no config → global default "all"
         assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "all"
 
+    def test_tool_progress_boolean_like_strings_normalise(self):
+        """Quoted YAML booleans should not unexpectedly enable progress."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({"display": {"tool_progress": "false"}}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({"display": {"tool_progress": "0"}}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({"display": {"tool_progress": "no"}}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({"display": {"tool_progress": "true"}}, "telegram", "tool_progress") == "all"
+
+    def test_busy_steer_ack_enabled_string_false_normalises(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"busy_steer_ack_enabled": "false"}}}}
+
+        assert resolve_display_setting(config, "telegram", "busy_steer_ack_enabled", True) is False
+
     def test_fallback_parameter_used_last(self):
         """Explicit fallback is used when nothing else matches."""
         from gateway.display_config import resolve_display_setting

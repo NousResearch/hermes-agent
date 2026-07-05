@@ -496,9 +496,12 @@ class ConversationObserver:
             if nudge:
                 return nudge
 
-            # Missing output: did work, no files
+            # Missing output: did work, no verification, no files
             work_tools = {"write_file", "patch", "execute_code"}
-            if any(t in work_tools for t in tools) and not self._current_files:
+            verify_tools = {"terminal", "read_file", "search_files"}
+            did_work = any(t in work_tools for t in tools)
+            did_verify = any(t in verify_tools for t in tools)
+            if did_work and not did_verify and not self._current_files:
                 return trigger.apply_fix("output-task", "missing_output")
 
             # Find matching cluster for cluster-based failures

@@ -428,6 +428,13 @@ def _interpreter_shutting_down(exc: Optional[BaseException] = None) -> bool:
     if sys.is_finalizing():
         return True
     if exc is not None:
+        # Match the SHORT prefix deliberately: CPython emits two shutdown
+        # variants — "cannot schedule new futures after interpreter shutdown"
+        # (asyncio.run_coroutine_threadsafe / a torn-down default executor) and
+        # "cannot schedule new futures after shutdown" (a plain
+        # ThreadPoolExecutor). Both are documented in #58720. The common prefix
+        # catches both; the sibling agent/tool_executor._is_interpreter_shutdown_submit_error
+        # matches only the fuller "...after interpreter shutdown" form.
         return "cannot schedule new futures" in str(exc).lower()
     return False
 
@@ -2376,10 +2383,22 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def run_job(
+    job: dict, *, defer_agent_teardown: Optional[list] = None
+) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
-    
+
+    ``defer_agent_teardown``: when a caller passes a list, ``run_job`` skips
+    the agent's async-resource teardown (``agent.close()`` +
+    ``cleanup_stale_async_clients()``) in its ``finally`` block and instead
+    appends the live agent to that list. The caller is then responsible for
+    calling ``_teardown_cron_agent(agent)`` AFTER it has delivered the result.
+    This closes the ordering window in #58720 where delivery ran against a
+    torn-down async client (defense-in-depth alongside the interpreter-shutdown
+    guard). When ``None`` (the default) teardown happens inline as before, so
+    every existing caller is unchanged.
+
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
@@ -3194,20 +3213,40 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job
         # until it hits EMFILE (#10200 / "too many open files").
-        try:
+        #
+        # When the caller opted to defer teardown (passed a list), hand the live
+        # agent back instead of closing it here — delivery must run against a
+        # live async client, and the caller tears down afterwards (#58720).
+        if defer_agent_teardown is not None:
             if agent is not None:
-                agent.close()
-        except (Exception, KeyboardInterrupt) as e:
-            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
-        # Each cron run spins up a short-lived worker thread whose event loop
-        # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
-        # httpx clients cached under that loop are now unusable — reap them
-        # so their transports don't accumulate in the process-global cache.
-        try:
-            from agent.auxiliary_client import cleanup_stale_async_clients
-            cleanup_stale_async_clients()
-        except Exception as e:
-            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+                defer_agent_teardown.append(agent)
+        else:
+            _teardown_cron_agent(agent, job_id)
+
+
+def _teardown_cron_agent(agent, job_id: str) -> None:
+    """Release an ephemeral cron agent's async resources.
+
+    Split out of ``run_job``'s ``finally`` so a caller that defers teardown
+    (to deliver first — #58720) can invoke the identical cleanup AFTER delivery.
+    Closes the agent (subprocesses, sandboxes, browser daemons, OpenAI/httpx
+    client) and reaps stale async clients whose loop has since closed. Idempotent
+    and independently guarded, matching the original inline behavior.
+    """
+    try:
+        if agent is not None:
+            agent.close()
+    except (Exception, KeyboardInterrupt) as e:
+        logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+    # Each cron run spins up a short-lived worker thread whose event loop
+    # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
+    # httpx clients cached under that loop are now unusable — reap them
+    # so their transports don't accumulate in the process-global cache.
+    try:
+        from agent.auxiliary_client import cleanup_stale_async_clients
+        cleanup_stale_async_clients()
+    except Exception as e:
+        logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
@@ -3256,40 +3295,72 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         _scope_token = set_secret_scope(
             build_profile_secret_scope(_get_hermes_home())
         )
+        # Defer the cron agent's async-resource teardown until AFTER delivery.
+        # run_job normally closes the agent (and reaps stale async clients) in
+        # its finally block; doing that before _deliver_result runs means the
+        # live send races a torn-down async client (#58720). Passing a holder
+        # list makes run_job hand the agent back instead, and we tear it down
+        # below once delivery is done. Defense-in-depth alongside the
+        # interpreter-shutdown guard in _deliver_result.
+        _deferred_agents: list = []
         try:
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error = run_job(
+                job, defer_agent_teardown=_deferred_agents
+            )
+        except BaseException:
+            # run_job's finally still hands back the agent when it raises; tear
+            # it down here so a failed run never leaks its async resources
+            # (#10200), then re-raise into the outer handler. BaseException
+            # (not just Exception) so a KeyboardInterrupt/SystemExit mid-run
+            # still triggers teardown before propagating.
+            for _deferred_agent in _deferred_agents:
+                _teardown_cron_agent(_deferred_agent, job["id"])
+            raise
         finally:
             reset_secret_scope(_scope_token)
 
-        output_file = save_job_output(job["id"], output)
-        if verbose:
-            logger.info("Output saved to: %s", output_file)
-
-        # Deliver the final response to the origin/target chat.
-        # If the agent responded with [SILENT], skip delivery (but
-        # output is already saved above).  Failed jobs always deliver.
-        deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-        # Treat whitespace-only final responses the same as empty
-        # responses: do not deliver a blank message, and let the
-        # empty-response guard below mark the run as a soft failure.
-        should_deliver = bool(deliver_content.strip())
-        # Cron silence suppression — see _is_cron_silence_response.  Replaces the
-        # old `SILENT_MARKER in ...upper()` substring check, which both leaked
-        # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
-        # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
-        # #46917).  Keeps the intentional bracketed-prefix / trailing-line
-        # tolerance the cron contract relies on.
-        if should_deliver and success and _is_cron_silence_response(deliver_content):
-            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-            should_deliver = False
-
+        # Everything from here through delivery runs with the agent still live
+        # (deferred teardown). Wrap it ALL in a try/finally so that if any step
+        # between run_job returning and delivery — save_job_output, the [SILENT]
+        # / empty-response computation, or _deliver_result itself — raises, the
+        # deferred agent is still torn down. Otherwise the outer `except` would
+        # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
-        if should_deliver:
-            try:
-                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-            except Exception as de:
-                delivery_error = str(de)
-                logger.error("Delivery failed for job %s: %s", job["id"], de)
+        try:
+            output_file = save_job_output(job["id"], output)
+            if verbose:
+                logger.info("Output saved to: %s", output_file)
+
+            # Deliver the final response to the origin/target chat.
+            # If the agent responded with [SILENT], skip delivery (but
+            # output is already saved above).  Failed jobs always deliver.
+            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            # Treat whitespace-only final responses the same as empty
+            # responses: do not deliver a blank message, and let the
+            # empty-response guard below mark the run as a soft failure.
+            should_deliver = bool(deliver_content.strip())
+            # Cron silence suppression — see _is_cron_silence_response.  Replaces the
+            # old `SILENT_MARKER in ...upper()` substring check, which both leaked
+            # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
+            # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
+            # #46917).  Keeps the intentional bracketed-prefix / trailing-line
+            # tolerance the cron contract relies on.
+            if should_deliver and success and _is_cron_silence_response(deliver_content):
+                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                should_deliver = False
+
+            if should_deliver:
+                try:
+                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                except Exception as de:
+                    delivery_error = str(de)
+                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+        finally:
+            # Tear down the deferred agent(s) now that save + delivery have run
+            # (or raised). Must happen on every path so cron agents never leak
+            # their subprocesses/clients (#10200).
+            for _deferred_agent in _deferred_agents:
+                _teardown_cron_agent(_deferred_agent, job["id"])
 
         # Treat empty final_response as a soft failure so last_status
         # is not "ok" — the agent ran but produced nothing useful.

@@ -376,8 +376,11 @@ def _browser_cdp_via_supervisor(
             )
         result_msg = fut.result(timeout=timeout + 2)
     except Exception as exc:
+        from tools.browser_supervisor import _redact_cdp_error_text
+
         return tool_error(
-            f"CDP call via supervisor failed: {type(exc).__name__}: {exc}",
+            f"CDP call via supervisor failed: {type(exc).__name__}: "
+            f"{_redact_cdp_error_text(exc)}",
             cdp_docs=CDP_DOCS_URL,
         )
 

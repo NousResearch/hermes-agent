@@ -247,6 +247,71 @@ def test_generic_exception_redacts_token_in_message(monkeypatch):
     assert "***" in result["error"]
 
 
+# ---------------------------------------------------------------------------
+# frame_id supervisor routing
+# ---------------------------------------------------------------------------
+
+
+def test_supervisor_dispatch_failure_redacts_token(monkeypatch):
+    """A frame_id call dispatched through the CDP supervisor's live WebSocket
+    (``_browser_cdp_via_supervisor``) can fail with an exception whose text
+    embeds the CDP endpoint's ``?token=`` credential — the same leak class as
+    the stateless paths above, but through a separate egress point that must
+    also route through ``_redact_cdp_error_text``."""
+    from tools import browser_supervisor
+
+    class _FakeLoop:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeSupervisor:
+        _loop = _FakeLoop()
+        _state_lock = threading.Lock()
+        _frames: Dict[str, Any] = {}
+
+        def snapshot(self):
+            return type(
+                "_Snap",
+                (),
+                {
+                    "frame_tree": {
+                        "top": {"frame_id": "top1"},
+                        "children": [{"frame_id": "f1", "session_id": "sess1"}],
+                    }
+                },
+            )()
+
+    monkeypatch.setattr(
+        browser_supervisor.SUPERVISOR_REGISTRY,
+        "_by_task",
+        {"default": _FakeSupervisor()},
+    )
+
+    class _FakeFuture:
+        def result(self, timeout=None):
+            raise RuntimeError(f"dispatch failed talking to {_TOKEN_URL}")
+
+    def fake_schedule(coro, loop):
+        coro.close()  # avoid "coroutine was never awaited" warning
+        return _FakeFuture()
+
+    monkeypatch.setattr(
+        "agent.async_utils.safe_schedule_threadsafe", fake_schedule
+    )
+
+    result = json.loads(
+        browser_cdp_tool._browser_cdp_via_supervisor(
+            task_id="default",
+            frame_id="f1",
+            method="Runtime.evaluate",
+            params={},
+            timeout=5.0,
+        )
+    )
+    assert "SUPER-SECRET-TOKEN-12345" not in result["error"]
+    assert "***" in result["error"]
+
+
 def test_websockets_missing_returns_error(monkeypatch):
     monkeypatch.setattr(browser_cdp_tool, "_WS_AVAILABLE", False)
     result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets"))

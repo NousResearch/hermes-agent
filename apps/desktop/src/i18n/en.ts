@@ -378,7 +378,9 @@ export const en: Translations = {
     },
     personalization: {
       personalityTitle: 'Personality',
-      personalityIntro: 'Choose how APEX talks to you. New chats start with this style.'
+      personalityIntro: 'Choose how APEX talks to you. New chats start with this style.',
+      soulTitle: 'Personality file (SOUL.md)',
+      soulIntro: 'The active profile’s SOUL.md — the system prompt and personality instructions APEX starts every chat with.'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -1082,6 +1084,44 @@ export const en: Translations = {
     failedSaveSoul: 'Failed to save SOUL.md',
     failedCreate: 'Failed to create profile',
     failedRename: 'Failed to rename profile'
+  },
+
+  profileStats: {
+    close: 'Close profile',
+    signedOut: 'Not signed in',
+    loading: 'Loading usage stats…',
+    failedLoad: 'Failed to load usage stats',
+    emptyTitle: 'No activity yet',
+    emptyDesc: 'Start chatting and your usage stats will show up here.',
+    stats: {
+      sessions: 'Sessions',
+      tokens: 'Total tokens',
+      apiCalls: 'API calls',
+      activeDays: 'Active days',
+      skillsUsed: 'Skills used'
+    },
+    heatmap: {
+      title: 'Token activity',
+      daily: 'Daily',
+      weekly: 'Weekly',
+      cumulative: 'Cumulative',
+      less: 'Less',
+      more: 'More',
+      cellTitle: (date, tokens) => `${date} · ${tokens} tokens`
+    },
+    insights: {
+      title: 'Activity insights',
+      busiestDay: 'Busiest day',
+      avgPerActiveDay: 'Avg tokens per active day',
+      topModel: 'Most used model',
+      longestStreak: 'Longest streak',
+      streakDays: days => (days === 1 ? '1 day' : `${days} days`),
+      estimatedCost: 'Estimated cost'
+    },
+    topSkills: {
+      title: 'Top plugins',
+      uses: count => `${count} uses`
+    }
   },
 
   cron: {

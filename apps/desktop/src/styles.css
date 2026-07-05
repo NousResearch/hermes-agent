@@ -1539,5 +1539,295 @@ canvas {
   border-color: color-mix(in srgb, var(--dt-destructive) 32%, transparent);
   background: color-mix(in srgb, var(--dt-destructive) 5%, var(--p5-card-bg));
 }
+
+/* ── P5 Profile — the 个人资料 stats page (Claude Code Desktop profile layout:
+   centered avatar header → stat cards → token heatmap → insights/plugins).
+   Scoped under .p5-settings like the rest of P5 so it inherits the card
+   tokens; every color runs through the existing theme vars (--theme-primary /
+   --ui-* / --p5-*) so both light and dark themes hold. */
+.p5-settings .p5-profile-page {
+  --p5-hm-cell: 0.5625rem;
+  --p5-hm-gap: 0.1875rem;
+  margin-inline: auto;
+  width: 100%;
+  max-width: 44rem;
+  padding-top: 1.5rem;
+}
+
+.p5-settings .p5-profile-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: center;
+}
+
+/* Brand-tinted circular avatar with the account's first initial. */
+.p5-settings .p5-profile-avatar {
+  display: grid;
+  place-items: center;
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--theme-primary) 16%, transparent);
+  color: var(--theme-primary);
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.p5-settings .p5-profile-name {
+  color: var(--ui-text-primary);
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.p5-settings .p5-profile-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+}
+
+.p5-settings .p5-profile-plan {
+  border-radius: 9999px;
+  padding: 0.09375rem 0.5rem;
+  background: color-mix(in srgb, var(--theme-primary) 12%, transparent);
+  color: var(--theme-primary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* Stat cards row — rounded bordered cards, big number over a small label. */
+.p5-settings .p5-profile-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.25rem, 1fr));
+  gap: 0.625rem;
+  margin-top: 1.75rem;
+}
+
+.p5-settings .p5-profile-stat {
+  border: 0.0625rem solid var(--p5-card-border);
+  border-radius: var(--p5-card-radius);
+  background: var(--p5-card-bg);
+  box-shadow: var(--shadow-xs);
+  padding: 0.875rem 1rem;
+}
+
+.p5-settings .p5-profile-stat-value {
+  color: var(--ui-text-primary);
+  font-size: 1.375rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.p5-settings .p5-profile-stat-label {
+  margin-top: 0.1875rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.71875rem;
+}
+
+.p5-settings .p5-profile-section {
+  margin-top: 1.25rem;
+}
+
+.p5-settings .p5-profile-card {
+  border: 0.0625rem solid var(--p5-card-border);
+  border-radius: var(--p5-card-radius);
+  background: var(--p5-card-bg);
+  box-shadow: var(--shadow-xs);
+  padding: 0.875rem 1.125rem 1rem;
+}
+
+.p5-settings .p5-profile-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  color: var(--ui-text-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+/* 每日/每周/累计 segmented toggle. */
+.p5-settings .p5-profile-toggle {
+  display: inline-flex;
+  gap: 0.125rem;
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--ui-base) 6%, transparent);
+  padding: 0.125rem;
+}
+
+.p5-settings .p5-profile-toggle button {
+  border-radius: 0.4375rem;
+  padding: 0.1875rem 0.5625rem;
+  color: var(--ui-text-secondary);
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.p5-settings .p5-profile-toggle button:hover {
+  color: var(--ui-text-primary);
+}
+
+.p5-settings .p5-profile-toggle button[data-active='true'] {
+  background: var(--p5-card-bg);
+  color: var(--ui-text-primary);
+  box-shadow: var(--shadow-xs);
+}
+
+/* GitHub-style week × day heatmap. Column-major CSS grid; the wrapper scrolls
+   horizontally as a safety net on narrow windows. */
+.p5-settings .p5-profile-heatmap-scroll {
+  overflow-x: auto;
+  padding-bottom: 0.125rem;
+}
+
+.p5-settings .p5-profile-heatmap {
+  display: flex;
+  gap: 0.375rem;
+  width: max-content;
+}
+
+.p5-settings .p5-profile-weekdays {
+  display: grid;
+  grid-template-rows: repeat(7, var(--p5-hm-cell));
+  gap: var(--p5-hm-gap);
+  color: var(--ui-text-quaternary);
+  font-size: 0.5625rem;
+  line-height: var(--p5-hm-cell);
+  text-align: right;
+}
+
+.p5-settings .p5-profile-heatmap-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, var(--p5-hm-cell));
+  grid-auto-columns: var(--p5-hm-cell);
+  gap: var(--p5-hm-gap);
+}
+
+.p5-settings .p5-profile-heatmap-cell {
+  width: var(--p5-hm-cell);
+  height: var(--p5-hm-cell);
+  border-radius: 0.125rem;
+  background: color-mix(in srgb, var(--ui-base) 8%, transparent);
+}
+
+.p5-settings .p5-profile-heatmap-cell[data-future] {
+  visibility: hidden;
+}
+
+.p5-settings .p5-profile-heatmap-cell[data-level='1'] {
+  background: color-mix(in srgb, var(--theme-primary) 28%, transparent);
+}
+
+.p5-settings .p5-profile-heatmap-cell[data-level='2'] {
+  background: color-mix(in srgb, var(--theme-primary) 50%, transparent);
+}
+
+.p5-settings .p5-profile-heatmap-cell[data-level='3'] {
+  background: color-mix(in srgb, var(--theme-primary) 74%, transparent);
+}
+
+.p5-settings .p5-profile-heatmap-cell[data-level='4'] {
+  background: var(--theme-primary);
+}
+
+/* Month axis under the grid — one slot per week column, labels overflow
+   without shifting the track. */
+.p5-settings .p5-profile-heatmap-months {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: var(--p5-hm-cell);
+  gap: var(--p5-hm-gap);
+  margin-top: 0.25rem;
+  color: var(--ui-text-quaternary);
+  font-size: 0.5625rem;
+}
+
+.p5-settings .p5-profile-heatmap-months span {
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.p5-settings .p5-profile-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+  color: var(--ui-text-quaternary);
+  font-size: 0.625rem;
+}
+
+/* 活动洞察 | 最常用的插件 double column (single column when only one side has
+   data, or below the width breakpoint). */
+.p5-settings .p5-profile-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+  align-items: start;
+}
+
+@media (min-width: 40rem) {
+  .p5-settings .p5-profile-columns[data-two='true'] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.p5-settings .p5-profile-rows > * + * {
+  border-top: 0.0625rem solid var(--p5-divider);
+}
+
+.p5-settings .p5-profile-kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 0.5rem;
+}
+
+.p5-settings .p5-profile-kv-label {
+  color: var(--ui-text-tertiary);
+  font-size: 0.75rem;
+}
+
+.p5-settings .p5-profile-kv-value {
+  min-width: 0;
+  color: var(--ui-text-primary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.p5-settings .p5-profile-skill {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding-block: 0.5rem;
+  color: var(--ui-text-primary);
+  font-size: 0.75rem;
+}
+
+.p5-settings .p5-profile-skill-icon {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--theme-primary) 10%, transparent);
+  color: var(--theme-primary);
+}
 }
 /* ===== end P5 Settings ===== */

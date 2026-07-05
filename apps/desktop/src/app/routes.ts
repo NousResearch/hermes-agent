@@ -7,6 +7,9 @@ export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
+// 个人资料 — the account/usage-stats page (avatar header + token heatmap).
+// Distinct from PROFILES_ROUTE, which is the multi-profile (配置档案) manager.
+export const PROFILE_STATS_ROUTE = '/profile'
 export const AGENTS_ROUTE = '/agents'
 export const SEARCH_ROUTE = '/search'
 
@@ -17,6 +20,7 @@ export type AppView =
   | 'command-center'
   | 'cron'
   | 'messaging'
+  | 'profile'
   | 'profiles'
   | 'search'
   | 'settings'
@@ -29,6 +33,7 @@ export type AppRouteId =
   | 'cron'
   | 'messaging'
   | 'new'
+  | 'profile'
   | 'profiles'
   | 'search'
   | 'settings'
@@ -50,6 +55,7 @@ export const APP_ROUTES = [
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'search', path: SEARCH_ROUTE, view: 'search' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
+  { id: 'profile', path: PROFILE_STATS_ROUTE, view: 'profile' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' }
 ] as const satisfies readonly AppRoute[]
 
@@ -60,7 +66,13 @@ const RESERVED_PATHS: ReadonlySet<string> = new Set(APP_ROUTES.map(route => rout
 // While one is open the app's titlebar control clusters must hide so they don't
 // bleed over the overlay (they sit at a higher z-index than the overlay card).
 // cron/search/skills/artifacts are NOT overlays — they render in the main region.
-export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set(['agents', 'command-center', 'profiles', 'settings'])
+export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
+  'agents',
+  'command-center',
+  'profile',
+  'profiles',
+  'settings'
+])
 
 export function isOverlayView(view: AppView): boolean {
   return OVERLAY_VIEWS.has(view)

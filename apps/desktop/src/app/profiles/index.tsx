@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -13,25 +13,25 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
 import {
   createProfile,
   deleteProfile,
   getProfiles,
   getProfileSetupCommand,
-  getProfileSoul,
   type ProfileInfo,
-  renameProfile,
-  updateProfileSoul
+  renameProfile
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
+import { AlertTriangle, Pencil, Terminal, Trash2, Users } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+// SOUL.md editing moved to settings (设置 → 个性化 embeds it for the active
+// profile); this page keeps a per-profile instance for profile management.
+import { SoulEditor } from '../settings/soul-editor'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
@@ -356,99 +356,6 @@ function DetailRow({ children, label }: { children: React.ReactNode; label: stri
       <dt className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</dt>
       <dd className="text-sm text-foreground">{children}</dd>
     </div>
-  )
-}
-
-function SoulEditor({ profileName }: { profileName: string }) {
-  const { t } = useI18n()
-  const p = t.profiles
-  const [content, setContent] = useState('')
-  const [original, setOriginal] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<null | string>(null)
-  const requestRef = useRef<string>(profileName)
-
-  useEffect(() => {
-    requestRef.current = profileName
-    setLoading(true)
-    setError(null)
-    setContent('')
-    setOriginal('')
-
-    void (async () => {
-      try {
-        const soul = await getProfileSoul(profileName)
-
-        if (requestRef.current === profileName) {
-          setContent(soul.content)
-          setOriginal(soul.content)
-        }
-      } catch (err) {
-        if (requestRef.current === profileName) {
-          setError(err instanceof Error ? err.message : p.failedLoadSoul)
-        }
-      } finally {
-        if (requestRef.current === profileName) {
-          setLoading(false)
-        }
-      }
-    })()
-  }, [p, profileName])
-
-  const dirty = content !== original
-  const isEmpty = !content.trim()
-
-  async function handleSave() {
-    setSaving(true)
-    setError(null)
-
-    try {
-      await updateProfileSoul(profileName, content)
-      setOriginal(content)
-      notify({ kind: 'success', title: p.soulSaved, message: profileName })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : p.failedSaveSoul)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <section className="space-y-2">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">SOUL.md</h4>
-          <p className="text-xs text-muted-foreground">{p.soulDesc}</p>
-        </div>
-        {dirty && <span className="text-[0.65rem] text-muted-foreground">{p.unsavedChanges}</span>}
-      </div>
-
-      {loading ? (
-        <PageLoader className="min-h-44" label={p.loadingSoul} />
-      ) : (
-        <Textarea
-          className="min-h-72 font-mono text-xs leading-5"
-          onChange={event => setContent(event.target.value)}
-          placeholder={isEmpty ? p.emptySoul : undefined}
-          value={content}
-        />
-      )}
-
-      {error && (
-        <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
-
-      <div className="flex justify-end">
-        <Button disabled={!dirty || saving || loading} onClick={() => void handleSave()} size="sm">
-          <Save />
-          {saving ? p.saving : p.saveSoul}
-        </Button>
-      </div>
-    </section>
   )
 }
 

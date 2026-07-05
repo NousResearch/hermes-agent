@@ -372,7 +372,9 @@ export const zh: Translations = {
     },
     personalization: {
       personalityTitle: '人格',
-      personalityIntro: '选择 APEX 和你说话的风格，新对话会默认使用。'
+      personalityIntro: '选择 APEX 和你说话的风格，新对话会默认使用。',
+      soulTitle: '人格文件（SOUL.md）',
+      soulIntro: '当前配置档案的 SOUL.md——APEX 每次对话开始时加载的系统提示词与人格指令。'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -1266,6 +1268,44 @@ export const zh: Translations = {
     failedSaveSoul: '保存 SOUL.md 失败',
     failedCreate: '创建配置档案失败',
     failedRename: '重命名配置档案失败'
+  },
+
+  profileStats: {
+    close: '关闭个人资料',
+    signedOut: '未登录',
+    loading: '正在加载使用统计…',
+    failedLoad: '加载使用统计失败',
+    emptyTitle: '暂无使用数据',
+    emptyDesc: '开始对话后，这里会展示你的使用统计。',
+    stats: {
+      sessions: '会话',
+      tokens: 'Token 总量',
+      apiCalls: 'API 调用',
+      activeDays: '活跃天数',
+      skillsUsed: '用过的技能'
+    },
+    heatmap: {
+      title: 'Token 活动',
+      daily: '每日',
+      weekly: '每周',
+      cumulative: '累计',
+      less: '少',
+      more: '多',
+      cellTitle: (date, tokens) => `${date}：${tokens} tokens`
+    },
+    insights: {
+      title: '活动洞察',
+      busiestDay: '最活跃的一天',
+      avgPerActiveDay: '活跃日均 Token',
+      topModel: '最常用模型',
+      longestStreak: '最长连续活跃',
+      streakDays: days => `${days} 天`,
+      estimatedCost: '预估成本'
+    },
+    topSkills: {
+      title: '最常用的插件',
+      uses: count => `${count} 次`
+    }
   },
 
   cron: {

@@ -130,6 +130,7 @@ const CommandCenterView = lazy(async () => ({ default: (await import('./command-
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
+const ProfileStatsView = lazy(async () => ({ default: (await import('./profile')).ProfileStatsView }))
 const SearchView = lazy(async () => ({ default: (await import('./search')).SearchView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
@@ -229,6 +230,7 @@ export function DesktopController() {
     openAgents,
     openCommandCenterSection,
     profilesOpen,
+    profileStatsOpen,
     settingsOpen,
     toggleCommandCenter
   } = useOverlayRouting()
@@ -1002,6 +1004,12 @@ export function DesktopController() {
       {profilesOpen && (
         <Suspense fallback={null}>
           <ProfilesView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {profileStatsOpen && (
+        <Suspense fallback={null}>
+          <ProfileStatsView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
     </>

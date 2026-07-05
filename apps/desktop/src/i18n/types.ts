@@ -288,10 +288,13 @@ export interface Translations {
       removeTheme: string
       importedBadge: string
     }
-    // 个性化 — the consumer landing section (人格 picker + the former About content).
+    // 个性化 — the consumer landing section (人格 picker + SOUL.md + the former
+    // About content).
     personalization: {
       personalityTitle: string
       personalityIntro: string
+      soulTitle: string
+      soulIntro: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
@@ -857,6 +860,46 @@ export interface Translations {
     failedSaveSoul: string
     failedCreate: string
     failedRename: string
+  }
+
+  // 个人资料 — the profile stats page (avatar header + usage stats off the
+  // local analytics API). Distinct from `profiles` (the multi-profile manager).
+  profileStats: {
+    close: string
+    signedOut: string
+    loading: string
+    failedLoad: string
+    emptyTitle: string
+    emptyDesc: string
+    stats: {
+      sessions: string
+      tokens: string
+      apiCalls: string
+      activeDays: string
+      skillsUsed: string
+    }
+    heatmap: {
+      title: string
+      daily: string
+      weekly: string
+      cumulative: string
+      less: string
+      more: string
+      cellTitle: (date: string, tokens: string) => string
+    }
+    insights: {
+      title: string
+      busiestDay: string
+      avgPerActiveDay: string
+      topModel: string
+      longestStreak: string
+      streakDays: (days: number) => string
+      estimatedCost: string
+    }
+    topSkills: {
+      title: string
+      uses: (count: string) => string
+    }
   }
 
   cron: {

@@ -214,6 +214,55 @@ class TestBuildLaunchOptions:
 
 
 class TestWrapperEntrypoints:
+    def test_screenshot_returns_standard_data_path_shape(self, monkeypatch, tmp_path):
+        from tools import browser_cloakbrowser as bc
+
+        screenshot_bytes = b"\x89PNG\r\n\x1a\ncloakbrowser"
+        page = SimpleNamespace(screenshot=_awaitable(screenshot_bytes))
+        session = {"page": page, "refs": {}}
+        shots_dir = tmp_path / "cache" / "screenshots"
+
+        monkeypatch.setattr(bc, "_ensure_session", lambda task_id=None: session)
+        monkeypatch.setattr(bc, "_run_on_session_loop", lambda session, coro, timeout=None: bc._run_async(coro))
+        monkeypatch.setattr("hermes_constants.get_hermes_dir", lambda *parts: shots_dir)
+
+        result = json.loads(bc.cloakbrowser_screenshot(task_id="task-shot"))
+
+        assert result["success"] is True
+        assert result["data"]["path"].endswith(".png")
+        assert Path(result["data"]["path"]).read_bytes() == screenshot_bytes
+
+    def test_screenshot_annotate_true_includes_snapshot_annotations(self, monkeypatch, tmp_path):
+        from tools import browser_cloakbrowser as bc
+
+        screenshot_bytes = b"\x89PNG\r\n\x1a\ncloakbrowser"
+        page = SimpleNamespace(screenshot=_awaitable(screenshot_bytes))
+        session = {"page": page, "refs": {}}
+        snapshot = {
+            "snapshot": '- button "Submit" [@e1]',
+            "refs": {"e1": {"selector": "[data-hermes-ref=\"e1\"]", "tag": "button", "text": "Submit"}},
+            "element_count": 1,
+        }
+        shots_dir = tmp_path / "cache" / "screenshots"
+
+        monkeypatch.setattr(bc, "_ensure_session", lambda task_id=None: session)
+        monkeypatch.setattr(bc, "_ensure_live_page", _awaitable(page))
+        monkeypatch.setattr(bc, "_snapshot_page", _awaitable(snapshot))
+        monkeypatch.setattr(bc, "_run_on_session_loop", lambda session, coro, timeout=None: bc._run_async(coro))
+        monkeypatch.setattr("hermes_constants.get_hermes_dir", lambda *parts: shots_dir)
+
+        result = json.loads(bc.cloakbrowser_screenshot(task_id="task-shot", annotate=True))
+
+        assert result["success"] is True
+        assert result["data"]["annotations"] == [{
+            "ref": "@e1",
+            "label": 'button "Submit"',
+            "tag": "button",
+            "text": "Submit",
+            "selector": '[data-hermes-ref="e1"]',
+        }]
+        assert session["refs"] == snapshot["refs"]
+
     def test_launch_session_strips_duplicate_user_data_dir_for_persistent_launch(self, monkeypatch, tmp_path):
         from tools import browser_cloakbrowser as bc
 
@@ -373,6 +422,144 @@ class TestWrapperEntrypoints:
         result = json.loads(bc.cloakbrowser_get_images(task_id="task-images"))
 
         assert result == {"success": True, "images": [], "count": 0}
+
+    def test_ensure_session_runs_listener_registration_on_session_loop(self, monkeypatch):
+        from tools import browser_cloakbrowser as bc
+
+        class LoopBoundPage:
+            def __init__(self):
+                self.listeners = {}
+                self.loop_ids = []
+
+            def on(self, event, handler):
+                self.loop_ids.append(id(__import__("asyncio").get_running_loop()))
+                self.listeners[event] = handler
+
+        loop, thread = bc._start_loop_thread("cloakbrowser-test-loop")
+        session = {"page": LoopBoundPage(), "refs": {}, "_loop": loop, "_thread": thread}
+        monkeypatch.setitem(bc._sessions, "loop-test", session)
+        try:
+            ready = bc._ensure_session("loop-test")
+        finally:
+            bc._sessions.pop("loop-test", None)
+            bc._shutdown_loop_thread(loop, thread)
+
+        assert ready is session
+        assert len(session["page"].loop_ids) == 2
+        assert session["_console_listeners_page"] is session["page"]
+
+    def test_console_returns_buffered_messages_and_errors_and_clear_empties_buffers(self, monkeypatch):
+        from tools import browser_cloakbrowser as bc
+
+        session = {
+            "page": SimpleNamespace(url="https://example.com"),
+            "refs": {},
+            "console_messages": [
+                {"type": "log", "text": "hello", "source": "console"},
+                {"type": "error", "text": "oops", "source": "console"},
+            ],
+            "page_errors": [
+                {"message": "Uncaught TypeError", "source": "exception"},
+            ],
+        }
+        monkeypatch.setattr(bc, "_ensure_session", lambda task_id=None: session)
+
+        result = json.loads(bc.cloakbrowser_console(task_id="task-console"))
+
+        assert result == {
+            "success": True,
+            "console_messages": [
+                {"type": "log", "text": "hello", "source": "console"},
+                {"type": "error", "text": "oops", "source": "console"},
+            ],
+            "js_errors": [
+                {"message": "Uncaught TypeError", "source": "exception"},
+            ],
+            "total_messages": 2,
+            "total_errors": 1,
+        }
+
+        cleared = json.loads(bc.cloakbrowser_console(clear=True, task_id="task-console"))
+        assert cleared["success"] is True
+        assert cleared["total_messages"] == 2
+        assert cleared["total_errors"] == 1
+        assert session["console_messages"] == []
+        assert session["page_errors"] == []
+
+    def test_eval_returns_structured_serializable_result(self, monkeypatch):
+        from tools import browser_cloakbrowser as bc
+
+        page = SimpleNamespace(url="https://example.com", evaluate=_awaitable('{"title":"Example"}'))
+        monkeypatch.setattr(bc, "_ensure_session", lambda task_id=None: {"page": page, "refs": {}})
+
+        result = json.loads(bc.cloakbrowser_eval("document.title", task_id="task-eval"))
+
+        assert result == {
+            "success": True,
+            "result": {"title": "Example"},
+            "result_type": "dict",
+            "method": "cloakbrowser_native",
+        }
+
+    def test_session_listener_registration_buffers_console_and_pageerror_events(self):
+        from tools import browser_cloakbrowser as bc
+
+        class FakePage:
+            def __init__(self):
+                self.listeners = {}
+                self.loop_ids = []
+
+            def on(self, event, handler):
+                self.loop_ids.append(id(__import__("asyncio").get_running_loop()))
+                self.listeners[event] = handler
+
+        page = FakePage()
+        session = {"page": page, "refs": {}}
+
+        bc._run_async(bc._ensure_session_ready(session))
+
+        page.listeners["console"](SimpleNamespace(type="warning", text="watch out"))
+        page.listeners["pageerror"](RuntimeError("boom"))
+
+        assert len(page.loop_ids) == 2
+        assert len(set(page.loop_ids)) == 1
+        assert session["console_messages"] == [
+            {"type": "warning", "text": "watch out", "source": "console"},
+        ]
+        assert session["page_errors"] == [
+            {"message": "boom", "source": "exception"},
+        ]
+
+    def test_session_listener_registration_reregisters_after_page_recreation(self):
+        from tools import browser_cloakbrowser as bc
+
+        class FakePage:
+            def __init__(self, closed=False):
+                self.closed = closed
+                self.listeners = {}
+
+            def is_closed(self):
+                return self.closed
+
+            def on(self, event, handler):
+                __import__("asyncio").get_running_loop()
+                self.listeners[event] = handler
+
+        first_page = FakePage(closed=True)
+        replacement_page = FakePage()
+        context = SimpleNamespace(new_page=_awaitable(replacement_page))
+        session = {"page": first_page, "context": context, "refs": {"e1": {"selector": "#x"}}}
+
+        page = bc._run_async(bc._ensure_session_ready(session))
+        assert page is replacement_page
+        assert session["page"] is replacement_page
+        assert session["refs"] == {}
+        assert session["_console_listeners_page"] is replacement_page
+        replacement_page.listeners["console"](SimpleNamespace(type="info", text="fresh page"))
+
+        assert session["console_messages"] == [
+            {"type": "info", "text": "fresh page", "source": "console"},
+        ]
 
 
 class TestBrowserToolRouting:

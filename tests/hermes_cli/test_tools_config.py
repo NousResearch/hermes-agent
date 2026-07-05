@@ -815,6 +815,7 @@ def test_cloakbrowser_provider_writes_browser_config(monkeypatch):
     assert config["browser"]["use_gateway"] is False
     assert config["browser"]["cloakbrowser"] == {
         "enabled": True,
+        "inactivity_timeout": 3600,
         "headless": True,
         "humanize": False,
         "proxy": "http://proxy.example:8080",
@@ -1166,6 +1167,7 @@ def test_reconfigure_cloakbrowser_uses_existing_values_as_prompt_defaults(monkey
     assert seen_prompts == []
     assert config["browser"]["cloakbrowser"] == {
         "enabled": True,
+        "inactivity_timeout": 3600,
         "headless": True,
         "humanize": False,
         "proxy": "http://proxy.example:8080",

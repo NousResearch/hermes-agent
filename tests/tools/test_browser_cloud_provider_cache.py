@@ -61,6 +61,34 @@ class TestCloudProviderCachePolicy:
         assert browser_tool._get_cloud_provider() is fake_provider
         assert factory.call_count == 1
 
+    def test_explicit_cloakbrowser_caches_local_mode_without_plugin_lookup(
+        self, monkeypatch, caplog
+    ):
+        """CloakBrowser selection is native local backend, not plugin cloud mode."""
+        browser_use_factory = Mock(side_effect=AssertionError("auto-detect should not run"))
+        browserbase_factory = Mock(side_effect=AssertionError("auto-detect should not run"))
+        registry_lookup = Mock(side_effect=AssertionError("plugin lookup should not run"))
+        plugin_loader = Mock(side_effect=AssertionError("plugin discovery should not run"))
+
+        monkeypatch.setattr(browser_tool, "BrowserUseProvider", browser_use_factory)
+        monkeypatch.setattr(browser_tool, "BrowserbaseProvider", browserbase_factory)
+        monkeypatch.setattr(browser_tool, "_registry_get_browser_provider", registry_lookup)
+        monkeypatch.setattr(browser_tool, "_ensure_browser_plugins_loaded", plugin_loader)
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"browser": {"cloud_provider": "cloakbrowser"}},
+        )
+
+        with caplog.at_level(logging.WARNING, logger="tools.browser_tool"):
+            assert browser_tool._get_cloud_provider() is None
+
+        assert browser_tool._cloud_provider_resolved is True
+        assert not [r for r in caplog.records if "registered browser plugin" in r.message]
+        assert browser_use_factory.call_count == 0
+        assert browserbase_factory.call_count == 0
+        assert registry_lookup.call_count == 0
+        assert plugin_loader.call_count == 0
+
     def test_no_credentials_yet_does_not_cache_none(self, monkeypatch):
         """Auto-detect path with no creds: must NOT poison the cache."""
         monkeypatch.setattr(

@@ -14,11 +14,12 @@ import inspect
 import json
 import os
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
 from hermes_cli import config as hermes_config
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_hermes_dir
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 from tools.registry import tool_error
 
@@ -373,6 +374,12 @@ async def _ensure_live_page(session: dict[str, Any]) -> Any:
     return page
 
 
+async def _ensure_session_ready(session: dict[str, Any]) -> Any:
+    page = await _ensure_live_page(session)
+    _register_console_listeners(session)
+    return page
+
+
 def _ensure_session(task_id: str | None = None) -> dict[str, Any]:
     key = _task_key(task_id)
     with _sessions_lock:
@@ -381,11 +388,81 @@ def _ensure_session(task_id: str | None = None) -> dict[str, Any]:
             session = _launch_session_on_dedicated_loop(timeout=_CLOAKBROWSER_LAUNCH_TIMEOUT)
             _sessions[key] = session
     try:
-        _run_on_session_loop(session, _ensure_live_page(session), timeout=_CLOAKBROWSER_DEFAULT_TIMEOUT)
+        _run_on_session_loop(session, _ensure_session_ready(session), timeout=_CLOAKBROWSER_DEFAULT_TIMEOUT)
         return session
     except Exception:
         _teardown_session(session, task_id=task_id)
         raise
+
+
+def _console_buffer(session: dict[str, Any]) -> list[dict[str, Any]]:
+    messages = session.get("console_messages")
+    if not isinstance(messages, list):
+        messages = []
+        session["console_messages"] = messages
+    return messages
+
+
+def _page_error_buffer(session: dict[str, Any]) -> list[dict[str, Any]]:
+    errors = session.get("page_errors")
+    if not isinstance(errors, list):
+        errors = []
+        session["page_errors"] = errors
+    return errors
+
+
+def _listener_text(value: Any) -> str:
+    text_attr = getattr(value, "text", None)
+    if callable(text_attr):
+        try:
+            text_attr = text_attr()
+        except Exception:
+            text_attr = None
+    if text_attr not in (None, ""):
+        return str(text_attr)
+    return str(value or "")
+
+
+def _listener_type(value: Any) -> str:
+    type_attr = getattr(value, "type", None)
+    if callable(type_attr):
+        try:
+            type_attr = type_attr()
+        except Exception:
+            type_attr = None
+    return str(type_attr or "log")
+
+
+def _register_console_listeners(session: dict[str, Any]) -> None:
+    page = session.get("page")
+    _console_buffer(session)
+    _page_error_buffer(session)
+    if session.get("_console_listeners_page") is page:
+        return
+    if page is None or not callable(getattr(page, "on", None)):
+        session["_console_listeners_page"] = page
+        return
+
+    def _on_console(message: Any) -> None:
+        _console_buffer(session).append(
+            {
+                "type": _listener_type(message),
+                "text": _listener_text(message),
+                "source": "console",
+            }
+        )
+
+    def _on_pageerror(error: Any) -> None:
+        _page_error_buffer(session).append(
+            {
+                "message": _listener_text(error),
+                "source": "exception",
+            }
+        )
+
+    page.on("console", _on_console)
+    page.on("pageerror", _on_pageerror)
+    session["_console_listeners_page"] = page
 
 
 async def _navigate_page(page: Any, url: str, timeout: float | None = None) -> None:
@@ -461,6 +538,67 @@ def _resolve_ref(session: dict[str, Any], ref: str) -> tuple[str, str]:
     if not info or not info.get("selector"):
         raise RuntimeError(f"Unknown element ref '@{clean_ref}'. Call browser_snapshot first.")
     return clean_ref, str(info["selector"])
+
+
+async def _capture_screenshot(page: Any, *, full: bool = True) -> bytes:
+    screenshot = getattr(page, "screenshot", None)
+    if not callable(screenshot):
+        raise RuntimeError("Browser page does not support screenshots")
+    payload = await screenshot(full_page=full)
+    if isinstance(payload, (bytes, bytearray)):
+        return bytes(payload)
+    if isinstance(payload, str):
+        candidate = Path(payload)
+        if candidate.exists():
+            return candidate.read_bytes()
+    raise RuntimeError("CloakBrowser screenshot capture returned no image bytes")
+
+
+def _annotation_payload_from_snapshot(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    refs = snapshot.get("refs", {}) or {}
+    annotations: list[dict[str, Any]] = []
+    for ref, info in refs.items():
+        clean_ref = str(ref).lstrip("@")
+        tag = str(info.get("tag") or "element").strip() or "element"
+        text = str(info.get("text") or "").strip()
+        label = f"{tag} {json.dumps(text)}" if text else tag
+        annotations.append({
+            "ref": f"@{clean_ref}",
+            "label": label,
+            "tag": tag,
+            "text": text,
+            "selector": str(info.get("selector") or ""),
+        })
+    return annotations
+
+
+def cloakbrowser_screenshot(
+    task_id: str | None = None,
+    *,
+    annotate: bool = False,
+    full: bool = True,
+) -> str:
+    try:
+        session = _ensure_session(task_id)
+        page = _run_on_session_loop(session, _ensure_live_page(session))
+        annotation_data = None
+        if annotate:
+            snapshot = _run_on_session_loop(session, _snapshot_page(page, full=False))
+            session["refs"] = snapshot.get("refs", {}) or {}
+            annotation_data = _annotation_payload_from_snapshot(snapshot)
+        screenshot_bytes = _run_on_session_loop(session, _capture_screenshot(page, full=full))
+        screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        screenshot_path = screenshots_dir / f"browser_screenshot_{uuid.uuid4().hex}.png"
+        screenshot_path.write_bytes(screenshot_bytes)
+        data: dict[str, Any] = {"path": str(screenshot_path)}
+        if annotation_data is not None:
+            data["annotations"] = annotation_data
+        return json.dumps({"success": True, "data": data}, ensure_ascii=False)
+    except ModuleNotFoundError:
+        return tool_error("CloakBrowser Python package is not installed", success=False)
+    except Exception as exc:
+        return tool_error(str(exc), success=False)
 
 
 def cloakbrowser_navigate(url: str, task_id: str | None = None) -> str:
@@ -617,12 +755,55 @@ def cloakbrowser_get_images(task_id: str | None = None) -> str:
         return tool_error(str(exc), success=False)
 
 
+def cloakbrowser_eval(expression: str, task_id: str | None = None) -> str:
+    try:
+        session = _ensure_session(task_id)
+        page = _run_on_session_loop(session, _ensure_live_page(session))
+        raw_result = _run_on_session_loop(session, page.evaluate(expression))
+        parsed = raw_result
+        if isinstance(raw_result, str):
+            try:
+                parsed = json.loads(raw_result)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return json.dumps(
+            {
+                "success": True,
+                "result": parsed,
+                "result_type": type(parsed).__name__,
+                "method": "cloakbrowser_native",
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+    except ModuleNotFoundError:
+        return tool_error("CloakBrowser Python package is not installed", success=False)
+    except Exception as exc:
+        return tool_error(str(exc), success=False)
+
+
 def cloakbrowser_console(clear: bool = False, task_id: str | None = None) -> str:
-    del clear, task_id
-    return tool_error(
-        "CloakBrowser console is not implemented in this minimal slice yet.",
-        success=False,
-    )
+    try:
+        session = _ensure_session(task_id)
+        messages = list(_console_buffer(session))
+        errors = list(_page_error_buffer(session))
+        if clear:
+            session["console_messages"] = []
+            session["page_errors"] = []
+        return json.dumps(
+            {
+                "success": True,
+                "console_messages": messages,
+                "js_errors": errors,
+                "total_messages": len(messages),
+                "total_errors": len(errors),
+            },
+            ensure_ascii=False,
+        )
+    except ModuleNotFoundError:
+        return tool_error("CloakBrowser Python package is not installed", success=False)
+    except Exception as exc:
+        return tool_error(str(exc), success=False)
 
 
 def cloakbrowser_close(task_id: str | None = None) -> bool:

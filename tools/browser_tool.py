@@ -162,7 +162,9 @@ try:
         cloakbrowser_press,
         cloakbrowser_current_url,
         cloakbrowser_get_images,
+        cloakbrowser_eval,
         cloakbrowser_console,
+        cloakbrowser_screenshot,
         cloakbrowser_close,
         cloakbrowser_close_all,
     )
@@ -197,7 +199,13 @@ except ImportError:
     def cloakbrowser_get_images(task_id: Optional[str] = None) -> str:
         raise RuntimeError("CloakBrowser wrapper unavailable")
 
+    def cloakbrowser_eval(expression: str, task_id: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
     def cloakbrowser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
+        raise RuntimeError("CloakBrowser wrapper unavailable")
+
+    def cloakbrowser_screenshot(task_id: Optional[str] = None, *, annotate: bool = False, full: bool = True) -> str:
         raise RuntimeError("CloakBrowser wrapper unavailable")
 
     def cloakbrowser_close(task_id: Optional[str] = None) -> bool:
@@ -740,7 +748,12 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
             provider_key = normalize_browser_cloud_provider(
                 browser_cfg.get("cloud_provider")
             )
-            if provider_key == "local":
+            if provider_key in {"local", "cloakbrowser"}:
+                # ``browser.cloud_provider`` is still the persisted selector for
+                # both real cloud plugins and native local backends wired in-core.
+                # CloakBrowser is the latter: keep its explicit selection sticky
+                # like ``local`` and do NOT fall through to plugin lookup or
+                # Browser Use / Browserbase auto-detect.
                 _cached_cloud_provider = None
                 _cloud_provider_resolved = True
                 return None
@@ -3524,17 +3537,6 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         policy_error = _enforce_browser_eval_policy(expression)
         if policy_error:
             return json.dumps({"success": False, "error": policy_error}, ensure_ascii=False)
-        if _is_cloakbrowser_mode():
-            return json.dumps({
-                "success": False,
-                "error": (
-                    "JavaScript evaluation via browser_console(expression=...) is "
-                    "not yet supported with the CloakBrowser backend in this "
-                    "minimal slice. CloakBrowser console capture is also not "
-                    "available yet; use browser_snapshot or browser_vision to "
-                    "inspect page state instead."
-                ),
-            }, ensure_ascii=False)
         return _browser_eval(expression, task_id)
 
     # --- Console output mode (original behaviour) ---
@@ -3543,7 +3545,21 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         return camofox_console(clear, task_id)
     if _is_cloakbrowser_mode():
         _mark_cloakbrowser_activity(task_id)
-        return cloakbrowser_console(clear, task_id)
+        raw_result = cloakbrowser_console(clear, task_id)
+        try:
+            result = json.loads(raw_result)
+        except Exception:
+            return raw_result
+        if result.get("success"):
+            response = {
+                "success": True,
+                "console_messages": _redact_browser_output(result.get("console_messages", [])),
+                "js_errors": _redact_browser_output(result.get("js_errors", [])),
+                "total_messages": int(result.get("total_messages", 0)),
+                "total_errors": int(result.get("total_errors", 0)),
+            }
+            return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        return json.dumps(_copy_fallback_warning(result, result), ensure_ascii=False)
 
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -3805,6 +3821,29 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                     "browser mode."
                 ),
             }, ensure_ascii=False)
+
+    if _is_cloakbrowser_mode():
+        raw_result = cloakbrowser_eval(expression, task_id)
+        try:
+            result = json.loads(raw_result)
+        except Exception:
+            return raw_result
+        if _eval_ssrf_guard_active(effective_task_id):
+            _blocked_url = _current_page_private_url(effective_task_id)
+            if _blocked_url:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "Blocked: page URL targets a private or internal address "
+                        f"({_blocked_url}). This may have been caused by a "
+                        "JavaScript navigation via browser_console."
+                    ),
+                }, ensure_ascii=False)
+        if result.get("success"):
+            if "result" in result:
+                result["result"] = _redact_browser_output(result.get("result"))
+            return json.dumps(_copy_fallback_warning(result, result), ensure_ascii=False, default=str)
+        return json.dumps(_copy_fallback_warning(result, result), ensure_ascii=False)
 
     # Camofox keeps its own raw-``task_id``-keyed session map, so pass the raw
     # id (matching every other Camofox tool) rather than the resolved
@@ -4174,6 +4213,25 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         from tools.browser_camofox import camofox_vision
         return camofox_vision(question, annotate, task_id)
 
+    if _is_cloakbrowser_mode():
+        result = {}
+        try:
+            _mark_cloakbrowser_activity(task_id)
+            raw_result = cloakbrowser_screenshot(task_id=task_id, annotate=annotate, full=True)
+            result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        except json.JSONDecodeError:
+            return json.dumps({
+                "success": False,
+                "error": "Failed to parse CloakBrowser screenshot response",
+            }, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({
+                "success": False,
+                "error": f"Failed to take screenshot (native CloakBrowser mode): {e}",
+            }, ensure_ascii=False)
+    else:
+        result = None
+
     import base64
     import uuid as uuid_mod
     from hermes_constants import get_hermes_dir
@@ -4254,7 +4312,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # Prune old screenshots (older than 24 hours) to prevent unbounded disk growth
         _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
 
-        if _lp_prerouted and screenshot_path.exists():
+        if result is not None:
+            pass
+        elif _lp_prerouted and screenshot_path.exists():
             result = {
                 "success": True,
                 "data": {

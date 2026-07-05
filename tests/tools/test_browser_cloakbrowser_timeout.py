@@ -369,6 +369,61 @@ class TestNormalBehaviorPreserved:
 
 
 class TestCloakBrowserPersistencePolicy:
+    @pytest.mark.parametrize(
+        ("headless", "task_id"),
+        [
+            (False, "headed-persist"),
+            (True, "headless-persist"),
+        ],
+    )
+    def test_native_session_stays_open_across_turns_for_headed_and_headless(
+        self,
+        monkeypatch,
+        headless,
+        task_id,
+    ):
+        launch_calls = []
+
+        async def fake_launch_session():
+            launch_calls.append(headless)
+            page = SimpleNamespace(
+                url="about:blank",
+                title=_awaitable("Persisted Page"),
+            )
+            return {
+                "page": page,
+                "context": SimpleNamespace(),
+                "refs": {},
+            }
+
+        def fake_navigate(page, url, timeout=None):
+            page.url = url
+            return _awaitable(None)()
+
+        monkeypatch.setattr(bc, "_launch_session", fake_launch_session)
+        monkeypatch.setattr(bc, "build_cloakbrowser_launch_options", lambda: {"headless": headless})
+        monkeypatch.setattr(bc, "_navigate_page", fake_navigate)
+        monkeypatch.setattr(
+            bc,
+            "_snapshot_page",
+            _awaitable({
+                "snapshot": '- link "Docs" [@e1]',
+                "element_count": 1,
+                "refs": {"e1": {"selector": "#docs"}},
+            }),
+        )
+
+        first = json.loads(bc.cloakbrowser_navigate("https://example.com/one", task_id=task_id))
+        second = json.loads(bc.cloakbrowser_snapshot(task_id=task_id))
+
+        assert first["success"] is True
+        assert second["success"] is True
+        assert launch_calls == [headless]
+        session = bc._sessions[task_id]
+        assert getattr(session["page"], "url", None) == "https://example.com/one"
+        assert bc.cloakbrowser_close(task_id) is True
+        _wait_for_thread_stop(session["_thread"])
+
     def test_inactivity_cleanup_closes_native_cloakbrowser_session(self, monkeypatch):
         from tools import browser_tool as bt
 
@@ -378,7 +433,8 @@ class TestCloakBrowserPersistencePolicy:
         monkeypatch.setattr(bt, "_active_sessions", {})
         monkeypatch.setattr(bt, "_last_active_session_key", {})
         monkeypatch.setattr(bt, "_session_last_activity", {"idle-task": 0.0})
-        monkeypatch.setattr(bt, "BROWSER_SESSION_INACTIVITY_TIMEOUT", 30)
+        monkeypatch.setattr(bt, "_get_cloakbrowser_session_inactivity_timeout", lambda: 30)
+        monkeypatch.setattr(bt, "BROWSER_SESSION_INACTIVITY_TIMEOUT", 3600)
         monkeypatch.setattr(bt.time, "time", lambda: 100.0)
 
         bt._cleanup_inactive_browser_sessions()
@@ -400,3 +456,42 @@ class TestCloakBrowserPersistencePolicy:
 
         assert closed == ["cleanup-task"]
         assert "cleanup-task" not in bt._session_last_activity
+
+    def test_timeout_poison_teardown_closes_resources_immediately(self):
+        events = []
+
+        async def fake_launch_session():
+            page = _LoopBoundClosable("page", events)
+            context = _LoopBoundClosable("context", events)
+            browser = _LoopBoundClosable("browser", events)
+            return {
+                "page": page,
+                "context": context,
+                "browser": browser,
+                "refs": {},
+                "persistent": False,
+            }
+
+        with patch.object(bc, "_launch_session", fake_launch_session):
+            session = bc._ensure_session("poisoned-timeout")
+
+        with patch.object(bc, "_CLOAKBROWSER_NAV_TIMEOUT", 0.05), patch.object(
+            bc,
+            "_navigate_page",
+            _never_completes,
+        ):
+            result = json.loads(
+                bc.cloakbrowser_navigate(
+                    "https://example.com/hang",
+                    task_id="poisoned-timeout",
+                )
+            )
+
+        assert result["success"] is False
+        assert "timed out" in result["error"]
+        assert events == [("page", "close"), ("context", "close"), ("browser", "close")]
+        assert session["page"].close_calls == 1
+        assert session["context"].close_calls == 1
+        assert session["browser"].close_calls == 1
+        assert "poisoned-timeout" not in bc._sessions
+        _wait_for_thread_stop(session["_thread"])

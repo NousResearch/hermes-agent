@@ -160,19 +160,67 @@ class TestBrowserConsole:
         assert result == {"success": True, "result": "Example"}
         mock_eval.assert_called_once_with("document.title", "test")
 
-    def test_expression_reports_cloakbrowser_backend_limitation_without_eval(self):
+    def test_expression_routes_cloakbrowser_through_shared_eval_policy(self):
         from tools.browser_tool import browser_console
 
         with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
              patch("tools.browser_tool._is_cloakbrowser_mode", return_value=True), \
-             patch("tools.browser_tool._browser_eval") as mock_eval:
+             patch("tools.browser_tool._browser_eval", return_value=json.dumps({"success": True, "result": "Example"})) as mock_eval:
             result = json.loads(browser_console(expression="document.title", task_id="test"))
 
-        assert result["success"] is False
-        assert "browser_console(expression=...)" in result["error"]
-        assert "CloakBrowser backend" in result["error"]
-        assert "browser_snapshot or browser_vision" in result["error"]
-        mock_eval.assert_not_called()
+        assert result == {"success": True, "result": "Example"}
+        mock_eval.assert_called_once_with("document.title", "test")
+
+    def test_expression_redacts_cloakbrowser_eval_result_with_shared_output_path(self):
+        from tools.browser_tool import browser_console
+
+        fake_key = "ghp_" + "CLOAKBROWSEREVALSECRET1234567890"
+        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+             patch("tools.browser_tool._is_cloakbrowser_mode", return_value=True), \
+             patch("tools.browser_tool._last_session_key", return_value="test"), \
+             patch("tools.browser_tool._eval_ssrf_guard_active", return_value=False), \
+             patch(
+                 "tools.browser_tool.cloakbrowser_eval",
+                 return_value=json.dumps({
+                     "success": True,
+                     "result": fake_key,
+                     "result_type": "str",
+                     "method": "cloakbrowser_native",
+                     "fallback_warning": "warn",
+                 }),
+             ):
+            result = json.loads(browser_console(expression="document.title", task_id="test"))
+
+        assert result["success"] is True
+        assert result["fallback_warning"] == "warn"
+        assert "CLOAKBROWSEREVALSECRET" not in json.dumps(result)
+        assert result["result"].startswith("ghp_")
+
+    def test_redacts_cloakbrowser_console_output_with_shared_output_path(self):
+        from tools.browser_tool import browser_console
+
+        fake_key = "sk-" + "CLOAKBROWSERCONSOLESECRET1234567890"
+        with patch("tools.browser_tool._is_cloakbrowser_mode", return_value=True), \
+             patch(
+                 "tools.browser_tool.cloakbrowser_console",
+                 return_value=json.dumps(
+                     {
+                         "success": True,
+                         "console_messages": [{"text": f"token={fake_key}", "type": "log", "source": "console"}],
+                         "js_errors": [{"message": f"boom {fake_key}", "source": "exception"}],
+                         "total_messages": 1,
+                         "total_errors": 1,
+                         "fallback_warning": "warn",
+                     }
+                 ),
+             ):
+            result = json.loads(browser_console(task_id="test"))
+
+        assert result["success"] is True
+        assert result["fallback_warning"] == "warn"
+        assert "CLOAKBROWSERCONSOLESECRET" not in json.dumps(result)
+        assert fake_key not in result["console_messages"][0]["text"]
+        assert fake_key not in result["js_errors"][0]["message"]
 
     def test_expression_blocks_cookie_access_before_eval(self):
         from tools.browser_tool import browser_console
@@ -450,6 +498,173 @@ class TestBrowserVisionConfig:
         assert result["meta"]["annotations"] == annotations
         assert any(p.get("type") == "image_url" for p in result["content"])
         assert f"Screenshot path: {screenshot}" in result["text_summary"]
+        mock_get_vision_model.assert_not_called()
+        mock_llm.assert_not_called()
+
+    def test_browser_vision_routes_cloakbrowser_capture_through_shared_pipeline(self, tmp_path):
+        from tools.browser_tool import browser_vision
+
+        shots_dir = tmp_path / "cache" / "screenshots"
+        shots_dir.mkdir(parents=True, exist_ok=True)
+        screenshot = shots_dir / "cloakbrowser.png"
+        screenshot.write_bytes(b"\x89PNG\r\n\x1a\ncloakbrowser")
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "CloakBrowser screenshot analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+            patch("tools.browser_tool._cleanup_old_screenshots"),
+            patch("tools.browser_tool._is_camofox_mode", return_value=False),
+            patch("tools.browser_tool._is_cloakbrowser_mode", return_value=True),
+            patch(
+                "tools.browser_tool.cloakbrowser_screenshot",
+                return_value=json.dumps({"success": True, "data": {"path": str(screenshot)}}),
+            ) as mock_cb_screenshot,
+            patch(
+                "tools.browser_tool._run_browser_command",
+                side_effect=AssertionError("generic screenshot path should not run for CloakBrowser"),
+            ),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {}}}),
+            patch("tools.browser_tool.call_llm", return_value=mock_response) as mock_llm,
+        ):
+            result = json.loads(browser_vision("what is on the page?", task_id="test"))
+
+        assert result["success"] is True
+        assert result["analysis"] == "CloakBrowser screenshot analysis"
+        assert result["screenshot_path"] == str(screenshot)
+        mock_cb_screenshot.assert_called_once_with(task_id="test", annotate=False, full=True)
+        image_url = mock_llm.call_args.kwargs["messages"][0]["content"][1]["image_url"]["url"]
+        assert image_url.startswith("data:image/png;base64,")
+
+    def test_browser_vision_cloakbrowser_native_fast_path_preserves_screenshot_path(self, tmp_path):
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from tools.browser_tool import browser_vision
+
+        shots_dir = tmp_path / "cache" / "screenshots"
+        shots_dir.mkdir(parents=True, exist_ok=True)
+        screenshot = shots_dir / "cloakbrowser-native.png"
+        screenshot.write_bytes(b"\x89PNG\r\n\x1a\ncloakbrowser-native")
+
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with (
+                patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+                patch("tools.browser_tool._cleanup_old_screenshots"),
+                patch("tools.browser_tool._is_camofox_mode", return_value=False),
+                patch("tools.browser_tool._is_cloakbrowser_mode", return_value=True),
+                patch(
+                    "tools.browser_tool.cloakbrowser_screenshot",
+                    return_value=json.dumps({"success": True, "data": {"path": str(screenshot)}}),
+                ),
+                patch(
+                    "tools.browser_tool._run_browser_command",
+                    side_effect=AssertionError("generic screenshot path should not run for CloakBrowser"),
+                ),
+                patch("hermes_cli.config.load_config", return_value={"model": {"supports_vision": True}}),
+                patch("tools.browser_tool._get_vision_model") as mock_get_vision_model,
+                patch("tools.browser_tool.call_llm") as mock_llm,
+            ):
+                result = browser_vision("what is on the page?", task_id="test")
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, dict)
+        assert result["_multimodal"] is True
+        assert result["meta"]["screenshot_path"] == str(screenshot)
+        assert f"Screenshot path: {screenshot}" in result["text_summary"]
+        mock_get_vision_model.assert_not_called()
+        mock_llm.assert_not_called()
+
+    def test_browser_vision_cloakbrowser_annotate_true_preserves_annotations(self, tmp_path):
+        from tools.browser_tool import browser_vision
+
+        shots_dir = tmp_path / "cache" / "screenshots"
+        shots_dir.mkdir(parents=True, exist_ok=True)
+        screenshot = shots_dir / "cloakbrowser-annotated.png"
+        screenshot.write_bytes(b"\x89PNG\r\n\x1a\ncloakbrowser-annotated")
+        annotations = [{"ref": "@e1", "label": 'button "Submit"'}]
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Annotated CloakBrowser screenshot analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+            patch("tools.browser_tool._cleanup_old_screenshots"),
+            patch("tools.browser_tool._is_camofox_mode", return_value=False),
+            patch("tools.browser_tool._is_cloakbrowser_mode", return_value=True),
+            patch("tools.browser_tool._mark_cloakbrowser_activity") as mock_mark_activity,
+            patch(
+                "tools.browser_tool.cloakbrowser_screenshot",
+                return_value=json.dumps({"success": True, "data": {"path": str(screenshot), "annotations": annotations}}),
+            ) as mock_cb_screenshot,
+            patch(
+                "tools.browser_tool._run_browser_command",
+                side_effect=AssertionError("generic screenshot path should not run for CloakBrowser"),
+            ),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {}}}),
+            patch("tools.browser_tool.call_llm", return_value=mock_response),
+        ):
+            raw_result = browser_vision("what is on the page?", annotate=True, task_id="test")
+
+        assert isinstance(raw_result, str)
+        result = json.loads(raw_result)
+        assert result["success"] is True
+        assert result["annotations"] == annotations
+        mock_mark_activity.assert_called_once_with("test")
+        mock_cb_screenshot.assert_called_once_with(task_id="test", annotate=True, full=True)
+
+    def test_browser_vision_cloakbrowser_native_fast_path_marks_activity_before_capture(self, tmp_path):
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from tools.browser_tool import browser_vision
+
+        shots_dir = tmp_path / "cache" / "screenshots"
+        shots_dir.mkdir(parents=True, exist_ok=True)
+        screenshot = shots_dir / "cloakbrowser-native-order.png"
+        screenshot.write_bytes(b"\x89PNG\r\n\x1a\ncloakbrowser-native-order")
+
+        call_order = []
+
+        def mark_activity(task_id):
+            call_order.append(("mark", task_id))
+
+        def take_screenshot(*, task_id=None, annotate=False, full=True):
+            call_order.append(("screenshot", task_id, annotate, full))
+            return json.dumps({"success": True, "data": {"path": str(screenshot)}})
+
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with (
+                patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+                patch("tools.browser_tool._cleanup_old_screenshots"),
+                patch("tools.browser_tool._is_camofox_mode", return_value=False),
+                patch("tools.browser_tool._is_cloakbrowser_mode", return_value=True),
+                patch("tools.browser_tool._mark_cloakbrowser_activity", side_effect=mark_activity),
+                patch("tools.browser_tool.cloakbrowser_screenshot", side_effect=take_screenshot),
+                patch(
+                    "tools.browser_tool._run_browser_command",
+                    side_effect=AssertionError("generic screenshot path should not run for CloakBrowser"),
+                ),
+                patch("hermes_cli.config.load_config", return_value={"model": {"supports_vision": True}}),
+                patch("tools.browser_tool._get_vision_model") as mock_get_vision_model,
+                patch("tools.browser_tool.call_llm") as mock_llm,
+            ):
+                result = browser_vision("what is on the page?", task_id="test")
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, dict)
+        assert result["_multimodal"] is True
+        assert call_order == [
+            ("mark", "test"),
+            ("screenshot", "test", False, True),
+        ]
         mock_get_vision_model.assert_not_called()
         mock_llm.assert_not_called()
 

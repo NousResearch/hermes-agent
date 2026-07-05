@@ -1,0 +1,347 @@
+"""Auto-Trigger — HAEE activates automatically during normal agent use.
+
+Users never run `hermes evolution run`. Instead, the engine watches
+conversations, detects when a known task pattern is being executed,
+auto-evaluates the result, and silently improves the agent.
+
+Flow:
+  1. User chats normally: "fix the login bug"
+  2. Observer detects this matches a known task pattern (bug-fix)
+  3. After agent completes, HAEE auto-evaluates against inferred criteria
+  4. If agent failed (didn't verify, forgot docs, etc.), HAEE:
+     a. Analyzes the failure
+     b. Generates a fix (skill/prompt)
+     c. Gates it for safety
+     d. Applies it silently OR nudges user: "I noticed I forgot to verify.
+        I've created a skill to prevent this. Review?"
+  5. Next time user asks for a similar fix, agent uses the skill
+
+Nudge levels:
+  - silent:  Apply fixes automatically (safe ones only: skill_create, skill_patch)
+  - notify:  Apply + tell user what was done (default)
+  - approve: Show proposal, wait for user approval
+  - off:     Don't auto-trigger (use manual hermes evolution run instead)
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Callable, Dict, List, Optional
+
+from agent.evolution.task_definition import (
+    TaskDefinition, SuccessCriterion, SuccessCriterionType,
+)
+from agent.evolution.trajectory_collector import TrajectoryCollector, EvalResult
+from agent.evolution.evaluator import TaskEvaluator, EvaluationContext
+from agent.evolution.failure_analyzer import FailureAnalyzer
+from agent.evolution.improvement_proposer import ImprovementProposer
+from agent.evolution.regression_gate import RegressionGate
+from agent.evolution.evolution_store import get_evolution_store
+from agent.evolution.conversation_observer import get_observer
+
+logger = logging.getLogger(__name__)
+
+# Nudge levels
+SILENT = "silent"
+NOTIFY = "notify"
+APPROVE = "approve"
+OFF = "off"
+
+# Safe action types that can be auto-applied
+SAFE_ACTIONS = {"skill_create", "skill_patch", "memory_update"}
+
+
+class AutoTrigger:
+    """Watches conversations and auto-triggers the evolution cycle.
+
+    Integrates with the agent loop — called after each turn.
+    Zero overhead when no patterns are detected.
+    """
+
+    def __init__(self, nudge_level: str = NOTIFY):
+        self.nudge_level = nudge_level
+        self._evaluator = TaskEvaluator()
+        self._analyzer = FailureAnalyzer()
+        self._proposer = ImprovementProposer()
+        self._gate = RegressionGate()
+        self._store = get_evolution_store()
+        self._nudge_callback: Optional[Callable] = None  # Set by agent init
+
+    def apply_verification_skill(self, task_name: str) -> Optional[str]:
+        """Auto-create a verification skill for a task cluster. Returns nudge message."""
+        from agent.evolution.improvement_proposer import _generate_verification_skill
+
+        skill_name = "verify-before-complete"
+        content = _generate_verification_skill(task_name, [])
+
+        if not content:
+            return None
+
+        # Apply
+        from hermes_constants import get_hermes_home
+        skill_path = get_hermes_home() / "skills" / skill_name
+        skill_path.mkdir(parents=True, exist_ok=True)
+        (skill_path / "SKILL.md").write_text(content)
+
+        if self.nudge_level == SILENT:
+            return None
+        return (
+            f"🔧 HAEE noticed I forgot to verify my work on '{task_name}'.\n"
+            f"   Auto-created '{skill_name}' skill to prevent this.\n"
+            f"   I'll verify automatically next time."
+        )
+
+    def set_nudge_callback(self, callback: Callable[[str, str], None]) -> None:
+        """Set a callback for user nudges. Called as callback(title, message)."""
+        self._nudge_callback = callback
+
+    def check_and_trigger(
+        self,
+        messages: List[Dict[str, Any]],
+        session_id: str = "",
+    ) -> Optional[str]:
+        """Check if current turn matches a known task pattern, and trigger evaluation.
+
+        Called after each agent turn completes (post_llm_call or turn end).
+
+        Returns:
+            A nudge message if a fix was applied, None otherwise.
+        """
+        if self.nudge_level == OFF:
+            return None
+
+        # Check if observer has matched a task pattern
+        observer = get_observer()
+        # Use lower thresholds for auto-trigger — we want to catch patterns early
+        clusters = observer.suggest_tasks(min_occurrences=2, min_confidence=0.2)
+
+        if not clusters:
+            return None
+
+        # Check if agent just completed its work (declared done, no tool calls pending)
+        if not self._agent_just_completed(messages):
+            return None
+
+        # Use the highest-confidence cluster
+        best_cluster = clusters[0]  # Already sorted by confidence × log(occurrences)
+
+        # Build an ad-hoc task from the cluster's criteria
+        task = self._cluster_to_task(best_cluster)
+
+        # Check if the agent followed the cluster's pattern
+        # Key insight: we don't need to run the full evaluator.
+        # We check: did the agent verify its work?
+        observer = get_observer()
+        verification_failed = self._detect_missing_verification(
+            best_cluster, observer
+        )
+
+        if not verification_failed:
+            # Record success baseline
+            self._store.set_baseline(
+                task_name=best_cluster.task_name,
+                score=1.0,
+                task_domain="general",
+            )
+            return None
+
+        # Verification missing — run the improvement cycle
+        return self._run_improvement_cycle(task, None, best_cluster, session_id)
+
+    @staticmethod
+    def _detect_missing_verification(cluster, observer) -> bool:
+        """Check if the current session missed verification that the cluster expects.
+
+        Returns True if verification was missing (trigger improvement).
+        """
+        # Get the current session's tool sequence from the observer
+        if not observer._current_tool_sequence:
+            return False
+
+        tools = observer._current_tool_sequence
+
+        # Check if any verification tool was called
+        verify_tools = {"terminal", "read_file", "search_files"}
+        had_verification = any(t in verify_tools for t in tools)
+
+        # Check if write/patch tools were used (agent did work)
+        work_tools = {"write_file", "patch"}
+        did_work = any(t in work_tools for t in tools)
+
+        # Trigger: agent did work but didn't verify
+        if did_work and not had_verification:
+            return True
+
+        # Also trigger if cluster has high confidence but this session had no user feedback
+        if cluster.confidence >= 0.5:
+            if not observer._current_user_messages:
+                return True  # No user feedback = potential silent failure
+
+        return False
+
+    @staticmethod
+    def _agent_just_completed(messages: List[Dict[str, Any]]) -> bool:
+        """Check if the agent just declared completion (no pending tool calls)."""
+        for msg in reversed(messages):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "assistant":
+                tool_calls = msg.get("tool_calls", []) or []
+                return len(tool_calls) == 0
+        return False
+
+    def _cluster_to_task(self, cluster) -> TaskDefinition:
+        """Convert a discovered task cluster to an ad-hoc TaskDefinition."""
+        criteria = []
+        for c in cluster.suggested_criteria:
+            try:
+                ctype = SuccessCriterionType(c["type"])
+                criteria.append(SuccessCriterion(
+                    type=ctype,
+                    command=c.get("command"),
+                    path=c.get("path"),
+                    pattern=c.get("pattern"),
+                    expected_output=c.get("expected_output"),
+                    weight=c.get("weight", 0.5),
+                ))
+            except (KeyError, ValueError):
+                continue
+
+        if not criteria:
+            criteria = [SuccessCriterion(
+                type=SuccessCriterionType.TEST_PASS,
+                command="true", weight=1.0,
+            )]
+
+        return TaskDefinition(
+            name=cluster.task_name,
+            description=cluster.description,
+            success_criteria=criteria,
+            domain="general",
+            complexity=cluster.estimated_complexity,
+        )
+
+    def _run_improvement_cycle(
+        self,
+        task: TaskDefinition,
+        eval_result: Optional[EvalResult],
+        cluster,
+        session_id: str,
+    ) -> Optional[str]:
+        """Run the full improvement cycle and return a nudge message if applicable."""
+        from agent.evolution.trajectory_collector import Trajectory, EvalResult as ER
+
+        if eval_result is None:
+            eval_result = ER(passed=False, score=0.0)
+
+        # Create minimal trajectory for analysis
+        traj = Trajectory(
+            task_name=task.name,
+            run_id=f"auto_{session_id[:12]}",
+            status="failed",
+            total_turns=1, total_tool_calls=0,
+        )
+
+        # Analyze
+        analysis = self._analyzer.analyze(task, traj, eval_result)
+        if not analysis.findings:
+            return None
+
+        # Generate proposals
+        proposals = self._proposer.propose(task, analysis)
+        if not proposals:
+            return None
+
+        # Apply safe proposals
+        applied = []
+        for p in proposals:
+            gate_result = self._gate.evaluate(p)
+            if not gate_result.passed:
+                continue
+
+            # Check if this action can be auto-applied
+            if p.action_type.value not in SAFE_ACTIONS:
+                if self.nudge_level == APPROVE:
+                    return self._format_approval_nudge(p, analysis)
+                continue  # Skip destructive actions in silent/notify mode
+
+            # Apply
+            try:
+                self._apply_silently(p)
+                applied.append(p)
+            except Exception as e:
+                logger.debug("Auto-apply failed for %s: %s", p.target, e)
+
+        if not applied:
+            return None
+
+        # Record in store
+        run_id = self._store.create_run(
+            task_name=task.name,
+            task_domain="general",
+            task_complexity=cluster.estimated_complexity,
+            session_id=session_id,
+        )
+        self._store.add_iteration(
+            run_id=run_id, iteration_num=1, status="auto_improved",
+            improvement_action=applied[0].action_type.value,
+            improvement_target=applied[0].target,
+        )
+        self._store.update_run_status(run_id, "auto_improved")
+
+        if self.nudge_level == SILENT:
+            return None
+
+        return self._format_success_nudge(applied, analysis)
+
+    def _apply_silently(self, proposal) -> None:
+        """Apply a proposal without user interaction."""
+        from hermes_constants import get_hermes_home
+
+        if proposal.action_type.value == "skill_create":
+            skill_path = get_hermes_home() / "skills" / proposal.target
+            skill_path.mkdir(parents=True, exist_ok=True)
+            (skill_path / "SKILL.md").write_text(proposal.content)
+        elif proposal.action_type.value == "skill_patch":
+            skill_path = get_hermes_home() / "skills" / proposal.target / "SKILL.md"
+            if skill_path.exists():
+                content = skill_path.read_text()
+                if proposal.old_string in content:
+                    skill_path.write_text(
+                        content.replace(proposal.old_string, proposal.new_string)
+                    )
+        elif proposal.action_type.value == "memory_update":
+            mem_path = get_hermes_home() / "MEMORY.md"
+            with open(mem_path, "a") as f:
+                f.write(f"\n\n## Auto: {proposal.target}\n\n{proposal.content}\n")
+
+    def _format_success_nudge(self, applied, analysis) -> str:
+        """Format a nudge message for auto-applied fixes."""
+        actions = ", ".join(f"{p.action_type.value}→{p.target}" for p in applied)
+        finding = analysis.findings[0] if analysis.findings else None
+        cause = f": {finding.description[:80]}" if finding else ""
+        return (
+            f"🔧 HAEE auto-improved: {len(applied)} fix(es) applied ({actions})\n"
+            f"   Cause{cause}\n"
+            f"   These will prevent this issue next time."
+        )
+
+    def _format_approval_nudge(self, proposal, analysis) -> str:
+        """Format a nudge requesting user approval."""
+        return (
+            f"💡 HAEE suggests: {proposal.action_type.value} → {proposal.target}\n"
+            f"   {proposal.description[:120]}\n"
+            f"   Reason: {proposal.rationale[:120]}\n"
+            f"   Approve with: /evolution approve {proposal.target}"
+        )
+
+
+# Singleton
+_auto_trigger: Optional[AutoTrigger] = None
+
+
+def get_auto_trigger() -> AutoTrigger:
+    global _auto_trigger
+    if _auto_trigger is None:
+        _auto_trigger = AutoTrigger()
+    return _auto_trigger

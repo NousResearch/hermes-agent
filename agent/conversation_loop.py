@@ -4235,6 +4235,19 @@ def run_conversation(
             except Exception:
                 pass
 
+            # ── Auto-Trigger: silently evaluate + improve during normal use ──
+            try:
+                from agent.evolution.auto_trigger import get_auto_trigger
+                trigger = get_auto_trigger()
+                nudge = trigger.check_and_trigger(
+                    messages,
+                    session_id=getattr(agent, "session_id", ""),
+                )
+                if nudge and hasattr(agent, "_emit_status"):
+                    agent._emit_status(nudge)
+            except Exception:
+                pass
+
             # ── Evolution Engine: record model call in active trajectory ──
             try:
                 _evo_mgr = getattr(agent, "_evolution_manager", None)

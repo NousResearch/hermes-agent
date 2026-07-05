@@ -401,9 +401,10 @@ class ConversationObserver:
         self._current_turn_count = 0
         self._session_start_time = __import__("time").monotonic()
 
-    def end_session(self) -> None:
+    def end_session(self) -> Optional[str]:
+        """Finalize session observations. Returns auto-trigger nudge if applicable."""
         if not self._current_tool_sequence:
-            return
+            return None
 
         # Build semantic fingerprint
         fp = SessionFingerprint(
@@ -437,6 +438,38 @@ class ConversationObserver:
         self._cluster_session(fp)
         self._prune()
         self._save()
+
+        # Auto-trigger: if verification was missing, create improvement skill
+        return self._auto_trigger_if_needed(fp)
+
+    def _auto_trigger_if_needed(self, fp: SessionFingerprint) -> Optional[str]:
+        """If this session lacked verification for a known cluster, auto-improve."""
+        if fp.has_verification:
+            return None  # All good
+        if not fp.tool_ngrams:
+            return None
+
+        # Find the best-matching cluster
+        best = None
+        best_sim = 0.0
+        for cluster in self._clusters.values():
+            if not cluster.fingerprints:
+                continue
+            sim = self._jaccard_similarity(fp, cluster.fingerprints[-1])
+            if sim > best_sim and sim >= 0.15:  # Lower threshold for auto-trigger
+                best_sim = sim
+                best = cluster
+
+        if not best or best.occurrence_count < 3:
+            return None
+
+        # Create the improvement skill
+        try:
+            from agent.evolution.auto_trigger import AutoTrigger
+            trigger = AutoTrigger()
+            return trigger.apply_verification_skill(best.task_name)
+        except Exception:
+            return None
 
     def observe_turn(self, messages: List[Dict[str, Any]]) -> None:
         """Record a conversation turn for pattern discovery."""
@@ -502,8 +535,8 @@ class ConversationObserver:
                 best_similarity = similarity
                 best_cluster = cluster
 
-        # Threshold: 0.3 Jaccard = likely related sessions
-        if best_cluster and best_similarity >= 0.3:
+        # Threshold: 0.2 Jaccard = likely related sessions (lower for real usage)
+        if best_cluster and best_similarity >= 0.2:
             best_cluster.update_evidence(fp)
             fp.cluster_id = best_cluster.cluster_id
         elif len(fp.tool_ngrams) >= 2 or fp.has_verification:
@@ -534,18 +567,31 @@ class ConversationObserver:
     def _jaccard_similarity(a: SessionFingerprint, b: SessionFingerprint) -> float:
         """Jaccard similarity between two session fingerprints.
 
+        Uses subset-aware similarity: if one session is a partial match
+        (e.g., missing verification), it still matches the cluster.
+
         Weighted combination of:
-        - Tool n-gram overlap (0.5 weight)
+        - Tool n-gram overlap (0.5 weight) — uses subset-aware ratio
         - Command signature overlap (0.3 weight)
         - File domain overlap (0.2 weight)
         """
         scores = []
 
-        # Tool n-gram similarity
+        # Tool n-gram similarity — use subset-aware ratio
         if a.tool_ngrams and b.tool_ngrams:
             intersection = len(a.tool_ngrams & b.tool_ngrams)
-            union = len(a.tool_ngrams | b.tool_ngrams)
-            scores.append((intersection / union, 0.5))
+            # Instead of Jaccard (intersection/union), use overlap coefficient:
+            # intersection / min(|A|, |B|). This handles partial matches
+            # where one session has fewer steps (e.g., missing verification).
+            min_size = min(len(a.tool_ngrams), len(b.tool_ngrams))
+            if min_size > 0:
+                overlap = intersection / min_size
+                # Blend: 70% overlap coefficient + 30% Jaccard
+                union = len(a.tool_ngrams | b.tool_ngrams)
+                jaccard = intersection / union if union > 0 else 0.0
+                scores.append((0.7 * overlap + 0.3 * jaccard, 0.5))
+            else:
+                scores.append((0.0, 0.5))
         else:
             scores.append((0.0, 0.5))
 

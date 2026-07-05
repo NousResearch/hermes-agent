@@ -525,7 +525,7 @@ def cmd_search(args):
             "osm_type":     item.get("osm_type", ""),
             "osm_id":       item.get("osm_id", ""),
             "bounding_box": {
-                "min_lat": float(bb[0]) if len(bb) > 0 else None,
+                "min_lat": float(bb[0]) if bb else None,
                 "max_lat": float(bb[1]) if len(bb) > 1 else None,
                 "min_lon": float(bb[2]) if len(bb) > 2 else None,
                 "max_lon": float(bb[3]) if len(bb) > 3 else None,

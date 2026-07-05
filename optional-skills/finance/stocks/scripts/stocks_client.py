@@ -279,7 +279,7 @@ def extract_quote_from_chart(symbol: str, chart_data: dict) -> dict:
     }
 
     chart = safe_get(chart_data, "chart", "result")
-    if not chart or not isinstance(chart, list) or len(chart) == 0:
+    if not chart or not isinstance(chart, list) or not chart:
         return result
 
     r = chart[0]
@@ -320,7 +320,7 @@ def extract_quote_summary_fields(qs_data: dict) -> dict:
     }
 
     result = safe_get(qs_data, "quoteSummary", "result")
-    if not result or not isinstance(result, list) or len(result) == 0:
+    if not result or not isinstance(result, list) or not result:
         return out
 
     r = result[0]
@@ -455,7 +455,7 @@ def cmd_history(symbol: str, range_: str = "1mo") -> None:
         return
 
     chart = safe_get(chart_data, "chart", "result")
-    if not chart or not isinstance(chart, list) or len(chart) == 0:
+    if not chart or not isinstance(chart, list) or not chart:
         err = safe_get(chart_data, "chart", "error", "description") or "Unknown error"
         print_json({"error": err, "symbol": sym, "data_source": "Yahoo Finance"})
         return
@@ -616,7 +616,7 @@ def cmd_crypto(symbol: str, vs: str = "USD") -> None:
         return
 
     chart = safe_get(chart_data, "chart", "result")
-    if not chart or not isinstance(chart, list) or len(chart) == 0:
+    if not chart or not isinstance(chart, list) or not chart:
         err = safe_get(chart_data, "chart", "error", "description") or "Symbol not found"
         print_json({"error": err, "symbol": ticker, "data_source": "Yahoo Finance"})
         return

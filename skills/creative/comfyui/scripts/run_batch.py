@@ -144,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(sweep, dict):
             emit_json({"error": "--sweep must be a JSON object {param: [values]}"})
             return 1
-        empty = [k for k, v in sweep.items() if isinstance(v, list) and len(v) == 0]
+        empty = [k for k, v in sweep.items() if isinstance(v, list) and not v]
         if empty:
             emit_json({"error": f"--sweep parameters have empty value lists: {empty}"})
             return 1

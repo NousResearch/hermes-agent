@@ -1544,6 +1544,38 @@ class TestWebServerEndpoints:
 
 
 
+    def test_main_model_repick_preserves_context_only_for_same_assignment(self):
+        from hermes_cli.web_server import _apply_main_model_assignment
+
+        current = {
+            "provider": "custom",
+            "default": "my-local-model",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "context_length": 262144,
+        }
+
+        same = _apply_main_model_assignment(
+            current.copy(),
+            "custom",
+            "my-local-model",
+            "http://127.0.0.1:8000/v1",
+        )
+        assert same["context_length"] == 262144
+
+        different_model = _apply_main_model_assignment(
+            current.copy(),
+            "custom",
+            "other-local-model",
+        )
+        assert "context_length" not in different_model
+
+        different_provider = _apply_main_model_assignment(
+            current.copy(),
+            "openrouter",
+            "my-local-model",
+        )
+        assert "context_length" not in different_provider
+
     def test_parse_model_ids_handles_openai_and_bare_shapes(self):
         """Model discovery must tolerate the common /v1/models shapes and
         never raise (so a slightly non-standard local endpoint still works)."""

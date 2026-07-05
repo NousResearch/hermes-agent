@@ -17,9 +17,44 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from agent.secret_scope import current_secret_scope, get_secret as _get_secret
 from utils import env_int, env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+def _getenv(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Read env vars through the active profile secret scope when present.
+
+    ``load_gateway_config()`` runs in many contexts, including multiplexed
+    profile startup where ``_profile_runtime_scope`` installs per-profile
+    secrets. In that scope we must prefer the scoped value; outside it we keep
+    legacy ``os.getenv`` behavior for single-profile callers and unscoped
+    gateway reads.
+    """
+    if current_secret_scope() is not None:
+        scope_val = _get_secret(name, None)
+        return scope_val if scope_val is not None else default
+    env_val = os.environ.get(name)
+    if env_val is not None:
+        return env_val
+    return default
+
+
+def _getenv_str(name: str, default: str = "") -> str:
+    val = _getenv(name, default)
+    return val if val is not None else default
+
+
+def _getenv_int(name: str, default: int) -> int:
+    raw = _getenv(name, None)
+    if raw is None:
+        return default
+    try:
+        return int(str(raw).strip(), 10)
+    except (TypeError, ValueError):
+        return default
+
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
@@ -1587,10 +1622,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
 
     # Email
-    email_addr = os.getenv("EMAIL_ADDRESS")
-    email_pwd = os.getenv("EMAIL_PASSWORD")
-    email_imap = os.getenv("EMAIL_IMAP_HOST")
-    email_smtp = os.getenv("EMAIL_SMTP_HOST")
+    email_addr = _getenv("EMAIL_ADDRESS")
+    email_pwd = _getenv("EMAIL_PASSWORD")
+    email_imap = _getenv("EMAIL_IMAP_HOST")
+    email_smtp = _getenv("EMAIL_SMTP_HOST")
     if all([email_addr, email_pwd, email_imap, email_smtp]):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
@@ -1600,13 +1635,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })
-    email_home = os.getenv("EMAIL_HOME_ADDRESS")
+    email_home = _getenv("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:
         config.platforms[Platform.EMAIL].home_channel = HomeChannel(
             platform=Platform.EMAIL,
             chat_id=email_home,
-            name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
-            thread_id=os.getenv("EMAIL_HOME_ADDRESS_THREAD_ID") or None,
+            name=_getenv_str("EMAIL_HOME_ADDRESS_NAME", "Home"),
+            thread_id=_getenv("EMAIL_HOME_ADDRESS_THREAD_ID") or None,
         )
 
     # SMS (Twilio)
@@ -1634,7 +1669,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if api_server_enabled or api_server_key:
         if Platform.API_SERVER not in config.platforms:
             config.platforms[Platform.API_SERVER] = PlatformConfig()
-        config.platforms[Platform.API_SERVER].enabled = True
+        # Honor explicit enabled:false under env key (multiplex fix, PR #51374)
+        if not config.platforms[Platform.API_SERVER].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.API_SERVER].enabled = True
         if api_server_key:
             config.platforms[Platform.API_SERVER].extra["key"] = api_server_key
         if api_server_cors_origins:

@@ -23,6 +23,9 @@ import os
 import re
 import smtplib
 import socket
+
+# Profile-scoped secret reader for multiplexing support (PR #50094)
+from agent.secret_scope import get_secret as _get_secret
 import ssl
 import uuid
 from email.header import decode_header
@@ -164,10 +167,10 @@ def check_email_requirements() -> bool:
     Treats blank/whitespace-only values as missing so an abandoned setup that
     left empty ``EMAIL_*`` keys in ``.env`` does not enable the platform (#40715).
     """
-    addr = os.getenv("EMAIL_ADDRESS", "").strip()
-    pwd = os.getenv("EMAIL_PASSWORD", "").strip()
-    imap = os.getenv("EMAIL_IMAP_HOST", "").strip()
-    smtp = os.getenv("EMAIL_SMTP_HOST", "").strip()
+    addr = _get_secret("EMAIL_ADDRESS", "").strip()
+    pwd = _get_secret("EMAIL_PASSWORD", "").strip()
+    imap = _get_secret("EMAIL_IMAP_HOST", "").strip()
+    smtp = _get_secret("EMAIL_SMTP_HOST", "").strip()
     return all([addr, pwd, imap, smtp])
 
 
@@ -434,11 +437,11 @@ class EmailAdapter(BasePlatformAdapter):
         # misleading ``[Errno 8] nodename nor servname`` (an unresolvable name)
         # instead of an obvious "host not set" error.
         extra = config.extra or {}
-        self._address = (os.getenv("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
-        self._password = os.getenv("EMAIL_PASSWORD", "")
-        self._imap_host = (os.getenv("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
+        self._address = (_get_secret("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
+        self._password = _get_secret("EMAIL_PASSWORD", "")
+        self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
         self._imap_port = env_int("EMAIL_IMAP_PORT", 993)
-        self._smtp_host = (os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
+        self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
@@ -473,7 +476,7 @@ class EmailAdapter(BasePlatformAdapter):
         # own receiving server (defends against an injected header that sorts
         # first). Defaults to the From-domain of the agent's own address.
         self._authserv_id = (
-            extra.get("authserv_id", "") or os.getenv("EMAIL_AUTHSERV_ID", "")
+            extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")
         ).strip().lower()
 
         # Track message IDs we've already processed to avoid duplicates
@@ -756,7 +759,7 @@ class EmailAdapter(BasePlatformAdapter):
         """
         truthy = {"true", "1", "yes"}
         return (
-            os.getenv("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in truthy
+            _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in truthy
             or os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in truthy
         )
 
@@ -771,7 +774,7 @@ class EmailAdapter(BasePlatformAdapter):
         and the authentication gate is unnecessary.
         """
         return bool(
-            os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+            _get_secret("EMAIL_ALLOWED_USERS", "").strip()
             or os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
         )
 
@@ -793,9 +796,9 @@ class EmailAdapter(BasePlatformAdapter):
         # that the gateway will never authorize.  Without this early guard,
         # a race between dispatch and authorization can result in the adapter
         # sending a reply even though the handler returned None.
-        allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+        allowed_raw = _get_secret("EMAIL_ALLOWED_USERS", "").strip()
         if not allowed_raw:
-            if os.getenv("EMAIL_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"} and (
+            if _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"} and (
                 os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"}
             ):
                 logger.debug(
@@ -1204,11 +1207,11 @@ async def _standalone_send(
     from email.utils import formatdate
 
     extra = getattr(pconfig, "extra", {}) or {}
-    address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
-    password = os.getenv("EMAIL_PASSWORD", "")
-    smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    address = extra.get("address") or _get_secret("EMAIL_ADDRESS", "")
+    password = _get_secret("EMAIL_PASSWORD", "")
+    smtp_host = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", "")
     try:
-        smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+        smtp_port = int(_get_secret("EMAIL_SMTP_PORT", "587") or "587")
     except (ValueError, TypeError):
         smtp_port = 587
 

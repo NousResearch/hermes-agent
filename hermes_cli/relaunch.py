@@ -185,9 +185,9 @@ def relaunch(
         # Windows: subprocess + exit, because execvp can't swap to .cmd/.exe shims.
         import subprocess
         try:
-            result = subprocess.run(new_argv)
+            result = subprocess.run(new_argv, timeout=300)
             sys.exit(result.returncode)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, subprocess.TimeoutExpired):
             sys.exit(130)
         except OSError as exc:
             # Surface a helpful error rather than the raw OSError — the

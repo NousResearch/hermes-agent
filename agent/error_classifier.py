@@ -1041,6 +1041,18 @@ def _classify_by_status(
                 retryable=True,
                 should_compress=True,
             )
+        # "upstream capacity limits" and similar provider-side congestion
+        # should fast-fail and try cloud fallbacks immediately instead of
+        # retrying with exponential backoff for 2+ minutes.
+        upstream_capacity_patterns = [
+            "upstream capacity",
+            "capacity limits",
+            "provider overloaded",
+            "backend unavailable",
+            "no capacity",
+        ]
+        if any(p in error_msg for p in upstream_capacity_patterns):
+            return result_fn(FailoverReason.overloaded, retryable=False, should_fallback=True)
         return result_fn(FailoverReason.overloaded, retryable=True)
 
     # Other 4xx — non-retryable

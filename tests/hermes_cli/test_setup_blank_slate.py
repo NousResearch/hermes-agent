@@ -45,6 +45,25 @@ class TestBlankSlateMinimalToolsets:
         disabled = set(cfg["agent"]["disabled_toolsets"])
         assert "coding" not in disabled
 
+    def test_no_disabled_bundle_overlaps_kept_tools(self):
+        """Invariant: ``disabled_toolsets`` is applied at *tool* granularity and
+        a single tool can belong to several toolsets, so no disabled entry may
+        share a tool with a kept toolset — it would silently strip that tool
+        from the blank-slate agent (#57315, #58281).
+        """
+        from toolsets import resolve_toolset
+        cfg = {}
+        _blank_slate_minimal_toolsets(cfg)
+        kept_tools = set()
+        for ts in cfg["platform_toolsets"]["cli"]:
+            kept_tools.update(resolve_toolset(ts))
+        for ts in cfg["agent"]["disabled_toolsets"]:
+            overlap = set(resolve_toolset(ts)) & kept_tools
+            assert not overlap, (
+                f"disabled toolset '{ts}' overlaps kept tools {sorted(overlap)}; "
+                "it would silently strip them from the blank-slate agent"
+            )
+
     def test_resolver_yields_exactly_file_and_terminal(self):
         from hermes_cli.tools_config import _get_platform_tools
         cfg = {}

@@ -12623,9 +12623,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not tts_text:
                 return
 
-            # Telegram's adapter only sends native voice bubbles for OGG/Opus.
-            # Other platforms keep the existing MP3 default.
-            audio_ext = "ogg" if event.source.platform == Platform.TELEGRAM else "mp3"
+            # Telegram and Matrix adapters only render native voice bubbles
+            # for OGG/Opus audio.  Other platforms keep the existing MP3
+            # default.
+            _voice_platforms = (Platform.TELEGRAM, Platform.MATRIX)
+            audio_ext = "ogg" if event.source.platform in _voice_platforms else "mp3"
             audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
                 f"tts_reply_{_uuid.uuid4().hex[:12]}.{audio_ext}",

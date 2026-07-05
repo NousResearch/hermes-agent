@@ -293,9 +293,30 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const needsSetup = !!selectedProvider && !isProviderReady(selectedProviderRow)
   const setupIsApiKey = needsSetup && selectedProviderRow?.auth_type === 'api_key' && !!selectedProviderRow?.key_env
 
-  // Clear any half-typed key when switching provider so it can't leak across.
+  // Clear any half-typed key and stale model when switching provider.
+  // Without this, switching to a custom provider whose models haven't been
+  // probed yet (empty models list) leaves the previous provider's model
+  // visible in the Select via withActive(), making it look like the model
+  // list didn't refresh.  For empty-but-authenticated providers, call
+  // with refresh=true so the backend probes the live /models endpoint.
   useEffect(() => {
     setApiKeyDraft('')
+    setSelectedModel('')
+
+    const row = providers.find(p => p.slug === selectedProvider)
+    if (row && row.authenticated !== false && (row.models?.length ?? 0) === 0) {
+      const epoch = profileEpoch.current
+      getGlobalModelOptions({ refresh: true })
+        .then(opts => {
+          if (profileEpoch.current !== epoch) return
+          setProviders(opts.providers || [])
+          const refreshed = opts.providers?.find(p => p.slug === selectedProvider)
+          if (refreshed?.models?.length) {
+            setSelectedModel(refreshed.models[0])
+          }
+        })
+        .catch(() => {})
+    }
   }, [selectedProvider])
 
   const auxDraftProviderModels = useMemo(

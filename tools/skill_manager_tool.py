@@ -532,6 +532,9 @@ def _validate_frontmatter(content: str) -> Optional[str]:
 
     if "name" not in parsed:
         return "Frontmatter must include 'name' field."
+    name_val = parsed["name"]
+    if name_val is None or not str(name_val).strip():
+        return "Frontmatter 'name' field must not be empty."
     if "description" not in parsed:
         return "Frontmatter must include 'description' field."
     if len(str(parsed["description"])) > MAX_DESCRIPTION_LENGTH:

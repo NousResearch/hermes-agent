@@ -146,6 +146,46 @@ class TestValidateFrontmatter:
 
 
 # ---------------------------------------------------------------------------
+# authoring standards — guardrails that catch the most common SKILL.md mistakes
+# ---------------------------------------------------------------------------
+
+
+class TestSkillAuthoringStandards:
+    """Catch common authoring mistakes that cause silent failures downstream."""
+
+    def test_bom_before_frontmatter_rejected(self):
+        """UTF-8 BOM before --- causes parse_frontmatter to miss the header."""
+        content = "﻿---\nname: test\ndescription: desc\n---\n\nBody.\n"
+        err = _validate_frontmatter(content)
+        assert err is not None, "BOM before frontmatter should fail validation"
+
+    def test_leading_blank_line_before_frontmatter_rejected(self):
+        """A blank line before --- means the frontmatter opener is not at pos 0."""
+        content = "\n---\nname: test\ndescription: desc\n---\n\nBody.\n"
+        err = _validate_frontmatter(content)
+        assert err is not None, "leading blank line should fail validation"
+
+    def test_description_stripped_of_leading_trailing_whitespace(self):
+        """Description values with accidental whitespace should still validate."""
+        content = (
+            "---\n"
+            "name: test\n"
+            "description:   padded description with spaces   \n"
+            "---\n\nBody.\n"
+        )
+        err = _validate_frontmatter(content)
+        assert err is None, (
+            "description with accidental whitespace should still be valid"
+        )
+
+    def test_empty_name_after_trim_rejected(self):
+        """A name that is only whitespace must not pass validation."""
+        content = "---\nname:    \ndescription: desc\n---\n\nBody.\n"
+        err = _validate_frontmatter(content)
+        assert err is not None, "whitespace-only name should fail"
+
+
+# ---------------------------------------------------------------------------
 # _validate_file_path — path traversal prevention
 # ---------------------------------------------------------------------------
 

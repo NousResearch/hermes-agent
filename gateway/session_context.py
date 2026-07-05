@@ -72,6 +72,13 @@ _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", defaul
 # treats as "no managed run" and degrades gracefully.
 _SESSION_PRODUCT_RUN_ID: ContextVar = ContextVar("HERMES_PRODUCT_RUN_ID", default=_UNSET)
 
+# Backend-owned app/tool gateway credentials for a single KarinAI managed run.
+# These are deliberately request-scoped and are never read from product metadata
+# or model-visible messages.
+_APP_TOOL_GATEWAY_URL: ContextVar = ContextVar("KARINAI_APP_TOOL_GATEWAY_URL", default=_UNSET)
+_APP_TOOL_GATEWAY_TOKEN: ContextVar = ContextVar("KARINAI_APP_TOOL_GATEWAY_TOKEN", default=_UNSET)
+_APP_TOOL_GATEWAY_EXPIRES_AT: ContextVar = ContextVar("KARINAI_APP_TOOL_GATEWAY_EXPIRES_AT", default=_UNSET)
+
 # Whether the current session's delivery channel can route an ASYNC completion
 # back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
 #
@@ -111,6 +118,9 @@ _VAR_MAP = {
     "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_PRODUCT_RUN_ID": _SESSION_PRODUCT_RUN_ID,
+    "KARINAI_APP_TOOL_GATEWAY_URL": _APP_TOOL_GATEWAY_URL,
+    "KARINAI_APP_TOOL_GATEWAY_TOKEN": _APP_TOOL_GATEWAY_TOKEN,
+    "KARINAI_APP_TOOL_GATEWAY_EXPIRES_AT": _APP_TOOL_GATEWAY_EXPIRES_AT,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
@@ -144,6 +154,9 @@ def set_session_vars(
     session_id: str = "",
     message_id: str = "",
     product_run_id: str = "",
+    app_tool_gateway_url: str = "",
+    app_tool_gateway_token: str = "",
+    app_tool_gateway_expires_at: str = "",
     cwd: str = "",
     async_delivery: bool = True,
 ) -> list:
@@ -174,6 +187,9 @@ def set_session_vars(
         _SESSION_ID.set(session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PRODUCT_RUN_ID.set(product_run_id),
+        _APP_TOOL_GATEWAY_URL.set(app_tool_gateway_url),
+        _APP_TOOL_GATEWAY_TOKEN.set(app_tool_gateway_token),
+        _APP_TOOL_GATEWAY_EXPIRES_AT.set(app_tool_gateway_expires_at),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
     try:
@@ -208,6 +224,9 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PRODUCT_RUN_ID,
+        _APP_TOOL_GATEWAY_URL,
+        _APP_TOOL_GATEWAY_TOKEN,
+        _APP_TOOL_GATEWAY_EXPIRES_AT,
     ):
         var.set("")
     # Reset async-delivery capability to the "never set" sentinel rather than a

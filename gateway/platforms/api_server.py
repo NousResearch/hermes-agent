@@ -3986,6 +3986,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_key: str = "",
         session_id: str = "",
         product_run_id: str = "",
+        app_tool_gateway: Optional[Dict[str, Any]] = None,
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
@@ -4004,12 +4005,16 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from gateway.session_context import set_session_vars
 
+        app_gateway = app_tool_gateway if isinstance(app_tool_gateway, dict) else {}
         return set_session_vars(
             platform="api_server",
             chat_id=chat_id,
             session_key=session_key,
             session_id=session_id,
             product_run_id=product_run_id,
+            app_tool_gateway_url=str(app_gateway.get("url") or ""),
+            app_tool_gateway_token=str(app_gateway.get("token") or ""),
+            app_tool_gateway_expires_at=str(app_gateway.get("expires_at") or ""),
             async_delivery=False,
         )
 
@@ -4196,6 +4201,24 @@ class APIServerAdapter(BasePlatformAdapter):
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
+        app_tool_gateway = None
+        raw_app_tool_gateway = body.get("app_tool_gateway")
+        if raw_app_tool_gateway is not None:
+            if not isinstance(raw_app_tool_gateway, dict):
+                return web.json_response(_openai_error("'app_tool_gateway' must be an object"), status=400)
+            gateway_url = str(raw_app_tool_gateway.get("url") or "").strip()
+            gateway_token = str(raw_app_tool_gateway.get("token") or "").strip()
+            gateway_expires_at = str(raw_app_tool_gateway.get("expires_at") or "").strip()
+            if not gateway_url or not gateway_token:
+                return web.json_response(
+                    _openai_error("'app_tool_gateway' requires url and token fields"),
+                    status=400,
+                )
+            app_tool_gateway = {
+                "url": gateway_url,
+                "token": gateway_token,
+                "expires_at": gateway_expires_at,
+            }
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
@@ -4394,6 +4417,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_tokens = self._bind_api_server_session(
                             session_key=approval_session_key,
                             product_run_id=product_run_id,
+                            app_tool_gateway=app_tool_gateway,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(

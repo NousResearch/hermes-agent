@@ -53,6 +53,8 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Backend-owned connected app tools (Gmail/Drive/Calendar, etc.).
+    "karinai_app_tools_list", "karinai_app_tool",
     # Clarifying questions
     "clarify",
     # Code execution + delegation

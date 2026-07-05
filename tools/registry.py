@@ -124,7 +124,20 @@ _check_fn_cache_lock = threading.Lock()
 
 
 def _check_fn_cached(fn: Callable) -> bool:
-    """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
+    """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False.
+
+    A check_fn may opt out of caching by setting ``fn._hermes_no_ttl_cache =
+    True``. This is required for checks whose result depends on per-request
+    context (e.g. a run-scoped gateway token bound via contextvar): the TTL
+    cache keys purely on function identity and assumes process-stable
+    availability, so caching a per-request result would leak one request's
+    state onto another.
+    """
+    if getattr(fn, "_hermes_no_ttl_cache", False):
+        try:
+            return bool(fn())
+        except Exception:
+            return False
     now = time.monotonic()
     with _check_fn_cache_lock:
         cached = _check_fn_cache.get(fn)

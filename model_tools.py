@@ -313,6 +313,15 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        # Lazy import (matches the tool-layer idiom) to avoid an import cycle
+        # through gateway/__init__ in this central module.
+        try:
+            from gateway.session_context import get_session_env
+            _app_tool_token_bound = bool(
+                get_session_env("KARINAI_APP_TOOL_GATEWAY_TOKEN", "").strip()
+            )
+        except Exception:
+            _app_tool_token_bound = False
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
@@ -320,6 +329,13 @@ def get_tool_definitions(
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
+            # The KarinAI app tools are advertised only when a run-scoped gateway
+            # token is bound (per-request contextvar; see
+            # tools/karinai_app_tools._app_tools_available). That state is NOT
+            # captured by the toolset/generation fingerprint above, so include it
+            # here — otherwise a tokenless request could cache an app-tool-less
+            # list that a later /v1/runs (token bound) request wrongly reuses.
+            _app_tool_token_bound,
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:

@@ -16177,6 +16177,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         }
 
                     # Parse SSE stream
+                    _SSE_BUFFER_CAP = 1 << 20  # 1 MiB — reject boundary-less lines
                     buffer = ""
                     async for chunk in resp.content.iter_any():
                         if not _run_still_current():
@@ -16196,6 +16197,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             }
                         text = chunk.decode("utf-8", errors="replace")
                         buffer += text
+
+                        if len(buffer) > _SSE_BUFFER_CAP:
+                            raise RuntimeError(
+                                f"Proxy SSE buffer exceeded {_SSE_BUFFER_CAP} bytes "
+                                "without a line boundary — aborting"
+                            )
 
                         # Process complete SSE lines
                         while "\n" in buffer:

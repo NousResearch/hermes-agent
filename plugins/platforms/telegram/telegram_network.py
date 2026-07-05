@@ -63,6 +63,20 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
+        # httpx discards a client-level ``limits`` whenever a custom transport is
+        # supplied (adapter.py passes this transport into HTTPXRequest), so the
+        # CLOSE_WAIT-safe keepalive tuning would be lost on the fallback path
+        # unless the transport applies it itself. Default to the shared platform
+        # limits so peer-FIN'd keepalive sockets are reaped before the process
+        # walks into the fd limit (#31599 / #58790). An explicit ``limits=`` wins.
+        if "limits" not in transport_kwargs:
+            try:
+                from gateway.platforms._http_client_limits import platform_httpx_limits
+                _fallback_limits = platform_httpx_limits()
+            except Exception:
+                _fallback_limits = None
+            if _fallback_limits is not None:
+                transport_kwargs["limits"] = _fallback_limits
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
         self._fallbacks = {
             ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips

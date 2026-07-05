@@ -7391,11 +7391,70 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         await self._ensure_forum_commands(update.message)
 
+        handled_quick_button = await self._handle_mobile_quick_text(msg)
+        if handled_quick_button:
+            return
+
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
+
+    async def _handle_mobile_quick_text(self, msg: Any) -> bool:
+        """Handle Chinese mobile quick-keyboard labels locally.
+
+        Some mobile Telegram clients show custom keyboard buttons as plain text
+        messages. Treat the known Chinese labels like commands so they do not
+        fall through to the LLM and produce mixed-language guidance.
+        """
+        text = (getattr(msg, "text", "") or "").strip()
+        normalized = re.sub(r"\s+", "", text)
+        if normalized in {"🕹掌上控制", "掌上控制", "手机控制", "控制面板"}:
+            await self._send_mobile_panel_for_message(msg)
+            return True
+        if normalized in {"◷定时", "⏰定时", "定时", "定时任务"}:
+            await self._send_mobile_schedule_help(msg)
+            return True
+        return False
+
+    async def _send_mobile_schedule_help(self, msg: Any) -> None:
+        if not self._bot:
+            return
+        thread_id = getattr(msg, "message_thread_id", None)
+        chat_id = str(getattr(getattr(msg, "chat", None), "id", getattr(msg, "chat_id", "")))
+        reply_to_id = getattr(msg, "message_id", None)
+        metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
+        text = (
+            "◷ <b>定时任务</b>\n"
+            "━━━━━━━━\n"
+            "你可以直接用中文告诉我什么时候提醒或执行任务。\n\n"
+            "常用说法：\n"
+            "• <code>明天上午 9 点提醒我看周报</code>\n"
+            "• <code>每天下午 6 点汇总今天任务</code>\n"
+            "• <code>每周一早上检查 Hermes 状态</code>\n\n"
+            "查看/管理：\n"
+            "• <code>/cron list</code> 查看定时任务\n"
+            "• <code>/cron</code> 打开定时任务帮助\n"
+        )
+        kwargs: Dict[str, Any] = {
+            "chat_id": normalize_telegram_chat_id(chat_id),
+            "text": text,
+            "parse_mode": ParseMode.HTML,
+            "reply_markup": InlineKeyboardMarkup([[InlineKeyboardButton("◀ 返回控制面板", callback_data="mpanel:menu")]]),
+            "reply_to_message_id": reply_to_id,
+            **self._link_preview_kwargs(),
+        }
+        kwargs.update(
+            self._thread_kwargs_for_send(
+                chat_id,
+                str(thread_id) if thread_id is not None else None,
+                metadata,
+                reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode,
+            )
+        )
+        await self._send_message_with_thread_fallback(**kwargs)
 
     def _mobile_panel_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
@@ -7408,7 +7467,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 InlineKeyboardButton("🔥 高占用进程", callback_data="mpanel:topproc"),
             ],
             [
-                InlineKeyboardButton("⚕ Gateway", callback_data="mpanel:health"),
+                InlineKeyboardButton("⚕ 网关状态", callback_data="mpanel:health"),
                 InlineKeyboardButton("📸 截图命令", callback_data="mpanel:hint:shot"),
             ],
             [InlineKeyboardButton("🔄 刷新菜单", callback_data="mpanel:menu")],

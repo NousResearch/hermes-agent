@@ -560,6 +560,44 @@ def test_gateway_restart_on_windows_preserves_failure_fallback(monkeypatch):
     assert calls == ["restart", "stop", "wait", "run"]
 
 
+def test_spawn_detached_gateway_timestamps_stderr(monkeypatch, tmp_path):
+    calls = []
+    child_cmd = [
+        "/usr/bin/python3",
+        "-m",
+        "hermes_cli.main",
+        "gateway",
+        "run",
+        "--replace",
+    ]
+
+    def fake_popen(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return SimpleNamespace()
+
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(gateway, "get_python_path", lambda: "/usr/bin/python3")
+    monkeypatch.setattr(gateway, "_gateway_run_command", lambda: child_cmd)
+    monkeypatch.setattr(gateway.subprocess, "Popen", fake_popen)
+
+    assert gateway._spawn_detached_gateway() is True
+
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd == [
+        "/usr/bin/python3",
+        "-m",
+        "hermes_cli.stderr_timestamp",
+        "--error-log",
+        str(tmp_path / "logs" / "gateway.error.log"),
+        "--",
+        *child_cmd,
+    ]
+    assert kwargs["stdin"] is gateway.subprocess.DEVNULL
+    assert kwargs["stderr"] is gateway.subprocess.DEVNULL
+    assert kwargs["stdout"].name == str(tmp_path / "logs" / "gateway.log")
+
+
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")

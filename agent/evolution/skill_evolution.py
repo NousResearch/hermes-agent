@@ -1,33 +1,4 @@
-"""Recursive Skill Evolution — HyperAgents-inspired meta-improvement at the skill level.
-
-Safe, production-ready recursive self-improvement. Instead of modifying
-source code (dangerous, unsolved), this modifies SKILL.md files (safe,
-reversible, human-readable). The meta-agent is rule-based, not LLM-generated,
-so there's no risk of code corruption.
-
-How it works:
-  1. HAEE creates a skill (verify-before-complete, troubleshoot-X, etc.)
-  2. SkillEvolutionTracker records every time the skill is loaded
-  3. When a session fails DESPITE the skill being active, tracker records it
-  4. After N failures, the skill is auto-patched with the specific failure info
-  5. The patched skill is gated through RegressionGate before application
-  6. Over time, skills accumulate real failure examples → get more precise
-
-This IS recursive self-improvement:
-  - Gen 0: No skill → agent fails
-  - Gen 1: Skill created from failure analysis → agent succeeds sometimes
-  - Gen 2: Skill patched with specific failure cases → agent succeeds more
-  - Gen 3: Skill refined with edge cases → agent succeeds reliably
-  - Gen N: Skill is comprehensive, covers all known failure modes
-
-Meta-level: the improvement process itself improves the skill's ability
-to prevent future failures. Each generation builds on the last.
-
-Research basis:
-  - HyperAgents (ICLR 2026): metacognitive self-modification → adapted to skills
-  - MUSE (ICLR 2026): hierarchical memory for experience-driven learning
-  - SE-Agent (NeurIPS 2025): trajectory revision + refinement
-"""
+"""Recursive Skill Evolution — skills auto-improve from failures. Each generation adds targeted procedures."""
 
 from __future__ import annotations
 

@@ -1,17 +1,4 @@
-"""Multi-method task evaluation for the Evolution Engine.
-
-Evaluates agent trajectories against task success criteria using five methods:
-
-1. **test_pass** — run a shell command, check exit code 0
-2. **file_exists** — verify a file was created/modified
-3. **content_match** — grep/regex against file content
-4. **command_output** — run a command, check output matches expected
-5. **llm_judge** — use an auxiliary model to judge qualitative criteria
-
-Composite scores are weighted averages of individual criterion scores.
-
-Inspired by HarnessX's deterministic verifier + SIA's evaluate.py contract.
-"""
+"""Task Evaluator — 5 methods (test_pass, file_exists, content_match, command_output, llm_judge)."""
 
 from __future__ import annotations
 

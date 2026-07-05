@@ -1,23 +1,4 @@
-"""Atropos-compatible training data export from Evolution Engine runs.
-
-Produces the EXACT format that batch_runner.py outputs and Atropos environments
-consume — ShareGPT conversations with from/value pairs, tool_stats,
-tool_error_counts, api_calls, and completed fields.
-
-Every evolution iteration produces enriched training records:
-  - Negative example: failed trajectory with labeled failure category
-  - Positive example: retry trajectory after fix was applied
-  - Reward signal: score delta between attempts encoded in metadata
-  - Failure labels: analyzer output as training labels
-
-This is the flywheel: HAEE usage → labeled training data →
-better Hermes models → more capable agents.
-
-Usage:
-    from agent.evolution.atropos_export import export_run, export_all_runs
-    records = export_run(run_id)          # One run → training records
-    records = export_all_runs(days=30)    # All recent → training records
-"""
+"""Atropos Export — produces batch_runner-compatible ShareGPT records with failure labels and score deltas."""
 
 from __future__ import annotations
 

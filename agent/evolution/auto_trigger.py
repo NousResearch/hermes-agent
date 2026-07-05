@@ -1,21 +1,4 @@
-"""Auto-Trigger — HAEE activates automatically during normal agent use.
-
-Users never run `hermes evolution run`. Instead, the engine watches
-conversations and auto-improves the agent across ALL failure types:
-
-  1. Missing verification — agent didn't test/verify work
-  2. Loop detection — agent repeated the same tools 3+ times
-  3. Execution errors — tools failed (permission, missing deps, network)
-  4. Premature completion — agent declared done, user corrected
-  5. Missing output — agent said done but no files were created
-  6. User correction — strongest signal, triggers immediate improvement
-
-Nudge levels:
-  - silent:  Apply fixes automatically (safe ones only: skill_create, skill_patch)
-  - notify:  Apply + tell user what was done (default)
-  - approve: Show proposal, wait for user approval
-  - off:     Don't auto-trigger (use manual hermes evolution run instead)
-"""
+"""Auto-Trigger — watches conversations, detects 5 failure types, auto-improves silently."""
 
 from __future__ import annotations
 

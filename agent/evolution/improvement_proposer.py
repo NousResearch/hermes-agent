@@ -1,19 +1,4 @@
-"""Improvement Proposer — the AEGIS "Evolver" for the Evolution Engine.
-
-Generates concrete improvement proposals based on failure analysis. Each proposal
-is a specific, reviewable change to the agent's capabilities:
-
-- Skill creation/update (SKILL.md files, uses existing skill_manager_tool)
-- Tool creation (new Python functions registered in the tool registry)
-- Tool modification (targeted code patches to existing tools)
-- Prompt modification (strategy changes, better guidance)
-- Memory update (persistent knowledge to prevent recurrence)
-
-Safety: proposals are DRAFTS. They must pass through the RegressionGate
-before being applied, and destructive changes require human approval.
-
-Inspired by HarnessX's "typed builder operations" and SIA's code-generation pattern.
-"""
+"""Improvement Proposer — AEGIS Evolver. Generates skill/tool/prompt fixes from failure analysis."""
 
 from __future__ import annotations
 

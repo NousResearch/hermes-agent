@@ -1,23 +1,4 @@
-"""Failure Analyzer — the AEGIS "Digester" for the Evolution Engine.
-
-Analyzes failed trajectories to identify root causes and categorize failures.
-Produces structured analysis that the ImprovementProposer uses to generate
-targeted fixes.
-
-Failure categories (HarnessX-inspired):
-  - MISSING_TOOL: A required capability has no corresponding tool
-  - TOOL_MISUSE: A tool was called with wrong arguments or in wrong context
-  - INSUFFICIENT_CONTEXT: Agent lacked necessary information to proceed
-  - STRATEGY_ERROR: Wrong approach/plan for the task
-  - EXECUTION_ERROR: Tool call failed due to environment issues
-  - PREMATURE_COMPLETION: Agent declared success without verifying
-  - HALLUCINATION: Agent fabricated information or tool results
-  - TIMEOUT: Task exceeded time/turn limits
-  - LOOP: Agent got stuck in a repetitive pattern
-
-The analyzer runs on the auxiliary model (to avoid polluting the main
-conversation cache) and produces structured JSON output.
-"""
+"""Failure Analyzer — AEGIS Digester. 2-tier root-cause analysis (rules + LLM) with 10 failure categories."""
 
 from __future__ import annotations
 

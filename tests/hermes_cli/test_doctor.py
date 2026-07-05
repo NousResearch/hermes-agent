@@ -517,6 +517,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("kilocode", "anthropic/claude-sonnet-4.6"),
         ("kimi-coding", "kimi-k2"),
         ("nvidia", "qwen/qwen3.5-122b-a10b"),
+        ("moa", "anthropic/claude-sonnet-4.6"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(

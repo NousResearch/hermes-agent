@@ -83,8 +83,9 @@ def stage_memory_candidate(
     rationale: str = "",
 ) -> MemoryCandidate:
     """Stage a memory write candidate without mutating active memory files."""
-    if not str(content).strip():
-        raise ValueError("content is required")
+    content_clean = str(content).strip()
+    if "\n§\n" in content_clean:
+        raise ValueError("content cannot contain memory entry separator")
     _target_file(target)  # validates target
     candidate_id = _new_id()
     path = _candidate_path(candidate_id)
@@ -92,7 +93,7 @@ def stage_memory_candidate(
         "schema_version": 1,
         "candidate_id": candidate_id,
         "target": target,
-        "content": str(content).strip(),
+        "content": content_clean,
         "status": "staged",
         "created_at": _now_iso(),
         "source": dict(source or {}),
@@ -118,12 +119,17 @@ def promote_memory_candidate(candidate_id: str) -> MemoryCandidate:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     existing = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
     parts = [part.strip() for part in existing.split("\n§\n") if part.strip()]
-    if candidate.content not in parts:
+    appended = candidate.content not in parts
+    appended_suffix = ""
+    if appended:
         sep = "\n§\n" if existing.strip() else ""
-        target_path.write_text(existing + sep + candidate.content, encoding="utf-8")
+        appended_suffix = sep + candidate.content
+        target_path.write_text(existing + appended_suffix, encoding="utf-8")
     payload = dict(candidate.payload)
     payload["status"] = "promoted"
     payload["promoted_at"] = _now_iso()
+    payload["promote_action"] = "appended" if appended else "noop_duplicate"
+    payload["promoted_suffix"] = appended_suffix
     _write_payload(candidate.path, payload)
     return _shape(candidate.path, payload)
 
@@ -137,13 +143,16 @@ def rollback_memory_candidate(candidate_id: str) -> MemoryCandidate:
         raise ValueError("candidate is not promoted")
     target_path = _target_file(candidate.target)
     existing = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
-    suffixes = [f"\n§\n{candidate.content}", candidate.content]
-    for suffix in suffixes:
-        if existing.endswith(suffix):
-            target_path.write_text(existing[: -len(suffix)], encoding="utf-8")
-            break
-    else:
+    suffix = str(candidate.payload.get("promoted_suffix") or "")
+    if not suffix:
+        payload = dict(candidate.payload)
+        payload["status"] = "rolled_back"
+        payload["rolled_back_at"] = _now_iso()
+        _write_payload(candidate.path, payload)
+        return _shape(candidate.path, payload)
+    if not existing.endswith(suffix):
         raise ValueError("cannot rollback: promoted content is not the last memory entry")
+    target_path.write_text(existing[: -len(suffix)], encoding="utf-8")
     payload = dict(candidate.payload)
     payload["status"] = "rolled_back"
     payload["rolled_back_at"] = _now_iso()

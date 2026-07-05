@@ -58,6 +58,39 @@ def test_memory_candidate_promotion_is_idempotent(tmp_path):
     assert _with_home(home, run) == ("promoted", "Existing fact\n§\nNew verified fact")
 
 
+def test_duplicate_promotion_records_noop_and_rollback_preserves_existing_entry(tmp_path):
+    home = tmp_path / ".hermes"
+    mem_dir = home / "memories"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "MEMORY.md").write_text("Existing fact", encoding="utf-8")
+
+    def run():
+        from agent.memory_candidates import load_memory_candidate, promote_memory_candidate, rollback_memory_candidate, stage_memory_candidate
+
+        candidate = stage_memory_candidate(target="memory", content="Existing fact")
+        promote_memory_candidate(candidate.candidate_id)
+        loaded = load_memory_candidate(candidate.candidate_id)
+        rollback_memory_candidate(candidate.candidate_id)
+        return loaded.status, loaded.payload.get("promote_action"), (mem_dir / "MEMORY.md").read_text(encoding="utf-8")
+
+    assert _with_home(home, run) == ("promoted", "noop_duplicate", "Existing fact")
+
+
+def test_stage_memory_candidate_rejects_separator_in_content(tmp_path):
+    home = tmp_path / ".hermes"
+
+    def run():
+        from agent.memory_candidates import stage_memory_candidate
+
+        try:
+            stage_memory_candidate(target="memory", content="one\n§\ntwo")
+        except ValueError as exc:
+            return str(exc)
+        return "no error"
+
+    assert _with_home(home, run) == "content cannot contain memory entry separator"
+
+
 def test_reject_memory_candidate_marks_status_and_prevents_promotion(tmp_path):
     home = tmp_path / ".hermes"
 

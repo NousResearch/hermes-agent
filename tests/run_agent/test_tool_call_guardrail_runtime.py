@@ -228,7 +228,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     messages = []
 
     with (
-        patch("hermes_cli.plugins.resolve_pre_tool_block", return_value="plugin policy"),
+        patch("hermes_cli.plugins.get_pre_tool_call_block_message", return_value="plugin policy"),
         patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc,
     ):
         agent._execute_tool_calls_sequential(msg, messages, "task-1")

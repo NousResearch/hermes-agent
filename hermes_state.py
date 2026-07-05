@@ -2723,17 +2723,52 @@ class SessionDB:
 
         root_ids = list(dict.fromkeys(root_ids))
         placeholders = ",".join("?" * len(root_ids))
+        # ``best_child`` mirrors the single-child selection in
+        # ``get_compression_tip``: for each compression-ended parent, pick the
+        # one continuation child (skipping branch/delegate/tool rows) preferring
+        # a further compression continuation, then a still-live child, then a
+        # stale closed sibling such as ``ws_orphan_reap``. The old
+        # ``child.started_at >= parent.ended_at`` discriminator was too brittle —
+        # a gateway/compression race can insert the real continuation before the
+        # parent's ``ended_at`` is written, so the walk would follow the stale
+        # websocket sibling and drop the live tip. Walking one best child per
+        # step keeps this batch walk consistent with ``get_compression_tip``.
         query = f"""
-            WITH RECURSIVE chain(root_id, cur_id, depth, path) AS (
+            WITH RECURSIVE best_child AS (
+                SELECT parent_id, child_id FROM (
+                    SELECT
+                        parent.id AS parent_id,
+                        child.id AS child_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY parent.id
+                            ORDER BY
+                                CASE
+                                    WHEN child.end_reason = 'compression' THEN 0
+                                    WHEN child.ended_at IS NULL THEN 1
+                                    ELSE 2
+                                END,
+                                COALESCE(
+                                    (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
+                                    child.started_at
+                                ) DESC,
+                                child.started_at DESC,
+                                child.id DESC
+                        ) AS rn
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
+                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND COALESCE(child.source, '') != 'tool'
+                ) WHERE rn = 1
+            ),
+            chain(root_id, cur_id, depth, path) AS (
                 SELECT id, id, 0, ',' || id || ',' FROM sessions WHERE id IN ({placeholders})
                 UNION ALL
-                SELECT c.root_id, child.id, c.depth + 1, c.path || child.id || ','
+                SELECT c.root_id, bc.child_id, c.depth + 1, c.path || bc.child_id || ','
                 FROM chain c
-                JOIN sessions parent ON parent.id = c.cur_id
-                JOIN sessions child ON child.parent_session_id = c.cur_id
-                WHERE parent.end_reason = 'compression'
-                  AND child.started_at >= parent.ended_at
-                  AND instr(c.path, ',' || child.id || ',') = 0
+                JOIN best_child bc ON bc.parent_id = c.cur_id
+                WHERE instr(c.path, ',' || bc.child_id || ',') = 0
             )
             SELECT root_id, cur_id, depth
             FROM chain

@@ -23,6 +23,10 @@ skill (proof is just the tail of doing the gig).
 
 ## Procedure
 
+0. **Prefer injected gig context.** If a `[CRWD gig context]` block is present in
+   the turn, use each gig's `next_step` as the primary answer — call
+   `get_user_gig_status` only if context is missing or the member asks about a
+   different gig.
 1. **Confirm the gig and its type** (live `irl` vs online) with `crwd_db` `get_gig_details`.
    If it's cleanly neither, go by the gig's real `type_of_work_proof`/requirements rather than
    forcing it into one bucket — and hand off if what's required is unclear.

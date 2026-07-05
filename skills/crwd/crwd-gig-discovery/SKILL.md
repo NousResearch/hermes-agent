@@ -65,8 +65,10 @@ Find gigs and explain them against the member's **real** data — not in the abs
    - Suggest they **call ahead to confirm stock** — you cannot see live inventory, so never
      claim something is in stock.
 7. Explain the flow against their **actual** state, not generically: browse → apply →
-   **get approved** → perform → submit proof → get paid. If they're waiting on approval, say
-   that; if approved, point them at what to do next (`crwd-gig-execution`).
+   **get approved** → perform → submit proof → get paid. If a `[CRWD gig context]`
+   block is present, quote each gig's `next_step` instead of generic lifecycle
+   advice. If they're waiting on approval, say that; if approved, point them at
+   what to do next (`crwd-gig-execution`).
 8. Be precise on **payout, deadline, and estimated time** — quote the real numbers; never guess.
 9. Offer a deadline reminder if the gig is time-sensitive (see `crwd-reminders-followups`).
 

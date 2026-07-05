@@ -70,6 +70,15 @@ class TestToolRequestMiddleware:
         assert out is not None
         assert out["args"]["user_id"] == "memberabc"
 
+    def test_rewrites_get_user_gig_status_when_user_id_missing(self, chatwoot_session):
+        with patch.object(us, "resolved_member_id", return_value="memberabc"):
+            out = us.on_tool_request(
+                tool_name="crwd_db",
+                args={"action": "get_user_gig_status"},
+            )
+        assert out is not None
+        assert out["args"]["user_id"] == "memberabc"
+
     def test_does_not_rewrite_foreign_user_id(self, chatwoot_session):
         with patch.object(us, "resolved_member_id", return_value="memberabc"):
             out = us.on_tool_request(

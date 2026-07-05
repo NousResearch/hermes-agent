@@ -24,6 +24,7 @@ _USER_SCOPED_ACTIONS = frozenset({
     "get_user",
     "get_user_gigs",
     "get_waitlisted_gigs",
+    "get_user_gig_status",
     "get_user_products",
     "get_user_receipts",
     "get_user_notifications",

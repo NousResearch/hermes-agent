@@ -312,8 +312,9 @@ class SlackTaskStream:
     retrying a broken stream on every subsequent event.
     """
 
-    # Tuning defaults (overridable per-instance via __init__, which run.py
-    # feeds from the display config keys tool_progress_native_*):
+    # Tuning constants (overridable per-instance via __init__ for tests and
+    # forks; deliberately NOT exposed as user config — they encode measured
+    # Slack API physics, not preferences):
     #
     # Proactive rollover thresholds, measured live 2026-07-05 via probe
     # (ehoy scripts/carnie/slack_stream_probe.py): a stream dies ~306s after startStream

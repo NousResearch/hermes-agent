@@ -421,7 +421,23 @@ def _compute_tool_definitions(
                         )
                 else:
                     resolved = resolve_toolset(toolset_name)
-                    tools_to_include.difference_update(resolved)
+                    if enabled_toolsets is not None:
+                        # When the user has explicitly enabled certain toolsets,
+                        # only subtract tools from the disabled composite that
+                        # are NOT also provided by an enabled toolset.  Without
+                        # this guard, disabling an overlapping composite like
+                        # ``coding`` silently strips tools from explicitly
+                        # enabled toolsets such as ``terminal`` and ``file``,
+                        # resulting in zero tools (#58281).
+                        enabled_tools: set = set()
+                        for ename in enabled_toolsets:
+                            if validate_toolset(ename):
+                                enabled_tools.update(resolve_toolset(ename))
+                        to_remove = set(resolved) - enabled_tools
+                        tools_to_include.difference_update(to_remove)
+                        resolved = sorted(to_remove)
+                    else:
+                        tools_to_include.difference_update(resolved)
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:

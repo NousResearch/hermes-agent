@@ -142,6 +142,92 @@ def test_mutator_route_table_matches_prd_inventory():
     }
 
 
+def test_compute_host_compress_control_runs_identity_guard_in_host(monkeypatch):
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+
+    class _Agent:
+        model = "host-model"
+        provider = "host-provider"
+        tools = []
+        _cached_system_prompt = ""
+        session_input_tokens = 1
+        session_output_tokens = 1
+        session_prompt_tokens = 1
+        session_completion_tokens = 1
+        session_total_tokens = 2
+        session_api_calls = 1
+        context_compressor = None
+
+    session = {
+        "agent": _Agent(),
+        "session_key": "before-key",
+        "history": [
+            {"role": "user", "content": "before"},
+            {"role": "assistant", "content": "before"},
+        ],
+        "history_lock": threading.Lock(),
+        "history_version": 2,
+        "running": False,
+        "manual_compression_lock": threading.Lock(),
+    }
+    calls: dict[str, object] = {}
+
+    def _compress(sess, focus_topic=None, **_kwargs):
+        assert sess is session
+        calls["compress_focus"] = focus_topic
+        with sess["history_lock"]:
+            sess["history"] = [{"role": "summary", "content": "compressed in host"}]
+            sess["history_version"] = 3
+
+    def _sync(sid, sess):
+        assert sess is session
+        calls["sync"] = sid
+        sess["session_key"] = "after-key"
+
+    server._sessions["sid"] = session
+    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
+    monkeypatch.setattr(server, "_compress_session_history", _compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", _sync)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {
+            "model": "host-model",
+            "provider": "host-provider",
+            "usage": {"total": 2},
+        },
+    )
+
+    try:
+        host.handle_frame(
+            {
+                "type": "control",
+                "sid": "sid",
+                "request_id": "compress-1",
+                "route_name": "slash.compress",
+                "command": "/compress focus",
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda f: f.get("type") == "control.ack" and f.get("request_id") == "compress-1",
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        host.close()
+
+    assert calls == {"compress_focus": "focus", "sync": "sid"}
+    assert ack["route_name"] == "slash.compress"
+    assert ack["session_key"] == "after-key"
+    assert ack["history_version"] == 3
+    assert ack["message_count"] == 1
+    assert ack["session_info"]["model"] == "host-model"
+
+
 def test_append_log_record_single_write_lines(tmp_path):
     path = tmp_path / "agent.log"
 

@@ -385,6 +385,7 @@ class ComputeHost:
                 message_count = len(session.get("history") or [])
                 interrupted = bool(session.get("_turn_cancel_requested"))
                 session_key = str(session.get("session_key") or "")
+            session_info = server._session_info(session.get("agent"), session)
             self._bump_progress()
             self.emit(
                 {
@@ -396,6 +397,8 @@ class ComputeHost:
                     "message_count": message_count,
                     "interrupted": interrupted,
                     "ended_ns": now_ns(),
+                    "session_info": session_info,
+                    "session_info_emitted": True,
                 }
             )
         except Exception as exc:
@@ -546,7 +549,23 @@ class ComputeHost:
             output = ""
             if command:
                 output = server._mirror_slash_side_effects(sid, session, command)
-            self.emit({"type": "control.ack", "sid": sid, "request_id": request_id, "route_name": route_name, "output": output})
+            with session["history_lock"]:
+                history_version = int(session.get("history_version", 0))
+                message_count = len(session.get("history") or [])
+                session_key = str(session.get("session_key") or "")
+            self.emit(
+                {
+                    "type": "control.ack",
+                    "sid": sid,
+                    "request_id": request_id,
+                    "route_name": route_name,
+                    "output": output,
+                    "session_key": session_key,
+                    "history_version": history_version,
+                    "message_count": message_count,
+                    "session_info": server._session_info(session.get("agent"), session),
+                }
+            )
         except Exception as exc:
             self.emit({"type": "control.error", "sid": sid, "request_id": request_id, "message": str(exc)})
 

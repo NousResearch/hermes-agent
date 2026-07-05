@@ -386,7 +386,15 @@ class MemoryStore:
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
+        """Find entry containing old_text substring, replace the matched portion with new_content.
+
+        If old_text matches only part of an entry, only the matched substring is
+        replaced -- surrounding content is preserved (fix for issue #59184 where
+        whole-entry replacement silently destroyed composite entries).
+
+        If old_text matches the entire entry, behaviour is unchanged (the whole
+        entry is replaced with new_content).
+        """
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -429,9 +437,24 @@ class MemoryStore:
             idx = matches[0][0]
             limit = self._char_limit(target)
 
+            # Substring replacement: replace only the matched portion within
+            # the entry, preserving surrounding content (fix for #59184).
+            # If old_text matches the entire entry, this is equivalent to
+            # whole-entry replacement (backward compatible).
+            entry = entries[idx]
+            pos = entry.find(old_text)
+            if pos == -1:
+                # Should not happen (we matched above), but guard defensively
+                return self._consolidation_failure({
+                    "success": False,
+                    "error": f"Match found but position lost. This is a bug -- please report.",
+                    "current_entries": entries,
+                })
+            new_entry = entry[:pos] + new_content + entry[pos + len(old_text):]
+
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
-            test_entries[idx] = new_content
+            test_entries[idx] = new_entry
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
@@ -448,7 +471,7 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
+            entries[idx] = new_entry
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
@@ -559,7 +582,13 @@ class MemoryStore:
                             target,
                             f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
                         )
-                    working[matches[0]] = content
+                    # Substring replacement: preserve surrounding content (fix for #59184)
+                    idx = matches[0]
+                    entry = working[idx]
+                    sub_pos = entry.find(old_text)
+                    if sub_pos == -1:
+                        return self._batch_error(target, f"{pos}: match position lost (bug).")
+                    working[idx] = entry[:sub_pos] + content + entry[sub_pos + len(old_text):]
 
                 elif act == "remove":
                     if not old_text:

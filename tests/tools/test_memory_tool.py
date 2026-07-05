@@ -321,10 +321,29 @@ class TestMemoryStoreAdd:
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):
         store.add("memory", "Python 3.11 project")
-        result = store.replace("memory", "3.11", "Python 3.12 project")
+        result = store.replace("memory", "3.11", "3.12")
         assert result["success"] is True
         assert "Python 3.12 project" in store.memory_entries
         assert "Python 3.11 project" not in store.memory_entries
+
+    def test_replace_whole_entry_with_full_old_text(self, store):
+        """Backward compat: when old_text IS the full entry, whole entry is replaced."""
+        store.add("memory", "Python 3.11 project")
+        result = store.replace("memory", "Python 3.11 project", "Rust 1.75 project")
+        assert result["success"] is True
+        assert "Rust 1.75 project" in store.memory_entries
+        assert "Python 3.11 project" not in store.memory_entries
+
+    def test_replace_substring_preserves_surrounding(self, store):
+        """Fix for #59184: partial old_text replaces only the match, not the whole entry."""
+        store.add("memory", "Section A\ncontent A\nSection B\ncontent B\nSection C")
+        result = store.replace("memory", "Section B\ncontent B", "Section B\nnew content")
+        assert result["success"] is True
+        entry = store.memory_entries[0]
+        assert "Section A" in entry
+        assert "Section C" in entry
+        assert "new content" in entry
+        assert "content B\nSection C" not in entry  # old substring gone
 
     def test_replace_no_match(self, store):
         store.add("memory", "fact A")
@@ -652,6 +671,22 @@ class TestMemoryBatch:
         assert result["success"] is True
         assert store.memory_entries.count("already here") == 1
         assert "brand new" in store.memory_entries
+
+    def test_batch_replace_preserves_surrounding(self, store):
+        """Fix for #59184 in batch: substring replace preserves surrounding content."""
+        store.add("memory", "Section A\ncontent A\nSection B\ncontent B\nSection C")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[
+                {"action": "replace", "old_text": "Section B\ncontent B", "content": "Section B\nnew content"},
+            ],
+            store=store,
+        ))
+        assert result["success"] is True
+        entry = store.memory_entries[0]
+        assert "Section A" in entry
+        assert "Section C" in entry
+        assert "new content" in entry
 
     def test_batch_injection_blocked_rejects_whole_batch(self, store):
         result = json.loads(memory_tool(

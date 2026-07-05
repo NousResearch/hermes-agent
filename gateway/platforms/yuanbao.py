@@ -3868,6 +3868,7 @@ class ConnectionManager:
                     "[%s] Reconnected on attempt %d. connectId=%s",
                     adapter.name, attempt + 1, self._connect_id,
                 )
+                YuanbaoAdapter.set_active(adapter)
                 return True
 
             except asyncio.TimeoutError:

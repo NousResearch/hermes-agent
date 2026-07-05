@@ -639,6 +639,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Last truncated mid-stream preview delivered per (chat_id, message_id).
+        # Once an oversized streaming edit saturates at the 4096 preview cap,
+        # every subsequent progressive edit truncates to the SAME text; sending
+        # it again is a no-op that still burns Telegram's flood budget (~1
+        # edit/0.8s × the rest of the stream ⇒ flood control with 200s+
+        # penalties, hanging final delivery). Dedup here so a saturated preview
+        # goes quiet until finalize. Bounded: entries are dropped on finalize.
+        self._last_overflow_preview: Dict[tuple, str] = {}
         # Background task that runs post-connect housekeeping (command-menu
         # registration + DM-topic setup) off the connect path so a slow Bot
         # API call (e.g. a set_my_commands stall for certain tokens) cannot
@@ -3855,12 +3863,32 @@ class TelegramAdapter(BasePlatformAdapter):
         # the next token chunk the full accumulated text is re-edited into the
         # continuation, triggering another split → infinite duplication loop
         # (#48648).  The full content is delivered when finalize=True.
+        _preview_key = (str(chat_id), str(message_id))
+        _saturated_preview = False
+        if finalize:
+            # Any saturation state for this message is finished with — the
+            # final edit always delivers real (full) content.
+            self._last_overflow_preview.pop(_preview_key, None)
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
             if finalize:
                 return await self._edit_overflow_split(
                     chat_id, message_id, content, finalize=finalize, metadata=metadata,
                 )
             content = self._truncate_stream_overflow_preview(content)
+            _saturated_preview = True
+            # Saturated-preview dedup: past the cap, every progressive edit
+            # truncates to the same text. Re-sending it is a visual no-op that
+            # still burns flood budget (Telegram counts the request and answers
+            # "message is not modified"). ~1 edit/0.8s for the rest of a long
+            # stream trips flood control (200s+ penalties) and hangs the final
+            # delivery. Skip silently until finalize.
+            if self._last_overflow_preview.get(_preview_key) == content:
+                return SendResult(success=True, message_id=message_id)
+        elif not finalize:
+            # Content shrank back under the cap (segment break / new message
+            # id) — clear stale saturation state so dedup can't mask a real
+            # edit later.
+            self._last_overflow_preview.pop(_preview_key, None)
 
         try:
             if not finalize:
@@ -3869,6 +3897,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=content,
                 )
+                if _saturated_preview:
+                    self._last_overflow_preview[_preview_key] = content
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
@@ -3916,11 +3946,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 # Mid-stream: truncate and retry instead of splitting (#48648).
                 truncated = self._truncate_stream_overflow_preview(content)
+                if self._last_overflow_preview.get(_preview_key) == truncated:
+                    # Saturated-preview dedup (see pre-flight path above).
+                    return SendResult(success=True, message_id=message_id)
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=truncated,
                 )
+                self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back

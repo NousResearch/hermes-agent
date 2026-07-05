@@ -1202,6 +1202,7 @@ class SessionStore:
         session_id: str,
         session_key: str,
         source: Optional[SessionSource],
+        display_name: Optional[str] = None,
     ) -> None:
         """Persist the routing peer for an existing gateway session row."""
         if not self._db or not source:
@@ -1210,6 +1211,11 @@ class SessionStore:
         if not callable(recorder):
             return
         try:
+            origin_json = None
+            try:
+                origin_json = json.dumps(source.to_dict())
+            except Exception:
+                pass
             recorder(
                 session_id,
                 source=source.platform.value,
@@ -1218,9 +1224,56 @@ class SessionStore:
                 chat_id=source.chat_id,
                 chat_type=source.chat_type,
                 thread_id=source.thread_id,
+                display_name=display_name or source.chat_name,
+                origin_json=origin_json,
             )
+        except TypeError:
+            # Older SessionDB without display_name/origin_json kwargs.
+            try:
+                recorder(
+                    session_id,
+                    source=source.platform.value,
+                    user_id=source.user_id,
+                    session_key=session_key,
+                    chat_id=source.chat_id,
+                    chat_type=source.chat_type,
+                    thread_id=source.thread_id,
+                )
+            except Exception as exc:
+                logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
         except Exception as exc:
             logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
+
+    def set_expiry_finalized(
+        self, entry: SessionEntry, *, clear_model_override: bool = True
+    ) -> None:
+        """Mark a session entry expiry-finalized in memory, sessions.json, AND state.db.
+
+        Single write-path for the expiry watcher (#9006): keeps the durable
+        state.db flag in sync with the JSON routing index so the flag
+        survives sessions.json pruning/loss.
+
+        ``clear_model_override=False`` preserves the give-up path's original
+        behavior (flag only, no override drop).
+        """
+        with self._lock:
+            entry.expiry_finalized = True
+            if clear_model_override:
+                # Session finalization is a conversation boundary — drop the
+                # persisted /model override too so a later message doesn't
+                # rehydrate it after the in-memory override was popped.
+                entry.model_override = None
+            self._save()
+        if self._db:
+            setter = getattr(self._db, "set_expiry_finalized", None)
+            if callable(setter):
+                try:
+                    setter(entry.session_id, True)
+                except Exception as exc:
+                    logger.debug(
+                        "Session DB expiry_finalized write failed for %s: %s",
+                        entry.session_id, exc,
+                    )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -1618,6 +1671,7 @@ class SessionStore:
                     session_id,
                     session_key,
                     source,
+                    display_name=entry.display_name,
                 )
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
@@ -1643,6 +1697,7 @@ class SessionStore:
                     entry.session_id,
                     session_key,
                     entry.origin,
+                    display_name=entry.display_name,
                 )
 
     def set_model_override(
@@ -1888,6 +1943,7 @@ class SessionStore:
                     session_id,
                     session_key,
                     old_entry.origin,
+                    display_name=new_entry.display_name if new_entry else None,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -1950,6 +2006,7 @@ class SessionStore:
                 target_session_id,
                 session_key,
                 new_entry.origin if new_entry else None,
+                display_name=new_entry.display_name if new_entry else None,
             )
 
         return new_entry

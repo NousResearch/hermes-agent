@@ -2,6 +2,7 @@
 
 import sqlite3
 import time
+import json
 import pytest
 
 import hermes_state
@@ -4829,6 +4830,174 @@ def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
         chat_id="chat-1",
         chat_type="dm",
     ) is None
+
+
+def test_gateway_metadata_display_name_origin_round_trip(db):
+    """record_gateway_session_peer persists display_name/origin_json (#9006)."""
+    db.create_session("gw-meta", "telegram", user_id="u1")
+    origin = {"platform": "telegram", "chat_id": "c1", "chat_name": "Alice", "chat_type": "dm"}
+    db.record_gateway_session_peer(
+        "gw-meta",
+        source="telegram",
+        user_id="u1",
+        session_key="agent:main:telegram:dm:c1",
+        chat_id="c1",
+        chat_type="dm",
+        thread_id=None,
+        display_name="Alice",
+        origin_json=json.dumps(origin),
+    )
+    row = db.get_session("gw-meta")
+    assert row["display_name"] == "Alice"
+    assert json.loads(row["origin_json"])["chat_name"] == "Alice"
+
+    # None values must not clobber existing metadata.
+    db.record_gateway_session_peer(
+        "gw-meta",
+        source="telegram",
+        user_id="u1",
+        session_key="agent:main:telegram:dm:c1",
+        chat_id="c1",
+        chat_type="dm",
+    )
+    row = db.get_session("gw-meta")
+    assert row["display_name"] == "Alice"
+    assert row["origin_json"] is not None
+
+
+def test_set_expiry_finalized_round_trip(db):
+    db.create_session("gw-exp", "telegram", session_key="agent:main:telegram:dm:x")
+    row = db.get_session("gw-exp")
+    assert not row["expiry_finalized"]
+    db.set_expiry_finalized("gw-exp")
+    assert db.get_session("gw-exp")["expiry_finalized"] == 1
+    db.set_expiry_finalized("gw-exp", False)
+    assert db.get_session("gw-exp")["expiry_finalized"] == 0
+
+
+def test_list_gateway_sessions_filters_and_dedupes(db):
+    # Two rows on the same session_key: only the newest should be returned.
+    db.create_session(
+        "gw-old", "telegram",
+        session_key="agent:main:telegram:dm:c1", chat_id="c1", chat_type="dm",
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = started_at - 100 WHERE id = 'gw-old'"
+    )
+    db._conn.commit()
+    db.create_session(
+        "gw-new", "telegram",
+        session_key="agent:main:telegram:dm:c1", chat_id="c1", chat_type="dm",
+    )
+    db.create_session(
+        "gw-discord", "discord",
+        session_key="agent:main:discord:group:g1:u1", chat_id="g1", chat_type="group",
+    )
+    # Non-gateway session (no session_key) must never appear.
+    db.create_session("cli-session", "cli")
+    # Ended gateway session excluded when active_only.
+    db.create_session(
+        "gw-ended", "slack",
+        session_key="agent:main:slack:dm:s1", chat_id="s1", chat_type="dm",
+    )
+    db.end_session("gw-ended", "session_reset")
+
+    rows = db.list_gateway_sessions(active_only=True)
+    ids = {r["id"] for r in rows}
+    assert ids == {"gw-new", "gw-discord"}
+
+    tg_rows = db.list_gateway_sessions(platform="telegram", active_only=True)
+    assert [r["id"] for r in tg_rows] == ["gw-new"]
+
+    all_rows = db.list_gateway_sessions(active_only=False)
+    assert "gw-ended" in {r["id"] for r in all_rows}
+    assert "cli-session" not in {r["id"] for r in all_rows}
+
+
+def test_find_session_by_origin_matching_rules(db):
+    db.create_session(
+        "gw-o1", "telegram", user_id="u1",
+        session_key="agent:main:telegram:group:c9:u1", chat_id="c9", chat_type="group",
+    )
+    db.create_session(
+        "gw-o2", "telegram", user_id="u2",
+        session_key="agent:main:telegram:group:c9:u2", chat_id="c9", chat_type="group",
+    )
+
+    # Exact user match wins.
+    assert db.find_session_by_origin(
+        platform="telegram", chat_id="c9", user_id="u2"
+    ) == "gw-o2"
+    # Unknown user among multiple distinct users -> None (no contamination).
+    assert db.find_session_by_origin(
+        platform="telegram", chat_id="c9", user_id="u3"
+    ) is None
+    # No user given + multiple distinct users -> None.
+    assert db.find_session_by_origin(platform="telegram", chat_id="c9") is None
+    # Ended sessions are ignored: only gw-o1 remains as a live candidate.
+    # A single remaining candidate is returned even without an exact user
+    # match — mirrors the original sessions.json scan semantics.
+    db.end_session("gw-o2", "session_reset")
+    assert db.find_session_by_origin(
+        platform="telegram", chat_id="c9", user_id="u2"
+    ) == "gw-o1"
+    # Single remaining candidate resolves without user_id.
+    assert db.find_session_by_origin(platform="telegram", chat_id="c9") == "gw-o1"
+    # Thread filter.
+    db.create_session(
+        "gw-th", "discord", user_id="u9",
+        session_key="agent:main:discord:thread:t7", chat_id="ch7",
+        chat_type="thread", thread_id="t7",
+    )
+    assert db.find_session_by_origin(
+        platform="discord", chat_id="ch7", thread_id="t7"
+    ) == "gw-th"
+    assert db.find_session_by_origin(
+        platform="discord", chat_id="ch7", thread_id="other"
+    ) is None
+
+
+def test_v18_backfill_from_sessions_json(tmp_path, monkeypatch):
+    """Migration backfills display_name/origin_json/expiry_finalized from sessions.json."""
+    import hermes_state as hs
+
+    home = tmp_path / ".hermes"
+    (home / "sessions").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(hs, "DEFAULT_DB_PATH", home / "state.db")
+
+    # Seed a pre-v18 database: create schema, downgrade version, add a bare row.
+    db = hs.SessionDB(home / "state.db")
+    db.create_session("legacy-gw", "telegram", user_id="u1")
+    db._conn.execute("UPDATE schema_version SET version = 17")
+    db._conn.execute(
+        "UPDATE sessions SET session_key = NULL, display_name = NULL, "
+        "origin_json = NULL WHERE id = 'legacy-gw'"
+    )
+    db._conn.commit()
+    db.close()
+
+    origin = {"platform": "telegram", "chat_id": "123", "chat_name": "Alice",
+              "chat_type": "dm", "user_id": "u1"}
+    (home / "sessions" / "sessions.json").write_text(json.dumps({
+        "_README": "sentinel",
+        "agent:main:telegram:dm:123": {
+            "session_id": "legacy-gw",
+            "display_name": "Alice",
+            "chat_type": "dm",
+            "expiry_finalized": True,
+            "origin": origin,
+        },
+    }))
+
+    db = hs.SessionDB(home / "state.db")
+    row = db.get_session("legacy-gw")
+    db.close()
+    assert row["session_key"] == "agent:main:telegram:dm:123"
+    assert row["display_name"] == "Alice"
+    assert row["chat_id"] == "123"
+    assert json.loads(row["origin_json"])["chat_name"] == "Alice"
+    assert row["expiry_finalized"] == 1
 
 
 def test_compression_failure_cooldown_round_trips_and_clears(db):

@@ -215,9 +215,31 @@ function looksBinaryBytes(bytes: Uint8Array) {
   return suspicious / Math.min(bytes.length, 4096) > 0.12
 }
 
-async function readTextPreview(filePath: string) {
+async function readTextPreview(filePath: string): Promise<{
+  binary: boolean
+  byteSize: number
+  language: string
+  mimeType?: string
+  path: string
+  text: string | null
+  truncated: boolean
+}> {
   try {
-    return await readDesktopFileText(filePath)
+    const result = await readDesktopFileText(filePath)
+    // Guard against null/undefined results (e.g. IPC returning null for
+    // binary files). Normalize to the expected shape so callers never hit
+    // "NoneType has no attribute …".
+    if (result === null || result === undefined) {
+      return {
+        binary: true,
+        byteSize: 0,
+        language: 'text',
+        path: filePath,
+        text: null,
+        truncated: false
+      }
+    }
+    return result
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
 
@@ -240,7 +262,8 @@ async function readTextPreview(filePath: string) {
     byteSize: bytes.byteLength,
     mimeType,
     path: filePath,
-    text: new TextDecoder().decode(bytes)
+    text: new TextDecoder().decode(bytes),
+    truncated: false
   }
 }
 

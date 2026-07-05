@@ -27,6 +27,7 @@ gateway:
     error_prefix:           "Hiba: {error}"
     switched:               "Modell átváltva: `{model}`"
     provider_label:         "Szolgáltató: {provider}"
+    reasoning_label:        "Gondolkodás: {effort}"
     context_label:          "Kontextus: {tokens} token"
     max_output_label:       "Max. kimenet: {tokens} token"
     cost_label:             "Költség: {cost}"

@@ -27,6 +27,7 @@ gateway:
     error_prefix:           "오류: {error}"
     switched:               "모델이 `{model}`(으)로 전환되었습니다"
     provider_label:         "제공자: {provider}"
+    reasoning_label:        "추론: {effort}"
     context_label:          "컨텍스트: {tokens} 토큰"
     max_output_label:       "최대 출력: {tokens} 토큰"
     cost_label:             "비용: {cost}"

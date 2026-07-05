@@ -199,3 +199,54 @@ async def test_model_session_flag_does_not_persist(tmp_path, monkeypatch):
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     # Config untouched — the session override is in-memory only.
     assert written["model"]["default"] == "old-model"
+
+
+@pytest.mark.asyncio
+async def test_model_switch_confirmation_shows_reasoning_from_config(tmp_path, monkeypatch):
+    """The /model confirmation surfaces the effective reasoning effort, read
+    from config.yaml (agent.reasoning_effort) when no session override is set.
+    """
+    cfg_path = _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openai-codex"},
+    )
+    # Add an agent.reasoning_effort to the isolated config the handler reads.
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    cfg["agent"] = {"reasoning_effort": "xhigh"}
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    runner = _make_runner()
+    runner._session_reasoning_overrides = {}
+    result = await runner._handle_model_command(_make_event("/model gpt-5.5"))
+
+    assert result is not None
+    assert "Reasoning: xhigh" in result
+
+
+@pytest.mark.asyncio
+async def test_model_switch_confirmation_honors_session_reasoning_override(tmp_path, monkeypatch):
+    """A /model switch does NOT clear a /reasoning session override, so the
+    confirmation must reflect the override — not the global config value.
+    """
+    cfg_path = _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openai-codex"},
+    )
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    cfg["agent"] = {"reasoning_effort": "low"}  # global default
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    runner = _make_runner()
+    # Seed a session override keyed to the event's session — high beats the
+    # config's "low".
+    ev = _make_event("/model gpt-5.5")
+    session_key = runner._session_key_for_source(ev.source)
+    runner._session_reasoning_overrides = {session_key: {"enabled": True, "effort": "high"}}
+
+    result = await runner._handle_model_command(ev)
+
+    assert result is not None
+    assert "Reasoning: high" in result
+    assert "Reasoning: low" not in result

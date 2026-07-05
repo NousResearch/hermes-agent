@@ -27,6 +27,7 @@ gateway:
     error_prefix:           "Errore: {error}"
     switched:               "Modello cambiato a `{model}`"
     provider_label:         "Provider: {provider}"
+    reasoning_label:        "Reasoning: {effort}"
     context_label:          "Contesto: {tokens} token"
     max_output_label:       "Output massimo: {tokens} token"
     cost_label:             "Costo: {cost}"

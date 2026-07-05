@@ -4854,6 +4854,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return result
 
     @staticmethod
+    def _reasoning_effort_label(reasoning_cfg: dict | None) -> str:
+        """Render a reasoning-effort config dict into a display label.
+
+        Shared by the ``/new`` reset banner and the ``/model`` switch
+        confirmation so both surfaces describe the effective reasoning effort
+        the same way. ``None`` → ``"medium (default)"``;
+        ``{"enabled": False}`` → ``"none"``; otherwise the configured effort.
+        """
+        if reasoning_cfg is None:
+            return "medium (default)"
+        if not reasoning_cfg.get("enabled", True):
+            return "none"
+        return str(reasoning_cfg.get("effort", "medium"))
+
+    @staticmethod
     def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
         """Parse `/reasoning` args into `(value, persist_global)`.
 
@@ -12619,13 +12634,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # override, so config.yaml is the effective level at reset time.
         reasoning_label = None
         try:
-            reasoning_cfg = self._load_reasoning_config()
-            if reasoning_cfg is None:
-                reasoning_label = "medium (default)"
-            elif not reasoning_cfg.get("enabled", True):
-                reasoning_label = "none"
-            else:
-                reasoning_label = str(reasoning_cfg.get("effort", "medium"))
+            reasoning_label = self._reasoning_effort_label(self._load_reasoning_config())
         except Exception:
             reasoning_label = None
 

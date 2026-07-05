@@ -1371,6 +1371,14 @@ class GatewaySlashCommandsMixin:
                         plabel = result.provider_label or result.target_provider
                         lines = [t("gateway.model.switched", model=result.new_model)]
                         lines.append(t("gateway.model.provider_label", provider=plabel))
+                        try:
+                            _reasoning_label = self._reasoning_effort_label(
+                                self._resolve_session_reasoning_config(source=source)
+                            )
+                            if _reasoning_label:
+                                lines.append(t("gateway.model.reasoning_label", effort=_reasoning_label))
+                        except Exception:
+                            pass
                         mi = result.model_info
                         from hermes_cli.model_switch import resolve_display_context_length
                         _sw_config_ctx = None
@@ -1608,6 +1616,18 @@ class GatewaySlashCommandsMixin:
             provider_label = result.provider_label or result.target_provider
             lines = [t("gateway.model.switched", model=result.new_model)]
             lines.append(t("gateway.model.provider_label", provider=provider_label))
+
+            # Reasoning effort in effect after the switch. /model does NOT clear
+            # a /reasoning session override, so resolve the session-aware value
+            # (falls back to config.yaml) rather than the global default.
+            try:
+                _reasoning_label = self._reasoning_effort_label(
+                    self._resolve_session_reasoning_config(source=source)
+                )
+                if _reasoning_label:
+                    lines.append(t("gateway.model.reasoning_label", effort=_reasoning_label))
+            except Exception:
+                pass
 
             # Context: always resolve via the provider-aware chain so Codex OAuth,
             # Copilot, and Nous-enforced caps win over the raw models.dev entry.

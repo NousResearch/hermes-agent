@@ -27,6 +27,7 @@ gateway:
     error_prefix:           "エラー: {error}"
     switched:               "モデルを `{model}` に切り替えました"
     provider_label:         "プロバイダー: {provider}"
+    reasoning_label:        "推論: {effort}"
     context_label:          "コンテキスト: {tokens} トークン"
     max_output_label:       "最大出力: {tokens} トークン"
     cost_label:             "コスト: {cost}"

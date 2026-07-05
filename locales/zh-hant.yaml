@@ -27,6 +27,7 @@ gateway:
     error_prefix:           "錯誤：{error}"
     switched:               "已切換模型為 `{model}`"
     provider_label:         "提供方：{provider}"
+    reasoning_label:        "推理：{effort}"
     context_label:          "上下文：{tokens} tokens"
     max_output_label:       "最大輸出：{tokens} tokens"
     cost_label:             "費用：{cost}"

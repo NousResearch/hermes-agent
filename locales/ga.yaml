@@ -31,6 +31,7 @@ gateway:
     error_prefix:           "Earráid: {error}"
     switched:               "Athraíodh an tsamhail go `{model}`"
     provider_label:         "Soláthraí: {provider}"
+    reasoning_label:        "Réasúnaíocht: {effort}"
     context_label:          "Comhthéacs: {tokens} comhartha"
     max_output_label:       "Aschur uasta: {tokens} comhartha"
     cost_label:             "Costas: {cost}"

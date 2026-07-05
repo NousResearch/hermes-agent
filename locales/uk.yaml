@@ -27,6 +27,7 @@ gateway:
     error_prefix:           "Помилка: {error}"
     switched:               "Модель змінено на `{model}`"
     provider_label:         "Провайдер: {provider}"
+    reasoning_label:        "Мислення: {effort}"
     context_label:          "Контекст: {tokens} токенів"
     max_output_label:       "Макс. вихід: {tokens} токенів"
     cost_label:             "Вартість: {cost}"

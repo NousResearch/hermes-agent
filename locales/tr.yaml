@@ -27,6 +27,7 @@ gateway:
     error_prefix:           "Hata: {error}"
     switched:               "Model `{model}` olarak değiştirildi"
     provider_label:         "Sağlayıcı: {provider}"
+    reasoning_label:        "Akıl yürütme: {effort}"
     context_label:          "Bağlam: {tokens} token"
     max_output_label:       "Maks. çıktı: {tokens} token"
     cost_label:             "Maliyet: {cost}"

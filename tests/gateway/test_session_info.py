@@ -154,3 +154,23 @@ class TestFormatSessionInfoReasoning:
         assert "◆ Model:" in info
         assert "◆ Context:" in info
         assert "Reasoning" not in info
+
+
+class TestReasoningEffortLabel:
+    """The shared _reasoning_effort_label helper — single source of truth for
+    the reasoning-effort display string used by both the /new reset banner and
+    the /model switch confirmation."""
+
+    def test_none_is_medium_default(self):
+        assert GatewayRunner._reasoning_effort_label(None) == "medium (default)"
+
+    def test_disabled_is_none(self):
+        assert GatewayRunner._reasoning_effort_label({"enabled": False}) == "none"
+
+    def test_explicit_effort(self):
+        assert GatewayRunner._reasoning_effort_label(
+            {"enabled": True, "effort": "xhigh"}
+        ) == "xhigh"
+
+    def test_enabled_without_effort_defaults_medium(self):
+        assert GatewayRunner._reasoning_effort_label({"enabled": True}) == "medium"

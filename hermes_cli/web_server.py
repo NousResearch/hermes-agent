@@ -972,6 +972,11 @@ class MoaConfigPayload(BaseModel):
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
     enabled: bool = True
+    # Trace persistence fields (GH #58819): included so they survive the
+    # wholesale cfg["moa"] overwrite.  None = "not sent by client" → preserve
+    # the existing config value; explicit bool/str = "client is updating".
+    save_traces: Optional[bool] = None
+    trace_dir: Optional[str] = None
     profile: Optional[str] = None
 
 
@@ -4460,6 +4465,11 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
 
         with _profile_scope(body.profile or profile):
             cfg = load_config()
+            existing_moa = cfg.get("moa") if isinstance(cfg, dict) else {}
+            # Preserve trace-persistence fields from the existing config
+            # when the client didn't send them (GH #58819).
+            _existing_save_traces = existing_moa.get("save_traces") if isinstance(existing_moa, dict) else None
+            _existing_trace_dir = existing_moa.get("trace_dir") if isinstance(existing_moa, dict) else None
             if body.presets:
                 raw = {
                     "default_preset": body.default_preset,
@@ -4475,6 +4485,10 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                         }
                         for name, preset in body.presets.items()
                     },
+                    # Preserve trace-persistence fields from existing config
+                    # when client didn't send explicit values (GH #58819).
+                    "save_traces": body.save_traces if body.save_traces is not None else _existing_save_traces,
+                    "trace_dir": body.trace_dir if body.trace_dir is not None else _existing_trace_dir,
                 }
             else:
                 raw = {
@@ -4484,6 +4498,10 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                     "aggregator_temperature": body.aggregator_temperature,
                     "max_tokens": body.max_tokens,
                     "enabled": body.enabled,
+                    # Preserve trace-persistence fields from existing config
+                    # when client didn't send explicit values (GH #58819).
+                    "save_traces": body.save_traces if body.save_traces is not None else _existing_save_traces,
+                    "trace_dir": body.trace_dir if body.trace_dir is not None else _existing_trace_dir,
                 }
             normalized = normalize_moa_config(raw)
             cfg["moa"] = normalized

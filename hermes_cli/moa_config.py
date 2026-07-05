@@ -193,6 +193,10 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "reference_max_tokens": active.get("reference_max_tokens"),
         "fanout": active.get("fanout", "per_iteration"),
         "enabled": active["enabled"],
+        # Trace persistence fields (GH #58819): pass through from the raw
+        # config so they survive the normalization round-trip.
+        "save_traces": raw.get("save_traces"),
+        "trace_dir": raw.get("trace_dir"),
     }
 
 

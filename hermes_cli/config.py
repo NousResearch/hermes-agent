@@ -1696,6 +1696,14 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        # Emit a terminal notification (BEL + OSC 9) whenever Hermes blocks on
+        # an interactive prompt (clarify, command approval, sudo password,
+        # secret capture, slash-command confirmation). Notification-aware
+        # terminals (Ghostty, iTerm2, Kitty, WezTerm) flash the pane/tab;
+        # the BEL works universally in tmux, screen, and SSH. Set false to
+        # disable. Default true — the agent blocking silently is worse than
+        # a harmless bell.
+        "input_alert": True,
         "show_reasoning": False,
         # When reasoning display is on, the post-response "Reasoning" recap box
         # collapses long thinking to the first 10 lines. Set true to print the
@@ -7644,7 +7652,8 @@ def show_config():
     display = config.get('display', {})
     print(f"  Personality:  {display.get('personality') or 'none'}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
-    print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+    print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'} (turn-end), "
+          f"{'on' if display.get('input_alert', True) else 'off'} (input alert)")
     ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
     ump_first = ump.get('first_lines', 2)
     ump_last = ump.get('last_lines', 2)

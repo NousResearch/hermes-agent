@@ -1676,6 +1676,21 @@ def prompt_dangerous_approval(command: str, description: str,
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
+        # Emit input-needed alert (BEL) if enabled (default true).
+        # This is the non-TUI fallback path (scripts, sshd, tests); the TUI
+        # path fires its own BEL + OSC 9 via _notify_input_needed in cli.py.
+        try:
+            from hermes_cli.config import load_config_readonly as _load_cfg
+            _input_alert = (_load_cfg() or {}).get("display", {}).get("input_alert", True)
+        except Exception:
+            _input_alert = True
+        if _input_alert and sys.stdout.isatty():
+            try:
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
         # Resolve the active UI language once per prompt so we don't re-read
         # config/YAML inside the retry loop below.
         from agent.i18n import t

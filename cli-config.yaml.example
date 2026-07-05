@@ -1156,6 +1156,19 @@ display:
   #   false: Silent (default)
   bell_on_complete: false
 
+  # Emit a terminal notification whenever Hermes blocks on an interactive
+  # prompt (clarify question, command approval, sudo password, secret capture,
+  # slash-command confirmation). Fires two complementary signals:
+  #   - OSC 9 escape sequence: notification-aware terminals (Ghostty, iTerm2,
+  #     Kitty, WezTerm) flash the pane/tab and play a system notification.
+  #   - BEL (\a): universal fallback that works in tmux, screen, SSH, dumb terms.
+  # Useful for long-running tasks where you've Cmd-Tab'd away — the moment
+  # Hermes needs you, the pane lights up. Off automatically when stdout is
+  # not a TTY.
+  #   true:  Notify on input prompts (default)
+  #   false: Silent
+  input_alert: true
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

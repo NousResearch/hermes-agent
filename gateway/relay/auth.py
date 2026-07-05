@@ -67,7 +67,7 @@ def verify_signature(payload: str, sig_hex: str, secrets: Sequence[str]) -> bool
         sig_buf = bytes.fromhex(sig_hex)
     except (ValueError, TypeError):
         return False
-    if len(sig_buf) == 0:
+    if not sig_buf:
         return False
     for secret in secrets:
         if not secret:

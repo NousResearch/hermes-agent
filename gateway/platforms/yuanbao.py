@@ -1762,7 +1762,7 @@ class ExtractContentMiddleware(InboundMiddleware):
                 # Prefer medium image (index 1), fallback to index 0
                 if len(image_info_array) > 1 and isinstance(image_info_array[1], dict):
                     image_info = image_info_array[1]
-                elif len(image_info_array) > 0 and isinstance(image_info_array[0], dict):
+                elif image_info_array and isinstance(image_info_array[0], dict):
                     image_info = image_info_array[0]
                 image_url = str((image_info or {}).get("url") or "").strip()
                 rid = cls._parse_resource_id(image_url)
@@ -1862,7 +1862,7 @@ class ExtractContentMiddleware(InboundMiddleware):
                 image_info = None
                 if len(image_info_array) > 1 and isinstance(image_info_array[1], dict):
                     image_info = image_info_array[1]
-                elif len(image_info_array) > 0 and isinstance(image_info_array[0], dict):
+                elif image_info_array and isinstance(image_info_array[0], dict):
                     image_info = image_info_array[0]
                 image_url = str((image_info or {}).get("url") or "").strip()
                 if image_url:
@@ -4846,7 +4846,7 @@ class MessageSender:
         Returns:
             Error description (str) if validation fails, otherwise None.
         """
-        if file_bytes is None or len(file_bytes) == 0:
+        if not file_bytes:
             return f"Empty file: {filename}"
         max_bytes = max_size_mb * 1024 * 1024
         if len(file_bytes) > max_bytes:

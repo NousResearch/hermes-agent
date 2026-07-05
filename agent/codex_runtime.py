@@ -25,6 +25,61 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
+    """Map a Codex app-server ``item/started`` notification to a Hermes
+    tool-progress event ``(tool_name, preview, args)``.
+
+    The Codex app-server runtime processes ``item/started`` notifications for
+    command execution, file changes, and MCP/dynamic tool calls, but never
+    surfaced them as Hermes tool-progress events — so gateways (Telegram, etc.)
+    showed no verbose "running X" breadcrumbs on this route while every other
+    provider did (#38835). Returns None for items that aren't tool-shaped.
+    """
+    if not isinstance(note, dict) or note.get("method") != "item/started":
+        return None
+    params = note.get("params") or {}
+    item = params.get("item") or {}
+    if not isinstance(item, dict):
+        return None
+
+    item_type = item.get("type") or ""
+    if item_type == "commandExecution":
+        command = item.get("command") or ""
+        return "exec_command", command, {"command": command, "cwd": item.get("cwd") or ""}
+
+    if item_type == "fileChange":
+        changes = item.get("changes") or []
+        preview = "file changes"
+        if isinstance(changes, list) and changes:
+            paths = [
+                str(change.get("path"))
+                for change in changes
+                if isinstance(change, dict) and change.get("path")
+            ]
+            if paths:
+                preview = ", ".join(paths[:3])
+                if len(paths) > 3:
+                    preview += f", +{len(paths) - 3} more"
+        return "apply_patch", preview, {"changes": changes}
+
+    if item_type == "mcpToolCall":
+        server = item.get("server") or "mcp"
+        tool = item.get("tool") or "unknown"
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return f"mcp.{server}.{tool}", tool, args
+
+    if item_type == "dynamicToolCall":
+        tool = item.get("tool") or "unknown"
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return tool, tool, args
+
+    return None
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -189,13 +244,18 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
-    from agent.transports.codex_app_server_session import CodexAppServerSession
+    from agent.transports.codex_app_server_session import (
+        CodexAppServerSession,
+        _ServerRequestRouting,
+    )
 
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
-        cwd = getattr(agent, "session_cwd", None) or os.getcwd()
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
         # Approval callback: defer to Hermes' standard prompt flow if a
         # CLI thread has installed one. Gateway / cron contexts get the
         # codex-side fail-closed default.
@@ -204,9 +264,52 @@ def run_codex_app_server_turn(
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+
+        # Gateway / cron contexts have no UI to surface codex's approval
+        # requests through, so codex app-server exec / apply_patch requests
+        # fail closed (silently decline) by default. When the user has
+        # explicitly opted out of Hermes approvals — via `approvals.mode: off`
+        # in config, the /yolo session toggle, or --yolo / HERMES_YOLO_MODE —
+        # honor that and let codex's own sandbox permission profile
+        # (~/.codex/config.toml) be the policy gate instead of double-gating
+        # with a missing Hermes UI. Defaults (manual/smart/unset) preserve the
+        # current fail-closed behavior — this is a no-op for those users.
+        auto_approve_requests = False
+        try:
+            from tools.approval import is_approval_bypass_active
+
+            auto_approve_requests = is_approval_bypass_active()
+        except Exception:
+            logger.debug(
+                "codex app-server: approval-bypass lookup failed; "
+                "keeping fail-closed default",
+                exc_info=True,
+            )
+
+        def _on_codex_event(note: dict) -> None:
+            # Bridge Codex app-server item/started notifications to Hermes
+            # tool-progress so gateways show verbose "running X" breadcrumbs
+            # on this route too (#38835).
+            progress_callback = getattr(agent, "tool_progress_callback", None)
+            if progress_callback is None:
+                return
+            mapped = _codex_note_to_tool_progress(note)
+            if mapped is None:
+                return
+            tool_name, preview, args = mapped
+            try:
+                progress_callback("tool.started", tool_name, preview, args)
+            except Exception:
+                logger.debug("codex tool-progress callback raised", exc_info=True)
+
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            request_routing=_ServerRequestRouting(
+                auto_approve_exec=auto_approve_requests,
+                auto_approve_apply_patch=auto_approve_requests,
+            ),
+            on_event=_on_codex_event,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the
@@ -258,6 +361,28 @@ def run_codex_app_server_turn(
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
 
+        # Persist the newly-projected assistant/tool messages ourselves.
+        # This path is an early return that bypasses conversation_loop, whose
+        # normal per-step _persist_session() calls would otherwise flush them.
+        # The inbound user turn was already flushed at turn start
+        # (turn_context.py _persist_session), and _flush_messages_to_session_db
+        # is idempotent via the intrinsic _DB_PERSISTED_MARKER — so this writes
+        # ONLY the new codex projected rows and does NOT re-write the user turn.
+        # Keeping the agent as the sole persister lets us return
+        # agent_persisted=True below, so the gateway skips its own DB write and
+        # we avoid the #860/#42039 duplicate user-message write (append_message
+        # is a raw INSERT with no dedup, so a gateway re-write would duplicate
+        # the already-flushed user turn). See gateway/run.py agent_persisted.
+        if getattr(agent, "_session_db", None) is not None:
+            try:
+                agent._flush_messages_to_session_db(messages)
+            except Exception:
+                logger.debug(
+                    "codex app-server projected-message flush failed",
+                    exc_info=True,
+                )
+
+
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
     # in the run_conversation() pre-loop block (lines ~11793-11817) so we
@@ -290,6 +415,7 @@ def run_codex_app_server_turn(
                 original_user_message=original_user_message,
                 final_response=turn.final_text,
                 interrupted=False,
+                messages=messages,
             )
         except Exception:
             logger.debug("external memory sync raised", exc_info=True)
@@ -318,6 +444,18 @@ def run_codex_app_server_turn(
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
+        # The codex app-server runtime IS an early-return path that bypasses
+        # conversation_loop, but we flush the projected assistant/tool messages
+        # ourselves above (see the _flush_messages_to_session_db call after
+        # messages.extend). The inbound user turn was already flushed at turn
+        # start (turn_context._persist_session) and the flush dedups via
+        # _DB_PERSISTED_MARKER, so state.db ends up with each real message
+        # exactly once and session_search / conversation-distill see the full
+        # gateway conversation. Report agent_persisted=True so the gateway
+        # skips its own append_to_transcript DB write — writing again there
+        # would re-INSERT the already-flushed user turn (append_message has no
+        # dedup), reintroducing the #860 / #42039 duplicate-write bug.
+        "agent_persisted": True,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,
         **usage_result,

@@ -241,7 +241,11 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
     assert kwargs["session_id"] == session_id
     assert kwargs["gateway_session_key"] == "client-42"
     assert kwargs["ephemeral_system_prompt"] == "stay focused"
-    assert kwargs["conversation_history"] == [
+    history = kwargs["conversation_history"]
+    assert len(history) == 2
+    assert isinstance(history[0].pop("timestamp"), (int, float))
+    assert isinstance(history[1].pop("timestamp"), (int, float))
+    assert history == [
         {"role": "user", "content": "earlier"},
         {"role": "assistant", "content": "prior answer"},
     ]

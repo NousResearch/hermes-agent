@@ -128,7 +128,6 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
         buttonSize="icon"
         className="size-7 shrink-0 rounded-md border border-border/55 bg-background/40 text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground"
         label={filePath ? t.fileMenu.copyPath : t.common.copy}
-        side="top"
         text={filePath || target}
       />
       {filePath && (

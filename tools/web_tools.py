@@ -225,6 +225,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
         ("firecrawl", _is_tool_gateway_ready()),
+        ("crawl4ai", _has_env("CRAWL4AI_API_TOKEN") and _has_env("CRAWL4AI_URL")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -330,6 +331,8 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "crawl4ai":
+        return _has_env("CRAWL4AI_URL") and _has_env("CRAWL4AI_API_TOKEN")
     return False
 
 

@@ -898,6 +898,7 @@ AUTHOR_MAP = {
     "jezzahehn@gmail.com": "JezzaHehn",
     "barnacleboy.jezzahehn@agentmail.to": "JezzaHehn",
     "254021826+dodo-reach@users.noreply.github.com": "dodo-reach",
+    "edder@example.com": "EdderTalmor",  # PR #41575 salvage (prompt-size: pass platform-resolved enabled_toolsets + agent.disabled_toolsets into the inspection agent; #41445)
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
     "123342691+banditburai@users.noreply.github.com": "banditburai",
     "9063726+Kyzcreig@users.noreply.github.com": "Kyzcreig",

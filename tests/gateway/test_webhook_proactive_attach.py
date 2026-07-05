@@ -75,3 +75,57 @@ async def test_deliver_only_webhook_can_attach_proactive_event_to_target_session
     assert events[0].alert_id == "mail_alert_contract_deadline"
     assert events[0].canonical_summary == "Contract approval needed by 17:00"
     assert events[0].status == "context_ready"
+
+
+def test_proactive_source_does_not_invent_group_user_id():
+    adapter = WebhookAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="",
+            extra={"host": "127.0.0.1", "port": 0, "secret": "secret", "routes": {}},
+        )
+    )
+
+    source = adapter._proactive_source_for_delivery(
+        "whatsapp",
+        {"deliver_extra": {"chat_id": "group-1@g.us", "chat_type": "group"}},
+    )
+
+    assert source is not None
+    assert source.chat_id == "group-1@g.us"
+    assert source.user_id is None
+
+
+@pytest.mark.asyncio
+async def test_proactive_attach_returns_error_when_store_unavailable(monkeypatch, tmp_path):
+    import gateway.proactive_events as proactive_events
+
+    adapter = WebhookAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="",
+            extra={"host": "127.0.0.1", "port": 0, "secret": "secret", "routes": {}},
+        )
+    )
+    runner = _FakeRunner(tmp_path)
+    runner.proactive_event_store = None
+    adapter.gateway_runner = runner
+    monkeypatch.setattr(
+        proactive_events,
+        "get_proactive_event_store",
+        lambda: (_ for _ in ()).throw(RuntimeError("sqlite unavailable")),
+    )
+
+    result = await adapter._direct_deliver_and_attach(
+        "alert",
+        {
+            "deliver": "whatsapp",
+            "deliver_extra": {"chat_id": "15551234567@lid", "chat_type": "dm"},
+            "payload": {"idempotency_key": "alert:v1"},
+        },
+        route_name="alerts",
+        delivery_id="alert:v1",
+    )
+
+    assert result.success is False
+    assert "Proactive event store unavailable" in (result.error or "")

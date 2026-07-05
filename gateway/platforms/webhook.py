@@ -1040,7 +1040,7 @@ class WebhookAdapter(BasePlatformAdapter):
             chat_id=chat_id,
             chat_type=str(extra.get("chat_type") or "dm"),
             thread_id=str(extra.get("thread_id") or extra.get("message_thread_id") or "").strip() or None,
-            user_id=str(extra.get("user_id") or chat_id).strip() or None,
+            user_id=str(extra.get("user_id") or "").strip() or None,
             user_name=str(extra.get("user_name") or "").strip() or None,
         )
 
@@ -1073,7 +1073,11 @@ class WebhookAdapter(BasePlatformAdapter):
         if store is None:
             from gateway.proactive_events import get_proactive_event_store
 
-            store = get_proactive_event_store()
+            try:
+                store = get_proactive_event_store()
+            except Exception as exc:
+                logger.warning("[webhook] proactive event store unavailable: %s", exc)
+                return SendResult(success=False, error=f"Proactive event store unavailable: {exc}")
             setattr(self.gateway_runner, "proactive_event_store", store)
 
         idempotency_key = str(payload.get("idempotency_key") or delivery_id or "").strip()

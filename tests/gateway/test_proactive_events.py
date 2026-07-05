@@ -55,6 +55,55 @@ def test_proactive_event_store_idempotently_tracks_alert_without_ambient_context
     assert build_proactive_context_prompt(store, first.conversation_id) == ""
 
 
+def test_proactive_payload_is_serialized_best_effort_and_bounded(tmp_path):
+    store = ProactiveEventStore(tmp_path / "proactive.sqlite3")
+    event = store.create_or_get_event(
+        conversation_id="whatsapp:dm:chat:user",
+        platform="whatsapp",
+        chat_id="chat",
+        user_id="user",
+        event_type="email_alert",
+        alert_id="large-alert",
+        idempotency_key="large-alert:v1",
+        canonical_summary="Large payload",
+        rendered_message="Large payload",
+        payload={"non_json": object(), "body": "x" * 100_000},
+    )
+
+    assert event.payload["_truncated"] is True
+    assert event.payload["original_chars"] > 32_768
+
+
+def test_conversation_matching_does_not_match_unrelated_user_id(tmp_path):
+    store = ProactiveEventStore(tmp_path / "proactive.sqlite3")
+    event = _create_ready_event(
+        store,
+        conversation_id="agent:main:whatsapp:dm:other-chat",
+    )
+    # Mutate the stored user_id to a value that looks like a different DM key.
+    # Matching user_id for arbitrary conversation ids can leak breadcrumbs
+    # between unrelated sessions; only conversation/chat aliases should match.
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE proactive_events SET user_id = ? WHERE event_id = ?",
+            ("15551234567", event.event_id),
+        )
+
+    assert store.list_unresolved("agent:main:whatsapp:dm:15551234567") == []
+
+
+def test_threaded_whatsapp_alias_matches_chat_not_thread_suffix(tmp_path):
+    store = ProactiveEventStore(tmp_path / "proactive.sqlite3")
+    _create_ready_event(
+        store,
+        conversation_id="agent:main:whatsapp:dm:15551234567",
+    )
+
+    events = store.list_unresolved("agent:main:whatsapp:dm:15551234567:thread-a")
+
+    assert len(events) == 1
+
+
 def test_build_proactive_context_prompt_does_not_mark_events_introduced(tmp_path):
     store = ProactiveEventStore(tmp_path / "proactive.sqlite3")
     event = _create_ready_event(store)

@@ -63,6 +63,32 @@ _CONTEXT_HEADER = (
     "Lifecycle hints only apply when the user's visible message clearly references an alert: ignore/nah/skip/not important usually means drop or resolve the referenced alert; done/handled/sorted/replied usually means resolved; later/tomorrow/remind me means snooze; draft/reply/ask/tell them means act on the alert but keep it active until approval/sent/done.]"
 )
 _CONTEXT_FOOTER = "[/HERMES CONTEXT NOTE]"
+_MAX_PAYLOAD_JSON_CHARS = 32_768
+
+
+def _safe_payload_json(payload: dict[str, Any] | None) -> str:
+    """Return bounded JSON for source payload metadata.
+
+    Proactive payloads come from webhook callers and should never be able to
+    fail delivery by carrying an odd Python value, nor grow the SQLite ledger
+    without bound. Keep the payload best-effort and explicit when truncated.
+    """
+    try:
+        raw = json.dumps(payload or {}, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        raw = json.dumps({"_unserializable": repr(payload)[:1000]}, ensure_ascii=False)
+    if len(raw) <= _MAX_PAYLOAD_JSON_CHARS:
+        return raw
+    preview = raw[:_MAX_PAYLOAD_JSON_CHARS]
+    return json.dumps(
+        {
+            "_truncated": True,
+            "original_chars": len(raw),
+            "preview": preview,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -162,7 +188,7 @@ class ProactiveEventStore:
         now = time.time()
         event_id = f"pevt_{uuid.uuid4().hex}"
         rendered_hash = hashlib.sha256(rendered_message.encode("utf-8")).hexdigest()
-        payload_json = json.dumps(payload or {}, sort_keys=True, ensure_ascii=False)
+        payload_json = _safe_payload_json(payload)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -264,17 +290,21 @@ class ProactiveEventStore:
         and an @lid chat/user id. Proactive events should follow the actual chat,
         not disappear when the session key representation changes.
         """
-        identifier = conversation_id.rsplit(":", 1)[-1]
-        aliases = {conversation_id, identifier}
-        if identifier and "@" not in identifier:
-            aliases.add(f"{identifier}@lid")
+        parts = conversation_id.split(":")
+        identifier = parts[4] if len(parts) >= 5 else conversation_id.rsplit(":", 1)[-1]
+        aliases = {conversation_id}
+        if len(parts) > 5:
+            aliases.add(":".join(parts[:5]))
+        if identifier:
+            aliases.add(identifier)
+            if "@" not in identifier:
+                aliases.add(f"{identifier}@lid")
         placeholders = ", ".join("?" for _ in aliases)
         predicate = (
             f"(conversation_id IN ({placeholders}) "
-            f"OR chat_id IN ({placeholders}) "
-            f"OR user_id IN ({placeholders}))"
+            f"OR chat_id IN ({placeholders}))"
         )
-        params = list(aliases) * 3
+        params = list(aliases) * 2
         return predicate, params
 
     def list_unresolved(self, conversation_id: str, *, limit: int = 5) -> list[ProactiveEvent]:

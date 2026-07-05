@@ -6523,7 +6523,7 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         ) from exc
 
 
-def atomic_config_write(config_path: "Path", data: Any, **kwargs: Any) -> None:
+def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """Fail-closed atomic write for ``config.yaml``.
 
     The single chokepoint every config-update path should use instead of

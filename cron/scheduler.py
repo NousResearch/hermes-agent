@@ -2657,11 +2657,23 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
         return []
 
     raw_parts = [p.strip() for p in deliver.split(",") if p.strip()]
+    origin = _resolve_origin(job)
+    has_explicit_origin = any(p.lower() == "origin" for p in raw_parts)
 
     # Expand routing intents.
     parts: List[str] = []
     for raw in raw_parts:
-        parts.extend(_expand_routing_tokens(raw))
+        raw_is_routing_token = raw.lower() in _ROUTING_TOKENS
+        expanded_parts = _expand_routing_tokens(raw)
+        for part in expanded_parts:
+            if (
+                raw_is_routing_token
+                and has_explicit_origin
+                and origin
+                and str(origin.get("platform", "")).lower() == part.lower()
+            ):
+                continue
+            parts.append(part)
 
     seen = set()
     targets = []

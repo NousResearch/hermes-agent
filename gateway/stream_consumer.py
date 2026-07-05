@@ -21,6 +21,43 @@ import logging
 import queue
 import re
 import time
+
+# --- Hermes context-compaction leak fix (shootzjmr, fix/context-compaction-leak) ---
+# Filters the [CONTEXT COMPACTION — REFERENCE ONLY] / HANDOFF / BACKGROUND
+# handoff block that Hermes's context-compaction mechanism injects into
+# user-visible responses. The block is intended for the model in the next
+# turn, not for the human, but it leaks through to chat gateways until
+# stripped here. See PR description for the full rationale.
+_COMPACTION_HEADER_RE = re.compile(
+    r"\[CONTEXT\s+COMPACTION[^\]]*?(?:REFERENCE\s+ONLY|HANDOFF|BACKGROUND)[^\]]*?\]",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_compaction_block(text):
+    """Strip Hermes's internal context-compaction handoff block from `text`.
+
+    Idempotent and safe to call on every chunk. Returns `text` unchanged if no
+    compaction header is found. Whitespace at the cut boundary is trimmed.
+    """
+    if not text or "[CONTEXT" not in text:
+        return text
+    header = _COMPACTION_HEADER_RE.search(text)
+    if not header:
+        return text
+    tail = text[header.start():]
+    # End anchor: either '---' line or '## END OF (CONTEXT) SUMMARY'
+    for _m in re.finditer(r"^[ \t]*-{3,}[ \t]*$", tail, re.MULTILINE):
+        return text[: header.start()].rstrip()
+    if re.search(
+        r"##\s*END\s+OF\s+(?:CONTEXT\s+)?SUMMARY",
+        tail,
+        re.IGNORECASE,
+    ):
+        return text[: header.start()].rstrip()
+    # No explicit anchor — drop everything from the header to end-of-text
+    return text[: header.start()].rstrip()
+# --- end Hermes context-compaction leak fix ---
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -898,7 +935,12 @@ class GatewayStreamConsumer:
         delivered separately via ``_deliver_media_from_response()`` after the
         stream finishes — we just need to hide the raw directives from the
         user.
+
+        Also strips the ``[CONTEXT COMPACTION — REFERENCE ONLY]`` handoff block
+        that Hermes's context-compaction mechanism injects into responses,
+        keeping the internal handoff out of the user-visible stream.
         """
+        text = _strip_compaction_block(text)
         return _BasePlatformAdapter.strip_media_directives_for_display(text)
 
     async def _send_new_chunk(

@@ -201,6 +201,102 @@ AUTHOR_MAP = {
     "witt3rd@witt3rd.com": "witt3rd",  # Donald Thompson (fork maintainer) — fork-local
     "forge@witt3rd.com": "forge-witt3rd",  # Forge (Donald's Janus, forge-witt3rd account) — fork-local
     "280690580+forge-witt3rd@users.noreply.github.com": "forge-witt3rd",  # Forge noreply form — fork-local
+    # upstream v2026.7.1 contributors — added by staging merge
+    "1079826437@qq.com": "nankingjing",  # upstream v2026.7.1 contributor
+    "3483421977@qq.com": "xy200303",  # upstream v2026.7.1 contributor
+    "afnlegion01@gmail.com": "Afnath Ahamed",  # upstream v2026.7.1 contributor
+    "agent@tranquil-flow.dev": "Tranquil-Flow",  # upstream v2026.7.1 contributor
+    "ailang323@163.com": "longer",  # upstream v2026.7.1 contributor
+    "andryypaez@gmail.com": "zeapsu",  # upstream v2026.7.1 contributor
+    "arthur.zhang@ingenico.com": "ArthurZhang",  # upstream v2026.7.1 contributor
+    "baris@writeme.com": "Baris Sencan",  # upstream v2026.7.1 contributor
+    "benbenwyb@gmail.com": "benbenwyb",  # upstream v2026.7.1 contributor
+    "blaryx@gmail.com": "blaryx",  # upstream v2026.7.1 contributor
+    "bradhallett@users.noreply.github.com": "Brad Hallett",  # upstream v2026.7.1 contributor
+    "brett@personalfinancelab.com": "Brett",  # upstream v2026.7.1 contributor
+    "bukim0119@gmail.com": "bykim0119",  # upstream v2026.7.1 contributor
+    "carlitosdiazplaza@gmail.com": "talmax1124",  # upstream v2026.7.1 contributor
+    "charleneleong84@gmail.com": "charleneleong-ai",  # upstream v2026.7.1 contributor
+    "chazmaniandinkle@gmail.com": "Chaz Dinkle",  # upstream v2026.7.1 contributor
+    "christianpersico98@gmail.com": "Christian Persico",  # upstream v2026.7.1 contributor
+    "chufengfan@jackroooc-2.local": "Chufeng Fan",  # upstream v2026.7.1 contributor
+    "claudlos@agentmail.to": "claudlos",  # upstream v2026.7.1 contributor
+    "cyb3rwr3n@users.noreply.github.com": "cyb3rwr3n",  # upstream v2026.7.1 contributor
+    "cypher@augmentl.com": "Cypher",  # upstream v2026.7.1 contributor
+    "dale@dalenguyen.me": "Dale Nguyen",  # upstream v2026.7.1 contributor
+    "dana@added-value.co.il": "Dana Moverman",  # upstream v2026.7.1 contributor
+    "DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",  # upstream v2026.7.1 contributor
+    "dev@pixlmedia.no": "texhy",  # upstream v2026.7.1 contributor
+    "diamondeyesfox@gmail.com": "diamondeyesfox",  # upstream v2026.7.1 contributor
+    "eric@outsourc-e.com": "Eric",  # upstream v2026.7.1 contributor
+    "gary@bitcryptic.com": "Gary Walker",  # upstream v2026.7.1 contributor
+    "gromyko.ss83@gmail.com": "Gromykoss",  # upstream v2026.7.1 contributor
+    "gxalong@gmail.com": "Jeffgithub0029",  # upstream v2026.7.1 contributor
+    "ha-agent@homelab.4410.us": "homelab-ha-agent",  # upstream v2026.7.1 contributor
+    "hodlclone@gmail.com": "HODLCLONE",  # upstream v2026.7.1 contributor
+    "huangsen365@gmail.com": "Wing Huang",  # upstream v2026.7.1 contributor
+    "huangxudong663@gmail.com": "huangxudong663-sys",  # upstream v2026.7.1 contributor
+    "igor.izotov@gmail.com": "iizotov",  # upstream v2026.7.1 contributor
+    "info@djimit.nl": "Dutch Dim",  # upstream v2026.7.1 contributor
+    "janrenz@Mac.fritz.box": "Jan Renz",  # upstream v2026.7.1 contributor
+    "jason@hermes-jc": "Jason",  # upstream v2026.7.1 contributor
+    "jearnest@velocityenergy.com": "Jack Earnest",  # upstream v2026.7.1 contributor
+    "jinhyuk9714@gmail.com": "jinhyuk9714",  # upstream v2026.7.1 contributor
+    "jmmaloney4@gmail.com": "Jack Maloney",  # upstream v2026.7.1 contributor
+    "jnibarger01@gmail.com": "Jace Nibarger",  # upstream v2026.7.1 contributor
+    "joeykerp@gmail.com": "Joey Kerper",  # upstream v2026.7.1 contributor
+    "justin@newartifice.com": "Justin Ohms",  # upstream v2026.7.1 contributor
+    "kevenyanisme@gmail.com": "Tao Yan",  # upstream v2026.7.1 contributor
+    "kurlyk@kurlyks-Mac-mini.local": "kurlyk",  # upstream v2026.7.1 contributor
+    "kyzcreig@gmail.com": "Alex Gierczyk",  # upstream v2026.7.1 contributor
+    "linyubin@users.noreply.github.com": "linyubin",  # upstream v2026.7.1 contributor
+    "liruixinch@outlook.com": "HexLab98",  # upstream v2026.7.1 contributor
+    "lubos@komfi.health": "Lubos Buracinsky",  # upstream v2026.7.1 contributor
+    "mac-studio@Fabios-Mac-Studio.local": "Fabio Fernandes Valente",  # upstream v2026.7.1 contributor
+    "mailtowbd@gmail.com": "marco0158",  # upstream v2026.7.1 contributor
+    "mango001@126.com": "chenxiang",  # upstream v2026.7.1 contributor
+    "manusjs@users.noreply.github.com": "manusjs",  # upstream v2026.7.1 contributor
+    "minz0721@outlook.com": "s010mn",  # upstream v2026.7.1 contributor
+    "moonsong@nousresearch.local": "Moonsong",  # upstream v2026.7.1 contributor
+    "mucio@mucio.net": "Francesco Mucio",  # upstream v2026.7.1 contributor
+    "neo.assistant2026@gmail.com": "Neo",  # upstream v2026.7.1 contributor
+    "nikshepsvn@gmail.com": "nikshepsvn",  # upstream v2026.7.1 contributor
+    "peet.wannasarnmetha@gmail.com": "Peetwan",  # upstream v2026.7.1 contributor
+    "phanvanhoa@gmail.com": "Markus Phan",  # upstream v2026.7.1 contributor
+    "pink@PinkdeMacBook-Air.local": "Pink",  # upstream v2026.7.1 contributor
+    "pinkiilqwq@users.noreply.github.com": "PINKIIILQWQ",  # upstream v2026.7.1 contributor
+    "poli.koltsova@gmail.com": "wnuuee1",  # upstream v2026.7.1 contributor
+    "prathamesh290504@gmail.com": "PRATHAMESH75",  # upstream v2026.7.1 contributor
+    "pyxl-dev@users.noreply.github.com": "pyxl-dev",  # upstream v2026.7.1 contributor
+    "qdaszx@naver.com": "qdaszx",  # upstream v2026.7.1 contributor
+    "qWaitCrypto@users.noreply.github.com": "qWaitCrypto",  # upstream v2026.7.1 contributor
+    "r266-tech@users.noreply.github.com": "r266-tech",  # upstream v2026.7.1 contributor
+    "rafael.millan@gmail.com": "Rafael Millan",  # upstream v2026.7.1 contributor
+    "randomuser2026x@proton.me": "Z",  # upstream v2026.7.1 contributor
+    "rebel@rebels-Mac-Studio-2.local": "rebel",  # upstream v2026.7.1 contributor
+    "sahil.rakhaiya117814@marwadiuniversity.ac.in": "SahilRakhaiya05",  # upstream v2026.7.1 contributor
+    "sharma.priyanshu96@gmail.com": "Priyanshu Sharma",  # upstream v2026.7.1 contributor
+    "shx_929@163.com": "HiaHia",  # upstream v2026.7.1 contributor
+    "SJWATTS89@OUTLOOK.COM": "lEWFkRAD",  # upstream v2026.7.1 contributor
+    "sksmsghkdud1@gmail.com": "jun",  # upstream v2026.7.1 contributor
+    "srojk34@users.noreply.github.com": "srojk34",  # upstream v2026.7.1 contributor
+    "steve@lightpathapps.com": "steve",  # upstream v2026.7.1 contributor
+    "sunxusidney@gmail.com": "sunxusidney",  # upstream v2026.7.1 contributor
+    "swissly@users.noreply.github.com": "swissly",  # upstream v2026.7.1 contributor
+    "syahidfrd@gmail.com": "syahidfrd",  # upstream v2026.7.1 contributor
+    "t.chen@aftership.com": "t.chen",  # upstream v2026.7.1 contributor
+    "telos@apex-z.com": "telos",  # upstream v2026.7.1 contributor
+    "tenoryang@outlook.com": "tenoryang",  # upstream v2026.7.1 contributor
+    "tgmerritt@gmail.com": "tgmerritt",  # upstream v2026.7.1 contributor
+    "timchris.roth@pm.me": "timchris.roth",  # upstream v2026.7.1 contributor
+    "ud@arubangles.com": "ud",  # upstream v2026.7.1 contributor
+    "uriyas22@gmail.com": "uriyas22",  # upstream v2026.7.1 contributor
+    "vladimsmirnoff33@gmail.com": "vladimsmirnoff33",  # upstream v2026.7.1 contributor
+    "yashiel@skyner.co.za": "yashiel",  # upstream v2026.7.1 contributor
+    "yong2bba@gmail.com": "yong2bba",  # upstream v2026.7.1 contributor
+    "zhangml@tech.icbc.com.cn": "zhangml",  # upstream v2026.7.1 contributor
+    "zkowkmdx@sharklasers.com": "zkowkmdx",  # upstream v2026.7.1 contributor
+    "znding04@gmail.com": "znding04",  # upstream v2026.7.1 contributor
     "jeevesassistant00@gmail.com": "jeeves-assistant",  # PR #50771 (computer-use CuaDriver vision capture routing)
     "21178861+ScotterMonk@users.noreply.github.com": "ScotterMonk",  # PR #50145 salvage (cron output truncation: adapter-aware chunking, #50126)
     "rrandqua@gmail.com": "TutkuEroglu",  # PR #50481 salvage (AGENTS.md stale token-lock adapter path)

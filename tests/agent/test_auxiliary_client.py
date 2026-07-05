@@ -35,6 +35,7 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
+    _get_task_stream,
 )
 
 
@@ -5079,3 +5080,144 @@ class TestCompressionFallbackContextFilter:
         # Empty / unknown tasks have no minimum
         assert _task_minimum_context_length("") is None
         assert _task_minimum_context_length(None) is None
+
+
+# ── _get_task_stream config helper ──────────────────────────────────────────
+
+
+class TestGetTaskStream:
+    """Tests for _get_task_stream() config helper."""
+
+    def test_returns_false_for_none_task(self):
+        assert _get_task_stream(None) is False
+
+    def test_returns_false_for_empty_task(self):
+        assert _get_task_stream("") is False
+
+    def test_returns_false_when_config_missing(self):
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={}):
+            assert _get_task_stream("vision") is False
+
+    def test_returns_true_when_config_set(self):
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"stream": True}):
+            assert _get_task_stream("vision") is True
+
+    def test_returns_false_when_config_set_false(self):
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"stream": False}):
+            assert _get_task_stream("vision") is False
+
+    def test_returns_false_for_non_bool_value(self):
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"stream": "yes"}):
+            assert _get_task_stream("vision") is False
+
+
+# ── async_call_llm streaming path ───────────────────────────────────────────
+
+
+class TestAsyncCallLlmStream:
+    """Tests for async_call_llm() streaming support."""
+
+    @pytest.mark.asyncio
+    async def test_stream_true_returns_raw_async_stream(self):
+        """When stream=True, async_call_llm returns the raw async stream iterator."""
+        mock_stream = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.openai.com/v1"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_stream)
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai", "gpt-4o", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(mock_client, "gpt-4o")),
+            patch("agent.auxiliary_client._get_task_extra_body", return_value={}),
+            patch("agent.auxiliary_client._get_task_stream", return_value=False),
+        ):
+            result = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+            )
+
+        assert result is mock_stream
+        mock_client.chat.completions.create.assert_awaited_once()
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert call_kwargs["stream"] is True
+
+    @pytest.mark.asyncio
+    async def test_config_stream_enables_streaming(self):
+        """When auxiliary.<task>.stream=true in config, streaming is enabled."""
+        mock_stream = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.openai.com/v1"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_stream)
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai", "gpt-4o", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(mock_client, "gpt-4o")),
+            patch("agent.auxiliary_client._get_task_extra_body", return_value={}),
+            patch("agent.auxiliary_client._get_task_stream", return_value=True),
+        ):
+            result = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result is mock_stream
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert call_kwargs["stream"] is True
+
+    @pytest.mark.asyncio
+    async def test_stream_options_passed_through(self):
+        """stream_options are forwarded to the SDK when streaming."""
+        mock_stream = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.openai.com/v1"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_stream)
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai", "gpt-4o", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(mock_client, "gpt-4o")),
+            patch("agent.auxiliary_client._get_task_extra_body", return_value={}),
+            patch("agent.auxiliary_client._get_task_stream", return_value=False),
+        ):
+            await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert call_kwargs["stream"] is True
+        assert call_kwargs["stream_options"] == {"include_usage": True}
+
+    @pytest.mark.asyncio
+    async def test_no_stream_by_default(self):
+        """Without stream param or config, async_call_llm does not stream."""
+        mock_response = MagicMock()
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.openai.com/v1"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai", "gpt-4o", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(mock_client, "gpt-4o")),
+            patch("agent.auxiliary_client._get_task_extra_body", return_value={}),
+            patch("agent.auxiliary_client._get_task_stream", return_value=False),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task: resp),
+        ):
+            result = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert "stream" not in call_kwargs

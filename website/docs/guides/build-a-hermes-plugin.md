@@ -630,6 +630,20 @@ return None
 
 Any non-None, non-empty return with a `"context"` key (or a plain non-empty string) is collected and appended to the user message for the current turn.
 
+#### Oversized-context spill
+
+Per-hook context is capped at `10,000` characters by default. Anything above the cap is written to `$HERMES_HOME/hook_outputs/<session_id>/<uuid>.txt` and replaced with a head/tail preview plus the saved path. The model can read the full content via `read_file` or `terminal` if it genuinely needs it. This keeps a runaway plugin from inflating every subsequent turn's prompt and blowing out the prompt cache prefix. Tune in `config.yaml`:
+
+```yaml
+hooks:
+  output_spill:
+    enabled: true          # default: true
+    max_chars: 10000       # default; set higher to opt out of spilling
+    preview_head: 500      # chars shown at the top of the preview
+    preview_tail: 500      # chars shown at the bottom of the preview
+    # directory: null      # default: $HERMES_HOME/hook_outputs
+```
+
 #### How injection works
 
 Injected context is appended to the **user message**, not the system prompt. This is a deliberate design choice:

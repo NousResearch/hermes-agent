@@ -86,12 +86,12 @@ def _hash_chat_id(value: str) -> str:
 from .config import (
     Platform,
     GatewayConfig,
-    SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
+    SessionResetPolicy,
     HomeChannel,
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
-    normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
+    normalize_whatsapp_identifier,
 )
 from utils import atomic_replace
 

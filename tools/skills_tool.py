@@ -1462,6 +1462,17 @@ def skill_view(
                 logger.debug(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
+                # Surface a warning so the agent knows template variables
+                # and inline shell snippets were NOT resolved. Without this
+                # the model may treat ${HERMES_SKILL_DIR} as a literal path.
+                if any(marker in content for marker in ("${", "!`")):
+                    rendered_content = (
+                        "[WARNING: Skill preprocessing failed — template "
+                        "variables (e.g. ${HERMES_SKILL_DIR}) and inline "
+                        "shell snippets (!`cmd`) in this skill were NOT "
+                        "resolved. Treat them as literal text.]\n\n"
+                        + content
+                    )
 
         result = {
             "success": True,

@@ -786,14 +786,16 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
     # Probe triggers the OAuth flow (browser redirect + callback capture).
     # Honor the server's configured connect_timeout so a human has enough
     # time to complete the browser sign-in; the 30s default is too tight for
-    # an interactive OAuth round-trip. Give at least 180s for the login path.
+    # an interactive OAuth round-trip. Floor at 315s — the OAuth callback
+    # window (300s in mcp_oauth) plus headroom — matching the GUI re-auth
+    # path in web_server.py so CLI and dashboard behave identically.
     try:
         _login_connect_timeout = server_config.get("connect_timeout")
         try:
             _login_connect_timeout = float(_login_connect_timeout)
         except (TypeError, ValueError):
             _login_connect_timeout = 0.0
-        _login_connect_timeout = max(_login_connect_timeout, 180.0)
+        _login_connect_timeout = max(_login_connect_timeout, 315.0)
         tools = _probe_single_server(
             name, server_config, connect_timeout=_login_connect_timeout
         )

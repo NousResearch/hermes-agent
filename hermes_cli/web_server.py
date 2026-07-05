@@ -9152,8 +9152,15 @@ async def auth_mcp_server(name: str, profile: Optional[str] = None):
                 # The default 30s connect timeout would kill the flow while the
                 # user is still on the consent screen — give the browser
                 # round-trip the full callback window (300s in mcp_oauth) plus
-                # headroom so the connect wrapper can't pre-empt it.
-                tools = _probe_single_server(name, cfg, connect_timeout=315)
+                # headroom so the connect wrapper can't pre-empt it. Honor a
+                # larger configured connect_timeout when the user set one.
+                try:
+                    _cfg_timeout = float(cfg.get("connect_timeout", 0))
+                except (TypeError, ValueError):
+                    _cfg_timeout = 0.0
+                tools = _probe_single_server(
+                    name, cfg, connect_timeout=max(_cfg_timeout, 315)
+                )
             except Exception:
                 storage.restore(backup)
                 raise

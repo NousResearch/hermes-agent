@@ -468,6 +468,24 @@ class GatewaySlashCommandsMixin:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_approvals_command(self, event: MessageEvent) -> str:
+        """Handle /approvals — durable SEO PR approval cards.
+
+        This is a control-plane command like /kanban: it reads or mutates the
+        durable approval store under Hermes home and must not depend on the
+        currently-running conversation context.
+        """
+        from hermes_cli.seo_pr_approvals import run_slash
+
+        text = (event.text or "").strip()
+        try:
+            output = await asyncio.to_thread(run_slash, text)
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"approvals error: {exc}"
+        if len(output) > 3800:
+            output = output[:3800] + "\n… truncated"
+        return output
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model

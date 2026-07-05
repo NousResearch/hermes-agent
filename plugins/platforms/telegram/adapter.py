@@ -4473,6 +4473,65 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_seo_pr_approval_card(
+        self,
+        chat_id: str,
+        approval: Any,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a durable Kavera SEO PR approval card with inline buttons.
+
+        The callback payload carries only the durable approval id. No adapter
+        memory is needed, so taps still work after gateway restarts.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            approval_id = str(getattr(approval, "approval_id"))
+            pr_number = getattr(approval, "pr_number", "?")
+            text = (
+                "🧾 <b>Kavera SEO PR approval</b>\n\n"
+                f"<b>Site:</b> {_html.escape(str(getattr(approval, 'site', '')))}\n"
+                f"<b>Route:</b> <code>{_html.escape(str(getattr(approval, 'route', '')))}</code>\n"
+                f"<b>Target:</b> {_html.escape(str(getattr(approval, 'target_keyword', '') or '(none)'))}\n"
+                f"<b>PR:</b> <a href=\"{_html.escape(str(getattr(approval, 'pr_url', '')))}\">#{_html.escape(str(pr_number))}</a>\n"
+                f"<b>Preview:</b> <a href=\"{_html.escape(str(getattr(approval, 'preview_url', '') or ''))}\">open preview</a>\n"
+                f"<b>Checks:</b> {_html.escape(str(getattr(approval, 'checks_summary', '') or getattr(approval, 'checks_status', '') or 'unknown'))}\n"
+                f"<b>Approval ID:</b> <code>{_html.escape(approval_id)}</code>"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Approve", callback_data=f"seo:approve:{approval_id}"),
+                    InlineKeyboardButton("✏️ Revise", callback_data=f"seo:revise:{approval_id}"),
+                    InlineKeyboardButton("⏸ Hold", callback_data=f"seo:hold:{approval_id}"),
+                ]
+            ])
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": normalize_telegram_chat_id(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                )
+            )
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_seo_pr_approval_card failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -5254,6 +5313,62 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- Durable SEO PR approval callbacks (seo:action:approval_id) ---
+        if data.startswith("seo:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid approval data.")
+                return
+            action = parts[1]
+            approval_id = parts[2]
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to answer this approval.")
+                return
+
+            user_display = getattr(query.from_user, "first_name", "User")
+            try:
+                from hermes_cli.seo_pr_approvals import handle_callback_action
+
+                result = await asyncio.to_thread(
+                    handle_callback_action,
+                    action,
+                    approval_id,
+                    actor=user_display,
+                )
+            except Exception as exc:
+                logger.error("[%s] durable SEO approval callback failed: %s", self.name, exc, exc_info=True)
+                await query.answer(text="Approval failed. Check gateway logs.")
+                return
+
+            await query.answer(text=result.message[:180])
+            label_map = {
+                "approve": "✅ Approved",
+                "revise": "✏️ Revision requested",
+                "hold": "⏸ Held",
+            }
+            label = label_map.get(action, "Resolved") if result.ok else "⚠️ Not resolved"
+            try:
+                await query.edit_message_text(
+                    text=(
+                        f"{label} by {_html.escape(str(user_display))}\n\n"
+                        f"<code>{_html.escape(approval_id)}</code>\n"
+                        f"{_html.escape(result.message)}"
+                    ),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

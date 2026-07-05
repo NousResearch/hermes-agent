@@ -183,6 +183,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills",
                args_hint="[pending|approve|reject|approval] [id|on|off]",
                subcommands=("pending", "approve", "reject", "approval")),
+    CommandDef("approvals", "Review durable SEO PR approval cards",
+               "Tools & Skills", aliases=("seo-approve",),
+               args_hint="[list|show|approve|hold|revise|demo] [id|all]",
+               subcommands=("list", "pending", "show", "approve", "hold", "revise", "demo")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
     CommandDef("pet", "Toggle or adopt a petdex mascot (/pet, /pet list, /pet <slug>)", "Tools & Skills",
@@ -1163,7 +1167,11 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - approvals: Telegram/mobile-focused durable PR approval cards; Slack can
+#     still run it as /hermes approvals without displacing core native slashes.
+_SLACK_VIA_HERMES_ONLY = frozenset({
+    "credits", "billing", "moa", "debug", "approvals", "seo-approve"
+})
 
 
 def _sanitize_slack_name(raw: str) -> str:

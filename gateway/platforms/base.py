@@ -3085,6 +3085,27 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    async def send_seo_pr_approval_card(
+        self,
+        chat_id: str,
+        approval: Any,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a durable SEO PR approval card.
+
+        Button-capable adapters should override this. The default text fallback
+        still preserves the durable approval id and gives the operator slash
+        commands that work after restarts.
+        """
+        from hermes_cli.seo_pr_approvals import format_approval_card_text
+
+        prefix = getattr(self, "typed_command_prefix", "/") or "/"
+        return await self.send(
+            chat_id=chat_id,
+            content=format_approval_card_text(approval, command_prefix=prefix),
+            metadata=metadata,
+        )
+
     async def send_clarify(
         self,
         chat_id: str,

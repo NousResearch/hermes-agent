@@ -1514,6 +1514,17 @@ class CLICommandsMixin:
         if output:
             print(output)
 
+    def _handle_approvals_command(self, cmd: str):
+        """Handle /approvals and /seo-approve durable SEO PR approvals."""
+        from hermes_cli.seo_pr_approvals import run_slash
+
+        try:
+            output = run_slash(cmd)
+        except Exception as exc:  # pragma: no cover - defensive
+            output = f"(._.) approvals error: {exc}"
+        if output:
+            print(output)
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from cli import ChatConsole

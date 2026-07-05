@@ -65,6 +65,55 @@ def _turn_id() -> str:
     return "turn_" + uuid.uuid4().hex
 
 
+def _recover_provider_from_model(model: str, provider: str) -> tuple[str, str]:
+    """Split a leaked composite ``<provider>/<model>`` model id when the provider
+    column is empty, so the recorded ``(provider, model)`` pair matches how every
+    correctly-recorded turn stores it.
+
+    The fleet keys turns as a composite ``<provider>/<model>`` (config default
+    ``claude-app/claude-opus-4-8``). Correctly-recorded turns arrive split — the
+    ``model`` column bare, the lane in ``provider``. But a turn that reaches the
+    recorder with the WHOLE composite in ``model`` AND an empty ``provider``
+    (observed 2026-07-05: a $0/0-token desktop turn recorded as
+    ``claude-api-proxy-f6/claude-haiku-4-5`` with no provider) becomes a phantom
+    "Spend by model" row that never rolls up with its bare ``claude-haiku-4-5``
+    form.
+
+    This runs at the RECORDING boundary — it rewrites only the telemetry row, not
+    any live inference state — so it is inference-safe by construction (unlike a
+    fix in the model-resolution path, where a slash-bearing model on a custom or
+    aggregator endpoint carries prompt-caching / routing meaning).
+
+    Guarded tightly, recover ONLY when:
+      * the provider column is empty (a correctly-split turn is untouched), AND
+      * the model carries a ``<prefix>/<rest>`` shape, AND
+      * ``prefix`` is a REAL, non-aggregator provider id (``PROVIDER_REGISTRY``
+        minus ``_AGGREGATOR_PROVIDERS``).
+    So a genuine aggregator/vendor slug that legitimately keeps its vendor prefix
+    (``meta-llama/llama-3.1``, ``nous/hermes-4``) is left verbatim — those always
+    record WITH a non-empty provider anyway (openrouter/nous/claude-pool).
+    """
+    prov = (provider or "").strip()
+    mdl = (model or "").strip()
+    if prov or "/" not in mdl:
+        return provider, model
+    prefix, _sep, rest = mdl.partition("/")
+    prefix_norm = prefix.strip().lower()
+    rest = rest.strip()
+    if not prefix_norm or not rest:
+        return provider, model
+    try:
+        from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        if prefix_norm in PROVIDER_REGISTRY and prefix_norm not in _AGGREGATOR_PROVIDERS:
+            return prefix_norm, rest
+    except Exception:
+        pass
+    return provider, model
+
+
+
 def _profile_name() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
@@ -218,6 +267,13 @@ def _build_record(
     is_subagent = bool(usage.get("is_subagent"))
     if is_subagent and not bool(cfg.get("record_subagents", True)):
         return None
+
+    # Repair a leaked composite ``<provider>/<model>`` model id that arrived with
+    # an empty provider column (Ace's 2026-07-05 phantom "Spend by model" row).
+    # Done here at the recording boundary so it's telemetry-only and can never
+    # perturb live inference/prompt-caching; also feeds the corrected provider to
+    # cost pricing below so the row prices on the right route.
+    provider, model = _recover_provider_from_model(model, provider)
 
     now = time.time()
     state = _session_state(session_id)

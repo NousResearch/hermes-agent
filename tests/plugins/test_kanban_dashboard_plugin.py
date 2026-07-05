@@ -2265,3 +2265,270 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+
+def _task_status(task_id: str) -> str:
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        return task.status
+    finally:
+        conn.close()
+
+
+def _task_assignee(task_id: str):
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        return task.assignee
+    finally:
+        conn.close()
+
+
+def test_conditional_manual_block_accepts_todo_and_review_cards(client):
+    """Cockpit can manually block non-running product-workflow cards via API.
+
+    Regression coverage for the Agentic OS Cockpit API migration: the old
+    direct-DB Cockpit control allowed todo/review/ready cards to be blocked.
+    The worker-oriented block_task helper only accepts running/ready, so the
+    dashboard API needs an explicit compare-and-swap manual block path.
+    """
+    todo_id = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "todo block target"},
+    ).json()["task"]["id"]
+    review_id = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "review block target"},
+    ).json()["task"]["id"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='todo' WHERE id=?", (todo_id,))
+            conn.execute("UPDATE tasks SET status='review' WHERE id=?", (review_id,))
+    finally:
+        conn.close()
+
+    todo_resp = client.patch(
+        f"/api/plugins/kanban/tasks/{todo_id}",
+        json={
+            "status": "blocked",
+            "block_reason": "waiting for product input",
+            "expected_status": "todo",
+            "expected_current_run_id": None,
+        },
+    )
+    review_resp = client.patch(
+        f"/api/plugins/kanban/tasks/{review_id}",
+        json={
+            "status": "blocked",
+            "block_reason": "waiting for compliance review",
+            "expected_status": "review",
+            "expected_current_run_id": None,
+        },
+    )
+
+    assert todo_resp.status_code == 200, todo_resp.text
+    assert review_resp.status_code == 200, review_resp.text
+    assert _task_status(todo_id) == "blocked"
+    assert _task_status(review_id) == "blocked"
+
+
+def test_conditional_manual_block_rejects_stale_status_snapshot(client):
+    task_id = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "stale block target"},
+    ).json()["task"]["id"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='review' WHERE id=?", (task_id,))
+    finally:
+        conn.close()
+
+    resp = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={
+            "status": "blocked",
+            "block_reason": "stale snapshot should fail",
+            "expected_status": "ready",
+            "expected_current_run_id": None,
+        },
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert _task_status(task_id) == "review"
+
+
+def test_conditional_manual_block_rejects_active_current_run_even_when_snapshot_matches(client):
+    task_id = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "active run block target"},
+    ).json()["task"]["id"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            run_cur = conn.execute(
+                """
+                INSERT INTO task_runs (task_id, profile, step_key, status, started_at, ended_at)
+                VALUES (?, ?, ?, 'running', ?, NULL)
+                """,
+                (task_id, "developer", "development", 1234),
+            )
+            run_id = run_cur.lastrowid
+            conn.execute(
+                "UPDATE tasks SET status='ready', current_run_id=? WHERE id=?",
+                (run_id, task_id),
+            )
+    finally:
+        conn.close()
+
+    resp = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={
+            "status": "blocked",
+            "block_reason": "active run should fail",
+            "expected_status": "ready",
+            "expected_current_run_id": run_id,
+        },
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert _task_status(task_id) == "ready"
+
+
+def test_conditional_manual_block_clears_stale_failure_state(client):
+    task_id = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "failure state block target"},
+    ).json()["task"]["id"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='ready', consecutive_failures=4, last_failure_error='old failure' WHERE id=?",
+                (task_id,),
+            )
+    finally:
+        conn.close()
+
+    resp = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={
+            "status": "blocked",
+            "block_reason": "manual operator block",
+            "expected_status": "ready",
+            "expected_current_run_id": None,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    conn = kb.connect()
+    try:
+        row = conn.execute(
+            "SELECT status, consecutive_failures, last_failure_error FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row["status"] == "blocked"
+    assert row["consecutive_failures"] == 0
+    assert row["last_failure_error"] is None
+
+
+def test_conditional_reassign_rejects_stale_assignee_snapshot(client):
+    task_id = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "stale reassign target", "assignee": "architect"},
+    ).json()["task"]["id"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET assignee='tester' WHERE id=?", (task_id,))
+    finally:
+        conn.close()
+
+    resp = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/reassign",
+        json={
+            "profile": "developer",
+            "reclaim_first": False,
+            "reason": "Cockpit redirect",
+            "expected_status": "ready",
+            "expected_current_run_id": None,
+            "expected_assignee": "architect",
+        },
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert _task_assignee(task_id) == "tester"
+
+
+def test_conditional_reassign_rejects_active_current_run_even_when_snapshot_matches(client):
+    task_id = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "active run reassign target", "assignee": "architect"},
+    ).json()["task"]["id"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            run_cur = conn.execute(
+                """
+                INSERT INTO task_runs (task_id, profile, step_key, status, started_at, ended_at)
+                VALUES (?, ?, ?, 'running', ?, NULL)
+                """,
+                (task_id, "developer", "development", 2345),
+            )
+            run_id = run_cur.lastrowid
+            conn.execute(
+                "UPDATE tasks SET status='ready', current_run_id=? WHERE id=?",
+                (run_id, task_id),
+            )
+    finally:
+        conn.close()
+
+    resp = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/reassign",
+        json={
+            "profile": "developer",
+            "reclaim_first": False,
+            "reason": "Cockpit redirect",
+            "expected_status": "ready",
+            "expected_current_run_id": run_id,
+            "expected_assignee": "architect",
+        },
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert _task_assignee(task_id) == "architect"
+
+
+def test_conditional_reassign_applies_when_snapshot_matches(client):
+    task_id = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "matching reassign target", "assignee": "architect"},
+    ).json()["task"]["id"]
+
+    resp = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/reassign",
+        json={
+            "profile": "developer",
+            "reclaim_first": False,
+            "reason": "Cockpit redirect",
+            "expected_status": "ready",
+            "expected_current_run_id": None,
+            "expected_assignee": "architect",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert _task_assignee(task_id) == "developer"

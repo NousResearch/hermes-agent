@@ -811,6 +811,12 @@ class UpdateTaskBody(BaseModel):
     body: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
+    # Optional compare-and-swap guards for external Cockpit clients. When
+    # provided, the mutation is applied only if the task is still on the
+    # caller's snapshot. This preserves the dashboard plugin as the single
+    # write surface without forcing clients back to direct SQLite access.
+    expected_status: Optional[str] = None
+    expected_current_run_id: Optional[int] = None
     # Structured handoff fields — forwarded to complete_task when status
     # transitions to 'done'. Dashboard parity with ``hermes kanban
     # complete --summary ... --metadata ...``.
@@ -850,7 +856,16 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     metadata=payload.metadata,
                 )
             elif s == "blocked":
-                ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
+                if _any_model_fields_set(payload, ("expected_status", "expected_current_run_id")):
+                    ok = _conditional_manual_block_task(
+                        conn,
+                        task_id,
+                        reason=payload.block_reason,
+                        expected_status=payload.expected_status,
+                        expected_current_run_id=payload.expected_current_run_id,
+                    )
+                else:
+                    ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
             elif s == "scheduled":
                 ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
             elif s == "ready":
@@ -953,6 +968,177 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
     finally:
         conn.close()
 
+
+
+def _model_field_was_set(model: BaseModel, field_name: str) -> bool:
+    """Pydantic v1/v2 compatible test for whether a JSON field was present."""
+    fields = getattr(model, "model_fields_set", None)
+    if fields is None:
+        fields = getattr(model, "__fields_set__", set())
+    return field_name in fields
+
+
+def _any_model_fields_set(model: BaseModel, field_names: tuple[str, ...]) -> bool:
+    return any(_model_field_was_set(model, name) for name in field_names)
+
+
+def _canonical_assignee(value: Optional[str]) -> Optional[str]:
+    """Reuse kanban_db canonicalization while keeping this module testable."""
+    try:
+        return kanban_db._canonical_assignee(value)  # type: ignore[attr-defined]
+    except AttributeError:
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        return normalized or None
+
+
+def _insert_task_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    payload: Optional[dict[str, Any]],
+    *,
+    run_id: Optional[int] = None,
+) -> None:
+    conn.execute(
+        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            task_id,
+            run_id,
+            kind,
+            json.dumps(payload, ensure_ascii=False) if payload is not None else None,
+            int(time.time()),
+        ),
+    )
+
+
+def _conditional_manual_block_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str],
+    expected_status: Optional[str],
+    expected_current_run_id: Optional[int],
+) -> bool:
+    """Atomically apply a Cockpit manual block if the task still matches.
+
+    ``kanban_db.block_task`` is worker-oriented and only accepts running/ready
+    tasks. Cockpit also lets humans block not-yet-running todo/review cards.
+    This API helper keeps that manual-control contract while enforcing
+    compare-and-swap guards inside the same SQLite write transaction.
+    """
+    if expected_status not in {"todo", "ready", "review"}:
+        raise HTTPException(
+            status_code=409,
+            detail="manual block requires expected_status todo, ready, or review",
+        )
+
+    with kanban_db.write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if row["status"] != expected_status or row["current_run_id"] != expected_current_run_id:
+            raise HTTPException(status_code=409, detail="task changed; refresh before blocking")
+        if row["claim_lock"] is not None or row["status"] == "running":
+            raise HTTPException(status_code=409, detail="task is running; refresh before blocking")
+        if row["current_run_id"] is not None:
+            run = conn.execute("SELECT ended_at FROM task_runs WHERE id = ?", (row["current_run_id"],)).fetchone()
+            if run is None or run["ended_at"] is None:
+                raise HTTPException(status_code=409, detail="task is running; refresh before blocking")
+
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status        = 'blocked',
+                   claim_lock    = NULL,
+                   claim_expires = NULL,
+                   worker_pid    = NULL,
+                   consecutive_failures = 0,
+                   last_failure_error = NULL,
+                   block_kind    = 'needs_input',
+                   block_recurrences = CASE
+                       WHEN block_kind IS NULL OR block_kind != 'needs_input' THEN 1
+                       ELSE COALESCE(block_recurrences, 0) + 1
+                   END
+             WHERE id = ?
+               AND status = ?
+               AND current_run_id IS ?
+               AND claim_lock IS NULL
+            """,
+            (task_id, expected_status, expected_current_run_id),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=409, detail="task changed; refresh before blocking")
+        _insert_task_event(
+            conn,
+            task_id,
+            "blocked",
+            {"reason": reason, "kind": "needs_input", "source": "dashboard_api"},
+            run_id=expected_current_run_id,
+        )
+    return True
+
+
+def _conditional_reassign_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    profile: Optional[str],
+    *,
+    reclaim_first: bool,
+    reason: Optional[str],
+    expected_status: Optional[str],
+    expected_current_run_id: Optional[int],
+    expected_assignee: Optional[str],
+) -> bool:
+    """Atomically reassign only if the task still matches the caller snapshot."""
+    if reclaim_first:
+        # Reclaim deliberately changes state before reassignment, so snapshot
+        # preconditions would be ambiguous. Keep the existing recovery endpoint
+        # behaviour for reclaim callers.
+        return kanban_db.reassign_task(
+            conn, task_id, profile, reclaim_first=True, reason=reason,
+        )
+
+    new_profile = _canonical_assignee(profile)
+    expected_profile = _canonical_assignee(expected_assignee)
+    with kanban_db.write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id, claim_lock, assignee FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if expected_status is not None and row["status"] != expected_status:
+            raise HTTPException(status_code=409, detail="task status changed; refresh before reassigning")
+        if row["current_run_id"] != expected_current_run_id:
+            raise HTTPException(status_code=409, detail="task run changed; refresh before reassigning")
+        if _canonical_assignee(row["assignee"]) != expected_profile:
+            raise HTTPException(status_code=409, detail="task assignee changed; refresh before reassigning")
+        if row["claim_lock"] is not None or row["status"] == "running":
+            raise HTTPException(status_code=409, detail="task is running; refresh before reassigning")
+        if row["current_run_id"] is not None:
+            run = conn.execute("SELECT ended_at FROM task_runs WHERE id = ?", (row["current_run_id"],)).fetchone()
+            if run is None or run["ended_at"] is None:
+                raise HTTPException(status_code=409, detail="task is running; refresh before reassigning")
+
+        if _canonical_assignee(row["assignee"]) != new_profile:
+            conn.execute(
+                "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+                "last_failure_error = NULL WHERE id = ?",
+                (new_profile, task_id),
+            )
+        else:
+            conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (new_profile, task_id))
+        event_payload: dict[str, Any] = {"assignee": new_profile, "source": "dashboard_api"}
+        if reason:
+            event_payload["reason"] = reason
+        _insert_task_event(conn, task_id, "assigned", event_payload)
+    return True
 
 def _parents_blocking_ready(
     conn: sqlite3.Connection, task_id: str,
@@ -1646,6 +1832,9 @@ class ReassignBody(BaseModel):
     profile: Optional[str] = None  # "" or None = unassign
     reclaim_first: bool = False
     reason: Optional[str] = None
+    expected_status: Optional[str] = None
+    expected_current_run_id: Optional[int] = None
+    expected_assignee: Optional[str] = None
 
 
 @router.post("/tasks/{task_id}/reassign")
@@ -1664,12 +1853,24 @@ def reassign_task_endpoint(
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        ok = kanban_db.reassign_task(
-            conn, task_id,
-            payload.profile or None,
-            reclaim_first=bool(payload.reclaim_first),
-            reason=payload.reason,
-        )
+        if _any_model_fields_set(payload, ("expected_status", "expected_current_run_id", "expected_assignee")):
+            ok = _conditional_reassign_task(
+                conn,
+                task_id,
+                payload.profile or None,
+                reclaim_first=bool(payload.reclaim_first),
+                reason=payload.reason,
+                expected_status=payload.expected_status,
+                expected_current_run_id=payload.expected_current_run_id,
+                expected_assignee=payload.expected_assignee,
+            )
+        else:
+            ok = kanban_db.reassign_task(
+                conn, task_id,
+                payload.profile or None,
+                reclaim_first=bool(payload.reclaim_first),
+                reason=payload.reason,
+            )
         if not ok:
             raise HTTPException(
                 status_code=409,

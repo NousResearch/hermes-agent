@@ -1709,12 +1709,20 @@ function Install-Venv {
                 Write-Warn "Old venv parked at $staleName (a process still holds files in it); it will be cleaned up on the next install"
             }
         } else {
+            # Rename failed — fall back to in-place delete with retries.
+            # A killed process can take a moment to release its file handles,
+            # so the first Remove-Item may still hit a locked .pyd. Retry
+            # with exponential backoff before giving up.
             Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
-            # A killed process can take a moment to release its file handles, so a
-            # first Remove-Item may still hit a locked .pyd. Retry once after a short
-            # pause before giving up and letting the stage fail loudly.
+            $retryDelay = 2
+            for ($retry = 0; $retry -lt 3; $retry++) {
+                if (-not (Test-Path "venv")) { break }
+                Write-Info "  venv still locked (attempt $($retry + 1)/3); waiting ${retryDelay}s..."
+                Start-Sleep -Seconds $retryDelay
+                Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
+                $retryDelay *= 2
+            }
             if (Test-Path "venv") {
-                Start-Sleep -Seconds 2
                 Remove-Item -Recurse -Force "venv"
             }
         }

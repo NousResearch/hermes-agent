@@ -45,7 +45,15 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "jonathan@mintrx.com": "JAlmanzarMint",  # PR #52688 salvage (vision: rasterize SVG / re-encode unsupported raster formats to PNG before embedding), folded into #57890
+    "al3060388206@gmail.com": "ooiuuii",  # PR #58466/#58377 salvage (redact: fireworks fw-/fpk_ prefixes; telegram: redact bot tokens out of transport error strings). Also PR #58433 salvage (codex: accept recorded final_text when app-server omits turn/completed).
+    "Jigoooo@users.noreply.github.com": "Jigoooo",  # PR #58474 salvage (auxiliary: fall back to token resolver when anthropic pool has no usable entry)
+    "root@vmi3351581.contaboserver.net": "ostravajih",  # PR #58374 salvage (poolside: coerce integer finish_reason and tool_call id to strings)
+    "yingwaizhiying@gmail.com": "msh01",  # PR #58250 salvage (telegram: wall-clock init timeout via daemon-thread deadline + abandon the shielded initialize task on timeout so the retry ladder advances instead of hanging on attempt 1/8 under s6 supervision; #58236). Also covers PR #58276 salvage (compression: preserve a real user turn after compaction; #55677).
+    "danilo@falcao.org": "danilofalcao",  # PR #56674 salvage (update: skip unsupported platform.matrix lazy refresh on native Windows — python-olm has no Windows wheel)
+    "huanshan5195@users.noreply.github.com": "huanshan5195",  # PR #57601 salvage (custom-provider: emit reasoning_effort at the live CustomProfile path so GLM-5.2/ARK/vLLM/Ollama endpoints receive it; + "max" reasoning level)
     "infinitycrew39@gmail.com": "infinitycrew39",  # PR #56431 salvage (honor live vLLM context limits on local endpoints)
+    "jonathan.kovacs999@gmail.com": "CocaKova",  # PR #57692 salvage (cron: run jobs under the profile secret scope so get_secret does not fail-close with UnscopedSecretError under profile isolation)
     "hermes.wanderer@yahoo.com": "trismegistus-wanderer",  # PR #31856 salvage (gateway: defer idle-TTL agent-cache eviction until the session store says the session actually expired, so the expiry watcher can still fire MemoryProvider.on_session_end with the live transcript; #11205)
     "louis@letsfive.io": "Mibayy",  # PR #3243 salvage (/compact alias + preview/aggressive flags for /compress)
     "louis@letsfive.io": "Mibayy",  # PR #3176 salvage (api-server: per-client model routing via model_routes)
@@ -259,6 +267,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "marxb@protonmail.com": "Marxb85",
     "153708448+hunjaiboy@users.noreply.github.com": "yyzquwu",  # PR #47567 salvage (Matrix: register inbound handlers with wait_sync=True so _dispatch_sync's gather awaits them; without it mautrix fire-and-forgets and inbound intake has no completion point)
     "jearnest@velocityenergy.com": "jearnest11",  # PR #48700 salvage (multi-profile gateway flap: use node symlink's own parent, not .resolve() target, when building systemd/launchd service PATH so one profile's node path can't leak into every unit and force a perpetual daemon-reload restart loop)
     "tgmerritt@gmail.com": "tgmerritt",  # PR #43553 salvage (parse vLLM's token-based output-cap error format so over-cap max_tokens 400s reduce the output cap instead of death-looping into compression)
@@ -1134,6 +1143,7 @@ AUTHOR_MAP = {
     "hata1234@gmail.com": "hata1234",
     "hmbown@gmail.com": "Hmbown",
     "iacobs@m0n5t3r.info": "m0n5t3r",
+    "iacobs@webflakes.com": "m0n5t3r",
     "jiayuw794@gmail.com": "JiayuuWang",
     "jinhyuk9714@gmail.com": "sjh9714",
     "jonny@nousresearch.com": "yoniebans",
@@ -1388,6 +1398,7 @@ AUTHOR_MAP = {
     "holynn@placeholder.local": "holynn-q",
     "agent@hermes.local": "jacdevos",
     "sunsky.lau@gmail.com": "liuhao1024",
+    "suninrain086@gmail.com": "suninrain086",  # PR #57651 salvage of #50685 (vision custom-endpoint creds)
     "mohamed.origami@gmail.com": "mohamedorigami-jpg",  # PR #32117 (cron storage root anchor; #32091)
     "58446328+sherman-yang@users.noreply.github.com": "sherman-yang",  # PR #32788 (cron per-job MCP merge; #23997)
     "rob@rbrtbn.com": "rbrtbn",
@@ -1854,6 +1865,7 @@ AUTHOR_MAP = {
     "poli.koltsova@gmail.com": "wnuuee1",  # commit 9fd2b2cb PR author
     "yosapol@jitrak.dev": "Eji4h",  # direct email match
     "kiljadn@gmail.com": "designnotdrum",  # PR #56480 salvage (toolset static-inference fix)
+    "lavya@loom.local": "LavyaTandel",  # PR #57893 salvage local git identity (envelope-layout cache markers on tool/empty-assistant messages; #57845)
 }
 
 

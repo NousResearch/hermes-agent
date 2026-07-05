@@ -31,6 +31,7 @@ from hermes_constants import display_hermes_home, is_termux as _is_termux_enviro
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
     is_browser_debug_ready,
+    launch_chrome_debug,
     manual_chrome_debug_command,
 )
 
@@ -1850,8 +1851,8 @@ class CLICommandsMixin:
             elif cdp_url == _DEFAULT_CDP:
                 # Try to auto-launch a Chromium-family browser with remote debugging
                 print("   Chromium-family browser isn't running with remote debugging — attempting to launch...")
-                _launched = self._try_launch_chrome_debug(_port, _plat.system())
-                if _launched:
+                _launch = launch_chrome_debug(_port, _plat.system())
+                if _launch.launched:
                     # Wait for the DevTools discovery endpoint to come up
                     for _wait in range(10):
                         if is_browser_debug_ready(cdp_url, timeout=1.0):
@@ -1865,6 +1866,9 @@ class CLICommandsMixin:
                         print("     Try again in a few seconds — the debug instance may still be starting")
                 else:
                     print("   ⚠ Could not auto-launch a Chromium-family browser")
+                    _hint = _launch.hint
+                    if _hint:
+                        print(f"     {_hint}")
                     sys_name = _plat.system()
                     chrome_cmd = manual_chrome_debug_command(_port, sys_name)
                     if chrome_cmd:

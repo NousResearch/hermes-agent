@@ -45,6 +45,30 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     )
 
 
+def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    fetch = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected probe"))
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Slow Local",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "api_key": "sk-local",
+                "model": "local-model",
+            }
+        ],
+        probe_custom_providers=False,
+    )
+
+    row = next(p for p in providers if p["slug"] == "custom:slow-local")
+    assert row["models"] == ["local-model"]
+    assert row["total_models"] == 1
+
+
 def test_resolve_provider_full_finds_named_custom_provider():
     """Explicit /model --provider should resolve saved custom_providers entries."""
     resolved = resolve_provider_full(

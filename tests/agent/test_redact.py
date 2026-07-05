@@ -59,6 +59,22 @@ class TestKnownPrefixes:
         result = redact_sensitive_text("fal_abc123def456ghi789jkl")
         assert "abc123def456" not in result
 
+    def test_fireworks_keys(self):
+        samples = [
+            "fw-" + "A" * 40,
+            "fw_" + "B" * 40,
+            "fpk_" + "C" * 40,
+        ]
+
+        for token in samples:
+            result = redact_sensitive_text(f"provider error {token}")
+            assert token not in result
+            assert "..." in result
+
+    def test_short_fireworks_like_words_unchanged(self):
+        text = "fw-tooshort fw_tooshort fpk_tooshort"
+        assert redact_sensitive_text(text) == text
+
     def test_notion_internal_integration_token(self):
         result = redact_sensitive_text("ntn_abc123def456ghi789jkl")
         assert "abc123def456" not in result

@@ -1,5 +1,6 @@
 """Tests for tools/vision_tools.py — URL validation, type hints, error logging."""
 
+import base64
 import json
 import logging
 import os
@@ -261,6 +262,56 @@ class TestHandleVisionAnalyze:
             # (the centralized call_llm router picks the default)
             assert model is None
 
+    @pytest.mark.asyncio
+    async def test_config_yaml_model_takes_priority_over_env(self):
+        """config.yaml auxiliary.vision.model should be preferred over env var."""
+        with (
+            patch(
+                "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            ) as mock_tool,
+            patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"auxiliary": {"vision": {"model": "qwen3.7-plus"}}},
+            ),
+            patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "env-model"}),
+        ):
+            mock_tool.return_value = json.dumps({"result": "ok"})
+            await _handle_vision_analyze(
+                {"image_url": "https://example.com/img.png", "question": "test"}
+            )
+            call_args = mock_tool.call_args
+            model = call_args[0][2]  # third positional arg
+            assert model == "qwen3.7-plus"
+
+    @pytest.mark.asyncio
+    async def test_env_var_used_when_config_missing_model(self):
+        """Env var should be used when config.yaml has no auxiliary.vision.model."""
+        with (
+            patch(
+                "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            ) as mock_tool,
+            patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"auxiliary": {"vision": {}}},
+            ),
+            patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "fallback-model"}),
+        ):
+            mock_tool.return_value = json.dumps({"result": "ok"})
+            await _handle_vision_analyze(
+                {"image_url": "https://example.com/img.png", "question": "test"}
+            )
+            call_args = mock_tool.call_args
+            model = call_args[0][2]
+            assert model == "fallback-model"
+
     def test_empty_args_graceful(self):
         """Missing keys should default to empty strings, not raise."""
         with patch(
@@ -331,26 +382,20 @@ class TestErrorLoggingExcInfo:
     @pytest.mark.asyncio
     async def test_cleanup_error_logs_exc_info(self, tmp_path, caplog):
         """Temp file cleanup failure should log warning with exc_info."""
-        # Create a real temp file that will be "downloaded"
-        temp_dir = tmp_path / "temp_vision_images"
-        temp_dir.mkdir()
-
-        async def fake_download(url, dest, max_retries=3):
-            """Simulate download by writing file to the expected destination."""
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 16)
-            return dest
+        # A data: URL resolves to bytes without any network, materializes to a
+        # vision temp file, then the analysis runs — exercising the temp-cleanup
+        # path in the finally block. A tiny valid JPEG (magic bytes) passes the
+        # resolver's magic-byte sniff.
+        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 32).decode("ascii")
+        data_url = f"data:image/jpeg;base64,{jpeg_b64}"
 
         with (
-            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
-            patch("tools.vision_tools._download_image", side_effect=fake_download),
             patch(
                 "tools.vision_tools._image_to_base64_data_url",
                 return_value="data:image/jpeg;base64,abc",
             ),
             caplog.at_level(logging.WARNING, logger="tools.vision_tools"),
         ):
-            # Mock the async_call_llm function to return a mock response
             mock_response = MagicMock()
             mock_choice = MagicMock()
             mock_choice.message.content = "A test image description"
@@ -359,16 +404,12 @@ class TestErrorLoggingExcInfo:
             with (
                 patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
             ):
-                # Make unlink fail to trigger cleanup warning
-                original_unlink = Path.unlink
-
+                # Make unlink fail to trigger the cleanup warning.
                 def failing_unlink(self, *args, **kwargs):
                     raise PermissionError("no permission")
 
                 with patch.object(Path, "unlink", failing_unlink):
-                    result = await vision_analyze_tool(
-                        "https://example.com/tempimg.jpg", "describe", "test/model"
-                    )
+                    result = await vision_analyze_tool(data_url, "describe", "test/model")
 
             warning_records = [
                 r
@@ -450,7 +491,8 @@ class TestVisionSafetyGuards:
             result = json.loads(await vision_analyze_tool(str(secret), "extract text"))
 
         assert result["success"] is False
-        assert "Only real image files are supported" in result["error"]
+        # The unified resolver's magic-byte sniff rejects non-images.
+        assert "not a recognized image" in result["error"]
         mock_llm.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -463,8 +505,8 @@ class TestVisionSafetyGuards:
         }
 
         with (
-            patch("tools.vision_tools.check_website_access", return_value=blocked),
-            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
+            patch("tools.website_policy.check_website_access", return_value=blocked),
+            patch("tools.url_safety.is_safe_url", return_value=True),
             patch("tools.vision_tools._download_image", new_callable=AsyncMock) as mock_download,
         ):
             result = json.loads(await vision_analyze_tool("https://blocked.test/cat.png", "describe"))
@@ -1208,7 +1250,7 @@ class TestVisionCpuBurstCap:
                     enc_inflight -= 1
             return "data:image/jpeg;base64,AAAA"
 
-        async def fake_native(image_url, question):
+        async def fake_native(image_url, question, task_id=None):
             nonlocal calls_inflight, calls_peak
             calls_inflight += 1
             calls_peak = max(calls_peak, calls_inflight)

@@ -54,9 +54,11 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    MEDIA_TAG_CLEANUP_RE,
     BasePlatformAdapter,
     SendResult,
     is_network_accessible,
+    validate_media_delivery_path,
 )
 from agent.redact import redact_sensitive_text
 
@@ -581,9 +583,6 @@ _MEDIA_MIME = {
     ".webp": "image/webp",
     ".bmp": "image/bmp",
 }
-_MEDIA_TAG_RE = re.compile(
-    r"[`\"']?MEDIA:\s*(`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+'|\S+)[`\"']?"
-)
 _MEDIA_DATA_URL_MAX_BYTES = 5 * 1024 * 1024  # skip images larger than 5MB
 
 
@@ -594,18 +593,35 @@ def _resolve_media_to_data_urls(text: str) -> str:
     ``MEDIA:`` tags referencing images on the server are useless to them.
     Inline small local images as markdown data URLs; non-image or unreadable
     paths are left untouched.
+
+    Uses the same anchored ``MEDIA_TAG_CLEANUP_RE`` matcher and
+    ``validate_media_delivery_path`` safety check every other platform
+    adapter's media delivery already goes through (gateway/platforms/base.py)
+    — an absolute-path anchor plus a known-extension requirement, and a
+    resolved-path check against the credential/system-path denylist. The
+    prior pattern here matched any bare token after ``MEDIA:`` (including a
+    relative/traversal path like ``../../etc/passwd.png``) and read the file
+    directly with no denylist, so any image-suffixed, readable file the
+    process could see was base64-exfiltrated to the API caller if its path
+    merely appeared in the model's own final reply text.
     """
     if not text or "MEDIA:" not in text:
         return text
     import base64
 
     def _to_data_url(path_str: str) -> Optional[str]:
-        p = Path(path_str.strip().strip("`\"'")).expanduser()
+        # validate_media_delivery_path() strips wrapping quotes/backticks
+        # and trailing punctuation internally, same as MEDIA_TAG_CLEANUP_RE's
+        # other callers (extract_media / _strip_media_tag_directives) rely on.
+        safe_path = validate_media_delivery_path(path_str)
+        if not safe_path:
+            return None
+        p = Path(safe_path)
         suffix = p.suffix.lower()
         if suffix not in _MEDIA_IMG_EXT:
             return None
         try:
-            if not p.is_file() or p.stat().st_size > _MEDIA_DATA_URL_MAX_BYTES:
+            if p.stat().st_size > _MEDIA_DATA_URL_MAX_BYTES:
                 return None
             b64 = base64.b64encode(p.read_bytes()).decode()
         except OSError:
@@ -613,10 +629,10 @@ def _resolve_media_to_data_urls(text: str) -> str:
         return f"![image](data:{_MEDIA_MIME[suffix]};base64,{b64})"
 
     def _repl(m: "re.Match[str]") -> str:
-        return _to_data_url(m.group(1)) or m.group(0)
+        return _to_data_url(m.group("path")) or m.group(0)
 
     try:
-        return _MEDIA_TAG_RE.sub(_repl, text)
+        return MEDIA_TAG_CLEANUP_RE.sub(_repl, text)
     except Exception:
         return text
 

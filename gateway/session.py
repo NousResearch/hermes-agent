@@ -1369,6 +1369,48 @@ class SessionStore:
         
         return None
     
+    def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
+        """Return the latest compression continuation for *session_id*.
+
+        When an agent compresses context mid-turn the transcript moves to a
+        child session, but a restart or failed send can leave the SessionStore
+        mapping pointing at the compressed parent.  Heal that on read so the
+        next inbound message resumes the child instead of reloading the parent.
+        """
+        if not session_id or self._db is None:
+            return session_id
+        try:
+            return self._db.get_compression_tip(session_id) or session_id
+        except Exception:
+            logger.debug(
+                "Compression-tip lookup failed for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return session_id
+
+    def _heal_compression_tip_locked(
+        self,
+        entry: "SessionEntry",
+        original_session_id: Optional[str],
+        canonical_session_id: Optional[str],
+    ) -> bool:
+        """Rewrite *entry* to the compression continuation if stale. Lock held."""
+        if (
+            not original_session_id
+            or not canonical_session_id
+            or entry.session_id != original_session_id
+            or canonical_session_id == original_session_id
+        ):
+            return False
+        logger.info(
+            "SessionStore healed compressed session mapping: %s -> %s",
+            entry.session_id,
+            canonical_session_id,
+        )
+        entry.session_id = canonical_session_id
+        return True
+
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
 
@@ -1409,12 +1451,30 @@ class SessionStore:
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
+        existing_session_id = None
+
+        if not force_new:
+            with self._lock:
+                self._ensure_loaded_locked()
+                entry = self._entries.get(session_key)
+                if entry is not None:
+                    existing_session_id = entry.session_id
+
+        # Look up the compression continuation outside the lock (DB I/O).
+        canonical_existing_session_id = (
+            self._compression_tip_for_session_id(existing_session_id)
+            if existing_session_id
+            else None
+        )
 
         with self._lock:
             self._ensure_loaded_locked()
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
+                self._heal_compression_tip_locked(
+                    entry, existing_session_id, canonical_existing_session_id
+                )
 
                 # Self-heal stale routing: if this session_key still points at
                 # a session that has ALREADY been ended in state.db (end_reason

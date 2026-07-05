@@ -107,7 +107,9 @@ _PREFIX_PATTERNS = [
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
+    r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
+    r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.

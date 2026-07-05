@@ -2194,15 +2194,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     idx = _active_slot_by_idx[raw_idx]
 
                     if idx not in tool_calls_acc:
+                        # Poolside may send integer id instead of string
+                        _tc_id = tc_delta.id
+                        if isinstance(_tc_id, int):
+                            _tc_id = str(_tc_id)
                         tool_calls_acc[idx] = {
-                            "id": tc_delta.id or "",
+                            "id": _tc_id or "",
                             "type": "function",
                             "function": {"name": "", "arguments": ""},
                             "extra_content": None,
                         }
                     entry = tool_calls_acc[idx]
-                    if tc_delta.id:
-                        entry["id"] = tc_delta.id
+                    if tc_delta.id is not None:
+                        _new_id = tc_delta.id
+                        if isinstance(_new_id, int):
+                            _new_id = str(_new_id)
+                        if _new_id:
+                            entry["id"] = _new_id
                     if tc_delta.function:
                         if tc_delta.function.name:
                             # Use assignment, not +=.  Function names are

@@ -1260,7 +1260,7 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_hermes_home_override
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -1436,6 +1436,9 @@ if _config_path.exists():
         # config.yaml overrides .env for these since it's the documented config path.
         _terminal_cfg = _cfg.get("terminal", {})
         if _terminal_cfg and isinstance(_terminal_cfg, dict):
+            _terminal_backend = str(
+                _terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or ""
+            ).strip().lower()
             _terminal_env_map = {
                 "backend": "TERMINAL_ENV",
                 "cwd": "TERMINAL_CWD",
@@ -1474,10 +1477,16 @@ if _config_path.exists():
                     # Only bridge explicit absolute paths from config.yaml.
                     if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
                         continue
-                    # Expand shell tilde in cwd so subprocess.Popen never
-                    # receives a literal "~/" which the kernel rejects.
+                    # Expand shell tilde in local/container cwd so subprocess.Popen
+                    # never receives a literal "~/" which the kernel rejects.
+                    # SSH cwd is interpreted by the remote shell, so preserve
+                    # "~" / "~/..." for the SSH backend instead of expanding it
+                    # to the Hermes host/container HOME (often /opt/data). Shared
+                    # predicate with terminal_tool so the two sites can't drift.
                     if _cfg_key == "cwd" and isinstance(_val, str):
-                        _val = os.path.expanduser(_val)
+                        from tools.terminal_tool import _is_ssh_remote_tilde_cwd
+                        if not _is_ssh_remote_tilde_cwd(_terminal_backend, _val.strip()):
+                            _val = os.path.expanduser(_val)
                     if isinstance(_val, (list, dict)):
                         os.environ[_env_var] = json.dumps(_val)
                     else:
@@ -1651,13 +1660,27 @@ os.environ["HERMES_EXEC_ASK"] = "1"
 
 # Set terminal working directory for messaging platforms.
 # config.yaml terminal.cwd is the canonical source (bridged to TERMINAL_CWD
-# by the config bridge above).  When it's unset or a placeholder, default
-# to home directory.  MESSAGING_CWD is accepted as a backward-compat
-# fallback (deprecated — the warning above tells users to migrate).
+# by the config bridge above).  Placeholder values are resolved per-backend —
+# see gateway/cwd_placeholder.py for the three-case contract (local vs docker
+# mount-off vs docker mount-on).  MESSAGING_CWD is a backward-compat fallback.
+from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
+
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
-if not _configured_cwd or _configured_cwd in {".", "auto", "cwd"}:
-    _fallback = os.getenv("MESSAGING_CWD") or str(Path.home())
-    os.environ["TERMINAL_CWD"] = _fallback
+if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
+    _resolved_cwd = resolve_placeholder_terminal_cwd(
+        configured_cwd=_configured_cwd,
+        terminal_backend=os.environ.get("TERMINAL_ENV", ""),
+        messaging_cwd=os.getenv("MESSAGING_CWD"),
+        docker_mount_cwd_to_workspace=os.getenv(
+            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"
+        ).lower()
+        in {"true", "1", "yes"},
+        home_fallback=str(Path.home()),
+    )
+    if _resolved_cwd is None:
+        os.environ.pop("TERMINAL_CWD", None)
+    else:
+        os.environ["TERMINAL_CWD"] = _resolved_cwd
 
 from gateway.config import (
     ChannelOverride,
@@ -1845,6 +1868,23 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+
+
+def _credential_pool_for_provider(provider: Optional[str]):
+    """Return the live credential pool for a provider id (e.g. ``custom:hyper``)."""
+    if not provider or not str(provider).strip():
+        return None
+    try:
+        return _resolve_runtime_agent_kwargs_for_provider(str(provider).strip()).get(
+            "credential_pool"
+        )
+    except Exception:
+        logger.debug(
+            "Failed to resolve credential pool for provider=%s",
+            provider,
+            exc_info=True,
+        )
+        return None
 
 
 def _try_resolve_fallback_provider() -> dict | None:
@@ -2209,6 +2249,14 @@ def _teams_pipeline_plugin_enabled() -> bool:
     return "teams_pipeline" in enabled or "teams-pipeline" in enabled
 
 
+def _gateway_config_home() -> Path:
+    """Return the Hermes home that gateway config reads should use."""
+    override = get_hermes_home_override()
+    if override:
+        return Path(override)
+    return _hermes_home
+
+
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error.
 
@@ -2220,7 +2268,8 @@ def _load_gateway_config() -> dict:
     gateway honors administrator-pinned values — neither read_raw_config nor a
     direct yaml.safe_load carries the managed merge on its own. Fail-open.
     """
-    config_path = _hermes_home / 'config.yaml'
+    config_home = _gateway_config_home()
+    config_path = config_home / 'config.yaml'
     raw: dict = {}
     used_canonical = False
     try:
@@ -3643,8 +3692,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
+                "credential_pool": override.get("credential_pool"),
             }
             if override_runtime.get("api_key"):
+                if override_runtime.get("credential_pool") is None:
+                    override_runtime["credential_pool"] = _credential_pool_for_provider(
+                        override.get("provider")
+                    )
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
                     resolved_session_key or "", model, override_model,
@@ -9962,6 +10016,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         source: SessionSource,
         history: List[Dict[str, Any]],
+        session_key: Optional[str] = None,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent.
 
@@ -9980,10 +10035,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         message_text = event.text or ""
         _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
         _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
-        # Use the same helper every other call site uses so the write key here
-        # matches the consume key at the run_conversation site — even if the
-        # session store overrides build_session_key's default behavior.
-        session_key = self._session_key_for_source(source)
+        # Prefer the already resolved session key from the caller so this write
+        # key matches the consume key at the run_conversation site. Fall back
+        # to deriving it here for tests and legacy standalone callers.
+        session_key = session_key or self._session_key_for_source(source)
         # Reset only this session's per-call buffer; other sessions may be
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
@@ -10034,7 +10089,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
                 # pre-run + prepend description).  See agent/image_routing.py.
-                _img_mode = self._decide_image_input_mode()
+                _img_mode = self._decide_image_input_mode(
+                    source=source,
+                    session_key=session_key,
+                )
                 if _img_mode == "native":
                     # Defer attachment to the run_conversation call site.
                     pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
@@ -10997,6 +11055,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             event=event,
             source=source,
             history=history,
+            session_key=session_key,
         )
         if message_text is None:
             return
@@ -11378,6 +11437,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
+                # Clear per-session model cache so the post-reset turn
+                # resolves from current config, not a stale fallback.
+                _lrm = getattr(self, "_last_resolved_model", None)
+                if _lrm is not None:
+                    _lrm.pop(session_key, None)
                 if new_entry is not None:
                     # Drop the stale reference to the bloated compressed child and
                     # re-point the Telegram topic binding at the fresh session.
@@ -14379,25 +14443,62 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except TypeError:
             executor.shutdown(wait=False)
 
-    def _decide_image_input_mode(self) -> str:
-        """Resolve the image-input routing for the currently active model.
+    def _decide_image_input_mode(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> str:
+        """Resolve image-input routing for the effective model this turn.
 
         Returns ``"native"`` (attach pixels on the user turn) or ``"text"``
         (pre-analyze with vision_analyze and prepend the description). See
         agent/image_routing.py for the full decision table.
 
-        The active provider/model are read from config.yaml so the decision
-        tracks ``/model`` switches automatically on the next message.
+        Gateway sessions can have /model overrides that live outside
+        config.yaml. Image preprocessing runs before AIAgent sets the
+        auxiliary_client runtime globals, so resolve the same per-session
+        runtime bundle the upcoming agent turn will use instead of consulting
+        only the persisted default model.
         """
         try:
             from agent.image_routing import decide_image_input_mode
             from agent.auxiliary_client import _read_main_model, _read_main_provider
             from hermes_cli.config import load_config
 
-            cfg = load_config()
-            provider = _read_main_provider()
-            model = _read_main_model()
-            return decide_image_input_mode(provider, model, cfg)
+            cfg = user_config if isinstance(user_config, dict) else load_config()
+            resolved_provider = (provider or "").strip()
+            resolved_model = (model or "").strip()
+
+            needs_session_runtime = not resolved_provider or not resolved_model
+            has_session_identity = source is not None or session_key
+            if needs_session_runtime and has_session_identity:
+                try:
+                    turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                        source=source,
+                        session_key=session_key,
+                        user_config=cfg,
+                    )
+                    if not resolved_model and isinstance(turn_model, str):
+                        resolved_model = turn_model.strip()
+                    runtime_provider = runtime_kwargs.get("provider") if isinstance(runtime_kwargs, dict) else None
+                    if not resolved_provider and isinstance(runtime_provider, str):
+                        resolved_provider = runtime_provider.strip()
+                except Exception as exc:
+                    logger.debug(
+                        "image_routing: session runtime resolution failed, falling back to config — %s",
+                        exc,
+                    )
+
+            if not resolved_provider:
+                resolved_provider = _read_main_provider()
+            if not resolved_model:
+                resolved_model = _read_main_model()
+
+            return decide_image_input_mode(resolved_provider, resolved_model, cfg)
         except Exception as exc:
             logger.debug("image_routing: decision failed, falling back to text — %s", exc)
             return "text"
@@ -15210,6 +15311,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
+                override["credential_pool"] = runtime.get("credential_pool")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:
@@ -15239,10 +15341,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode"):
+        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        if (
+            runtime_kwargs.get("api_key")
+            and runtime_kwargs.get("credential_pool") is None
+            and override.get("provider")
+        ):
+            runtime_kwargs["credential_pool"] = _credential_pool_for_provider(
+                override.get("provider")
+            )
         return model, runtime_kwargs
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
@@ -19061,6 +19171,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_session_key = session_key
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -19069,10 +19180,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key or "?",
                         )
                         return result
+                    # Resolve the follow-up's session key BEFORE preparing the
+                    # inbound text: _prepare_inbound_message_text buffers native
+                    # image paths under the key it is given, and the recursive
+                    # _run_agent below consumes them under next_session_key.
+                    # The write and consume keys must match or the images drop.
+                    try:
+                        next_session_key = self._session_key_for_source(next_source)
+                    except Exception:
+                        logger.debug(
+                            "Queued follow-up session-key resolution failed; reusing %s",
+                            session_key or "?",
+                            exc_info=True,
+                        )
                     next_message = await self._prepare_inbound_message_text(
                         event=pending_event,
                         source=next_source,
                         history=updated_history,
+                        session_key=next_session_key,
                     )
                     if next_message is None:
                         return result
@@ -19114,7 +19239,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     history=updated_history,
                     source=next_source,
                     session_id=session_id,
-                    session_key=session_key,
+                    session_key=next_session_key,
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,

@@ -21,6 +21,7 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
+const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -35,7 +36,11 @@ const {
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
-const { createLinkTitleWindow } = require('./link-title-window.cjs')
+const {
+  createLinkTitleWindow,
+  guardLinkTitleSession,
+  readLinkTitleWindowTitle
+} = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
@@ -45,7 +50,10 @@ const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-ma
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
-const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
+const {
+  nativeOverlayWidth: computeNativeOverlayWidth,
+  macTitleBarOverlayHeight
+} = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
 const {
@@ -160,6 +168,9 @@ const IS_PACKAGED = app.isPackaged
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
+// Truthful macOS kernel major (Tahoe = 25). Product version lies (16 vs 26) per
+// build SDK, so gate Tahoe workarounds on Darwin instead.
+const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 const APP_ROOT = app.getAppPath()
 
 function hiddenWindowsChildOptions(options = {}) {
@@ -532,7 +543,10 @@ const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 
 function getTitleBarOverlayOptions() {
   if (IS_MAC) {
-    return { height: TITLEBAR_HEIGHT }
+    // Tahoe (Darwin 25+) misplaces the traffic lights when the overlay has a
+    // nonzero height (electron#49183); 0 there keeps them at the configured
+    // inset. See macTitleBarOverlayHeight.
+    return { height: macTitleBarOverlayHeight({ darwinMajor: DARWIN_MAJOR, titlebarHeight: TITLEBAR_HEIGHT }) }
   }
 
   // WSLg paints WCO via the RDP host's own min/max/close, so requesting
@@ -1361,10 +1375,7 @@ function backendSupportsServe(backend) {
   let supported = null
   if (backend.root) {
     try {
-      const src = fs.readFileSync(
-        path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'),
-        'utf8'
-      )
+      const src = fs.readFileSync(path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'), 'utf8')
       supported = sourceDeclaresServe(src)
     } catch {
       supported = null // source unreadable — fall through to the probe
@@ -2154,9 +2165,25 @@ async function releaseBackendLock(updateRoot, tag) {
       rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
       return { unlocked: true }
     }
+    // A supervised backend can respawn between kill and check (grandchildren,
+    // pool entries registered mid-teardown). Re-collect and re-kill each pass
+    // instead of trusting the initial sweep.
+    const stragglers = []
+    if (hermesProcess && Number.isInteger(hermesProcess.pid)) stragglers.push(hermesProcess.pid)
+    for (const entry of backendPool.values()) {
+      if (entry.process && Number.isInteger(entry.process.pid)) stragglers.push(entry.process.pid)
+    }
+    for (const pid of stragglers) forceKillProcessTree(pid)
     await new Promise(r => setTimeout(r, 300))
   }
-  rememberLog(`[${tag}] venv shim still locked after 15s; proceeding anyway (force)`)
+  // Do NOT proceed past a held lock: handing off to the updater while another
+  // process (a second desktop window, a user terminal, an unkillable child)
+  // still maps the venv's files guarantees a half-updated venv — the updater's
+  // dependency sync dies on access-denied partway through uninstalls, leaving
+  // imports broken (the July 2026 brotlicffi/_sodium.pyd incidents). Failing
+  // the update loudly and keeping the app running is strictly better than a
+  // bricked install that needs manual venv surgery.
+  rememberLog(`[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`)
   return { unlocked: false }
 }
 
@@ -2236,7 +2263,20 @@ async function applyUpdates(opts = {}) {
     // spawn the updater. Without this the updater races a still-locked
     // hermes.exe (held by the backend child / its grandchildren) and the update
     // bricks. See releaseBackendLockForUpdate for the full failure analysis.
-    await releaseBackendLockForUpdate(updateRoot)
+    const lock = await releaseBackendLockForUpdate(updateRoot)
+    if (!lock.unlocked) {
+      // Something OUTSIDE this app holds the venv (a second window, a user
+      // terminal running hermes, an unkillable child). Handing off anyway
+      // guarantees a half-updated venv — abort loudly instead and let the
+      // user close the holder and retry. Restart our own backend so the app
+      // keeps working after the failed attempt.
+      const message =
+        'Update aborted: another process is holding the Hermes install open ' +
+        '(a second Hermes window or a terminal running hermes?). Close it and retry.'
+      emitUpdateProgress({ stage: 'error', message, percent: null })
+      startHermes().catch(() => {})
+      return { ok: false, error: message }
+    }
 
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
@@ -2292,9 +2332,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // --repair (full venv recreate) and drove reinstall loops. The venv interpreter
   // and the bootstrap-complete marker are present earlier and are better signals.
   const haveRealInstall =
-    fileExists(venvPython) ||
-    fileExists(venvHermes) ||
-    fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
+    fileExists(venvPython) || fileExists(venvHermes) || fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
   const updaterArgs = haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 
   await releaseBackendLockForUpdate(updateRoot)
@@ -3499,6 +3537,7 @@ function getLinkTitleSession() {
   linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
     callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
   })
+  guardLinkTitleSession(linkTitleSession)
   return linkTitleSession
 }
 
@@ -3546,13 +3585,13 @@ function runRenderTitleJob(rawUrl) {
       return finish('')
     }
 
-    const readTitle = () => window?.webContents?.getTitle?.() || ''
+    const finishWithTitle = () => finish(readLinkTitleWindowTitle(window))
     const scheduleGrace = () => {
       if (graceTimer) clearTimeout(graceTimer)
-      graceTimer = setTimeout(() => finish(readTitle()), RENDER_TITLE_GRACE_MS)
+      graceTimer = setTimeout(finishWithTitle, RENDER_TITLE_GRACE_MS)
     }
 
-    hardTimer = setTimeout(() => finish(readTitle()), RENDER_TITLE_TIMEOUT_MS)
+    hardTimer = setTimeout(finishWithTitle, RENDER_TITLE_TIMEOUT_MS)
 
     window.webContents.setUserAgent(TITLE_USER_AGENT)
     window.webContents.on('page-title-updated', scheduleGrace)

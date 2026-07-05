@@ -1424,13 +1424,30 @@ class TerminalCommandAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+class LongSingleLineTerminalCommandAgent:
+    """Emits a long single-line terminal command with real args."""
+
+    CMD = LongPreviewAgent.LONG_CMD
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "terminal", self.CMD, {"command": self.CMD}
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 @pytest.mark.asyncio
 async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path):
     """Terminal progress on a markdown-capable (supports_code_blocks) gateway
     renders a bare fenced code block — no language tag (Slack mrkdwn would print
-    'bash' as a literal first code line).  In non-verbose ("all"/"new") mode the
-    command is collapsed to a single line capped at tool_preview_length so a long
-    or multi-line command doesn't render as a huge block (#42634)."""
+    'bash' as a literal first code line).  In non-verbose ("all"/"new") mode a
+    multi-line command is collapsed to the first line so a full script doesn't
+    render as a huge block (#42634)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1477,6 +1494,59 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     assert "node --version" not in all_content
     # No truncated quoted preview for the terminal command.
     assert 'terminal: "' not in all_content
+
+
+@pytest.mark.asyncio
+async def test_terminal_progress_respects_zero_preview_length_as_unlimited(monkeypatch, tmp_path):
+    """For markdown-capable gateway terminal progress, display.tool_preview_length=0
+    means the first shell line is not character-truncated. Multi-line commands
+    are still collapsed separately by test_terminal_progress_renders_fenced_code_block.
+    """
+    import yaml
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = LongSingleLineTerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"tool_preview_length": 0}}),
+        encoding="utf-8",
+    )
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-zero-preview",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert LongSingleLineTerminalCommandAgent.CMD in all_content
+    assert "..." not in all_content
 
 
 @pytest.mark.asyncio

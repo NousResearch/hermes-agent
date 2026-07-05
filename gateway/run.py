@@ -16843,14 +16843,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "" if last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
                 )
                 _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
-                # Single-line, capped preview for non-verbose modes.
+                # Single-line preview for non-verbose modes. Respect
+                # display.tool_preview_length when it is positive; when it is
+                # 0, leave the first shell line untruncated (0 means "no
+                # limit" elsewhere in Hermes display config too). Multi-line
+                # commands still collapse to the first line plus an ellipsis
+                # marker so progress bubbles do not become full scripts.
                 _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
                 _lines = _cmd_full.splitlines()
                 _cmd_short = _lines[0] if _lines else _cmd_full
                 _multiline = len(_lines) > 1
-                if len(_cmd_short) > _cap:
-                    _cmd_short = _cmd_short[:_cap - 3] + "..."
+                if _pl > 0 and len(_cmd_short) > _pl:
+                    _cmd_short = _cmd_short[:_pl - 3] + "..."
                 elif _multiline:
                     _cmd_short = _cmd_short + " ..."
                 _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"

@@ -2440,6 +2440,16 @@ DEFAULT_CONFIG = {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        # User-defined deny rules: fnmatch globs matched against terminal
+        # commands. A match blocks the command unconditionally — BEFORE the
+        # --yolo / /yolo / mode=off bypass — making this the user-editable
+        # counterpart to the code-shipped hardline blocklist. Patterns are
+        # case-insensitive and must be quoted in YAML when they start with
+        # * or contain {}/!/: sequences. Example:
+        #   deny:
+        #     - "git push --force*"
+        #     - "*curl*|*sh*"
+        "deny": [],
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

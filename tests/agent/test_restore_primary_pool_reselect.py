@@ -204,6 +204,65 @@ class TestRestorePrimaryPoolReselect:
         # Entry has no key, so use snapshot
         assert agent.api_key == "original-key-entry-1"
 
+    def test_restore_gate_allows_sibling_of_model_scoped_block(self):
+        """A block scoped to gpt-5.5 must not hide a sibling model at the gate.
+
+        Regression: the restore gate called has_available() with no model, so a
+        gpt-5.5-scoped exhaustion made it return False and the scoped select()
+        for the sibling (Spark) never ran — falling back to the stale snapshot.
+        """
+        entries = [
+            {
+                **_make_entry("entry-1", "spark-usable-key", priority=0,
+                              last_status="exhausted",
+                              last_status_at=time.time() + 3600),
+                "last_error_model": "gpt-5.5",
+            },
+        ]
+        pool = _build_mock_pool(entries)
+
+        agent = self._make_agent(pool)
+        # The primary runtime being restored is the sibling model (Spark), not
+        # the model that hit the gpt-5.5-scoped limit. restore_primary_runtime
+        # writes agent.model back from the snapshot, so the snapshot's model is
+        # what the gate must scope to.
+        agent.model = "gpt-5.3-codex-spark"
+        agent._primary_runtime["model"] = "gpt-5.3-codex-spark"
+        # Neutralize the auth-store resync so the test doesn't read the host's
+        # real ~/.hermes codex tokens over the synthetic entry.
+        from agent.credential_pool import CredentialPool
+        with patch.object(
+            CredentialPool, "_sync_codex_entry_from_auth_store",
+            lambda self, entry: entry,
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        # Block is scoped to gpt-5.5, so Spark should re-select the entry rather
+        # than fall through to the stale snapshot key.
+        assert agent.api_key == "spark-usable-key"
+        assert agent._client_kwargs["api_key"] == "spark-usable-key"
+
+    def test_restore_gate_still_blocks_the_exhausted_model(self):
+        """A model-scoped block must still hide the entry for that same model."""
+        entries = [
+            {
+                **_make_entry("entry-1", "key-1", priority=0,
+                              last_status="exhausted",
+                              last_status_at=time.time() + 3600),
+                "last_error_model": "gpt-5.5",
+            },
+        ]
+        pool = _build_mock_pool(entries)
+
+        agent = self._make_agent(pool)
+        agent.model = "gpt-5.5"  # same model that hit the limit
+        result = agent._restore_primary_runtime()
+
+        assert result is True
+        # Same model is genuinely blocked → keep the snapshot key.
+        assert agent.api_key == "original-key-entry-1"
+
     def test_restore_updates_base_url_from_pool_entry(self):
         """If pool entry has a different base_url, restore should update it."""
         entries = [

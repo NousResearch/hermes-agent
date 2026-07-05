@@ -1211,8 +1211,15 @@ def restore_primary_runtime(agent) -> bool:
         # When the pool is absent, empty, or the entry has no usable key, we
         # keep the snapshot key (the existing behavior).  Fixes #25205.
         pool = getattr(agent, "_credential_pool", None)
-        if pool is not None and pool.has_available():
-            entry = pool.select(requested_model=getattr(agent, "model", None))
+        # Scope the gate/select to the model we are restoring *to* (the primary
+        # snapshot's model, which line above just wrote back to agent.model).
+        # A no-model has_available() would treat a sibling-scoped block (e.g. a
+        # gpt-5.5 exhaustion on a shared openai-codex credential) as a
+        # pool-wide outage and hide an otherwise-usable entry for this model
+        # (e.g. Spark), stranding restore on the stale snapshot key.
+        _restore_model = rt.get("model") or getattr(agent, "model", None)
+        if pool is not None and pool.has_available(requested_model=_restore_model):
+            entry = pool.select(requested_model=_restore_model)
             if entry is not None:
                 entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
                 primary_provider = str(rt.get("provider") or "").strip().lower()

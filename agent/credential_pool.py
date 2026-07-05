@@ -551,9 +551,15 @@ class CredentialPool:
     def has_credentials(self) -> bool:
         return bool(self._entries)
 
-    def has_available(self) -> bool:
-        """True if at least one entry is not currently in exhaustion cooldown."""
-        return bool(self._available_entries())
+    def has_available(self, *, requested_model: Optional[str] = None) -> bool:
+        """True if at least one entry is not currently in exhaustion cooldown.
+
+        When *requested_model* is provided, an entry whose exhaustion is scoped
+        to a different model is treated as available — mirroring ``select`` so a
+        gpt-5.5-scoped block on a shared credential doesn't hide a sibling model
+        (e.g. Spark) from callers that gate a scoped ``select`` on this check.
+        """
+        return bool(self._available_entries(requested_model=requested_model))
 
     def entries(self) -> List[PooledCredential]:
         return list(self._entries)

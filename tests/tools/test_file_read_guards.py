@@ -275,6 +275,21 @@ class TestCharacterCountGuard(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertTrue(result["content"])  # not empty
         self.assertEqual(result["next_offset"], 2)  # advanced past line 1
+        # The hint must disclose that the line was clamped mid-line and its
+        # remainder is unreachable via offset pagination.
+        self.assertIn("clamped mid-line", result["hint"])
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    def test_multiline_truncation_hint_has_no_clamp_note(self, _mock_limit, mock_ops):
+        """Ordinary multi-line truncation must NOT carry the clamp note."""
+        big_content = "\n".join(f"{i}|" + "z" * 98 for i in range(1, 51))
+        mock_ops.return_value = _make_fake_ops(
+            content=big_content, total_lines=50, file_size=len(big_content),
+        )
+        result = json.loads(read_file_tool("/tmp/manylines.txt", task_id="manylines"))
+        self.assertTrue(result["truncated"])
+        self.assertNotIn("clamped mid-line", result["hint"])
 
     @patch("tools.file_tools._get_file_ops")
     def test_small_read_not_truncated(self, mock_ops):

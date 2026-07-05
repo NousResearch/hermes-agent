@@ -29,11 +29,13 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_ALIAS_CACHE_KEY: Optional[Tuple[str, Tuple[Tuple[str, int, int], ...]]] = None
+_ALIAS_CACHE_VALUE: Dict[str, str] = {}
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
@@ -503,35 +505,95 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
     so ``profile list``/``show`` surface the command the user actually typed.
     Results are sorted for deterministic output when several aliases match.
     """
-    wrapper_dir = _get_wrapper_dir()
-    if not wrapper_dir.is_dir():
-        return None
     canon = normalize_profile_name(profile_name)
-    is_windows = sys.platform == "win32"
-    needle = f"hermes -p {canon}"
+    return _aliases_by_profile().get(canon)
 
-    custom: Optional[str] = None
-    profile_named: Optional[str] = None
+
+def _alias_cache_key(wrapper_dir: Path) -> Tuple[str, Tuple[Tuple[str, int, int], ...]]:
+    is_windows = sys.platform == "win32"
+    entries: List[Tuple[str, int, int]] = []
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
             continue
-        # Only our own wrappers are named with the alias and (on Windows) .bat.
         if is_windows and entry.suffix != ".bat":
             continue
         if not is_windows and entry.suffix:
             continue
         try:
-            content = entry.read_text()
-        except (OSError, UnicodeDecodeError):
+            stat_result = entry.stat()
+        except OSError:
             continue
-        if needle not in content:
+        entries.append((entry.name, stat_result.st_mtime_ns, stat_result.st_size))
+    return str(wrapper_dir), tuple(entries)
+
+
+def _read_wrapper_probe(entry: Path) -> Optional[str]:
+    try:
+        with entry.open("rb") as f:
+            content = f.read(8192)
+    except OSError:
+        return None
+    return content.decode("utf-8", errors="ignore")
+
+
+def _aliases_by_profile() -> Dict[str, str]:
+    """Return ``{profile_name: alias_name}`` by scanning wrapper scripts once.
+
+    ``list_profiles()`` renders every profile row, so calling
+    ``find_alias_for_profile`` per profile re-read the same wrapper directory
+    once for each profile. On a real desktop install that cost several seconds
+    at startup. The cache makes repeated desktop refreshes cheap while the
+    wrapper directory snapshot keeps alias edits visible. Keep the same display
+    rule here: a custom alias wins over a profile-named wrapper, and sorted
+    wrappers make ties deterministic.
+    """
+    global _ALIAS_CACHE_KEY, _ALIAS_CACHE_VALUE
+
+    wrapper_dir = _get_wrapper_dir()
+    if not wrapper_dir.is_dir():
+        _ALIAS_CACHE_KEY = None
+        _ALIAS_CACHE_VALUE = {}
+        return {}
+
+    cache_key = _alias_cache_key(wrapper_dir)
+    if cache_key == _ALIAS_CACHE_KEY:
+        return dict(_ALIAS_CACHE_VALUE)
+
+    is_windows = sys.platform == "win32"
+    custom: Dict[str, str] = {}
+    profile_named: Dict[str, str] = {}
+
+    for entry in sorted(wrapper_dir.iterdir()):
+        if not entry.is_file():
             continue
+        if is_windows and entry.suffix != ".bat":
+            continue
+        if not is_windows and entry.suffix:
+            continue
+
+        content = _read_wrapper_probe(entry)
+        if content is None:
+            continue
+
+        if "hermes" not in content.lower():
+            continue
+
+        match = re.search(r"(?:^|\s)-p\s+([a-z0-9][a-z0-9_-]{0,63}|default)\b", content)
+        if not match:
+            continue
+
+        profile = normalize_profile_name(match.group(1))
         alias = entry.stem if is_windows else entry.name
-        if alias == canon:
-            profile_named = alias
-        elif custom is None:
-            custom = alias
-    return custom if custom is not None else profile_named
+
+        if alias == profile:
+            profile_named.setdefault(profile, alias)
+        else:
+            custom.setdefault(profile, alias)
+
+    aliases = {**profile_named, **custom}
+    _ALIAS_CACHE_KEY = cache_key
+    _ALIAS_CACHE_VALUE = aliases
+    return dict(aliases)
 
 
 # ---------------------------------------------------------------------------
@@ -721,6 +783,7 @@ def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []
     wrapper_dir = _get_wrapper_dir()
+    aliases_by_profile = _aliases_by_profile()
 
     # Default profile
     default_home = _get_default_hermes_home()
@@ -756,7 +819,7 @@ def list_profiles() -> List[ProfileInfo]:
             if not _PROFILE_ID_RE.match(name):
                 continue
             model, provider = _read_config_model(entry)
-            alias_name = find_alias_for_profile(name)
+            alias_name = aliases_by_profile.get(name)
             if alias_name:
                 is_windows = sys.platform == "win32"
                 alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)

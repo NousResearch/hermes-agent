@@ -1426,6 +1426,8 @@ class APIServerAdapter(BasePlatformAdapter):
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
         )
+        if gateway_user_id:
+            agent._user_id = gateway_user_id
         return agent
 
     # ------------------------------------------------------------------

@@ -5,7 +5,7 @@ import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-term
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import { translateNow } from '@/i18n'
-import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
+import { type GatewayEventPayload, isSessionBusyMessage, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
@@ -585,6 +585,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
+        const isBusyBounce = isSessionBusyMessage(errorMessage)
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
 
         // A turn that errors out has also ended — drop any open blocking prompt
@@ -603,16 +604,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           flashPetActivity({ error: true })
         }
 
-        dispatchNativeNotification({
-          body: errorMessage,
-          kind: 'turnError',
-          sessionId,
-          title: translateNow('notifications.native.turnErrorTitle')
-        })
+        if (!isBusyBounce) {
+          dispatchNativeNotification({
+            body: errorMessage,
+            kind: 'turnError',
+            sessionId,
+            title: translateNow('notifications.native.turnErrorTitle')
+          })
+        }
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
-        } else {
+        } else if (!isBusyBounce) {
           // Toast globally, not just when the failing thread is focused: a
           // turn-ending error (e.g. out of funds) blocks every thread, so the
           // inline error alone is too easy to miss. The stable id collapses the
@@ -626,8 +629,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (sessionId) {
-          flushQueuedDeltas(sessionId)
-          failAssistantMessage(sessionId, errorMessage)
+          if (isBusyBounce) {
+            updateSessionState(sessionId, state => ({
+              ...state,
+              messages: state.messages.filter(message => !isSessionBusyMessage(message.error)),
+              streamId: null,
+              pendingBranchGroup: null,
+              awaitingResponse: false,
+              busy: false,
+              needsInput: false,
+              turnStartedAt: null
+            }))
+          } else {
+            flushQueuedDeltas(sessionId)
+            failAssistantMessage(sessionId, errorMessage)
+          }
         }
 
         if (isActiveEvent) {

@@ -7,9 +7,9 @@ import { clearComposerAttachments, type ComposerAttachment } from '@/store/compo
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $queuedPromptsBySession,
+  batchQueuedPrompts,
   enqueueQueuedPrompt,
   markQueuedPromptAutoDrain,
-  markQueuedPromptsAutoDrain,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
@@ -278,7 +278,7 @@ export function useComposerQueue({
     }
 
     queuedPrompts.forEach(entry => drainFailuresRef.current.delete(entry.id))
-    markQueuedPromptsAutoDrain(activeQueueSessionKey)
+    const batch = batchQueuedPrompts(activeQueueSessionKey)
 
     if (sendBlocked) {
       triggerHaptic('selection')
@@ -290,8 +290,8 @@ export function useComposerQueue({
       return true
     }
 
-    return drainNextQueued()
-  }, [activeQueueSessionKey, busy, drainNextQueued, onCancel, queueEdit, queuedPrompts, sendBlocked])
+    return batch ? runDrain(entries => entries.find(entry => entry.id === batch.id)) : false
+  }, [activeQueueSessionKey, busy, onCancel, queueEdit, queuedPrompts, runDrain, sendBlocked])
 
   const implicitQueueDrainAllowed = useCallback(() => {
     const entry = pickDrainHead(queuedPrompts)

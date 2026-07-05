@@ -203,6 +203,41 @@ export const markQueuedPromptsAutoDrain = (key: string | null | undefined): bool
   return true
 }
 
+export const batchQueuedPrompts = (key: string | null | undefined): null | QueuedPromptEntry => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return null
+  }
+
+  const queue = queueFor(sid)
+
+  if (queue.length === 0) {
+    return null
+  }
+
+  const [head] = queue
+
+  if (queue.length === 1) {
+    const batched = head!.autoDrain ? head! : { ...head!, autoDrain: true }
+    writeSession(sid, [batched])
+
+    return batched
+  }
+
+  const batched: QueuedPromptEntry = {
+    id: head!.id,
+    text: queue.map(entry => entry.text.trim()).filter(Boolean).join('\n\n'),
+    attachments: queue.flatMap(entry => cloneAttachments(entry.attachments)),
+    queuedAt: head!.queuedAt,
+    autoDrain: true
+  }
+
+  writeSession(sid, [batched])
+
+  return batched
+}
+
 export const markQueuedPromptAutoDrain = (key: string | null | undefined, id: string): boolean => {
   const sid = sidOf(key)
 

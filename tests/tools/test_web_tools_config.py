@@ -557,6 +557,14 @@ class TestCheckWebApiKey:
             os.environ.pop(key, None)
         for p in self._managed_patchers:
             p.stop()
+        # Reset the web search registry to prevent leaked providers from
+        # other test classes (e.g. TestNonBuiltinProviderAvailability)
+        # from polluting check_web_api_key() results.
+        try:
+            from agent.web_search_registry import _reset_for_tests
+            _reset_for_tests()
+        except ImportError:
+            pass
 
     def test_parallel_key_only(self):
         with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):

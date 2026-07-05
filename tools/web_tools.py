@@ -1122,10 +1122,30 @@ def check_web_api_key() -> bool:
     registry.
     """
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured and _is_backend_available(configured):
-        return True
-    # Any built-in backend with credentials present. This is a boolean OR, so
-    # unlike _get_backend() the probe order is irrelevant.
+    if configured:
+        # When a specific backend is configured, only check that backend.
+        # Do NOT fall through to all legacy backends — the user explicitly
+        # chose this backend; if it's unavailable, the tools should stay
+        # gated (regression from the failover PR, issue #59013).
+        if configured in _LEGACY_WEB_BACKENDS:
+            return _is_backend_available(configured)
+        # Non-legacy name: delegate to the registry.
+        try:
+            from agent.web_search_registry import (
+                get_active_search_provider,
+                get_active_extract_provider,
+            )
+
+            return (
+                get_active_search_provider() is not None
+                or get_active_extract_provider() is not None
+            )
+        except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+            logger.debug("web provider registry availability check failed: %s", exc)
+            return False
+    # No specific backend configured: check any built-in backend with
+    # credentials present. This is a boolean OR, so unlike _get_backend()
+    # the probe order is irrelevant.
     if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
         return True
     # Any plugin-registered provider the registry considers active for either

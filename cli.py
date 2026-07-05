@@ -3310,6 +3310,76 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+
+        # ── Resolve model_aliases for the main model path ─────────────────
+        # If config ``model.default`` names a configured ``model_aliases``
+        # entry (e.g. ``smart-cheap``), expand it to the alias's concrete
+        # provider/model/base_url and merge its fallback_chain into
+        # ``fallback_providers``.  This unifies the main model path with the
+        # same alias resolution already used by auxiliary tasks
+        # (``auxiliary_client._model_alias_entry``) and delegate_task
+        # (``delegate_tool._delegation_model_alias_entry``).
+        #
+        # Without this, profiles whose ``model.default`` is an alias name
+        # (rather than a concrete model string) send the literal alias name
+        # to the provider API and fail with 400 "No models provided".
+        if self.model and isinstance(_model_config, dict):
+            _aliases_cfg = CLI_CONFIG.get("model_aliases")
+            if isinstance(_aliases_cfg, dict):
+                _alias_lookup = str(self.model).strip().lower()
+                _resolved_alias = None
+                for _alias_name, _alias_entry in _aliases_cfg.items():
+                    if (
+                        str(_alias_name or "").strip().lower() == _alias_lookup
+                        and isinstance(_alias_entry, dict)
+                    ):
+                        _a_model = str(_alias_entry.get("model") or "").strip()
+                        _a_provider = str(_alias_entry.get("provider") or "").strip()
+                        if _a_model and _a_provider:
+                            _resolved_alias = _alias_entry
+                            break
+                if _resolved_alias is not None:
+                    self.model = str(_resolved_alias.get("model")).strip()
+                    # Populate model config fields so the provider/base_url
+                    # resolution below picks up the alias's routing.
+                    if not _model_config.get("provider"):
+                        _model_config["provider"] = str(_resolved_alias.get("provider")).strip()
+                    _alias_base_url = str(_resolved_alias.get("base_url") or "").strip()
+                    if _alias_base_url and not _model_config.get("base_url"):
+                        _model_config["base_url"] = _alias_base_url
+                    # Merge the alias fallback_chain into fallback_providers
+                    # (deduplicated) so get_fallback_chain(CLI_CONFIG) at line
+                    # ~3461 picks it up.
+                    _alias_fb = _resolved_alias.get("fallback_chain")
+                    if isinstance(_alias_fb, list) and _alias_fb:
+                        _existing_fp = CLI_CONFIG.get("fallback_providers")
+                        if not isinstance(_existing_fp, list):
+                            _existing_fp = []
+                        _fp_seen = set()
+                        for _fp_e in _existing_fp:
+                            if isinstance(_fp_e, dict):
+                                _fp_seen.add((
+                                    str(_fp_e.get("provider") or "").strip().lower(),
+                                    str(_fp_e.get("model") or "").strip().lower(),
+                                    str(_fp_e.get("base_url") or "").strip().rstrip("/").lower(),
+                                ))
+                        for _fb_entry in _alias_fb:
+                            if not isinstance(_fb_entry, dict):
+                                continue
+                            _fb_p = str(_fb_entry.get("provider") or "").strip()
+                            _fb_m = str(_fb_entry.get("model") or "").strip()
+                            if not _fb_p or not _fb_m:
+                                continue
+                            _fb_identity = (
+                                _fb_p.lower(),
+                                _fb_m.lower(),
+                                str(_fb_entry.get("base_url") or "").strip().rstrip("/").lower(),
+                            )
+                            if _fb_identity not in _fp_seen:
+                                _fp_seen.add(_fb_identity)
+                                _existing_fp.append(dict(_fb_entry))
+                        CLI_CONFIG["fallback_providers"] = _existing_fp
+
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")
         if _env_mt:

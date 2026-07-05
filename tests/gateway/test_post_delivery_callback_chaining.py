@@ -13,11 +13,18 @@ async callbacks chained behind it.
 """
 import asyncio
 import inspect
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+)
+from gateway.session import SessionSource
 
 
 class _MinAdapter(BasePlatformAdapter):
@@ -171,3 +178,69 @@ class TestPostDeliveryCallbackAsyncChaining:
         cb = adapter.pop_post_delivery_callback("s")
         _invoke(cb)
         assert fired == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_callback_generation_snapshotted_before_pending_handoff(adapter):
+    """Queued follow-ups must not steal the completed turn's callback.
+
+    When a user sends the next message before the current answer has finished
+    delivering, ``_process_message_background`` sends the current response, then
+    hands the queued follow-up to a fresh task before its ``finally`` block fires
+    post-delivery callbacks.  The follow-up reuses the same interrupt Event and
+    binds a new run generation to it.  The completed turn must still pop the
+    callback registered for its own generation (e.g. the post-task New button),
+    not look at the newer generation written by the follow-up.
+    """
+    session_key = "agent:main:telegram:group:-1001:2"
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="forum",
+        thread_id="2",
+        user_id="42",
+    )
+    first = MessageEvent(
+        text="first",
+        message_id="m1",
+        source=source,
+        message_type=MessageType.TEXT,
+    )
+    followup = MessageEvent(
+        text="followup",
+        message_id="m2",
+        source=source,
+        message_type=MessageType.TEXT,
+    )
+    fired: list[str] = []
+    calls = 0
+
+    async def _handler(event):
+        nonlocal calls
+        calls += 1
+        active = adapter._active_sessions[session_key]
+        if calls == 1:
+            active._hermes_run_generation = 1
+            adapter.register_post_delivery_callback(
+                session_key,
+                lambda: fired.append("new-button"),
+                generation=1,
+            )
+            adapter._pending_messages[session_key] = followup
+            return "first response"
+        active._hermes_run_generation = 2
+        return "followup response"
+
+    adapter.set_message_handler(_handler)
+    adapter._start_session_processing(first, session_key)
+
+    with patch.object(adapter, "_keep_typing", new=AsyncMock()), patch.object(
+        adapter,
+        "_send_with_retry",
+        new=AsyncMock(return_value=SendResult(success=True, message_id="sent")),
+    ):
+        await adapter._process_message_background(first, session_key)
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+    assert fired == ["new-button"]

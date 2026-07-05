@@ -4826,6 +4826,12 @@ class BasePlatformAdapter(ABC):
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        # Set after the gateway message handler returns, once it has registered
+        # any per-run post-delivery callbacks.  Do not wait until ``finally`` to
+        # read this from ``interrupt_event``: a queued follow-up may be handed to
+        # a fresh task before callbacks fire, and that task reuses the same Event
+        # while binding a newer run generation to it.
+        _callback_generation = None
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4873,6 +4879,15 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
+            # The handler is responsible for registering callbacks and binding
+            # the run generation to this event. Snapshot it now, before the
+            # pending-message handoff below can spawn another run that mutates
+            # the same interrupt Event.
+            _callback_generation = getattr(
+                interrupt_event,
+                "_hermes_run_generation",
+                None,
+            )
             is_ephemeral_response = isinstance(response, EphemeralReply)
 
             # Slash-command handlers may return an EphemeralReply sentinel to
@@ -5266,19 +5281,16 @@ class BasePlatformAdapter(ABC):
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #
-            # Snapshot the callback generation HERE (after the agent has run),
-            # not at the top of this task.  _hermes_run_generation is set on
-            # the interrupt event by GatewayRunner._bind_adapter_run_generation
-            # during _handle_message_with_agent — which happens DURING the
-            # self._message_handler(event) await above.  Snapshotting earlier
-            # always captured None, which bypassed the generation-ownership
-            # check in pop_post_delivery_callback and let stale runs fire a
-            # fresher run's callbacks.
-            _callback_generation = getattr(
-                interrupt_event,
-                "_hermes_run_generation",
-                None,
-            )
+            # Use the generation snapshotted immediately after the message
+            # handler returned.  If no handler result was obtained (exception,
+            # cancellation), fall back to the current event marker so legacy
+            # callbacks without a captured generation still have a chance to run.
+            if _callback_generation is None:
+                _callback_generation = getattr(
+                    interrupt_event,
+                    "_hermes_run_generation",
+                    None,
+                )
             if hasattr(self, "pop_post_delivery_callback"):
                 _post_cb = self.pop_post_delivery_callback(
                     session_key,

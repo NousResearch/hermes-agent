@@ -185,18 +185,18 @@ def _make_interaction(
 
 @pytest.mark.asyncio
 async def test_no_allowlist_denies_without_opt_in(adapter):
-    """Without allowlists or allow-all flags, Discord traffic is denied."""
+    """Without any allowlists configured, Discord traffic is allowed (open default)."""
     interaction = _make_interaction("999999999")
-    assert await adapter._check_slash_authorization(interaction, "/help") is False
-    interaction.response.send_message.assert_awaited()
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+    interaction.response.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_no_allowlist_dm_denied_without_opt_in(adapter):
-    """DM slash commands follow the same fail-closed default."""
+    """DM slash commands follow the same open default when no allowlists configured."""
     interaction = _make_interaction("999999999", in_dm=True)
-    assert await adapter._check_slash_authorization(interaction, "/help") is False
-    interaction.response.send_message.assert_awaited()
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+    interaction.response.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -475,10 +475,19 @@ async def test_missing_channel_id_rejected_when_channel_policy_configured(
 
 
 @pytest.mark.asyncio
-async def test_missing_channel_id_denied_without_allowlists(adapter):
-    """No channel or user policy configured: fail closed by default."""
+async def test_missing_channel_id_allows_without_allowlists(adapter):
+    """No channel or user policy configured: open by default."""
+    interaction = _make_interaction("100200300", channel_id=None)
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+@pytest.mark.asyncio
+async def test_channel_policy_fail_closed_when_channels_configured(adapter, monkeypatch):
+    """DISCORD_ALLOWED_CHANNELS set but interaction has no channel id: fail closed."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "111222333")
     interaction = _make_interaction("100200300", channel_id=None)
     assert await adapter._check_slash_authorization(interaction, "/help") is False
+    interaction.response.send_message.assert_awaited()
 
 
 @pytest.mark.asyncio

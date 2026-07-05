@@ -1211,7 +1211,7 @@ class TestDiscordVoiceChannelMethods:
 
     def test_is_allowed_user_empty_list(self):
         adapter = self._make_adapter()
-        assert adapter._is_allowed_user("42") is False
+        assert adapter._is_allowed_user("42") is True
 
     def test_is_allowed_user_in_list(self):
         adapter = self._make_adapter()

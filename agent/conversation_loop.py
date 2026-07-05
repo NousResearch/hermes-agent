@@ -4458,18 +4458,19 @@ def run_conversation(
                             )
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
+                            _stall_no_tool_msg = (
+                                "Model stopped after an action preamble with no "
+                                "tool call; configured stall retry also produced "
+                                "no tool call."
+                            )
                             return {
-                                "final_response": None,
+                                "final_response": _stall_no_tool_msg,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
                                 "failed": True,
-                                "error": (
-                                    "Model stopped after an action preamble with no "
-                                    "tool call; configured stall retry also produced "
-                                    "no tool call."
-                                ),
+                                "error": _stall_no_tool_msg,
                                 "failure_subclass": "stall_retry_failed_no_tool_call",
                             }
                 except Exception as exc:
@@ -4481,14 +4482,15 @@ def run_conversation(
                     )
                     agent._cleanup_task_resources(effective_task_id)
                     agent._persist_session(messages, conversation_history)
+                    _stall_exc_msg = f"Stall retry failed before recovery: {exc}"
                     return {
-                        "final_response": None,
+                        "final_response": _stall_exc_msg,
                         "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,
                         "partial": True,
                         "failed": True,
-                        "error": f"Stall retry failed before recovery: {exc}",
+                        "error": _stall_exc_msg,
                         "failure_subclass": "stall_retry_exception",
                     }
             

@@ -62,6 +62,26 @@ Every installed skill is automatically available as a slash command:
 /excalidraw
 ```
 
+### Stacking multiple skills in one command
+
+You can invoke several skills in a single message by chaining slash commands
+at the start — every leading `/skill` token (up to 5) is loaded, and the rest
+becomes your instruction:
+
+```bash
+/github-pr-workflow /test-driven-development fix issue #123 and open a PR
+```
+
+Parsing stops at the first token that isn't an installed skill, so arguments
+that happen to start with `/` (like file paths) are never swallowed:
+
+```bash
+/ocr-and-documents /tmp/scan.pdf extract the tables   # loads one skill; /tmp/scan.pdf is the argument
+```
+
+For combinations you use repeatedly, prefer a [skill bundle](#skill-bundles) —
+same effect under one short command.
+
 The bundled `plan` skill is a good example. Running `/plan [request]` loads the skill's instructions, telling Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.
 
 You can also interact with skills through natural conversation:

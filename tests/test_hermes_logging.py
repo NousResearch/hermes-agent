@@ -590,6 +590,94 @@ class TestRecordFactory:
         assert openai_key not in output
         assert "..." in output
 
+    def test_plain_formatter_redacts_secret_assembled_by_formatting(self):
+        """Format-time token assembly is redacted before plain handlers emit."""
+        secret = "sk-" + "d" * 32
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("_test_plain_split_token_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            logger.info("token %s%s", "sk-", "d" * 32)
+            logger.info("auth token sk-%s", "d" * 32)
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        output = stream.getvalue()
+        assert "token" in output
+        assert secret not in output
+        assert "..." in output
+
+    def test_plain_formatter_redacts_non_string_message(self):
+        """Object messages are stringified and redacted for plain handlers."""
+        secret = "sk-" + "e" * 32
+
+        class SecretMessage:
+            def __str__(self):
+                return f"object carried {secret}"
+
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("_test_plain_object_message_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            logger.info(SecretMessage())
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        output = stream.getvalue()
+        assert "object carried" in output
+        assert secret not in output
+        assert "..." in output
+
+    def test_plain_formatter_redacts_exception_traceback(self):
+        """Exception text is pre-redacted before plain handlers format it."""
+        secret = "sk-" + "f" * 32
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("_test_plain_exception_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.ERROR)
+        logger.addHandler(handler)
+        try:
+            try:
+                raise RuntimeError(f"provider returned {secret}")
+            except RuntimeError:
+                logger.exception("provider request failed")
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        output = stream.getvalue()
+        assert "provider request failed" in output
+        assert "RuntimeError" in output
+        assert secret not in output
+        assert "..." in output
+
 
 class TestComponentFilter:
     """Unit tests for _ComponentFilter."""

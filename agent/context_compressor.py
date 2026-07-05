@@ -3015,6 +3015,25 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Port of Kilo-Org/kilocode#9434.
         compressed = _strip_historical_media(compressed)
 
+        # Enforced invariant: at least one user-role message must exist in the
+        # compressed list.  After sanitization the tail can end up with zero
+        # user turns (e.g. [system, summary(assistant), tool_result, assistant])
+        # which breaks any stock chat template that expects a user turn to
+        # follow the system prompt.  Inject a minimal continuation prompt so
+        # the model always has a user-role anchor to respond to.  Fixes the
+        # "no-user-query" template crash (Qwen3.6 hard-raise, vLLM 400).
+        has_user = any(m.get("role") == "user" for m in compressed)
+        if not has_user:
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression produced zero user-role messages — injecting "
+                    "continuation prompt to preserve template compatibility",
+                )
+            compressed.append({
+                "role": "user",
+                "content": "Please continue.",
+            })
+
         new_estimate = estimate_messages_tokens_rough(compressed)
         saved_estimate = display_tokens - new_estimate
 

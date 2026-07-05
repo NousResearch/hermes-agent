@@ -20,6 +20,59 @@ relay_call = load_module("relay_call", "relay-call.py")
 gate_run = load_module("gate_run", "gate-run.py")
 
 
+def test_load_registry_example_has_expected_ai_metadata():
+    reg = relay_call.load_registry(Path("/tmp/no-local-registry"))
+
+    assert len(reg) == 10
+    assert reg["opus"]["roles"] == ["brain"]
+    assert reg["fable"]["roles"] == ["brain"]
+    assert reg["codex"]["vendor"] == "openai"
+
+
+def test_registry_enabled_returns_only_enabled_tools():
+    reg = relay_call.load_registry(Path("/tmp/no-local-registry"))
+
+    enabled = relay_call.registry_enabled(reg)
+
+    assert "grok" in enabled
+    assert "qwen" not in enabled
+    assert "glm" not in enabled
+    assert "deepseek" not in enabled
+    assert "sonnet" not in enabled
+
+
+def test_registry_vendor_returns_vendor_or_none():
+    reg = relay_call.load_registry(Path("/tmp/no-local-registry"))
+
+    assert relay_call.registry_vendor(reg, "grok") == "xai"
+    assert relay_call.registry_vendor(reg, "missing") is None
+
+
+def test_registry_normalize_single_string_role_and_quoted_enabled():
+    # GPT-5 fix: กันข้อมูลเพี้ยนเงียบ
+    reg = relay_call._normalize_registry_ai({
+        "toolA": {"roles": "coder", "good_for": "backend", "enabled": "true"},
+        "toolB": {"roles": ["coder", "reviewer"], "enabled": "false"},
+    })
+    # ค่าเดี่ยวถูกห่อเป็น list (ไม่ถูกวนตัวอักษรทีละตัว)
+    assert reg["toolA"]["roles"] == ["coder"]
+    assert reg["toolA"]["good_for"] == ["backend"]
+    # enabled มี quote ต้องกลายเป็น bool จริง → registry_enabled นับ toolA แต่ไม่นับ toolB
+    assert reg["toolA"]["enabled"] is True
+    assert reg["toolB"]["enabled"] is False
+    enabled = relay_call.registry_enabled(reg)
+    assert "toolA" in enabled and "toolB" not in enabled
+
+
+def test_load_registry_returns_empty_when_no_file_exists(tmp_path):
+    original_script_dir = relay_call.SCRIPT_DIR
+    relay_call.SCRIPT_DIR = tmp_path / "missing-script-dir"
+    try:
+        assert relay_call.load_registry(tmp_path / "project") == {}
+    finally:
+        relay_call.SCRIPT_DIR = original_script_dir
+
+
 def test_classify_exit0_long_stdout_mentions_login_is_ok():
     stdout = "หน้า login ต้องแสดงข้อความ please login และ credential invalid ให้ผู้ใช้เห็นอย่างถูกต้อง"
 

@@ -3,6 +3,23 @@
 This plugin ships bundled with Hermes but is **opt-in** — it only loads when
 you explicitly enable it.
 
+> **⚠️ WARNING: SDK dependency can silently disappear after updates**
+>
+> The `langfuse` Python SDK (`pip install langfuse`) is **required** for tracing
+> to work. If the SDK is missing from the active Hermes environment, tracing
+> silently stops — the plugin fails open and produces no output or errors.
+>
+> After a Hermes update (`pip install --upgrade hermes-agent`), a `venv` refresh,
+> or a reinstall, the `langfuse` SDK may be removed from the environment, causing
+> tracing to silently stop. Always reinstall the SDK after such operations:
+>
+> ```bash
+> pip install langfuse
+> ```
+>
+> The plugin logs a one-time warning at startup if the SDK is missing; check
+> your logs if you suspect tracing has stopped.
+
 ## Enable
 
 Pick one:
@@ -27,7 +44,7 @@ HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or your self-hosted URL
 ```
 
 Without the SDK or credentials the hooks no-op silently — the plugin fails
-open.
+open. See the **⚠️ warning above** about the SDK dependency.
 
 ## Verify
 

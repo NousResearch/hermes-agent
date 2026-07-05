@@ -1,0 +1,5 @@
+# Required: Langfuse Python SDK for observability tracing.
+# If this SDK is missing from the Hermes environment, tracing silently stops.
+# Reinstall after any Hermes update or venv refresh:
+#   pip install langfuse
+langfuse>=2.36,<3.0

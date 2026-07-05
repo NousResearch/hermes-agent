@@ -162,6 +162,12 @@ def _get_langfuse() -> Optional[Langfuse]:
         return _LANGFUSE_CLIENT
 
     if Langfuse is None:
+        logger.warning(
+            "Langfuse plugin: the 'langfuse' SDK is not installed — tracing will be "
+            "silently disabled. Install it with: pip install langfuse. "
+            "After a Hermes update or venv refresh the SDK may be removed; reinstall "
+            "it to restore tracing."
+        )
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 

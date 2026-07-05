@@ -117,6 +117,17 @@ def _preprocess_skill(content: str, skill_dir, session_id, debug_msg: str, *args
         return preprocess_skill_content(content, skill_dir, session_id=session_id)
     except Exception:
         logger.debug(debug_msg, *args, exc_info=True)
+        # Surface a warning so the agent knows template variables
+        # and inline shell snippets were NOT resolved. Without this
+        # the model may treat ${HERMES_SKILL_DIR} as a literal path.
+        if any(marker in content for marker in ("${", "!`")):
+            return (
+                "[WARNING: Skill preprocessing failed — template "
+                "variables (e.g. ${HERMES_SKILL_DIR}) and inline "
+                "shell snippets (!`cmd`) in this skill were NOT "
+                "resolved. Treat them as literal text.]\n\n"
+                + content
+            )
         return content
 
 

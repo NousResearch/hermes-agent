@@ -1038,6 +1038,44 @@ class TestConnectDisconnect(unittest.TestCase):
             result = asyncio.run(adapter.connect())
             self.assertFalse(result)
 
+    def test_connect_startup_checks_do_not_block_event_loop(self):
+        """Slow IMAP/SMTP startup probes should not block other asyncio tasks."""
+        import asyncio
+        import time
+
+        adapter = self._make_adapter()
+
+        def slow_imap_probe():
+            time.sleep(0.05)
+            return 0
+
+        def slow_smtp_probe():
+            time.sleep(0.05)
+
+        adapter._test_imap_startup_connection = slow_imap_probe
+        adapter._test_smtp_startup_connection = slow_smtp_probe
+
+        async def exercise():
+            ticks = 0
+
+            async def ticker():
+                nonlocal ticks
+                deadline = asyncio.get_running_loop().time() + 0.08
+                while asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(0.005)
+                    ticks += 1
+
+            result, _ = await asyncio.gather(adapter.connect(), ticker())
+            return result, ticks
+
+        result, ticks = asyncio.run(exercise())
+
+        self.assertTrue(result)
+        self.assertGreater(ticks, 2)
+        adapter._running = False
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+
     def test_disconnect_cancels_poll(self):
         """disconnect() should cancel the polling task."""
         import asyncio

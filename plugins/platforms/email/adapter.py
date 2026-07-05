@@ -548,6 +548,49 @@ class EmailAdapter(BasePlatformAdapter):
             # Retry with IPv4 only.
             return _connect(ipv4_only=True)
 
+    def _test_imap_startup_connection(self) -> int:
+        """Validate IMAP credentials and seed seen UIDs.
+
+        This performs blocking socket operations and must only be called from an
+        executor thread. Keeping it synchronous lets the poll path reuse the
+        same stdlib IMAP APIs while the async ``connect()`` method keeps the
+        gateway event loop responsive.
+        """
+        imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+        try:
+            imap.login(self._address, self._password)
+            _send_imap_id(imap)
+            # Mark all existing messages as seen so we only process new ones
+            imap.select("INBOX")
+            status, data = imap.uid("search", None, "ALL")
+            if status == "OK" and data and data[0]:
+                for uid in data[0].split():
+                    self._seen_uids.add(uid)
+            # Keep only the most recent UIDs to prevent unbounded growth
+            self._trim_seen_uids()
+            return len(self._seen_uids)
+        finally:
+            try:
+                imap.logout()
+            except Exception:
+                logger.debug("[Email] IMAP logout failed during startup test", exc_info=True)
+
+    def _test_smtp_startup_connection(self) -> None:
+        """Validate SMTP credentials.
+
+        This performs blocking socket operations and must only be called from an
+        executor thread; otherwise an unreachable SMTP host can block Discord
+        heartbeats and every other asyncio platform in the gateway.
+        """
+        smtp = self._connect_smtp()
+        try:
+            smtp.login(self._address, self._password)
+        finally:
+            try:
+                smtp.quit()
+            except Exception:
+                logger.debug("[Email] SMTP quit failed during startup test", exc_info=True)
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         # Validate up front so a missing host surfaces as an actionable config
@@ -580,32 +623,24 @@ class EmailAdapter(BasePlatformAdapter):
             )
             return False
 
+        loop = asyncio.get_running_loop()
+
         try:
-            # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
-            _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
-            imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            # Test IMAP connection in a worker thread. IMAP4_SSL/login/select are
+            # blocking stdlib calls; running them on the event loop stalls other
+            # platforms during slow DNS/socket/provider timeouts.
+            skipped = await loop.run_in_executor(None, self._test_imap_startup_connection)
+            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", skipped)
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False
 
         try:
-            # Test SMTP connection
-            smtp = self._connect_smtp()
-            try:
-                smtp.login(self._address, self._password)
-            finally:
-                smtp.quit()
+            # Test SMTP connection in a worker thread for the same reason. The
+            # IPv4 fallback can legitimately spend multiple socket timeouts when
+            # a provider black-holes outbound SMTP ports; it must not block the
+            # gateway heartbeat loop.
+            await loop.run_in_executor(None, self._test_smtp_startup_connection)
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)

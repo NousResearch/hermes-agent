@@ -18,6 +18,7 @@ import time
 import tempfile
 import html as _html
 import re
+from urllib.parse import parse_qs, urlparse
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -7276,21 +7277,53 @@ class TelegramAdapter(BasePlatformAdapter):
             yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
             yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
 
-        def _text_link_user_id(entity: Any) -> Optional[int]:
-            url = str(getattr(entity, "url", "") or "")
-            match = re.fullmatch(r"tg://user\?id=(\d+)(?:[&#].*)?", url)
-            if not match:
-                return None
-            try:
-                return int(match.group(1))
-            except (TypeError, ValueError):
-                return None
+        def _text_link_targets_bot(entity: Any) -> bool:
+            """Return True when a hidden text_link points at this bot.
+
+            Telegram clients can encode a selected @bot call as a text_link
+            whose visible text is arbitrary (for example just "Эй?"). Bot API
+            links may target either the user id (tg://user?id=...) or a public
+            username (tg://resolve?domain=..., https://t.me/...).
+            """
+            url = str(getattr(entity, "url", "") or "").strip()
+            if not url:
+                return False
+            parsed = urlparse(url)
+            scheme = parsed.scheme.lower()
+            host = parsed.netloc.lower()
+            path = parsed.path.strip("/")
+            query = parse_qs(parsed.query)
+
+            def _query_first(name: str) -> str:
+                values = query.get(name) or []
+                return str(values[0]) if values else ""
+
+            if scheme == "tg":
+                if host == "user":
+                    try:
+                        return bot_id_int is not None and int(_query_first("id")) == bot_id_int
+                    except (TypeError, ValueError):
+                        return False
+                if host == "openmessage":
+                    try:
+                        return bot_id_int is not None and int(_query_first("user_id")) == bot_id_int
+                    except (TypeError, ValueError):
+                        return False
+                if host == "resolve":
+                    return bool(bot_username) and _query_first("domain").lstrip("@").lower() == bot_username
+                return False
+
+            if scheme in {"http", "https"} and host in {"t.me", "telegram.me", "telegram.dog"}:
+                return bool(bot_username) and path.split("/", 1)[0].lstrip("@").lower() == bot_username
+            return False
 
         # Telegram parses mentions server-side and emits MessageEntity objects
         # (type=mention for @username, type=text_mention for @FirstName targeting
         # a user without a public username). Some clients/operators can also
-        # produce a hidden user mention as type=text_link with a tg://user?id=...
-        # URL, whose visible text can be arbitrary (for example just "Эй?").
+        # produce a hidden user mention as type=text_link pointing at the bot
+        # id or username (for example tg://user?id=..., tg://resolve?domain=...,
+        # or https://t.me/...), whose visible text can be arbitrary (for example
+        # just "Эй?").
         # Those entities are authoritative: raw substring matches like
         # "foo@hermes_bot.example" are not mentions (bug #12545). Entities also
         # correctly handle @handles inside URLs, code blocks, and quoted text,
@@ -7307,10 +7340,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         return True
                 elif entity_type == "text_mention":
                     user = getattr(entity, "user", None)
-                    if user and getattr(user, "id", None) == bot_id:
+                    try:
+                        user_id_int = int(getattr(user, "id", "")) if user else None
+                    except (TypeError, ValueError):
+                        user_id_int = None
+                    if bot_id_int is not None and user_id_int == bot_id_int:
                         return True
                 elif entity_type == "text_link":
-                    if bot_id_int is not None and _text_link_user_id(entity) == bot_id_int:
+                    if _text_link_targets_bot(entity):
                         return True
                 elif entity_type == "bot_command" and expected:
                     # Telegram's official group-disambiguation form for slash

@@ -441,12 +441,26 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("hi @hermes_bot", entities=[_mention_entity("hi @hermes_bot")])) is True
     assert adapter._should_process_message(_group_message("replying", reply_to_bot=True)) is True
     hidden_text = "Эй?"
+    for hidden_link in (
+        "tg://user?id=999",
+        "tg://openmessage?user_id=999",
+        "tg://resolve?domain=hermes_bot",
+        "https://t.me/hermes_bot",
+        "https://telegram.me/hermes_bot?start=ignored",
+        "https://telegram.dog/hermes_bot",
+    ):
+        assert adapter._should_process_message(
+            _group_message(
+                hidden_text,
+                entities=[_text_link_entity(hidden_text, hidden_text, hidden_link)],
+            )
+        ) is True
     assert adapter._should_process_message(
         _group_message(
             hidden_text,
-            entities=[_text_link_entity(hidden_text, hidden_text, "tg://user?id=999")],
+            entities=[_text_link_entity(hidden_text, hidden_text, "tg://resolve?domain=other_bot")],
         )
-    ) is True
+    ) is False
     # Commands must also respect require_mention when it is enabled
     assert adapter._should_process_message(_group_message("/status"), is_command=True) is False
     # Telegram's group command menu sends ``/cmd@botname`` as a single

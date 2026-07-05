@@ -53,6 +53,7 @@ import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitle
 
 import { ChatDropOverlay } from './chat-drop-overlay'
 import { ChatSwapOverlay } from './chat-swap-overlay'
+import { SessionDragSwitcher } from './session-drag-switcher'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
 import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
@@ -439,7 +440,8 @@ export function ChatView({
 
       <PromptOverlays />
 
-      <ChatRuntimeBoundary
+      <SessionDragSwitcher>
+        <ChatRuntimeBoundary
         busy={busy}
         onCancel={onCancel}
         onEdit={onEdit}
@@ -521,6 +523,7 @@ export function ChatView({
           </Suspense>
         )}
       </ChatRuntimeBoundary>
+      </SessionDragSwitcher>
     </div>
   )
 }

@@ -77,6 +77,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # ARD — Agentic Resource Discovery (runtime search for skills, MCP servers, Spaces)
+    "ard_search", "ard_install_mcp", "ard_catalog",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -132,6 +134,12 @@ TOOLSETS = {
     "image_gen": {
         "description": "Creative generation tools (images)",
         "tools": ["image_generate"],
+        "includes": []
+    },
+
+    "ard": {
+        "description": "ARD (Agentic Resource Discovery) — runtime search for AI capabilities, MCP servers, skills, and agent Spaces from Hugging Face and federated registries",
+        "tools": ["ard_search", "ard_install_mcp", "ard_catalog"],
         "includes": []
     },
 

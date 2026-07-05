@@ -132,9 +132,14 @@ _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
 from plugins.platforms.google_chat.adapter import (  # noqa: E402
     GoogleChatAdapter,
+    _addon_event_to_card_click_payload,
+    _card_click_action_name,
+    _card_click_parameters,
     _is_google_owned_host,
     _mime_for_message_type,
     _redact_sensitive,
+    _synthesize_card_click_text,
+    card_spec_to_cards_v2,
     check_google_chat_requirements,
 )
 
@@ -252,6 +257,9 @@ class TestEnvConfigLoading:
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_CHAT_SUBSCRIPTION_NAME",
         "GOOGLE_CHAT_SUBSCRIPTION",
+        "GOOGLE_CHAT_HTTP_EVENTS_URL",
+        "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE",
+        "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL",
         "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
         "GOOGLE_APPLICATION_CREDENTIALS",
         "GOOGLE_CHAT_HOME_CHANNEL",
@@ -280,7 +288,34 @@ class TestEnvConfigLoading:
         cfg = load_gateway_config()
         assert _GC not in cfg.platforms
 
-
+    def test_http_events_enable_without_pubsub(self, monkeypatch):
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_HTTP_EVENTS_URL",
+            "https://example.test/google-chat/events",
+        )
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE",
+            "https://callback.example.test/events",
+        )
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL",
+            "chat-callback@example.iam.gserviceaccount.com",
+        )
+        cfg = load_gateway_config()
+        assert _GC in cfg.platforms
+        assert (
+            cfg.platforms[_GC].extra["http_events_url"]
+            == "https://example.test/google-chat/events"
+        )
+        assert (
+            cfg.platforms[_GC].extra["http_events_audience"]
+            == "https://callback.example.test/events"
+        )
+        assert (
+            cfg.platforms[_GC].extra["http_events_service_account_email"]
+            == "chat-callback@example.iam.gserviceaccount.com"
+        )
 
 
 # ===========================================================================
@@ -389,6 +424,334 @@ class TestValidateConfig:
         project, sub = a._validate_config()
         assert project == "test-project"
         assert sub == "projects/test-project/subscriptions/test-sub"
+
+    def test_http_events_mode_does_not_require_pubsub(self):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra["http_events_url"] = "https://example.test/google-chat/events"
+        a = GoogleChatAdapter(cfg)
+        project, sub = a._validate_config()
+        assert project == ""
+        assert sub is None
+
+    def test_full_subscription_can_infer_project(self):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra["subscription_name"] = "projects/inferred/subscriptions/sub"
+        a = GoogleChatAdapter(cfg)
+        project, sub = a._validate_config()
+        assert project == "inferred"
+        assert sub == "projects/inferred/subscriptions/sub"
+
+
+class TestHttpEventIngress:
+    def test_verify_http_event_request_accepts_expected_google_identity(self, monkeypatch):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update(
+            {
+                "http_events_url": "https://example.test/google-chat/events",
+                "http_events_service_account_email": (
+                    "chat-callback@example.iam.gserviceaccount.com"
+                ),
+            }
+        )
+        a = GoogleChatAdapter(cfg)
+
+        def fake_verify(token, audience):
+            assert token == "signed-token"
+            assert audience == "https://example.test/google-chat/events"
+            return {"email": "chat-callback@example.iam.gserviceaccount.com"}
+
+        monkeypatch.setattr(_gc_mod, "_verify_google_id_token", fake_verify)
+
+        assert a.verify_http_event_request("Bearer signed-token") == (True, "")
+
+    def test_verify_http_event_request_rejects_unexpected_identity(self, monkeypatch):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update(
+            {
+                "http_events_url": "https://example.test/google-chat/events",
+                "http_events_service_account_email": (
+                    "expected@example.iam.gserviceaccount.com"
+                ),
+            }
+        )
+        a = GoogleChatAdapter(cfg)
+        monkeypatch.setattr(
+            _gc_mod,
+            "_verify_google_id_token",
+            lambda _token, _audience: {
+                "email": "other@example.iam.gserviceaccount.com"
+            },
+        )
+
+        ok, code = a.verify_http_event_request("Bearer signed-token")
+
+        assert ok is False
+        assert code == "unexpected_google_bearer_identity"
+
+    def test_verify_http_event_request_requires_callback_identity_config(self):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra["http_events_url"] = "https://example.test/google-chat/events"
+        a = GoogleChatAdapter(cfg)
+
+        assert a.verify_http_event_request("Bearer signed-token") == (
+            False,
+            "google_chat_http_events_not_configured",
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_http_event_routes_message_payload(self, adapter):
+        envelope = _make_chat_envelope(text="hello from http")
+
+        result = await adapter.dispatch_http_event(envelope)
+
+        assert result == {}
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "hello from http"
+        assert event.source.chat_id == "spaces/S"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_http_event_ignores_bot_messages(self, adapter):
+        envelope = _make_chat_envelope(text="bot echo", sender_type="BOT")
+
+        assert await adapter.dispatch_http_event(envelope) == {}
+        adapter.handle_message.assert_not_awaited()
+
+
+class TestCardClickCallbacks:
+    def test_card_click_helpers_extract_action_and_parameters(self):
+        payload = {
+            "action": {
+                "function": "custom_action",
+                "parameters": [
+                    {"key": "choice", "value": "A"},
+                    {"name": "extra", "value": "B"},
+                ],
+            },
+            "common": {
+                "formInputs": {
+                    "field": {"stringInputs": {"value": ["x", "y"]}},
+                }
+            },
+        }
+
+        assert _card_click_action_name(payload) == "custom_action"
+        assert _card_click_parameters(payload)["choice"] == "A"
+        text = _synthesize_card_click_text(payload)
+        assert "Google Chat card click" in text
+        assert "action: custom_action" in text
+        assert "- field: x, y" in text
+
+    def test_addon_event_normalizes_button_payload(self):
+        payload = _addon_event_to_card_click_payload(
+            {
+                "commonEventObject": {
+                    "invokedFunction": "hermes_clarify",
+                    "parameters": {"clarify_id": "c1", "choice": "A"},
+                },
+                "chat": {
+                    "space": {"name": "spaces/S", "spaceType": "DIRECT_MESSAGE"},
+                    "messagePayload": {
+                        "message": {"name": "spaces/S/messages/M.M"}
+                    },
+                    "user": {"name": "users/123", "email": "u@example.com"},
+                },
+            }
+        )
+
+        assert payload["type"] == "CARD_CLICKED"
+        assert payload["common"]["invokedFunction"] == "hermes_clarify"
+        assert payload["common"]["parameters"]["choice"] == "A"
+        assert payload["space"]["name"] == "spaces/S"
+        assert payload["message"]["name"] == "spaces/S/messages/M.M"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_card_click_as_message_event(self, adapter):
+        payload = {
+            "space": {"name": "spaces/S", "spaceType": "SPACE", "displayName": "Room"},
+            "user": {
+                "name": "users/123",
+                "email": "u@example.com",
+                "displayName": "User",
+            },
+            "message": {"name": "spaces/S/messages/CARD.CARD"},
+            "action": {
+                "function": "custom_action",
+                "parameters": [{"key": "choice", "value": "A"}],
+            },
+        }
+
+        await adapter._dispatch_card_click(payload)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text.startswith("Google Chat card click")
+        assert "custom_action" in event.text
+        assert event.source.chat_id == "spaces/S"
+        assert event.source.user_id == "u@example.com"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_http_event_resolves_clarify_card_click(self, adapter):
+        from tools.clarify_gateway import register, wait_for_response
+
+        clarify_id = "clarify123"
+        session_key = "agent:main:google_chat:dm:spaces/S"
+        register(
+            clarify_id=clarify_id,
+            session_key=session_key,
+            question="Pick one",
+            choices=["A", "B"],
+        )
+        adapter._clarify_state[clarify_id] = session_key
+        adapter._create_message = AsyncMock(
+            return_value=type(
+                "R",
+                (),
+                {"success": True, "message_id": "m/ack", "error": None},
+            )()
+        )
+        class Runner:
+            def _is_user_authorized(self, _source):
+                return True
+
+            async def handle(self, _event):
+                return None
+
+        adapter._message_handler = Runner().handle
+
+        await adapter.dispatch_http_event(
+            {
+                "commonEventObject": {
+                    "invokedFunction": "hermes_clarify",
+                    "parameters": {"clarify_id": clarify_id, "choice": "B"},
+                },
+                "chat": {
+                    "space": {"name": "spaces/S", "spaceType": "DIRECT_MESSAGE"},
+                    "messagePayload": {
+                        "message": {"name": "spaces/S/messages/CARD.CARD"}
+                    },
+                    "user": {"name": "users/123", "email": "u@example.com"},
+                },
+            }
+        )
+
+        assert wait_for_response(clarify_id, timeout=0.1) == "B"
+        assert clarify_id not in adapter._clarify_state
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_clarify_card_click_does_not_resolve(self, adapter):
+        from tools.clarify_gateway import register, wait_for_response
+
+        class Runner:
+            def _is_user_authorized(self, _source):
+                return False
+
+            async def handle(self, _event):
+                return None
+
+        clarify_id = "clarify-denied"
+        register(
+            clarify_id=clarify_id,
+            session_key="agent:main:google_chat:dm:spaces/S",
+            question="Pick one",
+            choices=["A", "B"],
+        )
+        adapter._clarify_state[clarify_id] = "agent:main:google_chat:dm:spaces/S"
+        adapter._message_handler = Runner().handle
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True, "message_id": "m/deny", "error": None})()
+        )
+
+        await adapter._dispatch_card_click(
+            {
+                "space": {"name": "spaces/S", "spaceType": "DIRECT_MESSAGE"},
+                "user": {"name": "users/999", "email": "blocked@example.com"},
+                "message": {"name": "spaces/S/messages/CARD.CARD"},
+                "action": {
+                    "function": "hermes_clarify",
+                    "parameters": [
+                        {"key": "clarify_id", "value": clarify_id},
+                        {"key": "choice", "value": "A"},
+                    ],
+                },
+            }
+        )
+
+        assert wait_for_response(clarify_id, timeout=0.1) is None
+        assert clarify_id in adapter._clarify_state
+        sent = adapter._create_message.await_args.args[1]["text"]
+        assert "not authorized" in sent
+
+    @pytest.mark.asyncio
+    async def test_clarify_card_click_fails_closed_without_runner(self, adapter, monkeypatch):
+        # No runner wired → _is_callback_user_authorized must fall back to the
+        # env allowlist and deny by default (no silent authorize on a gated
+        # action). Regression for the fail-open bug where a missing auth_fn
+        # let any card click through.
+        from tools.clarify_gateway import register, wait_for_response
+
+        monkeypatch.delenv("GOOGLE_CHAT_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        clarify_id = "clarify-no-runner"
+        register(
+            clarify_id=clarify_id,
+            session_key="agent:main:google_chat:dm:spaces/S",
+            question="Pick one",
+            choices=["A", "B"],
+        )
+        adapter._clarify_state[clarify_id] = "agent:main:google_chat:dm:spaces/S"
+        # No _message_handler → no runner → auth_fn absent.
+        adapter._message_handler = None
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True, "message_id": "m/deny", "error": None})()
+        )
+
+        await adapter._dispatch_card_click(
+            {
+                "space": {"name": "spaces/S", "spaceType": "DIRECT_MESSAGE"},
+                "user": {"name": "users/999", "email": "sneaky@example.com"},
+                "message": {"name": "spaces/S/messages/CARD.CARD"},
+                "action": {
+                    "function": "hermes_clarify",
+                    "parameters": [
+                        {"key": "clarify_id", "value": clarify_id},
+                        {"key": "choice", "value": "A"},
+                    ],
+                },
+            }
+        )
+
+        assert wait_for_response(clarify_id, timeout=0.1) is None
+        assert clarify_id in adapter._clarify_state
+        sent = adapter._create_message.await_args.args[1]["text"]
+        assert "not authorized" in sent
+
+
+class TestConnectModes:
+    @pytest.mark.asyncio
+    async def test_connect_http_mode_skips_pubsub_subscriber(self, tmp_path, monkeypatch):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update({
+            "http_events_url": "https://example.test/google-chat/events",
+            "service_account_json": "{}",
+        })
+        a = GoogleChatAdapter(cfg)
+        a._thread_count_store._path = tmp_path / "google_chat_thread_counts.json"
+        monkeypatch.setattr(_gc_mod, "_load_google_modules", lambda: True)
+        monkeypatch.setattr(a, "_load_sa_credentials", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(_gc_mod, "build_service", MagicMock(return_value=MagicMock()))
+        subscriber_client = MagicMock()
+        monkeypatch.setattr(_gc_mod, "pubsub_v1", MagicMock(SubscriberClient=subscriber_client))
+        a._resolve_bot_user_id = AsyncMock(return_value=None)
+
+        assert await a.connect() is True
+        subscriber_client.assert_not_called()
+        assert a._subscription_path is None
+        assert a._supervisor_task is None
+        assert a.is_connected is True
+        await a.disconnect()
 
 
 # ===========================================================================
@@ -1003,6 +1366,88 @@ class TestSend:
         with pytest.raises(_FakeHttpError):
             await adapter.send("spaces/S", "hola")
         assert adapter._rate_limit_hits.get("spaces/S") == 1
+
+    def test_card_spec_to_cards_v2_builds_button_card(self):
+        card = card_spec_to_cards_v2(
+            {
+                "card_id": "approval",
+                "header": {"title": "Approve request"},
+                "sections": [
+                    {
+                        "widgets": [
+                            {"type": "text", "text": "Pick one"},
+                            {
+                                "type": "buttons",
+                                "buttons": [
+                                    {
+                                        "text": "Yes",
+                                        "action": "approve",
+                                        "parameters": {"choice": "yes"},
+                                    }
+                                ],
+                            },
+                        ]
+                    }
+                ],
+            }
+        )
+
+        assert card["cardId"] == "approval"
+        assert card["card"]["header"]["title"] == "Approve request"
+        button = card["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"][0]
+        assert button["text"] == "Yes"
+        assert button["onClick"]["action"]["function"] == "approve"
+        assert {"key": "choice", "value": "yes"} in button["onClick"]["action"]["parameters"]
+
+    @pytest.mark.asyncio
+    async def test_send_card_posts_cards_v2_with_thread(self, adapter):
+        adapter._create_message = AsyncMock(
+            return_value=type(
+                "R",
+                (),
+                {"success": True, "message_id": "m/1", "error": None, "raw_response": None},
+            )()
+        )
+
+        result = await adapter.send_card(
+            "spaces/S",
+            {"cardId": "c1", "card": {"sections": [{"widgets": []}]}},
+            metadata={"thread_id": "spaces/S/threads/T"},
+        )
+
+        assert result.success is True
+        body = adapter._create_message.await_args.args[1]
+        assert body["cardsV2"][0]["cardId"] == "c1"
+        assert body["thread"] == {"name": "spaces/S/threads/T"}
+
+    @pytest.mark.asyncio
+    async def test_send_clarify_posts_choice_card(self, adapter):
+        adapter._create_message = AsyncMock(
+            return_value=type(
+                "R",
+                (),
+                {"success": True, "message_id": "m/1", "error": None, "raw_response": None},
+            )()
+        )
+
+        result = await adapter.send_clarify(
+            "spaces/S",
+            "Pick a demo",
+            ["Simple", "Capability test"],
+            "clarify123",
+            "session-key",
+        )
+
+        assert result.success is True
+        body = adapter._create_message.await_args.args[1]
+        card = body["cardsV2"][0]
+        assert card["cardId"] == "clarify-clarify123"
+        buttons = card["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+        assert buttons[0]["text"] == "Simple"
+        assert buttons[0]["onClick"]["action"]["function"] == "hermes_clarify"
+        assert {"key": "choice", "value": "Simple"} in buttons[0]["onClick"]["action"]["parameters"]
+        assert buttons[-1]["text"] == "Other / type answer"
+        assert adapter._clarify_state["clarify123"] == "session-key"
 
 
 # ===========================================================================

@@ -125,8 +125,18 @@ def _cmd_reject(args) -> int:
 def _cmd_adopt(args) -> int:
     run_dir = _run_dir_for_id(getattr(args, "run_id"))
     loaded = load_skillopt_proposal(run_dir)
+    scores = loaded.proposal.get("scores") if isinstance(loaded.proposal, dict) else {}
+    if not isinstance(scores, dict):
+        scores = {}
     if loaded.status != "evaluated":
         raise RuntimeError("SkillOpt proposal must be evaluated successfully before adopt")
+    if (
+        not scores.get("heldout_ready")
+        or int(scores.get("total") or 0) <= 0
+        or int(scores.get("failed") or 0) != 0
+        or float(scores.get("score") or 0.0) <= 0.0
+    ):
+        raise RuntimeError("SkillOpt proposal must have passing evaluation scores before adopt")
     current_path = _ensure_skill_path_is_adoptable(loaded.current_skill_path)
     current_text = current_path.read_text(encoding="utf-8")
     import hashlib
@@ -209,7 +219,7 @@ def register_cli(subparsers) -> None:
     reject.add_argument("run_id")
     reject.add_argument("--reason", default="")
     reject.add_argument("--reviewer", default="cli")
-    adopt = sub.add_parser("adopt", help="Adopt a staged proposal if the live skill hash still matches")
+    adopt = sub.add_parser("adopt", help="Adopt an evaluated proposal if scores pass and the live skill hash still matches")
     adopt.add_argument("run_id")
     evaluate = sub.add_parser("evaluate", help="Evaluate a staged proposal against verification evidence")
     evaluate.add_argument("run_id")

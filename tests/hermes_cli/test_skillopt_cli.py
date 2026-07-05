@@ -120,6 +120,27 @@ def test_skillopt_adopt_refuses_unevaluated_proposal(tmp_path):
     assert _with_home(home, run).endswith("# Demo\n")
 
 
+def test_skillopt_adopt_refuses_evaluated_status_with_bad_scores(tmp_path):
+    home = tmp_path / ".hermes"
+    skill_path = _write_skill(home, "demo", "# Demo\n")
+
+    def run():
+        from agent.skillopt_state import stage_skillopt_proposal
+        from hermes_cli.skillopt import cmd_skillopt
+
+        staged = stage_skillopt_proposal(skill_name="demo", current_skill_path=skill_path, candidate_skill="# Candidate\n")
+        proposal_path = staged.run_dir / "proposal.json"
+        payload = json.loads(proposal_path.read_text(encoding="utf-8"))
+        payload["status"] = "evaluated"
+        payload["scores"] = {"heldout_ready": False, "score": 0.0, "passed": 0, "failed": 1, "total": 1}
+        proposal_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(RuntimeError, match="passing evaluation scores"):
+            cmd_skillopt(argparse.Namespace(skillopt_command="adopt", run_id=staged.run_id))
+        return skill_path.read_text(encoding="utf-8")
+
+    assert _with_home(home, run).endswith("# Demo\n")
+
+
 def test_skillopt_evaluate_records_scores_and_rejects_low_evidence(tmp_path):
     home = tmp_path / ".hermes"
     skill_path = _write_skill(home, "demo", "# Demo\n")

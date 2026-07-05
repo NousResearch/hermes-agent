@@ -12,6 +12,15 @@ import {
 } from './chat-messages'
 
 describe('toChatMessages', () => {
+  it('drops stored assistant session-busy bounces', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'continue', timestamp: 1 },
+      { role: 'assistant', content: 'session busy', timestamp: 2 }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user'])
+  })
+
   it('keeps a turn with interleaved tool-only rows in a single bubble', () => {
     const messages = toChatMessages([
       { role: 'assistant', content: 'Planning.', timestamp: 1 },
@@ -272,6 +281,35 @@ describe('preserveLocalAssistantErrors', () => {
         id: 'user-123',
         parts: [{ text: 'new prompt', type: 'text' }],
         role: 'user'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(message => message.id)).toEqual(['stored-user'])
+  })
+
+  it('does not preserve local session-busy bounces as transcript errors', () => {
+    const nextMessages: ChatMessage[] = [
+      {
+        id: 'stored-user',
+        parts: [{ text: 'earlier', type: 'text' }],
+        role: 'user'
+      }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      ...nextMessages,
+      {
+        id: 'optimistic-user',
+        parts: [{ text: 'queued prompt', type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'session busy',
+        id: 'assistant-error-busy',
+        parts: [],
+        role: 'assistant'
       }
     ]
 

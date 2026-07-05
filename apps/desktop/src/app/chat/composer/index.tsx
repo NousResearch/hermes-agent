@@ -50,9 +50,9 @@ import {
 } from '@/store/composer-popout'
 import {
   $queuedPromptsBySession,
+  batchQueuedPrompts,
   enqueueQueuedPrompt,
   markQueuedPromptAutoDrain,
-  markQueuedPromptsAutoDrain,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
@@ -1637,7 +1637,7 @@ export function ChatBar({
     }
 
     queuedPrompts.forEach(entry => drainFailuresRef.current.delete(entry.id))
-    markQueuedPromptsAutoDrain(activeQueueSessionKey)
+    const batch = batchQueuedPrompts(activeQueueSessionKey)
 
     if (sendBlocked) {
       triggerHaptic('selection')
@@ -1649,8 +1649,8 @@ export function ChatBar({
       return true
     }
 
-    return drainNextQueued()
-  }, [activeQueueSessionKey, busy, drainNextQueued, onCancel, queueEdit, queuedPrompts, sendBlocked])
+    return batch ? runDrain(entries => entries.find(entry => entry.id === batch.id)) : false
+  }, [activeQueueSessionKey, busy, onCancel, queueEdit, queuedPrompts, runDrain, sendBlocked])
 
   // Edge-independent auto-drain: send the head whenever the session is idle and
   // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.

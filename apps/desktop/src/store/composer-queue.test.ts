@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { ComposerAttachment } from './composer'
 import {
   $queuedPromptsBySession,
+  batchQueuedPrompts,
   clearQueuedPrompts,
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
@@ -151,6 +152,20 @@ describe('composer queue store', () => {
     expect(markQueuedPromptsAutoDrain(SESSION_KEY)).toBe(true)
     expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.autoDrain)).toEqual([true, true])
     expect(markQueuedPromptsAutoDrain(SESSION_KEY)).toBe(false)
+  })
+
+  it('batches all queued entries into one auto-drainable send', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('first-file')], text: 'first prompt' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('second-file', 'image')], text: 'second prompt' })
+
+    const batch = batchQueuedPrompts(SESSION_KEY)
+
+    expect(batch).not.toBeNull()
+    expect(batch?.text).toBe('first prompt\n\nsecond prompt')
+    expect(batch?.autoDrain).toBe(true)
+    expect(batch?.attachments.map(item => item.id)).toEqual(['first-file', 'second-file'])
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+    expect(getQueuedPrompts(SESSION_KEY)[0]).toEqual(batch)
   })
 
   it('marks one queued entry as auto-drainable on explicit row send', () => {

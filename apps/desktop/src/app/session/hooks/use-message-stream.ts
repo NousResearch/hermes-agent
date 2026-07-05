@@ -11,6 +11,7 @@ import {
   type ChatMessagePart,
   chatMessageText,
   type GatewayEventPayload,
+  isSessionBusyMessage,
   reasoningPart,
   renderMediaTags,
   textPart,
@@ -724,6 +725,22 @@ export function useMessageStream({
     [updateSessionState]
   )
 
+  const clearSessionBusyBounce = useCallback(
+    (sessionId: string) => {
+      updateSessionState(sessionId, state => ({
+        ...state,
+        messages: state.messages.filter(message => !isSessionBusyMessage(message.error)),
+        streamId: null,
+        pendingBranchGroup: null,
+        awaitingResponse: false,
+        busy: false,
+        needsInput: false,
+        turnStartedAt: null
+      }))
+    },
+    [updateSessionState]
+  )
+
   const handleGatewayEvent = useCallback(
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
@@ -1122,6 +1139,7 @@ export function useMessageStream({
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
+        const isBusyBounce = isSessionBusyMessage(errorMessage)
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
 
         // A turn that errors out has also ended — drop any open blocking prompt
@@ -1133,16 +1151,18 @@ export function useMessageStream({
           compactedTurnRef.current.delete(sessionId)
         }
 
-        dispatchNativeNotification({
-          body: errorMessage,
-          kind: 'turnError',
-          sessionId,
-          title: translateNow('notifications.native.turnErrorTitle')
-        })
+        if (!isBusyBounce) {
+          dispatchNativeNotification({
+            body: errorMessage,
+            kind: 'turnError',
+            sessionId,
+            title: translateNow('notifications.native.turnErrorTitle')
+          })
+        }
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
-        } else {
+        } else if (!isBusyBounce) {
           // Toast globally, not just when the failing thread is focused: a
           // turn-ending error (e.g. out of funds) blocks every thread, so the
           // inline error alone is too easy to miss. The stable id collapses the
@@ -1156,8 +1176,12 @@ export function useMessageStream({
         }
 
         if (sessionId) {
-          flushQueuedDeltas(sessionId)
-          failAssistantMessage(sessionId, errorMessage)
+          if (isBusyBounce) {
+            clearSessionBusyBounce(sessionId)
+          } else {
+            flushQueuedDeltas(sessionId)
+            failAssistantMessage(sessionId, errorMessage)
+          }
         }
 
         if (isActiveEvent) {
@@ -1169,6 +1193,7 @@ export function useMessageStream({
       appendAssistantDelta,
       appendReasoningDelta,
       activeSessionIdRef,
+      clearSessionBusyBounce,
       completeAssistantMessage,
       failAssistantMessage,
       flushQueuedDeltas,

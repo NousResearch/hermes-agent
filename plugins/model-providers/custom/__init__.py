@@ -16,6 +16,21 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 
+# vLLM / llama.cpp validate ``reasoning_effort`` against the OpenAI set
+# {none, low, medium, high} and return a non-retryable HTTP 400 on Hermes-only
+# levels (minimal, xhigh, max). Clamp those to the nearest accepted value for
+# *detected* vLLM / llama.cpp only. GLM-5.2 / ARK (also provider=custom)
+# legitimately accept "high"/"max", so their effort passes through untouched.
+_VLLM_EFFORT_CLAMP = {
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "high",
+    "max": "high",
+}
+
+
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
@@ -80,9 +95,16 @@ class CustomProfile(ProviderProfile):
                 if _templated:
                     extra_body["chat_template_kwargs"] = {"enable_thinking": False}
             elif _effort:
-                top_level["reasoning_effort"] = _effort
+                # Templated backends (vLLM / llama.cpp) reject Hermes-only
+                # levels (minimal/xhigh/max) with a non-retryable 400 — clamp
+                # to the nearest OpenAI-set value. GLM/ARK keep their raw level.
                 if _templated:
+                    top_level["reasoning_effort"] = _VLLM_EFFORT_CLAMP.get(
+                        _effort, "high"
+                    )
                     extra_body["chat_template_kwargs"] = {"enable_thinking": True}
+                else:
+                    top_level["reasoning_effort"] = _effort
 
         return extra_body, top_level
 

@@ -1019,3 +1019,22 @@ class TestTruncateHelper:
     def test_unicode_message_encoded(self):
         result = _ntfy._truncate_body("héllo 🔔", context="test")
         assert result == "héllo 🔔".encode("utf-8")
+
+
+class TestInboundLogPrivacy:
+    """`_on_message` must not copy raw message content into logs (#58477 class:
+    the merged Slack fix logs length, not a preview)."""
+
+    def test_debug_log_omits_message_text(self, caplog):
+        secret = "wire $5000 to account 12345 — private quote"
+        config = PlatformConfig(enabled=True, extra={"topic": "t"})
+        adapter = NtfyAdapter(config)
+        adapter.handle_message = AsyncMock()
+
+        with caplog.at_level("DEBUG"):
+            _run(adapter._on_message({"id": "m1", "message": secret, "topic": "t"}))
+
+        adapter.handle_message.assert_awaited_once()
+        assert secret not in caplog.text
+        assert "43 chars" in caplog.text  # length is logged instead
+

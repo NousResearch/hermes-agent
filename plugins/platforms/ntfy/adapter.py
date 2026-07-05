@@ -359,7 +359,7 @@ class NtfyAdapter(BasePlatformAdapter):
             timestamp=timestamp,
         )
 
-        logger.debug("[%s] Message on topic %s: %s", self.name, topic, text[:80])
+        logger.debug("[%s] Message on topic %s (%d chars)", self.name, topic, len(text))
         await self.handle_message(message_event)
 
     # -- Deduplication ------------------------------------------------------

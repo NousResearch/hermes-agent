@@ -875,6 +875,8 @@ export interface MoaConfigResponse {
   max_tokens: number
   reference_models: MoaModelSlot[]
   reference_temperature: number
+  save_traces: boolean
+  trace_dir: string
 }
 
 export interface ModelAssignmentRequest {

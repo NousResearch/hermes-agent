@@ -9942,6 +9942,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             else:
                 print("  ✓ Desktop app up to date")
 
+            # After a desktop rebuild the chrome-sandbox helper may have
+            # lost its root:root + SUID (4755) permissions — git reset
+            # --hard replaces the file with a user-owned copy and electron-
+            # builder's dir mode doesn't restore the setuid bit.  Fix it
+            # here so the next launch doesn't silently fail on Linux hosts
+            # that require the SUID sandbox helper (Ubuntu 23.10+ with
+            # AppArmor restrict_unprivileged_userns).  (#58593)
+            _pe = _desktop_packaged_executable(desktop_dir)
+            if _pe is not None:
+                _desktop_linux_sandbox_fixup(_pe)
+
         print()
         print("✓ Code updated!")
 

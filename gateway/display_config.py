@@ -58,6 +58,18 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Per-platform master switch for UNSOLICITED / background pushes (cron job
+    # responses, background-review memory notifications, kanban notifiers,
+    # background-task results, restart notices). Default on for back-compat.
+    # A platform set to false receives NO proactive push — but normal
+    # request→response replies are unaffected (the gate only guards background
+    # delivery paths, never interactive replies).
+    "proactive_push": True,
+    # Memory-update review notifications in chat: "off" | "on" | "verbose".
+    # Registered here (③) so it resolves per-platform via resolve_display_setting
+    # and coexists, layered, with proactive_push: a memory-review push is
+    # delivered only when proactive_push != false AND memory_notifications != off.
+    "memory_notifications": "on",
 }
 
 # ---------------------------------------------------------------------------
@@ -252,6 +264,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "busy_ack_detail",
         "busy_steer_ack_enabled",
         "thinking_progress",
+        "proactive_push",
     }:
         if isinstance(value, str):
             val = value.strip().lower()
@@ -259,6 +272,14 @@ def _normalise(setting: str, value: Any) -> Any:
                 return "generic"
             return val in {"true", "1", "yes", "on", "raw", "verbose"}
         return bool(value)
+    if setting == "memory_notifications":
+        # Three modes; normalise bool/str to off|on|verbose (default on).
+        if value is False:
+            return "off"
+        if value is True:
+            return "on"
+        val = str(value).lower()
+        return val if val in ("off", "on", "verbose") else "on"
     if setting == "cleanup_progress":
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
@@ -275,3 +296,19 @@ def _normalise(setting: str, value: Any) -> Any:
         except (TypeError, ValueError):
             return 0
     return value
+
+
+def platform_accepts_proactive_push(user_config: dict, platform_key: str) -> bool:
+    """Whether a platform accepts unsolicited / background pushes.
+
+    Single source of truth for the per-platform proactive-push gate. Every
+    background delivery path (cron ``_deliver_result``, background-review
+    memory notifications, kanban notifiers, background-task results, restart
+    notices) consults this before delivering, so a platform opted out via
+    ``display.platforms.<platform>.proactive_push: false`` (or globally via
+    ``display.proactive_push: false``) is skipped everywhere.
+
+    Interactive replies (a user's message → the agent's response) must NOT go
+    through this gate — it guards only background/proactive delivery.
+    """
+    return bool(resolve_display_setting(user_config, platform_key, "proactive_push", True))

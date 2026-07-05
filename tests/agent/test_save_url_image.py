@@ -29,7 +29,7 @@ PNG_1PX = bytes.fromhex(
 class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
     """Tiny HTTP server that mimics the shapes save_url_image must handle."""
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         if self.path == "/image.png":
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
@@ -69,7 +69,7 @@ class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-    def log_message(self, *args, **kw):  # noqa: D401
+    def log_message(self, *args, **kw):
         return
 
 

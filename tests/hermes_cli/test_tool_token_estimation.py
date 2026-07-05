@@ -6,7 +6,7 @@ import pytest
 # tiktoken is not in core/[all] deps — skip estimation tests when unavailable
 _has_tiktoken = True
 try:
-    import tiktoken  # noqa: F401
+    import tiktoken
 except ImportError:
     _has_tiktoken = False
 
@@ -266,7 +266,7 @@ def test_registry_get_schema_returns_schema():
     from tools.registry import registry
 
     # Import to trigger discovery
-    import model_tools  # noqa: F401
+    import model_tools
 
     schema = registry.get_schema("terminal")
     assert schema is not None

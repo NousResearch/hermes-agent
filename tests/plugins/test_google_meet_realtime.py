@@ -40,7 +40,7 @@ class _FakeWS:
             payload = payload.decode()
         self.sent.append(json.loads(payload))
 
-    def recv(self, timeout=None):  # noqa: ARG002
+    def recv(self, timeout=None):
         if not self._recv_q:
             raise RuntimeError("fake ws: no more frames")
         frame = self._recv_q.pop(0)
@@ -226,7 +226,7 @@ class _StubSession:
     def __init__(self):
         self.spoken: list[str] = []
 
-    def speak(self, text, timeout=30.0):  # noqa: ARG002
+    def speak(self, text, timeout=30.0):
         self.spoken.append(text)
         return {"ok": True, "bytes_written": len(text), "duration_ms": 1.0}
 

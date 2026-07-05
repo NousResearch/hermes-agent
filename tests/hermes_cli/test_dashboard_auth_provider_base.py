@@ -122,7 +122,7 @@ def test_assert_protocol_compliance_rejects_missing_display_name():
 # ---------------------------------------------------------------------------
 
 
-from hermes_cli.dashboard_auth import (  # noqa: E402  (after-imports for clarity)
+from hermes_cli.dashboard_auth import (
     register_provider,
     get_provider,
     list_providers,

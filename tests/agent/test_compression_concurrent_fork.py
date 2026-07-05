@@ -395,7 +395,7 @@ class _NoLockSubsystemDB:
     def __init__(self, real_db: SessionDB) -> None:
         self._real = real_db
 
-    def try_acquire_compression_lock(self, *_a, **_k):  # noqa: D401
+    def try_acquire_compression_lock(self, *_a, **_k):
         raise AttributeError(
             "'SessionDB' object has no attribute 'try_acquire_compression_lock'"
         )

@@ -284,7 +284,7 @@ class TestBrowserConsoleToolsetWiring:
 
     def test_in_registry(self):
         from tools.registry import registry
-        from tools import browser_tool  # noqa: F401
+        from tools import browser_tool
         assert "browser_console" in registry._tools
 
 

@@ -333,7 +333,7 @@ class TestCDPSupervisorStartErrorRedaction:
         err = ValueError(f"{raw} isn't a valid URI: hostname isn't provided")
         try:
             self._run_start_hitting_error(raw, err)
-        except Exception as exc:  # noqa: BLE001 - asserting on the surface
+        except Exception as exc:
             msg = str(exc)
             assert "super-secret-999" not in msg, (
                 "raw token must not appear in the re-raised error message"
@@ -349,7 +349,7 @@ class TestCDPSupervisorStartErrorRedaction:
         err = ValueError(f"{raw} isn't a valid URI: hostname isn't provided")
         try:
             self._run_start_hitting_error(raw, err)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             assert "p4ssw0rd" not in str(exc)
         else:
             raise AssertionError("start() did not re-raise the start error")

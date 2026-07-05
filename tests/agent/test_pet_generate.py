@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(
 from agent.pet.generate import atlas
 
 PIL = pytest.importorskip("PIL")
-from PIL import Image, ImageDraw  # noqa: E402
+from PIL import Image, ImageDraw
 
 
 def _strip(n_blobs: int, *, transparent: bool = True, bg=(0, 255, 0, 255), size=(208, 208)) -> Image.Image:

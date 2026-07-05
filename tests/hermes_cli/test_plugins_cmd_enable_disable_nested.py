@@ -8,7 +8,7 @@ registry key and write THAT — the same string PluginManager gates on — so a
 nested bundled plugin can actually be toggled.
 """
 
-import sys  # noqa: F401
+import sys
 from pathlib import Path
 from unittest.mock import patch
 

@@ -156,7 +156,7 @@ class TestSmsRequirements:
             # Only returns True if aiohttp is also importable
             result = check_sms_requirements()
             try:
-                import aiohttp  # noqa: F401
+                import aiohttp
                 assert result is True
             except ImportError:
                 assert result is False

@@ -1420,7 +1420,7 @@ class TestIsStaleConnectionError:
         NOT be classified as stale — those are real test/code bugs."""
         from agent.bedrock_adapter import is_stale_connection_error
         try:
-            assert False, "test-only"  # noqa: B011
+            assert False, "test-only"
         except AssertionError as exc:
             assert is_stale_connection_error(exc) is False
 

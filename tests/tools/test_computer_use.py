@@ -102,7 +102,7 @@ class TestSchema:
 class TestRegistration:
     def test_tool_registers_with_registry(self):
         # Importing the shim registers the tool.
-        import tools.computer_use_tool  # noqa: F401
+        import tools.computer_use_tool
         from tools.registry import registry
         entry = registry._tools.get("computer_use")
         assert entry is not None
@@ -1064,7 +1064,7 @@ class TestUniversality:
 
     def test_no_provider_gating_in_tool_registration(self):
         """Anthropic-only gating was a #4562 artefact — must not recur."""
-        import tools.computer_use_tool  # noqa: F401
+        import tools.computer_use_tool
         from tools.registry import registry
         entry = registry._tools["computer_use"]
         # check_fn should only check platform + binary availability,

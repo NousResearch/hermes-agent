@@ -25,7 +25,7 @@ class _FakeAS(BaseHTTPRequestHandler):
     # Rotation counter shared across requests so refresh returns a new token.
     issued = {"n": 0}
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path != "/authorize":
             self.send_response(404)
@@ -48,7 +48,7 @@ class _FakeAS(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
-    def do_POST(self):  # noqa: N802
+    def do_POST(self):
         parsed = urlparse(self.path)
         if parsed.path != "/oauth/token":
             self.send_response(404)

@@ -343,7 +343,7 @@ def _reload_cron_jobs(home: Path):
         import cron.jobs as _cj
         importlib.reload(_cj)
     else:
-        import cron.jobs as _cj  # noqa: F401
+        import cron.jobs as _cj
     import cron.jobs as cj
     return cj
 

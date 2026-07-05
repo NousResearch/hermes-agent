@@ -27,7 +27,7 @@ class TestThreadLocalApprovalCallback:
             _get_approval_callback,
         )
 
-        cb1 = lambda cmd, desc: "once"  # noqa: E731
+        cb1 = lambda cmd, desc: "once"
         set_approval_callback(cb1)
         assert _get_approval_callback() is cb1
 
@@ -38,8 +38,8 @@ class TestThreadLocalApprovalCallback:
             _get_approval_callback,
         )
 
-        cb_a = lambda cmd, desc: "thread_a"  # noqa: E731
-        cb_b = lambda cmd, desc: "thread_b"  # noqa: E731
+        cb_a = lambda cmd, desc: "thread_a"
+        cb_b = lambda cmd, desc: "thread_b"
 
         seen_in_a = []
         seen_in_b = []
@@ -76,7 +76,7 @@ class TestThreadLocalApprovalCallback:
             _get_approval_callback,
         )
 
-        cb_main = lambda cmd, desc: "main"  # noqa: E731
+        cb_main = lambda cmd, desc: "main"
         set_approval_callback(cb_main)
 
         worker_saw = []
@@ -100,7 +100,7 @@ class TestThreadLocalApprovalCallback:
             _get_sudo_password_callback,
         )
 
-        cb_main = lambda: "main-password"  # noqa: E731
+        cb_main = lambda: "main-password"
         set_sudo_password_callback(cb_main)
 
         worker_saw = []

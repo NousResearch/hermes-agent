@@ -270,7 +270,7 @@ def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) ->
     # Force-import the submodule so monkeypatch's attribute lookup
     # against the `hermes_cli` package succeeds — gateway_windows is
     # imported lazily inside the wrapper and may not yet be loaded.
-    import hermes_cli.gateway_windows  # noqa: F401
+    import hermes_cli.gateway_windows
 
     class _FakeWindowsModule:
         @staticmethod
@@ -298,7 +298,7 @@ def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) ->
 def test_windows_manager_is_running_false_when_not_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import hermes_cli.gateway_windows  # noqa: F401
+    import hermes_cli.gateway_windows
 
     class _FakeWindowsModule:
         @staticmethod
@@ -314,7 +314,7 @@ def test_windows_manager_is_running_false_when_not_installed(
 
 def test_windows_manager_install_forwards_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
-    import hermes_cli.gateway_windows  # noqa: F401
+    import hermes_cli.gateway_windows
 
     class _FakeWindowsModule:
         @staticmethod

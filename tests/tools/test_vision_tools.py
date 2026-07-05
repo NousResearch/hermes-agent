@@ -1039,7 +1039,7 @@ class TestImageExceedsDimension:
 
     def test_corrupt_file_returns_false(self, tmp_path):
         try:
-            import PIL  # noqa: F401
+            import PIL
         except ImportError:
             pytest.skip("Pillow not installed")
         path = tmp_path / "corrupt.png"

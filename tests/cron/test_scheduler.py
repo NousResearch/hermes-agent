@@ -697,7 +697,7 @@ class TestDeliverResultWrapping:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -754,7 +754,7 @@ class TestDeliverResultWrapping:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -803,7 +803,7 @@ class TestDeliverResultWrapping:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -853,7 +853,7 @@ class TestDeliverResultWrapping:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -3337,7 +3337,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -3399,7 +3399,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -3461,7 +3461,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -3522,7 +3522,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -3581,7 +3581,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -3651,7 +3651,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -3717,7 +3717,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -3780,7 +3780,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -4505,7 +4505,7 @@ class TestCronContinuableSurfaceInChannel:
             try:
                 import asyncio as _asyncio
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 

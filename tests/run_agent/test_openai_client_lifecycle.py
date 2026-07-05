@@ -158,7 +158,7 @@ def test_concurrent_requests_do_not_break_each_other_when_one_client_closes(monk
     def run_call(name):
         try:
             results[name] = agent._interruptible_api_call({"model": agent.model, "messages": []})
-        except Exception as exc:  # noqa: BLE001 - asserting exact type below
+        except Exception as exc:
             results[name] = exc
 
     thread_one = threading.Thread(target=run_call, args=("first",), daemon=True)

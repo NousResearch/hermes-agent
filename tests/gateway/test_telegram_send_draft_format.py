@@ -35,8 +35,8 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-import plugins.platforms.telegram.adapter as tg_mod  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+import plugins.platforms.telegram.adapter as tg_mod
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter() -> TelegramAdapter:

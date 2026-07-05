@@ -23,7 +23,7 @@ def _fresh_run_agent(hermes_home):
     for mod in list(sys.modules):
         if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("hermes_"):
             del sys.modules[mod]
-    import run_agent  # noqa: F401
+    import run_agent
     return sys.modules["run_agent"]
 
 

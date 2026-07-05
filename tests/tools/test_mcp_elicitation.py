@@ -16,9 +16,9 @@ import pytest
 
 pytest.importorskip("mcp.types")
 
-from mcp.types import ElicitResult  # noqa: E402  -- after importorskip
+from mcp.types import ElicitResult
 
-from tools.mcp_tool import (  # noqa: E402
+from tools.mcp_tool import (
     ElicitationHandler,
     _format_elicitation_schema_summary,
 )

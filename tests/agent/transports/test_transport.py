@@ -54,14 +54,14 @@ class TestTransportRegistry:
         assert get_transport("nonexistent_mode") is None
 
     def test_anthropic_registered_on_import(self):
-        import agent.transports.anthropic  # noqa: F401
+        import agent.transports.anthropic
         t = get_transport("anthropic_messages")
         assert t is not None
         assert t.api_mode == "anthropic_messages"
 
     def test_discovers_missing_transport_when_registry_partially_populated(self):
         """Importing one transport directly must not hide other valid api_modes."""
-        import agent.transports.chat_completions  # noqa: F401
+        import agent.transports.chat_completions
         t = get_transport("codex_responses")
         assert t is not None
         assert t.api_mode == "codex_responses"
@@ -93,7 +93,7 @@ class TestAnthropicTransport:
 
     @pytest.fixture
     def transport(self):
-        import agent.transports.anthropic  # noqa: F401
+        import agent.transports.anthropic
         return get_transport("anthropic_messages")
 
     def test_api_mode(self, transport):

@@ -75,7 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class FakeTree:
@@ -664,7 +664,7 @@ async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(ada
 # ------------------------------------------------------------------
 
 
-import discord as _discord_mod  # noqa: E402 — mock or real, used below
+import discord as _discord_mod
 
 
 class _FakeTextChannel:

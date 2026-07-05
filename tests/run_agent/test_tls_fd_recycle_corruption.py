@@ -166,7 +166,7 @@ def _call_inside_owner_thread(callable_):
     def runner():
         try:
             result["value"] = callable_()
-        except BaseException as e:  # noqa: BLE001 — propagate test failures faithfully
+        except BaseException as e:
             result["exc"] = e
 
     t = threading.Thread(target=runner)

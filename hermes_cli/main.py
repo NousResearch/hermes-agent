@@ -9707,7 +9707,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         try:
             from hermes_cli.backup import create_quick_snapshot
 
-            pre_update_snapshot_id = create_quick_snapshot(label="pre-update", keep=1)
+            pre_update_snapshot_id = create_quick_snapshot(label="pre-update", keep=3)
             if pre_update_snapshot_id:
                 print(f"  ✓ Pre-update snapshot: {pre_update_snapshot_id}")
         except Exception as exc:

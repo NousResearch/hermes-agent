@@ -1761,6 +1761,48 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
 _INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 _INDICATOR_DEFAULT = "kaomoji"
 
+_DASHBOARD_TURN_ISOLATION_DEFAULT = False
+_DASHBOARD_COMPUTE_HOST_HEARTBEAT_SECS_DEFAULT = 15
+_DASHBOARD_COMPUTE_HOST_RESPAWN_MAX_DEFAULT = 3
+
+
+def _coerce_int_config_value(value: Any, default: int, *, min_value: int) -> int:
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return default
+    return coerced if coerced >= min_value else default
+
+
+def _load_dashboard_process_isolation_config(cfg: dict | None = None) -> dict[str, Any]:
+    """Return dashboard process-isolation config with read-site defaults.
+
+    ``_load_cfg()`` intentionally returns raw ``config.yaml`` plus the managed
+    overlay; it does not deep-merge ``hermes_cli.config.DEFAULT_CONFIG``. Keep
+    the Phase-0 defaults here so dashboard runtime and the REST editor's
+    DEFAULT_CONFIG-backed schema cannot drift.
+    """
+    root = _load_cfg() if cfg is None else cfg
+    dashboard = root.get("dashboard") if isinstance(root, dict) else {}
+    if not isinstance(dashboard, dict):
+        dashboard = {}
+    return {
+        "turn_isolation": is_truthy_value(
+            dashboard.get("turn_isolation"),
+            default=_DASHBOARD_TURN_ISOLATION_DEFAULT,
+        ),
+        "compute_host_heartbeat_secs": _coerce_int_config_value(
+            dashboard.get("compute_host_heartbeat_secs"),
+            _DASHBOARD_COMPUTE_HOST_HEARTBEAT_SECS_DEFAULT,
+            min_value=1,
+        ),
+        "compute_host_respawn_max": _coerce_int_config_value(
+            dashboard.get("compute_host_respawn_max"),
+            _DASHBOARD_COMPUTE_HOST_RESPAWN_MAX_DEFAULT,
+            min_value=0,
+        ),
+    }
+
 
 def _load_cfg() -> dict:
     global _cfg_cache, _cfg_mtime, _cfg_path
@@ -8363,6 +8405,16 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    isolation_cfg = _load_dashboard_process_isolation_config()
+    if isolation_cfg["turn_isolation"]:
+        # Phase 0 seeds the flag and proves the read path. The actual dispatch
+        # switch to a persistent compute host lands in Phase 1; fail closed so
+        # a user cannot enable the knob and silently keep running in-process.
+        return _err(
+            rid,
+            5019,
+            "dashboard.turn_isolation requires the compute-host dispatch path (Phase 1)",
+        )
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.

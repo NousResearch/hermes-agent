@@ -1842,6 +1842,14 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Dashboard process-isolation rollout controls. Runtime reads these via
+        # tui_gateway.server::_load_cfg() (raw config + managed overlay, no
+        # DEFAULT_CONFIG merge), so that read site also carries explicit
+        # defaults. Keeping them here seeds the REST editor/schema path that
+        # uses load_config().
+        "turn_isolation": False,
+        "compute_host_heartbeat_secs": 15,
+        "compute_host_respawn_max": 3,
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

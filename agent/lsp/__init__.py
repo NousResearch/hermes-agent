@@ -89,7 +89,7 @@ def shutdown_service() -> None:
     if svc is not None:
         try:
             svc.shutdown()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("LSP shutdown error: %s", e)
 
 
@@ -99,7 +99,7 @@ def _atexit_shutdown() -> None:
     a noisy shutdown line on top of that is just clutter."""
     try:
         shutdown_service()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("atexit LSP shutdown failed: %s", e)
 
 

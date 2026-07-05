@@ -94,7 +94,7 @@ class _BackgroundLoop:
         finally:
             try:
                 loop.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     def run(self, coro, *, timeout: Optional[float] = None) -> Any:
@@ -193,7 +193,7 @@ class LSPService:
         try:
             from hermes_cli.config import load_config
             cfg = load_config()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("LSP config load failed: %s", e)
             return None
 
@@ -272,7 +272,7 @@ class LSPService:
         # have used anyway when it failed).
         try:
             per_server_root = srv.resolve_root(file_path, ws_root) or ws_root
-        except Exception:  # noqa: BLE001
+        except Exception:
             per_server_root = ws_root
         if (srv.server_id, per_server_root) in self._broken:
             return False
@@ -294,7 +294,7 @@ class LSPService:
         try:
             diags = self._loop.run(self._snapshot_async(file_path), timeout=8.0)
             self._delta_baseline[os.path.abspath(file_path)] = diags or []
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("baseline snapshot failed for %s: %s", file_path, e)
             self._mark_broken_for_file(file_path, e)
             self._delta_baseline[os.path.abspath(file_path)] = []
@@ -347,7 +347,7 @@ class LSPService:
             logger.debug("LSP diagnostics timeout for %s: %s", file_path, e)
             self._mark_broken_for_file(file_path, e)
             return []
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             eventlog.log_server_error(server_id, file_path, e)
             logger.debug("LSP diagnostics fetch failed for %s: %s", file_path, e)
             self._mark_broken_for_file(file_path, e)
@@ -372,7 +372,7 @@ class LSPService:
             # diagnosticTracking.
             try:
                 fresh = self._loop.run(self._current_diags_async(file_path), timeout=2.0) or []
-            except Exception:  # noqa: BLE001
+            except Exception:
                 fresh = []
             if fresh:
                 self._delta_baseline[abs_path] = fresh
@@ -408,7 +408,7 @@ class LSPService:
             return
         try:
             per_server_root = srv.resolve_root(file_path, ws_root) or ws_root
-        except Exception:  # noqa: BLE001
+        except Exception:
             per_server_root = ws_root
         key = (srv.server_id, per_server_root)
         already_broken = key in self._broken
@@ -425,7 +425,7 @@ class LSPService:
                 # Fire-and-forget shutdown — give it a second to cleanup,
                 # but don't block.  We're already on a slow path.
                 self._loop.run(client.shutdown(), timeout=1.0)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
         if not already_broken:
@@ -437,7 +437,7 @@ class LSPService:
             return
         try:
             self._loop.run(self._shutdown_async(), timeout=10.0)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("LSP shutdown error: %s", e)
         self._loop.stop()
         clear_cache()
@@ -453,7 +453,7 @@ class LSPService:
         try:
             version = await client.open_file(file_path, language_id=language_id_for(file_path))
             await client.wait_for_diagnostics(file_path, version, mode=self._wait_mode)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("snapshot open/wait failed: %s", e)
             return []
         self._last_used[(client.server_id, client.workspace_root)] = time.time()
@@ -467,7 +467,7 @@ class LSPService:
             version = await client.open_file(file_path, language_id=language_id_for(file_path))
             await client.save_file(file_path)
             await client.wait_for_diagnostics(file_path, version, mode=self._wait_mode)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("open/wait failed for %s: %s", file_path, e)
             return []
         self._last_used[(client.server_id, client.workspace_root)] = time.time()
@@ -514,7 +514,7 @@ class LSPService:
         if spawning is not None:
             try:
                 return await spawning
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return None
 
         # Begin spawn
@@ -551,7 +551,7 @@ class LSPService:
             )
             try:
                 await client.start()
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 eventlog.log_spawn_failed(srv.server_id, per_server_root, e)
                 self._broken.add(key)
                 spawn_future.set_result(None)

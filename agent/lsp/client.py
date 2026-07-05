@@ -436,13 +436,13 @@ class LSPClient:
             self._reader_task.cancel()
             try:
                 await self._reader_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except (asyncio.CancelledError, Exception):
                 pass
         if self._stderr_task is not None and not self._stderr_task.done():
             self._stderr_task.cancel()
             try:
                 await self._stderr_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except (asyncio.CancelledError, Exception):
                 pass
         proc = self._proc
         self._proc = None
@@ -553,7 +553,7 @@ class LSPClient:
             return
         try:
             result = await handler(params)
-        except Exception as e:  # noqa: BLE001 — protocol must not blow up
+        except Exception as e:
             logger.warning("[%s] request handler %s failed: %s", self.server_id, method, e)
             await self._send_error_response(req_id, -32000, f"handler failed: {e}")
             return
@@ -565,7 +565,7 @@ class LSPClient:
             return
         try:
             handler(msg.get("params"))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("[%s] notification handler %s failed: %s", self.server_id, method, e)
 
     # ------------------------------------------------------------------
@@ -834,7 +834,7 @@ class LSPClient:
             for t in pending:
                 try:
                     await t
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                except (asyncio.CancelledError, Exception):
                     pass
 
             # If we got a fresh push for our version, we're done.

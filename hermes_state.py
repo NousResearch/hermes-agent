@@ -3467,6 +3467,91 @@ class SessionDB:
             result.append(msg)
         return result
 
+    def get_recent_cross_session_messages(
+        self,
+        *,
+        current_session_id: str,
+        lookback_seconds: int = 86400,
+        max_sessions: int = 4,
+        max_messages_per_session: int = 4,
+        max_chars_per_message: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """Return compact recent user/assistant activity from other sessions.
+
+        This is the storage primitive for opt-in cross-channel context. It is
+        intentionally read-only and excludes the active session: callers use it
+        to give a new session awareness of nearby work without merging histories
+        or changing any channel's routing/response behavior.
+        """
+        if max_sessions <= 0 or max_messages_per_session <= 0:
+            return []
+
+        try:
+            cutoff = time.time() - max(0, int(lookback_seconds))
+        except (TypeError, ValueError):
+            cutoff = time.time() - 86400
+        max_sessions = max(1, min(int(max_sessions), 20))
+        max_messages_per_session = max(1, min(int(max_messages_per_session), 20))
+        max_chars_per_message = max(80, min(int(max_chars_per_message), 4000))
+
+        with self._lock:
+            session_rows = self._conn.execute(
+                """
+                SELECT
+                    s.id, s.source, s.user_id, s.session_key, s.chat_id,
+                    s.chat_type, s.thread_id, s.title, s.started_at,
+                    MAX(m.timestamp) AS last_active
+                FROM sessions s
+                JOIN messages m ON m.session_id = s.id
+                WHERE s.id != ?
+                  AND COALESCE(s.source, '') != 'tool'
+                  AND m.active = 1
+                  AND m.role IN ('user', 'assistant')
+                  AND m.content IS NOT NULL
+                  AND LENGTH(TRIM(m.content)) > 0
+                  AND m.timestamp >= ?
+                GROUP BY s.id
+                ORDER BY last_active DESC, s.started_at DESC, s.id DESC
+                LIMIT ?
+                """,
+                (current_session_id or "", cutoff, max_sessions),
+            ).fetchall()
+
+            out: List[Dict[str, Any]] = []
+            for session_row in session_rows:
+                message_rows = self._conn.execute(
+                    """
+                    SELECT id, role, content, timestamp
+                    FROM messages
+                    WHERE session_id = ?
+                      AND active = 1
+                      AND role IN ('user', 'assistant')
+                      AND content IS NOT NULL
+                      AND LENGTH(TRIM(content)) > 0
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (session_row["id"], max_messages_per_session),
+                ).fetchall()
+                out.append(
+                    {
+                        "session": dict(session_row),
+                        "messages": [dict(row) for row in reversed(message_rows)],
+                    }
+                )
+
+        for item in out:
+            for msg in item["messages"]:
+                content = self._decode_content(msg.get("content"))
+                if not isinstance(content, str):
+                    content = json.dumps(content, ensure_ascii=False)
+                content = sanitize_context(content)
+                content = re.sub(r"\s+", " ", content).strip()
+                if len(content) > max_chars_per_message:
+                    content = content[: max_chars_per_message - 3].rstrip() + "..."
+                msg["content"] = content
+        return out
+
     def get_messages_around(
         self,
         session_id: str,

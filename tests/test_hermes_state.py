@@ -271,6 +271,30 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["model"] == "openai/gpt-5.4"
 
+    def test_recent_cross_session_messages_excludes_active_and_bounds_content(self, db):
+        now = time.time()
+        db.create_session(session_id="active", source="cli")
+        db.append_message("active", "user", "do not include", timestamp=now)
+        db.create_session(session_id="telegram-session", source="telegram", chat_id="group-1", chat_type="group")
+        db.append_message("telegram-session", "user", "research product alpha", timestamp=now - 20)
+        db.append_message("telegram-session", "assistant", "Alpha result " + ("x" * 200), timestamp=now - 10)
+        db.create_session(session_id="old", source="discord")
+        db.append_message("old", "user", "too old", timestamp=now - 100000)
+
+        rows = db.get_recent_cross_session_messages(
+            current_session_id="active",
+            lookback_seconds=3600,
+            max_sessions=5,
+            max_messages_per_session=2,
+            max_chars_per_message=40,
+        )
+
+        assert [row["session"]["id"] for row in rows] == ["telegram-session"]
+        assert [msg["role"] for msg in rows[0]["messages"]] == ["user", "assistant"]
+        assert rows[0]["messages"][0]["content"] == "research product alpha"
+        assert rows[0]["messages"][1]["content"].endswith("...")
+        assert len(rows[0]["messages"][1]["content"]) <= 80
+
     def test_update_token_counts_preserves_existing_model(self, db):
         db.create_session(session_id="s1", source="cli", model="anthropic/claude-opus-4.6")
         db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")

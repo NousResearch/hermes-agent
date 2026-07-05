@@ -409,6 +409,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if system_message is not None:
         context_parts.append(system_message)
 
+    try:
+        from agent.cross_channel_context import build_cross_channel_context_block
+
+        cross_channel_context = build_cross_channel_context_block(agent)
+        if cross_channel_context:
+            context_parts.append(cross_channel_context)
+    except Exception:
+        pass
+
     if not agent.skip_context_files:
         # Prefer the configured TERMINAL_CWD (gateway mode). When unset (local
         # CLI), None lets build_context_files_prompt fall back to the launch

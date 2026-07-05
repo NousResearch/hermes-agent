@@ -986,6 +986,20 @@ DEFAULT_CONFIG = {
         # (docker/modal/ssh — they have their own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
+        # Opt-in cross-channel awareness. When enabled, a new session's cached
+        # system prompt includes a compact read-only digest of recent
+        # user/assistant activity from other sessions in the shared state DB.
+        # Named profile state DBs are included by default only after this
+        # feature is explicitly enabled, preserving profile isolation by
+        # default while supporting multi-profile gateway groups.
+        "cross_channel_context": {
+            "enabled": False,
+            "lookback_seconds": 86400,
+            "max_sessions": 4,
+            "max_messages_per_session": 4,
+            "max_chars_per_message": 500,
+            "include_profiles": True,
+        },
         # Embedder-supplied environment description appended to the system
         # prompt's environment-hints block. Lets a host that wraps Hermes
         # (sandbox runner, managed platform) explain the runtime environment

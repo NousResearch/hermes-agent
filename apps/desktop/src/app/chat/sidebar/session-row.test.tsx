@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $replyReadySessionIds, $replyReadySessionProfiles } from '@/store/session'
+import { $attentionSessionIds, $replyReadySessionIds, $replyReadySessionProfiles } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { SidebarSessionRow } from './session-row'
@@ -25,6 +25,8 @@ const session = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
 
 describe('SidebarSessionRow reply-ready acknowledgement', () => {
   afterEach(() => {
+    cleanup()
+    $attentionSessionIds.set([])
     $replyReadySessionIds.set([])
     $replyReadySessionProfiles.set({})
   })
@@ -48,10 +50,42 @@ describe('SidebarSessionRow reply-ready acknowledgement', () => {
       />
     )
 
-    fireEvent.click(screen.getAllByRole('button', { name: /needs review/i })[0])
+    fireEvent.click(rowButton())
 
     expect($replyReadySessionIds.get()).toEqual([])
     expect($replyReadySessionProfiles.get()).toEqual({})
     expect(onResume).toHaveBeenCalledTimes(1)
   })
+
+  it('clears attention markers before resuming the clicked row', () => {
+    const onResume = vi.fn()
+
+    $attentionSessionIds.set(['root-1'])
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected
+        isWorking={false}
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+        onPin={vi.fn()}
+        onResume={onResume}
+        session={session({ _lineage_root_id: 'root-1' })}
+      />
+    )
+
+    fireEvent.click(rowButton())
+
+    expect($attentionSessionIds.get()).toEqual([])
+    expect(onResume).toHaveBeenCalledTimes(1)
+  })
 })
+
+function rowButton(): HTMLButtonElement {
+  const button = screen.getByText('Needs review').closest('button')
+
+  expect(button).not.toBeNull()
+
+  return button as HTMLButtonElement
+}

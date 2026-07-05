@@ -12,7 +12,13 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds, $replyReadySessionIds, clearSessionReplyReady, sessionPinId } from '@/store/session'
+import {
+  $attentionSessionIds,
+  $replyReadySessionIds,
+  clearSessionNotifications,
+  sessionHasVisibleNotification,
+  sessionPinId
+} from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -76,19 +82,13 @@ export function SidebarSessionRow({
   // Telegram thread continued here still reads as Telegram.
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
   const handoffLabel = handoffSource ? sessionSourceLabel(handoffSource) ?? handoffSource : null
-  const pinId = sessionPinId(session)
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
-  const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const attentionIds = useStore($attentionSessionIds)
   const replyReadyIds = useStore($replyReadySessionIds)
-  const replyReady = replyReadyIds.includes(session.id) || replyReadyIds.includes(pinId)
-
-  const clearReplyReady = () => {
-    clearSessionReplyReady(session.id)
-    clearSessionReplyReady(pinId)
-    clearSessionReplyReady(session._lineage_root_id)
-  }
+  const needsInput = sessionHasVisibleNotification(session, attentionIds, [])
+  const replyReady = sessionHasVisibleNotification(session, [], replyReadyIds)
 
   const handleDragStart = (event: React.DragEvent<HTMLElement>) => {
     // Reorder drags belong to dnd-kit (the grab handle) — cancel the native
@@ -154,13 +154,13 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              clearReplyReady()
+              clearSessionNotifications(session)
               void openSessionInNewWindow(session.id)
 
               return
             }
 
-            clearReplyReady()
+            clearSessionNotifications(session)
             onResume()
           }}
           onDragStart={handleDragStart}

@@ -7,12 +7,8 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import {
   persistBoolean,
   persistString,
-  persistStringArray,
-  persistStringRecord,
   storedBoolean,
-  storedString,
-  storedStringArray,
-  storedStringRecord
+  storedString
 } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
@@ -31,6 +27,13 @@ const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 const REPLY_READY_SESSION_IDS_KEY = 'hermes.desktop.replyReadySessionIds'
 const REPLY_READY_SESSION_PROFILES_KEY = 'hermes.desktop.replyReadySessionProfiles'
+
+try {
+  localStorage.removeItem(REPLY_READY_SESSION_IDS_KEY)
+  localStorage.removeItem(REPLY_READY_SESSION_PROFILES_KEY)
+} catch {
+  // Non-browser test/import contexts do not expose localStorage.
+}
 
 let configuredDefaultProjectDir = ''
 
@@ -217,8 +220,8 @@ export const $messagingTruncated = atom<boolean>(false)
 export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
-export const $replyReadySessionIds = atom<string[]>(storedStringArray(REPLY_READY_SESSION_IDS_KEY))
-export const $replyReadySessionProfiles = atom<Record<string, string>>(storedStringRecord(REPLY_READY_SESSION_PROFILES_KEY))
+export const $replyReadySessionIds = atom<string[]>([])
+export const $replyReadySessionProfiles = atom<Record<string, string>>({})
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
@@ -472,9 +475,6 @@ const toggleMembership = (set: (next: Updater<string[]>) => void, id: string, on
     return present ? current.filter(x => x !== id) : current
   })
 
-$replyReadySessionIds.subscribe(value => persistStringArray(REPLY_READY_SESSION_IDS_KEY, [...value]))
-$replyReadySessionProfiles.subscribe(value => persistStringRecord(REPLY_READY_SESSION_PROFILES_KEY, value))
-
 export function setSessionReplyReady(
   sessionId: string | null | undefined,
   ready: boolean,
@@ -518,6 +518,27 @@ export function clearSessionReplyReady(sessionId: string | null | undefined) {
   }
 }
 
+export function sessionNotificationAliases(session: SessionInfo): string[] {
+  return [session.id, sessionPinId(session), session._lineage_root_id].filter((id): id is string => Boolean(id))
+}
+
+export function sessionHasVisibleNotification(
+  session: SessionInfo,
+  attentionSessionIds: readonly string[],
+  replyReadySessionIds: readonly string[]
+): boolean {
+  const aliases = sessionNotificationAliases(session)
+
+  return aliases.some(id => attentionSessionIds.includes(id) || replyReadySessionIds.includes(id))
+}
+
+export function clearSessionNotifications(session: SessionInfo) {
+  for (const id of sessionNotificationAliases(session)) {
+    clearSessionReplyReady(id)
+    setSessionAttention(id, false)
+  }
+}
+
 // Stored session ids with a blocking prompt (clarify) waiting on the user.
 // Separate from $workingSessionIds: a session can be "working" (turn running)
 // AND need input. The sidebar row reads this for a persistent indicator that,
@@ -548,12 +569,11 @@ export const $attentionProfileCounts = computed(
   [
     $attentionSessionIds,
     $replyReadySessionIds,
-    $replyReadySessionProfiles,
     $sessions,
     $cronSessions,
     $messagingSessions
   ],
-  (attentionSessionIds, replyReadySessionIds, replyReadySessionProfiles, sessions, cronSessions, messagingSessions) => {
+  (attentionSessionIds, replyReadySessionIds, sessions, cronSessions, messagingSessions) => {
     if (attentionSessionIds.length === 0 && replyReadySessionIds.length === 0) {
       if (Object.keys(lastAttentionProfileCounts).length === 0) {
         return lastAttentionProfileCounts
@@ -564,24 +584,14 @@ export const $attentionProfileCounts = computed(
       return lastAttentionProfileCounts
     }
 
-    const ids = new Set([...attentionSessionIds, ...replyReadySessionIds])
     const next: Record<string, number> = {}
-    const sessionsById = new Map<string, SessionInfo>()
 
     for (const session of [...sessions, ...cronSessions, ...messagingSessions]) {
-      sessionsById.set(session.id, session)
-      sessionsById.set(sessionPinId(session), session)
-    }
-
-    for (const id of ids) {
-      const session = sessionsById.get(id)
-      const profile = session?.profile ?? replyReadySessionProfiles[id]
-
-      if (!profile && !session) {
+      if (!sessionHasVisibleNotification(session, attentionSessionIds, replyReadySessionIds)) {
         continue
       }
 
-      const key = normalizeSessionProfileKey(profile)
+      const key = normalizeSessionProfileKey(session.profile)
       next[key] = (next[key] ?? 0) + 1
     }
 

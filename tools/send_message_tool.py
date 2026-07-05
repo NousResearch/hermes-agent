@@ -45,9 +45,10 @@ _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 # newsletter chats. These are explicit native targets the bridge accepts
 # verbatim — they must NOT fall through to home-channel resolution.
 _WHATSAPP_JID_RE = re.compile(
-    r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
+    r"^\s*[-\w]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
     re.IGNORECASE,
 )
+_WHATSAPP_LID_RE = re.compile(r"^\s*(\d+@lid)\s*$")
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -548,6 +549,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
+            return target_ref.strip(), None, True
+    if platform_name == "whatsapp":
+        match = _WHATSAPP_LID_RE.fullmatch(target_ref)
+        if match:
             return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True

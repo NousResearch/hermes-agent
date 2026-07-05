@@ -6597,7 +6597,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     # usage credits on top of a Claude Max plan — see disclaimer in name).
     {
         "id": "anthropic",
-        "name": "Anthropic API Key",
+        "name": "Anthropic Account",
         "flow": "pkce",
         "cli_command": "hermes auth add anthropic",
         "docs_url": "https://docs.claude.com/en/api/getting-started",

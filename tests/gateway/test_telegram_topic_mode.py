@@ -340,6 +340,15 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
+    # The /new reset message appends a random tip, and one tip legitimately
+    # contains the words "parallel work" (delegate_task ... for parallel work).
+    # Pin the tip so the "parallel work" assertion reliably verifies the
+    # *topic-lane header* is absent for a group /new — rather than flaking on
+    # whichever tip the global RNG happens to select in this slice.
+    import hermes_cli.tips as _tips_mod
+    monkeypatch.setattr(
+        _tips_mod, "get_random_tip", lambda *a, **k: "Use /help to list commands."
+    )
 
     result = await runner._handle_message(_make_group_event("/new", thread_id="555"))
 

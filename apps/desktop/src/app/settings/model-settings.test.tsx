@@ -206,4 +206,41 @@ describe('ModelSettings', () => {
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
+
+  it('clears selectedModel when switching provider so the old model does not linger', async () => {
+    // Two authenticated providers: nous (with models) and omlx (empty — custom
+    // endpoint that wasn't probed on initial load).
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: ['hermes-4', 'hermes-4-mini'],
+          authenticated: true,
+          capabilities: { 'hermes-4': { reasoning: true, fast: true } }
+        },
+        {
+          name: 'oMLX',
+          slug: 'omlx',
+          models: [],
+          authenticated: true,
+          capabilities: {}
+        }
+      ]
+    })
+
+    await renderModelSettings()
+    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
+
+    // Open provider Select and switch from nous to omlx.
+    const triggers = screen.getAllByRole('combobox')
+    fireEvent.click(triggers[0])
+    fireEvent.click(await screen.findByText('oMLX'))
+
+    // The model dropdown should NOT contain the previous provider's model.
+    // withActive() would have injected 'hermes-4' if selectedModel were stale.
+    const modelTriggers = screen.getAllByRole('combobox')
+    fireEvent.click(modelTriggers[1])
+    expect(screen.queryByText('hermes-4')).toBeNull()
+  })
 })

@@ -276,8 +276,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const setupIsApiKey = needsSetup && selectedProviderRow?.auth_type === 'api_key' && !!selectedProviderRow?.key_env
 
   // Clear any half-typed key when switching provider so it can't leak across.
+  // Also reset the selected model so the previous provider's model doesn't
+  // linger in the new provider's (possibly empty) model list via withActive().
   useEffect(() => {
     setApiKeyDraft('')
+    setSelectedModel('')
   }, [selectedProvider])
 
   const auxDraftProviderModels = useMemo(

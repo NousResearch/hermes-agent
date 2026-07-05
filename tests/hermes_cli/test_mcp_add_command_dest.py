@@ -38,7 +38,7 @@ def _build_parser():
     mcp_sub = mcp_p.add_subparsers(dest="mcp_action")
 
     mcp_add = mcp_sub.add_parser("add")
-    mcp_add.add_argument("name")
+    mcp_add.add_argument("name", nargs="?")
     mcp_add.add_argument("--url")
     mcp_add.add_argument("--command", dest="mcp_command")
     mcp_add.add_argument("--args", nargs=argparse.REMAINDER, default=[])
@@ -84,8 +84,18 @@ class TestMcpAddCommandDest:
         args = parser.parse_args(["mcp", "add", "foo"])
 
         assert args.command == "mcp"
+        assert args.name == "foo"
         assert args.mcp_command is None
         assert args.url is None
+
+    def test_bare_mcp_add_can_prompt_for_name_later(self):
+        """`hermes mcp add` parses so the handler can run an interactive flow."""
+        parser = _build_parser()
+        args = parser.parse_args(["mcp", "add"])
+
+        assert args.command == "mcp"
+        assert args.mcp_action == "add"
+        assert args.name is None
 
     def test_args_passthrough_keeps_nested_option_flags(self):
         """`--args` must keep command flags like Docker MCP's --profile."""

@@ -41,7 +41,11 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_add_p = mcp_sub.add_parser(
         "add", help="Add an MCP server (discovery-first install)"
     )
-    mcp_add_p.add_argument("name", help="Server name (used as config key)")
+    mcp_add_p.add_argument(
+        "name",
+        nargs="?",
+        help="Server name (used as config key); prompted when omitted in a TTY",
+    )
     mcp_add_p.add_argument("--url", help="HTTP/SSE endpoint URL")
     # dest="mcp_command" so this flag does not clobber the top-level
     # subparser's args.command attribute, which the dispatcher reads to

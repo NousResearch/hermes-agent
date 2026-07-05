@@ -20,6 +20,13 @@ relay_call = load_module("relay_call", "relay-call.py")
 gate_run = load_module("gate_run", "gate-run.py")
 
 
+def load_relay_status():
+    # โหลดแบบ importlib เหมือน relay-call เพราะชื่อไฟล์มีขีดกลาง import ตรงไม่ได้
+    path = ROOT / "relay-status.py"
+    assert path.exists(), "ต้องมี scripts/ai-relay/relay-status.py"
+    return load_module("relay_status", "relay-status.py")
+
+
 def test_load_registry_example_has_expected_ai_metadata():
     reg = relay_call.load_registry(Path("/tmp/no-local-registry"))
 
@@ -46,6 +53,90 @@ def test_registry_vendor_returns_vendor_or_none():
 
     assert relay_call.registry_vendor(reg, "grok") == "xai"
     assert relay_call.registry_vendor(reg, "missing") is None
+
+
+def test_relay_status_bin_for_uses_registry_bin_or_vendor_default():
+    relay_status = load_relay_status()
+
+    assert relay_status.bin_for("opus", {"vendor": "anthropic"}) == "claude"
+    assert relay_status.bin_for("fable", {"vendor": "anthropic"}) == "claude"
+    assert relay_status.bin_for("ollama", {"vendor": "local"}) == "ollama"
+    assert relay_status.bin_for("grok", {"vendor": "xai"}) == "grok"
+    assert relay_status.bin_for("custom", {"bin": "custom-ai", "vendor": "other"}) == "custom-ai"
+
+
+def test_relay_status_tool_status_missing_bin_is_not_ready_with_hint():
+    relay_status = load_relay_status()
+
+    st = relay_status.tool_status(
+        "gemini",
+        {"vendor": "google", "login_hint": "gemini auth login"},
+        which_fn=lambda _bin: None,
+        cooldown_map={},
+    )
+
+    assert st["installed"] is False
+    assert st["ready"] is False
+    assert "gemini auth login" in st["hint"]
+
+
+def test_relay_status_tool_status_ready_without_probe_when_installed_and_not_paused():
+    relay_status = load_relay_status()
+
+    st = relay_status.tool_status(
+        "grok",
+        {"vendor": "xai", "login_hint": "grok login --device-auth"},
+        which_fn=lambda _bin: "/usr/local/bin/grok",
+        cooldown_map={},
+    )
+
+    assert st["installed"] is True
+    assert st["cooldown"] is False
+    assert st["live"] == "ยังไม่เช็ค (ใส่ --probe เพื่อเช็คจริง)"
+    assert st["ready"] is True
+
+
+def test_relay_status_tool_status_paused_by_cooldown_is_not_ready():
+    relay_status = load_relay_status()
+
+    st = relay_status.tool_status(
+        "grok",
+        {"vendor": "xai", "login_hint": "grok login --device-auth"},
+        which_fn=lambda _bin: "/usr/local/bin/grok",
+        cooldown_map={"grok": {"cooldown": True, "until": 9999999999}},
+    )
+
+    assert st["cooldown"] is True
+    assert st["ready"] is False
+    assert "กำลังพัก" in st["hint"]
+
+
+def test_relay_status_cooldown_matches_real_relay_call_format():
+    # GPT-5 fix-verify: .cooldown.json จริงที่ relay-call เขียน = {tool: {fails:[...], until: epoch}}
+    # relay-status ต้องอ่าน "until" แบบเดียวกับ in_cooldown ของ relay-call (until > now = พัก)
+    relay_status = load_relay_status()
+    now = 1000.0
+    paused = relay_status._normalize_cooldown_value({"fails": [999.0], "until": 2000.0}, now)
+    assert paused["cooldown"] is True
+    not_paused = relay_status._normalize_cooldown_value({"fails": [999.0], "until": 0}, now)
+    assert not_paused["cooldown"] is False
+
+
+def test_relay_status_tool_status_probe_auth_is_not_ready_with_login_hint():
+    relay_status = load_relay_status()
+
+    st = relay_status.tool_status(
+        "gemini",
+        {"vendor": "google", "login_hint": "gemini auth login"},
+        which_fn=lambda _bin: "/usr/local/bin/gemini",
+        cooldown_map={},
+        probe_result="auth",
+    )
+
+    assert st["live"] == "auth"
+    assert st["ready"] is False
+    assert "ล็อกอิน" in st["hint"]
+    assert "gemini auth login" in st["hint"]
 
 
 def test_registry_normalize_single_string_role_and_quoted_enabled():

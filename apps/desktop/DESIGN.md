@@ -96,6 +96,14 @@ Notes:
 - **No dividers between rows** unless the list genuinely needs them; prefer
   spacing. When you do need one, it's a single `--ui-stroke-tertiary` hairline.
 
+## Sidebar notifications
+
+- Profile rail badges must be derived from the same visible notification state
+  as session rows. Do not count stale ids, persisted hints, or background
+  sessions unless a loaded row would show the matching marker.
+- Opening a session must acknowledge all aliases for that row (`id`, pin id,
+  lineage root), so rail badges and row markers reset together.
+
 ## Feedback & empty/error/loading states
 
 - **Loading:** `Loader` (`src/components/ui/loader.tsx`) — animated math/ascii

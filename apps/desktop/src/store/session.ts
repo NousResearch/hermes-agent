@@ -7,12 +7,8 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import {
   persistBoolean,
   persistString,
-  persistStringArray,
-  persistStringRecord,
   storedBoolean,
-  storedString,
-  storedStringArray,
-  storedStringRecord
+  storedString
 } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
@@ -38,6 +34,13 @@ const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 
 export const getRememberedSessionId = (): null | string => storedString(LAST_SESSION_KEY)
 export const setRememberedSessionId = (id: null | string) => persistString(LAST_SESSION_KEY, id)
+
+try {
+  localStorage.removeItem(REPLY_READY_SESSION_IDS_KEY)
+  localStorage.removeItem(REPLY_READY_SESSION_PROFILES_KEY)
+} catch {
+  // Non-browser test/import contexts do not expose localStorage.
+}
 
 let configuredDefaultProjectDir = ''
 
@@ -239,10 +242,8 @@ export const $messagingTruncated = atom<boolean>(false)
 export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
-export const $replyReadySessionIds = atom<string[]>(storedStringArray(REPLY_READY_SESSION_IDS_KEY))
-export const $replyReadySessionProfiles = atom<Record<string, string>>(
-  storedStringRecord(REPLY_READY_SESSION_PROFILES_KEY)
-)
+export const $replyReadySessionIds = atom<string[]>([])
+export const $replyReadySessionProfiles = atom<Record<string, string>>({})
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
@@ -520,9 +521,6 @@ const toggleMembership = (set: (next: Updater<string[]>) => void, id: string, on
     return present ? current.filter(x => x !== id) : current
   })
 
-$replyReadySessionIds.subscribe(value => persistStringArray(REPLY_READY_SESSION_IDS_KEY, [...value]))
-$replyReadySessionProfiles.subscribe(value => persistStringRecord(REPLY_READY_SESSION_PROFILES_KEY, value))
-
 export function setSessionReplyReady(
   sessionId: string | null | undefined,
   ready: boolean,
@@ -617,12 +615,11 @@ export const $attentionProfileCounts = computed(
   [
     $attentionSessionIds,
     $replyReadySessionIds,
-    $replyReadySessionProfiles,
     $sessions,
     $cronSessions,
     $messagingSessions
   ],
-  (attentionSessionIds, replyReadySessionIds, replyReadySessionProfiles, sessions, cronSessions, messagingSessions) => {
+  (attentionSessionIds, replyReadySessionIds, sessions, cronSessions, messagingSessions) => {
     if (attentionSessionIds.length === 0 && replyReadySessionIds.length === 0) {
       if (Object.keys(lastAttentionProfileCounts).length === 0) {
         return lastAttentionProfileCounts
@@ -634,7 +631,6 @@ export const $attentionProfileCounts = computed(
     }
 
     const next: Record<string, number> = {}
-    const countedReplyReadyIds = new Set<string>()
 
     for (const session of [...sessions, ...cronSessions, ...messagingSessions]) {
       if (!sessionHasVisibleNotification(session, attentionSessionIds, replyReadySessionIds)) {
@@ -642,27 +638,6 @@ export const $attentionProfileCounts = computed(
       }
 
       const key = normalizeSessionProfileKey(session.profile)
-      next[key] = (next[key] ?? 0) + 1
-
-      for (const alias of sessionNotificationAliases(session)) {
-        if (replyReadySessionIds.includes(alias)) {
-          countedReplyReadyIds.add(alias)
-        }
-      }
-    }
-
-    for (const id of replyReadySessionIds) {
-      if (countedReplyReadyIds.has(id)) {
-        continue
-      }
-
-      const profile = replyReadySessionProfiles[id]
-
-      if (!profile) {
-        continue
-      }
-
-      const key = normalizeSessionProfileKey(profile)
       next[key] = (next[key] ?? 0) + 1
     }
 

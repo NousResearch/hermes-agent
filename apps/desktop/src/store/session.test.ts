@@ -15,6 +15,7 @@ import {
   $sessions,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
+  clearSessionNotifications,
   clearSessionReplyReady,
   getRecentlySettledSessionIds,
   mergeSessionPage,
@@ -106,7 +107,7 @@ describe('setSessionAttention', () => {
     expect($attentionProfileCounts.get()).toBe(first)
   })
 
-  it('counts persisted reply-ready profile hints before that profile is loaded', () => {
+  it('ignores persisted reply-ready profile hints until the session is visible', () => {
     $sessions.set([])
     $cronSessions.set([])
     $messagingSessions.set([])
@@ -114,16 +115,27 @@ describe('setSessionAttention', () => {
     $replyReadySessionIds.set(['fresh-session'])
     $replyReadySessionProfiles.set({ 'fresh-session': 'film-maker' })
 
-    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
+    expect($attentionProfileCounts.get()).toEqual({})
   })
 
-  it('uses the stored profile as a fallback for loaded reply-ready rows', () => {
-    $sessions.set([session({ id: 'fresh-session', profile: undefined })])
+  it('counts loaded reply-ready rows under their visible profile', () => {
+    $sessions.set([session({ id: 'fresh-session', profile: 'film-maker' })])
     $cronSessions.set([])
     $messagingSessions.set([])
     $attentionSessionIds.set([])
     $replyReadySessionIds.set(['fresh-session'])
-    $replyReadySessionProfiles.set({ 'fresh-session': 'film-maker' })
+    $replyReadySessionProfiles.set({})
+
+    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
+  })
+
+  it('resolves attention and reply-ready markers through session aliases', () => {
+    $sessions.set([session({ id: 'tip-2', _lineage_root_id: 'root-1', profile: 'film-maker' })])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $attentionSessionIds.set(['root-1'])
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
 
     expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
   })
@@ -137,6 +149,8 @@ describe('setSessionReplyReady', () => {
     $workingSessionIds.set([])
     $replyReadySessionIds.set([])
     $replyReadySessionProfiles.set({})
+    localStorage.removeItem('hermes.desktop.replyReadySessionIds')
+    localStorage.removeItem('hermes.desktop.replyReadySessionProfiles')
 
     for (const id of getRecentlySettledSessionIds(Number.MAX_SAFE_INTEGER)) {
       void id
@@ -163,7 +177,14 @@ describe('setSessionReplyReady', () => {
     $replyReadySessionProfiles.set({})
   })
 
-  it('marks a finished background turn as waiting under its profile hint', () => {
+  it('does not persist reply-ready markers across app restarts', () => {
+    setSessionReplyReady('s1', true, 'film-maker')
+
+    expect(localStorage.getItem('hermes.desktop.replyReadySessionIds')).toBeNull()
+    expect(localStorage.getItem('hermes.desktop.replyReadySessionProfiles')).toBeNull()
+  })
+
+  it('does not show a rail badge for a finished turn until its row is visible', () => {
     $sessions.set([])
     $cronSessions.set([])
     $messagingSessions.set([])
@@ -175,7 +196,7 @@ describe('setSessionReplyReady', () => {
     setSessionWorking('bg-session', false)
 
     expect($replyReadySessionIds.get()).toEqual(['bg-session'])
-    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
+    expect($attentionProfileCounts.get()).toEqual({})
   })
 
   it('clears reply-ready markers by live id, stored id, or lineage root', () => {
@@ -187,6 +208,24 @@ describe('setSessionReplyReady', () => {
 
     clearSessionReplyReady('tip-2')
 
+    expect($replyReadySessionIds.get()).toEqual([])
+    expect($replyReadySessionProfiles.get()).toEqual({})
+    expect($attentionProfileCounts.get()).toEqual({})
+  })
+
+  it('clears all visible notification aliases for a session', () => {
+    const current = session({ id: 'tip-2', _lineage_root_id: 'root-1', profile: 'film-maker' })
+
+    $sessions.set([current])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $attentionSessionIds.set(['tip-2', 'root-1'])
+    $replyReadySessionIds.set(['root-1'])
+    $replyReadySessionProfiles.set({ 'root-1': 'film-maker' })
+
+    clearSessionNotifications(current)
+
+    expect($attentionSessionIds.get()).toEqual([])
     expect($replyReadySessionIds.get()).toEqual([])
     expect($replyReadySessionProfiles.get()).toEqual({})
     expect($attentionProfileCounts.get()).toEqual({})

@@ -151,6 +151,20 @@ describe('ProfileRail attention badges', () => {
     expect(profileButton.textContent).toContain('2')
   })
 
+  it('does not show stale waiting counts for sessions that are not visible', () => {
+    $sessions.set([sessionInfo({ id: 's3', profile: 'default', title: 'Idle default' })])
+    $replyReadySessionIds.set(['missing-1', 'missing-2'])
+    $replyReadySessionProfiles.set({ 'missing-1': 'film-maker', 'missing-2': 'film-maker' })
+
+    render(
+      <MemoryRouter>
+        <ProfileRail />
+      </MemoryRouter>
+    )
+
+    expect(screen.queryByRole('button', { name: /film-maker, .*waiting for your reply/i })).toBeNull()
+  })
+
   it('keeps waiting-reply counts in the profile rail layout flow', () => {
     render(
       <MemoryRouter>

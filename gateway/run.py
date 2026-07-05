@@ -6126,7 +6126,22 @@ class TurnRunner:
             # is active.  The approval message send auto-clears the Slack
             # status; pausing prevents _keep_typing from re-setting it.
             # Typing resumes in _handle_approve_command/_handle_deny_command.
-            ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)
+            approval_route = _resolve_approval_prompt_route(
+                ctx.user_config,
+                self._runner.adapters,
+                source=ctx.source,
+                origin_adapter=ctx._status_adapter,
+                origin_chat_id=ctx._status_chat_id,
+                origin_metadata=ctx._status_thread_metadata,
+            )
+            if approval_route.escalated:
+                _send_approval_escalated_origin_notice_sync(
+                    ctx._status_adapter,
+                    ctx._status_chat_id,
+                    ctx._status_thread_metadata,
+                    ctx._loop_for_step,
+                )
+            approval_route.adapter.pause_typing_for_chat(approval_route.chat_id)
 
             cmd = approval_data.get("command", "")
             desc = approval_data.get("description", "dangerous command")
@@ -6142,15 +6157,15 @@ class TurnRunner:
             # Prefer button-based approval when the adapter supports it.
             # Check the *class* for the method, not the instance — avoids
             # false positives from MagicMock auto-attribute creation in tests.
-            if getattr(type(ctx._status_adapter), "send_exec_approval", None) is not None:
+            if getattr(type(approval_route.adapter), "send_exec_approval", None) is not None:
                 try:
                     _approval_fut = safe_schedule_threadsafe(
-                        ctx._status_adapter.send_exec_approval(
-                            chat_id=ctx._status_chat_id,
+                        approval_route.adapter.send_exec_approval(
+                            chat_id=approval_route.chat_id,
                             command=cmd,
                             session_key=_approval_session_key,
                             description=desc,
-                            metadata=ctx._status_thread_metadata,
+                            metadata=approval_route.metadata,
                             allow_permanent=approval_data.get("allow_permanent", True),
                             allow_session=approval_data.get("allow_session", True),
                             smart_denied=approval_data.get("smart_denied", False),
@@ -6179,19 +6194,32 @@ class TurnRunner:
                             "stays armed for a late tap)"
                         )
                         return
-                    logger.warning(
-                        "Button-based approval failed (send returned error), falling back to text"
-                    )
+                    if approval_route.escalated:
+                        logger.warning(
+                            "Escalated approval prompt failed (send returned error)"
+                        )
+                    else:
+                        logger.warning(
+                            "Button-based approval failed (send returned error), falling back to text"
+                        )
                 except Exception as _e:
-                    logger.warning(
-                        "Button-based approval failed, falling back to text: %s", _e
-                    )
+                    if approval_route.escalated:
+                        logger.warning("Escalated approval prompt failed: %s", _e)
+                    else:
+                        logger.warning(
+                            "Button-based approval failed, falling back to text: %s", _e
+                        )
+
+            if approval_route.escalated:
+                raise RuntimeError(
+                    "escalated approval prompt could not be delivered with interactive buttons"
+                )
 
             # Fallback: plain text approval prompt.  Use the adapter's
             # typed prefix so Slack/Matrix users are told the form they
             # can actually type (`!approve`) — typed "/" is blocked in
             # Slack threads and reserved by Matrix clients.
-            _p = getattr(ctx._status_adapter, "typed_command_prefix", "/")
+            _p = getattr(approval_route.adapter, "typed_command_prefix", "/")
             msg = _format_exec_approval_fallback(
                 cmd,
                 desc,
@@ -6202,10 +6230,10 @@ class TurnRunner:
             )
             try:
                 _approval_send_fut = safe_schedule_threadsafe(
-                    ctx._status_adapter.send(
-                        ctx._status_chat_id,
+                    approval_route.adapter.send(
+                        approval_route.chat_id,
                         msg,
-                        metadata=_interim_metadata(ctx._status_thread_metadata),
+                        metadata=_interim_metadata(approval_route.metadata),
                     ),
                     ctx._loop_for_step,
                     logger=logger,

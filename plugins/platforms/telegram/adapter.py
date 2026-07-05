@@ -213,12 +213,13 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Markdown table → Telegram-friendly row groups
+# Markdown table → Telegram-friendly monospaced tables
 # ---------------------------------------------------------------------------
 # Telegram's MarkdownV2 has no table syntax — '|' is just an escaped literal,
-# so pipe tables render as noisy backslash-pipe text with no alignment.
-# Reformating each row into a bold heading plus bullet list keeps the content
-# readable on mobile clients while preserving the source data.
+# so rich-message-disabled delivery needs a fallback that still *looks* like a
+# table. Render detected GFM pipe tables as fenced, padded monospace blocks:
+# banner-free legacy sendMessage delivery, but visually table-shaped instead of
+# lossy bullet groups.
 
 # Matches a GFM table delimiter row: optional outer pipes, cells containing
 # only dashes (with optional leading/trailing colons for alignment) separated
@@ -246,7 +247,7 @@ def _split_markdown_table_row(line: str) -> list[str]:
 
 
 def _render_table_block_for_telegram(table_block: list[str]) -> str:
-    """Render a detected GFM table as Telegram-friendly row groups."""
+    """Render a detected GFM table as a MarkdownV2-safe monospace block."""
     if len(table_block) < 3:
         return "\n".join(table_block)
 
@@ -254,56 +255,34 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
     if len(headers) < 2:
         return "\n".join(table_block)
 
-    # Detect row-label column: present when data rows have one more cell
-    # than the header row (the row-label column carries no header).
-    first_data_row = _split_markdown_table_row(table_block[2]) if len(table_block) > 2 else []
-    has_row_label_col = len(first_data_row) == len(headers) + 1
-
-    rendered_groups: list[str] = []
-    for index, row in enumerate(table_block[2:], start=1):
+    rows = [headers]
+    for row in table_block[2:]:
         cells = _split_markdown_table_row(row)
-        if has_row_label_col:
-            # First cell is the row-label (heading); remaining cells align with headers.
-            heading = cells[0] if cells and cells[0] else f"Row {index}"
-            data_cells = cells[1:]
-        else:
-            # No row-label column: use first non-empty cell as heading.
-            heading = next((cell for cell in cells if cell), f"Row {index}")
-            data_cells = cells
+        if len(cells) < len(headers):
+            cells.extend([""] * (len(headers) - len(cells)))
+        rows.append(cells[: len(headers)])
 
-        # Pad or trim data_cells to match headers length.
-        if len(data_cells) < len(headers):
-            data_cells.extend([""] * (len(headers) - len(data_cells)))
-        elif len(data_cells) > len(headers):
-            data_cells = data_cells[: len(headers)]
+    widths = [
+        max(len(str(row[col])) for row in rows)
+        for col in range(len(headers))
+    ]
 
-        # Build the bulleted lines for this row.  Skip any bullet whose value
-        # duplicates the heading text -- when has_row_label_col is False the
-        # heading IS the first data cell, and emitting it twice (once as the
-        # bold heading, once as the first bullet) is visual noise.
-        bullets: list[str] = []
-        for header, value in zip(headers, data_cells):
-            if not has_row_label_col and value == heading:
-                continue
-            bullets.append(f"• {header}: {value}")
+    def _render_row(cells: list[str]) -> str:
+        return " | ".join(str(cell).ljust(widths[idx]) for idx, cell in enumerate(cells))
 
-        # Within a row-group: single newline between heading and its bullets,
-        # and between successive bullets.  This keeps the row visually tight
-        # on Telegram instead of stretching each bullet into its own paragraph.
-        group_lines = [f"**{heading}**", *bullets]
-        rendered_groups.append("\n".join(group_lines))
-
-    # Between row-groups: blank line so each group reads as a distinct block.
-    return "\n\n".join(rendered_groups)
+    separator = "-+-".join("-" * width for width in widths)
+    rendered = [_render_row(headers), separator]
+    rendered.extend(_render_row(row) for row in rows[1:])
+    return "```\n" + "\n".join(rendered) + "\n```"
 
 
 def _wrap_markdown_tables(text: str) -> str:
-    """Rewrite GFM-style pipe tables into Telegram-friendly bullet groups.
+    """Rewrite GFM-style pipe tables into visible monospaced tables.
 
     Detected by a row containing '|' immediately followed by a delimiter
     row matching :data:`_TABLE_SEPARATOR_RE`.  Subsequent pipe-containing
     non-blank lines are consumed as the table body and rewritten as
-    per-row bullet groups. Tables inside existing fenced code blocks are left
+    fenced table blocks. Tables inside existing fenced code blocks are left
     alone.
     """
     if '|' not in text or '-' not in text:
@@ -489,12 +468,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # path degrades (tables → bullet lists, task lists, <details>, block
         # math) via sendRichMessage / editMessageText's rich_message param using
         # the raw agent markdown. Disabled by default so Telegram messages stay
-        # easy to copy as plain text; users can opt in for richer rendering on
-        # clients that accept but render rich messages poorly via
-        # platforms.telegram.extra.rich_messages: true.  Keep this opt-in:
-        # current Telegram clients can make rich messages difficult to copy
-        # as plain text, which is worse than degraded table/task-list rendering
-        # for command snippets and mobile handoffs.
+        # easy to copy as plain text and remain readable on clients/surfaces
+        # that do not support rich messages yet. Users can opt in for richer
+        # rendering via platforms.telegram.extra.rich_messages: true.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
@@ -1158,11 +1134,11 @@ class TelegramAdapter(BasePlatformAdapter):
     def _content_is_pipe_table_primary(self, content: str) -> bool:
         """True when pipe tables are the only rich construct in *content*.
 
-        Tables are auto-routed to ``sendRichMessage`` even when the full
-        ``rich_messages`` opt-in is off — MarkdownV2 has no table syntax and
-        the legacy path rewrites them into bullet lists, which reads like a
-        regression when users enable Telegram Topics and expect native tables.
-        Task lists, ``<details>``, and block math still require the full opt-in.
+        Kept as a content classifier for tests/future routing, but it must not
+        bypass the explicit ``rich_messages`` opt-in. Telegram forum/web/desktop
+        clients can display Bot API 10.1 ``sendRichMessage`` payloads as
+        unsupported-message cards, so ``rich_messages: false`` must force the
+        legacy MarkdownV2 path for tables too.
         """
         if not content or not any(
             _TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()
@@ -1178,10 +1154,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _rich_delivery_enabled(self, content: str) -> bool:
         """Whether rich delivery is allowed for this payload."""
-        return bool(
-            getattr(self, "_rich_messages_enabled", True)
-            or self._content_is_pipe_table_primary(content)
-        )
+        return bool(getattr(self, "_rich_messages_enabled", True))
 
     def _rich_eligible(self, content: str) -> bool:
         """Capability/content eligibility for rich, ignoring ``expect_edits``.

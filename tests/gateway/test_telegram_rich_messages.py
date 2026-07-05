@@ -18,6 +18,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, TimedOut
 
 
@@ -31,6 +32,14 @@ TABLE_ONLY_CONTENT = (
     "|---|---|---|---|\n"
     "| Red Sox | 36 | 34 | 6.0 |\n"
     "| Dodgers | 40 | 30 | 2.0 |"
+)
+TABLE_ONLY_LEGACY_RENDERED = (
+    "```\n"
+    "Team    | W  | L  | GB \n"
+    "--------+----+----+----\n"
+    "Red Sox | 36 | 34 | 6.0\n"
+    "Dodgers | 40 | 30 | 2.0\n"
+    "```"
 )
 DANGEROUS_DETAILS_MATH = (
     "<details><summary>Complex proof</summary>\n\n"
@@ -80,6 +89,12 @@ def _rich_api_kwargs(adapter):
     call = adapter._bot.do_api_request.call_args
     assert call.args[0] == "sendRichMessage"
     return call.kwargs["api_kwargs"]
+
+
+def test_legacy_format_preserves_pipe_tables_as_visible_monospaced_table():
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    assert adapter.format_message(TABLE_ONLY_CONTENT) == TABLE_ONLY_LEGACY_RENDERED
 
 
 @pytest.mark.asyncio
@@ -534,21 +549,23 @@ async def test_notification_opt_in_drops_disable_flag():
 
 
 @pytest.mark.asyncio
-async def test_table_only_uses_rich_when_rich_messages_opt_out():
-    """Pipe tables auto-route to sendRichMessage even without the full opt-in."""
+async def test_table_only_respects_rich_messages_opt_out():
+    """Pipe tables stay on the legacy path when rich_messages is disabled."""
     adapter = _make_adapter(extra={"rich_messages": False})
 
     result = await adapter.send("12345", TABLE_ONLY_CONTENT)
 
     assert result.success is True
-    api_kwargs = _rich_api_kwargs(adapter)
-    assert api_kwargs["rich_message"]["markdown"] == TABLE_ONLY_CONTENT
-    adapter._bot.send_message.assert_not_called()
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited_once()
+    call = adapter._bot.send_message.call_args
+    assert call.kwargs["parse_mode"] == ParseMode.MARKDOWN_V2
+    assert call.kwargs["text"] == TABLE_ONLY_LEGACY_RENDERED
 
 
 @pytest.mark.asyncio
-async def test_table_only_uses_rich_with_default_config():
-    """Default config keeps task lists on legacy but upgrades bare tables."""
+async def test_table_only_uses_legacy_with_default_config():
+    """Default config keeps bare tables on the legacy MarkdownV2 path."""
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = TelegramAdapter(config)
     bot = MagicMock()
@@ -560,14 +577,17 @@ async def test_table_only_uses_rich_with_default_config():
     result = await adapter.send("12345", TABLE_ONLY_CONTENT)
 
     assert result.success is True
-    bot.do_api_request.assert_awaited_once()
-    bot.send_message.assert_not_called()
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited_once()
+    call = bot.send_message.call_args
+    assert call.kwargs["parse_mode"] == ParseMode.MARKDOWN_V2
+    assert call.kwargs["text"] == TABLE_ONLY_LEGACY_RENDERED
 
 
 @pytest.mark.asyncio
-async def test_dm_topic_resumed_send_uses_rich_for_table_without_reply_anchor():
+async def test_dm_topic_resumed_rich_send_routes_table_without_reply_anchor():
     """Resumed/synthetic DM-topic sends route tables via direct_messages_topic_id."""
-    adapter = _make_adapter(extra={"rich_messages": False})
+    adapter = _make_adapter(extra={"rich_messages": True})
 
     result = await adapter.send(
         "123",
@@ -588,7 +608,7 @@ async def test_dm_topic_resumed_send_uses_rich_for_table_without_reply_anchor():
 
 @pytest.mark.asyncio
 async def test_finalize_edit_rich_includes_forum_topic_routing():
-    adapter = _make_adapter(extra={"rich_messages": False})
+    adapter = _make_adapter(extra={"rich_messages": True})
 
     result = await adapter.edit_message(
         "-100123",

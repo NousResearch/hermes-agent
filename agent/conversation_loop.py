@@ -156,6 +156,41 @@ def _ra():
     return run_agent
 
 
+def _emit_preflight_token_usage(agent: Any, request_tokens: int) -> None:
+    """Send the current request-size estimate through the live usage channel."""
+    if request_tokens <= 0:
+        return
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return
+
+    try:
+        previous = getattr(compressor, "last_prompt_tokens", 0) or 0
+        if request_tokens > previous:
+            compressor.last_prompt_tokens = request_tokens
+    except Exception:
+        logger.debug("could not update preflight context estimate", exc_info=True)
+
+    emit = getattr(agent, "_emit_token_usage", None)
+    if not callable(emit):
+        return
+
+    try:
+        emit(
+            input_tokens=getattr(agent, "session_input_tokens", 0)
+            or getattr(agent, "session_prompt_tokens", 0)
+            or 0,
+            output_tokens=getattr(agent, "session_output_tokens", 0)
+            or getattr(agent, "session_completion_tokens", 0)
+            or 0,
+            total_tokens=getattr(agent, "session_total_tokens", 0) or 0,
+            context_tokens=request_tokens,
+            context_length=getattr(compressor, "context_length", 0) or 0,
+        )
+    except Exception:
+        logger.debug("could not emit preflight token usage", exc_info=True)
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -3573,7 +3608,11 @@ def run_conversation(
                             "failed": True,
                             "compression_exhausted": True,
                         }
-                    agent._buffer_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
+                    pre_compress_request_tokens = approx_request_tokens if approx_request_tokens > 0 else approx_tokens
+                    agent._buffer_status(
+                        f"🗜️ Context too large (~{pre_compress_request_tokens:,} request tokens) "
+                        f"— compressing ({compression_attempts}/{max_compression_attempts})..."
+                    )
 
                     original_len = len(messages)
                     original_tokens = estimate_messages_tokens_rough(messages)
@@ -3597,6 +3636,7 @@ def run_conversation(
                             agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                         elif new_tokens > 0 and new_tokens < original_tokens * 0.95:
                             agent._buffer_status(f"🗜️ Compressed ~{original_tokens:,} → ~{new_tokens:,} tokens, retrying...")
+                        _emit_preflight_token_usage(agent, new_tokens)
                         time.sleep(2)  # Brief pause between compression retries
                         _retry.restart_with_compressed_messages = True
                         break

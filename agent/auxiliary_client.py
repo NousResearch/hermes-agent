@@ -1674,7 +1674,7 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     return api_key, base_url
 
 
-def _read_codex_access_token() -> Optional[str]:
+def _read_codex_access_token(requested_model: Optional[str] = None) -> Optional[str]:
     """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
 
     If a credential pool exists but currently has no selectable runtime entry
@@ -1682,8 +1682,16 @@ def _read_codex_access_token() -> Optional[str]:
     profile's auth.json token instead of hard-failing. This keeps explicit
     fallback-to-Codex working when the pool state is stale but the stored OAuth
     token is still valid.
+
+    When *requested_model* is supplied, it is threaded into the pool selection
+    so a credential exhausted for a DIFFERENT model (``last_error_model``) is
+    not treated as blocked. Without this, the raw-Codex failover path (used by
+    the main agent loop) would skip e.g. Spark whenever ``gpt-5.5`` alone hit
+    its usage limit on the shared OAuth credential (issue #47986).
     """
-    pool_present, entry = _select_pool_entry("openai-codex")
+    pool_present, entry = _select_pool_entry(
+        "openai-codex", requested_model=requested_model
+    )
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
@@ -2370,12 +2378,12 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
         if codex_token:
             base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
         else:
-            codex_token = _read_codex_access_token()
+            codex_token = _read_codex_access_token(model)
             if not codex_token:
                 return None, None
             base_url = _CODEX_AUX_BASE_URL
     else:
-        codex_token = _read_codex_access_token()
+        codex_token = _read_codex_access_token(model)
         if not codex_token:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
@@ -4318,7 +4326,7 @@ def resolve_provider_client(
         if raw_codex:
             # Return the raw OpenAI client for callers that need direct
             # access to responses.stream() (e.g., the main agent loop).
-            codex_token = _read_codex_access_token()
+            codex_token = _read_codex_access_token(model)
             if not codex_token:
                 logger.warning("resolve_provider_client: openai-codex requested "
                                "but no Codex OAuth token found (run: hermes model)")

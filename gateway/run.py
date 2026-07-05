@@ -18024,6 +18024,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         or (next(iter(_team_clients)) if len(_team_clients) == 1 else None)
                         or getattr(source, "scope_id", None)
                     )
+                    # Identity prefix for the header: agent callsign (first
+                    # Slack mention pattern), short session id, and turn
+                    # start time — makes cards attributable when multiple
+                    # streams (main + subagents) share a thread. Guarded:
+                    # this whole setup block disables cards on exception,
+                    # and a label must never cost us the cards.
+                    try:
+                        _plat_cfg = self.config.platforms.get(source.platform)
+                        _patterns = (getattr(_plat_cfg, "extra", None) or {}).get("mention_patterns") or []
+                        _callsign = str(_patterns[0]) if _patterns else "agent"
+                    except Exception:
+                        _callsign = "agent"
+                    try:
+                        _hdr_label = (
+                            f"{_callsign} · {str(session_id)[-6:]}"
+                            f" · {datetime.now().strftime('%H:%M')}"
+                        )
+                    except Exception:
+                        _hdr_label = _callsign
                     _slack_task_stream = SlackTaskStream(
                         _slack_client, source.chat_id, str(_progress_thread_id),
                         task_display_mode=str(
@@ -18033,6 +18052,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         ),
                         recipient_team_id=_stream_team_id,
                         recipient_user_id=getattr(source, "user_id", None),
+                        header_label=_hdr_label,
                         output_chars=resolve_display_setting(
                             user_config, platform_key, "tool_progress_native_output_chars",
                         ),
@@ -18061,6 +18081,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # task_finished updates are still queued — Slack then renders the
         # stuck-in_progress tasks with warning icons.
         _slack_task_futures: List[Any] = []
+        # Per-subagent dedicated streams (YOLO experiment 2026-07-06): each
+        # delegate_task child gets its own streamed message so parallel
+        # children render as separate live blocks. key → SlackTaskStream,
+        # plus a per-child monotonic tool index for its card entries.
+        _slack_subagent_streams: Dict[str, Any] = {}
+        _slack_subagent_tool_idx: Dict[str, int] = {}
 
         def _slack_task_event(event_type: str, tool_name: str, preview, args, kwargs) -> None:
             """Route a tool lifecycle event onto the Slack native task stream.
@@ -18161,11 +18187,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _slack_task_futures.append(_fut)
 
         def _slack_subagent_event(event_type: str, tool_name, preview, kwargs) -> None:
-            """Route delegate_task child lifecycle events onto subagent cards.
+            """Route delegate_task child lifecycle events onto PER-SUBAGENT streams.
 
-            Relayed by _build_child_progress_callback with identity kwargs
-            (subagent_id, goal, task_index...). tool_name carries the child's
-            tool for subagent.tool events.
+            Each child gets its own streamed message (own SlackTaskStream)
+            below the main card, so parallel subagents render as separate
+            live-updating blocks: main card + one card per child. Falls
+            back to a card on the MAIN stream if the child's stream can't
+            open. Relayed by _build_child_progress_callback with identity
+            kwargs (subagent_id, goal, task_index...).
             """
             if _slack_task_stream is None or _slack_task_stream.disabled:
                 return
@@ -18174,20 +18203,96 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 or kwargs.get("task_index")
                 or "0"
             )
-            # Stable 1-based number for the card ("#1", "#2"): task_index is
-            # 0-based in a batch; +1 for display. Falls back to None (no
-            # number shown) when the relay didn't carry a task_index.
             _ti = kwargs.get("task_index")
             number = (_ti + 1) if isinstance(_ti, int) else None
             goal = str(kwargs.get("goal") or preview or "")
             ok = "error" not in str(kwargs.get("status") or "").lower()
+
+            # Dedicated stream per child, created lazily on its first event.
+            sub = _slack_subagent_streams.get(key)
+            if sub is None and event_type == "subagent.start":
+                from gateway.slack_task_stream import SlackTaskStream
+                _n = f"#{number}" if number is not None else ""
+                _short_goal = goal[:60] + ("…" if len(goal) > 60 else "")
+                sub = SlackTaskStream(
+                    _slack_task_stream.client,
+                    _slack_task_stream.channel,
+                    _slack_task_stream.thread_ts,
+                    task_display_mode=_slack_task_stream.task_display_mode,
+                    recipient_team_id=_slack_task_stream.recipient_team_id,
+                    recipient_user_id=_slack_task_stream.recipient_user_id,
+                    # Caps-lock identity + time first, then the goal —
+                    # per Minh 2026-07-06: "SUBAGENT 2 - time - then text".
+                    header_label=(
+                        f"🔀 SUBAGENT {_n} · {datetime.now().strftime('%H:%M')}"
+                        f" · {_short_goal}"
+                    ),
+                )
+                _slack_subagent_streams[key] = sub
+            if sub is None or sub.disabled:
+                # Child stream unavailable → legacy single-card fallback on
+                # the main stream (keeps observability rather than dropping).
+                _fut = safe_schedule_threadsafe(
+                    _slack_task_stream.subagent_event(
+                        event_type, key, goal=goal, tool_name=tool_name, ok=ok, number=number,
+                    ),
+                    _voice_ack_loop,
+                    logger=logger,
+                    log_message="slack subagent card scheduling error",
+                )
+                if _fut is not None:
+                    _slack_task_futures.append(_fut)
+                return
+
+            # Child stream path: render the child's tools as first-class
+            # task entries on ITS card, exactly like the main turn.
+            if event_type == "subagent.start":
+                coro = sub.task_started(0, "delegate_task", f"started — {goal[:120]}")
+            elif event_type == "subagent.tool" and tool_name:
+                idx = _slack_subagent_tool_idx.get(key, 0) + 1
+                _slack_subagent_tool_idx[key] = idx
+                # preview carries the child tool's arg summary (same string
+                # the main card shows) — full detail parity with main.
+                coro = sub.task_started(idx, str(tool_name), preview)
+            elif event_type == "subagent.complete":
+                # Settle every entry, put the child's result summary on the
+                # final entry (the relay carries summary/duration/status —
+                # user-visible output was the missing piece), then close.
+                # Sanitize: summaries beginning with a markdown heading
+                # ("## Summary") rendered as an EMPTY output bullet on the
+                # card (observed A/B 2026-07-06 round 2: bold-first summary
+                # rendered, heading-first summary vanished) — strip heading
+                # markers and collapse newlines before sending.
+                _summary = str(kwargs.get("summary") or kwargs.get("preview") or "")
+                _summary = re.sub(r"^\s*#{1,6}\s*", "", _summary)
+                _summary = " ".join(_summary.split())[:400]
+                _dur = float(kwargs.get("duration_seconds") or 0.0)
+
+                async def _finish(s=sub, okv=ok, k=key, summ=_summary, dur=_dur):
+                    n = _slack_subagent_tool_idx.get(k, 0)
+                    # Settle the start entry (0) and each tool entry (1..n).
+                    for i in range(n + 1):
+                        await s.task_finished(i, "step", 0.0, okv)
+                    # New final entry carries the child's result summary in
+                    # DETAILS (not output — output previews can be disabled
+                    # via output_chars=0, and the summary must survive that).
+                    await s.task_started(
+                        n + 1, "delegate_task", "result",
+                        details=summ or None,
+                    )
+                    await s.task_finished(
+                        n + 1, "delegate_task", dur, okv,
+                        summary="✅ completed" if okv else "failed",
+                    )
+                    await s.stop()
+                coro = _finish()
+            else:
+                return
             _fut = safe_schedule_threadsafe(
-                _slack_task_stream.subagent_event(
-                    event_type, key, goal=goal, tool_name=tool_name, ok=ok, number=number,
-                ),
+                coro,
                 _voice_ack_loop,
                 logger=logger,
-                log_message="slack subagent card scheduling error",
+                log_message="slack subagent stream scheduling error",
             )
             if _fut is not None:
                 _slack_task_futures.append(_fut)
@@ -20819,6 +20924,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception:
                             pass
                     await _slack_task_stream.stop()
+                    # Close any per-subagent streams still open (child
+                    # crashed / never emitted subagent.complete) so their
+                    # cards don't freeze in Slack's error state.
+                    for _sub in _slack_subagent_streams.values():
+                        try:
+                            await _sub.stop()
+                        except Exception:
+                            pass
                 except Exception:
                     logger.debug("SlackTaskStream.stop() failed", exc_info=True)
 

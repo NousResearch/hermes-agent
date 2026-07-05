@@ -44,7 +44,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # collapses consecutive tool calls. Fixed at stream start (Slack limit).
     "tool_progress_native_mode": "plan",
     # Per-tool result preview length on finished native cards.
-    "tool_progress_native_output_chars": 120,
+    "tool_progress_native_output_chars": 0,
     "show_reasoning": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)

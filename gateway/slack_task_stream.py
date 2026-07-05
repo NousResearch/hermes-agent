@@ -313,15 +313,14 @@ class SlackTaskStream:
     """
 
     # Tuning constants (overridable per-instance via __init__ for tests and
-    # forks; deliberately NOT exposed as user config — they encode measured
-    # Slack API physics, not preferences):
+    # forks; only output preview length is user-config-exposed — the rest
+    # encode measured Slack API physics, not preferences):
     #
     # Proactive rollover thresholds, measured live 2026-07-05 via probe
     # (ehoy scripts/carnie/slack_stream_probe.py): a stream dies ~306s after startStream
     # even with appends every 20s — an ABSOLUTE lifetime, not inactivity —
     # so roll at 290s (~95% — post drain-fix, tool events arrive densely
-    # enough that the check runs often; a proactive miss just triggers the
-    # tested reactive-rollover path, so aggressive is safe). Cumulative
+    # enough; a proactive miss triggers the tested reactive path). Cumulative
     # size probed clean past 61,920 chars (earlier msg_too_long failures
     # were single oversized chunks, since capped per-field), so the char
     # threshold is a loose backstop, not the binding constraint.
@@ -343,8 +342,11 @@ class SlackTaskStream:
     # burst has substance. A pending fragment below this at finalize time
     # is carried into the next burst rather than emitted as its own card.
     REASONING_MIN_CHARS = 40
-    # Per-tool result preview length on finished cards.
-    OUTPUT_PREVIEW_CHARS = 120
+    # Per-tool result preview length on finished cards. 0 (default) =
+    # no output previews — per Minh 2026-07-06: output previews get
+    # skimmed past; reasoning is the signal. Set
+    # tool_progress_native_output_chars to re-enable.
+    OUTPUT_PREVIEW_CHARS = 0
     # Runaway guard: a turn pathological enough to need more fresh streams
     # than this should fall back to markdown instead. Sized generously —
     # age-based rollover alone consumes one per ~4 min, so a legitimate
@@ -363,6 +365,7 @@ class SlackTaskStream:
         rollover_chars: Optional[int] = None,
         reasoning_chars: Optional[int] = None,
         output_chars: Optional[int] = None,
+        header_label: Optional[str] = None,
     ) -> None:
         self.client = client
         self.channel = channel
@@ -370,6 +373,8 @@ class SlackTaskStream:
         self.recipient_team_id = recipient_team_id
         self.recipient_user_id = recipient_user_id
         self.task_display_mode = task_display_mode
+        # Identity prefix for the card header ("carnie · a3f2c1 · 14:32").
+        self.header_label = header_label
         # Config-driven tuning (None → class default). reasoning cap of 0
         # means uncapped; it is still clamped to SLACK_FIELD_CEILING.
         if rollover_age_s is not None and rollover_age_s > 0:
@@ -524,13 +529,21 @@ class SlackTaskStream:
         await self._refresh_turn_header()
 
     async def _refresh_turn_header(self) -> None:
-        """Set the collapsible header to a phrase summarizing the turn."""
+        """Set the collapsible header to a phrase summarizing the turn.
+
+        Prefixed with the identity label when one was provided
+        ("carnie · a3f2c1 · 14:32 — Searched · edited files") so multiple
+        cards in one thread — main turn + per-subagent streams — are
+        attributable at a glance.
+        """
         if not self._categories:
             return
         # Capitalize the first bucket, join the rest with " · ".
         cats = list(self._categories)
         cats[0] = cats[0][:1].upper() + cats[0][1:]
         header = " · ".join(cats)
+        if self.header_label:
+            header = f"{self.header_label} — {header}"
         if header != self._last_header:
             self._last_header = header
             await self.set_plan_title(header)
@@ -566,7 +579,11 @@ class SlackTaskStream:
             title = f"{base} · ✗ failed"[:250]
         self._total_duration += duration or 0.0
         # +30 slack vs the run.py-side preview cap so a summary suffix fits.
-        out = str(output)[: self.OUTPUT_PREVIEW_CHARS + 30] if output else None
+        # OUTPUT_PREVIEW_CHARS <= 0 disables output previews entirely.
+        if self.OUTPUT_PREVIEW_CHARS <= 0:
+            out = None
+        else:
+            out = str(output)[: self.OUTPUT_PREVIEW_CHARS + 30] if output else None
         # details APPEND server-side (measured 2026-07-05), so the start-time
         # content preview persists on its own — re-sending it here would
         # duplicate it. Send no details on the finish update.

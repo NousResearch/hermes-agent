@@ -157,6 +157,77 @@ def load_yaml(p: Path):
     except Exception:
         return {}
 
+def _registry_list(v):
+    # load_yaml มีตัวอ่านสำรองเวลาไม่มี PyYAML; ตรงนี้แปลง list แบบ [a, b]
+    # ให้ผู้ใช้ได้ค่าเหมือนกันทั้งเครื่องที่มีและไม่มี PyYAML
+    if isinstance(v, list):
+        return v
+    if isinstance(v, tuple):
+        return list(v)
+    if isinstance(v, str):
+        s = v.strip()
+        if s.startswith("[") and s.endswith("]"):
+            inner = s[1:-1].strip()
+            if not inner:
+                return []
+            return [_scalar(part.strip()) for part in inner.split(",")]
+    return v
+
+def _as_registry_bool(v):
+    # กัน enabled: "true"/"false" (มี quote) หายเงียบ · คืน bool ถ้าตีความได้ ไม่งั้นคืนค่าเดิม
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        low = v.strip().lower()
+        if low == "true":  return True
+        if low == "false": return False
+    return v
+
+def _normalize_registry_ai(ai):
+    if not isinstance(ai, dict):
+        return {}
+    reg = {}
+    for name, meta in ai.items():
+        if not isinstance(meta, dict):
+            continue
+        item = dict(meta)
+        for key in ("roles", "good_for"):
+            if key in item:
+                v = _registry_list(item[key])
+                # ค่าเดี่ยว (เช่น roles: coder) → ห่อเป็น list · None → [] · กันโค้ดถัดไปวนตัวอักษรทีละตัว
+                if v is None:
+                    item[key] = []
+                elif not isinstance(v, list):
+                    item[key] = [v]
+                else:
+                    item[key] = v
+        if "enabled" in item:
+            item["enabled"] = _as_registry_bool(item["enabled"])
+        reg[str(name)] = item
+    return reg
+
+def load_registry(cwd):
+    # ทะเบียนเป็นชั้นข้อมูลเสริมให้ doctor/suggest อ่านรอบหน้า ยังไม่เอาไปขับการเรียก AI ตอนนี้
+    cwd = Path(cwd)
+    local = cfg_dir(cwd)/"registry.yaml"
+    source = local if local.exists() else SCRIPT_DIR/"references"/"registry.example.yaml"
+    if not source.exists():
+        return {}
+    data = load_yaml(source)
+    if not isinstance(data, dict):
+        return {}
+    return _normalize_registry_ai(data.get("ai"))
+
+def registry_enabled(reg):
+    return {name: meta for name, meta in (reg or {}).items()
+            if isinstance(meta, dict) and meta.get("enabled") is True}
+
+def registry_vendor(reg, tool):
+    meta = (reg or {}).get(tool)
+    if not isinstance(meta, dict):
+        return None
+    return meta.get("vendor")
+
 def cfg_dir(cwd: Path): return cwd/".hermes"/"ai-relay"
 
 def load_env_file(path: Path):

@@ -114,6 +114,53 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_malformed_nested_platform_toolsets_recovers_intended_toolsets(caplog):
+    """A YAML indentation error that nests toolset names under a mapping
+    (``[{'hermes-discord': ['browser', 'terminal', ...]}]``) must not silently
+    collapse the platform's toolset. The old code stringified the mapping into
+    an unmatchable name and dropped every nested toolset, leaving the platform
+    with almost no tools while config.yaml looked correct. The intended
+    toolsets must be recovered and a warning emitted."""
+    malformed = {
+        "platform_toolsets": {
+            "discord": [
+                {"hermes-discord": ["browser", "terminal", "file", "web", "cronjob"]}
+            ]
+        }
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(malformed, "discord")
+
+    # Core interactive toolsets must survive the malformed nesting.
+    for ts in ("browser", "terminal", "file", "web", "cronjob"):
+        assert ts in enabled, ts
+
+    # The malformed structure must be surfaced, not swallowed silently.
+    assert any("malformed" in r.getMessage() for r in caplog.records)
+
+
+def test_malformed_nested_matches_well_formed_equivalent():
+    """Recovering a nested/malformed entry must yield the same toolset as the
+    equivalent flat list — the indentation error should be fully transparent
+    once recovered."""
+    names = ["hermes-discord", "browser", "terminal", "file", "web", "cronjob", "tts"]
+    flat = {"platform_toolsets": {"discord": names}}
+    nested = {"platform_toolsets": {"discord": [{names[0]: names[1:]}]}}
+
+    assert _get_platform_tools(nested, "discord") == _get_platform_tools(flat, "discord")
+
+
+def test_well_formed_platform_toolsets_emit_no_malformed_warning(caplog):
+    """Well-formed flat lists must pass through without the malformed warning."""
+    config = {"platform_toolsets": {"cli": ["web", "terminal", "file"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    assert not any("malformed" in r.getMessage() for r in caplog.records)
+
+
 def test_agent_disabled_toolsets_empty_list_is_noop():
     """Empty or missing disabled_toolsets should not change behavior."""
     config_empty = {"agent": {"disabled_toolsets": []}}

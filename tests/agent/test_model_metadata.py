@@ -64,7 +64,7 @@ class TestEstimateMessagesTokensRough:
 class TestDefaultContextLengths:
     def test__models_200k(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "" in key:
+            if "anthropic" in key:
                 assert value == 200000, f"{key} should be 200000"
 
     def test_gpt4_models_128k(self):

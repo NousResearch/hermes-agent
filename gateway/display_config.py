@@ -43,6 +43,8 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # "timeline" gives each task its own separate card block, "dense"
     # collapses consecutive tool calls. Fixed at stream start (Slack limit).
     "tool_progress_native_mode": "plan",
+    # Per-tool result preview length on finished native cards.
+    "tool_progress_native_output_chars": 120,
     "show_reasoning": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
@@ -283,7 +285,7 @@ def _normalise(setting: str, value: Any) -> Any:
     if setting == "reasoning_style":
         val = str(value).lower()
         return val if val in ("code", "blockquote", "subtext") else "code"
-    if setting == "tool_preview_length":
+    if setting in {"tool_preview_length", "tool_progress_native_output_chars"}:
         try:
             return max(0, int(value))
         except (TypeError, ValueError):

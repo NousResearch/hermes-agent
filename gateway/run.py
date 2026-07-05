@@ -18033,6 +18033,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         ),
                         recipient_team_id=_stream_team_id,
                         recipient_user_id=getattr(source, "user_id", None),
+                        output_chars=resolve_display_setting(
+                            user_config, platform_key, "tool_progress_native_output_chars",
+                        ),
                     )
                 else:
                     _slack_native_cards = False

@@ -56,6 +56,19 @@ def test_commit_memory_session_with_no_messages_passes_empty_list():
     ctx.on_session_end.assert_called_once_with("sess-7", [])
 
 
+def test_commit_memory_session_can_finalize_explicit_old_session_id():
+    """Async callers may run after agent.session_id already changed."""
+    mm = MagicMock()
+    ctx = MagicMock()
+    agent = _make_minimal_agent(mm, ctx, session_id="new-session")
+
+    msgs = [{"role": "user", "content": "old turn"}]
+    agent.commit_memory_session(msgs, session_id="old-session")
+
+    mm.on_session_end.assert_called_once_with(msgs)
+    ctx.on_session_end.assert_called_once_with("old-session", msgs)
+
+
 def test_commit_memory_session_no_memory_manager_still_notifies_context_engine():
     """If only the context engine is configured, it still gets the hook."""
     ctx = MagicMock()

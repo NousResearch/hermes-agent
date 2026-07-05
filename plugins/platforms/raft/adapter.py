@@ -473,7 +473,11 @@ class RaftAdapter(BasePlatformAdapter):
             self._bridge_token = secrets.token_hex(32)
             logger.info("[raft] Auto-generated bridge token")
 
-        app = web.Application()
+        # client_max_size makes aiohttp enforce the cap on every read path,
+        # including Transfer-Encoding: chunked bodies that carry no
+        # Content-Length and would otherwise bypass the header checks below
+        # (mirrors gateway/platforms/webhook.py's connect()).
+        app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post(self._path, self._handle_wake)
         app.router.add_post("/activity", self._handle_activity)
@@ -600,8 +604,16 @@ class RaftAdapter(BasePlatformAdapter):
 
         try:
             raw_body = await request.read()
+        except web.HTTPRequestEntityTooLarge:
+            # aiohttp's client_max_size tripped — chunked or lying
+            # Content-Length. Same 413 as the header check above.
+            return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
         except Exception:
             return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+        if len(raw_body) > self._max_body_bytes:
+            # Defense in depth: enforce the cap on the actual bytes read even
+            # if the server-level limit was bypassed or misconfigured.
+            return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
 
         payload: Dict[str, Any] = {}
         if raw_body.strip():
@@ -646,7 +658,20 @@ class RaftAdapter(BasePlatformAdapter):
             return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
 
         try:
-            payload = json.loads(await request.text())
+            raw_text = await request.text()
+        except web.HTTPRequestEntityTooLarge:
+            # aiohttp's client_max_size tripped — chunked or lying
+            # Content-Length. Same 413 as the header check above.
+            return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
+        except Exception as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        if len(raw_text.encode("utf-8")) > self._max_body_bytes:
+            # Defense in depth: enforce the cap on the actual bytes read even
+            # if the server-level limit was bypassed or misconfigured.
+            return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
+
+        try:
+            payload = json.loads(raw_text)
             self._activity_queue.push(payload)
         except json.JSONDecodeError:
             return web.json_response({"ok": False, "error": "invalid_json"}, status=400)

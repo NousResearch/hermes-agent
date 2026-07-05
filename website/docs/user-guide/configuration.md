@@ -1477,21 +1477,25 @@ Tool progress requires a gateway adapter that can display progress updates safel
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The footer can show the chat model, context-window usage, current working directory, optional token/cost totals, and account limit windows when the active provider exposes them. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # supported fields: model, context_pct, cwd
+    fields: ["model", "context", "session_limit", "weekly_limit", "cwd"]
+    usage_cache_seconds: 300      # cache provider limit telemetry
+    usage_timeout_seconds: 2      # never block the final reply for long
 ```
+
+Supported fields are `model`, `context_pct`, `context`/`ctx`, `session_limit`, `weekly_limit`, `tokens`, `cost`, and `cwd`. Limit fields are skipped silently when the provider has no account-window telemetry.
 
 The `/footer` slash command toggles this at runtime in any session.
 
 Example footer appended to a Telegram/Discord/Slack reply:
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+gpt-5.5 · ctx 214k/258k 83% · sess 86% left/3h · week 71% left/2d · ~
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.

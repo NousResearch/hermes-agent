@@ -85,7 +85,7 @@ def _handler(status: int = 200,
                 record.append("GET")
             self._write(status, content_type, body)
 
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             pass
 
     return _H

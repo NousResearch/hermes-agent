@@ -156,7 +156,7 @@ async def test_handle_401_tracks_inflight_task_to_prevent_gc(tmp_path, monkeypat
             super().__init__()
             self.ever_added: list = []
 
-        def add(self, item):  # noqa: A003
+        def add(self, item):
             self.ever_added.append(item)
             super().add(item)
 

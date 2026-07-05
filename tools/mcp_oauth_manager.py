@@ -603,7 +603,7 @@ class MCPOAuthManager:
                 # on its next auth flow. `_initialized` is private API but
                 # stable across the MCP SDK versions we pin (>=1.26.0).
                 if hasattr(entry.provider, "_initialized"):
-                    entry.provider._initialized = False  # noqa: SLF001
+                    entry.provider._initialized = False
                 logger.info(
                     "MCP OAuth '%s': tokens file changed (mtime %d -> %d), "
                     "forcing reload",

@@ -976,6 +976,70 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def _create_session_with_heavy_fields(self, session_id: str) -> None:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id=session_id,
+                source="cli",
+                system_prompt="# SOUL.md\n" + ("prompt body " * 500),
+                model_config={"temperature": 0.7, "notes": "x" * 200},
+            )
+        finally:
+            db.close()
+
+    def test_get_sessions_strips_heavy_fields_by_default(self):
+        """List rows must omit system_prompt/model_config.
+
+        system_prompt is the fully rendered prompt (tens of KB per row) and
+        dominated the sidebar payload (96% of a 528KB response); no list UI
+        reads it. Detail reads (GET /api/sessions/{id}) stay complete.
+        """
+        self._create_session_with_heavy_fields("lean-list-row")
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+        rows = [s for s in resp.json()["sessions"] if s["id"] == "lean-list-row"]
+        assert rows, "created session missing from list"
+        row = rows[0]
+        assert "system_prompt" not in row
+        assert "model_config" not in row
+        # The light fields the sidebar actually renders must survive.
+        for key in ("id", "source", "started_at", "message_count", "is_active"):
+            assert key in row
+
+    def test_get_sessions_full_param_keeps_heavy_fields(self):
+        """?full=1 is the escape hatch for callers that need complete rows."""
+        self._create_session_with_heavy_fields("full-list-row")
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0&full=1")
+        assert resp.status_code == 200
+        rows = [s for s in resp.json()["sessions"] if s["id"] == "full-list-row"]
+        assert rows, "created session missing from list"
+        row = rows[0]
+        assert row["system_prompt"].startswith("# SOUL.md")
+        assert "temperature" in (row["model_config"] or "")
+
+    def test_profiles_sessions_strips_heavy_fields_by_default(self):
+        """The cross-profile aggregate applies the same list projection."""
+        self._create_session_with_heavy_fields("lean-profiles-row")
+
+        resp = self.client.get("/api/profiles/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+        rows = [s for s in resp.json()["sessions"] if s["id"] == "lean-profiles-row"]
+        assert rows, "created session missing from profiles list"
+        row = rows[0]
+        assert "system_prompt" not in row
+        assert "model_config" not in row
+        assert row["profile"] == "default"
+
+        full = self.client.get("/api/profiles/sessions?limit=20&offset=0&full=1")
+        assert full.status_code == 200
+        full_rows = [s for s in full.json()["sessions"] if s["id"] == "lean-profiles-row"]
+        assert full_rows and full_rows[0]["system_prompt"].startswith("# SOUL.md")
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""

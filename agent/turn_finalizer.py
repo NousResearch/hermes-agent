@@ -51,13 +51,14 @@ def finalize_turn(
     from agent.conversation_loop import logger
 
     if final_response is None and (
-        api_call_count >= agent.max_iterations
-        or agent.iteration_budget.remaining <= 0
+        api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     ):
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.
-        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        _turn_exit_reason = (
+            f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        )
         agent._emit_status(
             f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
             "— asking model to summarise"
@@ -75,20 +76,24 @@ def finalize_turn(
         # _handle_max_iterations, so the model cannot call kanban_block
         # itself — we must do it on its behalf.
         #
-        # We route through ``_record_task_failure(outcome="timed_out")``
-        # rather than ``kanban_block`` so this counts toward the
-        # ``consecutive_failures`` counter and the dispatcher's
-        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without this,
-        # a task whose worker keeps exhausting its budget would block
-        # silently each run, get auto-promoted by the operator (or never
-        # surface), and re-block in an endless loop with no signal.
+        # We route through ``_handle_budget_exhaustion``: it gives the task
+        # up to ``kanban.budget_resume_limit`` clean fresh-budget requeues
+        # (a ship-loop routinely needs one more budget to finish after
+        # opening a PR) WITHOUT counting a failure, then — once the cap is
+        # reached — falls through to ``_record_task_failure(outcome=
+        # "timed_out")`` so it counts toward the ``consecutive_failures``
+        # counter and the ``failure_limit`` breaker exactly as before
+        # (#29747 gap 2). The resume cap is counted from durable
+        # ``budget_resumed`` events, so a worker that keeps exhausting its
+        # budget still trips the breaker instead of looping forever (#35072).
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
                 from hermes_cli import kanban_db as _kb
+
                 _conn = _kb.connect()
                 try:
-                    _kb._record_task_failure(
+                    _outcome = _kb._handle_budget_exhaustion(
                         _conn,
                         _kanban_task,
                         error=(
@@ -97,17 +102,17 @@ def finalize_turn(
                             "task could not complete within the allowed "
                             "iterations"
                         ),
-                        outcome="timed_out",
-                        release_claim=True,
-                        end_run=True,
                         event_payload_extra={
                             "budget_used": api_call_count,
                             "budget_max": agent.max_iterations,
                         },
                     )
                     logger.info(
-                        "recorded budget-exhausted failure for task %s (%d/%d)",
-                        _kanban_task, api_call_count, agent.max_iterations,
+                        "budget-exhausted task %s (%d/%d) → %s",
+                        _kanban_task,
+                        api_call_count,
+                        agent.max_iterations,
+                        _outcome,
                     )
                 finally:
                     try:
@@ -122,25 +127,100 @@ def finalize_turn(
                 )
 
     # Determine if conversation completed successfully
+    normal_text_response = str(_turn_exit_reason).startswith("text_response(")
     completed = (
         final_response is not None
-        and api_call_count < agent.max_iterations
         and not failed
+        and (api_call_count < agent.max_iterations or normal_text_response)
     )
+
+    # Post-loop cleanup must never lose the response.  Trajectory save,
+    # resource teardown, and session persistence all touch fallible
+    # surfaces — file I/O / JSON serialization (_save_trajectory), remote
+    # VM/browser teardown over the network (_cleanup_task_resources), and
+    # SQLite writes (_persist_session).  A raise from any of them used to
+    # propagate straight out of run_conversation, discarding the partial
+    # final_response the caller is waiting for (subprocess wrappers saw an
+    # empty stdout with no traceback — #8049).  Each step is now guarded
+    # independently so one failure can't skip the others, and any errors
+    # are surfaced on the result dict via ``cleanup_errors`` rather than
+    # killing the turn.
+    _cleanup_errors = []
 
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
-    agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
+    try:
+        agent._save_trajectory(
+            messages, _summarize_user_message_for_log(user_message), completed
+        )
+    except Exception as _save_err:
+        _cleanup_errors.append(f"save_trajectory: {_save_err}")
+        logger.error(
+            "finalize_turn: _save_trajectory failed: %s", _save_err, exc_info=True
+        )
 
     # Clean up VM and browser for this task after conversation completes
-    agent._cleanup_task_resources(effective_task_id)
+    try:
+        agent._cleanup_task_resources(effective_task_id)
+    except Exception as _cleanup_err:
+        _cleanup_errors.append(f"cleanup_task_resources: {_cleanup_err}")
+        logger.error(
+            "finalize_turn: _cleanup_task_resources failed: %s",
+            _cleanup_err,
+            exc_info=True,
+        )
 
     # Persist session to both JSON log and SQLite only after private retry
     # scaffolding has been removed. Otherwise a later user "continue" turn
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
-    agent._drop_trailing_empty_response_scaffolding(messages)
-    agent._persist_session(messages, conversation_history)
+    try:
+        agent._drop_trailing_empty_response_scaffolding(messages)
+
+        # When the turn was interrupted and the last message is a tool
+        # result, append a synthetic assistant message to close the
+        # tool-call sequence. Without this, the session persists a
+        # ``tool → user`` alternation that strict providers (Gemini,
+        # Claude) reject, causing them to hallucinate a continuation of
+        # the user's message on the next turn (#48879).
+        #
+        # ``_drop_trailing_empty_response_scaffolding`` only rewinds the
+        # tool tail when an empty-response scaffolding flag is present; a
+        # clean ``/stop`` interrupt after a successful tool sets no such
+        # flag, so the tool result survives as the tail and we close it
+        # here instead. On an interrupt ``final_response`` is typically
+        # empty, so fall back to an explicit placeholder rather than
+        # persisting an empty-content assistant turn.
+        if interrupted:
+            from agent.message_sanitization import close_interrupted_tool_sequence
+
+            close_interrupted_tool_sequence(messages, final_response)
+
+        # Some recovery/fallback paths return a real final_response without
+        # adding a closing assistant message to the transcript (e.g. the
+        # partial-stream and prior-turn-content recovery ``break`` sites in
+        # ``conversation_loop``). If persisted as-is, the durable session can
+        # end at a tool/user message even though the caller — and the gateway
+        # platform — already saw a completed assistant response. The next turn
+        # then replays a user-only backlog and the model re-answers every
+        # "unanswered" message. Close the durable turn at the source, at the
+        # single chokepoint every recovery ``break`` flows through, so the
+        # invariant "delivered final_response ⇒ assistant row in transcript"
+        # holds regardless of which path produced it. (#43849 / #44100)
+        if final_response and not interrupted:
+            try:
+                _tail_role = messages[-1].get("role") if messages else None
+            except Exception:
+                _tail_role = None
+            if _tail_role != "assistant":
+                messages.append({"role": "assistant", "content": final_response})
+
+        agent._persist_session(messages, conversation_history)
+    except Exception as _persist_err:
+        _cleanup_errors.append(f"persist_session: {_persist_err}")
+        logger.error(
+            "finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True
+        )
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -158,7 +238,8 @@ def finalize_turn(
                 break
 
     _turn_tool_count = sum(
-        1 for m in messages
+        1
+        for m in messages
         if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
     )
     _resp_len = len(final_response) if final_response else 0
@@ -170,9 +251,15 @@ def finalize_turn(
         "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
     )
     _diag_args = (
-        _turn_exit_reason, agent.model, api_call_count, agent.max_iterations,
-        _budget_used, _budget_max,
-        _turn_tool_count, _last_msg_role, _resp_len,
+        _turn_exit_reason,
+        agent.model,
+        api_call_count,
+        agent.max_iterations,
+        _budget_used,
+        _budget_max,
+        _turn_tool_count,
+        _last_msg_role,
+        _resp_len,
         agent.session_id or "none",
     )
 
@@ -180,8 +267,10 @@ def finalize_turn(
         # Agent was mid-work — this is the "just stops" case.
         logger.warning(
             "Turn ended with pending tool result (agent may appear stuck). "
-            + _diag_msg + " last_tool=%s",
-            *_diag_args, _last_tool_name,
+            + _diag_msg
+            + " last_tool=%s",
+            *_diag_args,
+            _last_tool_name,
         )
     else:
         logger.info(_diag_msg, *_diag_args)
@@ -239,9 +328,17 @@ def finalize_turn(
                     not _is_empty_terminal
                     and not str(_turn_exit_reason).startswith("text_response")
                     and len(_stripped) <= 24
-                    and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
+                    and _stripped[-1:]
+                    not in {".", "!", "?", "。", "！", "？", "`", ")"}
                 )
-                if _is_empty_terminal or _is_partial_fragment:
+                _is_partial_stream_recovery = (
+                    str(_turn_exit_reason) == "partial_stream_recovery"
+                )
+                if (
+                    _is_empty_terminal
+                    or _is_partial_fragment
+                    or _is_partial_stream_recovery
+                ):
                     _explanation = agent._format_turn_completion_explanation(
                         _turn_exit_reason
                     )
@@ -254,9 +351,7 @@ def finalize_turn(
                             # Keep the partial fragment, append the reason so
                             # the user sees both what arrived and why it
                             # stopped.
-                            final_response = (
-                                _stripped + "\n\n" + _explanation
-                            )
+                            final_response = _stripped + "\n\n" + _explanation
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
 
@@ -269,6 +364,7 @@ def finalize_turn(
     if final_response and not interrupted:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
+
             _transform_results = _invoke_hook(
                 "transform_llm_output",
                 response_text=final_response,
@@ -291,6 +387,7 @@ def finalize_turn(
     if final_response and not interrupted:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
+
             _invoke_hook(
                 "post_llm_call",
                 session_id=agent.session_id,
@@ -346,7 +443,8 @@ def finalize_turn(
         "prompt_tokens": agent.session_prompt_tokens,
         "completion_tokens": agent.session_completion_tokens,
         "total_tokens": agent.session_total_tokens,
-        "last_prompt_tokens": getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0,
+        "last_prompt_tokens": getattr(agent.context_compressor, "last_prompt_tokens", 0)
+        or 0,
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
@@ -354,6 +452,11 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    # Surface any post-loop cleanup failures so the caller can distinguish a
+    # clean turn from one whose trajectory/session/resource teardown raised
+    # (the response is still returned either way — #8049).
+    if _cleanup_errors:
+        result["cleanup_errors"] = _cleanup_errors
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.
@@ -374,9 +477,11 @@ def finalize_turn(
 
     # Check skill trigger NOW — based on how many tool iterations THIS turn used.
     _should_review_skills = False
-    if (agent._skill_nudge_interval > 0
-            and agent._iters_since_skill >= agent._skill_nudge_interval
-            and "skill_manage" in agent.valid_tool_names):
+    if (
+        agent._skill_nudge_interval > 0
+        and agent._iters_since_skill >= agent._skill_nudge_interval
+        and "skill_manage" in agent.valid_tool_names
+    ):
         _should_review_skills = True
         agent._iters_since_skill = 0
 
@@ -390,7 +495,11 @@ def finalize_turn(
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if (
+        final_response
+        and not interrupted
+        and (_should_review_memory or _should_review_skills)
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),
@@ -412,6 +521,7 @@ def finalize_turn(
     # Plugins can use this for cleanup, flushing buffers, etc.
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+
         _invoke_hook(
             "on_session_end",
             session_id=agent.session_id,

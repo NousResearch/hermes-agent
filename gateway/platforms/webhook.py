@@ -57,6 +57,11 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+# Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
+# names a profile this gateway does not serve (→ 404). Distinct from None
+# (no prefix / multiplexing off → handle as the default profile).
+_PROFILE_REJECTED = object()
+
 _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp",
     "matrix", "mattermost", "homeassistant", "email", "dingtalk",
@@ -148,7 +153,7 @@ class WebhookAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Load agent-created subscriptions before validating
         self._reload_dynamic_routes()
 
@@ -189,6 +194,14 @@ class WebhookAdapter(BasePlatformAdapter):
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
+        # Multi-profile multiplexing: a /p/<profile>/webhooks/<route> prefix
+        # routes the inbound event to that profile. Same handler; the profile is
+        # captured from the path and stamped onto the SessionSource so the agent
+        # turn resolves that profile's config/skills/credentials. Only honored
+        # when gateway.multiplex_profiles is on (the handler validates).
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}", self._handle_webhook
+        )
 
         # Port conflict detection — fail fast if port is already in use
         import socket as _socket
@@ -397,6 +410,35 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
+    def _resolve_request_profile(self, request: "web.Request"):
+        """Resolve + validate the /p/<profile>/ URL prefix on a webhook request.
+
+        Returns:
+          - ``None`` when no profile prefix is present, or multiplexing is off
+            (the prefix is ignored, request handled as the default profile).
+          - the profile name (str) when present, multiplexing is on, and the
+            profile is one this gateway serves.
+          - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
+            unknown/unconfigured (handler returns 404).
+        """
+        profile = (request.match_info.get("profile") or "").strip()
+        if not profile:
+            return None
+        runner = self.gateway_runner
+        cfg = getattr(runner, "config", None)
+        if not getattr(cfg, "multiplex_profiles", False):
+            # Prefix supplied but multiplexing is off — ignore it, behave as
+            # the single-profile gateway (don't 404 a would-be valid route).
+            return None
+        try:
+            from hermes_cli.profiles import profiles_to_serve
+            served = {name for name, _ in profiles_to_serve(multiplex=True)}
+        except Exception:
+            return _PROFILE_REJECTED
+        if profile not in served:
+            return _PROFILE_REJECTED
+        return profile
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
@@ -404,6 +446,13 @@ class WebhookAdapter(BasePlatformAdapter):
 
         route_name = request.match_info.get("route_name", "")
         route_config = self._routes.get(route_name)
+
+        # Multi-profile: resolve + validate the /p/<profile>/ prefix if present.
+        profile = self._resolve_request_profile(request)
+        if profile is _PROFILE_REJECTED:
+            return web.json_response(
+                {"error": "Unknown or unconfigured profile"}, status=404
+            )
 
         if not route_config:
             return web.json_response(
@@ -626,7 +675,6 @@ class WebhookAdapter(BasePlatformAdapter):
             "deliver_extra": self._render_delivery_extra(
                 route_config.get("deliver_extra", {}), payload
             ),
-            "payload": payload,
         }
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
@@ -641,6 +689,8 @@ class WebhookAdapter(BasePlatformAdapter):
             user_id=f"webhook:{route_name}",
             user_name=route_name,
         )
+        if profile and isinstance(profile, str):
+            source.profile = profile
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,
@@ -658,7 +708,11 @@ class WebhookAdapter(BasePlatformAdapter):
             delivery_id,
         )
 
-        # Non-blocking — return 202 Accepted immediately
+        # Non-blocking — return 202 Accepted immediately.  The per-delivery
+        # session is closed by the ``on_processing_complete`` override below
+        # once the agent run actually finishes (``handle_message`` itself is
+        # fire-and-forget: it spawns ``_process_message_background`` and
+        # returns before the run starts, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -672,6 +726,94 @@ class WebhookAdapter(BasePlatformAdapter):
             },
             status=202,
         )
+
+    async def on_processing_complete(
+        self, event: "MessageEvent", outcome: Any
+    ) -> None:
+        """Close the per-delivery webhook session once its run finishes.
+
+        A webhook delivery is one-shot: the ``delivery_id`` is baked into the
+        session key, so the session will never receive a second turn.  Mirror
+        the cron completion path (``cron/scheduler.py`` →
+        ``end_session(..., "cron_complete")``) by marking the session ended
+        when the run completes.  Without this, webhook sessions keep
+        ``ended_at`` NULL forever; ``SessionDB.prune_sessions`` only reaps
+        rows with ``ended_at`` set, so unclosed webhook sessions accumulate
+        unbounded and drive state.db bloat (the ghost-session leak).
+
+        This hook is the one seam that runs at the TRUE end of the run:
+        ``BasePlatformAdapter._process_message_background`` fires it after the
+        message handler returns, on the success, failure, and cancellation
+        paths alike — so error runs are reaped too.  (``handle_message`` is
+        fire-and-forget; wrapping IT closes before the run even starts.)
+        ``end_session()`` is first-reason-wins and no-ops on an already-ended
+        row, so this never clobbers a ``compression``/``agent_close`` reason.
+        """
+        await self._end_webhook_session(event, event.source.chat_id)
+
+    async def _end_webhook_session(
+        self, event: "MessageEvent", session_chat_id: str
+    ) -> None:
+        """Mark the per-delivery webhook session ended in state.db.
+
+        Resolves the persisted ``session_id`` from the gateway session store
+        using the SAME source the run was keyed on (so profile multiplexing
+        and key construction match exactly), then closes it via the existing
+        ``SessionDB.end_session`` API — never a hand-written UPDATE.
+        """
+        runner = self.gateway_runner
+        if runner is None:
+            return
+        session_db = getattr(runner, "_session_db", None)
+        store = getattr(runner, "session_store", None)
+        if session_db is None or store is None:
+            return
+        try:
+            key_fn = getattr(runner, "_session_key_for_source", None)
+            if key_fn is None:
+                return
+            session_key = key_fn(event.source)
+            # Resolve the persisted session_id via the store's public,
+            # lock-held accessor (peek_session_id) rather than reaching into
+            # the private _entries dict without the store lock. Fall back to
+            # the private path only for older stores / test doubles that
+            # predate the accessor.
+            peek = getattr(store, "peek_session_id", None)
+            if callable(peek):
+                session_id = peek(session_key)
+            else:
+                if hasattr(store, "_ensure_loaded"):
+                    try:
+                        store._ensure_loaded()
+                    except Exception:
+                        pass
+                entries = getattr(store, "_entries", {}) or {}
+                entry = entries.get(session_key)
+                session_id = getattr(entry, "session_id", None) if entry else None
+            if not session_id:
+                logger.debug(
+                    "[webhook] No session_id to close for %s (key=%s)",
+                    session_chat_id,
+                    session_key,
+                )
+                return
+            # AsyncSessionDB forwards end_session via asyncio.to_thread; a
+            # plain SessionDB exposes it synchronously.  Handle both.
+            _end = session_db.end_session
+            result = _end(session_id, "webhook_complete")
+            if asyncio.iscoroutine(result):
+                await result
+            logger.debug(
+                "[webhook] Closed session %s for delivery %s",
+                session_id,
+                session_chat_id,
+            )
+        except Exception as e:
+            logger.debug(
+                "[webhook] Failed to close session for %s: %s",
+                session_chat_id,
+                e,
+            )
 
     # ------------------------------------------------------------------
     # Signature validation
@@ -887,13 +1029,34 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error="Missing repo or pr_number"
             )
 
+        # --- Input validation (prevent CLI argument injection) ---
+        # pr_number must be a positive integer.
+        try:
+            pr_int = int(pr_number)
+            if pr_int <= 0:
+                raise ValueError("non-positive")
+        except (ValueError, TypeError):
+            logger.error(
+                "[webhook] invalid pr_number: %r", pr_number
+            )
+            return SendResult(
+                success=False, error="Invalid pr_number"
+            )
+
+        # repo must match owner/name (alphanumeric, hyphens, underscores, dots).
+        if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo):
+            logger.error("[webhook] invalid repo format: %r", repo)
+            return SendResult(
+                success=False, error="Invalid repo format"
+            )
+
         try:
             result = subprocess.run(
                 [
                     "gh",
                     "pr",
                     "comment",
-                    str(pr_number),
+                    str(pr_int),
                     "--repo",
                     repo,
                     "--body",

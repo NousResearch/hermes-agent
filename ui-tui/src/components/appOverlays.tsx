@@ -8,9 +8,11 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
+import { BillingOverlay } from './billingOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
+import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
@@ -31,6 +33,21 @@ export function PromptZone({
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
         <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+      </Box>
+    )
+  }
+
+  if (overlay.billing) {
+    const current = overlay.billing
+
+    const onPatch = (next: Partial<typeof current>) =>
+      patchOverlayState(prev => (prev.billing ? { ...prev, billing: { ...prev.billing, ...next } } : prev))
+
+    const onClose = () => patchOverlayState({ billing: null })
+
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <BillingOverlay onClose={onClose} onPatch={onPatch} overlay={current} t={theme} />
       </Box>
     )
   }
@@ -124,6 +141,7 @@ export function FloatingOverlays({
   const hasAny =
     overlay.modelPicker ||
     overlay.pager ||
+    overlay.petPicker ||
     overlay.sessions ||
     overlay.skillsHub ||
     overlay.pluginsHub ||
@@ -167,6 +185,12 @@ export function FloatingOverlays({
             sessionId={sid}
             t={theme}
           />
+        </FloatBox>
+      )}
+
+      {overlay.petPicker && (
+        <FloatBox color={theme.color.border}>
+          <PetPicker gw={gw} onClose={() => patchOverlayState({ petPicker: false })} t={theme} />
         </FloatBox>
       )}
 

@@ -115,6 +115,26 @@ def _safe_stderr():  # type: ignore[return]
     # Best-effort: if wrapping fails, return the original stream.
     return stream
 
+
+_CONCURRENT_LOG_LOCK_TIMEOUT = "Cannot acquire lock after 20 attempts"
+
+
+def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
+    """Return True for concurrent-log-handler's Windows lock timeout.
+
+    On Windows Desktop, slash-command workers and the gateway can all write to
+    the same rotating log files. ``concurrent-log-handler`` serializes rollover
+    with a cross-process lock, but when another process holds that lock too
+    long it raises this RuntimeError. Logging failures should not escape into
+    Desktop chat output.
+    """
+    return (
+        sys.platform == "win32"
+        and isinstance(exc, RuntimeError)
+        and _CONCURRENT_LOG_LOCK_TIMEOUT in str(exc)
+    )
+
+
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
     "openai",
@@ -210,7 +230,11 @@ class _ComponentFilter(logging.Filter):
 # Logger name prefixes that belong to each component.
 # Used by _ComponentFilter and exposed for ``hermes logs --component``.
 COMPONENT_PREFIXES = {
-    "gateway": ("gateway", "hermes_plugins"),
+    # ``plugins.platforms`` covers messaging-platform adapters that migrated
+    # out of ``gateway/platforms/`` into bundled plugins (#41112) — they are
+    # still gateway components and their logs belong in gateway.log / match
+    # ``hermes logs --component gateway``.
+    "gateway": ("gateway", "hermes_plugins", "plugins.platforms"),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),
@@ -490,6 +514,22 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             self._reopen_if_externally_rotated()
         super().emit(record)
 
+    def handleError(self, record: logging.LogRecord) -> None:
+        """Suppress the known Windows ``concurrent-log-handler`` lock timeout
+        instead of printing a traceback.
+
+        CLH's own ``emit()`` wraps its body in ``try/except Exception:
+        self.handleError(record)``, so the ``"Cannot acquire lock after N
+        attempts"`` RuntimeError raised in ``_do_lock()`` is caught inside CLH
+        and routed here — it never propagates out of ``super().emit()``.  This
+        override is the single point where that timeout can be silenced before
+        the stdlib handler prints it to stderr (which, under the Desktop
+        slash-worker, is captured and surfaced into chat output)."""
+        exc = sys.exc_info()[1]
+        if _is_windows_concurrent_log_lock_timeout(exc):
+            return
+        super().handleError(record)
+
     def _open(self):
         stream = super()._open()
         self._chmod_if_managed()
@@ -548,11 +588,18 @@ def _read_logging_config():
     Returns ``(level, max_size_mb, backup_count)`` — any may be ``None``.
     """
     try:
-        import yaml
+        from utils import fast_safe_load
         config_path = get_config_path()
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
+                cfg = fast_safe_load(f) or {}
+            # Managed scope: an administrator can pin logging.* too. Overlay via
+            # the shared helper (fail-open) since this reads config.yaml directly.
+            try:
+                from hermes_cli import managed_scope
+                cfg = managed_scope.apply_managed_overlay(cfg)
+            except Exception:
+                pass
             log_cfg = cfg.get("logging", {})
             if isinstance(log_cfg, dict):
                 return (

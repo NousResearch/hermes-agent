@@ -349,7 +349,10 @@ test('readDirForIpc bounds concurrent stats while preserving complete sorted out
   assert.equal(result.error, undefined)
   assert.equal(result.entries.length, names.length)
   assert.equal(statCalls.length, names.length)
-  assert.equal(statCalls.some(fullPath => fullPath.endsWith(`${path.sep}node_modules`)), false)
+  assert.equal(
+    statCalls.some(fullPath => fullPath.endsWith(`${path.sep}node_modules`)),
+    false
+  )
   assert.ok(peak > 1, `expected concurrent stats, observed peak ${peak}`)
   assert.ok(peak <= 16, `expected at most 16 concurrent stats, observed peak ${peak}`)
   assert.deepEqual(
@@ -357,8 +360,5 @@ test('readDirForIpc bounds concurrent stats while preserving complete sorted out
     expectedNames
   )
   assert.equal(result.entries.find(entry => entry.name === failedName)?.isDirectory, false)
-  assert.equal(
-    result.entries.filter(entry => entry.isDirectory).length,
-    successfulDirectoryNames.size
-  )
+  assert.equal(result.entries.filter(entry => entry.isDirectory).length, successfulDirectoryNames.size)
 })

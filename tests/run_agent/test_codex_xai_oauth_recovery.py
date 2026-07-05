@@ -252,6 +252,35 @@ def test_summarize_api_error_decorates_xai_body_message():
     assert "X Premium+ does NOT include" in summary
 
 
+def test_summarize_api_error_handles_nested_provider_message():
+    """HF router may put a structured object in error.message."""
+    from run_agent import AIAgent
+
+    class _NestedProviderErr(Exception):
+        status_code = 400
+        body = {
+            "error": {
+                "message": {
+                    "type": "Bad Request",
+                    "code": "context_length_exceeded",
+                    "message": (
+                        "This model's maximum context length is 262144 tokens. "
+                        "Please reduce the length of the messages."
+                    ),
+                    "param": None,
+                },
+                "type": "invalid_request_error",
+                "param": None,
+                "code": None,
+            }
+        }
+
+    summary = AIAgent._summarize_api_error(_NestedProviderErr("400"))
+    assert "HTTP 400" in summary
+    assert "maximum context length is 262144 tokens" in summary
+    assert "context_length_exceeded" not in summary
+
+
 def test_summarize_api_error_idempotent_for_entitlement_hint():
     """Decorating twice must not double up the hint."""
     from run_agent import AIAgent

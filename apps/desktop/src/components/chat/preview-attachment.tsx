@@ -1,10 +1,12 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { MonitorPlay } from '@/lib/icons'
-import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { localPreviewTarget, normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { previewName } from '@/lib/preview-targets'
+import { revealFile } from '@/store/file-actions'
 import { notifyError } from '@/store/notifications'
 import {
   $previewTarget,
@@ -26,6 +28,8 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
   const targetRef = useRef(target)
   const name = previewName(target)
   const isActive = activePreview?.source === target
+  const localTarget = useMemo(() => localPreviewTarget(target, cwd || undefined), [cwd, target])
+  const filePath = localTarget?.kind === 'file' ? localTarget.path : null
 
   activePreviewRef.current = activePreview
   cwdRef.current = cwd
@@ -119,6 +123,24 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
       >
         {opening ? t.preview.opening : isActive ? t.preview.hide : t.preview.openPreview}
       </button>
+      <CopyButton
+        appearance="icon"
+        buttonSize="icon"
+        className="size-7 shrink-0 rounded-md border border-border/55 bg-background/40 text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground"
+        label={filePath ? t.fileMenu.copyPath : t.common.copy}
+        side="top"
+        text={filePath || target}
+      />
+      {filePath && (
+        <button
+          className="shrink-0 rounded-md border border-border/55 bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground"
+          onClick={() => void revealFile(filePath)}
+          title={filePath}
+          type="button"
+        >
+          {t.fileMenu.revealFileManager}
+        </button>
+      )}
     </div>
   )
 }

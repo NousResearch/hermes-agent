@@ -7,6 +7,10 @@ export interface ClarifyRequest {
   question: string
   choices: string[] | null
   sessionId: string | null
+  multiSelect?: boolean
+  minSelections?: null | number
+  maxSelections?: null | number
+  allowOther?: boolean
 }
 
 // Pending clarify requests keyed by the runtime session id that raised them.

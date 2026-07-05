@@ -2277,11 +2277,20 @@ export const en: Translations = {
       notReady: 'Clarify request is not ready yet',
       gatewayDisconnected: 'Hermes gateway is not connected',
       sendFailed: 'Could not send clarify response',
+      responsePendingTitle: 'Clarify response may still be processing',
+      responsePendingMessage:
+        'Hermes did not confirm the choice in time. The backend may still receive it, so wait a moment before trying again to avoid duplicate responses.',
+      responseExpiredTitle: 'Clarify request expired',
+      responseExpiredMessage: 'That choice request is no longer pending. Wait for Hermes to ask again, then answer the fresh prompt.',
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
       skip: 'Skip',
-      continueLabel: 'Continue'
+      continueLabel: 'Continue',
+      selected: 'Selected',
+      selectedCount: count => `${count} selected`,
+      multiSelectHint: 'Multi-select: use the circle on the right to stage choices, then press Select selected.',
+      selectSelected: 'Select selected'
     },
     tool: {
       code: 'Code',

@@ -189,6 +189,29 @@ class TestTelegramSendClarify:
         assert "<script>" not in kwargs["text"]
         assert "&lt;script&gt;" in kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_multi_select_renders_toggle_state_and_done_button(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Pick all that apply",
+            choices=["alpha", "beta", "gamma"],
+            clarify_id="cidMS",
+            session_key="sk-ms",
+            multi_select=True,
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert "Select one or more" in kwargs["text"]
+        assert "cidMS" in adapter._clarify_state
+        assert adapter._clarify_multi_state["cidMS"]["selected"] == set()
+        assert adapter._clarify_multi_state["cidMS"]["choices"] == ["alpha", "beta", "gamma"]
+
 
 # ===========================================================================
 # Callback dispatch — _handle_callback_query routing for cl:* prefixes
@@ -448,6 +471,54 @@ class TestTelegramClarifyCallback:
         query.answer.assert_called_once()
         assert "invalid" in query.answer.call_args[1]["text"].lower()
 
+    @pytest.mark.asyncio
+    async def test_multi_select_toggle_then_done_resolves_joined_choices(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        cm.register("cidMS", "sk-ms", "Pick", ["red", "green", "blue"], multi_select=True)
+        adapter._clarify_state["cidMS"] = "sk-ms"
+        adapter._clarify_multi_state["cidMS"] = {
+            "choices": ["red", "green", "blue"],
+            "selected": set(),
+        }
+
+        async def click(data: str):
+            query = AsyncMock()
+            query.data = data
+            query.message = MagicMock()
+            query.message.chat_id = 12345
+            query.message.text = "Pick"
+            query.from_user = MagicMock()
+            query.from_user.id = "777"
+            query.from_user.first_name = "Tester"
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            update = MagicMock()
+            update.callback_query = query
+            context = MagicMock()
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+                await adapter._handle_callback_query(update, context)
+            return query
+
+        first = await click("clms:cidMS:toggle:0")
+        assert adapter._clarify_multi_state["cidMS"]["selected"] == {0}
+        first.answer.assert_called_once()
+
+        second = await click("clms:cidMS:toggle:2")
+        assert adapter._clarify_multi_state["cidMS"]["selected"] == {0, 2}
+        second.answer.assert_called_once()
+
+        done = await click("clms:cidMS:done")
+        with cm._lock:
+            entry = cm._entries.get("cidMS")
+        assert entry is not None
+        assert entry.response == "red, blue"
+        assert entry.event.is_set()
+        assert "cidMS" not in adapter._clarify_state
+        assert "cidMS" not in adapter._clarify_multi_state
+        done.edit_message_text.assert_called_once()
+
 
 # ===========================================================================
 # Base adapter fallback render — text numbered list
@@ -492,6 +563,42 @@ class TestBaseAdapterClarifyFallback:
         assert "Pick a fruit" in text
         assert "1." in text and "apple" in text
         assert "2." in text and "banana" in text
+
+    @pytest.mark.asyncio
+    async def test_allow_other_false_text_fallback_does_not_invite_custom_answer(self):
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        class _Stub(BasePlatformAdapter):
+            name = "stub"
+
+            def __init__(self):
+                self.sent: list = []
+
+            async def connect(self, *, is_reconnect: bool = False): pass
+            async def disconnect(self): pass
+            async def send(self, chat_id, content, **kw):
+                self.sent.append({"chat_id": chat_id, "content": content})
+                return SendResult(success=True, message_id="1")
+            async def edit(self, *a, **k): return SendResult(success=False)
+            async def get_history(self, *a, **k): return []
+            async def get_chat_info(self, *a, **k): return {}
+
+        adapter = _Stub()
+
+        result = await adapter.send_clarify(
+            chat_id="c",
+            question="Pick fruits",
+            choices=["apple", "banana"],
+            clarify_id="x-no-other",
+            session_key="s-no-other",
+            multi_select=True,
+            allow_other=False,
+        )
+
+        assert result.success is True
+        text = adapter.sent[0]["content"]
+        assert "Reply with one or more numbers/letters or option text." in text
+        assert "own answer" not in text
 
     @pytest.mark.asyncio
     async def test_open_ended_fallback_renders_question_only(self):

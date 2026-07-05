@@ -73,6 +73,11 @@ from hermes_constants import get_config_path, get_hermes_home
 # unless ``force=True``.
 _logging_initialized = False
 
+# Idempotency flag for the HERMES_LOG_BLOCKING=1 startup warning -- see
+# _warn_if_blocking_env_set(). Production callers do not need to clear
+# it; only tests do (via fixture).
+_blocking_warn_emitted = False
+
 # Thread-local storage for per-conversation session context.
 _session_context = threading.local()
 
@@ -368,6 +373,11 @@ def setup_logging(
     # Suppress noisy third-party loggers.
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Defense-in-depth: surface HERMES_LOG_BLOCKING=1 to stderr so an
+    # accidental opt-out of the non-blocking handler is loud, not silent.
+    # Idempotent: prints at most once per process.
+    _warn_if_blocking_env_set()
 
     _logging_initialized = True
     return log_dir
@@ -806,6 +816,45 @@ def _warn_log_drop(dropped_total: int) -> None:
         pass
 
 
+def _warn_if_blocking_env_set() -> None:
+    """Surface the HERMES_LOG_BLOCKING escape hatch to stderr at startup.
+
+    When ``HERMES_LOG_BLOCKING=1`` is set in the environment, the gateway
+    reverts to the synchronous ``_ManagedRotatingFileHandler`` -- which
+    reintroduces the asyncio-freeze risk that the ``a835f97`` fix
+    removed.  An operator who accidentally leaves the var set in
+    production (a launchd plist override, a deploy wrapper, etc.) would
+    see logs "work" until the disk wedges, at which point the gateway
+    dies exactly as in the 2026-07-04 outage.
+
+    To prevent that silent regression we print a loud
+    ``[hermes-log] WARNING`` to ``sys.stderr`` the first time
+    ``setup_logging()`` runs with the var set.  Stderr is intentional:
+    it never goes through the very handler we are guarding against,
+    so a wedged log file cannot silence this warning.
+
+    Idempotent across repeated ``setup_logging()`` calls -- exactly one
+    warning per process.  Reset the module flag explicitly in tests.
+    """
+    global _blocking_warn_emitted
+    if _blocking_warn_emitted:
+        return
+    if os.environ.get("HERMES_LOG_BLOCKING") != "1":
+        return
+    _blocking_warn_emitted = True
+    try:
+        print(
+            "[hermes-log] WARNING: HERMES_LOG_BLOCKING=1 -- gateway.log "
+            "emit() is SYNCHRONOUS; a wedged disk will freeze the asyncio "
+            "loop. Unset this env var to restore non-blocking behavior.",
+            file=sys.stderr,
+        )
+    except Exception:
+        # Do not let a print failure (broken stderr, exotic platform) keep
+        # the rest of setup_logging() from succeeding.
+        pass
+
+
 def _add_rotating_handler(
     logger: logging.Logger,
     path: Path,
@@ -842,6 +891,12 @@ def _add_rotating_handler(
     # via ``HERMES_LOG_BLOCKING=1`` in the environment; in that mode we
     # still go through ``_ManagedRotatingFileHandler`` (the original) so the
     # managed-mode chmod and external-rotation detection are preserved.
+    #
+    # NOTE: ``HERMES_LOG_BLOCKING=1`` also triggers a one-shot stderr
+    # WARNING from ``_warn_if_blocking_env_set()`` (called from
+    # ``setup_logging()``) so an accidental opt-out -- e.g. a stale launchd
+    # plist override -- is loud at startup instead of silently
+    # reintroducing the asyncio-freeze risk the ``a835f97`` fix removed.
     blocking = os.environ.get("HERMES_LOG_BLOCKING") == "1"
     handler_cls = (
         _ManagedRotatingFileHandler if blocking else _NonBlockingRotatingFileHandler

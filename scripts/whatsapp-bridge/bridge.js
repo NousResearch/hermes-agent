@@ -304,6 +304,15 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
     || update?.pollUpdates?.[0]?.pollCreationMessageKey?.id
     || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.id
     || '';
+  // Only surface votes on polls Hermes itself created (tracked when
+  // /send-poll returns). Arbitrary human polls in a group chat must not
+  // inject agent-visible messages on every vote.
+  if (!pollId || !recentlySentIds.has(pollId)) {
+    if (WHATSAPP_DEBUG) {
+      try { console.log(JSON.stringify({ event: 'ignored', reason: 'foreign_poll_update', pollId })); } catch {}
+    }
+    return;
+  }
   const chosenText = selectedOptions.length ? selectedOptions.join(', ') : `[Poll update${pollId ? `: ${pollId}` : ''}]`;
   const dedupeId = `poll:${pollId}:${senderId}:${selectedOptions.join('|')}`;
   if (recentlyProcessedPollUpdates.has(dedupeId)) return;

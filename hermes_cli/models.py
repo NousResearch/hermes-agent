@@ -2269,7 +2269,27 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     (opencode-go/zen, xiaomi, deepseek, smaller inference providers, etc.),
     models.dev entries are merged on top of curated so new models released
     on the platform appear in ``/model`` without a Hermes release.
+
+    User-defined ``model.extra_models.<provider>`` entries in config.yaml
+    are prepended to the result so custom model IDs appear at the top of
+    the picker without touching source code.
     """
+    normalized = normalize_provider(provider)
+    result = _provider_model_ids_core(provider, force_refresh=force_refresh)
+    try:
+        extra = _get_model_config_dict().get("extra_models", {})
+        extra_list = extra.get(normalized, [])
+        if isinstance(extra_list, list) and extra_list:
+            result_lower = {m.lower() for m in result}
+            prepend = [m for m in extra_list if isinstance(m, str) and m.lower() not in result_lower]
+            if prepend:
+                result = prepend + result
+    except Exception:
+        pass
+    return result
+
+
+def _provider_model_ids_core(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)

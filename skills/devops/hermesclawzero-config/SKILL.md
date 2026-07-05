@@ -10,6 +10,9 @@ This skill manages long-term semantic memory using the HermesClawZero API. It en
 - Base URL: from MEM_PUBLIC_URL (example: http://localhost:8000)
 - API Key: from API_KEY
 
+## Source
+- Upstream project: https://github.com/SunMe1977/HermesClawZero-ConfigSidecar
+
 ## Tools
 1. **capture(text: str)**: Saves text to memory.
 2. **search(query: str, limit: int = 5)**: Retrieves relevant memories.

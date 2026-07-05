@@ -3049,12 +3049,31 @@ class TelegramAdapter(BasePlatformAdapter):
 
             proxy_targets = ["api.telegram.org", *fallback_ips]
             proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
-            if fallback_ips and not proxy_url and not disable_fallback:
-                logger.info(
-                    "[%s] Telegram fallback IPs active: %s",
-                    self.name,
-                    ", ".join(fallback_ips),
-                )
+            if fallback_ips and not disable_fallback:
+                # The fallback-IP transport pins the TCP connection to a
+                # known-reachable Telegram IP while preserving the
+                # api.telegram.org SNI/Host. It also threads TELEGRAM_PROXY
+                # through internally, so this single branch handles three
+                # cases: fallback-only, proxy-only-with-pinned-IPs, and
+                # proxy+fallback together. Combining a proxy with pinned IPs is
+                # required when the proxy's upstream egress can only reach a
+                # subset of the api.telegram.org anycast block (e.g. a
+                # DPI-bypass router): plain httpx DNS through the proxy would
+                # pick an unreachable IP, but the transport falls through to
+                # the reachable one.
+                if proxy_url:
+                    logger.info(
+                        "[%s] Telegram fallback IPs active via proxy %s: %s",
+                        self.name,
+                        proxy_url,
+                        ", ".join(fallback_ips),
+                    )
+                else:
+                    logger.info(
+                        "[%s] Telegram fallback IPs active: %s",
+                        self.name,
+                        ", ".join(fallback_ips),
+                    )
                 # Keep request/update pools separate to reduce contention during
                 # polling reconnect + bot API bootstrap/delete_webhook calls.
                 # httpx ignores the client-level `limits` kwarg when a custom

@@ -256,4 +256,13 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+    # httpx.ProxyError is NOT a subclass of ConnectError. When TELEGRAM_PROXY
+    # points at a proxy that can reach some Telegram IPs but not the one the
+    # primary DNS path resolved to (e.g. a DPI-bypass router whose upstream
+    # egress only routes a subset of the api.telegram.org anycast block), the
+    # primary attempt raises ProxyError "Host unreachable". Treat that as
+    # retryable so the transport falls through to the reachable fallback IPs
+    # instead of failing the whole request.
+    return isinstance(
+        exc, (httpx.ConnectTimeout, httpx.ConnectError, httpx.ProxyError)
+    )

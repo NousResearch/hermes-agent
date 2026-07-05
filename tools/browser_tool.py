@@ -2955,7 +2955,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             auto_local_this_nav=auto_local_this_nav,
             clear_session=lambda: cloakbrowser_navigate("about:blank", task_id),
         )
-        return blocked_response or raw_result
+        if blocked_response:
+            return blocked_response
+
+        if parsed_result.get("success") and "snapshot" in parsed_result:
+            parsed_result["snapshot"] = _redact_browser_output(parsed_result.get("snapshot", ""))
+
+        return json.dumps(parsed_result, ensure_ascii=False)
 
     if auto_local_this_nav:
         logger.info(
@@ -3097,7 +3103,16 @@ def browser_snapshot(
         blocked = _blocked_private_page_snapshot(effective_task_id)
         if blocked is not None:
             return blocked
-        return cloakbrowser_snapshot(full, task_id, user_task)
+        raw_result = cloakbrowser_snapshot(full, task_id, user_task)
+        try:
+            parsed_result = json.loads(raw_result)
+        except Exception:
+            return raw_result
+
+        if parsed_result.get("success") and "snapshot" in parsed_result:
+            parsed_result["snapshot"] = _redact_browser_output(parsed_result.get("snapshot", ""))
+
+        return json.dumps(parsed_result, ensure_ascii=False)
 
     effective_task_id = _last_session_key(task_id or "default")
 

@@ -135,3 +135,50 @@ def test_cloakbrowser_guard_inactive_does_not_probe(monkeypatch):
     out = json.loads(browser_tool.browser_click("@e1", task_id="task-1"))
 
     assert out == {"success": True, "clicked": "@e1"}
+
+
+def test_cloakbrowser_navigate_redacts_snapshot_payload(monkeypatch):
+    secret = "super-secret-999"
+    monkeypatch.setattr(
+        browser_tool,
+        "cloakbrowser_navigate",
+        lambda url, task_id=None: json.dumps(
+            {
+                "success": True,
+                "url": url,
+                "title": "Example",
+                "snapshot": f'token: {secret}',
+                "element_count": 1,
+            }
+        ),
+    )
+
+    out = json.loads(browser_tool.browser_navigate("https://example.com", task_id="task-1"))
+
+    assert out["success"] is True
+    assert out["url"] == "https://example.com"
+    assert out["title"] == "Example"
+    assert secret not in out["snapshot"]
+    assert out["snapshot"] == "token: ***"
+
+
+def test_cloakbrowser_snapshot_redacts_snapshot_payload(monkeypatch):
+    secret = "super-secret-999"
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: False)
+    monkeypatch.setattr(
+        browser_tool,
+        "cloakbrowser_snapshot",
+        lambda full=False, task_id=None, user_task=None: json.dumps(
+            {
+                "success": True,
+                "snapshot": f'token: {secret}',
+                "element_count": 1,
+            }
+        ),
+    )
+
+    out = json.loads(browser_tool.browser_snapshot(task_id="task-1"))
+
+    assert out["success"] is True
+    assert secret not in out["snapshot"]
+    assert out["snapshot"] == "token: ***"

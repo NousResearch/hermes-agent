@@ -6218,6 +6218,10 @@ def _strip_default_values(
         if value == default:
             return None
 
+        if isinstance(value, str) and isinstance(default, str) and re.search(r"\${[^}]+}", default):
+            if value == _expand_env_vars(default):
+                return None
+
         return copy.deepcopy(value)
 
     result: Dict[str, Any] = {}

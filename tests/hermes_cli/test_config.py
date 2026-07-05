@@ -102,6 +102,7 @@ class TestLoadConfigDefaults:
             assert config["display"]["interim_assistant_messages"] is True
             assert config["browser"]["cloakbrowser"] == {
                 "enabled": False,
+                "inactivity_timeout": 3600,
                 "headless": False,
                 "humanize": True,
                 "proxy": "",
@@ -112,7 +113,7 @@ class TestLoadConfigDefaults:
                 "color_scheme": "",
                 "user_agent": "",
                 "extra_args": [],
-                "user_data_dir": "",
+                "user_data_dir": str(tmp_path / "cloakbrowser_profile"),
             }
 
     def test_partial_browser_config_gets_cloakbrowser_defaults(self, tmp_path):
@@ -124,6 +125,7 @@ class TestLoadConfigDefaults:
             assert config["browser"]["allow_private_urls"] is True
             assert config["browser"]["cloakbrowser"] == {
                 "enabled": False,
+                "inactivity_timeout": 3600,
                 "headless": False,
                 "humanize": True,
                 "proxy": "",
@@ -134,7 +136,7 @@ class TestLoadConfigDefaults:
                 "color_scheme": "",
                 "user_agent": "",
                 "extra_args": [],
-                "user_data_dir": "",
+                "user_data_dir": str(tmp_path / "cloakbrowser_profile"),
             }
 
     def test_partial_cloakbrowser_config_keeps_user_values_and_fills_supported_defaults(self, tmp_path):
@@ -153,6 +155,7 @@ class TestLoadConfigDefaults:
 
             assert config["browser"]["cloakbrowser"] == {
                 "enabled": False,
+                "inactivity_timeout": 3600,
                 "headless": True,
                 "humanize": True,
                 "proxy": "http://proxy.example:8080",
@@ -163,7 +166,7 @@ class TestLoadConfigDefaults:
                 "color_scheme": "",
                 "user_agent": "",
                 "extra_args": ["--disable-blink-features=AutomationControlled"],
-                "user_data_dir": "",
+                "user_data_dir": str(tmp_path / "cloakbrowser_profile"),
             }
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
@@ -338,6 +341,15 @@ class TestSaveAndLoadRoundtrip:
             saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert saved["agent"]["max_turns"] == 37
             assert "max_turns" not in saved
+
+    def test_save_config_does_not_materialize_default_cloakbrowser_user_data_dir(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+
+            save_config(config)
+
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert "browser" not in saved or "cloakbrowser" not in saved.get("browser", {})
 
     def test_nested_values_preserved(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

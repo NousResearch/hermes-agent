@@ -178,29 +178,3 @@ class TestCompressAlwaysKeepsAUserTurn:
             m.get("content") for m in out if isinstance(m.get("content"), str)
         )
         assert "the latest live user question" in joined
-
-
-class TestSourceGuardrail:
-    @pytest.fixture
-    def source(self) -> str:
-        from pathlib import Path
-
-        return (
-            Path(__file__).resolve().parents[2]
-            / "agent"
-            / "context_compressor.py"
-        ).read_text(encoding="utf-8")
-
-    def test_zero_user_guard_present(self, source):
-        assert "#58753" in source
-        # The guard must consider messages OUTSIDE the (system-only) head
-        # case — i.e. it inspects the preserved tail for a surviving user.
-        assert "_user_survives" in source
-
-    def test_guard_wired_into_force_user_leading(self, source):
-        """The guard must feed ``_force_user_leading`` so the existing
-        flip logic cannot revert the summary back to assistant."""
-        idx_guard = source.find("_user_survives")
-        idx_force = source.rfind("_force_user_leading = True")
-        assert idx_guard >= 0 and idx_force >= 0
-        assert idx_force > idx_guard

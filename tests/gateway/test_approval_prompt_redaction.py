@@ -78,44 +78,48 @@ class TestApprovalCommandWiring:
     call (`_redact(cmd); send(cmd)`) does NOT pass."""
 
     def _assert_redacts_then_uses(self, module, func_name: str, sink_substr: str):
-        """Parse `module`'s full AST, locate the (possibly nested) function
-        `func_name`, and assert it contains an assignment
+        """Parse `module`'s full AST, locate EVERY (possibly nested) function
+        named `func_name`, and assert each one contains an assignment
         `<x> = _redact_approval_command(...)` whose result is then used by a
         statement matching `sink_substr` on a LATER line. Walking the real AST
         (not a source slice) is refactor-robust and rejects discarded-result
-        calls (the call must be an assignment, not a bare expression)."""
+        calls (the call must be an assignment, not a bare expression). All
+        instances are checked (not just the first) so additional approval-notify
+        transports on the same module can't silently skip redaction."""
         import ast
         import inspect
 
         source = inspect.getsource(module)
         tree = ast.parse(source)
-        target_fn = None
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
-                target_fn = node
-                break
-        assert target_fn is not None, f"function {func_name} not found in {module.__name__}"
+        target_fns = [
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == func_name
+        ]
+        assert target_fns, f"function {func_name} not found in {module.__name__}"
 
-        redact_line = None
-        for node in ast.walk(target_fn):
-            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-                fn = node.value.func
-                if isinstance(fn, ast.Name) and fn.id == "_redact_approval_command":
-                    redact_line = node.lineno
-        assert redact_line is not None, (
-            f"{func_name} must assign the result of _redact_approval_command(...) "
-            "(a discarded-result call would still leak the raw command)"
-        )
+        for target_fn in target_fns:
+            where = f"{func_name} (line {target_fn.lineno})"
+            redact_line = None
+            for node in ast.walk(target_fn):
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                    fn = node.value.func
+                    if isinstance(fn, ast.Name) and fn.id == "_redact_approval_command":
+                        redact_line = node.lineno
+            assert redact_line is not None, (
+                f"{where} must assign the result of _redact_approval_command(...) "
+                "(a discarded-result call would still leak the raw command)"
+            )
 
-        sink_line = None
-        for node in ast.walk(target_fn):
-            seg = ast.get_source_segment(source, node)
-            if seg and sink_substr in seg and getattr(node, "lineno", 0) > redact_line:
-                sink_line = node.lineno
-                break
-        assert sink_line is not None, (
-            f"`{sink_substr}` sink not found after the redaction in {func_name}"
-        )
+            sink_line = None
+            for node in ast.walk(target_fn):
+                seg = ast.get_source_segment(source, node)
+                if seg and sink_substr in seg and getattr(node, "lineno", 0) > redact_line:
+                    sink_line = node.lineno
+                    break
+            assert sink_line is not None, (
+                f"`{sink_substr}` sink not found after the redaction in {where}"
+            )
 
     def test_chat_platform_path_redacts_before_send(self):
         import gateway.run as run

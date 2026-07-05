@@ -1,0 +1,299 @@
+name: Skeptic Gate
+
+# Manual-only escape hatch for skeptic VERDICT polling.
+#
+# Skeptic now runs only via /skeptic comment trigger (lifecycle-worker handles it).
+# This workflow is kept as a workflow_dispatch-only fallback for manual invocation.
+#
+# Flow:
+#   1. Post SKEPTIC_GATE_TRIGGER comment (lifecycle-worker picks it up → ao skeptic verify)
+#   2. Poll for VERDICT (up to 15 min)
+#   3. Exit PASS / FAIL
+#
+# No API keys, no local execution — pure polling wrapper.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number"
+        required: true
+        type: string
+      head_sha:
+        description: "PR head commit SHA"
+        required: true
+        type: string
+
+concurrency:
+  group: skeptic-gate-${{ (github.event.inputs.pr_number || github.run_id) }}
+  cancel-in-progress: false
+
+permissions:
+  pull-requests: write
+  issues: write
+  contents: read
+  statuses: read
+  checks: write
+
+jobs:
+  skeptic_gate:
+    name: Skeptic Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # workflow_dispatch only — no auto conditions needed.
+    steps:
+      # ----------------------------------------------------------------
+      # Extract PR context from workflow_run event
+      # ----------------------------------------------------------------
+      - name: Resolve PR number and head SHA
+        id: resolve
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ github.event.inputs.pr_number || '' }}
+        run: |
+          PR_NUM="$PR_NUM"
+          if [ -z "$PR_NUM" ]; then
+            echo "ERROR: could not determine PR number" >&2
+            exit 1
+          fi
+          PR_JSON=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" 2>/dev/null || echo "")
+          if [ -z "$PR_JSON" ]; then
+            echo "ERROR: could not fetch PR #$PR_NUM" >&2
+            exit 1
+          fi
+          HEAD_SHA=$(echo "$PR_JSON" | jq -r '.head.sha' || echo "")
+          if [ -z "$HEAD_SHA" ]; then
+            echo "ERROR: could not determine HEAD SHA for PR #$PR_NUM" >&2
+            exit 1
+          fi
+          PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.user.login' || echo "")
+          if [ -z "$PR_AUTHOR" ]; then
+            echo "ERROR: could not determine PR author for PR #$PR_NUM" >&2
+            exit 1
+          fi
+          REQUEST_ID="gate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PR_NUM}-${HEAD_SHA:0:12}"
+
+          echo "PR_NUM=$PR_NUM"
+          echo "HEAD_SHA=$HEAD_SHA"
+          echo "PR_AUTHOR=$PR_AUTHOR"
+          echo "pr_num=$PR_NUM" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "pr_author=$PR_AUTHOR" >> "$GITHUB_OUTPUT"
+
+      # ----------------------------------------------------------------
+      # Step 1: Post SKEPTIC_GATE_TRIGGER comment
+      # Lifecycle-worker picks this up and dispatches ao skeptic verify.
+      # ----------------------------------------------------------------
+      - name: Post skeptic trigger comment
+        id: post_trigger
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ steps.resolve.outputs.pr_num }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+        run: |
+          PR_NUM=$PR_NUM
+          HEAD_SHA=$HEAD_SHA
+          REQUEST_ID="gate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PR_NUM}-${HEAD_SHA:0:12}"
+
+          BODY=$(printf '%s\n%s\n%s\n%s' \
+            "SKEPTIC_GATE_TRIGGER" \
+            "<!-- skeptic-request-id-${REQUEST_ID} -->" \
+            "<!-- skeptic-head-sha-${HEAD_SHA} -->" \
+            "<!-- skeptic-gate-trigger-${HEAD_SHA} -->")
+
+          TRIGGER_UPDATED=""
+          for _attempt in 1 2 3 4 5; do
+            set +e
+            TRIGGER_UPDATED=$(gh api -X POST \
+              "repos/${GITHUB_REPOSITORY}/issues/${PR_NUM}/comments" \
+              -H "Accept: application/vnd.github+json" \
+              -f "body=${BODY}" \
+              --jq '.updated_at' 2>/dev/null)
+            _rc=$?
+            set -e
+            if [ "$_rc" -eq 0 ] && [ -n "$TRIGGER_UPDATED" ] && [ "$TRIGGER_UPDATED" != "null" ]; then
+              break
+            fi
+            echo "::warning::POST trigger comment failed (rc=${_rc}), attempt ${_attempt}/5 — sleeping 60s"
+            sleep 60
+          done
+          if [ -z "$TRIGGER_UPDATED" ] || [ "$TRIGGER_UPDATED" = "null" ]; then
+            echo "ERROR: failed to post trigger comment after retries" >&2
+            exit 1
+          fi
+
+          echo "Trigger posted at (GitHub server): $TRIGGER_UPDATED"
+          echo "request_id=$REQUEST_ID" >> "$GITHUB_OUTPUT"
+          echo "trigger_updated=$TRIGGER_UPDATED" >> "$GITHUB_OUTPUT"
+
+      # ----------------------------------------------------------------
+      # Step 2: Poll for VERDICT (up to 15 min)
+      # ----------------------------------------------------------------
+      - name: Poll for skeptic VERDICT
+        id: poll_verdict
+        timeout-minutes: 20
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ steps.resolve.outputs.pr_num }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          PR_AUTHOR: ${{ steps.resolve.outputs.pr_author }}
+          REQUEST_ID: ${{ steps.post_trigger.outputs.request_id }}
+          SKEPTIC_BOT_AUTHOR: ${{ vars.SKEPTIC_BOT_AUTHOR || 'jleechan2015' }}
+          TRIGGER_UPDATED: ${{ steps.post_trigger.outputs.trigger_updated }}
+        run: |
+          PR_NUM=$PR_NUM
+          set +e
+
+          if [ -z "$TRIGGER_UPDATED" ] || [ "$TRIGGER_UPDATED" = "null" ]; then
+            echo "ERROR: trigger_updated not set — cannot poll for verdicts"
+            exit 1
+          fi
+          if [ -z "$REQUEST_ID" ] || [ "$REQUEST_ID" = "null" ]; then
+            echo "ERROR: request_id not set — cannot safely bind skeptic verdicts"
+            exit 1
+          fi
+          echo "Only accepting verdicts posted after: $TRIGGER_UPDATED"
+          echo "Filter by trigger SHA: ${HEAD_SHA:0:7}"
+
+          INTERVAL=30
+          MAX_ATTEMPTS=30  # 30 * 30s = 15 minutes
+
+          echo "Polling for VERDICT on PR #$PR_NUM (commit ${HEAD_SHA:0:7})..."
+          echo "Max wait: $((MAX_ATTEMPTS * INTERVAL / 60)) minutes"
+
+          API_FAILURES=0
+          COMMENTS_API_FAILURES=0
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            PR_STATE=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" --jq '.state' 2>&1)
+            PR_STATE_FAIL=0
+            if echo "$PR_STATE" | grep -qi "error\|rate limit\|authentication\|not found\|server error"; then
+              API_FAILURES=$((API_FAILURES + 1))
+              PR_STATE_FAIL=1
+              echo "API warning: PR state lookup failed (attempt $((i))): ${PR_STATE:0:100}"
+              if [ "$API_FAILURES" -ge 3 ]; then
+                echo "ERROR: Too many consecutive API failures"
+                exit 1
+              fi
+            fi
+
+            if [ "$PR_STATE" = "closed" ]; then
+              echo "PR closed — exiting as SKIPPED"
+              exit 0
+            fi
+
+            _COMMENTS_TMP=$(mktemp)
+            _COMMENTS_PAGE=1
+            GH_EXIT=0
+            while true; do
+              _PAGE_TMP=$(mktemp)
+              gh api "repos/${{ github.repository }}/issues/${PR_NUM}/comments?per_page=100&page=${_COMMENTS_PAGE}" \
+                > "$_PAGE_TMP" 2>/dev/null
+              GH_EXIT=$?
+              if [ "$GH_EXIT" -ne 0 ]; then
+                rm -f "$_PAGE_TMP"
+                break
+              fi
+              cat "$_PAGE_TMP" >> "$_COMMENTS_TMP"
+              _PAGE_COUNT=$(jq 'length' "$_PAGE_TMP" 2>/dev/null || echo 0)
+              rm -f "$_PAGE_TMP"
+              if [ "$_PAGE_COUNT" -lt 100 ]; then
+                break
+              fi
+              _COMMENTS_PAGE=$((_COMMENTS_PAGE + 1))
+            done
+            VERDICT_RAW=$(cat "$_COMMENTS_TMP")
+            rm -f "$_COMMENTS_TMP"
+            if [ "$GH_EXIT" -ne 0 ]; then
+              VERDICT_JSON=""
+              COMMENTS_API_FAILURES=$((COMMENTS_API_FAILURES + 1))
+              API_FAILURES=$((API_FAILURES + 1))
+              echo "API warning: verdict lookup failed (exit=$GH_EXIT, attempt $((i)))"
+              if [ "$API_FAILURES" -ge 3 ]; then
+                echo "ERROR: Too many consecutive API failures"
+                exit 1
+              fi
+              echo "Attempt $i/$MAX_ATTEMPTS — sleeping ${INTERVAL}s..."
+              sleep $INTERVAL
+              continue
+            else
+              COMMENTS_API_FAILURES=0
+              # Only reset main counter when both APIs succeed in the same iteration
+              if [ "$PR_STATE_FAIL" -eq 0 ]; then
+                API_FAILURES=0
+              fi
+              VERDICT_JSON=$(echo "$VERDICT_RAW" | jq -s \
+                --arg tu "$TRIGGER_UPDATED" --arg ts "$HEAD_SHA" --arg ts_prefix "${HEAD_SHA:0:12}" --arg req "$REQUEST_ID" \
+                --arg author "$SKEPTIC_BOT_AUTHOR" --arg pr_author "$PR_AUTHOR" \
+                --arg VERDICT_RE "(?:^|\\n)[ \\t]*(?:> ?)?(?:\\#{1,6}[ \\t]*)?(?:\\*{1,2})?VERDICT:[ \\t]*(?<verdict>PASS|FAIL|SKIPPED)(?:\\*{1,2})?" \
+                'add
+                | def extract_verdict(verdict_re): (.body | ([match(verdict_re; "ig")] | last | .captures[0].string // "" | ascii_upcase)) // "";
+                map(. + {verdict: extract_verdict($VERDICT_RE)})
+                | map(. + {is_gh_bot: ((.user.login | ascii_downcase) == "github-actions[bot]")})
+                | map(select(
+                    (((.user.login | ascii_downcase) == ($author | ascii_downcase))
+                    or ((.user.login | ascii_downcase) == "jleechan-af")
+                    or ((.user.login | ascii_downcase) == "jleechanao")
+                    or (
+                      (.is_gh_bot == true)
+                      and ((.user.login | ascii_downcase) != ($pr_author | ascii_downcase))
+                    ))
+                    and (.body | test("<!--\\s*skeptic-agent-verdict\\s*-->"; "i"))
+                    and (.verdict != "")
+                    and (.body | test("skeptic-gate-trigger-" + $ts; "i"))
+                    and (.body | test("<!--\\s*skeptic-head-sha-" + $ts + "\\s*-->"; "i"))
+                    # request-id filter is tolerant for non-empty request IDs:
+                    # accept exact match OR any request-id containing the trigger
+                    # SHA (full or 12-char prefix). Missing request IDs fail closed
+                    # before polling.
+                    and ((.body | test("<!--\\s*skeptic-request-id-" + $req + "\\s*-->"; "i"))
+                         or (.body | test("<!--\\s*skeptic-request-id-[^>]*(" + ($ts | tostring) + "|" + $ts_prefix + ")[^>]*-->"; "i")))
+                    and ((.updated_at | try fromdate // 0) >= (try $tu | fromdate // 0))
+                    and ((.verdict != "PASS")
+                         or ((.body | test("<!--\\s*skeptic-gate-1\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-2\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-3\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-4\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-5\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-6\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-7\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-8\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-8a\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-8b\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-8c\\s*:\\s*PASS\\s*-->"; "i"))
+                             and (.body | test("<!--\\s*skeptic-gate-8d\\s*:\\s*PASS\\s*-->"; "i")) ))
+                ))
+                | last // empty' 2>/dev/null || echo "empty")
+            fi
+
+            if ! echo "$VERDICT_JSON" | jq -e 'if . == null or (.body == null) then empty else .body end | length > 0' >/dev/null 2>&1; then
+              echo "Attempt $i/$MAX_ATTEMPTS — no fresh VERDICT yet, sleeping ${INTERVAL}s..."
+              sleep $INTERVAL
+              continue
+            fi
+
+            VERDICT_BODY=$(echo "$VERDICT_JSON" | jq -r '.body')
+            VERDICT_TYPE=$(echo "$VERDICT_JSON" | jq -r '.verdict // ""')
+            VERDICT_CREATED=$(echo "$VERDICT_JSON" | jq -r '.updated_at')
+            echo ""
+            echo "=== Found VERDICT (posted $VERDICT_CREATED) ==="
+            echo "$VERDICT_BODY"
+
+            if [ "$VERDICT_TYPE" = "PASS" ]; then
+              echo "=== SKEPTIC GATE: PASS ==="
+              exit 0
+            elif [ "$VERDICT_TYPE" = "FAIL" ]; then
+              echo "=== SKEPTIC GATE: FAIL ==="
+              exit 1
+            elif [ "$VERDICT_TYPE" = "SKIPPED" ]; then
+              echo "=== SKEPTIC GATE: SKIPPED (fail-closed) ==="
+              exit 1
+            else
+              echo "WARNING: VERDICT body is malformed — sleeping ${INTERVAL}s before retry"
+              sleep $INTERVAL
+              continue
+            fi
+          done
+
+          echo "TIMEOUT: No fresh VERDICT after $((MAX_ATTEMPTS * INTERVAL / 60)) minutes"
+          echo "::error::Skeptic Gate timed out waiting for VERDICT — failing closed"
+          exit 1

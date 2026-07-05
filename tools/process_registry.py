@@ -1148,14 +1148,24 @@ class ProcessRegistry:
         """
         return session_id in self._completion_consumed or session_id in self._poll_observed
 
-    def drain_notifications(self) -> "list[tuple[dict, str]]":
+    def drain_notifications(
+        self, session_key: str = "",
+    ) -> "list[tuple[dict, str]]":
         """Pop all pending notification events and return formatted pairs.
 
         Returns a list of (raw_event, formatted_text) tuples.
         Skips completion events the agent already consumed via wait/log or
         observed inline via poll() (see ``_drain_should_skip``).
+
+        When ``session_key`` is non-empty, async-delegation events whose
+        ``session_key`` does NOT match are re-queued rather than consumed,
+        so they remain available for the correct session. This prevents
+        background delegation results from being delivered to the wrong
+        session when the user switches between gateway sessions while a
+        subagent is running (issue #58684).
         """
-        results = []
+        results: "list[tuple[dict, str]]" = []
+        requeue: "list[dict]" = []
         while not self.completion_queue.empty():
             try:
                 evt = self.completion_queue.get_nowait()
@@ -1164,9 +1174,18 @@ class ProcessRegistry:
             _evt_sid = evt.get("session_id", "")
             if evt.get("type") == "completion" and self._drain_should_skip(_evt_sid):
                 continue
+            # Filter async-delegation events by the caller's session_key so
+            # they are not delivered to the wrong session/thread (#58684).
+            if session_key and evt.get("type") == "async_delegation":
+                evt_session_key = evt.get("session_key", "") or ""
+                if evt_session_key != session_key:
+                    requeue.append(evt)
+                    continue
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))
+        for evt in requeue:
+            self.completion_queue.put(evt)
         return results
 
     def get(self, session_id: str) -> Optional[ProcessSession]:

@@ -993,6 +993,111 @@ async def test_run_agent_previewed_split_keeps_final_delivery_pending(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_run_agent_non_editable_streaming_uses_final_delivery_only(monkeypatch, tmp_path):
+    """Non-editable platforms must not send a stream preview.
+
+    Messaging adapters without edit support can only deliver the final answer
+    once. If streaming creates a preview first, it cannot be replaced by the
+    final delivery path.
+    """
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StreamingRefineAgent,
+        session_id="sess-whatsapp-final-only",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.WHATSAPP,
+        chat_id="hermes-test@s.whatsapp.net",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is not True
+    assert adapter.edits == []
+    assert [call["content"] for call in adapter.sent] == []
+
+
+class _FakeProxyContent:
+    async def iter_any(self):
+        yield b'data: {"choices":[{"delta":{"content":"Continuing to refine:"}}]}\n'
+        yield b'data: {"choices":[{"delta":{"content":" Final answer."}}]}\n'
+        yield b'data: [DONE]\n'
+
+
+class _FakeProxyResponse:
+    status = 200
+    content = _FakeProxyContent()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def text(self):
+        return ""
+
+
+class _FakeProxyClientSession:
+    def __init__(self, *args, **kwargs):
+        self.requests = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, url, *, json=None, headers=None):
+        self.requests.append({"url": url, "json": json, "headers": headers})
+        return _FakeProxyResponse()
+
+
+@pytest.mark.asyncio
+async def test_proxy_non_editable_streaming_uses_final_delivery_only(monkeypatch, tmp_path):
+    fake_aiohttp = types.ModuleType("aiohttp")
+    fake_aiohttp.ClientSession = _FakeProxyClientSession
+    fake_aiohttp.ClientTimeout = lambda *args, **kwargs: SimpleNamespace(
+        args=args, kwargs=kwargs
+    )
+    monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+    monkeypatch.setenv("GATEWAY_PROXY_URL", "http://proxy.example")
+
+    adapter = NonEditingProgressCaptureAdapter(platform=Platform.WHATSAPP)
+    runner = _make_runner(adapter)
+    runner.config.streaming = StreamingConfig.from_dict(
+        {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1}
+    )
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="hermes-test@s.whatsapp.net",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent_via_proxy(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-whatsapp-proxy-final-only",
+        session_key="agent:main:whatsapp:dm:hermes-test@s.whatsapp.net",
+        event_message_id="inbound-1",
+    )
+
+    assert result["final_response"] == "Continuing to refine: Final answer."
+    assert result["response_previewed"] is False
+    assert adapter.edits == []
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
 async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,

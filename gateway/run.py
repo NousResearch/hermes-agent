@@ -17106,8 +17106,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _chat_id=source.chat_id,
                         ) -> None:
                             _adapter.pause_typing_for_chat(_chat_id)
+                    # Non-editable messaging adapters (WhatsApp, Signal-style
+                    # transports, BlueBubbles, QQ, WeChat, …) must not receive
+                    # progressive preview sends. A first preview cannot be
+                    # edited into the final answer later, so let the normal
+                    # final send path run once instead.
                     _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                    _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
+                    if not _adapter_supports_edit:
+                        raise RuntimeError("skip streaming for non-editable platform")
+                    _effective_cursor = _scfg.cursor
                     _buffer_only = False
                     if source.platform == Platform.MATRIX:
                         _effective_cursor = ""

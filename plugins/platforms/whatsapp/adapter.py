@@ -1356,12 +1356,23 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             chat_type = "group" if is_group else "dm"
             
             # Build source
+            _chat_id = data.get("chatId", "")
             source = self.build_source(
-                chat_id=data.get("chatId", ""),
+                chat_id=_chat_id,
                 chat_name=data.get("chatName"),
                 chat_type=chat_type,
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
+            )
+
+            # Per-chat ephemeral system prompt (keyed by chat JID) — lets one
+            # WhatsApp connection give different groups/DMs a different persona,
+            # matching the channel_prompts support in the telegram/slack/discord
+            # adapters. Empty config → None → no override.
+            from gateway.platforms.base import resolve_channel_prompt
+            _channel_prompt = (
+                resolve_channel_prompt(self.config.extra, str(_chat_id))
+                if _chat_id else None
             )
             
             # Download media URLs to the local cache so agent tools
@@ -1514,6 +1525,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=reply_to_text,
                 reply_to_author_id=reply_to_author_id,
                 reply_to_is_own_message=reply_to_is_own_message,
+                channel_prompt=_channel_prompt,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

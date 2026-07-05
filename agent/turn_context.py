@@ -34,6 +34,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
 )
+from agent.runtime_evidence import clear_runtime_evidence, seed_turn_runtime_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +293,9 @@ def build_turn_context(
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
+    agent._current_user_task = original_user_message if isinstance(original_user_message, str) else str(original_user_message or "")
+    clear_runtime_evidence()
+    seed_turn_runtime_evidence(latest_user_request=agent._current_user_task)
 
     # Track memory nudge trigger (turn-based, checked here).
     should_review_memory = False

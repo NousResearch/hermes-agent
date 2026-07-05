@@ -24,12 +24,25 @@ import os
 import json
 import re
 import asyncio
+import contextvars
 import logging
 import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
+from agent.self_modification_guard import before_tool_call as before_self_modification_tool_call, clear_lifecycle_state, finalize_protected_write_result
+from agent.latest_user_task_guard import (
+    enforce_latest_user_request_authority,
+    record_latest_user_request_from_dispatch,
+)
+from agent.notion_healthcheck import require_fresh_notion_healthcheck
+from agent.no_progress_loop import (
+    preflight_no_progress_block,
+    record_no_progress_block,
+    record_no_progress_observation,
+)
+from agent.runtime_evidence import update_runtime_evidence
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -46,6 +59,7 @@ _WARNED_DISABLED_BUNDLES: set = set()
 _tool_loop = None          # persistent loop for the main (CLI) thread
 _tool_loop_lock = threading.Lock()
 _worker_thread_local = threading.local()  # per-worker-thread persistent loops
+_current_user_task = contextvars.ContextVar("hermes_current_user_task", default=None)
 
 
 def _get_tool_loop():
@@ -1057,104 +1071,100 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+    _user_task = user_task if user_task is not None else _current_user_task.get()
+    _user_task_token = _current_user_task.set(_user_task)
+    if _user_task is not None:
+        record_latest_user_request_from_dispatch(_user_task)
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
-
-    # ── Tool Search bridge dispatch ──────────────────────────────────
-    # tool_search and tool_describe are pure catalog reads — handle them
-    # inline. tool_call is unwrapped to the underlying tool so that every
-    # downstream hook (pre/post, edit approval, guardrails) sees the real
-    # tool name, not the bridge.
-    _ts_mod = None
     try:
-        from tools import tool_search as _ts_mod  # noqa: F401
-    except Exception:
+        # ── Tool Search bridge dispatch ──────────────────────────────────
+        # tool_search and tool_describe are pure catalog reads — handle them
+        # inline. tool_call is unwrapped to the underlying tool so that every
+        # downstream hook (pre/post, edit approval, guardrails) sees the real
+        # tool name, not the bridge.
         _ts_mod = None
-
-    if _ts_mod is not None and _ts_mod.is_bridge_tool(function_name):
         try:
-            # Use skip_tool_search_assembly=True so we see the real catalog,
-            # not the already-collapsed bridge-only list (the bridge would
-            # otherwise be searching only itself).
-            #
-            # Scope the catalog to the session's toolsets so the bridge can
-            # only surface and invoke tools the session was actually granted.
-            # Without this, a restricted-toolset session (subagent, kanban
-            # worker, curated gateway session) would see and be able to call
-            # the entire process registry via the bridge. Passing the same
-            # enabled/disabled toolsets the session was assembled with keeps
-            # the deferred catalog identical to the deferrable subset of the
-            # session's own tool list, and avoids polluting the process-global
-            # _last_resolved_tool_names with out-of-scope tools.
-            current_defs = get_tool_definitions(
-                enabled_toolsets=enabled_toolsets,
-                disabled_toolsets=disabled_toolsets,
-                quiet_mode=True, skip_tool_search_assembly=True,
-            ) or []
+            from tools import tool_search as _ts_mod  # noqa: F401
         except Exception:
-            current_defs = []
-        if function_name == _ts_mod.TOOL_SEARCH_NAME:
-            return _ts_mod.dispatch_tool_search(function_args or {},
-                                                current_tool_defs=current_defs)
-        if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
-            return _ts_mod.dispatch_tool_describe(function_args or {},
-                                                  current_tool_defs=current_defs)
-        if function_name == _ts_mod.TOOL_CALL_NAME:
-            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
-            if err or not underlying_name:
-                return json.dumps({"error": err or "tool_call could not be resolved"},
-                                  ensure_ascii=False)
-            # Defense in depth: the underlying tool MUST be in the session's
-            # scoped deferrable catalog. resolve_underlying_call() only checks
-            # that the name is deferrable in the global registry; this gate
-            # additionally rejects any tool the session was not granted, so a
-            # restricted session can never invoke an out-of-scope tool through
-            # the bridge even if the catalog scoping above regressed.
-            _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
-            if underlying_name not in _scoped_deferrable:
-                return json.dumps({
-                    "error": (
-                        f"'{underlying_name}' is not available in this session. "
-                        "Use tool_search to find tools you can call."
-                    ),
-                }, ensure_ascii=False)
-            # Recurse with the underlying tool. All hooks fire against the
-            # real tool name. The bridge is invisible to hooks by design.
-            return handle_function_call(
-                function_name=underlying_name,
-                function_args=underlying_args,
-                task_id=task_id,
-                tool_call_id=tool_call_id,
-                session_id=session_id,
-                user_task=user_task,
-                enabled_tools=enabled_tools,
-                skip_pre_tool_call_hook=skip_pre_tool_call_hook,
-                skip_tool_request_middleware=skip_tool_request_middleware,
-                tool_request_middleware_trace=list(_tool_middleware_trace),
-                enabled_toolsets=enabled_toolsets,
-                disabled_toolsets=disabled_toolsets,
-            )
+            _ts_mod = None
 
-    _tool_original_args = dict(function_args)
-    if not skip_tool_request_middleware:
-        try:
-            from hermes_cli.middleware import apply_tool_request_middleware
+        if _ts_mod is not None and _ts_mod.is_bridge_tool(function_name):
+            try:
+                # Use skip_tool_search_assembly=True so we see the real catalog,
+                # not the already-collapsed bridge-only list (the bridge would
+                # otherwise be searching only itself).
+                #
+                # Scope the catalog to the session's toolsets so the bridge can
+                # only surface and invoke tools the session was actually granted.
+                current_defs = get_tool_definitions(
+                    enabled_toolsets=enabled_toolsets,
+                    disabled_toolsets=disabled_toolsets,
+                    quiet_mode=True, skip_tool_search_assembly=True,
+                ) or []
+            except Exception:
+                current_defs = []
+            if function_name == _ts_mod.TOOL_SEARCH_NAME:
+                return _ts_mod.dispatch_tool_search(function_args or {},
+                                                    current_tool_defs=current_defs)
+            if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
+                return _ts_mod.dispatch_tool_describe(function_args or {},
+                                                      current_tool_defs=current_defs)
+            if function_name == _ts_mod.TOOL_CALL_NAME:
+                underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
+                if err or not underlying_name:
+                    return json.dumps({"error": err or "tool_call could not be resolved"},
+                                      ensure_ascii=False)
+                # Defense in depth: the underlying tool MUST be in the session's
+                # scoped deferrable catalog. resolve_underlying_call() only checks
+                # that the name is deferrable in the global registry; this gate
+                # additionally rejects any tool the session was not granted, so a
+                # restricted session can never invoke an out-of-scope tool through
+                # the bridge even if the catalog scoping above regressed.
+                _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
+                if underlying_name not in _scoped_deferrable:
+                    return json.dumps({
+                        "error": (
+                            f"'{underlying_name}' is not available in this session. "
+                            "Use tool_search to find tools you can call."
+                        ),
+                    }, ensure_ascii=False)
+                # Recurse with the underlying tool. All hooks fire against the
+                # real tool name. The bridge is invisible to hooks by design.
+                return handle_function_call(
+                    function_name=underlying_name,
+                    function_args=underlying_args,
+                    task_id=task_id,
+                    tool_call_id=tool_call_id,
+                    session_id=session_id,
+                    user_task=_user_task,
+                    enabled_tools=enabled_tools,
+                    skip_pre_tool_call_hook=skip_pre_tool_call_hook,
+                    skip_tool_request_middleware=skip_tool_request_middleware,
+                    tool_request_middleware_trace=list(_tool_middleware_trace),
+                    enabled_toolsets=enabled_toolsets,
+                    disabled_toolsets=disabled_toolsets,
+                )
 
-            _tool_request_mw = apply_tool_request_middleware(
-                function_name,
-                function_args,
-                task_id=task_id or "",
-                session_id=session_id or "",
-                tool_call_id=tool_call_id or "",
-                turn_id=turn_id or "",
-                api_request_id=api_request_id or "",
-            )
-            function_args = _tool_request_mw.payload
-            _tool_original_args = _tool_request_mw.original_payload
-            _tool_middleware_trace = _tool_request_mw.trace
-        except Exception as _mw_err:
-            logger.debug("tool_request middleware error: %s", _mw_err)
+        _tool_original_args = dict(function_args)
+        if not skip_tool_request_middleware:
+            try:
+                from hermes_cli.middleware import apply_tool_request_middleware
 
-    try:
+                _tool_request_mw = apply_tool_request_middleware(
+                    function_name,
+                    function_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                    turn_id=turn_id or "",
+                    api_request_id=api_request_id or "",
+                )
+                function_args = _tool_request_mw.payload
+                _tool_original_args = _tool_request_mw.original_payload
+                _tool_middleware_trace = _tool_request_mw.trace
+            except Exception as _mw_err:
+                logger.debug("tool_request middleware error: %s", _mw_err)
+
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
@@ -1201,7 +1211,129 @@ def handle_function_call(
                     error_message=block_message,
                     middleware_trace=list(_tool_middleware_trace),
                 )
+                record_no_progress_observation(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
+                    task_id=task_id,
+                )
                 return result
+
+        latest_user_task_block = enforce_latest_user_request_authority(
+            function_name=function_name,
+            function_args=function_args,
+            user_task=_user_task,
+        )
+        if latest_user_task_block is not None:
+            result = json.dumps({"error": latest_user_task_block}, ensure_ascii=False)
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="latest_user_request_block",
+                error_message=latest_user_task_block,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            record_no_progress_observation(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+            )
+            return result
+
+        notion_health_block = require_fresh_notion_healthcheck(
+            action_label=function_name,
+            function_args=function_args,
+            user_task=_user_task,
+        )
+        if notion_health_block is not None:
+            result = json.dumps({"error": notion_health_block}, ensure_ascii=False)
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="notion_healthcheck_block",
+                error_message=notion_health_block,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            record_no_progress_observation(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+            )
+            return result
+
+        no_progress_block_message = preflight_no_progress_block(
+            function_name=function_name,
+            function_args=function_args,
+            task_id=task_id,
+        )
+        if no_progress_block_message is not None:
+            result = json.dumps({"error": no_progress_block_message}, ensure_ascii=False)
+            record_no_progress_block(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+            )
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="no_progress_loop",
+                error_message=no_progress_block_message,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            return result
+
+        self_mod_block_message = before_self_modification_tool_call(
+            function_name,
+            function_args,
+            _user_task,
+        )
+        if self_mod_block_message is not None:
+            result = json.dumps({"error": self_mod_block_message}, ensure_ascii=False)
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="self_modification_block",
+                error_message=self_mod_block_message,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            record_no_progress_observation(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+            )
+            return result
 
         # ACP/Zed edit approval runs before any file mutation.  The requester
         # is bound via ContextVar only for ACP sessions, so CLI/gateway paths
@@ -1264,7 +1396,7 @@ def handle_function_call(
                         function_name, next_args,
                         task_id=task_id,
                         session_id=session_id,
-                        user_task=user_task,
+                        user_task=_user_task,
                     )
             from hermes_cli.middleware import run_tool_execution_middleware
 
@@ -1285,6 +1417,7 @@ def handle_function_call(
                     reset_current_observability_context(_approval_tokens)
                 except Exception:
                     pass
+        result = finalize_protected_write_result(function_name, result)
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
         _emit_post_tool_call_hook(
@@ -1334,12 +1467,27 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
+        record_no_progress_observation(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            task_id=task_id,
+        )
         return result
-
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
-        return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+        result = json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+        record_no_progress_observation(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            task_id=task_id,
+        )
+        return result
+    finally:
+        clear_lifecycle_state()
+        _current_user_task.reset(_user_task_token)
 
 
 # =============================================================================

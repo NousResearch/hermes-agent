@@ -486,6 +486,13 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        # Opt-in verbose [DBG] logging. When extra.debug: true, raise this
+        # module's logger to DEBUG so the [Telegram][DBG] traces (which were
+        # demoted from INFO to DEBUG to keep gateway logs quiet) become visible
+        # again without a code edit. Toggle via:
+        #   hermes config set platforms.telegram.extra.debug true
+        if self._coerce_bool_extra("debug", False):
+            logging.getLogger(__name__).setLevel(logging.DEBUG)
         # Bot API 10.1 Rich Messages: render constructs the legacy MarkdownV2
         # path degrades (tables → bullet lists, task lists, <details>, block
         # math) via sendRichMessage / editMessageText's rich_message param using
@@ -6171,7 +6178,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
 
-        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+        _excl = self._telegram_exclusive_bot_mentions()
+        _excl_other = _excl and self._explicit_bot_mentions_exclude_self(message)
+        if _excl_other:
             return False
 
         # Resolve guest-mode mention bypass once so _message_mentions_bot

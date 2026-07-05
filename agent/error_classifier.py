@@ -1016,6 +1016,7 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
+
         # Some local inference servers (notably llama.cpp / llama-server)
         # report context overflow with an HTTP 500 instead of the standard
         # 400/413. The request-validation guard above already ran, so any
@@ -1028,6 +1029,62 @@ def _classify_by_status(
                 retryable=True,
                 should_compress=True,
             )
+
+        # Context-overflow disguised as a server error (generic body + large session).
+        #
+        # Some providers — notably NVIDIA NIM hosting GLM-5.2 — return a
+        # bare HTTP 500 "Internal server error" (no context-length detail
+        # in the body) when the request exceeds the worker's capacity,
+        # rather than a 400/413 with a descriptive message.  The generic
+        # ``server_error`` classification (retryable, no compression) wastes
+        # all retries on the identical oversized request and then hard-fails
+        # the session.
+        #
+        # The explicit-pattern check above already catches bodies that carry
+        # context-length keywords.  This heuristic catches the *remaining*
+        # case: a generic body with no diagnostic detail, on a large session.
+        # When three signals converge we re-classify as ``context_overflow``
+        # so the retry loop compresses the context instead of hammering:
+        #
+        #   1. Status 500/502 — a server-side failure, not a client bug.
+        #   2. Generic body — the error message is short and carries no
+        #      diagnostic detail (no "context length", no "too many tokens",
+        #      no traceback).  A *real* 500 (crashed worker, bad deploy)
+        #      usually includes a longer, more specific message.
+        #   3. Large session — the approximated token count exceeds 40 %
+        #      of the configured ``context_length`` (or, for models with a
+        #      small declared window, an absolute 60 K floor).  A 500 on a
+        #      tiny session is unlikely to be context-related.
+        #
+        # This is deliberately heuristic, not a hard token threshold: as
+        # providers raise their real limits, the ``context_length`` config
+        # grows and the 40 % gate scales with it, so the detection stays
+        # correct without code changes.  Confirmed against production logs
+        # (5 NIM sessions failing at 68 K–83 K tokens with context_length
+        # 65 536 → all would be caught here and compressed instead of
+        # looped).
+        err_body_msg = ""
+        if isinstance(body, dict):
+            err_obj = body.get("error", {})
+            if isinstance(err_obj, dict):
+                err_body_msg = str(err_obj.get("message") or "").strip().lower()
+            if not err_body_msg:
+                err_body_msg = str(body.get("message") or "").strip().lower()
+        is_generic_body = (
+            len(err_body_msg) < 50
+            or err_body_msg in {"internal server error", "bad gateway", "error", ""}
+        )
+        is_large_session = (
+            approx_tokens > context_length * 0.4
+            or (context_length <= 256000 and approx_tokens > 60000)
+        )
+        if is_generic_body and is_large_session:
+            return result_fn(
+                FailoverReason.context_overflow,
+                retryable=True,
+                should_compress=True,
+            )
+
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in {503, 529}:

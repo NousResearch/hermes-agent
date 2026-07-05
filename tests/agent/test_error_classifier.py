@@ -366,6 +366,134 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.server_error
 
+    def test_500_generic_large_session_is_context_overflow(self):
+        """Generic 500 with large session → context overflow heuristic.
+
+        NVIDIA NIM returns HTTP 500 "Internal server error" (no context-length
+        detail in the body) when the request exceeds the worker's capacity.
+        Without this heuristic the classifier returns ``server_error``
+        (retryable, no compression) and the retry loop wastes all 3 retries on
+        the identical oversized request, then hard-fails the session.  With a
+        large session we re-classify as ``context_overflow`` so the retry loop
+        compresses the context instead of hammering the same request.
+        """
+        e = MockAPIError(
+            "Internal server error",
+            status_code=500,
+            body={"error": {"message": "Internal server error"}},
+        )
+        result = classify_api_error(e, approx_tokens=70000, context_length=65536)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.retryable is True
+        assert result.should_compress is True
+
+    def test_500_generic_large_session_above_40_percent(self):
+        """500 at >40% of context_length triggers overflow even below 60K floor."""
+        e = MockAPIError(
+            "Internal server error",
+            status_code=500,
+            body={"error": {"message": "Internal server error"}},
+        )
+        result = classify_api_error(e, approx_tokens=30000, context_length=65536)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_500_generic_small_session_still_server_error(self):
+        """Generic 500 with small session → server_error, not context overflow.
+
+        A 500 on a tiny session is unlikely to be context-related — it's
+        probably a real server error (crashed worker, bad deploy).  Keep the
+        default retryable server_error classification.
+        """
+        e = MockAPIError(
+            "Internal server error",
+            status_code=500,
+            body={"error": {"message": "Internal server error"}},
+        )
+        result = classify_api_error(e, approx_tokens=1000, context_length=200000)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_500_detailed_body_large_session_still_server_error(self):
+        """500 with a detailed body in a large session → server_error.
+
+        A real 500 (crashed worker, bad deploy, upstream proxy error) usually
+        carries a longer, more specific message.  The heuristic only fires on
+        *generic* bodies — this avoids false-positive compression on genuine
+        server failures.
+        """
+        e = MockAPIError(
+            "Worker process crashed unexpectedly while processing request. "
+            "This is an internal error and has been reported. "
+            "Please retry your request in a few moments.",
+            status_code=500,
+            body={"error": {"message": "Worker process crashed unexpectedly while processing request. "
+                                       "This is an internal error and has been reported."}},
+        )
+        result = classify_api_error(e, approx_tokens=100000, context_length=200000)
+        assert result.reason == FailoverReason.server_error
+        assert result.should_compress is False
+
+    def test_502_generic_large_session_is_context_overflow(self):
+        """502 with generic body and large session → context overflow (same as 500)."""
+        e = MockAPIError(
+            "Bad Gateway",
+            status_code=502,
+            body={"error": {"message": "Bad Gateway"}},
+        )
+        result = classify_api_error(e, approx_tokens=80000, context_length=65536)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_500_nim_repro_all_five_sessions(self):
+        """Regression: all 5 NIM production failures (68K-83K tokens, 65536 window).
+
+        Confirmed against production logs — every session was stuck after 3
+        retries with identical "Internal server error" and would have been
+        rescued by compression if this heuristic existed.
+        """
+        cases = [
+            (68039, 13),
+            (81373, 108),
+            (76045, 143),
+            (82977, 99),
+            (78256, 22),
+        ]
+        for tokens, msgs in cases:
+            e = MockAPIError(
+                "Internal server error",
+                status_code=500,
+                body={"error": {"message": "Internal server error"}},
+            )
+            result = classify_api_error(
+                e,
+                approx_tokens=tokens,
+                context_length=65536,
+                num_messages=msgs,
+            )
+            assert result.reason == FailoverReason.context_overflow, (
+                f"Expected context_overflow for {tokens} tokens / {msgs} msgs, "
+                f"got {result.reason}"
+            )
+            assert result.should_compress is True
+
+    def test_500_large_context_model_not_false_positive(self):
+        """500 with large context_length (e.g. 1M) and moderate tokens → server_error.
+
+        Models with a large declared context window (e.g. 1M) should not
+        trigger the overflow heuristic at moderate token counts.  A 500 at
+        50K tokens on a 1M model is a real server error, not context overflow.
+        """
+        e = MockAPIError(
+            "Internal server error",
+            status_code=500,
+            body={"error": {"message": "Internal server error"}},
+        )
+        result = classify_api_error(e, approx_tokens=50000, context_length=1_000_000)
+        assert result.reason == FailoverReason.server_error
+        assert result.should_compress is False
+
     def test_503_overloaded(self):
         e = MockAPIError("Service Unavailable", status_code=503)
         result = classify_api_error(e)

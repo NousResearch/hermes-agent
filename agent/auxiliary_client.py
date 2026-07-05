@@ -4147,7 +4147,15 @@ def resolve_provider_client(
                 "Dropping OpenRouter-format model %r for non-OpenRouter "
                 "auxiliary provider (using %r instead)", model, resolved)
             model = None
-        final_model = model or resolved
+        # _resolve_auto() already handles MoA preset → aggregator resolution
+        # (PR #53827). Its returned ``resolved`` model is the real model ID
+        # the endpoint accepts. The pre-filled ``model`` from
+        # _read_main_model() may be a MoA preset name (e.g. "default") that
+        # is NOT a valid model ID — using it overrides _resolve_auto's
+        # correct resolution and causes HTTP 400. Prefer ``resolved`` so
+        # the auto-detect chain's answer wins; ``model`` remains as
+        # fallback when _resolve_auto returns None (non-MoA fallthrough).
+        final_model = resolved or model
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

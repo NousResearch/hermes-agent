@@ -193,6 +193,20 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             detail=f"Provider does not support interactive login: {provider!r}",
         )
 
+    if getattr(p, "supports_password", False):
+        # Fork patch: password-only providers have no OAuth redirect
+        # (start_login raises NotImplementedError -> 500). Send direct or
+        # bookmarked /auth/login hits to the /login form instead. Carry:
+        # report upstream alongside the _auto_sso_response guard.
+        from urllib.parse import quote as _quote
+        from hermes_cli.dashboard_auth.prefix import prefix_from_request
+        _prefix = prefix_from_request(request)
+        _loc = (
+            f"{_prefix}/login?next={_quote(next, safe='')}" if next
+            else f"{_prefix}/login"
+        )
+        return RedirectResponse(url=_loc, status_code=302)
+
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
     except ProviderError as e:

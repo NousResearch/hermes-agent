@@ -573,6 +573,26 @@ gateway:
 
 Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
 
+### Restricting exec-approval buttons to admins
+
+By default, any user allowed to talk to the bot — including users paired via `hermes pairing approve` — can click the **Approve / Deny** buttons on a dangerous-command prompt. This mirrors plain-chat admission and is the historical behavior. To restrict *approving dangerous commands* to admins only, set `require_admin_for_exec_approval` in the Discord platform's `extra` block:
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      extra:
+        require_admin_for_exec_approval: true   # default: false
+        allow_admin_from:
+          - "123456789012345678"   # only these users may click Approve/Deny
+```
+
+**Behavior:**
+
+- **Default off** — exec-approval buttons stay user-scope; any admitted user can approve. Existing installs are unaffected.
+- **When on** — the clicker must pass the normal admission check **and** be listed in `allow_admin_from` (the same key the slash-command split uses). The lower-stakes component views (model picker, clarify, update prompt) stay user-scope.
+- **Fails closed** — if the toggle is on but `allow_admin_from` is empty, *nobody* can approve and a warning is logged, so the misconfiguration is visible rather than silently locking you out.
+
 ## Interactive Model Picker
 
 Send `/model` with no arguments in a Discord channel to open a dropdown-based model picker:

@@ -343,14 +343,21 @@ class MemoryStore:
         Only invokes the script when the threshold is exceeded; silent no-op otherwise.
         Does NOT raise — auto-consolidation is best-effort, the rejection path
         handles the actual error reporting.
+
+        Telemetry: emits a logger.info line per phase so ops can see when
+        auto-consolidate fires in production logs. Output: structured
+        key=value pairs, easy to grep / parse.
         """
         path = self._path_for(target)
         if not path.exists():
+            logger.info("memory auto-consolidate: target=%s skipped reason=file_missing", target)
             return False
         before_size = path.stat().st_size
         script = get_memory_dir().parent / "scripts" / "memory-auto-compress.py"
         if not script.exists():
+            logger.info("memory auto-consolidate: target=%s skipped reason=script_missing", target)
             return False
+        logger.info("memory auto-consolidate: target=%s before=%d starting", target, before_size)
         try:
             # 5s timeout — auto-consolidation should be fast (just file rewrites).
             # If the script hangs, the user is already in a bad state; fail open.
@@ -361,8 +368,25 @@ class MemoryStore:
                 check=False,
             )
             after_size = path.stat().st_size if path.exists() else before_size
-            return after_size < before_size
-        except (subprocess.TimeoutExpired, OSError) as e:
+            freed = before_size - after_size
+            if freed > 0:
+                logger.info(
+                    "memory auto-consolidate: target=%s after=%d freed=%d result=ok",
+                    target, after_size, freed,
+                )
+                return True
+            logger.info(
+                "memory auto-consolidate: target=%s after=%d freed=0 result=no_room",
+                target, after_size,
+            )
+            return False
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "memory auto-consolidate: target=%s failed reason=timeout limit_seconds=5",
+                target,
+            )
+            return False
+        except OSError as e:
             logger.warning(f"memory auto-consolidate failed: {type(e).__name__}: {e}")
             return False
 

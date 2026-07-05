@@ -1,6 +1,7 @@
 """Tests for set_config_value — verifying secrets route to .env and config to config.yaml."""
 
 import argparse
+import json
 import os
 from unittest.mock import patch
 
@@ -247,6 +248,153 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+# ---------------------------------------------------------------------------
+# Cron drift guard warning — regression tests for #59031
+# ---------------------------------------------------------------------------
+
+def _write_cron_jobs(tmp_path, jobs):
+    cron_dir = tmp_path / "cron"
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    (cron_dir / "jobs.json").write_text(
+        json.dumps({"jobs": jobs}),
+        encoding="utf-8",
+    )
+
+
+class TestCronModelDriftConfigWarning:
+    """Warn operators before unpinned snapshot-bearing cron jobs fail closed."""
+
+    def test_model_default_change_warns_for_unpinned_snapshot_jobs(
+        self,
+        _isolated_hermes_home,
+        capsys,
+    ):
+        _write_cron_jobs(
+            _isolated_hermes_home,
+            [
+                {
+                    "id": "model-drift-job",
+                    "enabled": True,
+                    "no_agent": False,
+                    "model": None,
+                    "provider": None,
+                    "model_snapshot": "old-model",
+                    "provider_snapshot": "openrouter",
+                    "prompt": "do not print this prompt",
+                },
+            ],
+        )
+
+        set_config_value("model.default", "new-model")
+
+        captured = capsys.readouterr()
+        assert "1 enabled unpinned cron job" in captured.out
+        assert "model_snapshot" in captured.out
+        assert "fail closed" in captured.out
+        assert "cronjob action=update job_id=<job_id> provider=<provider> model=<model>" in captured.out
+        assert "do not print this prompt" not in captured.out
+
+    def test_provider_change_warns_for_unpinned_snapshot_jobs(
+        self,
+        _isolated_hermes_home,
+        capsys,
+    ):
+        _write_cron_jobs(
+            _isolated_hermes_home,
+            [
+                {
+                    "id": "provider-drift-job",
+                    "enabled": True,
+                    "no_agent": False,
+                    "model": None,
+                    "provider": None,
+                    "model_snapshot": "same-model",
+                    "provider_snapshot": "openrouter",
+                },
+            ],
+        )
+
+        set_config_value("model.provider", "new-provider")
+
+        captured = capsys.readouterr()
+        assert "1 enabled unpinned cron job" in captured.out
+        assert "provider_snapshot" in captured.out
+        assert "new global provider" in captured.out
+        assert "cronjob action=update job_id=<job_id> provider=<provider> model=<model>" in captured.out
+
+    def test_pinned_jobs_and_missing_snapshots_do_not_warn(
+        self,
+        _isolated_hermes_home,
+        capsys,
+    ):
+        _write_cron_jobs(
+            _isolated_hermes_home,
+            [
+                {
+                    "id": "model-pinned",
+                    "enabled": True,
+                    "model": "old-model",
+                    "model_snapshot": "old-model",
+                },
+                {
+                    "id": "missing-model-snapshot",
+                    "enabled": True,
+                    "model": None,
+                },
+                {
+                    "id": "provider-pinned",
+                    "enabled": True,
+                    "provider": "openrouter",
+                    "provider_snapshot": "openrouter",
+                },
+                {
+                    "id": "missing-provider-snapshot",
+                    "enabled": True,
+                    "provider": None,
+                },
+                {
+                    "id": "disabled-unpinned",
+                    "enabled": False,
+                    "model": None,
+                    "model_snapshot": "old-model",
+                    "provider": None,
+                    "provider_snapshot": "openrouter",
+                },
+                {
+                    "id": "script-only",
+                    "enabled": True,
+                    "no_agent": True,
+                    "model": None,
+                    "model_snapshot": "old-model",
+                    "provider": None,
+                    "provider_snapshot": "openrouter",
+                },
+            ],
+        )
+
+        set_config_value("model.default", "new-model")
+        set_config_value("model.provider", "new-provider")
+
+        captured = capsys.readouterr()
+        assert "fail closed" not in captured.out
+        assert "cronjob action=update" not in captured.out
+
+    def test_unreadable_cron_database_does_not_break_config_set(
+        self,
+        _isolated_hermes_home,
+        capsys,
+    ):
+        cron_dir = _isolated_hermes_home / "cron"
+        cron_dir.mkdir(parents=True, exist_ok=True)
+        (cron_dir / "jobs.json").write_text("{not-json", encoding="utf-8")
+
+        set_config_value("model.default", "new-model")
+
+        captured = capsys.readouterr()
+        assert "Set model.default = new-model" in captured.out
+        assert "fail closed" not in captured.out
 
 
 # ---------------------------------------------------------------------------

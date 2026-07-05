@@ -68,6 +68,37 @@
     return str;
   }
 
+  function dueDateLabel(ts) {
+    if (!ts) return "";
+    const d = new Date(Number(ts) * 1000);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+  function dueDateFull(ts) {
+    if (!ts) return "";
+    const d = new Date(Number(ts) * 1000);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  }
+  function dueDateInputValue(ts) {
+    if (!ts) return "";
+    const d = new Date(Number(ts) * 1000);
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+  function dueDateEndOfDay(value) {
+    if (!value) return null;
+    const d = new Date(value + "T23:59:59");
+    if (Number.isNaN(d.getTime())) return null;
+    return Math.floor(d.getTime() / 1000);
+  }
+  function isOverdue(task) {
+    return task && task.due_at && task.status !== "done" && task.status !== "archived" && Number(task.due_at) < Math.floor(Date.now() / 1000);
+  }
+
   // ``fetchJSON`` throws ``Error("<status>: <raw body>")`` on non-2xx, and
   // FastAPI bodies look like ``{"detail":"<message>"}``.  Pull the
   // human-readable message out so banners/toasts don't have to leak HTTP
@@ -2587,6 +2618,10 @@
               ? h(Badge, { className: "hermes-kanban-priority",
                            title: `Priority ${t.priority}. Higher-priority tasks are claimed first by the dispatcher.` }, `P${t.priority}`)
               : null,
+            t.due_at
+              ? h(Badge, { variant: "outline", className: cn("hermes-kanban-due", isOverdue(t) ? "hermes-kanban-due--overdue" : ""),
+                           title: `Due ${dueDateFull(t.due_at)}` }, "due ", dueDateLabel(t.due_at))
+              : null,
             t.tenant
               ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
                            title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
@@ -2646,6 +2681,7 @@
     const [title, setTitle] = useState("");
     const [assignee, setAssignee] = useState("");
     const [priority, setPriority] = useState(0);
+    const [dueDate, setDueDate] = useState("");
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
     // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
@@ -2671,6 +2707,8 @@
         priority: Number(priority) || 0,
         triage: props.columnName === "triage",
       };
+      const dueAt = dueDateEndOfDay(dueDate);
+      if (dueAt) body.due_at = dueAt;
       if (parent) body.parents = [parent];
       // Parse comma-separated skills into a clean list. Blank = no
       // extras (omit key so backend leaves it null). The dispatcher
@@ -2695,7 +2733,7 @@
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
       props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
+      setTitle(""); setAssignee(""); setPriority(0); setDueDate(""); setParent(""); setSkills("");
       setWorkspaceKind("scratch"); setWorkspacePath("");
       setGoalMode(false); setGoalMaxTurns("");
     };
@@ -2744,6 +2782,13 @@
           placeholder: "pri",
           className: "h-7 text-xs w-16",
           title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
+        }),
+        h(Input, {
+          type: "date",
+          value: dueDate,
+          onChange: function (e) { setDueDate(e.target.value); },
+          className: "h-7 text-xs w-36",
+          title: "Optional due date for planning/triage visibility.",
         }),
       ),
       h(Input, {
@@ -3247,6 +3292,7 @@
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
+        h(DueDateEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
         h(MetaRow, {
           label: tx(i18n, "workspace", "Workspace"),
@@ -3598,6 +3644,45 @@
         },
         className: "h-7 text-xs w-20",
       }),
+    );
+  }
+
+  function DueDateEditor(props) {
+    const { t } = useI18n();
+    const [editing, setEditing] = useState(false);
+    const [v, setV] = useState(dueDateInputValue(props.task.due_at));
+    useEffect(function () { setV(dueDateInputValue(props.task.due_at)); }, [props.task.due_at]);
+    const save = function () {
+      const dueAt = dueDateEndOfDay(v) || 0;
+      props.onPatch({ due_at: dueAt }).then(function () { setEditing(false); });
+    };
+    if (!editing) {
+      return h("div", { className: "hermes-kanban-meta-row" },
+        h("span", { className: "hermes-kanban-meta-label" }, tx(t, "dueDate", "Due date")),
+        h("span", {
+          className: cn("hermes-kanban-meta-value hermes-kanban-editable", isOverdue(props.task) ? "hermes-kanban-due-overdue" : ""),
+          onClick: function () { setEditing(true); },
+          title: tx(t, "clickToEdit", "Click to edit"),
+        }, props.task.due_at ? dueDateFull(props.task.due_at) : "—"),
+      );
+    }
+    return h("div", { className: "hermes-kanban-meta-row" },
+      h("span", { className: "hermes-kanban-meta-label" }, tx(t, "dueDate", "Due date")),
+      h(Input, {
+        type: "date", value: v, autoFocus: true,
+        onChange: function (e) { setV(e.target.value); },
+        onKeyDown: function (e) {
+          if (e.key === "Enter") { e.preventDefault(); save(); }
+          if (e.key === "Escape") setEditing(false);
+        },
+        className: "h-7 text-xs w-36",
+      }),
+      h(Button, { onClick: save, size: "sm", className: "h-7 text-xs" }, tx(t, "save", "Save")),
+      h(Button, {
+        onClick: function () { props.onPatch({ due_at: 0 }).then(function () { setEditing(false); }); },
+        size: "sm",
+        className: "h-7 text-xs",
+      }, tx(t, "clear", "Clear")),
     );
   }
 

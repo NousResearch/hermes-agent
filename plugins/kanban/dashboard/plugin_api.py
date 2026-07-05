@@ -592,6 +592,7 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    due_at: Optional[int] = None
 
 
 @router.post("/tasks")
@@ -616,6 +617,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            due_at=payload.due_at,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -816,6 +818,7 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    due_at: Optional[int] = None
 
 
 @router.patch("/tasks/{task_id}")
@@ -907,6 +910,20 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     "VALUES (?, 'reprioritized', ?, ?)",
                     (task_id, json.dumps({"priority": int(payload.priority)}),
                      int(time.time())),
+                )
+
+        # --- due date -----------------------------------------------------
+        if payload.due_at is not None:
+            with kanban_db.write_txn(conn):
+                due_at = int(payload.due_at)
+                conn.execute(
+                    "UPDATE tasks SET due_at = ? WHERE id = ?",
+                    (due_at if due_at > 0 else None, task_id),
+                )
+                conn.execute(
+                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                    "VALUES (?, 'due_date_changed', ?, ?)",
+                    (task_id, json.dumps({"due_at": due_at if due_at > 0 else None}), int(time.time())),
                 )
 
         # --- title / body -------------------------------------------------

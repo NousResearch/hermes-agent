@@ -78,6 +78,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
         "session_id": t.session_id,
+        "due_at": t.due_at,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
     }

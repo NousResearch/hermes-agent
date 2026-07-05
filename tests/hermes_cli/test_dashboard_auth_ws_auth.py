@@ -618,3 +618,49 @@ class TestGatewayWsUrl:
             assert web_server._build_gateway_ws_url() is None
         finally:
             web_server.app.state.bound_host = "fly-app.fly.dev"
+
+
+# ---------------------------------------------------------------------------
+# Wildcard → loopback substitution — both _build_gateway_ws_url and
+# _build_sidecar_url must replace 0.0.0.0 / :: with 127.0.0.1 so that
+# co-located PTY children do not route through a forward proxy.
+# ---------------------------------------------------------------------------
+
+
+class TestWildcardLoopbackSubstitution:
+    """Regression tests for GitHub #58993."""
+
+    @pytest.mark.parametrize("wildcard", ["0.0.0.0", "::"])
+    def test_gateway_ws_substitutes_loopback(self, loopback_app, wildcard):
+        web_server.app.state.bound_host = wildcard
+        try:
+            url = web_server._build_gateway_ws_url()
+            assert url is not None
+            assert "127.0.0.1" in url
+            assert "0.0.0.0" not in url
+            assert "::" not in url
+        finally:
+            web_server.app.state.bound_host = "127.0.0.1"
+
+    @pytest.mark.parametrize("wildcard", ["0.0.0.0", "::"])
+    def test_sidecar_substitutes_loopback(self, loopback_app, wildcard):
+        web_server.app.state.bound_host = wildcard
+        try:
+            url = web_server._build_sidecar_url("ch-1")
+            assert url is not None
+            assert "127.0.0.1" in url
+            assert "0.0.0.0" not in url
+            assert "::" not in url
+        finally:
+            web_server.app.state.bound_host = "127.0.0.1"
+
+    def test_non_wildcard_preserved(self, loopback_app):
+        """A specific LAN address should pass through untouched."""
+        web_server.app.state.bound_host = "192.168.1.10"
+        try:
+            url = web_server._build_gateway_ws_url()
+            assert url is not None
+            assert "192.168.1.10" in url
+            assert "127.0.0.1" not in url
+        finally:
+            web_server.app.state.bound_host = "127.0.0.1"

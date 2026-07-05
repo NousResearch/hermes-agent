@@ -12784,10 +12784,15 @@ def _build_gateway_ws_url() -> Optional[str]:
     if not host or not port:
         return None
 
+    # The PTY child runs in the same container; wildcard bind addresses
+    # (0.0.0.0 / ::) should resolve to loopback so that a forward proxy
+    # configured via HTTPS_PROXY does not intercept the WS connection.
+    client_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+
     netloc = (
-        f"[{host}]:{port}"
-        if ":" in host and not host.startswith("[")
-        else f"{host}:{port}"
+        f"[{client_host}]:{port}"
+        if ":" in client_host and not client_host.startswith("[")
+        else f"{client_host}:{port}"
     )
 
     if getattr(app.state, "auth_required", False):
@@ -12851,7 +12856,10 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     if not host or not port:
         return None
 
-    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+    # Same loopback substitution as _build_gateway_ws_url — the PTY child
+    # is co-located with the server.
+    client_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    netloc = f"[{client_host}]:{port}" if ":" in client_host and not client_host.startswith("[") else f"{client_host}:{port}"
 
     if getattr(app.state, "auth_required", False):
         # Gated mode — use the internal credential so the WS upgrade survives

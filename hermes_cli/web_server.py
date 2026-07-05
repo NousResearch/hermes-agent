@@ -282,17 +282,6 @@ _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
-# CORS: restrict to localhost origins only.  The web UI is intended to run
-# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
-# read/modify config and secrets.
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under
 # /api/ is gated by the auth middleware below.
@@ -599,6 +588,21 @@ async def _token_auth_seam(request: Request, call_next):
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
     return await token_auth_middleware(request, call_next)
 
+
+# CORS: restrict to localhost origins only.  The web UI is intended to run
+# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
+# read/modify config and secrets.
+#
+# Registered AFTER all ``@app.middleware("http")`` decorators so it is the
+# *outermost* middleware (Starlette's onion: last-added runs first).
+# Without this, an OPTIONS preflight from a cross-origin SPA hits the auth
+# middlewares before CORS can answer, producing 401 instead of 204 + headers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------------------------------------------------------------------------
 # Config schema — auto-generated from DEFAULT_CONFIG

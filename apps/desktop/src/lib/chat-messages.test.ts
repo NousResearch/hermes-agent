@@ -784,4 +784,68 @@ describe('upsertToolPart', () => {
       summary: 'Did 1 search in 0.5s'
     })
   })
+
+  it('redacts token-shaped values from live tool args and results', () => {
+    const fakeToken = 'fake_plex_token_for_live_tool_123456789'
+
+    const completed = upsertToolPart(
+      [],
+      {
+        args: {
+          command: `PLEX_TOKEN='${fakeToken}' curl 'http://localhost:32400/library?X-Plex-Token=${fakeToken}'`
+        },
+        name: 'terminal',
+        result: {
+          stdout: `connected with Authorization: Bearer ${fakeToken}`,
+          output: `http://localhost:32400/status?X-Plex-Token=${fakeToken}`
+        },
+        tool_id: 'terminal-secret'
+      },
+      'complete'
+    )
+
+    const serialized = JSON.stringify(completed)
+
+    expect(serialized).not.toContain(fakeToken)
+    expect(serialized).toContain('[REDACTED]')
+  })
+
+  it('redacts token-shaped values from stored tool calls and tool results', () => {
+    const fakeToken = 'fake_plex_token_for_stored_tool_123456789'
+
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: `running TOKEN=${fakeToken}`,
+        reasoning: `checking X-Plex-Token=${fakeToken}`,
+        timestamp: 1,
+        tool_calls: [
+          {
+            id: 'tc-secret',
+            function: {
+              name: 'terminal',
+              arguments: JSON.stringify({
+                command: `TOKEN=${fakeToken} curl 'http://localhost:32400/library?X-Plex-Token=${fakeToken}'`
+              })
+            }
+          }
+        ]
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'tc-secret',
+        tool_name: 'terminal',
+        content: JSON.stringify({
+          stdout: `Authorization: Bearer ${fakeToken}`,
+          output: `PLEX_TOKEN=${fakeToken}`
+        }),
+        timestamp: 2
+      }
+    ])
+
+    const serialized = JSON.stringify(messages)
+
+    expect(serialized).not.toContain(fakeToken)
+    expect(serialized).toContain('[REDACTED]')
+  })
 })

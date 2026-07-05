@@ -4119,7 +4119,7 @@ def validate_requested_model(
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 
-    if api_models is not None:
+    if api_models:
         # Gemini's OpenAI-compat /v1beta/openai/models endpoint returns IDs
         # prefixed with "models/" (e.g. "models/gemini-2.5-flash") — native
         # Gemini-API convention.  Our curated list and user input both use

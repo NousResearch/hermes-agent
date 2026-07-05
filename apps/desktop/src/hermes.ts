@@ -66,13 +66,13 @@ import type {
 // "Timed out connecting to Hermes backend" that hangs the UI (#48504).
 //
 // Give the boot burst a generous per-call timeout instead of raising the
-// global default: interactive/runtime calls and the liveness poll (/api/status)
-// keep the short default so a genuinely-dead backend is still detected fast.
+// global default: interactive/runtime calls keep the short default so a
+// genuinely-dead backend is still detected fast.
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 const PROFILE_LIST_REQUEST_TIMEOUT_MS = STARTUP_REQUEST_TIMEOUT_MS
-const BOOT_AGGREGATE_REQUEST_TIMEOUT_MS = STARTUP_REQUEST_TIMEOUT_MS
+export const BOOT_AGGREGATE_REQUEST_TIMEOUT_MS = STARTUP_REQUEST_TIMEOUT_MS
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -328,14 +328,15 @@ export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
   return window.hermesDesktop.api<ModelInfoResponse>({
     ...profileScoped(),
     path: '/api/model/info',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
 export function getStatus(): Promise<StatusResponse> {
   return window.hermesDesktop.api<StatusResponse>({
     ...profileScoped(),
-    path: '/api/status'
+    path: '/api/status',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -372,7 +373,8 @@ export function getLogs(params: {
 
   return window.hermesDesktop.api<LogsResponse>({
     ...profileScoped(),
-    path: suffix ? `/api/logs?${suffix}` : '/api/logs'
+    path: suffix ? `/api/logs?${suffix}` : '/api/logs',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -380,14 +382,15 @@ export function getHermesConfig(): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
     ...profileScoped(),
     path: '/api/config',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
 export function getHermesConfigRecord(): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
     ...profileScoped(),
-    path: '/api/config'
+    path: '/api/config',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -395,14 +398,15 @@ export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
     ...profileScoped(),
     path: '/api/config/defaults',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 
 export function getHermesConfigSchema(): Promise<ConfigSchemaResponse> {
   return window.hermesDesktop.api<ConfigSchemaResponse>({
     ...profileScoped(),
-    path: '/api/config/schema'
+    path: '/api/config/schema',
+    timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
   })
 }
 

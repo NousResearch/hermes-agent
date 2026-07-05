@@ -7,6 +7,7 @@ const $gateway = atom<unknown>({ id: 'live-socket' })
 
 vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForProfile }))
 vi.mock('@/hermes', () => ({
+  BOOT_AGGREGATE_REQUEST_TIMEOUT_MS: 60_000,
   getProfiles: getProfilesMock,
   setApiRequestProfile: vi.fn()
 }))
@@ -25,6 +26,7 @@ describe('profile cache', () => {
   afterEach(() => {
     window.localStorage.clear()
     vi.restoreAllMocks()
+    Reflect.deleteProperty(window, 'hermesDesktop')
   })
 
   it('seeds the profile list synchronously from localStorage before backend refresh', async () => {
@@ -56,5 +58,16 @@ describe('profile cache', () => {
 
     expect(getProfilesMock).not.toHaveBeenCalled()
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'office-work'])
+  })
+
+  it('uses the boot timeout for active profile refresh', async () => {
+    const api = vi.fn(async () => ({ current: 'default' }))
+    Object.assign(window, { hermesDesktop: { api } })
+
+    const { refreshActiveProfile } = await import('./profile')
+
+    await refreshActiveProfile()
+
+    expect(api).toHaveBeenCalledWith({ path: '/api/profiles/active', timeoutMs: 60_000 })
   })
 })

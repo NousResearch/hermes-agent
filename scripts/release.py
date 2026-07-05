@@ -2020,6 +2020,7 @@ AUTHOR_MAP = {
     "1torhan@protonmail.com": "uzaylisak",  # PR #29988 salvage (detect_local_server_type process-lifetime cache)
     "zhchl@hermes-agent.local": "8294",  # PR #50572 salvage (honor config context_length on banner)
     "yansh2017@gmail.com": "ya-nsh",  # PR #26790 salvage (normalize local terminal relative cwd; #26783)
+    "s.suzuki784@hotmail.com": "suzu784",  # sandbox egress control / kanban empty-diff guard PRs
 }
 
 

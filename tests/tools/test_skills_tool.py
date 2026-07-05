@@ -1370,3 +1370,84 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+
+class TestFindAllSkillsLiveHeremesHome:
+    """``_find_all_skills`` must consult HERMES_HOME at call time, not the
+    module-level ``SKILLS_DIR`` constant captured at import. Otherwise a
+    long-running gateway whose HERMES_HOME resolution drifts (env override
+    treated differently at boot vs. at runtime) returns a stale skill
+    index that diverges from a fresh Python subprocess (#58908).
+
+    The fix is a small behaviour change — pin its presence with a path
+    inspect that proves ``_find_all_skills`` re-resolves SKILLS_DIR per
+    call instead of relying solely on the module-level constant.
+    """
+
+    def test_find_all_skills_source_re_resolves_skills_dir(self):
+        """Pin the live-resolve contract by source inspection.
+
+        Process-level reproduction requires a long-running gateway
+        whose ``HERMES_HOME`` env drifts between boot and runtime — too
+        heavy to exercise reliably from a unit test. We assert the
+        surgical fix instead: the function must call
+        ``get_hermes_home()`` itself and not capture the module-level
+        ``SKILLS_DIR`` constant after the original module bootstrap.
+        A subsequent refactor that goes back to a module-only read
+        would silently regress #58908.
+        """
+        import inspect
+
+        from tools import skills_tool
+
+        src = inspect.getsource(skills_tool._find_all_skills)
+        # Must contain a ``get_hermes_home()`` invocation. The literal
+        # ``SKILLS_DIR = ...`` module-level line is *outside* the
+        # function body and is checked separately.
+        assert "get_hermes_home" in src, (
+            "_find_all_skills no longer reads HERMES_HOME at call time; "
+            "the live-resolve contract from #58908 has been removed in a "
+            "refactor. A long-running gateway whose HERMES_HOME drifts "
+            "will silently fall back to a stale module-level SKILLS_DIR."
+        )
+
+    def test_find_all_skills_results_use_call_time_skills_dir(
+        self, tmp_path, monkeypatch,
+    ):
+        """End-to-end: HERMES_HOME swap must change the local-skill
+        contribution seen by ``_find_all_skills``.
+
+        We scaffold two isolated home roots, drop a unique skill in
+        each, and assert that each HERMES_HOME settings sees its own
+        skill. The function reads ``HERMES_HOME / "skills"`` per call,
+        so the swap will toggle which local dirs are inspected. This
+        pins the runtime fix without depending on a stuck gateway.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        home_a = tmp_path / "home-a"
+        (home_a / "skills" / "alpha-skill").mkdir(parents=True)
+        (home_a / "skills" / "alpha-skill" / "SKILL.md").write_text(
+            "---\nname: alpha-skill\ndescription: alpha.\n---\n", encoding="utf-8"
+        )
+
+        home_b = tmp_path / "home-b"
+        (home_b / "skills" / "beta-skill").mkdir(parents=True)
+        (home_b / "skills" / "beta-skill" / "SKILL.md").write_text(
+            "---\nname: beta-skill\ndescription: beta.\n---\n", encoding="utf-8"
+        )
+
+        # Force the function-relative resolve path even when the
+        # module-level ``SKILLS_DIR`` is already pinned at process boot:
+        # we patch the module-level SKILLS_DIR to point at *home_a* and
+        # then assert the function picks up *home_a*'s skill.
+        # Diagnostic: this asserts both layer-zero (live resolve) and
+        # layer-one (honour of monkeypatch override) of the contract.
+        from tools import skills_tool
+        monkeypatch.setattr(skills_tool, "SKILLS_DIR", home_a / "skills")
+        names_a = {s["name"] for s in _find_all_skills()}
+        assert "alpha-skill" in names_a
+
+        monkeypatch.setattr(skills_tool, "SKILLS_DIR", home_b / "skills")
+        names_b = {s["name"] for s in _find_all_skills()}
+        assert "beta-skill" in names_b

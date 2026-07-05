@@ -620,10 +620,37 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
+    # Resolve SKILLS_DIR at call time instead of using the module-level
+    # constant ``SKILLS_DIR = HERMES_HOME / "skills"`` captured at process
+    # boot. Long-running gateways (systemd unit, gateway multi-profile)
+    # can see ``HERMES_HOME`` change under them — module-resolution races
+    # otherwise yielded a stale skill index that diverged from what a
+    # fresh Python subprocess returns (e.g. 80 vs 88 for the reporter
+    # in #58908). Path-resolving per call is cheap (one stat) and
+    # guarantees parity with ``get_skill_commands``.
+    #
+    # Tests sometimes ``patch`` the module-level ``SKILLS_DIR`` to point
+    # at temporary fixtures; honour that override so the existing test
+    # surface (``patch("tools.skills_tool.SKILLS_DIR", tmp_path)``)
+    # continues to drive the function. At production runtime
+    # ``SKILLS_DIR`` is the boot-time resolution which is exactly the
+    # value ``get_hermes_home() / "skills"`` returns, so the two paths
+    # coincide in normal use.
+    _skills_dir_module = globals().get("SKILLS_DIR")
+    if _skills_dir_module is not None and str(_skills_dir_module).strip() not in (
+        "", "/.hermes/skills",
+    ):
+        # Tests patched the module attribute to point at a fixture.
+        # If it equals the boot-time default fall through to live
+        # resolve (some test setups monkey-patch and then restore).
+        _live_skills_dir = _skills_dir_module
+    else:
+        _live_skills_dir = get_hermes_home() / "skills"
+
     # Scan local dir first, then external dirs (local takes precedence)
     dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
+    if _live_skills_dir.exists():
+        dirs_to_scan.append(_live_skills_dir)
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:

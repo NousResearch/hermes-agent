@@ -2,6 +2,8 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import type { Translations } from './types'
 
+const REBUILD_NEEDED = 'Source code changed — rebuild to apply local changes.'
+
 export const en: Translations = {
   common: {
     apply: 'Apply',
@@ -469,6 +471,8 @@ export const en: Translations = {
       cantReach: "We couldn't reach the update server.",
       tapCheck: 'Tap "Check now" to look for updates.',
       updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
+      rebuildNeeded: REBUILD_NEEDED,
+      rebuildNow: 'Rebuild now',
       lastChecked: age => `Last checked ${age}`,
       justNowSuffix: ' · just now',
       automaticUpdates: 'Automatic updates',
@@ -1843,6 +1847,8 @@ export const en: Translations = {
     allSetTitle: 'You’re all set',
     availableTitle: 'New update available',
     availableBody: 'A new version of Hermes is ready to install.',
+    rebuildTitle: 'Source code changed',
+    rebuildBody: 'The Hermes source has changed since the last build. Rebuild to apply local changes.',
     availableTitleBackend: 'Backend update available',
     availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
     availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
@@ -2057,6 +2063,7 @@ export const en: Translations = {
       update: 'update',
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
+      rebuildNeeded: REBUILD_NEEDED,
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `client v${version}`,

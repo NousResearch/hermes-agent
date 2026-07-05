@@ -116,6 +116,7 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
+import { bundleNeedsRebuild } from './update-stamp'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import {
   computeWindowOptions,
@@ -2220,11 +2221,19 @@ async function checkUpdates() {
 
   const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
 
+  // Detect if the running app bundle is stale relative to the source checkout.
+  // `runningAppBundle()` currently resolves only packaged macOS .app bundles;
+  // Linux/Windows/dev launches return null and simply skip this hint. The
+  // helper is best-effort, so malformed or missing stamps never break update
+  // checks.
+  const rebuildNeeded = bundleNeedsRebuild(runningAppBundle(), currentSha)
+
   return {
     supported: true,
     branch,
     currentBranch,
     behind,
+    rebuildNeeded,
     currentSha,
     targetSha,
     commits,

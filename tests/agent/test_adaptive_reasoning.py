@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.adaptive_reasoning import classify_reasoning_effort
 
 
@@ -88,13 +90,16 @@ class TestClassifyReasoningEffort:
         headers = mock_post.call_args.kwargs["headers"]
         assert headers["Authorization"] == "Bearer sk-real-key"
 
-    def test_omits_auth_header_for_placeholder_key(self):
+    @pytest.mark.parametrize(
+        "placeholder", ["not-needed", "none", "None", "NOT-NEEDED", "no-key", "sk-noauth", "local"]
+    )
+    def test_omits_auth_header_for_placeholder_key(self, placeholder):
         mock_post = MagicMock(return_value=_mock_response("minimal"))
         with patch("agent.adaptive_reasoning.requests.post", mock_post):
             classify_reasoning_effort(
                 "Hello",
                 base_url="http://127.0.0.1:8090/v1",
-                api_key="not-needed",
+                api_key=placeholder,
             )
         headers = mock_post.call_args.kwargs["headers"]
         assert "Authorization" not in headers

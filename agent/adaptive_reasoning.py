@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 _VALID_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 _FALLBACK_EFFORT = "medium"
 
+# Common placeholder API keys that local/self-hosted OpenAI-compatible
+# servers (llama.cpp, vLLM, LM Studio, etc.) don't actually validate — many
+# setup guides for these tell users to put a dummy string here since the
+# OpenAI SDK/clients require *some* non-empty value. Recognizing them lets
+# this module skip sending a meaningless Authorization header rather than
+# forwarding a placeholder string as if it were a real credential.
+_PLACEHOLDER_API_KEYS = frozenset({"not-needed", "none", "no-key", "sk-noauth", "local"})
+
 _CLASSIFY_PROMPT = (
     "You will be shown a single user message. Decide how much reasoning "
     "effort a response to it deserves, choosing exactly one of: "
@@ -85,7 +93,7 @@ def classify_reasoning_effort(
 
     url = base_url.rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
-    if api_key and api_key != "not-needed":
+    if api_key and api_key.strip().lower() not in _PLACEHOLDER_API_KEYS:
         headers["Authorization"] = f"Bearer {api_key}"
     payload = {
         "model": model or "default",

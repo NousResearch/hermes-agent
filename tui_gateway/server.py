@@ -12150,7 +12150,7 @@ def _details_completions(text: str) -> list[dict] | None:
     sections = ("thinking", "tools", "subagents", "activity")
     modes = ("hidden", "collapsed", "expanded")
 
-    if not body or (len(parts) == 0 and has_trailing_space):
+    if not body or (not parts and has_trailing_space):
         return [
             *[
                 _details_root_completion_item(

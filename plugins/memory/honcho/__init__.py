@@ -1013,7 +1013,7 @@ class HonchoMemoryProvider(MemoryProvider):
             # pass 2: reconciliation
             return (
                 f"Prior passes produced:\n\n"
-                f"Pass 1:\n{prior_results[0] if len(prior_results) > 0 else '(empty)'}\n\n"
+                f"Pass 1:\n{prior_results[0] if prior_results else '(empty)'}\n\n"
                 f"Pass 2:\n{prior_results[1] if len(prior_results) > 1 else '(empty)'}\n\n"
                 "Do these assessments cohere? Reconcile any contradictions "
                 "and produce a final, concise synthesis of what matters most "

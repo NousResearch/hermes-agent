@@ -1218,7 +1218,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         )
                         if len(all_devices) == 1:
                             client.device_id = next(iter(all_devices))
-                        elif len(all_devices) == 0:
+                        elif not all_devices:
                             logger.warning(
                                 "Matrix: no devices found for %s — "
                                 "key verification will be skipped",

@@ -1797,7 +1797,7 @@ class SlashCommandCompleter(Completer):
         trailing_space = sub_text.endswith(" ")
 
         # Subcommand stage: zero words typed, or completing the first word.
-        if len(parts) == 0 or (len(parts) == 1 and not trailing_space):
+        if not parts or (len(parts) == 1 and not trailing_space):
             partial = sub_text if not trailing_space else ""
             for sub in SUBS:
                 if sub.startswith(partial.lower()) and sub != partial.lower():

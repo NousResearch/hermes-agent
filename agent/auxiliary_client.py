@@ -5627,6 +5627,25 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     return {}
 
 
+def _get_task_stream(task: str) -> bool:
+    """Read auxiliary.{task}.stream from config. Returns False by default.
+
+    Follows the same per-task config pattern as ``_get_task_timeout`` and
+    ``_get_task_extra_body``.  When True, ``async_call_llm`` and ``call_llm``
+    will request a streaming response, reassembling chunks into a complete
+    response object transparently to the caller.  Useful for providers that
+    reject large non-streaming request bodies (e.g. base64-encoded images
+    in vision tasks).
+    """
+    if not task:
+        return False
+    task_config = _get_auxiliary_task_config(task)
+    raw = task_config.get("stream")
+    if isinstance(raw, bool):
+        return raw
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------
@@ -6083,7 +6102,10 @@ def call_llm(
     # consumer) owns chunk reassembly, stale-stream detection, and falling back to
     # a non-streaming call on error. stream_options is best-effort: providers that
     # reject it surface an error the caller's fallback already handles.
-    if stream:
+    # Also honour auxiliary.<task>.stream config (e.g. auxiliary.vision.stream)
+    # so users can opt into streaming via config.yaml without changing every caller.
+    effective_stream = stream or _get_task_stream(task)
+    if effective_stream:
         kwargs["stream"] = True
         if stream_options:
             kwargs["stream_options"] = stream_options
@@ -6572,6 +6594,8 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    stream: bool = False,
+    stream_options: dict = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -6656,6 +6680,44 @@ async def async_call_llm(
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+
+    # Streaming path: reassemble async chunks into a complete response object
+    # transparently, mirroring the sync call_llm() streaming path.  This lets
+    # callers (vision_analyze, etc.) use the same _validate_llm_response result
+    # regardless of whether the provider required streaming.  Also honour
+    # auxiliary.<task>.stream config so users can opt in via config.yaml.
+    effective_stream = stream or _get_task_stream(task)
+    if effective_stream:
+        kwargs["stream"] = True
+        kwargs["stream_options"] = stream_options or {"include_usage": True}
+        _stream = await client.chat.completions.create(**kwargs)
+        _content_parts: list[str] = []
+        _reasoning_parts: list[str] = []
+        _usage_obj = None
+        async for _chunk in _stream:
+            if not getattr(_chunk, "choices", None):
+                if hasattr(_chunk, "usage") and _chunk.usage:
+                    _usage_obj = _chunk.usage
+                continue
+            _choice = _chunk.choices[0]
+            _delta = getattr(_choice, "delta", None)
+            if _delta:
+                if getattr(_delta, "content", None):
+                    _content_parts.append(_delta.content)
+                _rc = getattr(_delta, "reasoning_content", None) or getattr(_delta, "reasoning", None)
+                if _rc:
+                    _reasoning_parts.append(_rc)
+        _full_content = "".join(_content_parts)
+        _full_reasoning = "".join(_reasoning_parts)
+        from types import SimpleNamespace as _SN
+        _msg = _SN(content=_full_content or None, role="assistant", tool_calls=None)
+        if _full_reasoning:
+            _msg.reasoning_content = _full_reasoning
+        return _validate_llm_response(_SN(
+            id="", model=final_model or "", object="chat.completion",
+            choices=[_SN(index=0, message=_msg, finish_reason="stop")],
+            usage=_usage_obj,
+        ), task)
 
     try:
         # Retry ONCE on the same provider for a transient transport blip

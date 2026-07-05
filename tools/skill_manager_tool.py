@@ -58,9 +58,10 @@ def mark_background_review_skill_read(path: Path) -> None:
 
     The autonomous review fork is allowed to evolve skills, but it must not
     patch or rewrite content it has only inferred from the transcript.  The
-    skill_view tool calls this after returning file content to the model; write
+    skill_view tool calls this after returning file content to the model. Write
     paths below require the corresponding target path to be present when the
-    current origin is ``background_review``.
+    current origin is ``background_review``; creating a new support file under
+    an existing skill requires the umbrella SKILL.md to have been read first.
     """
     try:
         from tools.skill_provenance import is_background_review
@@ -368,6 +369,7 @@ def _background_review_read_before_write_guard(
     target: Path,
     action: str,
     file_label: str,
+    intent: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Require review forks to load the exact target before mutating it."""
     try:
@@ -380,14 +382,25 @@ def _background_review_read_before_write_guard(
     if _background_review_has_read(target):
         return None
 
+    view_call = (
+        f"skill_view(name={name!r})"
+        if file_label == "SKILL.md"
+        else f"skill_view(name={name!r}, file_path={file_label!r})"
+    )
+    action_phrase = intent or {
+        "edit": "replace it",
+        "patch": "patch it",
+        "write_file": "write it",
+        "remove_file": "remove it",
+    }.get(action, f"{action} it")
+
     return {
         "success": False,
         "error": (
-            f"Refusing background curator {action} for skill '{name}': "
-            f"the current {file_label} content has not been loaded in this "
-            "review turn. Call skill_view(name) for SKILL.md, or "
-            "skill_view(name, file_path=...) for a supporting file, then "
-            "retry the write using the content just returned."
+            f"You must load the current {file_label} content before you can "
+            f"{action_phrase}. Call {view_call} first, then retry the "
+            f"{action}. Read-before-write ensures you see the current content "
+            "before modifying it."
         ),
         "_read_before_write_required": True,
     }
@@ -1150,6 +1163,17 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if target.exists():
         read_guard = _background_review_read_before_write_guard(
             name, target, "write_file", file_path
+        )
+        if read_guard:
+            return read_guard
+    else:
+        skill_md = existing["path"] / "SKILL.md"
+        read_guard = _background_review_read_before_write_guard(
+            name,
+            skill_md,
+            "write_file",
+            "SKILL.md",
+            intent=f"add {file_path!r} under this skill",
         )
         if read_guard:
             return read_guard

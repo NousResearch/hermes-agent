@@ -9,8 +9,9 @@ touched.
 
 The fork inherits the parent's live runtime (provider, model, base_url,
 credentials, cached system prompt) so it hits the same prefix cache and
-uses the same auth.  It runs with a tool whitelist limited to memory and
-skill management tools; everything else is denied at runtime.
+uses the same auth. It runs with a runtime whitelist of exact tool names:
+``memory`` when enabled, plus ``skills_list``, ``skill_view``, and
+``skill_manage``. Everything else is denied at runtime.
 
 See the ``hermes-agent-dev`` skill (``references/self-improvement-loop.md``)
 for invariants and PR review criteria.
@@ -153,6 +154,14 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
     return [digest] + keep
 
 
+def _format_background_review_tool_contract(tool_names: set) -> str:
+    """Render the exact runtime whitelist for the review agent."""
+    preferred_order = ("memory", "skills_list", "skill_view", "skill_manage")
+    ordered = [name for name in preferred_order if name in tool_names]
+    ordered.extend(sorted(set(tool_names) - set(ordered)))
+    return ", ".join(f"`{name}`" for name in ordered)
+
+
 # Review-prompt strings — used by ``spawn_background_review_thread`` to build
 # the user-message that the forked review agent receives.  AIAgent exposes
 # them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) for back-compat;
@@ -219,6 +228,11 @@ _SKILL_REVIEW_PROMPT = (
     "the skill can invoke directly (verification scripts, fixture "
     "generators, deterministic probes, anything the agent should run "
     "rather than hand-type each time).\n"
+    "     BEFORE adding any support file, you MUST call "
+    "skill_view(name='<umbrella>') and read the full current SKILL.md "
+    "body. Name + description from skills_list is not enough. If the "
+    "full SKILL.md shows the reference does not fit, duplicates "
+    "existing guidance, or belongs elsewhere, do not add it.\n"
     "     Add support files via skill_manage action=write_file with "
     "file_path starting 'references/', 'templates/', or 'scripts/'. "
     "The umbrella's SKILL.md should gain a one-line pointer to any "
@@ -309,7 +323,11 @@ _COMBINED_REVIEW_PROMPT = (
     "notes) written concise and task-focused; `templates/<name>.<ext>` "
     "for starter files meant to be copied and modified; "
     "`scripts/<name>.<ext>` for statically re-runnable actions "
-    "(verification, fixture generators, probes). Add a one-line "
+    "(verification, fixture generators, probes). BEFORE adding any "
+    "support file, call skill_view(name='<umbrella>') and read the "
+    "full current SKILL.md body; name + description from skills_list "
+    "is not enough. If the full SKILL.md shows it does not fit or "
+    "would duplicate existing guidance, do not add it. Add a one-line "
     "pointer in SKILL.md so future agents find them.\n"
     "  4. CREATE A NEW CLASS-LEVEL UMBRELLA when nothing exists. "
     "Name at the class level — NOT a PR number, error string, "
@@ -760,11 +778,12 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            allowed_tools = _format_background_review_tool_contract(review_whitelist)
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    f"{{tool_name}}. Only these tools are allowed: {allowed_tools}."
                 ),
             )
             try:
@@ -785,9 +804,10 @@ def _run_review_in_thread(
                 review_agent.run_conversation(
                     user_message=(
                         prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
-                        "at runtime — do not attempt them."
+                        + "\n\nBackground review can only call these "
+                        f"tools: {allowed_tools}. Use `skill_view` to "
+                        "read skills before `skill_manage` writes. "
+                        "Other tools will be denied at runtime."
                     ),
                     conversation_history=_review_history,
                 )

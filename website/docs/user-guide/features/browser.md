@@ -13,6 +13,7 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 - **Browser Use cloud mode** via [Browser Use](https://browser-use.com) as an alternative cloud browser provider
 - **Firecrawl cloud mode** via [Firecrawl](https://firecrawl.dev) for cloud browsers with built-in scraping
 - **Camofox local mode** via [Camofox](https://github.com/jo-inc/camofox-browser) for local anti-detection browsing (Firefox-based fingerprint spoofing)
+- **CloakBrowser local mode** via the native Python CloakBrowser backend for local stealth Chromium sessions
 - **Local Chromium-family CDP** — connect browser tools to your own Chrome, Brave, Chromium, or Edge instance using `/browser connect`
 - **Local browser mode** via the `agent-browser` CLI and a local Chromium installation
 
@@ -303,6 +304,51 @@ Adoption only fires until `tab_id` is populated for the session. If the external
 #### VNC live view
 
 When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.
+
+### CloakBrowser local mode
+
+[CloakBrowser](https://pypi.org/project/cloakbrowser/) is a native Python browser backend for local stealth Chromium sessions. Select it when you want Hermes to launch CloakBrowser directly instead of using Browserbase, Camofox, or the default `agent-browser` path.
+
+1. Install the package:
+
+```bash
+python -m pip install cloakbrowser
+```
+
+2. Select it as the browser provider:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  cloud_provider: cloakbrowser
+  cloakbrowser:
+    headless: false
+    humanize: true
+    stealth_args: true
+```
+
+Or configure it via `hermes tools` → Browser Automation → CloakBrowser.
+
+Common settings:
+
+```yaml
+browser:
+  cloakbrowser:
+    proxy: "http://proxy.example:8080"
+    geoip: true
+    locale: "en-US"
+    timezone: "America/New_York"
+    color_scheme: "dark"
+    user_agent: ""
+    extra_args: []
+    user_data_dir: "${HERMES_HOME}/cloakbrowser_profile"
+```
+
+`browser.cloakbrowser.enabled` is auto-managed from `browser.cloud_provider` and normally should not be edited by hand.
+
+:::warning CDP overrides win
+If `browser.cdp_url` or `BROWSER_CDP_URL` is set, Hermes attaches to that existing Chromium-family browser instead of launching native CloakBrowser. Clear the override to return to native CloakBrowser launch.
+:::
 
 ### Local Chromium-family browser via CDP (`/browser connect`)
 

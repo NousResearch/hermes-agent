@@ -361,9 +361,39 @@ terminal:
 # Browser Tool Configuration
 # =============================================================================
 browser:
+  # Browser provider selection:
+  #   "local"         - Default local Chromium via the agent-browser CLI
+  #   "browserbase"   - Browserbase cloud browser (requires BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID)
+  #   "browser-use"   - Browser Use cloud browser (requires BROWSER_USE_API_KEY)
+  #   "firecrawl"     - Firecrawl cloud browser (requires FIRECRAWL_API_KEY)
+  #   "cloakbrowser"  - Native CloakBrowser backend (requires: python -m pip install cloakbrowser)
+  cloud_provider: "local"
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
+  # Optional CDP override. When set, Hermes attaches directly to this Chromium-family
+  # browser endpoint instead of launching native CloakBrowser or the default local browser.
+  cdp_url: ""
+  # Auto-spawn a local browser for localhost/LAN URLs even when a cloud provider is selected.
+  auto_local_for_private_urls: true
+  # Native JS dialog handling for CDP-capable backends.
+  dialog_policy: "must_respond"  # must_respond | auto_dismiss | auto_accept
+  dialog_timeout_s: 300
+  # CloakBrowser-specific launch settings. These only matter when cloud_provider: "cloakbrowser".
+  cloakbrowser:
+    enabled: false                # Auto-managed; true only while cloud_provider is "cloakbrowser"
+    inactivity_timeout: 3600      # Native CloakBrowser session idle timeout in seconds
+    headless: false               # Run with a visible browser window when false
+    humanize: true                # Enable CloakBrowser humanized behavior
+    proxy: ""                     # Optional proxy URL
+    geoip: false                  # Resolve proxy geolocation automatically when supported
+    stealth_args: true            # Add default stealth Chromium arguments
+    locale: ""                    # Optional locale override, e.g. en-US
+    timezone: ""                  # Optional timezone override, e.g. America/New_York
+    color_scheme: ""              # Optional prefers-color-scheme override: light | dark
+    user_agent: ""                # Optional user-agent override
+    extra_args: []                # Extra Chromium args passed to CloakBrowser
+    user_data_dir: "${HERMES_HOME}/cloakbrowser_profile"
 
 # =============================================================================
 # Tool Loop Guardrails

@@ -55,6 +55,42 @@ def test_cloakbrowser_get_images_blocks_private_pages(monkeypatch, url):
     assert url in out["error"]
 
 
+@pytest.mark.parametrize("url", BLOCKED_URLS)
+def test_cloakbrowser_vision_blocks_private_pages_before_screenshot(monkeypatch, url):
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(browser_tool, "cloakbrowser_current_url", lambda task_id: url)
+    monkeypatch.setattr(
+        browser_tool,
+        "cloakbrowser_screenshot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("vision screenshot backend should not run")),
+    )
+
+    out = json.loads(browser_tool.browser_vision("what is on page?", task_id="task-1"))
+
+    assert out["success"] is False
+    assert "private or internal address" in out["error"]
+    assert url in out["error"]
+
+
+def test_cloakbrowser_vision_allows_public_page(monkeypatch):
+    screenshot_calls = []
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(browser_tool, "cloakbrowser_current_url", lambda task_id: "https://example.com/")
+
+    def fake_screenshot(*args, **kwargs):
+        screenshot_calls.append((args, kwargs))
+        return json.dumps({"success": False, "error": "expected test stop"})
+
+    monkeypatch.setattr(browser_tool, "cloakbrowser_screenshot", fake_screenshot)
+
+    out = json.loads(browser_tool.browser_vision("what is on page?", task_id="task-1"))
+
+    assert screenshot_calls == [((), {"task_id": "task-1", "annotate": False, "full": True})]
+    assert out["success"] is False
+    assert out["error"] == "Failed to take screenshot (local mode): expected test stop"
+
+
 @pytest.mark.parametrize(
     ("tool_call", "args"),
     [

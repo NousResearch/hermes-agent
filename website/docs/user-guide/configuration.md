@@ -1769,23 +1769,44 @@ Configure browser automation behavior:
 
 ```yaml
 browser:
+  cloud_provider: local          # local | browserbase | browser-use | firecrawl | cloakbrowser
   inactivity_timeout: 120        # Seconds before auto-closing idle sessions
-  command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
+  command_timeout: 30            # Timeout in seconds for browser commands (screenshot, navigate, etc.)
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
+  auto_local_for_private_urls: true  # Use local Chromium for localhost/LAN even when a cloud provider is selected
   # Optional CDP override — when set, Hermes attaches directly to your own
-  # Chromium-family browser (via /browser connect) rather than starting a headless browser.
+  # Chromium-family browser (via /browser connect) rather than starting native
+  # CloakBrowser or the default local browser.
   cdp_url: ""
   # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
   # are handled when a CDP backend is attached (Browserbase, local Chromium-family
   # browser via /browser connect). Ignored on Camofox and default local agent-browser mode.
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
+  cloakbrowser:
+    enabled: false               # Auto-managed; true only while cloud_provider is "cloakbrowser"
+    inactivity_timeout: 3600     # Native CloakBrowser session idle timeout in seconds
+    headless: false              # Run with a visible browser window when false
+    humanize: true               # Enable CloakBrowser humanized behavior
+    proxy: ""                    # Optional proxy URL
+    geoip: false                 # Resolve proxy geolocation automatically when supported
+    stealth_args: true           # Add default stealth Chromium arguments
+    locale: ""                   # Optional locale override, e.g. en-US
+    timezone: ""                 # Optional timezone override, e.g. America/New_York
+    color_scheme: ""             # Optional prefers-color-scheme override: light | dark
+    user_agent: ""               # Optional user-agent override
+    extra_args: []               # Extra Chromium args passed to CloakBrowser
+    user_data_dir: "${HERMES_HOME}/cloakbrowser_profile"
   camofox:
     managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
     user_id: ""                  # Optional externally managed Camofox userId
     session_key: ""              # Optional session key sent when Hermes creates a tab
     adopt_existing_tab: false    # Reuse an existing tab for this identity before creating one
 ```
+
+**Provider selection:** set `browser.cloud_provider` to choose Browserbase, Browser Use, Firecrawl, native CloakBrowser, or the default local browser path.
+
+**CloakBrowser:** Hermes only uses the nested `browser.cloakbrowser.*` settings when `browser.cloud_provider: cloakbrowser`. If `browser.cdp_url` or `BROWSER_CDP_URL` is set, that direct CDP attach path wins and native CloakBrowser launch is skipped until you clear the override.
 
 **Dialog policies:**
 

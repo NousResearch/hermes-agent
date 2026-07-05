@@ -3532,6 +3532,23 @@ def _blocked_private_page_images(effective_task_id: str) -> Optional[str]:
     }, ensure_ascii=False)
 
 
+def _blocked_private_page_vision(effective_task_id: str) -> Optional[str]:
+    """Return a blocked payload when vision capture would expose a private page."""
+    if not _eval_ssrf_guard_active(effective_task_id):
+        return None
+    blocked_url = _current_page_private_url(effective_task_id)
+    if not blocked_url:
+        return None
+    return json.dumps({
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            f"({blocked_url}). This may have been caused by a "
+            "JavaScript navigation via browser_console."
+        ),
+    }, ensure_ascii=False)
+
+
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
     """Get browser console messages and JavaScript errors, or evaluate JS in the page.
 
@@ -4232,6 +4249,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         result = {}
         try:
             _mark_cloakbrowser_activity(task_id)
+            effective_task_id = _last_session_key(task_id or "default")
+            blocked = _blocked_private_page_vision(effective_task_id)
+            if blocked is not None:
+                return blocked
             raw_result = cloakbrowser_screenshot(task_id=task_id, annotate=annotate, full=True)
             result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
         except json.JSONDecodeError:

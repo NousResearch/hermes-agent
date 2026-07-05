@@ -188,13 +188,48 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             detail=f"Unknown provider: {provider!r}",
         )
     if not getattr(p, "supports_session", True):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Provider does not support interactive login: {provider!r}",
-        )
+        # Password-only providers (BasicAuthProvider) have
+        # ``supports_session=False`` but ``supports_password=True`` — they
+        # should render the /login form. Non-interactive token-only
+        # providers (e.g. drain) have neither, so the 404 stays.
+        if not getattr(p, "supports_password", False):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Provider does not support interactive login: {provider!r}",
+            )
+        # Password-only providers have no OAuth-redirect login flow.
+        # Render the /login interstitial directly so the
+        # username/password form surfaces instead of an opaque 404.
+        from hermes_cli.dashboard_auth.prefix import prefix_from_request
+        from urllib.parse import quote
+
+        target = f"{prefix_from_request(request)}/login"
+        target_next = next or ""
+        if target_next:
+            target = f"{target}?next={quote(target_next, safe='')}"
+        return RedirectResponse(url=target, status_code=302)
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
+    except NotImplementedError:
+        # Password-only providers (e.g. ``BasicAuthProvider``) implement
+        # ``supports_password`` but explicitly raise ``NotImplementedError``
+        # from ``start_login`` because the login flow is a direct POST to
+        # ``/auth/password-login``, not an OAuth redirect. The auto-SSO
+        # path in ``_auto_sso_response`` skips these providers already,
+        # but a manually-typed ``/auth/login?provider=basic`` request
+        # would still 500 without this catch. Redirect to ``/login``
+        # which renders the username/password form (#58810).
+        from hermes_cli.dashboard_auth.prefix import prefix_from_request
+        from urllib.parse import quote
+
+        target = f"{prefix_from_request(request)}/login"
+        next_param = request.query_params.get("next", "") if hasattr(
+            request, "query_params"
+        ) else ""
+        if next_param:
+            target = f"{target}?next={quote(next_param, safe='')}"
+        return RedirectResponse(url=target, status_code=302)
     except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,

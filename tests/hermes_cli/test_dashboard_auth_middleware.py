@@ -593,3 +593,115 @@ def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 401
     assert "unreachable" not in r.text.lower()
+
+
+class _PasswordOnlyProvider:
+    """Minimal stand-in for BasicAuthProvider for fix-regression tests.
+
+    Mirrors the shape that matters to ``_auto_sso_response``: a single
+    registered provider that advertises ``supports_password=True`` with
+    no Session/OAuth flow. ``start_login`` raises ``NotImplementedError``
+    exactly like ``BasicAuthProvider`` does in production (#58810).
+    """
+
+    name = "basic"
+    display_name = "Username & Password"
+    supports_password = True
+    supports_session = False  # MIRRORS BasicAuthProvider in plugin/dashboard_auth/basic
+
+    def start_login(self, *, redirect_uri):  # noqa: D401
+        raise NotImplementedError(
+            "Password-only providers have no OAuth redirect; "
+            "POST to /auth/password-login instead."
+        )
+
+    def complete_login(
+        self, *, code, state, code_verifier, redirect_uri,
+    ):  # pragma: no cover - never invoked for basic
+        raise NotImplementedError
+
+    def complete_password_login(self, *, username, password, redirect_uri):
+        return None
+
+    def verify_session(self, *, token):
+        return None
+
+    def refresh_session(self, *, token):
+        return None
+
+    def revoke_session(self, *, token):
+        return None
+
+
+def test_password_only_provider_does_not_trigger_auto_sso_redirect(monkeypatch):
+    """A single password-only provider must NOT auto-redirect to
+    ``/auth/login?provider=basic`` because that route calls
+    ``start_login`` which raises ``NotImplementedError`` and returns
+    500 (#58810).
+
+    With the fix the unauthenticated HTML load falls through to ``/login``
+    which renders the username/password form correctly.
+    """
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from fastapi.testclient import TestClient
+    from hermes_cli import web_server
+
+    prev = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.auth_required = True
+    try:
+        clear_providers()
+        register_provider(_PasswordOnlyProvider())
+        client = TestClient(web_server.app)
+        # Unaauthenticated HTML load on the dashboard root MUST NOT
+        # bounce through ``/auth/login?provider=basic`` (that route
+        # raises ``NotImplementedError`` and 500s); instead it must
+        # fall through to ``/login`` (the password-form interstitial),
+        # which renders cleanly.
+        r = client.get("/", follow_redirects=False)
+        assert r.status_code == 302, (
+            f"Expected 302, got {r.status_code}: {r.text}"
+        )
+        location = r.headers["location"]
+        assert "/auth/login?provider=basic" not in location, (
+            f"Auto-SSO redirect to /auth/login for a password-only "
+            f"provider would 500 on start_login (NotImplementedError); "
+            f"got redirect={location!r} (#58810)"
+        )
+        assert "/login" in location, (
+            f"Expected fallback to /login, got {location!r} (#58810)"
+        )
+    finally:
+        clear_providers()
+        # Restore unconditionally — gate tests downstream depend on
+        # auth_required being reset (the prevailing ``if prev is not
+        # None`` guard left state at True when the suite first booted).
+        web_server.app.state.auth_required = prev
+
+
+def test_auth_login_redirects_to_login_when_provider_password_only(monkeypatch):
+    """Defense in depth: if a user types ``/auth/login?provider=basic``
+    directly (bypassing the auto-SSO redirect that the middleware now
+    skips), the route must catch ``NotImplementedError`` and redirect
+    to ``/login`` instead of returning 500 (#58810).
+    """
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from fastapi.testclient import TestClient
+    from hermes_cli import web_server
+
+    prev = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.auth_required = True
+    try:
+        clear_providers()
+        register_provider(_PasswordOnlyProvider())
+        client = TestClient(web_server.app)
+        r = client.get("/auth/login?provider=basic", follow_redirects=False)
+        assert r.status_code == 302, (
+            f"Expected 302 redirect to /login, got {r.status_code}: {r.text}"
+        )
+        assert "/login" in r.headers["location"], (
+            f"Redirect should target /login, got {r.headers['location']!r} "
+            "(#58810)"
+        )
+    finally:
+        clear_providers()
+        web_server.app.state.auth_required = prev

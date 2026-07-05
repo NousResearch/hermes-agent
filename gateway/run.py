@@ -619,19 +619,25 @@ def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
 def _auto_continue_freshness_window() -> float:
     """Return the configured auto-continue freshness window in seconds.
 
-    Thin wrapper that delegates to the canonical implementation in
-    ``gateway.session`` (the single source of truth shared with the
-    routing-time zombie gate in ``get_or_create_session``).  Reads
-    ``HERMES_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.yaml``
+    Reads ``HERMES_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.yaml``
     ``agent.gateway_auto_continue_freshness`` at gateway startup, same
-    pattern as ``HERMES_AGENT_TIMEOUT``).  Falls back to the module default
-    when unset or malformed.  Non-positive values disable the freshness gate
-    (restores the pre-fix "always fresh" behaviour for users who want to opt
-    out).  Kept here so existing call sites and test patches importing it
-    from ``gateway.run`` continue to work.
+    pattern as ``HERMES_AGENT_TIMEOUT``).  Falls back to 3600 s when unset
+    or malformed.  Non-positive values disable the freshness gate (restores
+    the pre-fix "always fresh" behaviour for users who want to opt out).
+
+    Previously delegated to ``gateway.session.auto_continue_freshness_window``
+    via a lazy import.  That coupling means any refactor that moves or removes
+    the symbol in ``gateway.session`` silently turns into a startup
+    ``ImportError`` crash-loop with no warning until the gateway tries to boot.
+    Inlined here so the function is self-contained and refactor-safe.
     """
-    from gateway.session import auto_continue_freshness_window
-    return auto_continue_freshness_window()
+    raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
+    if raw is None or raw == "":
+        return 3600.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 3600.0
 
 
 def _float_env(name: str, default: float) -> float:

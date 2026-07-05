@@ -788,6 +788,46 @@ class TestIncomingHandlerProcess:
     so the SDK ACK is returned immediately."""
 
     @pytest.mark.asyncio
+    async def test_raw_process_wraps_process_result_as_sdk_ack(self, monkeypatch):
+        """raw_process must build the AckMessage shape expected by the SDK."""
+        import plugins.platforms.dingtalk.adapter as dt
+
+        class FakeAckMessage:
+            STATUS_OK = 200
+            STATUS_SYSTEM_EXCEPTION = 500
+
+            def __init__(self):
+                self.code = None
+                self.headers = SimpleNamespace(message_id=None, content_type=None)
+                self.data = {}
+
+        monkeypatch.setattr(dt, "AckMessage", FakeAckMessage)
+
+        adapter = dt.DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._on_message = AsyncMock()
+        handler = dt._IncomingHandler(adapter, asyncio.get_running_loop())
+
+        callback = SimpleNamespace(
+            headers=SimpleNamespace(message_id="callback-msg-001"),
+            data={
+                "msgtype": "text",
+                "text": {"content": "hello"},
+                "senderId": "user1",
+                "conversationId": "conv1",
+            },
+        )
+
+        ack = await handler.raw_process(callback)
+
+        assert ack.code == 200
+        assert ack.headers.message_id == "callback-msg-001"
+        assert ack.headers.content_type == "application/json"
+        assert ack.data == {"response": "OK"}
+
+        await asyncio.sleep(0.05)
+        adapter._on_message.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_process_extracts_session_webhook(self):
         """session_webhook must be populated from callback data."""
         from plugins.platforms.dingtalk.adapter import _IncomingHandler, DingTalkAdapter

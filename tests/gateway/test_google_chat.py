@@ -610,6 +610,14 @@ class TestCardClickCallbacks:
                 {"success": True, "message_id": "m/ack", "error": None},
             )()
         )
+        class Runner:
+            def _is_user_authorized(self, _source):
+                return True
+
+            async def handle(self, _event):
+                return None
+
+        adapter._message_handler = Runner().handle
 
         await adapter.dispatch_http_event(
             {

@@ -92,6 +92,7 @@ export function PromptZone({
   }
 
   if (overlay.secret) {
+    const isSecureInput = Boolean(overlay.secret.metadata?.secure_input)
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
         <MaskedPrompt
@@ -99,7 +100,7 @@ export function PromptZone({
           icon="🔑"
           label={overlay.secret.prompt}
           onSubmit={onSecretSubmit}
-          sub={`for ${overlay.secret.envVar}`}
+          sub={isSecureInput ? 'secure input - not sent to the model' : `for ${overlay.secret.envVar}`}
           t={theme}
         />
       </Box>

@@ -32,7 +32,7 @@ _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
     # Terminal + process management
-    "terminal", "process",
+    "terminal", "process", "request_secure_input",
     # Read the desktop GUI's embedded terminal pane, and close an agent's
     # read-only terminal tab (both gated on HERMES_DESKTOP via check_fn —
     # hidden outside the GUI).
@@ -159,7 +159,13 @@ TOOLSETS = {
 
     "terminal": {
         "description": "Terminal/command execution and process management tools",
-        "tools": ["terminal", "process"],
+        "tools": ["terminal", "process", "request_secure_input"],
+        "includes": []
+    },
+
+    "secure_input": {
+        "description": "Secure masked input for secrets; returns opaque refs instead of raw values",
+        "tools": ["request_secure_input"],
         "includes": []
     },
     
@@ -347,7 +353,7 @@ TOOLSETS = {
         "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process", "read_terminal", "close_terminal",
+            "terminal", "process", "request_secure_input", "read_terminal", "close_terminal",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
@@ -379,7 +385,7 @@ TOOLSETS = {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process",
+            "terminal", "process", "request_secure_input",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
@@ -400,7 +406,7 @@ TOOLSETS = {
             # Web
             "web_search", "web_extract",
             # Terminal + process management
-            "terminal", "process",
+            "terminal", "process", "request_secure_input",
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation

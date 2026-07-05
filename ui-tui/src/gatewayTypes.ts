@@ -696,7 +696,11 @@ export type GatewayEvent =
       type: 'approval.request'
     }
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
-  | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
+  | {
+      payload: { env_var: string; metadata?: Record<string, unknown>; prompt: string; request_id: string }
+      session_id?: string
+      type: 'secret.request'
+    }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
   | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }

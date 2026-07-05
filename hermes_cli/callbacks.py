@@ -183,6 +183,59 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
     }
 
 
+def prompt_for_secure_input(cli, purpose: str, prompt: str, metadata=None) -> str:
+    """Prompt for an ephemeral secret without persisting it.
+
+    The return value goes straight to the secure input broker. The model only
+    receives the broker's opaque secret_ref.
+    """
+    if not getattr(cli, "_app", None):
+        try:
+            return masked_secret_prompt(f"{prompt} (hidden, empty Enter to cancel): ")
+        except (EOFError, KeyboardInterrupt):
+            return ""
+
+    timeout = 120
+    response_queue = queue.Queue()
+    cli._secret_state = {
+        "var_name": purpose,
+        "prompt": prompt,
+        "metadata": {**(metadata or {}), "secure_input": True},
+        "response_queue": response_queue,
+    }
+    cli._secret_deadline = _time.monotonic() + timeout
+    if hasattr(cli, "_clear_secret_input_buffer"):
+        try:
+            cli._clear_secret_input_buffer()
+        except Exception:
+            pass
+
+    if hasattr(cli, "_app") and cli._app:
+        cli._app.invalidate()
+
+    while True:
+        try:
+            value = response_queue.get(timeout=1)
+            cli._secret_state = None
+            cli._secret_deadline = 0
+            if hasattr(cli, "_app") and cli._app:
+                cli._app.invalidate()
+            return value or ""
+        except queue.Empty:
+            remaining = cli._secret_deadline - _time.monotonic()
+            if remaining <= 0:
+                break
+            if hasattr(cli, "_app") and cli._app:
+                cli._app.invalidate()
+
+    cli._secret_state = None
+    cli._secret_deadline = 0
+    if hasattr(cli, "_app") and cli._app:
+        cli._app.invalidate()
+    cprint(f"\n{_DIM}  ⏱ Timeout - secure input cancelled{_RST}")
+    return ""
+
+
 def approval_callback(cli, command: str, description: str) -> str:
     """Prompt for dangerous command approval through the TUI.
 

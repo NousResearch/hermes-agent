@@ -2159,12 +2159,18 @@ def _redact_process_result(result: dict) -> dict:
     if not isinstance(result, dict):
         return result
     from agent.redact import redact_sensitive_text, redact_terminal_output
+    try:
+        from agent.secure_input_broker import redact_known_secrets
+    except Exception:
+        redact_known_secrets = None
 
     command = result.get("command") or ""
     for field in ("output", "output_preview"):
         value = result.get(field)
         if isinstance(value, str) and value:
             result[field] = redact_terminal_output(value, command)
+            if redact_known_secrets is not None:
+                result[field] = redact_known_secrets(result[field])
     if isinstance(result.get("command"), str) and result["command"]:
         result["command"] = redact_sensitive_text(result["command"], code_file=True)
     return result

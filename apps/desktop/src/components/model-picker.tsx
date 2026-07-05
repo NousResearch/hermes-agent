@@ -205,6 +205,7 @@ function ModelResults({
               const isCurrent = model === currentModel && provider.slug === currentProvider
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
+              const description = provider.descriptions?.[model]
 
               return (
                 <CommandItem
@@ -223,7 +224,19 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
-                  <span className="min-w-0 flex-1 truncate">{model}</span>
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate">{model}</span>
+                    {description && (
+                      <span
+                        className={cn(
+                          'block truncate font-sans text-[0.68rem] leading-tight',
+                          isCurrent ? 'opacity-80' : 'text-muted-foreground'
+                        )}
+                      >
+                        {description}
+                      </span>
+                    )}
+                  </div>
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
                   )}

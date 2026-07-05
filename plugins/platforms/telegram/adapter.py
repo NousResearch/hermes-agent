@@ -4807,6 +4807,28 @@ class TelegramAdapter(BasePlatformAdapter):
         page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
         return InlineKeyboardMarkup(rows), page_info
 
+    def _build_model_legend(self, provider: dict, models: list) -> str:
+        """Return a MarkdownV2-ready legend of per-model descriptions.
+
+        Uses the ``descriptions`` map on the picker payload row (sourced from
+        ``models.<id>.description`` in config). Empty string when there are
+        none, so providers without descriptions are unaffected. Best-effort:
+        any error yields no legend rather than breaking the picker.
+        """
+        try:
+            desc_map = provider.get("descriptions") if isinstance(provider, dict) else None
+            if not isinstance(desc_map, dict) or not desc_map:
+                return ""
+            lines: list = []
+            for mid in models:
+                desc = desc_map.get(mid)
+                if desc:
+                    short = mid.split("/")[-1] if "/" in mid else mid
+                    lines.append(f"`{short}` — {desc}")
+            return ("\n\n" + "\n".join(lines)) if lines else ""
+        except Exception:
+            return ""
+
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
@@ -4845,13 +4867,14 @@ class TelegramAdapter(BasePlatformAdapter):
             total = provider.get("total_models", len(models))
             shown = len(models)
             extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+            legend = self._build_model_legend(provider, models)
 
             await query.edit_message_text(
                 text=self.format_message(
                     (
                         f"⚙ *Model Configuration*\n\n"
                         f"Provider: *{pname}*{page_info}\n"
-                        f"Select a model:{extra}"
+                        f"Select a model:{extra}{legend}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -4881,13 +4904,14 @@ class TelegramAdapter(BasePlatformAdapter):
             total = provider.get("total_models", len(models)) if provider else len(models)
             shown = len(models)
             extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+            legend = self._build_model_legend(provider or {}, models)
 
             await query.edit_message_text(
                 text=self.format_message(
                     (
                         f"⚙ *Model Configuration*\n\n"
                         f"Provider: *{pname}*{page_info}\n"
-                        f"Select a model:{extra}"
+                        f"Select a model:{extra}{legend}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,

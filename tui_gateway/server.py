@@ -2971,6 +2971,94 @@ def _sync_session_key_after_compress(
             pass
 
 
+def _seed_compression_exhausted_handoff(
+    sid: str,
+    session: dict,
+    agent_result: dict,
+) -> str:
+    """Rotate a Desktop/TUI session to a fresh handoff after compression exhausts.
+
+    Gateway platforms had this guard first; Desktop/TUI runs through
+    ``prompt.submit`` in this module, so it needs the same deterministic handoff
+    instead of surfacing the context-length error against the bloated history.
+    """
+    old_key = str(
+        session.get("session_key")
+        or getattr(session.get("agent"), "session_id", "")
+        or ""
+    )
+    new_key = _new_session_key()
+    profile_name = _current_profile_name()
+
+    from agent.compression_handoff import build_compression_handoff_messages
+
+    handoff_messages = build_compression_handoff_messages(
+        agent_result,
+        old_session_id=old_key,
+        new_session_id=new_key,
+        profile=profile_name,
+    )
+
+    # Build a fresh agent anchored on the fresh DB session. Keep the same live
+    # UI session id (sid), model override, cwd/profile, approval wiring, and
+    # active-session lease; only the persisted conversation id + history rotate.
+    tokens = _set_session_context(new_key)
+    home_token = None
+    session_db = None
+    profile_home = session.get("profile_home")
+    if profile_home:
+        home_token = set_hermes_home_override(profile_home)
+        try:
+            from hermes_state import SessionDB
+
+            session_db = SessionDB(db_path=Path(profile_home) / "state.db")
+        except Exception:
+            session_db = None
+    try:
+        new_agent = _make_agent(
+            sid,
+            new_key,
+            session_id=new_key,
+            session_db=session_db,
+            model_override=session.get("model_override"),
+            reasoning_config_override=session.get("create_reasoning_override"),
+            service_tier_override=session.get("create_service_tier_override"),
+        )
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+        _clear_session_context(tokens)
+
+    session["agent"] = new_agent
+    _sync_session_key_after_compress(
+        sid,
+        session,
+        clear_pending_title=False,
+        restart_slash_worker=True,
+    )
+    with session["history_lock"]:
+        session["history"] = [dict(msg) for msg in handoff_messages]
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+        session["attached_images"] = []
+        session["image_counter"] = 0
+
+    _ensure_session_db_row(session)
+    with _session_db(session) as db:
+        if db is not None:
+            try:
+                db.replace_messages(new_key, handoff_messages)
+            except Exception:
+                logger.debug("failed to persist TUI compression handoff", exc_info=True)
+
+    _emit("session.info", sid, _session_info(new_agent, session))
+    return (
+        "🔄 Automatischer Handoff — diese Desktop/TUI-Unterhaltung war nach "
+        "mehreren Kompressionsversuchen weiterhin zu groß für das Modell. "
+        "Ich habe eine neue interne Session mit kompaktem Arbeitsstand gestartet. "
+        f"Alte Session: @session:{profile_name}/{old_key}"
+    )
+
+
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
@@ -8488,6 +8576,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     _emit("message.start", sid)
 
     def run():
+        nonlocal agent
         approval_token = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
@@ -8664,8 +8753,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             last_reasoning = None
             status_note = None
+            handoff_done = False
+            raw = ""
+            status = "complete"
             if isinstance(result, dict):
-                if isinstance(result.get("messages"), list):
+                if result.get("compression_exhausted"):
+                    raw = _seed_compression_exhausted_handoff(sid, session, result)
+                    agent = session["agent"]
+                    status = "complete"
+                    handoff_done = True
+                elif isinstance(result.get("messages"), list):
                     with session["history_lock"]:
                         current_version = int(session.get("history_version", 0))
                         if current_version == history_version:
@@ -8701,27 +8798,28 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     sid, session, clear_pending_title=False, restart_slash_worker=True,
                 )
 
-                raw = result.get("final_response", "")
-                status = (
-                    "interrupted"
-                    if result.get("interrupted")
-                    else "error" if result.get("error") else "complete"
-                )
-                # When the backend produced no visible response AND reported a
-                # real error (e.g. invalid model slug → provider 4xx), surface
-                # that error as the visible text instead of shipping an empty
-                # turn to Ink. Mirrors classic CLI behavior at cli.py where
-                # (failed|partial) + no final_response → "Error: <detail>".
-                # Leaves the None-with-no-error path untouched: an empty
-                # successful turn still renders as empty, and the existing
-                # "(empty)" sentinel handling stays in its own lane.
-                if (not raw) and result.get("error") and (
-                    result.get("failed") or result.get("partial")
-                ):
-                    raw = f"Error: {result.get('error')}"
-                lr = result.get("last_reasoning")
-                if isinstance(lr, str) and lr.strip():
-                    last_reasoning = lr.strip()
+                if not handoff_done:
+                    raw = result.get("final_response", "")
+                    status = (
+                        "interrupted"
+                        if result.get("interrupted")
+                        else "error" if result.get("error") else "complete"
+                    )
+                    # When the backend produced no visible response AND reported a
+                    # real error (e.g. invalid model slug → provider 4xx), surface
+                    # that error as the visible text instead of shipping an empty
+                    # turn to Ink. Mirrors classic CLI behavior at cli.py where
+                    # (failed|partial) + no final_response → "Error: <detail>".
+                    # Leaves the None-with-no-error path untouched: an empty
+                    # successful turn still renders as empty, and the existing
+                    # "(empty)" sentinel handling stays in its own lane.
+                    if (not raw) and result.get("error") and (
+                        result.get("failed") or result.get("partial")
+                    ):
+                        raw = f"Error: {result.get('error')}"
+                    lr = result.get("last_reasoning")
+                    if isinstance(lr, str) and lr.strip():
+                        last_reasoning = lr.strip()
             else:
                 raw = str(result)
                 status = "complete"
@@ -8746,7 +8844,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # ("✓ Goal achieved" / "⏸ budget exhausted") is surfaced as
             # a system line so the user sees progress regardless of
             # outcome. Mirrors gateway/run._post_turn_goal_continuation.
-            if status == "complete" and isinstance(raw, str) and raw.strip():
+            if (
+                not handoff_done
+                and status == "complete"
+                and isinstance(raw, str)
+                and raw.strip()
+            ):
                 try:
                     from hermes_cli.goals import GoalManager
 
@@ -8792,7 +8895,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             # Apply pending_title now that the DB row exists.
             _pending = session.get("pending_title")
-            if _pending and status == "complete":
+            if _pending and status == "complete" and not handoff_done:
                 _pdb = _get_db()
                 if _pdb:
                     _session_key = session.get("session_key") or sid
@@ -8812,7 +8915,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         pass
 
             if (
-                status == "complete"
+                not handoff_done
+                and status == "complete"
                 and isinstance(raw, str)
                 and raw.strip()
                 and isinstance(text, str)
@@ -8843,7 +8947,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # calls / reasoning already stream separately and would be
             # noisy to read aloud.
             if (
-                status == "complete"
+                not handoff_done
+                and status == "complete"
                 and isinstance(raw, str)
                 and raw.strip()
                 and _voice_tts_enabled()

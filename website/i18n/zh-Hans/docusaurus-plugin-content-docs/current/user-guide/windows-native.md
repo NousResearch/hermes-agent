@@ -1,19 +1,15 @@
----
-title: "Windows（原生）指南 — 早期 Beta"
-description: "早期 BETA：在 Windows 10 / 11 上原生运行 Hermes Agent — 安装、功能矩阵、UTF-8 控制台、Git Bash、将 gateway 作为计划任务、编辑器处理、PATH、卸载及常见问题"
-sidebar_label: "Windows（原生）— Beta"
+P---
+title: "Windows（原生）指南"
+description: "在 Windows 10 / 11 上原生运行 Hermes Agent — 安装、功能矩阵、UTF-8 控制台、Git Bash、将 gateway 作为计划任务、编辑器处理、PATH、卸载及常见问题"
+sidebar_label: "Windows（原生）"
 sidebar_position: 3
 ---
 
-# Windows（原生）指南 — 早期 Beta
-
-:::warning 早期 BETA
-原生 Windows 支持处于**早期 beta** 阶段。它可以安装、运行，并通过了我们的 Windows 陷阱（footgun）lint 检查，但尚未像 Linux/macOS/WSL2 路径那样经过大规模实战验证。预计会有一些粗糙之处——尤其是子进程处理、路径怪癖和非 ASCII 控制台输出方面。遇到问题时，请[提交 issue](https://github.com/NousResearch/hermes-agent/issues) 并附上复现步骤。如果你今天想要一个经过充分验证的环境，请改用 [WSL2 下的 Linux/macOS 安装程序](./windows-wsl-quickstart.md)。
-:::
+# Windows（原生）指南
 
 Hermes 可在 Windows 10 和 Windows 11 上原生运行——无需 WSL、Cygwin 或 Docker。本页是深度指南：原生支持哪些功能、哪些仅限 WSL、安装程序实际做了什么，以及你可能需要调整的 Windows 专属配置项。
 
-如果你只是想安装，[首页](/) 或[安装页面](../getting-started/installation#windows-native-powershell--early-beta)上的一行命令就够了。遇到意外情况时再回来查阅本页。
+如果你只是想安装，[首页](/) 或[安装页面](../getting-started/installation#windows原生powershell)上的一行命令就够了。遇到意外情况时再回来查阅本页。
 
 :::tip 想用 WSL？
 如果你更倾向于真正的 POSIX 环境（用于 dashboard 内嵌终端、`fork` 语义、Linux 风格文件监视器等），请参阅 **[Windows（WSL2）指南](./windows-wsl-quickstart.md)**。两者可以干净共存：原生数据存放在 `%LOCALAPPDATA%\hermes`，WSL 数据存放在 `~/.hermes`。
@@ -24,7 +20,7 @@ Hermes 可在 Windows 10 和 Windows 11 上原生运行——无需 WSL、Cygwin
 打开 **PowerShell**（或 Windows Terminal）并运行：
 
 ```powershell
-iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
 无需管理员权限。安装程序会写入 `%LOCALAPPDATA%\hermes\`，并将 `hermes` 添加到你的**用户 PATH**——安装完成后打开新终端即可使用。
@@ -32,18 +28,18 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 **安装程序选项**（需要使用 scriptblock 形式传递参数）：
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1))) -NoVenv -SkipSetup -Branch main
+& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -NoVenv -SkipSetup -Branch main
 ```
 
-| 参数 | 默认值 | 用途 |
-|---|---|---|
-| `-Branch` | `main` | 克隆指定分支（用于测试 PR） |
-| `-Commit` | 未设置 | 将安装固定到指定 commit SHA（覆盖 `-Branch`） |
-| `-Tag` | 未设置 | 将安装固定到指定 git tag（如 `v0.14.0`） |
-| `-NoVenv` | 关闭 | 跳过 venv 创建（高级用法——由你自行管理 Python） |
-| `-SkipSetup` | 关闭 | 跳过安装后的 `hermes setup` 向导 |
-| `-HermesHome` | `%LOCALAPPDATA%\hermes` | 覆盖数据目录 |
-| `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | 覆盖代码存放位置 |
+| 参数          | 默认值                               | 用途                                            |
+| ------------- | ------------------------------------ | ----------------------------------------------- |
+| `-Branch`     | `main`                               | 克隆指定分支（用于测试 PR）                     |
+| `-Commit`     | 未设置                               | 将安装固定到指定 commit SHA（覆盖 `-Branch`）   |
+| `-Tag`        | 未设置                               | 将安装固定到指定 git tag（如 `v0.14.0`）        |
+| `-NoVenv`     | 关闭                                 | 跳过 venv 创建（高级用法——由你自行管理 Python） |
+| `-SkipSetup`  | 关闭                                 | 跳过安装后的 `hermes setup` 向导                |
+| `-HermesHome` | `%LOCALAPPDATA%\hermes`              | 覆盖数据目录                                    |
+| `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | 覆盖代码存放位置                                |
 
 安装程序会自动重试不稳定的 git 拉取，并剥离下载的 `install.ps1` 内容中的 BOM，因此 HTTP 传输中携带的 UTF-8 BOM 不再会破坏 `[scriptblock]::Create((irm ...))` 形式。
 
@@ -57,13 +53,13 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 
 在首次启动时（以及检测到缺少工具时按需触发），Hermes 会运行一个小型 Python 引导程序——`hermes_cli/dep_ensure.py`——检查并懒加载安装所需的非 Python 依赖。在 Windows 上，相关依赖如下：
 
-| 依赖 | Hermes 需要它的原因 |
-|---|---|
-| **PortableGit** | 为终端工具提供 `bash.exe`，为会话内克隆提供 `git`。在安装时配置，而非由 `dep_ensure` 负责。 |
-| **Node.js 22** | 浏览器工具（`agent-browser`）、TUI 的 web 桥接以及 WhatsApp 桥接所必需。 |
-| **ffmpeg** | TTS / 语音消息的音频格式转换。 |
-| **ripgrep** | 快速文件搜索——不可用时回退到 `grep`。 |
-| **npm 包** | `agent-browser`、Playwright Chromium 以及各工具集的 Node 依赖，在首次使用浏览器工具时安装一次。 |
+| 依赖            | Hermes 需要它的原因                                                                             |
+| --------------- | ----------------------------------------------------------------------------------------------- |
+| **PortableGit** | 为终端工具提供 `bash.exe`，为会话内克隆提供 `git`。在安装时配置，而非由 `dep_ensure` 负责。     |
+| **Node.js 22**  | 浏览器工具（`agent-browser`）、TUI 的 web 桥接以及 WhatsApp 桥接所必需。                        |
+| **ffmpeg**      | TTS / 语音消息的音频格式转换。                                                                  |
+| **ripgrep**     | 快速文件搜索——不可用时回退到 `grep`。                                                           |
+| **npm 包**      | `agent-browser`、Playwright Chromium 以及各工具集的 Node 依赖，在首次使用浏览器工具时安装一次。 |
 
 每个依赖都有类似 `shutil.which(...)` 的检查；如果二进制文件缺失且当前为交互式运行，`dep_ensure` 会提示安装（实际安装逻辑委托给 `scripts\install.ps1 -ensure <dep>`）。非交互式运行（gateway、cron、无头桌面启动）会跳过提示，并直接给出清晰的 `this feature needs <dep>` 错误。
 
@@ -83,25 +79,25 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 10. **运行 `hermes setup`** — 正常的首次运行向导（模型、提供商、工具集）。使用 `-SkipSetup` 跳过。
 
 :::tip 在 Windows 上跳过繁琐的提供商配置
-原生 Windows 仍处于早期 beta 阶段，逐个配置工具 API key（Firecrawl、FAL、Browser Use、OpenAI TTS）是获得可用 agent 摩擦最大的部分。[Nous Portal](/user-guide/features/tool-gateway) 订阅通过一次 OAuth 登录即可覆盖模型**以及**所有这些工具。安装程序完成后，运行 `hermes setup --portal` 完成配置。
+在 Windows 上，逐个配置工具 API key（Firecrawl、FAL、Browser Use、OpenAI TTS）是获得可用 agent 摩擦最大的部分。[Nous Portal](/user-guide/features/tool-gateway) 订阅通过一次 OAuth 登录即可覆盖模型**以及**所有这些工具。安装程序完成后，运行 `hermes setup --portal` 完成配置。
 :::
 
 ## 功能矩阵
 
 除 dashboard 内嵌终端面板外，所有功能均可在 Windows 上原生运行。
 
-| 功能 | 原生 Windows | WSL2 |
-|---|---|---|
-| CLI（`hermes chat`、`hermes setup`、`hermes gateway` 等） | ✓ | ✓ |
-| 交互式 TUI（`hermes --tui`） | ✓ | ✓ |
-| 消息 gateway（Telegram、Discord、Slack、WhatsApp，15+ 平台） | ✓ | ✓ |
-| Cron 调度器 | ✓ | ✓ |
-| 浏览器工具（通过 Node 驱动 Chromium） | ✓ | ✓ |
-| MCP 服务器（stdio 和 HTTP） | ✓ | ✓ |
-| 本地 Ollama / LM Studio / llama-server | ✓ | ✓（通过 WSL 网络） |
-| Web dashboard（会话、任务、指标、配置） | ✓ | ✓ |
-| Dashboard `/chat` 内嵌终端面板 | ✗（需要 POSIX PTY） | ✓ |
-| 登录时自动启动 | ✓（schtasks） | ✓（systemd） |
+| 功能                                                         | 原生 Windows        | WSL2               |
+| ------------------------------------------------------------ | ------------------- | ------------------ |
+| CLI（`hermes chat`、`hermes setup`、`hermes gateway` 等）    | ✓                   | ✓                  |
+| 交互式 TUI（`hermes --tui`）                                 | ✓                   | ✓                  |
+| 消息 gateway（Telegram、Discord、Slack、WhatsApp，15+ 平台） | ✓                   | ✓                  |
+| Cron 调度器                                                  | ✓                   | ✓                  |
+| 浏览器工具（通过 Node 驱动 Chromium）                        | ✓                   | ✓                  |
+| MCP 服务器（stdio 和 HTTP）                                  | ✓                   | ✓                  |
+| 本地 Ollama / LM Studio / llama-server                       | ✓                   | ✓（通过 WSL 网络） |
+| Web dashboard（会话、任务、指标、配置）                      | ✓                   | ✓                  |
+| Dashboard `/chat` 内嵌终端面板                               | ✗（需要 POSIX PTY） | ✓                  |
+| 登录时自动启动                                               | ✓（schtasks）       | ✓（systemd）       |
 
 Dashboard 的 `/chat` 标签页通过 POSIX PTY（`ptyprocess`）内嵌了真实终端。原生 Windows 没有等效的原语；Python 的 `pywinpty` / Windows ConPTY 可以实现，但需要单独的实现——视为未来工作。**dashboard 的其余部分均可原生运行**——只有该标签页会显示"请使用 WSL2"的提示横幅。
 
@@ -144,12 +140,12 @@ Hermes 的 Windows stdio 垫片现在将 `EDITOR=notepad` 设为默认值。Note
 
 **用户覆盖仍然优先**（在 setdefault 之前检查）：
 
-| 编辑器 | PowerShell 命令 |
-|---|---|
-| VS Code | `$env:EDITOR = "code --wait"` |
+| 编辑器    | PowerShell 命令                                                                    |
+| --------- | ---------------------------------------------------------------------------------- |
+| VS Code   | `$env:EDITOR = "code --wait"`                                                      |
 | Notepad++ | `$env:EDITOR = "'C:\Program Files\Notepad++\notepad++.exe' -multiInst -nosession"` |
-| Neovim | `$env:EDITOR = "nvim"` |
-| Helix | `$env:EDITOR = "hx"` |
+| Neovim    | `$env:EDITOR = "nvim"`                                                             |
+| Helix     | `$env:EDITOR = "hx"`                                                               |
 
 VS Code 的 `--wait` 标志至关重要——没有它，编辑器会立即返回，Hermes 收到的是空缓冲区。
 
@@ -204,13 +200,13 @@ hermes gateway uninstall   # 移除 schtasks 条目、Startup 快捷方式、pid
 
 ## 数据布局
 
-| 路径 | 内容 |
-|---|---|
+| 路径                                  | 内容                                                            |
+| ------------------------------------- | --------------------------------------------------------------- |
 | `%LOCALAPPDATA%\hermes\hermes-agent\` | Git 检出 + venv。可安全执行 `Remove-Item -Recurse` 后重新安装。 |
-| `%LOCALAPPDATA%\hermes\git\` | PortableGit（仅在安装程序配置时存在）。 |
-| `%LOCALAPPDATA%\hermes\node\` | 便携式 Node.js（仅在安装程序配置时存在）。 |
-| `%LOCALAPPDATA%\hermes\bin\` | `hermes.cmd` 垫片，已添加到用户 PATH。 |
-| `%USERPROFILE%\.hermes\` | 你的配置、认证、技能、会话、日志。**重装后保留。** |
+| `%LOCALAPPDATA%\hermes\git\`          | PortableGit（仅在安装程序配置时存在）。                         |
+| `%LOCALAPPDATA%\hermes\node\`         | 便携式 Node.js（仅在安装程序配置时存在）。                      |
+| `%LOCALAPPDATA%\hermes\bin\`          | `hermes.cmd` 垫片，已添加到用户 PATH。                          |
+| `%USERPROFILE%\.hermes\`              | 你的配置、认证、技能、会话、日志。**重装后保留。**              |
 
 这种分离是有意为之：`%LOCALAPPDATA%\hermes` 是可丢弃的基础设施（可以删除后用一行命令恢复）。`%USERPROFILE%\.hermes` 是你的数据——配置、记忆、技能、会话历史——其结构与 Linux 安装完全相同。在机器间同步它，你的 Hermes 就随之迁移。
 
@@ -252,11 +248,11 @@ TELEGRAM_BOT_TOKEN=...
 
 这些变量仅影响原生 Windows 安装：
 
-| 变量 | 效果 |
-|---|---|
-| `HERMES_GIT_BASH_PATH` | 覆盖 bash.exe 的发现逻辑。可指向任意 bash——完整 Git-for-Windows、通过符号链接的 WSL bash、MSYS2、Cygwin。安装程序会自动设置此变量。 |
-| `HERMES_DISABLE_WINDOWS_UTF8` | 设为 `1` 可禁用 UTF-8 stdio 垫片，回退到区域设置代码页。用于排查编码 bug。 |
-| `EDITOR` / `VISUAL` | 用于 `/edit` 和 `Ctrl-X Ctrl-E` 的编辑器。如果两者均未设置，Hermes 默认使用 `notepad`。 |
+| 变量                          | 效果                                                                                                                                |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `HERMES_GIT_BASH_PATH`        | 覆盖 bash.exe 的发现逻辑。可指向任意 bash——完整 Git-for-Windows、通过符号链接的 WSL bash、MSYS2、Cygwin。安装程序会自动设置此变量。 |
+| `HERMES_DISABLE_WINDOWS_UTF8` | 设为 `1` 可禁用 UTF-8 stdio 垫片，回退到区域设置代码页。用于排查编码 bug。                                                          |
+| `EDITOR` / `VISUAL`           | 用于 `/edit` 和 `Ctrl-X Ctrl-E` 的编辑器。如果两者均未设置，Hermes 默认使用 `notepad`。                                             |
 
 ## 卸载
 

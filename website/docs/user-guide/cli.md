@@ -48,12 +48,12 @@ hermes chat --verbose
 
 # Isolated git worktree (for running multiple agents in parallel)
 hermes -w                         # Interactive mode in worktree
-hermes -w -q "Fix issue #123"     # Single query in worktree
+hermes -w -z "Fix issue #123"     # Single query in worktree
 ```
 
 ## Interface Layout
 
-<img className="docs-terminal-figure" src="/img/docs/cli-layout.svg" alt="Stylized preview of the Hermes CLI layout showing the banner, conversation area, and fixed input prompt." />
+<img className="docs-terminal-figure" src="/docs/img/docs/cli-layout.svg" alt="Stylized preview of the Hermes CLI layout showing the banner, conversation area, and fixed input prompt." />
 <p className="docs-figure-caption">The Hermes CLI banner, conversation stream, and fixed input prompt rendered as a stable docs figure instead of fragile text art.</p>
 
 The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.

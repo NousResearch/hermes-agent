@@ -34,7 +34,7 @@ Install the required dependencies:
 ```bash
 pip install aiohttp cryptography
 # Optional: for terminal QR code display
-pip install hermes-agent[messaging]
+cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
 ```
 
 ## Setup
@@ -123,6 +123,8 @@ Set these in `config.yaml` under `platforms.weixin.extra`:
 | `allow_from` | `[]` | User IDs allowed for DMs (when dm_policy=allowlist) |
 | `group_allow_from` | `[]` | Group IDs allowed (when group_policy=allowlist) |
 | `split_multiline_messages` | `false` | When `true`, split multi-line replies into multiple chat messages (legacy behavior). When `false`, keep multi-line replies as one message unless they exceed the length limit. |
+| `text_batch_delay_seconds` | `3.0` | Quiet period (seconds) before a buffered burst of rapid text messages is flushed as one combined request. iLink delivers messages individually, so this debounce avoids one agent invocation per fragment. Set `0` to dispatch each message immediately. |
+| `text_batch_split_delay_seconds` | `5.0` | Extended flush delay used when the latest fragment is near the split threshold (long messages iLink may have chunked). |
 
 ## Access Policies
 
@@ -328,4 +330,4 @@ Only one Weixin gateway instance can use a given token at a time. The adapter ac
 | Voice messages show as text | If WeChat provides a transcription, the adapter uses the text. This is expected behavior |
 | Messages appear duplicated | The adapter deduplicates by message ID. If you see duplicates, check if multiple gateway instances are running |
 | `iLink POST ... HTTP 4xx/5xx` | API error from the iLink service. Check your token validity and network connectivity |
-| Terminal QR code doesn't render | Reinstall with the messaging extra: `pip install hermes-agent[messaging]`. Alternatively, open the URL printed above the QR |
+| Terminal QR code doesn't render | Reinstall with the messaging extra: `cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"`. Alternatively, open the URL printed above the QR |

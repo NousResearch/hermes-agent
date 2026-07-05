@@ -36,8 +36,13 @@ Key contract points encoded here:
   - scope is ``agent_dashboard:access`` only (no OIDC scopes).
   - tokens are RS256 JWTs verified against ``/.well-known/jwks.json``;
     JWKS is cached for 5 minutes.
-  - V1 has NO refresh tokens — ``refresh_session`` always raises
-    ``RefreshExpiredError`` so the middleware redirects to ``/auth/login``.
+  - the dashboard auth-code grant issues a 24h rotating refresh token
+    (Portal NAS PR #293). ``refresh_session`` posts ``grant_type=refresh_token``
+    to rotate the access token; ``complete_login`` and ``refresh_session``
+    both populate ``Session.refresh_token`` with the (rotating) value the
+    middleware persists back to the HttpOnly cookie. On a dead/expired/
+    reuse-detected refresh token Portal returns 400 → ``RefreshExpiredError``
+    → middleware redirects to ``/auth/login``.
   - audience claim is the bare ``client_id`` (no ``hermes-cli:`` prefix).
   - tolerant ``oauth_contract_version`` check: missing → warn + proceed;
     present and ``!= 1`` → refuse.
@@ -49,11 +54,11 @@ of cookie names; this provider just hands back ``{"code_verifier": …,
 "state": …}`` and the route serializes those into the ``hermes_session_pkce``
 cookie.
 
-Forward compatibility: if a future Portal contract starts issuing refresh
-tokens, ``complete_login`` already captures the value forward-compatibly
-(populates ``Session.refresh_token``). Wiring the RT cookie back into the
-middleware's near-expiry refresh path lives in the host application, not
-here.
+Refresh-token rotation: Portal rotates the refresh token on every
+successful refresh and runs reuse-detection (replaying a rotated token
+outside Portal's 60s grace revokes the whole session). The host
+middleware therefore MUST persist the rotated ``Session.refresh_token``
+back to the cookie on every refresh.
 
 Skip reasons:
   The plugin exposes a module-level ``LAST_SKIP_REASON`` that the gate's
@@ -229,12 +234,94 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         except httpx.RequestError as exc:
             raise ProviderError(f"Portal token endpoint unreachable: {exc}") from exc
 
+        # The dashboard auth-code grant now issues a rotating refresh token
+        # (24h session, reuse-detected) — Portal NAS PR #293. A 400 here means
+        # the code/PKCE/redirect_uri failed, surfaced as InvalidCodeError.
+        return self._token_response_to_session(
+            response, bad_request_exc=InvalidCodeError
+        )
+
+    def refresh_session(self, *, refresh_token: str) -> Session:
+        """Rotate the access token using the refresh token.
+
+        Posts ``grant_type=refresh_token`` to Portal's token endpoint. The
+        refresh token is sent in the ``X-Refresh-Token`` header (not the body)
+        so it never lands in Portal's request-body access logs — mirroring the
+        device-flow CLI convention; Portal reconciles header vs. body and
+        rejects conflicts.
+
+        Portal rotates the refresh token on every successful refresh, so the
+        returned ``Session.refresh_token`` is a NEW value the caller MUST
+        persist (replacing the old cookie). Failing to persist it means the
+        next refresh replays a rotated token and — outside Portal's 60s grace
+        — trips reuse-detection and revokes the whole session.
+
+        Raises ``RefreshExpiredError`` on a 400 (expired / revoked / reuse-
+        detected), so the middleware clears cookies and forces re-login.
+        Raises ``ProviderError`` if Portal is unreachable.
+        """
+        if not refresh_token:
+            # No RT to present — treat as a dead session so middleware
+            # forces a clean re-login rather than emitting a malformed POST.
+            raise RefreshExpiredError("no refresh token present in session")
+
+        try:
+            response = httpx.post(
+                self._token_url,
+                # The refresh token goes in BOTH the body and the
+                # ``x-nous-refresh-token`` header. Portal's token endpoint
+                # requires ``refresh_token`` in the body (its request schema
+                # rejects a header-only request as ``invalid_request``), and
+                # additionally reconciles the header against the body — sending
+                # both lets Portal keep the value out of body-access-logs while
+                # still satisfying the schema. The header name must match
+                # Portal's ``REFRESH_TOKEN_HEADER`` exactly (``x-nous-refresh-
+                # token``); any other name is silently ignored. (Verified
+                # against the NAS #293 preview deploy: header-only → 400
+                # invalid_request; body → accepted.)
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": self._client_id,
+                    "refresh_token": refresh_token,
+                },
+                headers={
+                    "Accept": "application/json",
+                    "x-nous-refresh-token": refresh_token,
+                },
+                timeout=_TOKEN_ENDPOINT_TIMEOUT_SEC,
+            )
+        except httpx.RequestError as exc:
+            raise ProviderError(
+                f"Portal token endpoint unreachable: {exc}"
+            ) from exc
+
+        # A 400 on refresh means the RT is expired / revoked / reuse-detected;
+        # surface as RefreshExpiredError so middleware forces re-login.
+        return self._token_response_to_session(
+            response, bad_request_exc=RefreshExpiredError
+        )
+
+    def _token_response_to_session(
+        self,
+        response: httpx.Response,
+        *,
+        bad_request_exc: type[Exception],
+    ) -> Session:
+        """Translate a Portal ``/api/oauth/token`` response into a Session.
+
+        Shared by ``complete_login`` (auth-code grant) and ``refresh_session``
+        (refresh grant). ``bad_request_exc`` is the exception type raised on a
+        400 — ``InvalidCodeError`` for the auth-code path, ``RefreshExpiredError``
+        for the refresh path — so the middleware's distinct handling
+        (400-on-callback vs. force-relogin) is preserved.
+        """
         if response.status_code == 400:
-            # Contract: invalid_code, invalid_grant, redirect_uri_mismatch all
+            # Contract: invalid_code / invalid_grant / redirect_uri_mismatch
+            # (auth-code) and expired / revoked / reuse-detected (refresh) all
             # surface as 400 with an OAuth-shaped JSON error envelope.
             body = self._parse_json_body(response)
             error_code = body.get("error", "invalid_request")
-            raise InvalidCodeError(f"Portal rejected code: {error_code}")
+            raise bad_request_exc(f"Portal rejected token request: {error_code}")
         if response.status_code != 200:
             raise ProviderError(
                 f"Portal token endpoint returned {response.status_code}: "
@@ -251,26 +338,20 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
             raise ProviderError(f"unexpected token_type={token_type!r}")
 
         claims = self._verify_jwt(access_token)
-        # Contract V1: no refresh token expected. If a future Portal ever
-        # adds one, capture it forward-compatibly.
+        # The dashboard grant issues a rotating refresh token; capture it so
+        # the caller can persist it. Empty string if Portal omitted it (the
+        # session then behaves as access-token-only until expiry).
         refresh_token = payload.get("refresh_token") or ""
         if not isinstance(refresh_token, str):
             refresh_token = ""
         return self._session_from_claims(access_token, refresh_token, claims)
 
-    def refresh_session(self, *, refresh_token: str) -> Session:
-        # Contract V1 has no refresh tokens — always force re-auth. If a
-        # future Portal contract starts issuing them, this method needs to
-        # be re-implemented; until then it's an unconditional refusal.
-        raise RefreshExpiredError(
-            "Nous Portal does not issue refresh tokens in OAuth contract v1; "
-            "user must re-authenticate via /auth/login."
-        )
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
-        # Contract: returns None on expiry/invalidity (middleware then
-        # triggers redirect-to-login since refresh_session can never succeed
-        # under V1); raises ProviderError if the IDP is unreachable.
+        # Contract: returns None on expiry/invalidity (the middleware then
+        # tries refresh_session with the RT cookie, falling back to
+        # redirect-to-login if that also fails); raises ProviderError if the
+        # IDP is unreachable.
         try:
             claims = self._verify_jwt(access_token)
         except InvalidCodeError:
@@ -279,14 +360,22 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         except ProviderError:
             # JWKS unreachable, etc. Bubble up so middleware emits 503.
             raise
-        # verify_session has no access to the original refresh_token; pass
-        # "" because in contract V1 there is none anyway.
+        # verify_session validates the AT in isolation and has no access to the
+        # refresh token (it lives in a separate cookie the middleware reads);
+        # pass "" here — the RT-driven rotation path is middleware's job.
         return self._session_from_claims(access_token, "", claims)
 
     def revoke_session(self, *, refresh_token: str) -> None:
-        # Contract V1: no refresh tokens to revoke, and no Portal revocation
-        # endpoint documented for dashboard tokens. Logout is purely
-        # client-side cookie clearing; this is a best-effort no-op.
+        # Portal exposes no public refresh-token revocation grant on its token
+        # endpoint (revocation is driven from the authenticated /sessions UI,
+        # keyed by sessionId + userId, not by the RT value). So logout is
+        # client-side cookie clearing; the server-side refresh session simply
+        # expires within its 24h TTL. Best-effort no-op, must not raise.
+        #
+        # If Portal later adds a token-endpoint revoke grant (e.g.
+        # grant_type=... + X-Refresh-Token), implement it here so logout
+        # invalidates the RT server-side immediately rather than waiting out
+        # the TTL.
         _ = refresh_token
         return None
 
@@ -296,20 +385,16 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         """Surface obviously-broken redirect_uris before bouncing to Portal.
 
         The Portal-side check (``agent-redirect-uri.ts``) is authoritative;
-        this is a fast-fail for the common operator-error case.
+        this is a fast-fail for the common operator-error case. We allow any
+        ``http://`` host (not just localhost) so self-hosted dashboards reached
+        over plain HTTP — LAN IPs, internal hostnames, reverse proxies that
+        terminate TLS upstream — are not rejected here; Portal makes the final
+        call on which redirect_uris are permitted.
         """
         parsed = urllib.parse.urlparse(redirect_uri)
         if parsed.scheme not in ("https", "http"):
             raise ProviderError(
                 f"redirect_uri must be http(s), got {redirect_uri!r}"
-            )
-        if parsed.scheme == "http" and parsed.hostname not in (
-            "localhost",
-            "127.0.0.1",
-        ):
-            raise ProviderError(
-                "redirect_uri may only use http:// for localhost/127.0.0.1, "
-                f"got {redirect_uri!r}"
             )
         if not parsed.path or not parsed.path.endswith("/auth/callback"):
             raise ProviderError(

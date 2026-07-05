@@ -1031,7 +1031,9 @@ auxiliary:
     timeout: 30
     language: ""
 
-  # Skills hub — skill matching and search
+  # Skills hub — optional semantic reranking for `hermes skills search`.
+  # The stock `auto` + empty model default keeps search deterministic; set
+  # provider/model (or fallback_chain/extra_body) to enable the LLM reranker.
   skills_hub:
     provider: "auto"
     model: ""

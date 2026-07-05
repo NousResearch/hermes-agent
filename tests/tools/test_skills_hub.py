@@ -2,6 +2,7 @@
 
 import json
 import time
+from types import SimpleNamespace
 from typing import List, Optional
 from unittest.mock import patch, MagicMock
 
@@ -1503,6 +1504,11 @@ class TestConvertToSkillMd:
 
 
 class TestUnifiedSearchDedup:
+    @pytest.fixture(autouse=True)
+    def _disable_real_auxiliary_rerank(self, monkeypatch):
+        """Keep unified_search unit tests independent of a developer's config.yaml."""
+        monkeypatch.setattr("tools.skills_hub._skills_hub_auxiliary_enabled", lambda: False)
+
     def _make_source(self, source_id, results):
         """Create a mock SkillSource that returns fixed results."""
         src = MagicMock()
@@ -1593,6 +1599,45 @@ class TestUnifiedSearchDedup:
         src = self._make_source("a", skills)
         results = unified_search("query", [src], limit=5)
         assert len(results) == 5
+
+    def test_configured_skills_hub_auxiliary_reranks_search_results(self):
+        generic = SkillMeta(
+            name="generic-browser", description="Generic browser helper", source="a",
+            identifier="a/generic-browser", trust_level="community")
+        exact = SkillMeta(
+            name="browser-control-routing",
+            description="Route browser automation and scraping work to the right surface",
+            source="a", identifier="a/browser-control-routing", trust_level="community")
+        src = self._make_source("a", [generic, exact])
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=json.dumps({"identifiers": [exact.identifier, generic.identifier]})
+                )
+            )]
+        )
+
+        with patch("tools.skills_hub._skills_hub_auxiliary_enabled", return_value=True, create=True), \
+             patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
+            results = unified_search("browser automation routing", [src], limit=2)
+
+        assert [r.identifier for r in results] == [exact.identifier, generic.identifier]
+        mock_call.assert_called_once()
+        assert mock_call.call_args.kwargs["task"] == "skills_hub"
+
+    def test_skills_hub_auxiliary_rerank_fails_open_to_deterministic_order(self):
+        first = SkillMeta(name="first", description="d", source="a",
+                          identifier="a/first", trust_level="community")
+        second = SkillMeta(name="second", description="d", source="a",
+                           identifier="a/second", trust_level="community")
+        src = self._make_source("a", [first, second])
+
+        with patch("tools.skills_hub._skills_hub_auxiliary_enabled", return_value=True, create=True), \
+             patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("aux down")) as mock_call:
+            results = unified_search("query", [src], limit=2)
+
+        assert [r.identifier for r in results] == [first.identifier, second.identifier]
+        mock_call.assert_called_once()
 
     def test_source_error_handled(self):
         failing = MagicMock()

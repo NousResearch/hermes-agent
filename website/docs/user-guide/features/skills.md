@@ -482,7 +482,7 @@ in the pending JSON file). Memory writes have the same gate under
 
 ## Skills Hub
 
-Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills.
+Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills. Search is deterministic by default; if you explicitly configure `auxiliary.skills_hub`, Hermes uses that auxiliary model as a fail-open semantic reranker for the top search candidates.
 
 ### Common commands
 

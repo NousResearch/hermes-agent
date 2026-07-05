@@ -186,7 +186,7 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 | Vision | Image analysis, browser screenshots | `auxiliary.vision` |
 | Web Extract | Web page summarization | `auxiliary.web_extract` |
 | Compression | Context compression summaries | `auxiliary.compression` |
-| Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
+| Skills Hub | Optional semantic reranking for `hermes skills search` | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
 | Approval | Smart command-approval classification | `auxiliary.approval` |
 | Title Generation | Session title summaries | `auxiliary.title_generation` |
@@ -243,15 +243,15 @@ auxiliary:
         model: inclusionai/ring-2.6-1t:free
 
   skills_hub:
-    provider: "auto"
-    model: ""
+    provider: "auto"              # stock auto+empty model keeps search deterministic
+    model: ""                     # set provider/model (or fallback_chain) to enable reranking
 
   mcp:
     provider: "auto"
     model: ""
 ```
 
-Every task above follows the same **provider / model / base_url** pattern. Each task can also declare its own `fallback_chain`; if omitted, `provider: auto` uses the top-level `fallback_providers` chain before Hermes' built-in auxiliary discovery chain.
+Every task above follows the same **provider / model / base_url** pattern. Each task can also declare its own `fallback_chain`; if omitted, `provider: auto` uses the top-level `fallback_providers` chain before Hermes' built-in auxiliary discovery chain. `auxiliary.skills_hub` is the one opt-in exception: the stock `provider: auto` + empty `model` default keeps `hermes skills search` deterministic; set an explicit provider/model, fallback chain, endpoint, or `extra_body` to enable the semantic reranker.
 
 Context compression is configured under `auxiliary.compression`:
 
@@ -415,7 +415,7 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |
 | Web extraction | Layered (see above) + internal OpenRouter retry | `auxiliary.web_extract` |
 | Context compression | Layered (see above); degrades to no-summary if all layers unavailable | `auxiliary.compression` |
-| Skills hub | Layered (see above) | `auxiliary.skills_hub` |
+| Skills hub | Optional search reranker; once explicitly configured, uses layered fallback as above | `auxiliary.skills_hub` |
 | MCP helpers | Layered (see above) | `auxiliary.mcp` |
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |

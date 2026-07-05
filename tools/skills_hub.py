@@ -3862,9 +3862,191 @@ def parallel_search_sources(
     return all_results, source_counts, timed_out_ids
 
 
+def _skills_hub_auxiliary_enabled() -> bool:
+    """Return True when the user intentionally configured auxiliary.skills_hub.
+
+    Stock Hermes ships ``auxiliary.skills_hub`` as ``provider: auto`` with an
+    empty model. Calling an LLM for every fresh-install hub search would make a
+    previously deterministic CLI unexpectedly spend tokens (and would make unit
+    tests depend on host credentials). Treat the pure default as disabled, but
+    honor any explicit user routing: provider/model/base_url/api_key,
+    fallback_chain, or extra_body.
+    """
+    try:
+        from agent.auxiliary_client import _get_auxiliary_task_config
+
+        cfg = _get_auxiliary_task_config("skills_hub")
+    except Exception:
+        return False
+    if not isinstance(cfg, dict):
+        return False
+
+    provider = str(cfg.get("provider") or "").strip().lower()
+    model = str(cfg.get("model") or "").strip()
+    base_url = str(cfg.get("base_url") or "").strip()
+    api_key = str(cfg.get("api_key") or "").strip()
+    fallback_chain = cfg.get("fallback_chain")
+    extra_body = cfg.get("extra_body")
+
+    return bool(
+        model
+        or base_url
+        or api_key
+        or (provider and provider != "auto")
+        or (isinstance(fallback_chain, list) and bool(fallback_chain))
+        or (isinstance(extra_body, dict) and bool(extra_body))
+    )
+
+
+def _strip_json_fence(text: str) -> str:
+    stripped = (text or "").strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    return stripped
+
+
+def _extract_json_payload(text: str) -> Any:
+    """Best-effort JSON extraction from plain or fenced LLM output."""
+    stripped = _strip_json_fence(text)
+    try:
+        return json.loads(stripped)
+    except (TypeError, json.JSONDecodeError):
+        pass
+
+    candidates: List[Tuple[int, int]] = []
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = stripped.find(opener)
+        end = stripped.rfind(closer)
+        if start != -1 and end > start:
+            candidates.append((start, end + 1))
+    for start, end in sorted(candidates, key=lambda pair: pair[0]):
+        try:
+            return json.loads(stripped[start:end])
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _parse_reranked_identifiers(text: str) -> List[str]:
+    """Parse identifiers from the Skills Hub auxiliary reranker response."""
+    payload = _extract_json_payload(text)
+    if isinstance(payload, dict):
+        for key in ("identifiers", "ranked_identifiers", "results", "ids"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                payload = value
+                break
+        else:
+            return []
+
+    identifiers: List[str] = []
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, str):
+                identifiers.append(item)
+            elif isinstance(item, dict):
+                ident = item.get("identifier") or item.get("id")
+                if isinstance(ident, str):
+                    identifiers.append(ident)
+    return [i.strip() for i in identifiers if i and i.strip()]
+
+
+def _rerank_with_skills_hub_auxiliary(
+    query: str,
+    results: List[SkillMeta],
+    *,
+    limit: int,
+) -> List[SkillMeta]:
+    """Use auxiliary.skills_hub as an optional semantic reranker.
+
+    Search remains deterministic and fail-open: registry/source search owns
+    recall and trust dedupe, while the LLM only reorders the top candidates for
+    semantic fit to the user's query. Unknown/omitted identifiers are ignored
+    and the original order is appended unchanged.
+    """
+    if not query.strip() or len(results) <= 1 or not _skills_hub_auxiliary_enabled():
+        return results
+
+    candidate_count = min(len(results), max(limit * 4, 20), 50)
+    candidates = results[:candidate_count]
+    candidate_payload = [
+        {
+            "identifier": r.identifier,
+            "name": r.name,
+            "description": r.description[:300],
+            "source": r.source,
+            "trust_level": r.trust_level,
+            "tags": list(r.tags or [])[:10],
+        }
+        for r in candidates
+    ]
+
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task="skills_hub",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You rerank Hermes Skills Hub search results. "
+                        "Return strict JSON only with this schema: "
+                        "{\"identifiers\": [\"candidate identifier\", ...]}. "
+                        "Use only identifiers from the candidate list. Do not invent skills."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "query": query,
+                            "candidates": candidate_payload,
+                            "instructions": (
+                                "Rank candidates by semantic usefulness for the query. "
+                                "Prefer exact workflow/procedure matches over broad or generic matches."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            temperature=0,
+            max_tokens=800,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        ranked_ids = _parse_reranked_identifiers(raw)
+    except Exception as exc:
+        logger.debug("Skills Hub auxiliary rerank unavailable; using deterministic order: %s", exc)
+        return results
+
+    if not ranked_ids:
+        return results
+
+    by_id = {r.identifier: r for r in candidates}
+    seen_ids: set[str] = set()
+    reranked: List[SkillMeta] = []
+    for ident in ranked_ids:
+        if ident in by_id and ident not in seen_ids:
+            reranked.append(by_id[ident])
+            seen_ids.add(ident)
+
+    if not reranked:
+        return results
+
+    reranked.extend(r for r in candidates if r.identifier not in seen_ids)
+    reranked.extend(results[candidate_count:])
+    return reranked
+
+
 def unified_search(query: str, sources: List[SkillSource],
                    source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
-    """Search all sources (in parallel) and merge results."""
+    """Search all sources (in parallel), merge results, and optionally rerank."""
     all_results, _, _ = parallel_search_sources(
         sources,
         query=query,
@@ -3884,5 +4066,6 @@ def unified_search(query: str, sources: List[SkillSource],
         elif _TRUST_RANK.get(r.trust_level, 0) > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
             seen[r.identifier] = r
     deduped = list(seen.values())
+    deduped = _rerank_with_skills_hub_auxiliary(query, deduped, limit=limit)
 
     return deduped[:limit]

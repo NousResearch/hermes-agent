@@ -10237,6 +10237,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
+        # GroupContext sidecar — unified group context injection.
+        #
+        # When an adapter populated event.group_context, apply the two-layer
+        # model here once, for all platforms:
+        #
+        #   Layer 1 (session-level, cache-stable): inject a group identity
+        #   block into channel_prompt. Same group = same block = prompt cache
+        #   preserved across turns.
+        #
+        #   Layer 2 (per-message): prepend "[SenderName]: " to message_text
+        #   when sender_display is known. Fires only when group_context is
+        #   present, so the existing is_shared_multi_user path above remains
+        #   the fallback for adapters not yet ported to the sidecar.
+        #
+        # Adapters that set group_context are responsible for NOT also
+        # mutating channel_prompt or message text directly — the sidecar is
+        # the single authoritative injection point.
+        _group_ctx = getattr(event, "group_context", None)
+        if _group_ctx is not None:
+            # Layer 1 — build and inject group identity block into channel_prompt.
+            _identity_parts = [
+                f"You are in a {_group_ctx.platform} group: "
+                f"{_group_ctx.group_name or _group_ctx.group_id}",
+            ]
+            if _group_ctx.bot_username or _group_ctx.bot_id:
+                _id_str = " ".join(filter(None, [
+                    f"@{_group_ctx.bot_username}" if _group_ctx.bot_username else None,
+                    f"(user_id={_group_ctx.bot_id})" if _group_ctx.bot_id else None,
+                ]))
+                _identity_parts.append(f"Your identity in this group: {_id_str}")
+            _identity_parts.append(
+                "Multiple people may be present. "
+                "Respond only when your voice genuinely adds something."
+            )
+            _group_prompt = "\n".join(_identity_parts)
+            _existing_cp = getattr(event, "channel_prompt", None)
+            channel_prompt_override = (
+                f"{_existing_cp}\n\n{_group_prompt}" if _existing_cp else _group_prompt
+            )
+            # Replace event with updated channel_prompt (dataclass is frozen-ish;
+            # use dataclasses.replace for a clean copy).
+            import dataclasses as _dc
+            event = _dc.replace(event, channel_prompt=channel_prompt_override)
+            # Layer 2 — sender prefix on this message only.
+            if _group_ctx.sender_display:
+                message_text = f"[{_group_ctx.sender_display}]: {message_text}"
+
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
         # trigger message, not the backfill block.

@@ -1713,6 +1713,43 @@ class ProcessingOutcome(Enum):
 
 
 @dataclass
+class GroupContext:
+    """Structured group/multi-user context sidecar for MessageEvent.
+
+    Populated by platform adapters when a message arrives in a group
+    setting (Telegram group, Discord server, API gateway with group
+    headers, etc.). Processed once in gateway/run.py to inject:
+
+      Layer 1 — channel_prompt (session-level, cache-stable):
+        Group identity: platform, group name/id, bot's own identity.
+        Same group = same block = prompt cache preserved.
+
+      Layer 2 — per-message sender prefix:
+        "[SenderName]: " prepended to message text when sender is known.
+        Minimal per-message overhead; does not accumulate.
+
+    Layer 3 (participant roster / join-leave events) is deferred.
+
+    Adapters that know they are in a group populate this struct and
+    attach it to MessageEvent.group_context. Adapters that do not
+    (DMs, channels, programmatic CLI) leave it None — existing
+    behaviour is completely unchanged.
+    """
+    platform: str
+    """Platform identifier: 'telegram', 'discord', 'api_server', etc."""
+    group_id: str
+    """Stable group identifier: chat_id, guild_id, room_id, etc."""
+    group_name: Optional[str] = None
+    """Human-readable group name when available."""
+    sender_display: Optional[str] = None
+    """Display name of the message sender (Layer 2 prefix)."""
+    bot_username: Optional[str] = None
+    """Bot's @mention name in this group (for Layer 1 identity block)."""
+    bot_id: Optional[str] = None
+    """Bot's user_id in this group (for Layer 1 identity block)."""
+
+
+@dataclass
 class MessageEvent:
     """
     Incoming message from a platform.
@@ -1758,6 +1795,14 @@ class MessageEvent:
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
+
+    # Structured group context sidecar.  Populated by platform adapters
+    # when a message arrives in a group/multi-user setting (Telegram group,
+    # Discord server, API gateway with X-Hermes-Group-* headers, etc.).
+    # Processed once in gateway/run.py to inject Layer 1 (channel_prompt
+    # group identity block) and Layer 2 (per-message sender prefix).
+    # None for DMs, channels, and programmatic CLI — no behaviour change.
+    group_context: Optional["GroupContext"] = None
 
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate

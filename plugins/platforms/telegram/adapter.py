@@ -8443,13 +8443,31 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_text = None
 
         # Per-channel/topic ephemeral prompt
-        from gateway.platforms.base import resolve_channel_prompt
+        from gateway.platforms.base import resolve_channel_prompt, GroupContext
         _chat_id_str = str(chat.id)
         _channel_prompt = resolve_channel_prompt(
             self.config.extra,
             thread_id_str or _chat_id_str,
             _chat_id_str if thread_id_str else None,
         )
+
+        # Populate GroupContext sidecar for group/supergroup messages.
+        # The actual injection (channel_prompt Layer 1 + sender prefix Layer 2)
+        # happens once in gateway/run.py, not here — this adapter's job is
+        # only to fill in what it knows from the Telegram message.
+        _group_context = None
+        if chat_type == "group":
+            _bot = getattr(self, "_bot", None)
+            _group_context = GroupContext(
+                platform="telegram",
+                group_id=_chat_id_str,
+                group_name=chat.title or None,
+                sender_display=(
+                    user.full_name or str(user.id) if user else None
+                ),
+                bot_username=getattr(_bot, "username", None),
+                bot_id=str(getattr(_bot, "id", None)) if getattr(_bot, "id", None) else None,
+            )
 
         return MessageEvent(
             text=message.text or "",
@@ -8462,6 +8480,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            group_context=_group_context,
             timestamp=message.date,
         )
 

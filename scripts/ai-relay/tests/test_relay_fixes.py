@@ -162,6 +162,42 @@ def test_fable_allowed_only_on_owner_machines():
     assert relay_call.fable_allowed_here("some-random-host.local") is False
 
 
+def test_classify_timeout_only_with_sentinel():
+    # ค้างจริงจาก run_once (มีป้าย TIMEOUT_MARK) → "timeout"
+    assert relay_call.classify(124, "", relay_call.TIMEOUT_MARK) == "timeout"
+    # CLI ที่บังเอิญ exit 124 เอง (ไม่มีป้าย) → ต้องไม่ใช่ timeout · ตกไป crash (ยังสลับตัวได้ ปลอดภัย)
+    assert relay_call.classify(124, "", "some cli error") == "crash"
+
+
+def test_resolve_timeout_coder_and_brain():
+    # ต่อ tool ชนะก่อนเสมอ
+    assert relay_call.resolve_timeout({"timeout": 120}, {"call_timeout_seconds": 900}) == 120
+    # coder: ค่ากลาง → ปริยาย 900
+    assert relay_call.resolve_timeout({}, {"call_timeout_seconds": 600}) == 600
+    assert relay_call.resolve_timeout({}, {}) == 900
+    # brain (fable/opus): ค่ากลางสมองแยก → ปริยาย 1800 (คิดนานกว่า ไม่โดนตัดเร็ว)
+    assert relay_call.resolve_timeout({"brain": True}, {}) == 1800
+    assert relay_call.resolve_timeout({"brain": True}, {"brain_call_timeout_seconds": 2400}) == 2400
+    # ค่าพัง (0/ติดลบ/ไม่ใช่ตัวเลข) → ตกไปค่าปริยายของชนิดนั้น
+    assert relay_call.resolve_timeout({"timeout": 0}, {}) == 900
+    assert relay_call.resolve_timeout({"timeout": "abc"}, {"brain": True} and {}) == 900
+
+
+def test_run_once_returns_timeout_mark_on_timeout():
+    def fake_run(cmd, **kwargs):
+        raise relay_call.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    orig = relay_call.subprocess.run
+    relay_call.subprocess.run = fake_run
+    try:
+        code, out, err = relay_call.run_once({"cmd": ["grok", "-p", "hi"]}, "hi", Path("/tmp"), "", timeout=1)
+    finally:
+        relay_call.subprocess.run = orig
+    assert code == 124
+    assert err == relay_call.TIMEOUT_MARK
+    assert relay_call.classify(code, out, err) == "timeout"
+
+
 def test_fable_allowlist_env_override_adds_host():
     os.environ["RELAY_FABLE_HOSTS"] = "extra-owner-box"
     try:

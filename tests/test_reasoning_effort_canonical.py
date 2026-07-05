@@ -137,9 +137,18 @@ def test_codex_auxiliary_adapter_maps_canonical_and_max_to_xhigh(monkeypatch):
         adapter.create(
             messages=[{"role": "user", "content": "hi"}],
             timeout=30,
-            extra_body={"reasoning": {"enabled": True, "effort": effort}},
+            extra_body={
+                "reasoning": {"enabled": True, "effort": effort},
+                "service_tier": "priority",
+            },
         )
 
+    assert [call["service_tier"] for call in captured] == [
+        "priority",
+        "priority",
+        "priority",
+        "priority",
+    ]
     assert [call["reasoning"]["effort"] for call in captured] == [
         "xhigh",
         "xhigh",

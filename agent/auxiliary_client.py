@@ -743,6 +743,14 @@ class _CodexCompletionsAdapter:
         # same behavior as the main agent's Codex transport.
         extra_body = kwargs.get("extra_body") or {}
         if isinstance(extra_body, dict):
+            service_tier = extra_body.get("service_tier")
+            if isinstance(service_tier, str) and service_tier.strip():
+                tier = service_tier.strip().lower()
+                if tier in {"fast", "priority", "on"}:
+                    resp_kwargs["service_tier"] = "priority"
+                elif tier not in {"normal", "off", "none"}:
+                    resp_kwargs["service_tier"] = service_tier.strip()
+
             reasoning_cfg = extra_body.get("reasoning")
             if isinstance(reasoning_cfg, dict):
                 if reasoning_cfg.get("enabled") is False:

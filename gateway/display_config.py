@@ -33,6 +33,35 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
+    # Opt-in: render tool progress as Slack's native "Thinking Steps" task
+    # cards (chat.startStream/appendStream/stopStream) instead of markdown
+    # progress bubbles. Only takes effect on Slack; every other platform
+    # ignores this key. Off by default — additive, not a behavior change.
+    "tool_progress_native": False,
+    # Card layout for native task cards: "plan" groups all tasks into one
+    # collapsible card (default — reads cleanest, prose lands below it),
+    # "timeline" gives each task its own separate card block, "dense"
+    # collapses consecutive tool calls. Fixed at stream start (Slack limit).
+    "tool_progress_native_mode": "plan",
+    # Native-card tuning knobs (all Slack-only, honored when
+    # tool_progress_native is on). Defaults chosen from live measurement
+    # 2026-07-05; override like any display setting, globally or under
+    # display.platforms.slack.
+    #   rollover_age_s: proactively continue on a fresh streamed message
+    #     after this many seconds. Measured 2026-07-05: Slack kills a
+    #     stream ~306s after startStream even with active appends
+    #     (absolute lifetime, not inactivity) — 240 ≈ 80% with margin.
+    #   rollover_chars: loose size backstop — probed clean past ~62k
+    #     cumulative chars; per-field caps prevent the real msg_too_long
+    #     trigger (single oversized chunk).
+    #   reasoning_chars: cap on the accumulated 💭 reasoning text kept in a
+    #     card's collapsible details. 0 = uncapped (a safety ceiling near
+    #     Slack's 12k markdown_text field limit still applies).
+    #   output_chars: per-tool result preview length on finished cards.
+    "tool_progress_native_rollover_age_s": 240,
+    "tool_progress_native_rollover_chars": 40_000,
+    "tool_progress_native_reasoning_chars": 0,
+    "tool_progress_native_output_chars": 120,
     "show_reasoning": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
@@ -252,6 +281,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "busy_ack_detail",
         "busy_steer_ack_enabled",
         "thinking_progress",
+        "tool_progress_native",
     }:
         if isinstance(value, str):
             val = value.strip().lower()
@@ -266,12 +296,21 @@ def _normalise(setting: str, value: Any) -> Any:
     if setting == "tool_progress_grouping":
         val = str(value).lower()
         return val if val in ("accumulate", "separate") else "accumulate"
+    if setting == "tool_progress_native_mode":
+        val = str(value).lower()
+        return val if val in ("plan", "timeline", "dense") else "plan"
     if setting == "reasoning_style":
         val = str(value).lower()
         return val if val in ("code", "blockquote", "subtext") else "code"
-    if setting == "tool_preview_length":
+    if setting in {
+        "tool_preview_length",
+        "tool_progress_native_rollover_age_s",
+        "tool_progress_native_rollover_chars",
+        "tool_progress_native_reasoning_chars",
+        "tool_progress_native_output_chars",
+    }:
         try:
-            return int(value)
+            return max(0, int(value))
         except (TypeError, ValueError):
-            return 0
+            return _GLOBAL_DEFAULTS.get(setting, 0)
     return value

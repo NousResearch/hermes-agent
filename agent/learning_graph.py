@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from agent.memory_wiki import build_memory_wiki_index
 
 
 @dataclass
@@ -191,32 +192,34 @@ def density_stats(nodes: dict[str, SkillNode], edges: list[tuple[str, str]]) -> 
 
 
 def _memory_cards() -> list[dict[str, Any]]:
-    """Freeform memory as readable cards.
+    """Structured memory-wiki entries as readable graph cards.
 
-    ``MEMORY.md`` / ``USER.md`` are prose split on bare ``§`` separators; each
-    chunk becomes one card. Every chunk is surfaced — the graph shows everything.
+    The memory wiki parser is the single source for splitting, categorization,
+    keywords, and provenance. ``source`` preserves the legacy graph API
+    (``USER.md`` appears as ``profile``), while ``wikiSource`` exposes the raw
+    memory-wiki source for callers that want exact provenance.
     """
-    base = get_hermes_home() / "memories"
+    index = build_memory_wiki_index()
     cards: list[dict[str, Any]] = []
-    for fname, source in (("MEMORY.md", "memory"), ("USER.md", "profile")):
-        path = base / fname
-        try:
-            text = path.read_text(encoding="utf-8").strip()
-            file_ts = _to_int_ts(path.stat().st_mtime)
-        except OSError:
+    for entry in index.get("entries") or []:
+        if not isinstance(entry, dict):
             continue
-        for chunk_idx, chunk in enumerate(c.strip() for c in text.split("\n§\n")):
-            if not chunk:
-                continue
-            first = chunk.splitlines()[0].strip().lstrip("# ").strip()
-            cards.append(
-                {
-                    "source": source,
-                    "timestamp": file_ts + chunk_idx if file_ts is not None else None,
-                    "title": (first[:80] + "…") if len(first) > 80 else first,
-                    "body": chunk[:1200],
-                }
-            )
+        wiki_source = str(entry.get("source") or "memory")
+        legacy_source = "profile" if wiki_source == "user" else wiki_source
+        body = str(entry.get("text") or "")
+        cards.append(
+            {
+                "id": entry.get("id"),
+                "source": legacy_source,
+                "wikiSource": wiki_source,
+                "timestamp": entry.get("timestamp"),
+                "title": entry.get("title") or "(untitled memory)",
+                "body": body[:1200],
+                "category": entry.get("category") or "memory",
+                "keywords": list(entry.get("keywords") or []),
+                "provenance": dict(entry.get("provenance") or {}),
+            }
+        )
     return cards
 
 
@@ -298,11 +301,14 @@ def build_learning_graph() -> dict[str, Any]:
                 "kind": "memory",
                 "memorySource": card["source"],
                 "timestamp": card.get("timestamp"),
-                "category": "memory",
+                "category": card.get("category", "memory"),
                 "useCount": 0,
                 "state": "active",
                 "createdBy": "memory",
                 "pinned": False,
+                "memoryCategory": card.get("category"),
+                "wikiSource": card.get("wikiSource"),
+                "provenance": card.get("provenance"),
             }
         )
 

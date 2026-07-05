@@ -88,6 +88,28 @@ def test_memory_is_cards_split_on_separator(tmp_path):
     assert any(n["kind"] == "memory" for n in graph["nodes"])
 
 
+def test_memory_cards_use_memory_wiki_categories_and_provenance(tmp_path):
+    home = tmp_path / ".hermes"
+    (home / "memories").mkdir(parents=True)
+    (home / "memories" / "USER.md").write_text(
+        "User prefers concise responses\n§\nRemote host Spark runs on port 8000",
+        encoding="utf-8",
+    )
+    token = set_hermes_home_override(home)
+    try:
+        graph = learning_graph.build_learning_graph()
+    finally:
+        reset_hermes_home_override(token)
+
+    cards = {c["title"]: c for c in graph["memory"]}
+    preference = cards["User prefers concise responses"]
+    assert preference["source"] == "profile"
+    assert preference["wikiSource"] == "user"
+    assert preference["category"] == "preference"
+    assert preference["provenance"]["path"].endswith("USER.md")
+    assert preference["keywords"]
+
+
 def test_malformed_frontmatter_metadata_does_not_crash(tmp_path):
     """``parse_frontmatter``'s malformed-YAML fallback stores every value as a
     string, so ``metadata`` can be a str. The graph must tolerate that instead

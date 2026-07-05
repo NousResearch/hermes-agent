@@ -304,6 +304,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.skillopt import register_cli as register_skillopt_cli
 
 
 def _require_tty(command_name: str) -> None:
@@ -12532,6 +12533,31 @@ def cmd_memory(args):
         from hermes_cli.memory_wiki import run_memory_wiki_index
 
         return run_memory_wiki_index(args)
+    if sub == "lint":
+        import json
+        from agent.memory_benchmarker import lint_memory_entries
+
+        findings = lint_memory_entries()
+        if getattr(args, "json", False):
+            print(json.dumps(findings, ensure_ascii=False, indent=2, sort_keys=True))
+        elif not findings:
+            print("No memory lint findings.")
+        else:
+            for finding in findings:
+                print(f"- {finding['target']}[{finding['index']}]: {', '.join(finding['issues'])} — {finding['text'][:120]}")
+        return 0 if not findings else 1
+    if sub == "bench":
+        import json
+        from pathlib import Path
+        from agent.memory_benchmarker import benchmark_memory_retrieval
+
+        cases = json.loads(Path(getattr(args, "cases")).expanduser().read_text(encoding="utf-8"))
+        report = benchmark_memory_retrieval(cases, k=getattr(args, "k", 3))
+        if getattr(args, "json", False):
+            print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(f"cases={report['cases']} precision@{report['k']}={report['precision_at_k']} recall@{report['k']}={report['recall_at_k']}")
+        return 0
     if sub == "off":
         from hermes_cli.config import load_config, save_config
 
@@ -13044,6 +13070,7 @@ def main():
     # skills command  (parser built in hermes_cli/subcommands/skills.py)
     # =========================================================================
     build_skills_parser(subparsers, cmd_skills=cmd_skills)
+    register_skillopt_cli(subparsers)
 
     # =========================================================================
     # bundles command — skill bundles (alias /<name> for multiple skills)

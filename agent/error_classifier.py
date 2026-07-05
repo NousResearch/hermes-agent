@@ -988,6 +988,34 @@ def _classify_by_status(
             should_fallback=True,
         )
 
+    if status_code == 409:
+        # A model-routing gateway/proxy returns 409 when asked for a model it
+        # won't serve on this endpoint — e.g. a shared-pool router that refuses
+        # to swap to a model outside its compatible pool
+        # ("model_not_allowed_for_remote_chat": "Remote chat is limited to the
+        # compatible shared model pool so it cannot force protected model
+        # swaps."). Falling back to *other* models is futile — the same
+        # endpoint policy rejects every protected swap, so cycling the chain
+        # just burns the retry budget and ends in a cryptic abort. Treat it
+        # like provider_policy_blocked (non-retryable, no fallback) so the real
+        # reason is surfaced. Other 409s (genuine state conflicts) fall through
+        # to the generic non-retryable 4xx handling below.
+        _remote_chat_locked = (
+            "model_not_allowed_for_remote_chat",
+            "remote chat is limited",
+            "compatible shared model pool",
+            "force protected model swaps",
+            "protected model swap",
+        )
+        if error_code.lower() == "model_not_allowed_for_remote_chat" or any(
+            p in error_msg for p in _remote_chat_locked
+        ):
+            return result_fn(
+                FailoverReason.provider_policy_blocked,
+                retryable=False,
+                should_fallback=False,
+            )
+
     if status_code == 400:
         return _classify_400(
             error_msg, error_code, body,

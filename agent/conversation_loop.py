@@ -3692,25 +3692,31 @@ def run_conversation(
 
                 if is_client_error:
                     # Try fallback before aborting — a different provider may
-                    # not have the same issue (rate limit, auth, etc.). Only
-                    # announce the attempt when a fallback chain actually
-                    # exists; otherwise "trying fallback..." is a lie and the
-                    # session looks like it's recovering when it's about to
-                    # abort silently (#35314, #17446).
-                    if agent._has_pending_fallback():
-                        if classified.reason == FailoverReason.content_policy_blocked:
-                            agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
-                        elif classified.reason == FailoverReason.ssl_cert_verification:
-                            agent._buffer_status("⚠️ TLS certificate verification failed — trying fallback...")
-                        else:
-                            agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
-                        active_system_prompt = _sync_failover_system_message(
-                            agent, api_messages, active_system_prompt)
-                        retry_count = 0
-                        compression_attempts = 0
-                        _retry.primary_recovery_attempted = False
-                        continue
+                    # not have the same issue (rate limit, auth, etc.) — UNLESS
+                    # the classifier says fallback won't help (should_fallback
+                    # is False, e.g. a shared-pool/policy block that rejects
+                    # every model swap on this endpoint). In that case cycling
+                    # the chain just burns the budget and ends in a cryptic
+                    # abort, so skip straight to the actionable error.
+                    if classified.should_fallback:
+                        # Only announce the attempt when a fallback chain
+                        # actually exists; otherwise "trying fallback..." is a
+                        # lie and the session looks like it's recovering when
+                        # it's about to abort silently (#35314, #17446).
+                        if agent._has_pending_fallback():
+                            if classified.reason == FailoverReason.content_policy_blocked:
+                                agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
+                            elif classified.reason == FailoverReason.ssl_cert_verification:
+                                agent._buffer_status("⚠️ TLS certificate verification failed — trying fallback...")
+                            else:
+                                agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                        if agent._try_activate_fallback():
+                            active_system_prompt = _sync_failover_system_message(
+                                agent, api_messages, active_system_prompt)
+                            retry_count = 0
+                            compression_attempts = 0
+                            _retry.primary_recovery_attempted = False
+                            continue
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
@@ -3784,6 +3790,8 @@ def run_conversation(
                             agent._vprint(f"{agent.log_prefix}      • Does your account have access to {_model}?", force=True)
                             if base_url_host_matches(str(_base), "openrouter.ai"):
                                 agent._vprint(f"{agent.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
+                    elif classified.reason == FailoverReason.provider_policy_blocked:
+                        agent._vprint(f"{agent.log_prefix}   💡 The endpoint refused model {_model} (HTTP {status_code}): it serves only a fixed/compatible model pool and won't accept a forced swap. Fallback won't help — every model hits the same policy. Use a model this endpoint serves, or point at an endpoint that allows {_model}.", force=True)
                     else:
                         agent._vprint(f"{agent.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                     # Content-policy blocks deserve their own actionable

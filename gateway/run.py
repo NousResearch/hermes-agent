@@ -18213,6 +18213,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 or "0"
             )
             _ti = kwargs.get("task_index")
+            # task_index-based number: used ONLY by the single-card fallback
+            # below. Dedicated child streams number themselves at open time
+            # (inside the FIFO gate) so displayed #N matches thread position.
             number = (_ti + 1) if isinstance(_ti, int) else None
             goal = str(kwargs.get("goal") or preview or "")
             ok = "error" not in str(kwargs.get("status") or "").lower()

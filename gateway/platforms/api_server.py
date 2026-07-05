@@ -1918,7 +1918,12 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
-        """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
+        """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent.
+
+        Supports interactive approval (via /v1/runs/{run_id}/approval) and
+        stop (via /v1/runs/{run_id}/stop) by registering the run in the
+        shared run-tracking dicts used by the /v1/runs endpoints.
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -1944,6 +1949,21 @@ class APIServerAdapter(BasePlatformAdapter):
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
         seq = 0
+        # Track agent for interrupt support (populated by the thread executor)
+        agent_ref: "list[Optional[Any]]" = [None]
+        # Approval session key — isolated per run so concurrent session streams
+        # do not share approval namespaces.
+        approval_session_key = run_id
+
+        # Register in shared run-tracking dicts so /v1/runs/{run_id}/approval
+        # and /v1/runs/{run_id}/stop can find this run.
+        self._run_streams[run_id] = queue
+        self._run_approval_sessions[run_id] = approval_session_key
+        self._set_run_status(
+            run_id,
+            "running",
+            session_id=session_id,
+        )
 
         def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
             nonlocal seq
@@ -1979,20 +1999,105 @@ class APIServerAdapter(BasePlatformAdapter):
                 event_name = event_type.replace("tool.", "tool.")
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        def _approval_notify(approval_data: Dict[str, Any]) -> None:
+            """Callback invoked by the approval framework when the agent needs user approval."""
+            event = dict(approval_data or {})
+            # Redact credentials from the command before it enters the
+            # SSE/API event stream — same egress bug as #48456.
+            if "command" in event:
+                from gateway.run import _redact_approval_command
+
+                event["command"] = _redact_approval_command(event.get("command"))
+            event.update({
+                "event": "approval.request",
+                "run_id": run_id,
+                "session_id": session_id,
+                "message_id": message_id,
+                "timestamp": time.time(),
+                "choices": ["once", "session", "always", "deny"],
+            })
+            self._set_run_status(
+                run_id,
+                "waiting_for_approval",
+                last_event="approval.request",
+            )
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, (event.pop("event"), event))
+            except Exception:
+                pass
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = self._conversation_history_for_session(session_id)
-                result, usage = await self._run_agent(
-                    user_message=user_message,
-                    conversation_history=history,
-                    ephemeral_system_prompt=system_prompt,
-                    session_id=session_id,
-                    stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress,
-                    gateway_session_key=gateway_session_key,
-                )
+
+                # Inline agent creation with approval support (same pattern as
+                # /v1/runs) instead of using _run_agent() which lacks approval hooks.
+                def _run_sync():
+                    from gateway.session_context import clear_session_vars
+                    from tools.approval import (
+                        register_gateway_notify,
+                        reset_current_session_key,
+                        set_current_session_key,
+                        unregister_gateway_notify,
+                    )
+
+                    effective_task_id = session_id or run_id
+                    approval_token = None
+                    session_tokens = []
+                    try:
+                        approval_token = set_current_session_key(approval_session_key)
+                        session_tokens = self._bind_api_server_session(
+                            session_key=approval_session_key,
+                        )
+                        register_gateway_notify(approval_session_key, _approval_notify)
+
+                        agent = self._create_agent(
+                            ephemeral_system_prompt=system_prompt,
+                            session_id=session_id,
+                            stream_delta_callback=_delta,
+                            tool_progress_callback=_tool_progress,
+                            gateway_session_key=gateway_session_key,
+                        )
+                        agent_ref[0] = agent
+                        self._active_run_agents[run_id] = agent
+
+                        result = agent.run_conversation(
+                            user_message=user_message,
+                            conversation_history=history,
+                            task_id=effective_task_id,
+                        )
+                        usage = {
+                            "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                            "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                            "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        }
+                        _eff_sid = getattr(agent, "session_id", session_id)
+                        if isinstance(_eff_sid, str) and _eff_sid:
+                            result["session_id"] = _eff_sid
+                        return result, usage
+                    finally:
+                        try:
+                            unregister_gateway_notify(approval_session_key)
+                        finally:
+                            if approval_token is not None:
+                                try:
+                                    reset_current_session_key(approval_token)
+                                except Exception:
+                                    pass
+                            if session_tokens:
+                                try:
+                                    clear_session_vars(session_tokens)
+                                except Exception:
+                                    pass
+
+                self._inflight_agent_runs += 1
+                try:
+                    result, usage = await loop.run_in_executor(None, _run_sync)
+                finally:
+                    self._inflight_agent_runs -= 1
+
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
@@ -2011,14 +2116,37 @@ class APIServerAdapter(BasePlatformAdapter):
                     "messages": turn_messages,
                     "usage": usage,
                 }))
+            except asyncio.CancelledError:
+                await queue.put(_event_payload("assistant.completed", {
+                    "session_id": session_id,
+                    "message_id": message_id,
+                    "content": "",
+                    "completed": True,
+                    "partial": False,
+                    "interrupted": True,
+                }))
+                raise
             except Exception as exc:
                 logger.exception("[api_server] session chat stream failed")
                 await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
             finally:
+                # Unregister approval notify in case the executor thread was
+                # cancelled while waiting on an approval — this releases
+                # blocked threads immediately.
+                try:
+                    from tools.approval import unregister_gateway_notify
+                    unregister_gateway_notify(approval_session_key)
+                except Exception:
+                    pass
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
+                self._active_run_agents.pop(run_id, None)
+                self._active_run_tasks.pop(run_id, None)
+                self._run_approval_sessions.pop(run_id, None)
+                self._run_streams.pop(run_id, None)
 
         task = asyncio.create_task(_run_and_signal())
+        self._active_run_tasks[run_id] = task
         try:
             self._background_tasks.add(task)
         except TypeError:
@@ -2031,6 +2159,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
             "X-Hermes-Session-Id": session_id,
+            "X-Hermes-Run-Id": run_id,
         }
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key

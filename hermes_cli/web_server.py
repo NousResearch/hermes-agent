@@ -972,6 +972,8 @@ class MoaConfigPayload(BaseModel):
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
     enabled: bool = True
+    save_traces: bool = False
+    trace_dir: str = ""
     profile: Optional[str] = None
 
 
@@ -4464,6 +4466,8 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 raw = {
                     "default_preset": body.default_preset,
                     "active_preset": body.active_preset,
+                    "save_traces": body.save_traces,
+                    "trace_dir": body.trace_dir,
                     "presets": {
                         name: {
                             "reference_models": [slot.dict() for slot in preset.reference_models],
@@ -4484,6 +4488,8 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                     "aggregator_temperature": body.aggregator_temperature,
                     "max_tokens": body.max_tokens,
                     "enabled": body.enabled,
+                    "save_traces": body.save_traces,
+                    "trace_dir": body.trace_dir,
                 }
             normalized = normalize_moa_config(raw)
             cfg["moa"] = normalized

@@ -193,6 +193,9 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "reference_max_tokens": active.get("reference_max_tokens"),
         "fanout": active.get("fanout", "per_iteration"),
         "enabled": active["enabled"],
+        # Top-level MoA config fields (not per-preset).
+        "save_traces": bool(raw.get("save_traces", False)),
+        "trace_dir": str(raw.get("trace_dir", "")),
     }
 
 

@@ -267,6 +267,7 @@ def _probe_single_server(
         _run_on_mcp_loop,
         _connect_server,
         _stop_mcp_loop_if_idle,
+        _parse_boolish,
     )
 
     config = _resolve_mcp_server_config(config)
@@ -287,18 +288,49 @@ def _probe_single_server(
                     desc = desc[:77] + "..."
                 tools_found.append((t.name, desc))
             if details is not None:
+                # Gate the capability probes exactly like runtime utility-tool
+                # registration (tools.mcp_tool._select_utility_schemas):
+                #   1. honour the user's tools.prompts / tools.resources config
+                #   2. only call a family the server actually advertises.
+                # Without this the "Test server" probe fired prompts/list and
+                # resources/list at every server unconditionally — so a server
+                # that rejects those methods (e.g. Unreal's MCP server, which
+                # answers "Call to unknown method 'prompts/list'") logged a hard
+                # error, and setting tools.prompts: false did NOT suppress it.
+                tools_filter = config.get("tools") or {}
+                prompts_enabled = _parse_boolish(
+                    tools_filter.get("prompts"), default=True
+                )
+                resources_enabled = _parse_boolish(
+                    tools_filter.get("resources"), default=True
+                )
+                advertised_caps = getattr(
+                    getattr(server, "initialize_result", None),
+                    "capabilities",
+                    None,
+                )
+
+                def _advertises(cap_attr: str) -> bool:
+                    # When no capability info was captured (legacy fixtures /
+                    # older servers) preserve the old always-try behaviour.
+                    if advertised_caps is None:
+                        return True
+                    return getattr(advertised_caps, cap_attr, None) is not None
+
                 # Capability probes are best-effort: servers without the
                 # capability raise, which just means "0".
-                try:
-                    result = await server.session.list_prompts()
-                    details["prompts"] = len(result.prompts)
-                except Exception:
-                    pass
-                try:
-                    result = await server.session.list_resources()
-                    details["resources"] = len(result.resources)
-                except Exception:
-                    pass
+                if prompts_enabled and _advertises("prompts"):
+                    try:
+                        result = await server.session.list_prompts()
+                        details["prompts"] = len(result.prompts)
+                    except Exception:
+                        pass
+                if resources_enabled and _advertises("resources"):
+                    try:
+                        result = await server.session.list_resources()
+                        details["resources"] = len(result.resources)
+                    except Exception:
+                        pass
         finally:
             await server.shutdown()
 

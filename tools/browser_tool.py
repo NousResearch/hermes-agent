@@ -107,7 +107,7 @@ def _build_browser_env() -> dict:
 try:
     from tools.website_policy import check_website_access
 except Exception:
-    check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
+    check_website_access = lambda url: None
 
 try:
     from tools.url_safety import (
@@ -117,26 +117,26 @@ try:
         sensitive_query_param_name as _sensitive_query_param_name,
     )
 except Exception:
-    _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
-    _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
-    _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
-    _sensitive_query_param_name = lambda url: None  # noqa: E731 — best-effort fallback
+    _is_safe_url = lambda url: False
+    _is_always_blocked_url = lambda url: True
+    _normalize_url_for_request = lambda url: url
+    _sensitive_query_param_name = lambda url: None
 # Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
 # (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
 # and into ``plugins/browser/<vendor>/``. The dispatcher consults the
 # registry; the legacy class names are re-exported below as backward-compat
 # shims for callers that import them from this module.
-from agent.browser_provider import BrowserProvider as CloudBrowserProvider  # noqa: F401  (legacy alias)
-from agent.browser_registry import (  # noqa: F401  (test-patchable surface)
+from agent.browser_provider import BrowserProvider as CloudBrowserProvider
+from agent.browser_registry import (
     get_provider as _registry_get_browser_provider,
 )
-from plugins.browser.browserbase.provider import (  # noqa: F401  (legacy import surface)
+from plugins.browser.browserbase.provider import (
     BrowserbaseBrowserProvider as BrowserbaseProvider,
 )
-from plugins.browser.browser_use.provider import (  # noqa: F401
+from plugins.browser.browser_use.provider import (
     BrowserUseBrowserProvider as BrowserUseProvider,
 )
-from plugins.browser.firecrawl.provider import (  # noqa: F401
+from plugins.browser.firecrawl.provider import (
     FirecrawlBrowserProvider as FirecrawlProvider,
 )
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
@@ -146,7 +146,7 @@ from tools.tool_backend_helpers import normalize_browser_cloud_provider
 try:
     from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
 except ImportError:
-    _is_camofox_mode = lambda: False  # noqa: E731
+    _is_camofox_mode = lambda: False
 
 logger = logging.getLogger(__name__)
 
@@ -543,7 +543,7 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     if not cdp_url:
         return
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
         policy, timeout_s = _get_dialog_policy_config()
         SUPERVISOR_REGISTRY.get_or_start(
@@ -563,7 +563,7 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
 def _stop_cdp_supervisor(task_id: str) -> None:
     """Stop the CDP supervisor for ``task_id`` if one exists. No-op otherwise."""
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
         SUPERVISOR_REGISTRY.stop(task_id)
     except Exception as exc:
@@ -2999,7 +2999,7 @@ def browser_snapshot(
         # supervisor is attached to this task. No-op otherwise. See
         # website/docs/developer-guide/browser-supervisor.md.
         try:
-            from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+            from tools.browser_supervisor import SUPERVISOR_REGISTRY
             _supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
             if _supervisor is not None:
                 _sv_snap = _supervisor.snapshot()
@@ -3571,7 +3571,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     # subprocess path on any error so behaviour is unchanged when no
     # supervisor is running (e.g. plain agent-browser without a CDP backend).
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
         if supervisor is not None:
             sup_result = supervisor.evaluate_runtime(expression)
@@ -4372,7 +4372,7 @@ def cleanup_all_browsers() -> None:
 
     # Tear down CDP supervisors for all tasks so background threads exit.
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
         SUPERVISOR_REGISTRY.stop_all()
     except Exception:
         pass

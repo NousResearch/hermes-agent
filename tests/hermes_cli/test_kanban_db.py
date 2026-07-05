@@ -4766,3 +4766,70 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# --- Bounded budget-exhaustion auto-resume (kanban.budget_resume_limit) --------
+
+def _running_task_with_run(conn, kb):
+    t = kb.create_task(conn, title="ship it", assignee="alice")
+    claimed = kb.claim_task(conn, t, claimer="host:1")
+    assert claimed is not None and claimed.status == "running"
+    return t
+
+
+def _events_of_kind(conn, task_id, kind):
+    return conn.execute(
+        "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, kind),
+    ).fetchone()["n"]
+
+
+def _task_row(conn, task_id):
+    return conn.execute(
+        "SELECT status, consecutive_failures FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+
+
+def test_budget_exhaustion_requeues_within_limit(kanban_home):
+    """First budget exhaustion (< resume limit) → clean requeue to ready,
+    breaker NOT tripped, one budget_resumed event."""
+    with kb.connect() as conn:
+        t = _running_task_with_run(conn, kb)
+        result = kb._handle_budget_exhaustion(
+            conn, t, error="Iteration budget exhausted (90/90)",
+            event_payload_extra={"budget_used": 90, "budget_max": 90},
+        )
+    with kb.connect() as conn:
+        row = _task_row(conn, t)
+        assert result == "resumed"
+        assert row["status"] == "ready"                # released, not blocked
+        assert int(row["consecutive_failures"] or 0) == 0   # breaker untouched
+        assert _events_of_kind(conn, t, "budget_resumed") == 1
+        assert _events_of_kind(conn, t, "gave_up") == 0
+
+
+def test_budget_exhaustion_deadends_after_limit(kanban_home):
+    """Second exhaustion (>= resume limit=1) → routes to the failure/breaker
+    path (counts a real failure), not another free resume."""
+    with kb.connect() as conn:
+        t = _running_task_with_run(conn, kb)
+        assert kb._handle_budget_exhaustion(conn, t, error="e1") == "resumed"
+        # dispatcher re-claims the requeued task → running again with a new run
+        kb.claim_task(conn, t, claimer="host:2")
+        result = kb._handle_budget_exhaustion(conn, t, error="e2")
+    with kb.connect() as conn:
+        row = _task_row(conn, t)
+        assert result == "gave_up"
+        assert int(row["consecutive_failures"] or 0) == 1   # counted failure
+        assert _events_of_kind(conn, t, "budget_resumed") == 1
+
+
+def test_budget_resume_limit_zero_deadends_immediately(kanban_home):
+    """resume_limit=0 → no free resume; first exhaustion hits the failure path."""
+    with kb.connect() as conn:
+        t = _running_task_with_run(conn, kb)
+        result = kb._handle_budget_exhaustion(conn, t, error="e", resume_limit=0)
+    with kb.connect() as conn:
+        assert result == "gave_up"
+        assert _events_of_kind(conn, t, "budget_resumed") == 0
+        assert int(_task_row(conn, t)["consecutive_failures"] or 0) == 1

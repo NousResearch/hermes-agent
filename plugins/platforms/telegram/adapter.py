@@ -2727,9 +2727,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 changed = True
 
             if changed:
-                from utils import atomic_yaml_write
+                from hermes_cli.config import atomic_config_write
 
-                atomic_yaml_write(
+                atomic_config_write(
                     config_path,
                     config,
                     default_flow_style=False,

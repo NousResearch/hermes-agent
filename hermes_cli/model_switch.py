@@ -2398,10 +2398,16 @@ def list_authenticated_providers(
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
+                    model_list_endpoint = str(ep_cfg.get("model_list_endpoint", "") or "").strip()
+                    fetch_kwargs = {
+                        "headers": _extra_headers_from_config(ep_cfg) or None,
+                    }
+                    if model_list_endpoint.startswith("/"):
+                        fetch_kwargs["model_list_endpoint"] = model_list_endpoint
                     live_models = fetch_api_models(
                         api_key,
                         api_url,
-                        headers=_extra_headers_from_config(ep_cfg) or None,
+                        **fetch_kwargs,
                     )
                     if live_models:
                         models_list = live_models
@@ -2553,6 +2559,9 @@ def list_authenticated_providers(
             # silently adopting whichever header set was seen first.
             entry_extra_headers = _extra_headers_from_config(entry)
             headers_identity = tuple(sorted(entry_extra_headers.items()))
+            model_list_endpoint = str(entry.get("model_list_endpoint", "") or "").strip()
+            if not model_list_endpoint.startswith("/"):
+                model_list_endpoint = ""
 
             # Display-name prefix (text before " — " / " - "), used both
             # as a grouping dimension and to derive the row's display name.
@@ -2562,7 +2571,14 @@ def list_authenticated_providers(
                     _display_prefix = _display_prefix.split(sep)[0].strip()
                     break
 
-            group_key = (api_url, credential_identity, api_mode, headers_identity, _display_prefix.lower())
+            group_key = (
+                api_url,
+                credential_identity,
+                api_mode,
+                headers_identity,
+                model_list_endpoint,
+                _display_prefix.lower(),
+            )
             if group_key not in groups:
                 # Reuse the prefix computed above as the row display name;
                 # fall back to the raw name if stripping left it empty.
@@ -2577,6 +2593,7 @@ def list_authenticated_providers(
                     "has_explicit_models": False,
                     "discover_models": discover,
                     "extra_headers": entry_extra_headers,
+                    "model_list_endpoint": model_list_endpoint,
                 }
             else:
                 if api_key and not groups[group_key].get("api_key"):
@@ -2694,10 +2711,16 @@ def list_authenticated_providers(
                 try:
                     from hermes_cli.models import fetch_api_models
 
+                    fetch_kwargs = {
+                        "headers": grp.get("extra_headers") or None,
+                    }
+                    model_list_endpoint = str(grp.get("model_list_endpoint", "") or "").strip()
+                    if model_list_endpoint.startswith("/"):
+                        fetch_kwargs["model_list_endpoint"] = model_list_endpoint
                     live_models = fetch_api_models(
                         api_key,
                         api_url,
-                        headers=grp.get("extra_headers") or None,
+                        **fetch_kwargs,
                     )
                     if live_models:
                         grp["models"] = live_models

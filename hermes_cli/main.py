@@ -3103,6 +3103,7 @@ def select_provider_and_model(args=None):
                 "model": entry.get("model", ""),
                 "models": entry.get("models", {}),
                 "discover_models": entry.get("discover_models", True),
+                "model_list_endpoint": entry.get("model_list_endpoint", ""),
                 "api_mode": entry.get("api_mode", ""),
                 "provider_key": provider_key,
                 "api_key_ref": _lookup_ref(

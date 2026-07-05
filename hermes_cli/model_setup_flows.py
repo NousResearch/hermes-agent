@@ -1476,6 +1476,9 @@ def _model_flow_named_custom(config, provider_info):
         fetch_kwargs = {"timeout": 8.0}
         if api_mode:
             fetch_kwargs["api_mode"] = api_mode
+        model_list_endpoint = str(provider_info.get("model_list_endpoint", "") or "").strip()
+        if model_list_endpoint.startswith("/"):
+            fetch_kwargs["model_list_endpoint"] = model_list_endpoint
         models = fetch_api_models(api_key, base_url, **fetch_kwargs)
         # If the probe came back empty but the operator configured an explicit
         # list, fall back to it rather than forcing manual entry.
@@ -1483,6 +1486,8 @@ def _model_flow_named_custom(config, provider_info):
             models = configured_models
 
     if models:
+        if saved_model and saved_model not in models:
+            models = [saved_model] + list(models)
         default_idx = 0
         if saved_model and saved_model in models:
             default_idx = models.index(saved_model)

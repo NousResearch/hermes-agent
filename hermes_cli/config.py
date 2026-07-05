@@ -996,7 +996,7 @@ def _ensure_hermes_home_managed(home: Path):
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "model": "",
+    "model": "",  # when a dict, accepts provider/default/base_url/api_key/api_mode/model_list_endpoint
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
@@ -5020,7 +5020,7 @@ def _normalize_custom_provider_entry(
         "provider",
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
-        "context_length", "rate_limit_delay",
+        "model_list_endpoint", "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
         "ssl_ca_cert", "ssl_verify",
@@ -5144,6 +5144,10 @@ def _normalize_custom_provider_entry(
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
 
+    model_list_endpoint = str(entry.get("model_list_endpoint", "") or "").strip()
+    if model_list_endpoint.startswith("/"):
+        normalized["model_list_endpoint"] = model_list_endpoint
+
     extra_body = entry.get("extra_body")
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
@@ -5191,6 +5195,7 @@ def _custom_provider_entry_to_provider_config(
         "context_length",
         "rate_limit_delay",
         "discover_models",
+        "model_list_endpoint",
         "extra_body",
         "extra_headers",
         "ssl_ca_cert",
@@ -5559,7 +5564,7 @@ _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
-    "context_length", "rate_limit_delay", "extra_body",
+    "model_list_endpoint", "context_length", "rate_limit_delay", "extra_body",
     "ssl_ca_cert", "ssl_verify",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.

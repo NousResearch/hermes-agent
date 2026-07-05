@@ -8,6 +8,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.parse
@@ -1886,6 +1887,15 @@ def _get_custom_base_url() -> str:
     return str(model_cfg.get("base_url", "")).strip()
 
 
+def _get_custom_model_list_endpoint() -> Optional[str]:
+    """Return the custom model-list endpoint from config.yaml if it is a relative path."""
+    model_cfg = _get_model_config_dict()
+    endpoint = str(model_cfg.get("model_list_endpoint", "") or "").strip()
+    if endpoint and endpoint.startswith("/"):
+        return endpoint
+    return None
+
+
 def _get_model_config_dict() -> dict[str, Any]:
     """Return the main model config mapping, or an empty dict."""
     try:
@@ -2589,7 +2599,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 or os.getenv("OPENROUTER_API_KEY", "")
             )
             api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
-            live = fetch_api_models(api_key, base_url, api_mode=api_mode)
+            custom_model_list_endpoint = _get_custom_model_list_endpoint()
+            live = fetch_api_models(
+                api_key,
+                base_url,
+                api_mode=api_mode,
+                model_list_endpoint=custom_model_list_endpoint,
+            )
             if live:
                 return live
     # Bedrock uses live discovery keyed by the resolved AWS region so that
@@ -3739,6 +3755,7 @@ def probe_api_models(
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
     request_headers: Optional[dict[str, str]] = None,
+    model_list_endpoint: Optional[str] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics.
 
@@ -3766,6 +3783,55 @@ def probe_api_models(
             "suggested_base_url": None,
             "used_fallback": False,
         }
+
+    # If a custom relative model-list endpoint was provided, use it directly
+    # and skip the /v1 fallback dance. Only relative paths starting with "/"
+    # are accepted to prevent accidental absolute URLs / protocol switches.
+    if model_list_endpoint and str(model_list_endpoint).startswith("/"):
+        url = normalized + str(model_list_endpoint)
+        headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+        if api_key and api_mode == "anthropic_messages":
+            headers["x-api-key"] = api_key
+            headers["anthropic-version"] = "2023-06-01"
+        elif api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        if isinstance(request_headers, dict):
+            from hermes_cli.config import normalize_extra_headers
+            headers.update(normalize_extra_headers(request_headers))
+        logging.getLogger(__name__).info("Fetching custom model list from %s", url)
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                raw_models = data.get("data") if isinstance(data, dict) else None
+                if not isinstance(raw_models, list):
+                    raw_models = []
+                    if isinstance(data, dict):
+                        for value in data.values():
+                            if isinstance(value, list):
+                                raw_models.extend(value)
+                return {
+                    "models": [
+                        m["id"]
+                        for m in raw_models
+                        if isinstance(m, dict) and m.get("id")
+                    ],
+                    "probed_url": url,
+                    "resolved_base_url": normalized,
+                    "suggested_base_url": None,
+                    "used_fallback": False,
+                }
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Failed to fetch custom model list from %s: %s", url, exc
+            )
+            return {
+                "models": None,
+                "probed_url": url,
+                "resolved_base_url": normalized,
+                "suggested_base_url": None,
+                "used_fallback": False,
+            }
 
     if normalized.endswith("/v1"):
         alternate_base = normalized[:-3].rstrip("/")
@@ -4047,6 +4113,7 @@ def fetch_api_models(
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
     headers: Optional[dict[str, str]] = None,
+    model_list_endpoint: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
@@ -4059,6 +4126,7 @@ def fetch_api_models(
         timeout=timeout,
         api_mode=api_mode,
         request_headers=headers,
+        model_list_endpoint=model_list_endpoint,
     ).get("models")
 
 

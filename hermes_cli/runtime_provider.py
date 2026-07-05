@@ -311,6 +311,40 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     return normalized_configured == normalized_provider
 
 
+def _looks_like_raw_github_token(token: str) -> bool:
+    """True when ``token`` is a raw GitHub OAuth/PAT token (needs exchange)."""
+    t = (token or "").strip()
+    return t.startswith(("ghu_", "gho_", "ghp_", "ghs_", "github_pat_"))
+
+
+def _exchange_copilot_api_key(api_key: str, base_url: str) -> tuple[str, str]:
+    """Return ``(api_key, base_url)`` with any raw GitHub token exchanged.
+
+    Copilot chat requests must use the short-lived Copilot API token
+    (``tid=...``) obtained from the token-exchange endpoint. A raw ``ghu_``
+    token makes GitHub ignore ``Copilot-Integration-Id: vscode-chat`` and pin
+    the request to integrator ``copilot-language-server``, whose model
+    allow-list is tiny, so Claude/Gemini/most GPT models fail with HTTP 400
+    ``model_not_available_for_integrator``. Non-raw tokens and exchange
+    failures pass through unchanged, so behaviour is never worse than before.
+    """
+    if not _looks_like_raw_github_token(api_key):
+        return api_key, base_url
+    try:
+        from hermes_cli.copilot_auth import get_copilot_api_token
+
+        exchanged, exchanged_base_url = get_copilot_api_token(api_key)
+        if exchanged:
+            api_key = exchanged
+            if exchanged_base_url:
+                base_url = exchanged_base_url.rstrip("/")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "Copilot token exchange during runtime resolution failed: %s", exc
+        )
+    return api_key, base_url
+
+
 def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
@@ -443,7 +477,8 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "chat_completions"
         base_url = _nous_inference_base_url_override() or base_url
     elif provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+        api_key, base_url = _exchange_copilot_api_key(api_key, base_url)
+        api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     elif provider == "azure-foundry":
         # Azure Foundry: read api_mode and base_url from config
@@ -1480,6 +1515,7 @@ def _resolve_explicit_runtime(
 
         api_mode = "chat_completions"
         if provider == "copilot":
+            api_key, base_url = _exchange_copilot_api_key(api_key, base_url)
             api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
         elif provider == "xai":
             api_mode = "codex_responses"

@@ -415,7 +415,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
 
         # Inbound webhook server.
-        app = web.Application()
+        # client_max_size backstops the bounded reader in _handle_webhook —
+        # aiohttp enforces the cap on request.read()/post() paths too
+        # (#58536/#58902/#59180 pattern).
+        app = web.Application(client_max_size=WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_verify)
         app.router.add_post(self._webhook_path, self._handle_webhook)

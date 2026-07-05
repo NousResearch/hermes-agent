@@ -40,9 +40,11 @@ Activation (config ``agent.coding_context``):
 
   * ``auto`` (default) — posture (brief + snapshot) on an interactive coding
     surface sitting in a code workspace (git repo or recognised project root).
-    Prompt-only; toolsets untouched.
+    Prompt-only; toolsets and the skill index untouched.
   * ``focus`` — like ``auto``, but additionally collapses the toolset to the
-    ``coding`` set + enabled MCP servers. Explicit opt-in for a lean schema.
+    ``coding`` set + enabled MCP servers and demotes non-coding skill
+    categories to names-only in the prompt's skill index (no skill is ever
+    hidden). Explicit opt-in for a lean schema.
   * ``on`` — force the posture anywhere (incl. non-workspaces). Prompt-only.
   * ``off`` — disable entirely.
 """
@@ -57,6 +59,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 logger = logging.getLogger("hermes.coding_context")
 
@@ -81,6 +85,59 @@ _PROJECT_MARKERS = (
 # Agent-instruction files surfaced separately from manifests in the snapshot.
 _CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md", ".cursorrules")
 
+# Source-file extensions that make a git repo a *code* workspace even with no
+# manifest. Without this, `git init` on a notes/writing/research folder (a huge
+# non-coding use case) would flip the whole session into the coding posture just
+# for having a `.git`. A manifest still wins on its own (see `_PROJECT_MARKERS`).
+_CODE_EXTENSIONS = frozenset({
+    ".py", ".pyi", ".ipynb", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".rb", ".php", ".c", ".h",
+    ".cc", ".cpp", ".hpp", ".cs", ".swift", ".m", ".mm", ".dart", ".ex", ".exs",
+    ".lua", ".sh", ".bash", ".zsh", ".sql", ".vue", ".svelte", ".r", ".jl",
+    ".hs", ".clj", ".erl", ".pl",
+})
+
+# Dirs never worth scanning for the code check (deps/build/vcs/venv noise).
+_CODE_SCAN_SKIP_DIRS = frozenset({
+    ".git", "node_modules", "venv", ".venv", "__pycache__", "dist", "build",
+    "target", ".next", ".turbo", "vendor",
+})
+
+# Bounded sweep: a code workspace reveals itself in the first handful of entries.
+_CODE_SCAN_MAX_ENTRIES = 500
+
+
+def _has_code_files(root: Path) -> bool:
+    """Cheap, bounded check for source files in a repo's top two levels.
+
+    Lets a git repo of loose scripts (no manifest) still read as a code
+    workspace while a bare notes/writing repo does not. Scans the root and its
+    immediate subdirectories only, capped at ``_CODE_SCAN_MAX_ENTRIES`` stats —
+    a handful of readdirs at session start, not a full walk.
+    """
+    seen = 0
+    stack = [(root, True)]
+    while stack:
+        directory, is_root = stack.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    seen += 1
+                    if seen > _CODE_SCAN_MAX_ENTRIES:
+                        return False
+                    name = entry.name
+                    try:
+                        if entry.is_file():
+                            if os.path.splitext(name)[1].lower() in _CODE_EXTENSIONS:
+                                return True
+                        elif is_root and entry.is_dir() and name not in _CODE_SCAN_SKIP_DIRS and not name.startswith("."):
+                            stack.append((Path(entry.path), False))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return False
+
 # Lockfile → package manager, checked in priority order.
 _PY_LOCKFILES = (("uv.lock", "uv"), ("poetry.lock", "poetry"), ("Pipfile.lock", "pipenv"))
 _JS_LOCKFILES = (
@@ -104,13 +161,19 @@ _GIT_TIMEOUT = 2.5
 # multi-file) and mode="replace" (find-and-swap). We nudge each family toward
 # its native format. Unknown families get nothing (the brief's neutral wording
 # stands). Substrings match the model id; aligned with TOOL_USE_ENFORCEMENT_MODELS.
+#
+# GPT/Codex get V4A for ALL edits, single-file included: in codex-rs,
+# apply_patch (V4A — apply_patch.lark) is the ONLY file editor, no
+# str_replace-style tool exists, and the shipped model prompts say to use
+# apply_patch even "for single file edits" — so a replace-mode nudge would
+# steer those models toward a format their first-party harness never taught
+# them.
 _EDIT_FORMAT_GUIDANCE: dict[str, tuple[tuple[str, ...], str]] = {
     "patch": (
         ("gpt", "codex"),
         "- Edit format: author new files with `write_file`; for edits to "
-        "existing code prefer `patch` with `mode='patch'` (V4A multi-file diff) "
-        "for structured or multi-file changes — it's the diff format you handle "
-        "most reliably. Use `mode='replace'` for a single small swap.",
+        "existing code use `patch` with `mode='patch'` (V4A diff) — including "
+        "single-file edits. It's the edit format you handle most reliably.",
     ),
     "replace": (
         ("claude", "sonnet", "opus", "haiku",
@@ -182,6 +245,10 @@ CODING_AGENT_GUIDANCE = (
     "Verify, and know when to stop:\n"
     "- Use `terminal` for git, builds, tests, and inspection. Run the relevant "
     "tests/linter/build and confirm they pass before claiming the work is done.\n"
+    "- Terminal state persists across calls: current directory and exported "
+    "environment variables carry forward. Activate a virtualenv or export setup "
+    "vars once, then reuse that state instead of re-sourcing it before every "
+    "test command.\n"
     "- Fix root causes, not symptoms: when you find a bug, check sibling call "
     "paths for the same flaw and fix the class, not just the reported site.\n"
     "- When fixing linter/type errors on a file, stop after about three "
@@ -212,11 +279,13 @@ class ContextProfile:
     ``model_hint``   — routing preference key for smart model routing
                        (extension seam; not yet consumed by the router).
     ``memory_policy``— memory namespace/weighting hint (extension seam).
-    ``hidden_skill_categories`` — skill categories pruned from the system-prompt
-                       skill index while this posture is active. Discovery-only:
-                       nothing is disabled — ``skills_list`` still returns the
-                       full catalog and ``skill_view`` loads anything. Deny-list
-                       semantics so unknown/custom categories stay visible.
+    ``compact_skill_categories`` — skill categories DEMOTED to names-only in
+                       the system-prompt skill index under the opt-in ``focus``
+                       mode. Never hidden: every skill name stays visible
+                       (so memory-anchored recall keeps working) — only the
+                       descriptions are dropped to cut index noise. Deny-list
+                       semantics so unknown/custom categories keep full
+                       entries.
     """
 
     name: str
@@ -224,14 +293,14 @@ class ContextProfile:
     guidance: str = ""
     model_hint: Optional[str] = None
     memory_policy: str = "default"
-    hidden_skill_categories: tuple[str, ...] = ()
+    compact_skill_categories: tuple[str, ...] = ()
 
 
-# Skill categories that are clearly not part of a coding workflow. Hidden from
-# the prompt's skill index in the coding posture (deny-list — anything not
-# listed here, incl. custom user categories, stays visible). Coding-adjacent
-# categories (devops, github, mcp, data-science, diagramming, research,
-# security, …) are intentionally absent.
+# Skill categories that are clearly not part of a coding workflow. Demoted to
+# names-only in the prompt's skill index under the opt-in ``focus`` mode only
+# (deny-list — anything not listed here, incl. custom user categories, keeps
+# full entries). Coding-adjacent categories (devops, github, mcp,
+# data-science, diagramming, research, security, …) are intentionally absent.
 _NON_CODING_SKILL_CATEGORIES = (
     "apple", "communication", "cooking", "creative", "email", "finance",
     "gaming", "gifs", "health", "media", "music", "note-taking",
@@ -247,7 +316,7 @@ CODING_PROFILE = ContextProfile(
     guidance=CODING_AGENT_GUIDANCE,
     model_hint="coding",
     memory_policy="project",
-    hidden_skill_categories=_NON_CODING_SKILL_CATEGORIES,
+    compact_skill_categories=_NON_CODING_SKILL_CATEGORIES,
 )
 
 _PROFILES: dict[str, ContextProfile] = {
@@ -282,6 +351,29 @@ def _coding_mode(config: Optional[dict[str, Any]]) -> str:
     if mode in {"off", "false", "no", "0", "never"}:
         return "off"
     return "auto"
+
+
+def _coding_instructions(config: Optional[dict[str, Any]]) -> str:
+    """Standing operator instructions for the coding posture (config).
+
+    ``agent.coding_instructions`` — a string or list of strings appended to the
+    coding brief as an extra stable system block, so a user can pin project-wide
+    coding-workflow rules (e.g. "for UI work don't run tsc/lint until I approve;
+    clean the diff before committing") without editing the shipped brief.
+    Cache-safe: resolved once per session into the stable system-prompt tier,
+    like the rest of the posture.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+    raw = ((config or {}).get("agent", {}) or {}).get("coding_instructions", "")
+    if isinstance(raw, (list, tuple)):
+        return "\n".join(str(item).strip() for item in raw if str(item).strip())
+    return str(raw or "").strip()
 
 
 def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
@@ -354,10 +446,16 @@ def _detect_profile_name(mode: str, platform: str, cwd_str: str) -> str:
     if platform and platform.strip().lower() not in INTERACTIVE_CODING_PLATFORMS:
         return GENERAL_PROFILE.name
     cwd = Path(cwd_str)
+    # A recognized project root (manifest / AGENTS.md / .cursorrules) is a code
+    # workspace on its own — cheap stat checks, no scan.
+    if _marker_root(cwd) is not None:
+        return CODING_PROFILE.name
     git_root = _git_root(cwd)
     if git_root is not None and git_root == _home():
         git_root = None  # dotfiles repo at $HOME — not a code workspace
-    if git_root is not None or _marker_root(cwd) is not None:
+    # A bare git repo only counts when it actually holds code, so `git init` on a
+    # notes/writing/research folder stays in the general posture.
+    if git_root is not None and _has_code_files(git_root):
         return CODING_PROFILE.name
     return GENERAL_PROFILE.name
 
@@ -384,6 +482,9 @@ class RuntimeMode:
     # only to steer edit-format guidance toward the model's family — see
     # ``_edit_format_line``. Fixed for the session, so cache-safe.
     model: Optional[str] = None
+    # Standing operator instructions (``agent.coding_instructions``), appended
+    # as an extra stable system block. Empty unless the user configures it.
+    instructions: str = ""
 
     @property
     def kind(self) -> str:
@@ -430,11 +531,33 @@ class RuntimeMode:
         workspace = build_coding_workspace_block(self.cwd)
         if workspace:
             blocks.append(workspace)
+        # Operator instructions ride their own block so the brief (block 0) stays
+        # byte-stable and cache-keyed independently of user config.
+        if self.instructions:
+            blocks.append(f"Operator instructions (from config):\n{self.instructions}")
         return blocks
 
-    def hidden_skill_categories(self) -> frozenset[str]:
-        """Skill categories to prune from the prompt's skill index (may be empty)."""
-        return frozenset(self.profile.hidden_skill_categories)
+    def compact_skill_categories(self) -> frozenset[str]:
+        """Skill categories to demote to names-only in the prompt's skill index.
+
+        Gated on the opt-in ``focus`` mode, like the toolset collapse: the
+        default posture leaves the skill index untouched. Users who didn't ask
+        for a lean prompt keep full entries for every category — index changes
+        under ``auto`` proved too surprising in practice, even names-only ones
+        (a demoted description is information the model no longer weighs when
+        deciding what to load).
+
+        Demoted — never hidden — even under ``focus``. An earlier revision
+        fully pruned these categories from the index, which caused silent
+        capability loss in a real workflow: agent-created skills are the
+        model's accumulated project memory (server-ops runbooks, learned
+        pitfalls, …), and models do not reliably reach for ``skills_list`` to
+        rediscover what the index stopped showing them. Names-only keeps every
+        skill loadable on recall while still cutting the description noise.
+        """
+        if not self.is_coding or self.config_mode != "focus":
+            return frozenset()
+        return frozenset(self.profile.compact_skill_categories)
 
 
 def resolve_runtime_mode(
@@ -464,6 +587,7 @@ def resolve_runtime_mode(
         cwd=resolved_cwd,
         config_mode=mode,
         model=model,
+        instructions=_coding_instructions(config),
     )
 
 
@@ -512,20 +636,23 @@ def coding_system_blocks(
     ).system_blocks()
 
 
-def coding_hidden_skill_categories(
+def coding_compact_skill_categories(
     *,
     platform: Optional[str] = None,
     cwd: Optional[str | Path] = None,
     config: Optional[dict[str, Any]] = None,
 ) -> frozenset[str]:
-    """Skill categories the active posture prunes from the prompt's skill index.
+    """Skill categories the active posture demotes to names-only in the index.
 
-    Empty outside the coding posture. Discovery-only: hidden skills remain
-    loadable via ``skills_list`` / ``skill_view``.
+    Empty outside the coding posture and outside the opt-in ``focus`` mode —
+    the default posture never touches the skill index. Under ``focus``,
+    demoted — never hidden: every skill name stays in the index and remains
+    loadable via ``skill_view`` / ``skills_list``; only descriptions are
+    dropped.
     """
     return resolve_runtime_mode(
         platform=platform, cwd=cwd, config=config
-    ).hidden_skill_categories()
+    ).compact_skill_categories()
 
 
 def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
@@ -553,12 +680,14 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
 
 
 def _git(cwd: Path, *args: str) -> str:
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         out = subprocess.run(
             ["git", "-C", str(cwd), *args],
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT,
+            **_popen_kwargs,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -600,25 +729,32 @@ def _read_small(path: Path) -> str:
         return ""
 
 
-def _project_facts(root: Path) -> list[str]:
-    """Detected project facts for the workspace snapshot.
+@dataclass(frozen=True)
+class ProjectFacts:
+    """Structured project facts — the model's verify loop, detected once.
 
-    The point is to hand the model its *verify loop* up front — which manifest,
-    which package manager, and the exact test/lint/build commands — instead of
-    making it rediscover them every session. Cheap: stat calls plus reads of a
-    couple of small files; built once at prompt-build time (cache-safe).
+    The same data that feeds the workspace snapshot, exposed structurally so
+    non-prompt consumers (e.g. the desktop verify UI) read it instead of
+    re-detecting and drifting from the prompt.
     """
-    facts: list[str] = []
 
+    manifests: list[str]
+    package_managers: list[str]
+    verify_commands: list[str]
+    context_files: list[str]
+
+
+def detect_project_facts(root: Path) -> ProjectFacts:
+    """Detect manifests, package manager(s), verify commands, and context files.
+
+    Cheap: stat calls plus reads of a couple of small files. The single source
+    of truth for both the prompt snapshot (:func:`_project_facts`) and the
+    gateway's ``project.facts`` — so the UI never re-sniffs verify commands.
+    """
     manifests = [m for m in _PROJECT_MARKERS if m not in _CONTEXT_FILES and (root / m).is_file()]
-    package_managers = [
-        pm for lock, pm in (*_PY_LOCKFILES, *_JS_LOCKFILES) if (root / lock).is_file()
-    ]
-    if manifests:
-        line = f"- Project: {', '.join(manifests[:6])}"
-        if package_managers:
-            line += f" ({'/'.join(dict.fromkeys(package_managers))})"
-        facts.append(line)
+    package_managers = list(
+        dict.fromkeys(pm for lock, pm in (*_PY_LOCKFILES, *_JS_LOCKFILES) if (root / lock).is_file())
+    )
 
     verify: list[str] = []
     if (root / "scripts" / "run_tests.sh").is_file():
@@ -638,15 +774,59 @@ def _project_facts(root: Path) -> list[str]:
             f"make {name}" for name in _VERIFY_TARGETS
             if re.search(rf"^{re.escape(name)}\s*:", makefile, re.MULTILINE)
         )
-    if verify:
-        deduped = list(dict.fromkeys(verify))[:_MAX_VERIFY_COMMANDS]
-        facts.append(f"- Verify: {'; '.join(deduped)}")
 
-    context_files = [c for c in _CONTEXT_FILES if (root / c).is_file()]
-    if context_files:
-        facts.append(f"- Context files: {', '.join(context_files)}")
+    return ProjectFacts(
+        manifests=manifests,
+        package_managers=package_managers,
+        verify_commands=list(dict.fromkeys(verify))[:_MAX_VERIFY_COMMANDS],
+        context_files=[c for c in _CONTEXT_FILES if (root / c).is_file()],
+    )
+
+
+def _project_facts(root: Path) -> list[str]:
+    """Render :func:`detect_project_facts` as workspace-snapshot lines.
+
+    Hands the model its *verify loop* up front — which manifest, which package
+    manager, and the exact test/lint/build commands — instead of making it
+    rediscover them every session. Built once at prompt-build time; the string
+    output must stay byte-stable to preserve the prompt cache.
+    """
+    f = detect_project_facts(root)
+    facts: list[str] = []
+
+    if f.manifests:
+        line = f"- Project: {', '.join(f.manifests[:6])}"
+        if f.package_managers:
+            line += f" ({'/'.join(f.package_managers)})"
+        facts.append(line)
+    if f.verify_commands:
+        facts.append(f"- Verify: {'; '.join(f.verify_commands)}")
+    if f.context_files:
+        facts.append(f"- Context files: {', '.join(f.context_files)}")
 
     return facts
+
+
+def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, Any]]:
+    """Structured project facts for ``cwd`` — ``None`` outside a workspace.
+
+    Same detection the system-prompt snapshot uses (git root, else marker root),
+    exposed for non-prompt consumers (the desktop verify UI) so they never
+    re-derive "are we coding?" or duplicate the verify-command sniffing.
+    """
+    resolved = _resolve_cwd(cwd)
+    root = _git_root(resolved) or _marker_root(resolved)
+    if root is None:
+        return None
+
+    f = detect_project_facts(root)
+    return {
+        "root": str(root),
+        "manifests": f.manifests,
+        "packageManagers": f.package_managers,
+        "verifyCommands": f.verify_commands,
+        "contextFiles": f.context_files,
+    }
 
 
 def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
@@ -680,10 +860,13 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
             lines.append("- Branch: (detached HEAD)")
 
         # Linked worktree: the per-worktree git dir differs from the shared common dir.
+        # We surface the fact that it's a worktree (so the model knows branches/stashes
+        # are shared state) but deliberately do NOT expose the primary tree path —
+        # giving the model a second absolute path causes it to sometimes run commands
+        # in the wrong directory.
         git_dir, common_dir = _git(root, "rev-parse", "--git-dir"), _git(root, "rev-parse", "--git-common-dir")
         if git_dir and common_dir and Path(git_dir).resolve() != Path(common_dir).resolve():
-            main_tree = Path(common_dir).resolve().parent
-            lines.append(f"- Worktree: linked (primary tree at {main_tree})")
+            lines.append("- Worktree: linked (git state shared with primary tree)")
 
         dirty = [f"{n} {label}" for label, n in (
             ("staged", counts["staged"]), ("modified", counts["modified"]),

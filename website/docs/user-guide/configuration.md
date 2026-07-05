@@ -1901,6 +1901,19 @@ Smart mode is particularly useful for reducing approval fatigue — it lets the 
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::
 
+### Deny rules
+
+`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:
+
+```yaml
+approvals:
+  deny:
+    - "git push --force*"
+    - "*curl*|*sh*"
+```
+
+Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](/user-guide/security#user-defined-deny-rules-approvalsdeny) for details.
+
 ## Checkpoints
 
 Automatic filesystem snapshots before destructive file operations. See the [Checkpoints & Rollback](/user-guide/checkpoints-and-rollback) for details.

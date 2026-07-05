@@ -241,6 +241,8 @@ def main():
     parser.add_argument("topic", nargs="+", help="辩论议题")
     parser.add_argument("--mode", choices=["quick", "standard", "deep"],
                         default="standard", help="复杂度 (默认: standard)")
+    parser.add_argument("--lang", choices=["zh", "en"],
+                        default="zh", help="语言 (默认: zh)")
     args = parser.parse_args()
 
     topic = " ".join(args.topic)
@@ -250,6 +252,7 @@ def main():
     output = {
         "topic": topic,
         "mode": mode,
+        "lang": args.lang,
         "rounds": depth["rounds"],
         "round_1": generate_round1(topic, mode),
         "_usage": {

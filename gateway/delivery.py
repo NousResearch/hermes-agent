@@ -400,6 +400,7 @@ class DeliveryRouter:
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         
+
         # Guard: handle oversized cron output.
         #
         # Two independent decisions:
@@ -449,6 +450,7 @@ class DeliveryRouter:
                     len(content), saved_path,
                 )
                 content = content[:visible] + footer
+
         
         # Substrate-level anti-loop guard: drop hallucinated "silence narration"
         # (*(silent)*, 🔇, a bare ".", etc.) before it ever reaches the adapter.

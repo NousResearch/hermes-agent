@@ -22,10 +22,10 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 
 import httpx
@@ -248,6 +248,10 @@ class SignalAdapter(BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
     platform = Platform.SIGNAL
+    MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    # send() chunks long content itself, so gateway delivery must not pre-cut
+    # cron/gateway output at its generic platform limit before Signal can split.
+    splits_long_messages = True
     # Signal has no real edit API for already-sent messages. Mark it explicitly
     # so streaming suppresses the visible cursor instead of leaving a stale tofu
     # square behind in chat clients when edit attempts fail.
@@ -323,6 +327,14 @@ class SignalAdapter(BasePlatformAdapter):
         # drop a still-recent timestamp and miss a genuine reply-to-own-message.
         self._sent_message_timestamps: "OrderedDict[str, None]" = OrderedDict()
         self._max_sent_message_timestamps = 500
+        # Track recently sent text bodies per chat as a second echo guard. Some
+        # signal-cli daemon responses return timestamps in shapes we cannot
+        # reliably match against later sync/data envelopes, and split-account
+        # setups may surface our own outbound text as a fresh inbound message
+        # from the same chat. Scoping by chat and keeping the TTL short avoids
+        # dropping ordinary follow-up messages in other conversations.
+        self._recent_sent_texts: Deque[Tuple[str, str, float]] = deque(maxlen=100)
+        self._recent_sent_text_ttl = float(os.getenv("SIGNAL_ECHO_TEXT_TTL", "30") or "30")
         # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
         # Keep a best-effort mapping so outbound sends can upgrade from a
         # phone number to the corresponding UUID when signal-cli prefers it.
@@ -612,6 +624,13 @@ class SignalAdapter(BasePlatformAdapter):
         mentions = data_message.get("mentions", [])
         if text and mentions:
             text = _render_mentions(text, mentions)
+
+        if text and self._is_recent_sent_text(chat_id, text):
+            logger.info(
+                "Signal: ignoring recent outbound text echo from %s",
+                redact_phone(sender),
+            )
+            return
 
         # Mention filter: in groups, only process messages that @mention the bot account
         if is_group and self.require_mention:
@@ -1054,58 +1073,107 @@ class SignalAdapter(BasePlatformAdapter):
         """Send a text message with native Signal formatting."""
         await self._stop_typing_indicator(chat_id)
 
-        plain_text, text_styles = self._markdown_to_signal(content)
+        markdown_chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
 
-        params: Dict[str, Any] = {
-            "account": self.account,
-            "message": plain_text,
-        }
-
-        if text_styles:
-            if len(text_styles) == 1:
-                params["textStyle"] = text_styles[0]
-            else:
-                params["textStyles"] = text_styles
-
+        base_params: Dict[str, Any] = {"account": self.account}
         if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
+            base_params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            base_params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        logger.info("[Signal] Sending response (%d chars) to %s", len(plain_text), chat_id)
-        result = await self._rpc("send", params)
+        logger.info("[Signal] Sending response (%d chars in %d chunk(s)) to %s", len(content), len(markdown_chunks), chat_id)
+        last_result: Any = None
+        for markdown_chunk in markdown_chunks:
+            plain_text, text_styles = self._markdown_to_signal(markdown_chunk)
+            params: Dict[str, Any] = {**base_params, "message": plain_text}
 
-        if result is not None:
+            # Native Signal body ranges are offsets into one message body. Build
+            # them after splitting so every chunk carries ranges local to its own
+            # text, never stale offsets from the original full response.
+            if text_styles:
+                if len(text_styles) == 1:
+                    params["textStyle"] = text_styles[0]
+                else:
+                    params["textStyles"] = text_styles
+
+            result = await self._rpc("send", params)
+            if result is None:
+                return SendResult(success=False, error="RPC send failed")
             success, err_msg = self._validate_send_result(result)
             if not success:
                 return SendResult(success=False, error=err_msg, raw_response=result)
-            self._track_sent_timestamp(result)
+            last_result = result
+            self._track_sent_timestamp(result, chat_id, plain_text)
+
+        if last_result is not None:
             # Signal has no editable message identifier. Returning None keeps the
             # stream consumer on the non-edit fallback path instead of pretending
             # future edits can remove an in-progress cursor from the chat thread.
             return SendResult(success=True, message_id=None)
         return SendResult(success=False, error="RPC send failed")
 
-    def _track_sent_timestamp(self, rpc_result) -> None:
-        """Record outbound message timestamp for echo-back filtering."""
-        ts = rpc_result.get("timestamp") if isinstance(rpc_result, dict) else None
-        if ts:
+    def _normalize_echo_text(self, text: Optional[str]) -> str:
+        """Normalize text for exact outbound echo detection."""
+        if not text:
+            return ""
+        return "\n".join(line.rstrip() for line in str(text).strip().splitlines())
+
+    def _track_sent_text(self, chat_id: str, text: Optional[str]) -> None:
+        normalized = self._normalize_echo_text(text)
+        if normalized:
+            self._recent_sent_texts.append((str(chat_id), normalized, time.monotonic()))
+
+    def _is_recent_sent_text(self, chat_id: str, text: Optional[str]) -> bool:
+        normalized = self._normalize_echo_text(text)
+        if not normalized:
+            return False
+        chat_key = str(chat_id)
+        now = time.monotonic()
+        kept: Deque[Tuple[str, str, float]] = deque(maxlen=self._recent_sent_texts.maxlen)
+        matched = False
+        for sent_chat_id, sent_text, sent_at in self._recent_sent_texts:
+            if now - sent_at <= self._recent_sent_text_ttl:
+                kept.append((sent_chat_id, sent_text, sent_at))
+                if sent_chat_id == chat_key and sent_text == normalized:
+                    matched = True
+        self._recent_sent_texts = kept
+        return matched
+
+    def _iter_rpc_timestamps(self, rpc_result):
+        """Yield timestamps from signal-cli RPC result variants."""
+        if isinstance(rpc_result, dict):
+            ts = rpc_result.get("timestamp")
+            if ts:
+                yield ts
+            for key in ("results", "result"):
+                value = rpc_result.get(key)
+                if isinstance(value, (list, tuple)):
+                    for item in value:
+                        yield from self._iter_rpc_timestamps(item)
+                elif isinstance(value, dict):
+                    yield from self._iter_rpc_timestamps(value)
+        elif isinstance(rpc_result, (list, tuple)):
+            for item in rpc_result:
+                yield from self._iter_rpc_timestamps(item)
+
+    def _track_sent_timestamp(self, rpc_result, chat_id: Optional[str] = None, text: Optional[str] = None) -> None:
+        """Record outbound message timestamp/text for echo-back filtering."""
+        now = time.monotonic()
+        for ts in self._iter_rpc_timestamps(rpc_result):
             self._remember_sent_message_timestamp(ts)
-            now = time.monotonic()
-            # Re-insert to mark as most-recently-used.
             self._recent_sent_timestamps.pop(ts, None)
             self._recent_sent_timestamps[ts] = now
-            # Drop entries older than TTL first (cheap O(k) where k=expired).
-            cutoff = now - self._recent_sent_ttl_seconds
-            while self._recent_sent_timestamps:
-                oldest_ts, oldest_at = next(iter(self._recent_sent_timestamps.items()))
-                if oldest_at < cutoff:
-                    self._recent_sent_timestamps.popitem(last=False)
-                else:
-                    break
-            # Hard cap as a last-resort guard against runaway producers.
-            while len(self._recent_sent_timestamps) > self._max_recent_timestamps:
+        cutoff = now - self._recent_sent_ttl_seconds
+        while self._recent_sent_timestamps:
+            oldest_ts, oldest_at = next(iter(self._recent_sent_timestamps.items()))
+            if oldest_at < cutoff:
                 self._recent_sent_timestamps.popitem(last=False)
+            else:
+                break
+        while len(self._recent_sent_timestamps) > self._max_recent_timestamps:
+            self._recent_sent_timestamps.popitem(last=False)
+        if chat_id is not None:
+            self._track_sent_text(chat_id, text)
 
     def _consume_sent_timestamp(self, ts) -> bool:
         """Pop a timestamp if it matches one we sent. Returns True on echo."""
@@ -1277,7 +1345,7 @@ class SignalAdapter(BasePlatformAdapter):
                     if result is not None:
                         success, err_msg = self._validate_send_result(result)
                         if success:
-                            self._track_sent_timestamp(result)
+                            self._track_sent_timestamp(result, chat_id, params.get("message"))
                             await scheduler.report_rpc_duration(_rpc_duration, n)
                             logger.info(
                                 "Signal batch %d/%d: %d attachments sent in %.1fs "
@@ -1403,7 +1471,7 @@ class SignalAdapter(BasePlatformAdapter):
             success, err_msg = self._validate_send_result(result)
             if not success:
                 return SendResult(success=False, error=err_msg, raw_response=result)
-            self._track_sent_timestamp(result)
+            self._track_sent_timestamp(result, chat_id, params.get("message"))
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send with attachment failed")
 
@@ -1445,7 +1513,7 @@ class SignalAdapter(BasePlatformAdapter):
             success, err_msg = self._validate_send_result(result)
             if not success:
                 return SendResult(success=False, error=err_msg, raw_response=result)
-            self._track_sent_timestamp(result)
+            self._track_sent_timestamp(result, chat_id, params.get("message"))
             return SendResult(success=True)
         return SendResult(success=False, error=f"RPC send {media_label.lower()} failed")
 
@@ -1637,7 +1705,19 @@ class SignalAdapter(BasePlatformAdapter):
         if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
             return False
         if event is not None:
-            sender = getattr(getattr(event, "source", None), "user_id", None)
+            source = getattr(event, "source", None)
+            sender = getattr(source, "user_id", None)
+            chat_type = getattr(source, "chat_type", None)
+            if chat_type in {"group", "forum", "channel"}:
+                chat_id = getattr(source, "chat_id", None)
+                chat_id_alt = getattr(source, "chat_id_alt", None)
+                allowed_group_ids = set(self.group_allow_from)
+                source_group_ids = {gid for gid in (chat_id, chat_id_alt) if gid}
+                if chat_id_alt:
+                    source_group_ids.add(f"group:{chat_id_alt}")
+                if "*" in allowed_group_ids or (allowed_group_ids & source_group_ids):
+                    return True
+                return False
             if sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from:
                 return False
         return True

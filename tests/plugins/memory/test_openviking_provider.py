@@ -1919,6 +1919,47 @@ def test_viking_client_retries_with_tenant_headers_for_trusted_mode(monkeypatch)
     assert captured_headers[1]["X-OpenViking-User"] == "usr"
 
 
+def test_viking_client_does_not_retry_root_tenant_error_as_trusted_mode(monkeypatch):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="usr",
+        agent="hermes",
+    )
+    captured_headers = []
+
+    def capture_post(url, **kwargs):
+        captured_headers.append(kwargs.get("headers") or {})
+        if len(captured_headers) == 1:
+            return SimpleNamespace(
+                status_code=400,
+                text="",
+                json=lambda: {
+                    "error": {
+                        "code": "INVALID_ARGUMENT",
+                        "message": "ROOT requests to tenant-scoped APIs must include X-OpenViking-Account and X-OpenViking-User headers.",
+                    },
+                },
+                raise_for_status=lambda: None,
+            )
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "result": {"total": 0}},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(client._httpx, "post", capture_post)
+
+    with pytest.raises(openviking_module._OpenVikingHTTPError, match="ROOT requests"):
+        client.post("/api/v1/search/search", {"query": "status"})
+
+    assert len(captured_headers) == 1
+    assert "X-OpenViking-Account" not in captured_headers[0]
+    assert "X-OpenViking-User" not in captured_headers[0]
+
+
 def test_viking_client_health_sends_auth_headers(monkeypatch):
     _clear_openviking_tenant_env(monkeypatch)
     client = _VikingClient(

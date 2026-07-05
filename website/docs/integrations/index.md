@@ -26,7 +26,7 @@ Hermes supports multiple AI inference providers out of the box. Use `hermes mode
 
 ## Web Search Backends
 
-The `web_search` and `web_extract` tools support eight backend providers, configured via `config.yaml` or `hermes tools`:
+The `web_search` and `web_extract` tools support nine backend providers, configured via `config.yaml` or `hermes tools`:
 
 | Backend | Env Var | Search | Extract | Crawl |
 |---------|---------|--------|---------|-------|
@@ -38,12 +38,13 @@ The `web_search` and `web_extract` tools support eight backend providers, config
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
 | **xAI** | `XAI_API_KEY` | ✔ | — | — |
+| **Yandex Search** | `YANDEX_SEARCH_API_KEY` + `YANDEX_FOLDER_ID` | ✔ | — | — |
 
 Quick setup example:
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: firecrawl    # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai | yandex
 ```
 
 If `web.backend` is not set, the backend is auto-detected from whichever API key is available. Self-hosted Firecrawl is also supported via `FIRECRAWL_API_URL`.

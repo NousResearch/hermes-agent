@@ -1,0 +1,10 @@
+name: web-yandex
+version: 1.0.0
+description: "Yandex Search API — web search via Yandex Cloud's WebSearch.Search v2 REST API. Requires YANDEX_SEARCH_API_KEY and YANDEX_FOLDER_ID (sign up at https://yandex.cloud/en/services/search-api)."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - yandex
+requires_env:
+  - YANDEX_SEARCH_API_KEY
+  - YANDEX_FOLDER_ID

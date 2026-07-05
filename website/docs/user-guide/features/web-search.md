@@ -26,8 +26,9 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | Paid |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth login xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
+| **Yandex Search** | `YANDEX_SEARCH_API_KEY` + `YANDEX_FOLDER_ID` | ✔ | — | Paid (Yandex Cloud) |
 
-Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
+Brave Search, DDGS, xAI, and Yandex Search are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -337,6 +338,39 @@ Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-
 
 ---
 
+### Yandex Search
+
+Search via Yandex Cloud's `WebSearch.Search` REST API — good coverage for Russian-language and CIS-region queries.
+
+```bash
+# ~/.hermes/.env
+YANDEX_SEARCH_API_KEY=your-api-key-here
+YANDEX_FOLDER_ID=your-folder-id-here
+```
+
+Get an API key and folder ID at [yandex.cloud/en/services/search-api](https://yandex.cloud/en/services/search-api). Both variables are required — the API key authenticates the request, and the folder ID identifies the Yandex Cloud folder that owns the billing account.
+
+Then select Yandex Search as the search backend:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  backend: "yandex"
+```
+
+**Optional knobs:**
+
+```bash
+# ~/.hermes/.env
+YANDEX_SEARCH_REGION=225           # optional — Yandex geo region ID (default: Yandex's own geo-detection)
+YANDEX_SEARCH_LANG=LOCALIZATION_EN # optional — result localization (default: Yandex's own default)
+YANDEX_SEARCH_TYPE=SEARCH_TYPE_RU  # optional — search domain (default: SEARCH_TYPE_RU)
+```
+
+**Search-only** — pair with Firecrawl / Tavily / Exa / Parallel if you also need `web_extract`. Not included in [auto-detection](#auto-detection) since it requires two credentials (API key + folder ID); set `web.backend: "yandex"` explicitly.
+
+---
+
 ## Configuration
 
 ### Single backend
@@ -346,7 +380,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai | yandex
 ```
 
 ### Per-capability configuration
@@ -380,6 +414,8 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `SEARXNG_URL` | searxng |
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
+
+Yandex Search is also **not** in the auto-detection chain — it requires two credentials (`YANDEX_SEARCH_API_KEY` + `YANDEX_FOLDER_ID`) rather than the single-variable pattern the auto-detect cascade checks. Opt in explicitly with `web.backend: "yandex"`.
 
 ---
 

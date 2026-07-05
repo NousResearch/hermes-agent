@@ -207,3 +207,79 @@ class TestOSSBackend:
         backend, _ = self._make()
         result = backend.delete("m1")
         assert result == {"result": "Memory deleted.", "memory_id": "m1"}
+
+
+class _FakeCollectionInfo:
+    """Minimal stand-in for qdrant_client.models.CollectionInfo."""
+    def __init__(self, dims: int):
+        class _Vectors:
+            def __init__(self, size):
+                self.size = size
+        self.config = type("C", (), {"params": type("P", (), {"vectors": _Vectors(dims)})()})()
+
+
+class _FakeQdrantClient:
+    """Fake QdrantClient that tracks calls — no file locks."""
+
+    def __init__(self, *, existing_dims: int | None = 8, collection_name: str = "mem0"):
+        self._existing_dims = existing_dims
+        self._collection_name = collection_name
+        self.deleted = False
+
+    def collection_exists(self, name: str) -> bool:
+        return self._existing_dims is not None and name == self._collection_name
+
+    def get_collection(self, name: str):
+        return _FakeCollectionInfo(self._existing_dims)
+
+    def delete_collection(self, name: str):
+        self.deleted = True
+
+
+class TestOSSBackendRecreateQdrantDims:
+    """Verify _recreate_qdrant_if_dims_changed uses Memory's own client."""
+
+    def _make_backend(self, client: _FakeQdrantClient, collection_name: str = "mem0"):
+        backend = OSSBackend.__new__(OSSBackend)
+        # Wire up a fake Memory with a fake vector_store that has the client.
+        memory = type("M", (), {
+            "vector_store": type("VS", (), {"client": client})(),
+            "collection_name": collection_name,
+        })()
+        backend._memory = memory
+        return backend
+
+    def test_dims_match_no_delete(self):
+        """When collection dims match expected, nothing happens."""
+        client = _FakeQdrantClient(existing_dims=384)
+        backend = self._make_backend(client)
+        backend._recreate_qdrant_if_dims_changed(384)
+        assert not client.deleted
+
+    def test_dims_mismatch_deletes_collection(self):
+        """When collection dims differ, the collection is deleted."""
+        client = _FakeQdrantClient(existing_dims=128)
+        backend = self._make_backend(client)
+        backend._recreate_qdrant_if_dims_changed(384)
+        assert client.deleted
+
+    def test_missing_collection_noop(self):
+        """When collection doesn't exist, nothing happens."""
+        client = _FakeQdrantClient(existing_dims=None)
+        backend = self._make_backend(client)
+        backend._recreate_qdrant_if_dims_changed(384)
+        assert not client.deleted
+
+    def test_no_vector_store_client_noop(self):
+        """When Memory has no vector_store.client, nothing happens."""
+        backend = OSSBackend.__new__(OSSBackend)
+        backend._memory = type("M", (), {"vector_store": None, "collection_name": "mem0"})()
+        backend._recreate_qdrant_if_dims_changed(384)
+        # Should not raise
+
+    def test_uses_memory_own_client(self):
+        """Verify the method accesses Memory's vector_store.client, not a new QdrantClient."""
+        client = _FakeQdrantClient(existing_dims=128)
+        backend = self._make_backend(client)
+        backend._recreate_qdrant_if_dims_changed(384)
+        assert client.deleted  # confirms it used THIS client

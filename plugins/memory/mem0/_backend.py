@@ -111,9 +111,11 @@ class OSSBackend(Mem0Backend):
             dims = KNOWN_DIMS.get(model)
         if dims:
             vs_config["embedding_model_dims"] = dims
-            self._recreate_collection_if_dims_changed(
-                vector_store.get("provider", "qdrant"), vs_config, dims,
-            )
+
+        provider = vector_store.get("provider", "qdrant")
+        # pgvector: check dims before Memory creation (no file lock issue).
+        if dims and provider == "pgvector":
+            self._recreate_collection_if_dims_changed(provider, vs_config, dims)
 
         vector_store["config"] = vs_config
 
@@ -124,6 +126,15 @@ class OSSBackend(Mem0Backend):
             "version": "v1.1",
         }
         self._memory = Memory.from_config(config)
+
+        # Qdrant: check dims AFTER Memory creation, reusing its own
+        # vector_store client.  The previous approach created a separate
+        # temporary QdrantClient(path=...) which holds an exclusive file
+        # lock; on Windows the lock may not release before Memory's own
+        # QdrantClient opens the same path, causing "Storage folder is
+        # already accessed by another instance".
+        if dims and provider == "qdrant":
+            self._recreate_qdrant_if_dims_changed(dims)
 
     @staticmethod
     def _recreate_collection_if_dims_changed(provider: str, vs_config: dict, expected_dims: int) -> None:
@@ -188,6 +199,32 @@ class OSSBackend(Mem0Backend):
                     conn.close()
             except Exception:
                 pass
+
+    def _recreate_qdrant_if_dims_changed(self, expected_dims: int) -> None:
+        """Recreate Qdrant collection if embedding dimensions changed.
+
+        Uses Memory's own vector_store.client instead of creating a separate
+        QdrantClient — avoids Windows file-lock conflicts (#58705).
+        """
+        try:
+            vs = getattr(self._memory, "vector_store", None)
+            client = getattr(vs, "client", None)
+            if client is None:
+                return
+            collection_name = self._memory.collection_name
+            if not client.collection_exists(collection_name):
+                return
+            info = client.get_collection(collection_name)
+            vectors = info.config.params.vectors
+            if isinstance(vectors, dict):
+                first = next(iter(vectors.values()), None)
+                current_dims = first.size if first else None
+            else:
+                current_dims = getattr(vectors, "size", None)
+            if current_dims is not None and current_dims != expected_dims:
+                client.delete_collection(collection_name)
+        except Exception:
+            pass
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
         response = self._memory.search(query, filters=filters, top_k=top_k)

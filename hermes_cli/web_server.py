@@ -6408,7 +6408,7 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
 
 
 def _anthropic_oauth_status() -> Dict[str, Any]:
-    """Status for the "Anthropic API Key" catalog entry.
+    """Status for the "Anthropic Account" catalog entry.
 
     Two sources, in priority order:
     1. ``~/.hermes/.anthropic_oauth.json`` — Hermes-managed PKCE flow (what
@@ -6592,12 +6592,12 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "docs_url": "https://docs.github.com/en/copilot",
         "status_fn": _copilot_acp_status,
     },
-    # ── Anthropic / Claude entries sit at the bottom: the API-key path
-    # first, then the subscription OAuth path (which only works with extra
-    # usage credits on top of a Claude Max plan — see disclaimer in name).
+    # ── Anthropic / Claude entries sit at the bottom: the browser-OAuth
+    # (Claude Pro/Max subscription) path first, then the API-key paste
+    # path — see disclaimer in name.
     {
         "id": "anthropic",
-        "name": "Anthropic API Key",
+        "name": "Anthropic Account",
         "flow": "pkce",
         "cli_command": "hermes auth add anthropic",
         "docs_url": "https://docs.claude.com/en/api/getting-started",

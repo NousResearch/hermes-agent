@@ -1768,6 +1768,16 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        # Drop the per-session delegate budget entry so the module-level
+        # dict in tools.delegate_tool does not grow unbounded in long-
+        # running gateway processes. Lazy import + try/except keeps this
+        # layer decoupled from the tools layer.
+        try:
+            from tools.delegate_tool import cleanup_session_budget
+            for sid in removed_ids:
+                cleanup_session_budget(sid)
+        except Exception:
+            pass
         return bool(deleted)
 
     def discard_unadmitted_session(self, session_id: str) -> bool:
@@ -1920,6 +1930,13 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        # Drop per-session delegate budget entries for all deleted sessions.
+        try:
+            from tools.delegate_tool import cleanup_session_budget
+            for sid in removed_ids:
+                cleanup_session_budget(sid)
+        except Exception:
+            pass
         return count
 
     # Shared by count_empty_sessions / delete_empty_sessions so badge and sweep agree. message_count
@@ -1964,6 +1981,13 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        # Drop per-session delegate budget entries for all deleted sessions.
+        try:
+            from tools.delegate_tool import cleanup_session_budget
+            for sid in removed_ids:
+                cleanup_session_budget(sid)
+        except Exception:
+            pass
         return count
 
     def archive_sessions(

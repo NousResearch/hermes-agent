@@ -407,6 +407,13 @@ class SessionMaintenanceMixin:
             self._remove_session_files(sessions_dir, sid)
         if deleted_ids is not None:
             deleted_ids.extend(removed_ids)
+        # Drop per-session delegate budget entries for all pruned sessions.
+        try:
+            from tools.delegate_tool import cleanup_session_budget
+            for sid in removed_ids:
+                cleanup_session_budget(sid)
+        except Exception:
+            pass
         return count
 
     def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:

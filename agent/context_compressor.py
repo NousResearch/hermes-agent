@@ -574,7 +574,13 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
     if tool_name == "write_file":
         path = args.get("path", "?")
-        written_lines = args.get("content", "").count("\n") + 1 if args.get("content") else "?"
+        raw_content = args.get("content")
+        if isinstance(raw_content, str):
+            written_lines = raw_content.count("\n") + 1 if raw_content else "?"
+        elif isinstance(raw_content, (dict, list)):
+            written_lines = f"{type(raw_content).__name__}"
+        else:
+            written_lines = "?"
         return f"[write_file] wrote to {path} ({written_lines} lines)"
 
     if tool_name == "search_files":

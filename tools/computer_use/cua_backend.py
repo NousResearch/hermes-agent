@@ -576,6 +576,10 @@ class _CuaDriverSession:
         # primitive belongs to the correct loop.
         self._shutdown_event = asyncio.Event()
         _t0 = _time.monotonic()
+        # Phase marker surfaced by the ready-timeout error (issue #57025):
+        # when startup wedges, the caller reports HOW FAR it got instead of
+        # an opaque "never reached ready".
+        self._startup_phase = "binary-check"
 
         try:
             if not cua_driver_binary_available():
@@ -584,6 +588,7 @@ class _CuaDriverSession:
             # Surface 8: ask cua-driver itself which subcommand spawns
             # the MCP server, instead of hardcoding ["mcp"]. Falls back
             # transparently for older drivers / any discovery failure.
+            self._startup_phase = "manifest-discovery"
             command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(
@@ -595,14 +600,17 @@ class _CuaDriverSession:
             )
 
             async with stdio_client(params) as (read, write):
+                self._startup_phase = "mcp-initialize"
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     _t_init = _time.monotonic()
                     # Populate capabilities + capability_version BEFORE
                     # exposing the session to callers, so the first
                     # tool call already sees them.
+                    self._startup_phase = "capability-discovery"
                     await self._populate_capabilities(session)
                     self._session = session
+                    self._startup_phase = "ready"
                     self._ready_event.set()
                     logger.info(
                         "cua-driver session ready in %.1fs "
@@ -691,7 +699,17 @@ class _CuaDriverSession:
         if not self._ready_event.wait(timeout=30.0):
             # Best-effort: signal shutdown if the future is still alive.
             self._signal_shutdown_locked()
-            raise RuntimeError("cua-driver session never reached ready (timeout 30s)")
+            # Surface which startup phase wedged (issue #57025) — "doctor
+            # passes but the wrapper times out" reports are undiagnosable
+            # from a bare "never reached ready".
+            phase = getattr(self, "_startup_phase", "unknown")
+            from hermes_constants import display_hermes_home
+            raise RuntimeError(
+                "cua-driver session never reached ready (timeout 30s; "
+                f"stuck in phase: {phase}). "
+                "Run `hermes computer-use doctor` and check "
+                f"{display_hermes_home()}/logs/agent.log for the phase timings."
+            )
         # If setup failed, the lifecycle coroutine set _setup_error
         # before setting _ready_event. Re-raise it on the caller's thread.
         if self._setup_error is not None:

@@ -27,6 +27,163 @@ def load_relay_status():
     return load_module("relay_status", "relay-status.py")
 
 
+def load_relay_suggest():
+    # โหลดแบบ importlib เหมือน relay-call เพราะชื่อไฟล์มีขีดกลาง import ตรงไม่ได้
+    path = ROOT / "relay-suggest.py"
+    assert path.exists(), "ต้องมี scripts/ai-relay/relay-suggest.py"
+    return load_module("relay_suggest", "relay-suggest.py")
+
+
+def _suggest_reg():
+    return {
+        "codex": {
+            "enabled": True,
+            "vendor": "openai",
+            "roles": ["coder", "reviewer"],
+            "good_for": ["backend", "logic", "security"],
+            "cost_tier": 3,
+            "login_hint": "codex login",
+        },
+        "grok": {
+            "enabled": True,
+            "vendor": "xai",
+            "roles": ["coder", "reviewer"],
+            "good_for": ["fast", "bulk", "repetitive"],
+            "cost_tier": 2,
+            "login_hint": "grok login --device-auth",
+        },
+        "gemini": {
+            "enabled": True,
+            "vendor": "google",
+            "roles": ["coder"],
+            "good_for": ["ui", "large-context"],
+            "cost_tier": 2,
+            "login_hint": "gemini auth login",
+        },
+        "fable": {
+            "enabled": True,
+            "vendor": "anthropic",
+            "roles": ["brain"],
+            "good_for": ["hard-design"],
+            "cost_tier": 5,
+            "login_hint": "claude login",
+        },
+    }
+
+
+def test_relay_suggest_backend_picks_codex_and_cross_vendor_reviewer():
+    relay_suggest = load_relay_suggest()
+    status_map = {
+        "codex": {"ready": True},
+        "grok": {"ready": True},
+        "gemini": {"ready": False},
+        "fable": {"ready": True},
+    }
+
+    out = relay_suggest.suggest("backend", _suggest_reg(), status_map)
+
+    assert out["coder"] == "codex"
+    assert out["reviewer"] == "grok"
+    assert out["warnings"] == []
+    assert "codex" in " ".join(out["reasons"])
+    assert "grok" in " ".join(out["reasons"])
+
+
+def test_relay_suggest_fast_picks_grok():
+    relay_suggest = load_relay_suggest()
+    status_map = {
+        "codex": {"ready": True},
+        "grok": {"ready": True},
+        "gemini": {"ready": True},
+    }
+
+    out = relay_suggest.suggest("fast", _suggest_reg(), status_map)
+
+    assert out["coder"] == "grok"
+    assert out["fallbacks"][0] == "gemini"
+
+
+def test_relay_suggest_keeps_coder_when_cross_vendor_reviewer_missing():
+    relay_suggest = load_relay_suggest()
+    reg = _suggest_reg()
+    status_map = {
+        "codex": {"ready": True},
+        "grok": {"ready": False},
+        "gemini": {"ready": False},
+    }
+
+    out = relay_suggest.suggest("backend", reg, status_map)
+
+    assert out["coder"] == "codex"
+    assert out["reviewer"] is None
+    assert any("ไม่มีคนตรวจคนละค่าย" in warning for warning in out["warnings"])
+    assert any("grok login --device-auth" in warning for warning in out["warnings"])
+
+
+def test_relay_suggest_no_ready_coder_warns_with_login_hint():
+    relay_suggest = load_relay_suggest()
+    status_map = {
+        "codex": {"ready": False},
+        "grok": {"ready": False},
+        "gemini": {"ready": False},
+    }
+
+    out = relay_suggest.suggest("backend", _suggest_reg(), status_map)
+
+    assert out["coder"] is None
+    assert out["reviewer"] is None
+    assert any("codex login" in warning for warning in out["warnings"])
+
+
+def test_relay_suggest_right_fit_beats_cheap_wrong_fit():
+    # GPT-5 fix: ตัวตรงงานแต่แพง ต้องชนะตัวถูกแต่ไม่ตรงงาน (สูตรคะแนนเดิมเลือกผิดได้)
+    relay_suggest = load_relay_suggest()
+    reg = {
+        "pricey_fit": {"enabled": True, "vendor": "a", "roles": ["coder"],
+                       "good_for": ["backend"], "cost_tier": 5, "login_hint": "x"},
+        "cheap_wrong": {"enabled": True, "vendor": "b", "roles": ["coder"],
+                        "good_for": ["ui"], "cost_tier": 1, "login_hint": "y"},
+    }
+    status_map = {"pricey_fit": {"ready": True}, "cheap_wrong": {"ready": True}}
+    out = relay_suggest.suggest("backend", reg, status_map)
+    assert out["coder"] == "pricey_fit"          # ตรงงานชนะ แม้แพงกว่า
+    assert out["fallbacks"] == ["cheap_wrong"]
+
+
+def test_relay_suggest_missing_status_is_not_ready_fail_closed():
+    # tool ในทะเบียนแต่ไม่มีสถานะสด → ต้องถือว่าไม่พร้อม (ไม่เดาว่าพร้อม)
+    relay_suggest = load_relay_suggest()
+    reg = {"codex": {"enabled": True, "vendor": "openai", "roles": ["coder"],
+                     "good_for": ["backend"], "cost_tier": 3, "login_hint": "codex login"}}
+    out = relay_suggest.suggest("backend", reg, {})   # status_map ว่าง
+    assert out["coder"] is None
+    assert any("codex login" in w for w in out["warnings"])
+
+
+def test_relay_suggest_reviewer_must_be_different_vendor_from_coder():
+    relay_suggest = load_relay_suggest()
+    reg = _suggest_reg()
+    reg["openai-reviewer"] = {
+        "enabled": True,
+        "vendor": "openai",
+        "roles": ["reviewer"],
+        "good_for": ["review"],
+        "cost_tier": 1,
+        "login_hint": "openai reviewer login",
+    }
+    status_map = {
+        "codex": {"ready": True},
+        "openai-reviewer": {"ready": True},
+        "grok": {"ready": True},
+    }
+
+    out = relay_suggest.suggest("backend", reg, status_map)
+
+    assert out["coder"] == "codex"
+    assert out["reviewer"] == "grok"
+    assert reg[out["reviewer"]]["vendor"] != reg[out["coder"]]["vendor"]
+
+
 def test_load_registry_example_has_expected_ai_metadata():
     reg = relay_call.load_registry(Path("/tmp/no-local-registry"))
 

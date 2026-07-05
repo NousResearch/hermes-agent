@@ -2263,6 +2263,15 @@ def run_conversation(
                     except Exception:
                         pass
                 agent._touch_activity(f"API call #{api_call_count} completed")
+                # LM Studio users can swap the loaded model from the app while a
+                # session is open; the response echoes the live model, so re-sync
+                # the cached identity when it drifts (#54454).
+                if agent.provider == "lmstudio":
+                    try:
+                        from agent.chat_completion_helpers import sync_lmstudio_active_model
+                        sync_lmstudio_active_model(agent, response)
+                    except Exception:
+                        pass
                 break  # Success, exit retry loop
 
             except InterruptedError:

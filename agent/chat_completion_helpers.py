@@ -1140,6 +1140,44 @@ def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     agent._cached_system_prompt = sp
 
 
+def sync_lmstudio_active_model(agent, response) -> None:
+    """Re-point the cached identity when LM Studio serves a different model.
+
+    LM Studio (and other local OpenAI-compatible servers) let the user swap the
+    loaded model from the app while a Hermes session stays open.  ``agent.model``
+    and the ``Model:`` line in the cached system prompt are resolved once at
+    session start, so after a swap the agent keeps reporting the original model
+    when asked about its inference engine — only a brand-new session picks up the
+    change (#54454).
+
+    Every chat-completion response echoes the model that actually served it, so
+    when that live name diverges from ``agent.model`` we adopt it and rewrite the
+    cached identity via :func:`rewrite_prompt_model_identity` (the same in-place,
+    non-persisted rewrite already used for provider failover).  Scoped to the
+    ``lmstudio`` provider — the only path where the server-side model changes
+    underneath a live session — so no other provider's identity is touched.
+    """
+    if (getattr(agent, "provider", "") or "").strip().lower() != "lmstudio":
+        return
+    live_model = getattr(response, "model", None)
+    if not isinstance(live_model, str) or not live_model.strip():
+        return
+    live_model = live_model.strip()
+    current = (getattr(agent, "model", "") or "").strip()
+    if not current:
+        return
+    try:
+        from agent.model_metadata import _model_id_matches
+
+        if _model_id_matches(live_model, current) or _model_id_matches(current, live_model):
+            return
+    except Exception:
+        if live_model == current:
+            return
+    agent.model = live_model
+    rewrite_prompt_model_identity(agent, live_model, agent.provider)
+
+
 def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
     return (
         str(fb.get("provider") or "").strip().lower(),

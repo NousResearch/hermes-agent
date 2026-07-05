@@ -42,6 +42,7 @@ the *Retired* section at the bottom with the upstream PR/commit reference.
 | [D9](#d-9) | fix(docker) | Honor passwd home in container wrappers instead of hardcoding `/opt/data` | candidate-upstream |
 | [D10](#d-10) | feat(gateway) | `X-Hermes-User-Id` header → agent `user_id` on the api_server platform (interlocutor identity) | candidate-upstream |
 | [D11](#d-11) | fix(agent) | Allow ZWJ inside emoji grapheme clusters in context/memory/skills scanners | **pending upstream** — NousResearch/hermes-agent#12673 |
+| [D12](#d-12) | feat(gateway) | `GroupContext` sidecar — unified group context injection for all platforms | **pending upstream** — candidate for NousResearch |
 
 ---
 
@@ -304,3 +305,38 @@ the *Retired* section at the bottom with the upstream PR/commit reference.
 *Empty.* When an upstream PR merges a delta from above, move its entry here
 with the upstream commit/PR reference and the SHA of the fork-local commit
 that became redundant.
+
+<a id="d-12"></a>
+### D12 — feat(gateway): `GroupContext` sidecar for unified group context injection
+
+- **Status:** active. **Candidate for upstream contribution.**
+- **Branch:** `feat/group-context-sidecar` (team-ajk/hermes-agent)
+- **Fork-local touchpoints:**
+  - `gateway/platforms/base.py` — new `GroupContext` dataclass; optional
+    `group_context: GroupContext | None = None` field on `MessageEvent`.
+    Fully backward-compatible: `None` preserves all existing behaviour.
+  - `gateway/run.py` — shared processing site after `is_shared_multi_user`
+    sender-prefix path. Reads `event.group_context` and applies Layer 1
+    (group identity block into `channel_prompt`, session-level, cache-stable)
+    and Layer 2 (`[SenderName]: ` prefix on message text). Existing fallback
+    path preserved for adapters not yet ported.
+  - `plugins/platforms/telegram/adapter.py` — populates `GroupContext` in
+    `_build_message_event()` for group/supergroup messages. Adapter no longer
+    mutates `channel_prompt` or message text directly.
+  - `gateway/platforms/api_server.py` — reads `X-Hermes-Group-Id`,
+    `X-Hermes-Group-Name`, `X-Hermes-Sender-Display` headers and populates
+    `GroupContext`. Enables Spire UI to stop packing metadata into the message
+    body and send structured headers instead. *(In progress.)*
+- **Why:** Without this patch, agents in group settings receive raw message
+  text with no group context and no sender attribution — they cannot distinguish
+  a group conversation from a 1:1 DM and implicitly treat every message as
+  coming from their primary member. This is the foundational change for
+  multi-being group presence (Telegram groups, Discord servers, Spire UI rooms,
+  GitHub issue threads). Each platform adapter fills in what it knows; one place
+  in `gateway/run.py` processes it uniformly. No double-attribution risk.
+  Prompt cache preserved: same group = same Layer 1 block = stable prefix.
+- **Upstream disposition:** strong candidate for NousResearch upstream. Platform-
+  neutral design benefits every Hermes deployment with multi-platform or
+  multi-being group presence. Discord, GitHub, and future adapters populate
+  the sidecar; injection behavior is free. See AMBIENT-ROOM-INTELLIGENCE.md
+  for the full design rationale.

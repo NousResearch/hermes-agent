@@ -833,6 +833,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
+        # Last truncated mid-stream preview delivered per (chat_id, message_id).
+        # Once an oversized streaming edit saturates at the 2000-char preview
+        # cap, every subsequent progressive edit truncates to the SAME text;
+        # re-sending it is a no-op that still counts against Discord's edit
+        # rate limit (~1 edit per stream tick for the rest of a long reply).
+        # Mirrors the Telegram #58563 fix. Entries are dropped on finalize.
+        self._last_overflow_preview: Dict[tuple, str] = {}
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -2153,6 +2160,13 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
 
+            _preview_key = (str(chat_id), str(message_id))
+            _saturated_preview = False
+            if finalize:
+                # Any saturation state for this message is finished with —
+                # the final edit always delivers real (full) content.
+                self._last_overflow_preview.pop(_preview_key, None)
+
             # Pre-flight: oversized payload.  Final edits split-and-deliver;
             # streaming edits truncate a one-message preview in place.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
@@ -2163,9 +2177,24 @@ class DiscordAdapter(BasePlatformAdapter):
                 formatted = self.truncate_message(
                     formatted, self.MAX_MESSAGE_LENGTH,
                 )[0]
+                _saturated_preview = True
+                # Saturated-preview dedup: past the cap, every progressive
+                # edit truncates to the same text. Re-sending it is a visual
+                # no-op that still counts against Discord's edit rate limit —
+                # skip silently until finalize (mirrors the Telegram #58563
+                # fix).
+                if self._last_overflow_preview.get(_preview_key) == formatted:
+                    return SendResult(success=True, message_id=message_id)
+            elif not finalize:
+                # Content shrank back under the cap (segment break / new
+                # message id) — clear stale saturation state so dedup can't
+                # mask a real edit later.
+                self._last_overflow_preview.pop(_preview_key, None)
 
             try:
                 await msg.edit(content=formatted)
+                if _saturated_preview:
+                    self._last_overflow_preview[_preview_key] = formatted
             except Exception as edit_err:
                 # Reactive split-and-deliver: format_message inflation (or a
                 # server-side rule change) can push the payload past 2,000
@@ -2180,7 +2209,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     truncated = self.truncate_message(
                         formatted, self.MAX_MESSAGE_LENGTH,
                     )[0]
+                    if self._last_overflow_preview.get(_preview_key) == truncated:
+                        # Saturated-preview dedup (see pre-flight path above).
+                        return SendResult(success=True, message_id=message_id)
                     await msg.edit(content=truncated)
+                    self._last_overflow_preview[_preview_key] = truncated
                 else:
                     raise
             return SendResult(success=True, message_id=message_id)

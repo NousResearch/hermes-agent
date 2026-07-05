@@ -9,7 +9,6 @@ the agent uses the Raft CLI according to the Raft manual.
 
 from __future__ import annotations
 
-import asyncio
 from collections import deque
 from datetime import datetime, timezone
 import hmac

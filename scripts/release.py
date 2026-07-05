@@ -554,6 +554,7 @@ AUTHOR_MAP = {
     "kronexoi13@gmail.com": "kronexoi",
     "hua.zhong@kingsmith.com": "vgocoder",
     "hermes@marian.local": "Schrotti77",
+    "hermes@tonyreviewsthings.com": "asimons81",  # PR #59254 salvage (providers: pin base_url_override="https://opencode.ai/zen/go/v1" on the opencode-go overlay so the routing-layer 404 class in #54147 is closed at every caller site, not just the per-site fixes #54148/#54365)
     "david@memorilabs.ai": "devwdave",
     "dave@devwdave.com": "devwdave",
     "1920071390@campus.ouj.ac.jp": "zapabob",

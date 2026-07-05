@@ -894,6 +894,7 @@ class _CuaDriverSession:
         import subprocess as _subprocess
         import tempfile as _tempfile
         import time as _time
+        from tools.environments.local import _sanitize_subprocess_env
 
         call_args = dict(args)
         shot_file: Optional[str] = None
@@ -911,7 +912,8 @@ class _CuaDriverSession:
             for attempt in range(attempts):
                 try:
                     proc = _subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=max(15.0, timeout)
+                        cmd, capture_output=True, text=True, timeout=max(15.0, timeout),
+                        env=_sanitize_subprocess_env(cua_driver_child_env()),
                     )
                 except Exception as e:  # pragma: no cover - subprocess spawn failure
                     raise RuntimeError(f"cua-driver CLI fallback for {name} failed to spawn: {e}") from e

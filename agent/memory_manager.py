@@ -73,6 +73,11 @@ def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
         schema = schema["function"]
         if not isinstance(schema, dict):
             return None
+    schema = dict(schema)
+    if "parameters" not in schema and isinstance(schema.get("inputSchema"), dict):
+        schema["parameters"] = schema["inputSchema"]
+    schema.pop("inputSchema", None)
+
     name = schema.get("name", "")
     if not name or not isinstance(name, str):
         return None
@@ -396,7 +401,16 @@ class MemoryManager:
             self._has_external = True
 
         self._providers.append(provider)
+        self._index_provider_tools(provider)
 
+        logger.info(
+            "Memory provider '%s' registered (%d tools)",
+            provider.name,
+            len(provider.get_tool_schemas()),
+        )
+
+    def _index_provider_tools(self, provider: MemoryProvider) -> None:
+        """Index provider tools for routing after schema discovery."""
         # Core tool names are reserved — a memory provider must never register
         # a tool that shadows a built-in (e.g. ``clarify``, ``delegate_task``).
         # Built-ins always win, so such a tool is dropped at agent init and
@@ -432,12 +446,6 @@ class MemoryManager:
                     self._tool_to_provider[tool_name].name,
                     provider.name,
                 )
-
-        logger.info(
-            "Memory provider '%s' registered (%d tools)",
-            provider.name,
-            len(provider.get_tool_schemas()),
-        )
 
     @property
     def providers(self) -> List[MemoryProvider]:
@@ -1079,6 +1087,7 @@ class MemoryManager:
         for provider in self._providers:
             try:
                 provider.initialize(session_id=session_id, **kwargs)
+                self._index_provider_tools(provider)
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' initialize failed: %s",

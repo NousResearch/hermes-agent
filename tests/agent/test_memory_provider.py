@@ -92,6 +92,19 @@ class MessagesMemoryProvider(FakeMemoryProvider):
         self.synced_turns.append((user_content, assistant_content, session_id, messages))
 
 
+class InitDiscoveredToolsProvider(FakeMemoryProvider):
+    """Provider that only discovers tools during initialize()."""
+
+    def __init__(self, name="external"):
+        super().__init__(name, tools=[])
+
+    def initialize(self, session_id, **kwargs):
+        super().initialize(session_id, **kwargs)
+        self._tools = [
+            {"name": "late_tool", "description": "Late", "parameters": {"type": "object"}}
+        ]
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider ABC tests
 # ---------------------------------------------------------------------------
@@ -335,6 +348,38 @@ class TestMemoryManager:
         assert r1["handled"] == "builtin_tool"
         r2 = json.loads(mgr.handle_tool_call("ext_tool", {"b": 2}))
         assert r2["handled"] == "ext_tool"
+
+    def test_tools_discovered_during_initialize_are_routed(self):
+        mgr = MemoryManager()
+        p = InitDiscoveredToolsProvider()
+        mgr.add_provider(p)
+        assert not mgr.has_tool("late_tool")
+
+        mgr.initialize_all("sess-1")
+
+        assert mgr.has_tool("late_tool")
+        result = json.loads(mgr.handle_tool_call("late_tool", {"ok": True}))
+        assert result == {"handled": "late_tool", "args": {"ok": True}}
+
+    def test_mcp_input_schema_normalized_to_parameters(self):
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("external", tools=[
+            {
+                "name": "mcp_tool",
+                "description": "MCP style",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+            }
+        ])
+        mgr.add_provider(p)
+
+        schema = mgr.get_all_tool_schemas()[0]
+        assert "inputSchema" not in schema
+        assert schema["parameters"]["required"] == ["text"]
+        assert schema["parameters"]["properties"]["text"]["type"] == "string"
 
     # -- Lifecycle hooks -----------------------------------------------------
 

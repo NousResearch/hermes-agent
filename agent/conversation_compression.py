@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import math
 import os
 import tempfile
 import uuid
@@ -94,6 +95,51 @@ def _compression_lock_holder(agent: Any) -> str:
         f":agent={id(agent):x}"
         f":nonce={uuid.uuid4().hex[:8]}"
     )
+
+
+class _CompressionActivityHeartbeat:
+    """Refresh the agent inactivity tracker while compression blocks in an aux call."""
+
+    def __init__(self, agent: Any, interval_seconds: float | None = None) -> None:
+        self._agent = agent
+        if interval_seconds is None:
+            interval_seconds = getattr(agent, "_compression_activity_heartbeat_interval", 60.0)
+        try:
+            interval_seconds = float(interval_seconds or 60.0)
+        except (TypeError, ValueError):
+            interval_seconds = 60.0
+        if not math.isfinite(interval_seconds):
+            interval_seconds = 60.0
+        self._interval_seconds = max(0.1, interval_seconds)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="compression-activity-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> "_CompressionActivityHeartbeat":
+        self._touch("context compression started")
+        self._thread.start()
+        return self
+
+    def stop(self, desc: str = "context compression completed") -> None:
+        self._stop.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+        self._touch(desc)
+
+    def _touch(self, desc: str) -> None:
+        try:
+            touch = getattr(self._agent, "_touch_activity", None)
+            if callable(touch):
+                touch(desc)
+        except Exception:
+            logger.debug("compression activity heartbeat touch failed", exc_info=True)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            self._touch("context compression in progress")
 
 
 class _CompressionLockLeaseRefresher:
@@ -717,21 +763,26 @@ def compress_context(
         except Exception:
             pass
 
+    _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
-    except TypeError:
-        # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
+        _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
         try:
+            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        except TypeError:
+            # Plugin context engine with strict signature that doesn't accept
+            # focus_topic / force — fall back to calling without them.
             compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
-        except BaseException:
-            _release_lock()
-            raise
     except BaseException:
         # ANY exception during compress() must release the lock so the
         # session isn't permanently blocked from future compression.
+        if _activity_heartbeat is not None:
+            _activity_heartbeat.stop("context compression failed")
+            _activity_heartbeat = None
         _release_lock()
         raise
+    finally:
+        if _activity_heartbeat is not None:
+            _activity_heartbeat.stop("context compression completed")
 
     # Capture boundary quality before session-rotation callbacks run. Built-in
     # and plugin lifecycle hooks may reset per-session compressor fields while
@@ -1170,7 +1221,20 @@ def _compress_context_via_codex_app_server(
     except Exception:
         pass
 
-    result = codex_session.compact_thread()
+    _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
+    try:
+        _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
+        result = codex_session.compact_thread()
+    except BaseException:
+        if _activity_heartbeat is not None:
+            _activity_heartbeat.stop("context compression failed")
+        raise
+
+    if getattr(result, "interrupted", False) or getattr(result, "error", None):
+        _activity_heartbeat.stop("context compression failed")
+    else:
+        _activity_heartbeat.stop("context compression completed")
+
     if getattr(result, "should_retire", False):
         try:
             codex_session.close()

@@ -473,6 +473,84 @@ def test_resolve_runtime_provider_lmstudio_normalizes_native_api_saved_base_url(
     assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
 
 
+def test_resolve_runtime_provider_local_honors_saved_private_base_url_without_key(monkeypatch):
+    monkeypatch.delenv("LOCAL_API_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "local")
+    monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "local",
+            "base_url": "http://192.168.1.25:8000/v1",
+            "default": "qwen/qwen3-coder-30b",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="local")
+
+    assert resolved["provider"] == "local"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://192.168.1.25:8000/v1"
+    assert resolved["api_key"] == "no-key-required"
+
+
+def test_resolve_runtime_provider_local_base_url_env_without_key(monkeypatch):
+    monkeypatch.delenv("LOCAL_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "local")
+    monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "local", "default": "local-model"},
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="local")
+
+    assert resolved["provider"] == "local"
+    assert resolved["base_url"] == "http://127.0.0.1:8000/v1"
+    assert resolved["api_key"] == "no-key-required"
+
+
+def test_resolve_runtime_provider_local_public_base_url_without_key_stays_empty(monkeypatch):
+    monkeypatch.delenv("LOCAL_API_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "local")
+    monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "local",
+            "base_url": "https://api.example.com/v1",
+            "default": "example-model",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="local")
+
+    assert resolved["provider"] == "local"
+    assert resolved["base_url"] == "https://api.example.com/v1"
+    assert resolved["api_key"] == ""
+
+
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

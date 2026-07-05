@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import ipaddress
 import shutil
 import shlex
 import ssl
@@ -150,6 +151,35 @@ SERVICE_PROVIDER_NAMES: Dict[str, str] = {
 # provider as configured. This sentinel is sent only to LM Studio, never to
 # any remote service.
 LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
+LOCAL_NOAUTH_PLACEHOLDER = "no-key-required"
+
+
+def _local_base_url_allows_noauth(base_url: str) -> bool:
+    """Return True when a local provider URL is private enough for no-key mode."""
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+    candidate = raw if "://" in raw else f"//{raw}"
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        return True
+    if host.endswith(".local"):
+        return True
+    if "." not in host and ":" not in host:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if addr.is_loopback or addr.is_private or addr.is_link_local:
+        return True
+    return isinstance(addr, ipaddress.IPv4Address) and addr in ipaddress.ip_network("100.64.0.0/10")
 
 
 # =============================================================================
@@ -216,6 +246,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="http://127.0.0.1:1234/v1",
         api_key_env_vars=("LM_API_KEY",),
         base_url_env_var="LM_BASE_URL",
+    ),
+    "local": ProviderConfig(
+        id="local",
+        name="Local endpoint",
+        auth_type="api_key",
+        api_key_env_vars=("LOCAL_API_KEY",),
+        base_url_env_var="LOCAL_BASE_URL",
     ),
     "copilot": ProviderConfig(
         id="copilot",
@@ -1731,7 +1768,7 @@ def resolve_provider(
         # whose availability isn't implied by LM_API_KEY presence (it may be
         # offline, and the no-auth setup uses a placeholder value), so it
         # also requires explicit selection.
-        if pid in {"copilot", "lmstudio"}:
+        if pid in {"copilot", "lmstudio", "local"}:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -6216,13 +6253,6 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
-    # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
-    # see the local server as configured. doctor still reports unconfigured
-    # because get_api_key_provider_status uses the raw secret resolver.
-    if not api_key and provider_id == "lmstudio":
-        api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
-        key_source = key_source or "default"
-
     env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
@@ -6258,6 +6288,16 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     if provider_id == "lmstudio":
         base_url = _normalize_lmstudio_runtime_base_url(base_url)
+
+    # No-auth local servers: substitute a placeholder so runtime /
+    # auxiliary_client see the endpoint as configured. For the generic local
+    # provider, only do this when the resolved URL is actually local/private.
+    if not api_key and provider_id == "lmstudio":
+        api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
+        key_source = key_source or "default"
+    elif not api_key and provider_id == "local" and _local_base_url_allows_noauth(base_url):
+        api_key = LOCAL_NOAUTH_PLACEHOLDER
+        key_source = key_source or "default"
 
     # Last-resort guard: an API-key provider must never hand back an empty
     # base URL (a set-but-empty COPILOT_API_BASE_URL or similar env override

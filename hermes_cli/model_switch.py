@@ -1630,6 +1630,29 @@ def list_authenticated_providers(
             live = [current_model]
         curated["lmstudio"] = live
 
+    if "local" not in curated and (
+        os.environ.get("LOCAL_API_KEY")
+        or os.environ.get("LOCAL_BASE_URL")
+        or current_provider.strip().lower() == "local"
+    ):
+        from hermes_cli.models import fetch_api_models
+        is_current_local = current_provider.strip().lower() == "local"
+        local_base = (
+            os.environ.get("LOCAL_BASE_URL")
+            or (current_base_url if is_current_local and current_base_url else None)
+            or ""
+        )
+        live = []
+        if local_base:
+            live = fetch_api_models(
+                os.environ.get("LOCAL_API_KEY", "") or "no-key-required",
+                local_base,
+                timeout=1.5,
+            ) or []
+        if not live and is_current_local and current_model:
+            live = [current_model]
+        curated["local"] = live
+
     # --- 1. Check Hermes-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
@@ -1742,6 +1765,11 @@ def list_authenticated_providers(
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
+        if not has_creds and hermes_slug == "local":
+            has_creds = bool(
+                os.environ.get("LOCAL_BASE_URL")
+                or (current_provider.strip().lower() == "local" and current_base_url)
+            )
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
             for _key in (pid, hermes_slug):

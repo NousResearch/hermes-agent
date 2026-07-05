@@ -14,6 +14,7 @@ from hermes_cli.auth import (
     get_auth_status,
     AuthError,
     KIMI_CODE_BASE_URL,
+    LOCAL_NOAUTH_PLACEHOLDER,
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL,
     _resolve_kimi_base_url,
@@ -65,6 +66,14 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("NVIDIA_API_KEY",)
         assert pconfig.base_url_env_var == "NVIDIA_BASE_URL"
         assert pconfig.inference_base_url == "https://integrate.api.nvidia.com/v1"
+
+    def test_local_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["local"]
+        assert pconfig.name == "Local endpoint"
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.api_key_env_vars == ("LOCAL_API_KEY",)
+        assert pconfig.base_url_env_var == "LOCAL_BASE_URL"
+        assert pconfig.inference_base_url == ""
 
     def test_copilot_env_vars(self):
         pconfig = PROVIDER_REGISTRY["copilot"]
@@ -137,7 +146,7 @@ class TestProviderRegistry:
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
-    "LM_API_KEY", "LM_BASE_URL",
+    "LM_API_KEY", "LM_BASE_URL", "LOCAL_API_KEY", "LOCAL_BASE_URL",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "STEPFUN_API_KEY", "STEPFUN_BASE_URL",
     "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
@@ -448,6 +457,35 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["provider"] == "lmstudio"
         assert creds["api_key"] == "dummy-lm-api-key"
         assert creds["base_url"] == "http://127.0.0.1:1234/v1"
+
+    def test_resolve_local_uses_token_and_base_url_from_env(self, monkeypatch):
+        monkeypatch.setenv("LOCAL_API_KEY", "local-token")
+        monkeypatch.setenv("LOCAL_BASE_URL", "http://127.0.0.1:8000/v1")
+
+        creds = resolve_api_key_provider_credentials("local")
+
+        assert creds["provider"] == "local"
+        assert creds["api_key"] == "local-token"
+        assert creds["base_url"] == "http://127.0.0.1:8000/v1"
+        assert creds["source"] == "LOCAL_API_KEY"
+
+    def test_resolve_local_private_base_url_without_key_uses_placeholder(self, monkeypatch):
+        monkeypatch.setenv("LOCAL_BASE_URL", "http://192.168.1.25:8000/v1")
+
+        creds = resolve_api_key_provider_credentials("local")
+
+        assert creds["provider"] == "local"
+        assert creds["api_key"] == LOCAL_NOAUTH_PLACEHOLDER
+        assert creds["base_url"] == "http://192.168.1.25:8000/v1"
+
+    def test_resolve_local_public_base_url_without_key_stays_unauthenticated(self, monkeypatch):
+        monkeypatch.setenv("LOCAL_BASE_URL", "https://api.example.com/v1")
+
+        creds = resolve_api_key_provider_credentials("local")
+
+        assert creds["provider"] == "local"
+        assert creds["api_key"] == ""
+        assert creds["base_url"] == "https://api.example.com/v1"
 
     def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.copilot_auth.shutil.which", lambda command: None)

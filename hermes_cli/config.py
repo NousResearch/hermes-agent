@@ -3278,6 +3278,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "LOCAL_API_KEY": {
+        "description": "API key for a local OpenAI-compatible endpoint, when the server requires one",
+        "prompt": "Local endpoint API key",
+        "url": None,
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "LOCAL_BASE_URL": {
+        "description": "Local OpenAI-compatible endpoint base URL",
+        "prompt": "Local endpoint base URL (e.g. http://localhost:8000/v1)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "GLM_API_KEY": {
         "description": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
         "prompt": "Z.AI / GLM API key",

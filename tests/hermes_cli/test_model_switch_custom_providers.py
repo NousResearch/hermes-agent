@@ -653,6 +653,93 @@ def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
     assert "base_url" not in captured
 
 
+def test_local_picker_uses_local_base_url_env_without_api_key(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setenv("LOCAL_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.delenv("LOCAL_API_KEY", raising=False)
+
+    captured: dict = {}
+
+    def _fake_fetch(api_key=None, base_url=None, timeout=5.0, **_kwargs):
+        captured["api_key"] = api_key
+        captured["base_url"] = base_url
+        captured["timeout"] = timeout
+        return ["local-qwen"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fake_fetch)
+
+    providers = list_authenticated_providers(refresh=True)
+
+    local = next(p for p in providers if p["slug"] == "local")
+    assert local["models"] == ["local-qwen"]
+    assert captured["api_key"] == "no-key-required"
+    assert captured["base_url"] == "http://127.0.0.1:8000/v1"
+
+
+def test_local_picker_probes_active_config_base_url(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.delenv("LOCAL_BASE_URL", raising=False)
+    monkeypatch.delenv("LOCAL_API_KEY", raising=False)
+
+    captured: dict = {}
+
+    def _fake_fetch(api_key=None, base_url=None, timeout=5.0, **_kwargs):
+        captured["api_key"] = api_key
+        captured["base_url"] = base_url
+        return []
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fake_fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="local",
+        current_base_url="http://192.168.1.25:8000/v1",
+        current_model="local-qwen",
+        refresh=True,
+    )
+
+    local = next(p for p in providers if p["slug"] == "local")
+    assert local["models"] == ["local-qwen"]
+    assert captured["base_url"] == "http://192.168.1.25:8000/v1"
+
+
+def test_local_picker_skips_probe_when_not_configured(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.delenv("LOCAL_BASE_URL", raising=False)
+    monkeypatch.delenv("LOCAL_API_KEY", raising=False)
+
+    captured: dict = {}
+
+    def _fake_fetch(api_key=None, base_url=None, timeout=5.0, **_kwargs):
+        captured["base_url"] = base_url
+        return []
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fake_fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        refresh=True,
+    )
+
+    assert all(p["slug"] != "local" for p in providers)
+    assert "base_url" not in captured
+
+
 def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch):
     """Custom providers with api_key + base_url should prefer live /models.
 

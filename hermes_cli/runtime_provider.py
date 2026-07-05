@@ -1462,14 +1462,20 @@ def _resolve_explicit_runtime(
         env_url = ""
         if pconfig.base_url_env_var:
             env_url = _getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = ""
+        if cfg_provider == provider:
+            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
 
         base_url = explicit_base_url
         if not base_url:
+            if cfg_base_url:
+                base_url = cfg_base_url
             if provider in {"kimi-coding", "kimi-coding-cn"}:
                 creds = resolve_api_key_provider_credentials(provider)
-                base_url = creds.get("base_url", "").rstrip("/")
+                base_url = base_url or creds.get("base_url", "").rstrip("/")
             else:
-                base_url = env_url or pconfig.inference_base_url
+                base_url = base_url or env_url or pconfig.inference_base_url
 
         api_key = explicit_api_key
         if not api_key:
@@ -1477,6 +1483,8 @@ def _resolve_explicit_runtime(
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
+        if provider == "local" and not api_key and auth_mod._local_base_url_allows_noauth(base_url):
+            api_key = auth_mod.LOCAL_NOAUTH_PLACEHOLDER
 
         api_mode = "chat_completions"
         if provider == "copilot":
@@ -2034,11 +2042,14 @@ def resolve_runtime_provider(
             base_url = normalize_opencode_base_url(provider, api_mode, base_url)
         if provider == "lmstudio":
             base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
+        api_key = creds.get("api_key", "")
+        if provider == "local" and not api_key and auth_mod._local_base_url_allows_noauth(base_url):
+            api_key = auth_mod.LOCAL_NOAUTH_PLACEHOLDER
         return {
             "provider": provider,
             "api_mode": api_mode,
             "base_url": base_url,
-            "api_key": creds.get("api_key", ""),
+            "api_key": api_key,
             "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
         }

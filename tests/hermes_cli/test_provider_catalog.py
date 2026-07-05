@@ -46,12 +46,12 @@ def test_descriptor_count_matches_canonical():
 def test_profileless_providers_still_present():
     """Providers without a ProviderProfile must still resolve via fallbacks.
 
-    lmstudio / openai-api / tencent-tokenhub / xai-oauth have no profile on
+    lmstudio / local / openai-api / tencent-tokenhub / xai-oauth have no profile on
     main; they exist only as registry + canonical entries. The catalog must
     not require a profile to include a provider.
     """
     by = provider_catalog_by_slug()
-    for slug in ("lmstudio", "openai-api", "tencent-tokenhub", "xai-oauth"):
+    for slug in ("lmstudio", "local", "openai-api", "tencent-tokenhub", "xai-oauth"):
         assert slug in by, f"{slug} dropped from catalog (profile-less provider)"
         assert by[slug].label, f"{slug} has empty label despite canonical fallback"
         assert by[slug].description, f"{slug} has empty description despite fallback"
@@ -82,6 +82,14 @@ def test_copilot_surfaces_as_a_provider_with_its_own_token_var():
     assert d.api_key_env_vars[0] == "COPILOT_GITHUB_TOKEN", (
         "Copilot's primary var must be the provider-owned token, not shared GITHUB_TOKEN"
     )
+
+
+def test_local_provider_exposes_key_and_base_url_env_vars():
+    by = provider_catalog_by_slug()
+    d = by["local"]
+    assert d.tab == "keys"
+    assert d.api_key_env_vars == ("LOCAL_API_KEY",)
+    assert d.base_url_env_var == "LOCAL_BASE_URL"
 
 
 def test_bedrock_routes_to_keys():

@@ -1033,6 +1033,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
+    ProviderEntry("local",          "Local endpoint",           "Local endpoint (OpenAI-compatible server via LOCAL_BASE_URL)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
@@ -2424,6 +2425,21 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             )
             api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
             live = fetch_api_models(api_key, base_url, api_mode=api_mode)
+            if live:
+                return live
+    if normalized == "local":
+        model_cfg = _get_model_config_dict()
+        cfg_provider = normalize_provider(str(model_cfg.get("provider", "") or ""))
+        cfg_base_url = str(model_cfg.get("base_url", "") or "").strip() if cfg_provider == "local" else ""
+        base_url = (os.getenv("LOCAL_BASE_URL", "").strip() or cfg_base_url).rstrip("/")
+        if base_url:
+            api_key = (
+                os.getenv("LOCAL_API_KEY", "").strip()
+                or str(model_cfg.get("api_key", "") or "").strip()
+                or "no-key-required"
+            )
+            api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
+            live = fetch_api_models(api_key, base_url, timeout=1.5, api_mode=api_mode)
             if live:
                 return live
     # Bedrock uses live discovery keyed by the resolved AWS region so that

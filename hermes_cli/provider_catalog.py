@@ -19,8 +19,8 @@ the same universe ``hermes model`` renders (``CANONICAL_PROVIDERS``), joining:
   :class:`providers.base.ProviderProfile` when one exists, falling back to the
   ``CANONICAL_PROVIDERS`` entry's ``label`` / ``tui_desc`` and the
   ``OPTIONAL_ENV_VARS`` signup URL otherwise (many profiles leave these blank,
-  and four canonical providers have no profile at all — lmstudio, openai-api,
-  tencent-tokenhub, xai-oauth — so the fallbacks are load-bearing).
+  and some canonical providers have no profile at all — lmstudio, local,
+  openai-api, tencent-tokenhub, xai-oauth — so the fallbacks are load-bearing).
 
 Each descriptor is tagged with the ``tab`` it belongs on (``keys`` vs
 ``accounts``) based purely on how the provider authenticates.  The desktop

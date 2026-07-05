@@ -7,14 +7,15 @@ concurrent.futures.thread._threads_queues, whose atexit hook joins every
 worker unconditionally — even after shutdown(wait=False).
 """
 
+import inspect
 import subprocess
 import sys
 import threading
 import time
 
-from concurrent.futures.thread import _threads_queues
+from concurrent.futures.thread import _threads_queues, _worker
 
-from tools.daemon_pool import DaemonThreadPoolExecutor
+from tools.daemon_pool import DaemonThreadPoolExecutor, _WORKER_USES_CTX
 
 
 def test_workers_are_daemon_threads():
@@ -87,3 +88,58 @@ def _repo_root():
     import pathlib
 
     return pathlib.Path(__file__).resolve().parents[2]
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for Python 3.14 _worker signature change (#58596)
+# ---------------------------------------------------------------------------
+
+def test_worker_uses_ctx_matches_signature():
+    """_WORKER_USES_CTX must reflect the actual _worker parameter count."""
+    params = len(inspect.signature(_worker).parameters)
+    if params == 3:
+        assert _WORKER_USES_CTX is True
+    elif params == 4:
+        assert _WORKER_USES_CTX is False
+    else:
+        raise AssertionError(
+            f"Unexpected _worker signature: {params} params (expected 3 or 4)"
+        )
+
+
+def test_submit_result_py314_path():
+    """Submit+result works regardless of which _worker branch is taken."""
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    try:
+        assert pool.submit(lambda: "ok-" + "py314").result(timeout=10) == "ok-py314"
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_initializer_works_across_worker_signatures():
+    """initializer/initargs must be honoured on both Python paths."""
+    seen: list = []
+
+    def _init(tag: str) -> None:
+        seen.append(tag)
+
+    pool = DaemonThreadPoolExecutor(
+        max_workers=1, initializer=_init, initargs=("tag-58596",)
+    )
+    try:
+        pool.submit(lambda: None).result(timeout=10)
+        assert seen == ["tag-58596"]
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_pool_reuse_across_worker_signatures():
+    """Multiple submits reuse the same worker (idle-reuse path)."""
+    pool = DaemonThreadPoolExecutor(max_workers=3)
+    try:
+        tid1 = pool.submit(threading.get_ident).result(timeout=10)
+        time.sleep(0.05)
+        tid2 = pool.submit(threading.get_ident).result(timeout=10)
+        assert tid1 == tid2
+    finally:
+        pool.shutdown(wait=True)

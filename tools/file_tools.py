@@ -1240,6 +1240,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                         f"{shown_end} of {total_lines}). Use offset={next_offset} "
                         "to continue."
                     )
+                    if len(trimmed.split("\n", 1)[0]) >= max_chars:
+                        result_dict["hint"] += (
+                            " Note: the first line alone exceeded the budget and "
+                            "was clamped mid-line; its remainder is not "
+                            "retrievable via offset."
+                        )
                 if result_dict["content"]:
                     result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
                 return json.dumps(result_dict, ensure_ascii=False)
@@ -1365,6 +1371,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 f"{lines_kept} line(s) (showing lines {offset}-{shown_end} of "
                 f"{total_lines}). Use offset={next_offset} to continue."
             )
+            if len(trimmed.split("\n", 1)[0]) >= max_chars:
+                result_dict["hint"] += (
+                    " Note: the first line alone exceeded the budget and was "
+                    "clamped mid-line; its remainder is not retrievable via "
+                    "offset."
+                )
             content_len = len(trimmed)
 
         # ── Redact secrets (after guard check to skip oversized content) ──

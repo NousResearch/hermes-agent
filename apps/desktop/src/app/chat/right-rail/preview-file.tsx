@@ -640,7 +640,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             byteSize: result.byteSize,
             language: result.language || target.language || 'text',
             loading: false,
-            text: shouldBlock ? undefined : result.text,
+            text: shouldBlock ? undefined : (result.text ?? undefined),
             truncated: result.truncated
           })
 
@@ -897,7 +897,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     )
   }
 
-  if (isText && state.text !== undefined) {
+  if (isText && state.text != null) {
     const isMarkdown = (state.language || target.language) === 'markdown'
     const hasDiff = Boolean(state.diff && state.diff.trim())
     // Order the toggle reads left→right; default lands on the most useful view.

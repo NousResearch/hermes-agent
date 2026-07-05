@@ -4486,6 +4486,14 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                     "enabled": body.enabled,
                 }
             normalized = normalize_moa_config(raw)
+            # Preserve save_traces / trace_dir from the existing config.
+            # These live at the top level of cfg["moa"] but are not part
+            # of the MoaConfigPayload model, so normalize_moa_config()
+            # never includes them in its return dict.
+            _prev_moa = cfg.get("moa", {})
+            for _key in ("save_traces", "trace_dir"):
+                if _key in _prev_moa and _key not in normalized:
+                    normalized[_key] = _prev_moa[_key]
             cfg["moa"] = normalized
             save_config(cfg)
             return {"ok": True, **normalized}

@@ -510,6 +510,44 @@ class TestWebServerEndpoints:
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
+    def test_put_moa_models_preserves_save_traces_and_trace_dir(self):
+        """PUT /api/model/moa must not silently drop save_traces / trace_dir
+        that live in cfg['moa'] but are not part of MoaConfigPayload.
+
+        Regression test for issue #58819.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        # Seed the existing config with save_traces + trace_dir.
+        cfg = load_config()
+        cfg.setdefault("moa", {})
+        cfg["moa"]["save_traces"] = True
+        cfg["moa"]["trace_dir"] = "/tmp/moa-traces"
+        save_config(cfg)
+
+        payload = {
+            "reference_models": [
+                {"provider": "openai-codex", "model": "gpt-5.5"},
+                {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+            ],
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+            "reference_temperature": 0.7,
+            "aggregator_temperature": 0.3,
+            "max_tokens": 8192,
+            "enabled": True,
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        cfg = load_config()
+        # The new fields must have been preserved.
+        assert cfg["moa"]["save_traces"] is True
+        assert cfg["moa"]["trace_dir"] == "/tmp/moa-traces"
+        # The payload fields must have been updated.
+        assert cfg["moa"]["max_tokens"] == 8192
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

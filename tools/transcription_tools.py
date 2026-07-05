@@ -1671,7 +1671,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return _transcribe_local_command(file_path, model_name)
 
     if provider == "groq":
-        model_name = model or DEFAULT_GROQ_STT_MODEL
+        groq_cfg = stt_config.get("groq", {})
+        model_name = model or groq_cfg.get("model", DEFAULT_GROQ_STT_MODEL)
         return _transcribe_groq(file_path, model_name)
 
     if provider == "openai":

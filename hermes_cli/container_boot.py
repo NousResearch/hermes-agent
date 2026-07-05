@@ -438,7 +438,7 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     tmp_dir.mkdir(parents=True)
 
     try:
-        (tmp_dir / "type").write_text("longrun\n")
+        (tmp_dir / "type").write_text("longrun\n", encoding="utf-8")
 
         # Reuse the manager's run-script rendering — single source of
         # truth so register_profile_gateway and reconcile_profile_gateways

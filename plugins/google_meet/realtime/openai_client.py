@@ -281,10 +281,10 @@ class RealtimeSpeaker:
         if not remaining:
             # Keep the file but empty — consumers may be watching for
             # new writes via mtime, and delete-then-recreate is a race.
-            self.queue_path.write_text("")
+            self.queue_path.write_text("", encoding="utf-8")
             return
         self.queue_path.write_text(
-            "\n".join(json.dumps(e) for e in remaining) + "\n"
+            "\n".join(json.dumps(e, encoding="utf-8") for e in remaining) + "\n"
         )
 
     def _append_processed(self, entry: dict, result: dict) -> None:

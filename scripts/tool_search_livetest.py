@@ -290,7 +290,7 @@ def setup_isolated_home(enabled: bool) -> Path:
         },
         "logging": {"level": "WARNING"},
     }
-    (hermes_home / "config.yaml").write_text(_yaml_dump(cfg), encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(_yaml_dump(cfg, encoding="utf-8"), encoding="utf-8")
     return hermes_home
 
 
@@ -437,7 +437,7 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
 
     suffix = "enabled" if enabled else "disabled"
     out_path = out_dir / f"{scenario['id']}__{suffix}.json"
-    out_path.write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
+    out_path.write_text(json.dumps(record, indent=2, default=str, encoding="utf-8"), encoding="utf-8")
 
     # Cleanup
     shutil.rmtree(home.parent, ignore_errors=True)
@@ -535,7 +535,7 @@ def main():
             })
 
     summary_path = out_dir / "_summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary, indent=2, encoding="utf-8"), encoding="utf-8")
     print(f"\nSummary saved to: {summary_path}")
 
     # Restore original HERMES_HOME

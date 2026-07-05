@@ -3705,7 +3705,7 @@ def _write_launchd_unsupported_marker() -> None:
     try:
         _launchd_unsupported_marker_path().write_text(
             json.dumps({
-                "written_at": datetime.now(timezone.utc).isoformat(),
+                "written_at": datetime.now(timezone.utc, encoding="utf-8").isoformat(),
                 "reason": "launchd domain unsupported (exit 5/125)",
             }),
             encoding="utf-8",
@@ -4068,7 +4068,7 @@ def launchd_install(force: bool = False):
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
-    plist_path.write_text(new_plist)
+    plist_path.write_text(new_plist, encoding="utf-8")
 
     try:
         _launchctl_bootstrap(

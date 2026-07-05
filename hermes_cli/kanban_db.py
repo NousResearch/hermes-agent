@@ -702,7 +702,7 @@ def write_board_metadata(
     path = board_metadata_path(slug)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
+        json.dumps(meta, indent=2, ensure_ascii=False, encoding="utf-8") + "\n",
         encoding="utf-8",
     )
     meta["db_path"] = str(kanban_db_path(slug))

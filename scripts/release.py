@@ -1961,7 +1961,7 @@ def update_version_files(semver: str, calver_date: str):
         f'__release_date__ = "{calver_date}"',
         content,
     )
-    VERSION_FILE.write_text(content)
+    VERSION_FILE.write_text(content, encoding="utf-8")
 
     # Update pyproject.toml
     pyproject = PYPROJECT_FILE.read_text()
@@ -1971,7 +1971,7 @@ def update_version_files(semver: str, calver_date: str):
         pyproject,
         flags=re.MULTILINE,
     )
-    PYPROJECT_FILE.write_text(pyproject)
+    PYPROJECT_FILE.write_text(pyproject, encoding="utf-8")
 
     # Keep the desktop Electron app's package.json version in lockstep with the
     # Python package version. The desktop About panel reads the live Hermes
@@ -2008,7 +2008,7 @@ def _update_acp_registry_versions(semver: str) -> None:
             uvx["package"] = f"hermes-agent[acp]=={semver}"
         # Preserve trailing newline + 2-space indent the file already uses.
         ACP_REGISTRY_MANIFEST.write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+            json.dumps(manifest, indent=2, encoding="utf-8") + "\n", encoding="utf-8"
         )
 
 

@@ -363,7 +363,7 @@ def _write_banner_cache(seen: dict[str, float]) -> None:
         return
     try:
         lines = [f"{aid} {ts}" for aid, ts in seen.items()]
-        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        p.write_text("\n".join(lines, encoding="utf-8") + "\n", encoding="utf-8")
     except Exception:
         logger.debug("Could not write advisory banner cache", exc_info=True)
 

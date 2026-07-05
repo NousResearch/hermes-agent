@@ -157,7 +157,7 @@ def main() -> int:
             if any(skip.rstrip("/") in parts for skip in SKIP_DIRS):
                 continue
 
-            content = py_file.read_text()
+            content = py_file.read_text(encoding="utf-8")
             violations = find_subprocess_calls(content, rel)
             all_violations.extend(violations)
 

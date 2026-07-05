@@ -144,7 +144,7 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         d.mkdir(parents=True, exist_ok=True)
         path = d / f"{pid}.json"
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2, encoding="utf-8"), encoding="utf-8")
         os.replace(tmp, path)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)

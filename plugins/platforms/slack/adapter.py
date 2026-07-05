@@ -4400,7 +4400,7 @@ def interactive_setup() -> None:
             target = Path(get_hermes_home()) / "slack-manifest.json"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(
-                _json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+                _json.dumps(manifest, indent=2, ensure_ascii=False, encoding="utf-8") + "\n",
                 encoding="utf-8",
             )
             print_success(f"Slack app manifest written to: {target}")

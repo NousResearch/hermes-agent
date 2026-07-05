@@ -41,7 +41,7 @@ def has_xai_credentials() -> bool:
         auth_path = get_hermes_home() / "auth.json"
         if not auth_path.exists():
             return False
-        store = json.loads(auth_path.read_text())
+        store = json.loads(auth_path.read_text(encoding="utf-8"))
         providers = store.get("providers") if isinstance(store, dict) else None
         xai_state = providers.get("xai-oauth") if isinstance(providers, dict) else None
         tokens = xai_state.get("tokens") if isinstance(xai_state, dict) else None
@@ -215,7 +215,7 @@ def maybe_mark_xai_storage_notice_seen(section_name: str) -> Optional[str]:
         marker = marker_dir / f"{section_name}_xai_storage_notice_seen"
         if marker.exists():
             return None
-        marker.write_text(datetime.datetime.now(datetime.UTC).isoformat() + "\n")
+        marker.write_text(datetime.datetime.now(datetime.UTC, encoding="utf-8").isoformat() + "\n")
         return notice
     except Exception:
         return notice

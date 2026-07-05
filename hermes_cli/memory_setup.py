@@ -418,7 +418,7 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
         if key not in updated_keys:
             new_lines.append(f"{key}={val}")
 
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    env_path.write_text("\n".join(new_lines, encoding="utf-8") + "\n", encoding="utf-8")
     # Restrict permissions — .env holds API keys and tokens.
     try:
         import stat

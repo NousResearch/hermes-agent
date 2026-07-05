@@ -442,6 +442,34 @@ class TestQueryLocalContextLengthLmStudio:
             "max_context_length (1048576) must not win over loaded_instances."
         )
 
+    def test_lmstudio_unloaded_model_uses_max_context_length(self):
+        """Falls back to max_context_length when the matching model is not loaded."""
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {
+                    "key": "nvidia/nvidia-nemotron-super-49b-v1",
+                    "id": "nvidia/nvidia-nemotron-super-49b-v1",
+                    "max_context_length": 1_048_576,
+                    "loaded_instances": [],
+                },
+            ]
+        })
+        client_mock = self._make_client(
+            native_resp,
+            self._make_resp(404, {}),
+            self._make_resp(404, {}),
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "nvidia-nemotron-super-49b-v1", "http://192.168.1.22:1234/v1"
+            )
+
+        assert result == 1_048_576
+
     def test_lmstudio_native_api_base_url_is_not_doubled(self):
         from agent.model_metadata import _query_local_context_length
 
@@ -576,6 +604,68 @@ class TestFetchEndpointModelMetadataLmStudio:
 
         assert mock_get.call_args[0][0] == "http://localhost:1234/api/v1/models"
         assert result["publisher/model-a"]["context_length"] == 65536
+
+    def test_unloaded_model_uses_max_context_length(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        native_resp = self._make_resp(
+            {
+                "models": [
+                    {
+                        "key": "publisher/model-a",
+                        "id": "publisher/model-a",
+                        "max_context_length": 1_048_576,
+                        "loaded_instances": [],
+                    }
+                ]
+            }
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("agent.model_metadata.requests.get", return_value=native_resp):
+            result = fetch_endpoint_model_metadata(
+                "http://localhost:1234/v1",
+                force_refresh=True,
+            )
+
+        assert result["publisher/model-a"]["context_length"] == 1_048_576
+
+    def test_remote_lmstudio_falls_back_to_native_context_metadata(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        openai_resp = self._make_resp(
+            {
+                "data": [
+                    {
+                        "id": "publisher/model-a",
+                        "object": "model",
+                        "owned_by": "lmstudio",
+                    }
+                ]
+            }
+        )
+        native_resp = self._make_resp(
+            {
+                "models": [
+                    {
+                        "key": "publisher/model-a",
+                        "id": "publisher/model-a",
+                        "max_context_length": 100_000,
+                        "loaded_instances": [],
+                    }
+                ]
+            }
+        )
+
+        with patch("agent.model_metadata.requests.get", side_effect=[openai_resp, native_resp]) as mock_get:
+            result = fetch_endpoint_model_metadata(
+                "https://lmstudio.example.com/v1",
+                force_refresh=True,
+            )
+
+        assert mock_get.call_args_list[0].args[0] == "https://lmstudio.example.com/v1/models"
+        assert mock_get.call_args_list[1].args[0] == "https://lmstudio.example.com/api/v1/models"
+        assert result["publisher/model-a"]["context_length"] == 100_000
 
 
 class TestQueryLocalContextLengthNetworkError:

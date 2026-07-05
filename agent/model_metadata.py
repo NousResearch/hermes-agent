@@ -769,6 +769,81 @@ def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: D
         cache.setdefault(bare_model, entry)
 
 
+def _lmstudio_native_context_length(model_payload: Dict[str, Any]) -> Optional[int]:
+    """Return the best context length from an LM Studio native model record.
+
+    Loaded instance context is the actual runtime allocation. When a model is
+    not loaded, LM Studio still exposes ``max_context_length`` as the training
+    max; use that as the best available fallback.
+    """
+    for inst in model_payload.get("loaded_instances", []) or []:
+        if not isinstance(inst, dict):
+            continue
+        cfg = inst.get("config", {})
+        ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
+        coerced = _coerce_reasonable_int(ctx)
+        if coerced is not None:
+            return coerced
+
+    for key in ("max_context_length", "context_length"):
+        coerced = _coerce_reasonable_int(model_payload.get(key))
+        if coerced is not None:
+            return coerced
+
+    return None
+
+
+def _lmstudio_native_metadata_cache(payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    cache: Dict[str, Dict[str, Any]] = {}
+    for model in payload.get("models", []):
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("key") or model.get("id")
+        if not model_id:
+            continue
+        entry: Dict[str, Any] = {"name": model.get("name", model_id)}
+
+        context_length = _lmstudio_native_context_length(model)
+        if context_length is not None:
+            entry["context_length"] = context_length
+
+        max_completion_tokens = _extract_max_completion_tokens(model)
+        if max_completion_tokens is not None:
+            entry["max_completion_tokens"] = max_completion_tokens
+
+        pricing = _extract_pricing(model)
+        if pricing:
+            entry["pricing"] = pricing
+
+        _add_model_aliases(cache, model_id, entry)
+        alt_id = model.get("id")
+        if isinstance(alt_id, str) and alt_id and alt_id != model_id:
+            _add_model_aliases(cache, alt_id, entry)
+    return cache
+
+
+def _fetch_lmstudio_native_metadata(
+    base_url: str,
+    headers: Dict[str, str],
+    *,
+    timeout: float = 10,
+) -> Dict[str, Dict[str, Any]]:
+    server_url = _lmstudio_server_root(base_url)
+    response = requests.get(
+        server_url.rstrip("/") + "/api/v1/models",
+        headers=headers,
+        timeout=timeout,
+        verify=_resolve_requests_verify(),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return _lmstudio_native_metadata_cache(payload)
+
+
+def _metadata_has_context_length(cache: Dict[str, Dict[str, Any]]) -> bool:
+    return any(isinstance(entry.get("context_length"), int) for entry in cache.values())
+
+
 def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
@@ -860,49 +935,7 @@ def fetch_endpoint_model_metadata(
     if is_local_endpoint(normalized):
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                server_url = _lmstudio_server_root(normalized)
-                response = requests.get(
-                    server_url.rstrip("/") + "/api/v1/models",
-                    headers=headers,
-                    timeout=10,
-                    verify=_resolve_requests_verify(),
-                )
-                response.raise_for_status()
-                payload = response.json()
-                cache: Dict[str, Dict[str, Any]] = {}
-                for model in payload.get("models", []):
-                    if not isinstance(model, dict):
-                        continue
-                    model_id = model.get("key") or model.get("id")
-                    if not model_id:
-                        continue
-                    entry: Dict[str, Any] = {"name": model.get("name", model_id)}
-
-                    context_length = None
-                    for inst in model.get("loaded_instances", []) or []:
-                        if not isinstance(inst, dict):
-                            continue
-                        cfg = inst.get("config", {})
-                        ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
-                        if isinstance(ctx, int) and ctx > 0:
-                            context_length = ctx
-                            break
-                    if context_length is not None:
-                        entry["context_length"] = context_length
-
-                    max_completion_tokens = _extract_max_completion_tokens(model)
-                    if max_completion_tokens is not None:
-                        entry["max_completion_tokens"] = max_completion_tokens
-
-                    pricing = _extract_pricing(model)
-                    if pricing:
-                        entry["pricing"] = pricing
-
-                    _add_model_aliases(cache, model_id, entry)
-                    alt_id = model.get("id")
-                    if isinstance(alt_id, str) and alt_id and alt_id != model_id:
-                        _add_model_aliases(cache, alt_id, entry)
-
+                cache = _fetch_lmstudio_native_metadata(normalized, headers)
                 _endpoint_model_metadata_cache[normalized] = cache
                 _endpoint_model_metadata_cache_time[normalized] = time.time()
                 return cache
@@ -933,6 +966,18 @@ def fetch_endpoint_model_metadata(
                 if pricing:
                     entry["pricing"] = pricing
                 _add_model_aliases(cache, model_id, entry)
+
+            if cache and not _metadata_has_context_length(cache):
+                try:
+                    lmstudio_cache = _fetch_lmstudio_native_metadata(
+                        normalized,
+                        headers,
+                        timeout=3,
+                    )
+                    if lmstudio_cache:
+                        cache = lmstudio_cache
+                except Exception as exc:
+                    last_error = exc
 
             # If this is a llama.cpp server, query /props for actual allocated context
             is_llamacpp = any(
@@ -1618,12 +1663,9 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                     data = resp.json()
                     for m in data.get("models", []):
                         if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
-                            # Prefer loaded instance context (actual runtime value)
-                            for inst in m.get("loaded_instances", []):
-                                cfg = inst.get("config", {})
-                                ctx = cfg.get("context_length")
-                                if ctx and isinstance(ctx, (int, float)):
-                                    return int(ctx)
+                            ctx = _lmstudio_native_context_length(m)
+                            if ctx is not None:
+                                return ctx
                             break
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}

@@ -3297,11 +3297,18 @@ class AIAgent:
             except Exception:
                 pass
 
-    def commit_memory_session(self, messages: list = None) -> None:
+    def commit_memory_session(
+        self,
+        messages: list = None,
+        session_id: Optional[str] = None,
+    ) -> None:
         """Trigger end-of-session extraction without tearing providers down.
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
+        ended_session_id = (
+            session_id if session_id is not None else (self.session_id or "")
+        )
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -3316,7 +3323,7 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
                 self.context_compressor.on_session_end(
-                    self.session_id or "",
+                    ended_session_id,
                     messages or [],
                 )
             except Exception:

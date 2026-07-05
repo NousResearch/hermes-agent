@@ -156,6 +156,10 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
 
     cli.process_command("/new")
 
+    boundary_thread = getattr(cli, "_last_session_boundary_thread", None)
+    if boundary_thread is not None:
+        boundary_thread.join(timeout=1)
+
     assert cli.session_id != old_session_id
 
     old_session = cli._session_db.get_session(old_session_id)
@@ -173,6 +177,46 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     assert cli.session_start > old_session_start
     assert cli.agent.session_start == cli.session_start
     cli.agent._invalidate_system_prompt.assert_called_once()
+
+
+def test_new_session_dispatches_memory_flush_on_background_thread(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    import cli as _cli_mod
+
+    started = {}
+
+    class _DummyThread:
+        def __init__(self, *, target=None, args=(), kwargs=None, daemon=None, name=None):
+            started["target"] = target
+            started["args"] = args
+            started["kwargs"] = kwargs or {}
+            started["daemon"] = daemon
+            started["name"] = name
+            started["started"] = False
+
+        def start(self):
+            started["started"] = True
+
+        def join(self, timeout=None):
+            return None
+
+    with patch.object(_cli_mod.threading, "Thread", _DummyThread):
+        cli.process_command("/new")
+
+    assert started["started"] is True
+    assert callable(started["target"])
+    assert started["daemon"] is True
+    assert started["name"] == f"session-boundary-flush-{old_session_id[:24]}"
+    cli.agent.commit_memory_session.assert_not_called()
+
+    started["target"]()
+
+    cli.agent.commit_memory_session.assert_called_once_with(
+        [{"role": "user", "content": "hello"}],
+        session_id=old_session_id,
+    )
 
 
 def test_new_command_rotates_hermes_session_id_env_and_context(tmp_path):

@@ -4131,6 +4131,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+        self._last_session_boundary_thread: Optional[threading.Thread] = None
 
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
         """Claim a global active-session slot for this CLI process."""
@@ -6956,17 +6957,50 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
             return False
 
+    def _launch_session_boundary_memory_flush(
+        self,
+        history_snapshot: list,
+        *,
+        session_id: Optional[str] = None,
+    ) -> None:
+        """Kick old-session memory extraction off-thread so /new is responsive."""
+        self._last_session_boundary_thread = None
+        agent = getattr(self, "agent", None)
+        if not agent or not history_snapshot:
+            return
+
+        def _run_boundary_flush() -> None:
+            if hasattr(agent, "commit_memory_session"):
+                try:
+                    agent.commit_memory_session(history_snapshot, session_id=session_id)
+                except Exception:
+                    pass
+
+        thread = threading.Thread(
+            target=_run_boundary_flush,
+            daemon=True,
+            name=f"session-boundary-flush-{(session_id or 'unknown')[:24]}",
+        )
+        self._last_session_boundary_thread = thread
+        thread.start()
+
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
+        old_session_id = self.session_id
         if self.agent and self.conversation_history:
-            # Trigger memory extraction on the old session before session_id rotates.
-            self.agent.commit_memory_session(self.conversation_history)
+            # Trigger memory extraction on the old session without blocking
+            # session rotation. Snapshot the history and old session id first:
+            # the background thread may run after ``self.agent.session_id`` is
+            # updated to the new session below.
+            self._launch_session_boundary_memory_flush(
+                list(self.conversation_history),
+                session_id=old_session_id,
+            )
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
             # First session or empty history — still finalize the old session
             self._notify_session_boundary("on_session_finalize")
 
-        old_session_id = self.session_id
         if self._session_db and old_session_id:
             # Flush any un-persisted messages from the current turn to the
             # old session *before* rotating.  /new can be called mid-turn

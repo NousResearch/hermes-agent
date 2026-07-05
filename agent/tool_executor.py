@@ -21,6 +21,8 @@ import threading
 import time
 from typing import Any, Optional
 
+from agent.tool_progress_bridge import reset_tool_progress, set_tool_progress  # torya: live sub-tool streaming
+
 from agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
@@ -1403,19 +1405,23 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner.start()
             _spinner_result = None
             try:
-                function_result = _ra().handle_function_call(
-                    function_name, function_args, effective_task_id,
-                    tool_call_id=tool_call.id,
-                    session_id=agent.session_id or "",
-                    turn_id=getattr(agent, "_current_turn_id", "") or "",
-                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
-                    skip_pre_tool_call_hook=True,
-                    skip_tool_request_middleware=True,
-                    enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                    disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                    tool_request_middleware_trace=list(middleware_trace),
-                )
+                _tp_tok = set_tool_progress(getattr(agent, "tool_progress_callback", None))  # torya hook
+                try:
+                    function_result = _ra().handle_function_call(
+                        function_name, function_args, effective_task_id,
+                        tool_call_id=tool_call.id,
+                        session_id=agent.session_id or "",
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                        enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                        skip_pre_tool_call_hook=True,
+                        skip_tool_request_middleware=True,
+                        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                        tool_request_middleware_trace=list(middleware_trace),
+                    )
+                finally:
+                    reset_tool_progress(_tp_tok)
                 _spinner_result = function_result
             except KeyboardInterrupt:
                 function_result = _emit_cancelled_terminal_post_tool_call(
@@ -1445,19 +1451,23 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent._vprint(f"  {cute_msg}")
         else:
             try:
-                function_result = _ra().handle_function_call(
-                    function_name, function_args, effective_task_id,
-                    tool_call_id=tool_call.id,
-                    session_id=agent.session_id or "",
-                    turn_id=getattr(agent, "_current_turn_id", "") or "",
-                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
-                    skip_pre_tool_call_hook=True,
-                    skip_tool_request_middleware=True,
-                    enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                    disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                    tool_request_middleware_trace=list(middleware_trace),
-                )
+                _tp_tok = set_tool_progress(getattr(agent, "tool_progress_callback", None))  # torya hook
+                try:
+                    function_result = _ra().handle_function_call(
+                        function_name, function_args, effective_task_id,
+                        tool_call_id=tool_call.id,
+                        session_id=agent.session_id or "",
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                        enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                        skip_pre_tool_call_hook=True,
+                        skip_tool_request_middleware=True,
+                        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                        tool_request_middleware_trace=list(middleware_trace),
+                    )
+                finally:
+                    reset_tool_progress(_tp_tok)
             except KeyboardInterrupt:
                 _emit_cancelled_terminal_post_tool_call(
                     agent,

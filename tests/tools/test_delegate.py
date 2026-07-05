@@ -11,9 +11,11 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import sys
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -33,6 +35,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _load_config,
 )
 
 
@@ -134,6 +137,27 @@ class TestDelegateRequirements(unittest.TestCase):
         )
         self.assertIn(f"up to {_get_max_concurrent_children()}", fn["description"])
         self.assertIn(f"max_spawn_depth={_get_max_spawn_depth()}", fn["description"])
+
+
+class TestDelegationConfigLoading(unittest.TestCase):
+    def test_file_config_wins_over_stale_cli_snapshot(self):
+        fake_cli = SimpleNamespace(
+            CLI_CONFIG={
+                "delegation": {
+                    "child_timeout_seconds": 600,
+                    "max_spawn_depth": 4,
+                }
+            }
+        )
+
+        with patch.dict(sys.modules, {"cli": fake_cli}), patch(
+            "hermes_cli.config.load_config",
+            return_value={"delegation": {"child_timeout_seconds": 900}},
+        ):
+            cfg = _load_config()
+
+        self.assertEqual(cfg["child_timeout_seconds"], 900)
+        self.assertEqual(cfg["max_spawn_depth"], 4)
 
 
 class TestChildSystemPrompt(unittest.TestCase):

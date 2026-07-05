@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
+from hermes_cli import kanban_workflows as kw
 from hermes_cli.profiles import get_active_profile_name
 
 
@@ -388,6 +389,35 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_swarm.add_argument("--created-by", default=None, help="Creator/anchor profile")
     p_swarm.add_argument("--idempotency-key", default=None, help="Dedup key for the root card")
     p_swarm.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    # --- workflow templates ---
+    p_workflow = sub.add_parser(
+        "workflow",
+        aliases=["wf"],
+        help="Create a standard Kanban workflow template graph",
+    )
+    workflow_sub = p_workflow.add_subparsers(dest="workflow_action")
+    p_coder_qa_pm = workflow_sub.add_parser(
+        "coder-qa-pm",
+        aliases=["coder-qa-pm-review"],
+        help="Create coder -> QA -> PM review tasks with dependency handoff",
+    )
+    p_coder_qa_pm.add_argument("title", help="Workflow title / request")
+    p_coder_qa_pm.add_argument("--body", default=None, help="Optional full request body")
+    p_coder_qa_pm.add_argument("--coder", default="coder-codex", help="Coder profile")
+    p_coder_qa_pm.add_argument("--qa", default="qa-minimax", help="QA profile")
+    p_coder_qa_pm.add_argument("--pm", default="pm-deepseek", help="PM review profile")
+    p_coder_qa_pm.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_coder_qa_pm.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_coder_qa_pm.add_argument("--created-by", default=None, help="Creator/anchor profile")
+    p_coder_qa_pm.add_argument("--workspace", default="scratch",
+                               help="scratch | worktree | worktree:<path> | dir:<path> "
+                                    "(default: scratch)")
+    p_coder_qa_pm.add_argument("--project", default=None,
+                               help="Link tasks to a project (id or slug)")
+    p_coder_qa_pm.add_argument("--idempotency-key", default=None,
+                               help="Dedup key for the root card")
+    p_coder_qa_pm.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
     p_list = sub.add_parser("list", aliases=["ls"], help="List tasks")
@@ -939,6 +969,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "init":     _cmd_init,
             "create":   _cmd_create,
             "swarm":    _cmd_swarm,
+            "workflow": _cmd_workflow,
+            "wf":       _cmd_workflow,
             "list":     _cmd_list,
             "ls":       _cmd_list,
             "show":     _cmd_show,
@@ -1396,6 +1428,45 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
         print("Workers: " + ", ".join(created.worker_ids))
         print(f"Verifier: {created.verifier_id}")
         print(f"Synthesizer: {created.synthesizer_id}")
+    return 0
+
+
+def _cmd_workflow(args: argparse.Namespace) -> int:
+    action = getattr(args, "workflow_action", None)
+    if action not in {"coder-qa-pm", "coder-qa-pm-review"}:
+        print(
+            "kanban workflow: choose a template, e.g. coder-qa-pm",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        ws_kind, ws_path = _parse_workspace_flag(getattr(args, "workspace", "scratch"))
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban workflow: {exc}", file=sys.stderr)
+        return 2
+    with kb.connect_closing() as conn:
+        created = kw.create_coder_qa_pm_review_workflow(
+            conn,
+            title=args.title,
+            body=args.body,
+            coder_assignee=args.coder,
+            qa_assignee=args.qa,
+            pm_assignee=args.pm,
+            tenant=args.tenant,
+            created_by=args.created_by or _profile_author(),
+            workspace_kind=ws_kind,
+            workspace_path=ws_path,
+            project_id=getattr(args, "project", None),
+            priority=args.priority,
+            idempotency_key=getattr(args, "idempotency_key", None),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(f"Workflow root: {created.root_id}")
+        print(f"Coder: {created.coder_task_id}")
+        print(f"QA: {created.qa_task_id}")
+        print(f"PM review: {created.pm_review_task_id}")
     return 0
 
 

@@ -7708,13 +7708,19 @@ def _codex_full_login_worker(session_id: str) -> None:
         if not access_token:
             raise RuntimeError("token exchange did not return access_token")
 
-        from hermes_cli.auth import _save_codex_tokens
+        from hermes_cli.auth import _save_codex_tokens, _update_config_for_provider
+        from hermes_cli.models import get_default_model_for_provider
 
         with _profile_scope(_oauth_session_profile(session_id)):
             _save_codex_tokens({
                 "access_token": access_token,
                 "refresh_token": refresh_token,
             })
+            _update_config_for_provider(
+                "openai-codex",
+                DEFAULT_CODEX_BASE_URL,
+                default_model=get_default_model_for_provider("openai-codex"),
+            )
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)

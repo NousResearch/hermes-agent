@@ -9,6 +9,7 @@ import {
   type OnboardingContext,
   refreshOnboarding,
   requestDesktopOnboarding,
+  saveOnboardingApiKey,
   saveOnboardingLocalEndpoint,
   submitOnboardingCode
 } from './onboarding'
@@ -364,6 +365,158 @@ describe('OAuth onboarding', () => {
     expect(optionsIndex).toBeGreaterThanOrEqual(0)
     expect(recommendedIndex).toBeGreaterThan(optionsIndex)
     expect(setIndex).toBeGreaterThan(recommendedIndex)
+  })
+
+  it('does not persist the first provider row when Codex is missing from model options', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/oauth/openai-codex/submit') {
+        return { ok: true, status: 'approved' }
+      }
+
+      if (path === '/api/model/options') {
+        return {
+          providers: [
+            {
+              name: 'Nous Portal',
+              slug: 'nous',
+              models: ['anthropic/claude-opus-4.8']
+            }
+          ]
+        }
+      }
+
+      if (path.startsWith('/api/model/recommended-default?')) {
+        return { provider: 'nous', model: 'anthropic/claude-opus-4.8', free_tier: false }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const requestGateway: OnboardingContext['requestGateway'] = async (method, params) => {
+      if (method === 'reload.env') {
+        return {} as never
+      }
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        expect(params).toEqual({ provider: 'openai-codex' })
+
+        return { ok: true } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    $desktopOnboarding.set(
+      baseState({
+        flow: {
+          status: 'awaiting_user',
+          provider: provider('openai-codex', 'OpenAI OAuth (ChatGPT)'),
+          start: {
+            auth_url: 'https://chatgpt.com/device',
+            expires_in: 600,
+            flow: 'pkce',
+            session_id: 'codex-session'
+          },
+          code: 'fresh-code'
+        },
+        requested: true
+      })
+    )
+
+    await submitOnboardingCode(onboardingContext(requestGateway))
+
+    expect(calls.some(c => c.path === '/api/model/set')).toBe(false)
+    expect(calls.some(c => c.path.startsWith('/api/model/recommended-default'))).toBe(false)
+    expect($desktopOnboarding.get().configured).toBe(true)
+  })
+})
+
+describe('API-key onboarding', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  it('maps OPENAI_API_KEY to the canonical openai-api provider instead of the first provider row', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/env') {
+        return { ok: true }
+      }
+
+      if (path === '/api/model/options') {
+        return {
+          providers: [
+            {
+              name: 'Nous Portal',
+              slug: 'nous',
+              models: ['anthropic/claude-opus-4.8']
+            },
+            {
+              name: 'OpenAI API',
+              slug: 'openai-api',
+              models: ['gpt-5.5']
+            }
+          ]
+        }
+      }
+
+      if (path.startsWith('/api/model/recommended-default?')) {
+        return { provider: 'openai-api', model: 'gpt-5.5', free_tier: null }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'openai-api', model: 'gpt-5.5', gateway_tools: [] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const requestGateway: OnboardingContext['requestGateway'] = async method => {
+      if (method === 'reload.env') {
+        return {} as never
+      }
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        return { ok: true } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    const result = await saveOnboardingApiKey(
+      'OPENAI_API_KEY',
+      'sk-test',
+      'OpenAI',
+      onboardingContext(requestGateway)
+    )
+
+    expect(result.ok).toBe(true)
+    expect(calls).toContainEqual({
+      path: '/api/model/set',
+      body: { scope: 'main', provider: 'openai-api', model: 'gpt-5.5' }
+    })
   })
 })
 

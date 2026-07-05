@@ -86,6 +86,13 @@ const COPY_FLASH_MS = 1500
 export const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
 export const DEFAULT_MANUAL_ONBOARDING_REASON = 'Add or switch inference provider.'
 
+const API_KEY_PROVIDER_SLUGS: Record<string, string[]> = {
+  OPENAI_API_KEY: ['openai-api'],
+  OPENROUTER_API_KEY: ['openrouter'],
+  GEMINI_API_KEY: ['gemini'],
+  XAI_API_KEY: ['xai']
+}
+
 function readCachedConfigured(): boolean | null {
   if (typeof window === 'undefined') {
     return null
@@ -250,13 +257,16 @@ async function fetchProviderDefaultModel(
     return null
   }
 
-  // Try each preferred slug (lowercased), fall back to the first provider
-  // returned (model.options orders by recency / authenticated state, so
-  // the just-authenticated provider is usually first anyway).
+  // Require the just-authenticated provider to be present. Falling back to the
+  // first provider row can silently persist an unrelated model, such as an Opus
+  // aggregator model, after a successful ChatGPT/Codex login.
   const lower = preferredSlugs.map(s => s.toLowerCase())
 
-  const matched =
-    providers.find((p: ModelOptionProvider) => lower.includes(String(p.slug).toLowerCase())) ?? providers[0]
+  const matched = providers.find((p: ModelOptionProvider) => lower.includes(String(p.slug).toLowerCase()))
+
+  if (!matched) {
+    return null
+  }
 
   const models = matched.models ?? []
 
@@ -764,13 +774,14 @@ export async function saveOnboardingApiKey(
   // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
     await setEnvVar(envKey, trimmed)
-    // For API-key flows we don't have a definitive provider id (the
-    // user picked which API key they're entering, but the corresponding
-    // backend slug — e.g. OPENROUTER_API_KEY → "openrouter" — is the
-    // env-key prefix stripped). Pass a couple of likely candidates;
-    // fetchProviderDefaultModel falls back to the first authenticated
-    // provider returned by /api/model/options if none match.
-    const slugCandidates = [envKey.replace(/_API_KEY$/, '').toLowerCase(), label.toLowerCase()]
+    // For API-key flows the user picked which key they're entering, but a few
+    // backend slugs do not match the env-key prefix (OPENAI_API_KEY ->
+    // openai-api).
+    const slugCandidates = [
+      ...(API_KEY_PROVIDER_SLUGS[envKey] ?? []),
+      envKey.replace(/_API_KEY$/, '').toLowerCase(),
+      label.toLowerCase()
+    ]
     // ignoreRuntimeGate=true: never block onboarding on the runtime check.
     await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
 

@@ -3706,6 +3706,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        # bell_on_approval: play terminal bell when a dangerous-command approval
+        # prompt appears mid-task (default true — the agent blocks silently
+        # otherwise, unlike turn-end where bell_on_complete covers it).
+        self.bell_on_approval = CLI_CONFIG["display"].get("bell_on_approval", True)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         # reasoning_full: when reasoning display is on, print the post-response
@@ -11592,6 +11596,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout
+
+            # Play terminal bell when a dangerous-command approval prompt
+            # appears mid-task. Without this, the agent blocks silently while
+            # the user is tabbed away — bell_on_complete only fires at turn end.
+            if getattr(self, "bell_on_approval", True):
+                sys.stdout.write("\a")
+                sys.stdout.flush()
 
             # Modal prompt — paint immediately, bypassing the throttle/resize
             # guard. A throttled paint here can be silently dropped (250ms

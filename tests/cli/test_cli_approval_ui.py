@@ -27,6 +27,7 @@ def _make_cli_stub():
     cli._sudo_deadline = 0
     cli._modal_input_snapshot = None
     cli._invalidate = MagicMock()
+    cli.bell_on_approval = True
     cli._app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())
     return cli
 
@@ -62,8 +63,94 @@ def _make_background_cli_stub():
     cli._agent_running = False
     cli._spinner_text = ""
     cli.bell_on_complete = False
+    cli.bell_on_approval = True
     cli.final_response_markdown = "strip"
     return cli
+
+
+class TestApprovalBell:
+    """Terminal bell (\a) fires on dangerous-command approval prompts.
+
+    bell_on_complete covers turn-end notification, but approval prompts
+    block mid-task — without a bell the agent stalls silently while the
+    user is tabbed away.
+    """
+
+    def test_bell_writes_bell_char_when_enabled(self):
+        """When bell_on_approval is True, \\a is written to stdout."""
+        import io
+        cli = _make_cli_stub()
+        cli.bell_on_approval = True
+        result = {}
+
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            def _run():
+                result["value"] = cli._approval_callback("rm -rf /tmp/x", "danger")
+
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cli._approval_state is not None
+            assert "\a" in mock_stdout.getvalue()
+
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+
+        assert result["value"] == "deny"
+
+    def test_bell_suppressed_when_disabled(self):
+        """When bell_on_approval is False, no \\a is written."""
+        import io
+        cli = _make_cli_stub()
+        cli.bell_on_approval = False
+        result = {}
+
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            def _run():
+                result["value"] = cli._approval_callback("rm -rf /tmp/x", "danger")
+
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cli._approval_state is not None
+            assert "\a" not in mock_stdout.getvalue()
+
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+
+        assert result["value"] == "deny"
+
+    def test_bell_defaults_to_true_when_attr_missing(self):
+        """If bell_on_approval is not set, bell fires (safe default)."""
+        import io
+        cli = _make_cli_stub()
+        delattr(cli, "bell_on_approval")  # simulate missing attr
+        result = {}
+
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            def _run():
+                result["value"] = cli._approval_callback("rm -rf /tmp/x", "danger")
+
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cli._approval_state is not None
+            assert "\a" in mock_stdout.getvalue()
+
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
 
 
 class TestCliApprovalUi:
@@ -384,6 +471,7 @@ def _make_real_paint_cli_stub():
     cli._clarify_freetext = False
     cli._clarify_deadline = 0
     cli._modal_input_snapshot = None
+    cli.bell_on_approval = False  # suppress bell in paint tests
     # Real methods, not mocks.
     cli._paint_now = HermesCLI._paint_now.__get__(cli, HermesCLI)
     cli._invalidate = HermesCLI._invalidate.__get__(cli, HermesCLI)

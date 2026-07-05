@@ -1676,6 +1676,18 @@ def prompt_dangerous_approval(command: str, description: str,
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
+        # Play terminal bell if bell_on_approval is enabled (default true).
+        # This is the non-TUI fallback path (scripts, sshd, tests); the TUI
+        # path fires its own bell in approval_callback.
+        try:
+            from hermes_cli.config import load_config_readonly as _load_cfg
+            _bell_approval = (_load_cfg() or {}).get("display", {}).get("bell_on_approval", True)
+        except Exception:
+            _bell_approval = True
+        if _bell_approval:
+            sys.stdout.write("\a")
+            sys.stdout.flush()
+
         # Resolve the active UI language once per prompt so we don't re-read
         # config/YAML inside the retry loop below.
         from agent.i18n import t

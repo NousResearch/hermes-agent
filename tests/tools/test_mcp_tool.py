@@ -5,7 +5,6 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
-import os
 import threading
 import time
 from types import SimpleNamespace
@@ -48,6 +47,46 @@ def _make_mock_server(name, session=None, tools=None):
     return server
 
 
+class TestFilterMCPChildren:
+    def test_filters_gateway_children_by_argv_marker(self, monkeypatch):
+        """Non-MCP children start with an interpreter/binary, not the marker."""
+        import sys
+
+        import tools.mcp_tool as mcp_tool
+
+        cmdlines = {
+            101: [
+                "/usr/bin/python3",
+                "-m",
+                "tui_gateway.slash_worker",
+                "--session-key",
+                "abc",
+            ],
+            102: [
+                "/usr/bin/java",
+                "-jar",
+                "/opt/jdtls/plugins/org.eclipse.equinox.launcher_1.7.0.jar",
+            ],
+            103: ["/usr/bin/node", "server.js"],
+        }
+
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def cmdline(self):
+                return cmdlines[self.pid]
+
+        fake_psutil = SimpleNamespace(
+            Process=FakeProcess,
+            NoSuchProcess=ProcessLookupError,
+            AccessDenied=PermissionError,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        assert mcp_tool._filter_mcp_children({101, 102, 103}) == {103}
+
+
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
@@ -81,6 +120,56 @@ class TestLoadMCPConfig:
             from tools.mcp_tool import _load_mcp_config
             result = _load_mcp_config()
             assert result == {}
+
+
+class TestMCPStatus:
+    def test_status_distinguishes_configured_connecting_failed_and_disabled(
+        self, monkeypatch
+    ):
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setattr(
+            mcp_tool,
+            "_load_mcp_config",
+            lambda: {
+                "configured": {"command": "docker", "args": ["mcp", "gateway", "run"]},
+                "connecting": {"command": "slow-mcp"},
+                "failed": {"command": "bad-mcp"},
+                "disabled": {"command": "off-mcp", "enabled": False},
+            },
+        )
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_connecting = set(mcp_tool._server_connecting)
+            saved_errors = dict(mcp_tool._server_connect_errors)
+            mcp_tool._servers.clear()
+            mcp_tool._server_connecting.clear()
+            mcp_tool._server_connect_errors.clear()
+            mcp_tool._server_connecting.add("connecting")
+            mcp_tool._server_connect_errors["failed"] = "Connection closed"
+
+        try:
+            statuses = {
+                entry["name"]: entry
+                for entry in mcp_tool.get_mcp_status()
+            }
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._server_connecting.clear()
+                mcp_tool._server_connecting.update(saved_connecting)
+                mcp_tool._server_connect_errors.clear()
+                mcp_tool._server_connect_errors.update(saved_errors)
+
+        assert statuses["configured"]["status"] == "configured"
+        assert statuses["configured"]["connected"] is False
+        assert statuses["configured"]["disabled"] is False
+        assert statuses["connecting"]["status"] == "connecting"
+        assert statuses["failed"]["status"] == "failed"
+        assert statuses["failed"]["error"] == "Connection closed"
+        assert statuses["disabled"]["status"] == "disabled"
+        assert statuses["disabled"]["disabled"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +274,89 @@ class TestSchemaConversion:
 
         assert schema["parameters"]["properties"]["items"]["items"]["$ref"] == "#/$defs/Entry"
         assert schema["parameters"]["$defs"]["Entry"]["properties"]["child"]["$ref"] == "#/$defs/Child"
+
+    def test_definitions_as_property_name_is_preserved(self):
+        """A tool parameter literally named ``definitions`` must not be renamed.
+
+        Regression: the rewrite that promotes the legacy ``definitions``
+        meta-keyword to ``$defs`` used to fire for *any* key named
+        ``definitions`` anywhere in the tree, including inside ``properties``
+        dicts. That turned user-facing parameter names into ``$defs``, which
+        Anthropic and OpenAI both reject because ``$`` is not in the
+        ``^[a-zA-Z0-9_.-]{1,64}$`` property-name pattern. Real-world repro: a
+        CI/pipelines MCP tool whose ``definitions`` parameter is an array of
+        pipeline-definition IDs.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="pipelines_build",
+            description="List pipeline builds",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "definitions": {
+                        "description": "Array of build definition IDs to filter builds.",
+                    },
+                    "top": {"type": "integer"},
+                },
+            },
+        )
+
+        schema = _convert_mcp_schema("pipelines", mcp_tool)
+
+        props = schema["parameters"]["properties"]
+        assert "definitions" in props, "user-facing property name was renamed away"
+        assert "$defs" not in props, "user-facing property name was rewritten to $defs"
+        # And the meta-keyword promotion didn't happen at the root either,
+        # because there was no `definitions` meta-keyword to promote.
+        assert "$defs" not in schema["parameters"]
+        assert "definitions" not in schema["parameters"]
+
+    def test_definitions_property_and_meta_keyword_coexist(self):
+        """``definitions`` as both a property name AND a meta-keyword in the
+        same schema. The property name stays; the meta-keyword is promoted.
+
+        Note: Python source can't express both keys as literals (the second
+        would clobber the first), so build the dict explicitly.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        input_schema = {
+            "type": "object",
+            "properties": {
+                # User-facing parameter literally named "definitions".
+                "definitions": {
+                    "description": "Array of build definition IDs.",
+                },
+                "payload": {"$ref": "#/definitions/Payload"},
+            },
+        }
+        # Meta-keyword (legacy draft-07 reusable defs), set after the literal.
+        input_schema["definitions"] = {
+            "Payload": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+            },
+        }
+
+        mcp_tool = _make_mcp_tool(
+            name="mixed",
+            description="Schema with both forms of `definitions`",
+            input_schema=input_schema,
+        )
+
+        schema = _convert_mcp_schema("mixed", mcp_tool)
+
+        # Property name preserved.
+        assert "definitions" in schema["parameters"]["properties"]
+        assert "$defs" not in schema["parameters"]["properties"]
+        # Meta-keyword promoted at the root.
+        assert "$defs" in schema["parameters"]
+        assert "definitions" not in schema["parameters"]
+        # The $ref into the legacy location was rewritten too.
+        assert schema["parameters"]["properties"]["payload"]["$ref"] == "#/$defs/Payload"
 
     def test_missing_type_on_object_is_coerced(self):
         """Schemas that describe an object but omit ``type`` get type='object'."""
@@ -398,6 +570,77 @@ class TestCheckFunction:
 
 
 # ---------------------------------------------------------------------------
+# MCP loop runner
+# ---------------------------------------------------------------------------
+
+class TestRunOnMcpLoop:
+    def test_scheduler_failure_closes_factory_coroutine(self):
+        """If run_coroutine_threadsafe raises, the factory's coroutine is closed."""
+        import gc
+        import warnings
+        import tools.mcp_tool as mcp
+
+        created = {"coro": None}
+
+        async def _sample():
+            return "ok"
+
+        def factory():
+            created["coro"] = _sample()
+            return created["coro"]
+
+        fake_loop = MagicMock()
+        fake_loop.is_running.return_value = True
+
+        with patch.object(mcp, "_mcp_loop", fake_loop):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with patch(
+                    "agent.async_utils.asyncio.run_coroutine_threadsafe",
+                    side_effect=RuntimeError("scheduler down"),
+                ):
+                    with pytest.raises(RuntimeError):
+                        mcp._run_on_mcp_loop(factory)
+                gc.collect()
+
+        assert created["coro"] is not None
+        assert created["coro"].cr_frame is None
+        runtime_warnings = [
+            w for w in caught
+            if issubclass(w.category, RuntimeWarning)
+            and "was never awaited" in str(w.message)
+            and "_sample" in str(w.message)
+        ]
+        assert runtime_warnings == []
+
+    def test_dead_loop_closes_passed_coroutine(self):
+        """If loop is None, a passed coroutine (not factory) is closed."""
+        import gc
+        import warnings
+        import tools.mcp_tool as mcp
+
+        async def _sample():
+            return "ok"
+
+        coro = _sample()
+        with patch.object(mcp, "_mcp_loop", None):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with pytest.raises(RuntimeError, match="not running"):
+                    mcp._run_on_mcp_loop(coro)
+                gc.collect()
+
+        assert coro.cr_frame is None
+        runtime_warnings = [
+            w for w in caught
+            if issubclass(w.category, RuntimeWarning)
+            and "was never awaited" in str(w.message)
+            and "_sample" in str(w.message)
+        ]
+        assert runtime_warnings == []
+
+
+# ---------------------------------------------------------------------------
 # Tool handler
 # ---------------------------------------------------------------------------
 
@@ -406,7 +649,8 @@ class TestToolHandler:
 
     def _patch_mcp_loop(self, coro_side_effect=None):
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
-        def fake_run(coro, timeout=30):
+        def fake_run(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
             return asyncio.run(coro)
         if coro_side_effect:
             return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=coro_side_effect)
@@ -485,7 +729,8 @@ class TestToolHandler:
 
         try:
             handler = _make_tool_handler("test_srv", "greet", 120)
-            def _interrupting_run(coro, timeout=30):
+            def _interrupting_run(coro_or_factory, timeout=30):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 coro.close()
                 raise InterruptedError("User sent a new message")
             with patch(
@@ -1306,6 +1551,33 @@ class TestBuildSafeEnv:
         assert "DATABASE_URL" not in result
         assert "API_SECRET" not in result
 
+    def test_windows_location_vars_passed_without_secrets(self):
+        """Windows launcher tools need location vars, but secrets stay filtered."""
+        from tools.mcp_tool import _build_safe_env
+
+        fake_env = {
+            "PATH": r"C:\Windows\System32",
+            "ProgramFiles": r"C:\Program Files",
+            "ProgramData": r"C:\ProgramData",
+            "ProgramW6432": r"C:\Program Files",
+            "LOCALAPPDATA": r"C:\Users\alice\AppData\Local",
+            "APPDATA": r"C:\Users\alice\AppData\Roaming",
+            "USERPROFILE": r"C:\Users\alice",
+            "GITHUB_TOKEN": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "OPENAI_API_KEY": "sk-proj-abc123",
+        }
+        with patch.dict("os.environ", fake_env, clear=True):
+            result = _build_safe_env(None)
+
+        assert result["ProgramFiles"] == r"C:\Program Files"
+        assert result["ProgramData"] == r"C:\ProgramData"
+        assert result["ProgramW6432"] == r"C:\Program Files"
+        assert result["LOCALAPPDATA"].endswith("Local")
+        assert result["APPDATA"].endswith("Roaming")
+        assert result["USERPROFILE"] == r"C:\Users\alice"
+        assert "GITHUB_TOKEN" not in result
+        assert "OPENAI_API_KEY" not in result
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_error
@@ -1386,6 +1658,27 @@ class TestHTTPConfig:
             with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
                 with pytest.raises(ImportError, match="HTTP transport"):
                     await server._run_http(config)
+
+        asyncio.run(_test())
+
+    def test_stdio_unavailable_raises_importerror_not_nameerror(self):
+        """Regression test for #30904.
+
+        When the mcp SDK isn't installed, ``_run_stdio`` previously leaked a
+        bare ``NameError: name 'StdioServerParameters' is not defined``. The
+        gate now raises a clear ``ImportError`` with install instructions,
+        mirroring ``_run_http``'s behaviour when the HTTP transport is
+        unavailable.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("local")
+        config = {"command": "python3", "args": ["/tmp/echo.py"]}
+
+        async def _test():
+            with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+                with pytest.raises(ImportError, match=r"mcp.*SDK"):
+                    await server._run_stdio(config)
 
         asyncio.run(_test())
 
@@ -1592,6 +1885,114 @@ class TestReconnection:
 
         asyncio.run(_test())
 
+    def test_initial_oauth_failure_does_not_retry(self):
+        """Initial OAuth failures stop immediately to avoid repeated browser prompts."""
+        from tools.mcp_tool import MCPServerTask
+
+        run_count = 0
+        target_server = None
+        oauth_error = RuntimeError("Token exchange failed (400): Unknown client_id")
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+            raise oauth_error
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("oauth_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("tools.mcp_tool._is_auth_error", return_value=True), \
+                 patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                await server.run({"command": "test"})
+
+            assert run_count == 1
+            assert server._error is oauth_error
+            assert server._ready.is_set()
+            assert mock_sleep.await_count == 0
+
+        asyncio.run(_test())
+
+    def test_preflight_probe_runs_on_initial_http_connect(self):
+        """The content-type preflight probe fires on the first HTTP connect."""
+        from tools.mcp_tool import MCPServerTask
+
+        target_server = None
+        probe = AsyncMock()
+
+        original_run_http = MCPServerTask._run_http
+
+        async def patched_run_http(self_srv, config):
+            if target_server is not self_srv:
+                return await original_run_http(self_srv, config)
+            # First connect succeeds; signal shutdown so run() exits cleanly.
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._ready.set()
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("http_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_http", patched_run_http), \
+                 patch.object(MCPServerTask, "_preflight_content_type", probe), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"url": "https://example.com/mcp"})
+
+            # Probe ran exactly once on the initial (pre-_ready) connect.
+            assert probe.await_count == 1
+
+        asyncio.run(_test())
+
+    def test_preflight_probe_skipped_when_already_ready(self):
+        """The probe must NOT re-run on reconnect (_ready already set).
+
+        On reconnect (OAuth recovery / manual refresh) run() is re-entered
+        with _ready still set from the prior successful connect. Re-probing
+        the already-validated endpoint burns a redundant network round-trip,
+        so the guard must skip it. Regression test for #40548.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        target_server = None
+        probe = AsyncMock()
+
+        original_run_http = MCPServerTask._run_http
+
+        async def patched_run_http(self_srv, config):
+            if target_server is not self_srv:
+                return await original_run_http(self_srv, config)
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("http_srv")
+            target_server = server
+            # Simulate a reconnect: _ready was set by the prior connect.
+            server._ready.set()
+
+            with patch.object(MCPServerTask, "_run_http", patched_run_http), \
+                 patch.object(MCPServerTask, "_preflight_content_type", probe), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"url": "https://example.com/mcp"})
+
+            # Probe skipped because _ready was already set.
+            assert probe.await_count == 0
+
+        asyncio.run(_test())
+
 
 # ---------------------------------------------------------------------------
 # Configurable timeouts
@@ -1606,7 +2007,7 @@ class TestConfigurableTimeouts:
 
         server = MCPServerTask("test_srv")
         assert server.tool_timeout == _DEFAULT_TOOL_TIMEOUT
-        assert server.tool_timeout == 120
+        assert server.tool_timeout == 300
 
     def test_custom_timeout(self):
         """Server with timeout=180 in config gets 180."""
@@ -1642,7 +2043,7 @@ class TestConfigurableTimeouts:
 
     def test_timeout_passed_to_handler(self):
         """The tool handler uses the server's configured timeout."""
-        from tools.mcp_tool import _make_tool_handler, _servers, MCPServerTask
+        from tools.mcp_tool import _make_tool_handler, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -1758,7 +2159,8 @@ class TestUtilityHandlers:
 
     def _patch_mcp_loop(self):
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
-        def fake_run(coro, timeout=30):
+        def fake_run(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
             return asyncio.run(coro)
         return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run)
 
@@ -2096,8 +2498,6 @@ class TestUtilityToolRegistration:
 # SamplingHandler tests
 # ===========================================================================
 
-import math
-import time
 
 class _CompatType:
     def __init__(self, **kwargs):
@@ -3654,3 +4054,208 @@ class TestRegisterMcpServers:
                 )
 
         _servers.pop("srv", None)
+
+
+# ---------------------------------------------------------------------------
+# Tests for parallel tool call support (port from openai/codex#17667)
+# ---------------------------------------------------------------------------
+
+class TestMcpParallelToolCalls:
+    """Tests for the supports_parallel_tool_calls config option."""
+
+    def test_is_mcp_tool_parallel_safe_non_mcp_tool(self):
+        """Non-MCP tool names always return False."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe
+        assert is_mcp_tool_parallel_safe("web_search") is False
+        assert is_mcp_tool_parallel_safe("read_file") is False
+        assert is_mcp_tool_parallel_safe("terminal") is False
+        assert is_mcp_tool_parallel_safe("") is False
+
+    def test_is_mcp_tool_parallel_safe_no_servers(self):
+        """MCP tool from unknown server returns False."""
+        from tools.mcp_tool import (
+            is_mcp_tool_parallel_safe, _mcp_tool_server_names,
+            _parallel_safe_servers, _lock,
+        )
+        with _lock:
+            _parallel_safe_servers.clear()
+            _mcp_tool_server_names.clear()
+        assert is_mcp_tool_parallel_safe("mcp_docs_search") is False
+
+    def test_is_mcp_tool_parallel_safe_with_flag(self):
+        """MCP tool from a parallel-safe server returns True."""
+        from tools.mcp_tool import (
+            is_mcp_tool_parallel_safe, _mcp_tool_server_names,
+            _parallel_safe_servers, _lock,
+        )
+        with _lock:
+            _parallel_safe_servers.add("docs")
+            _mcp_tool_server_names["mcp_docs_search"] = "docs"
+            _mcp_tool_server_names["mcp_docs_read_file"] = "docs"
+            _mcp_tool_server_names["mcp_github_list_repos"] = "github"
+        try:
+            assert is_mcp_tool_parallel_safe("mcp_docs_search") is True
+            assert is_mcp_tool_parallel_safe("mcp_docs_read_file") is True
+            # Different server should be False
+            assert is_mcp_tool_parallel_safe("mcp_github_list_repos") is False
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard("docs")
+                _mcp_tool_server_names.pop("mcp_docs_search", None)
+                _mcp_tool_server_names.pop("mcp_docs_read_file", None)
+                _mcp_tool_server_names.pop("mcp_github_list_repos", None)
+
+    def test_is_mcp_tool_parallel_safe_server_with_underscores(self):
+        """Server names containing underscores are correctly matched."""
+        from tools.mcp_tool import (
+            is_mcp_tool_parallel_safe, _mcp_tool_server_names,
+            _parallel_safe_servers, _lock,
+        )
+        with _lock:
+            _parallel_safe_servers.add("my_server")
+            _mcp_tool_server_names["mcp_my_server_query"] = "my_server"
+        try:
+            assert is_mcp_tool_parallel_safe("mcp_my_server_query") is True
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard("my_server")
+                _mcp_tool_server_names.pop("mcp_my_server_query", None)
+
+    def test_is_mcp_tool_parallel_safe_uses_exact_registered_server(self):
+        """Ambiguous MCP names must not match a shorter parallel-safe prefix."""
+        from tools.mcp_tool import (
+            is_mcp_tool_parallel_safe, _mcp_tool_server_names,
+            _parallel_safe_servers, _lock,
+        )
+        with _lock:
+            _parallel_safe_servers.add("a")
+            _mcp_tool_server_names["mcp_a_search"] = "a"
+            _mcp_tool_server_names["mcp_a_b_tool"] = "a_b"
+        try:
+            assert is_mcp_tool_parallel_safe("mcp_a_search") is True
+            assert is_mcp_tool_parallel_safe("mcp_a_b_tool") is False
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard("a")
+                _mcp_tool_server_names.pop("mcp_a_search", None)
+                _mcp_tool_server_names.pop("mcp_a_b_tool", None)
+
+    def test_registered_tool_provenance_prevents_prefix_collision(self):
+        """Registration records exact server ownership for ambiguous names."""
+        from tools.registry import registry
+        from tools.mcp_tool import (
+            _mcp_tool_server_names, _parallel_safe_servers,
+            _register_server_tools, is_mcp_tool_parallel_safe, _lock,
+        )
+
+        server = _make_mock_server(
+            "a_b",
+            tools=[_make_mcp_tool("tool", "Ambiguous tool name")],
+        )
+        registered = _register_server_tools("a_b", server, {})
+        try:
+            assert registered == ["mcp_a_b_tool"]
+            with _lock:
+                assert _mcp_tool_server_names["mcp_a_b_tool"] == "a_b"
+                _parallel_safe_servers.add("a")
+            assert is_mcp_tool_parallel_safe("mcp_a_b_tool") is False
+
+            with _lock:
+                _parallel_safe_servers.add("a_b")
+            assert is_mcp_tool_parallel_safe("mcp_a_b_tool") is True
+        finally:
+            for tool_name in registered:
+                registry.deregister(tool_name)
+            with _lock:
+                _parallel_safe_servers.discard("a")
+                _parallel_safe_servers.discard("a_b")
+                _mcp_tool_server_names.pop("mcp_a_b_tool", None)
+
+    def test_is_mcp_tool_parallel_safe_no_tool_suffix(self):
+        """Tool name that is just 'mcp_{server}' without a tool part returns False."""
+        from tools.mcp_tool import (
+            is_mcp_tool_parallel_safe, _mcp_tool_server_names,
+            _parallel_safe_servers, _lock,
+        )
+        with _lock:
+            _parallel_safe_servers.add("docs")
+            _mcp_tool_server_names.pop("mcp_docs", None)
+            _mcp_tool_server_names.pop("mcp_docs_", None)
+        try:
+            # "mcp_docs" has no tool part after the server name
+            assert is_mcp_tool_parallel_safe("mcp_docs") is False
+            # "mcp_docs_" has empty tool part
+            assert is_mcp_tool_parallel_safe("mcp_docs_") is False
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard("docs")
+
+    def test_register_mcp_servers_tracks_parallel_flag(self):
+        """register_mcp_servers populates _parallel_safe_servers from config."""
+        from tools.mcp_tool import (
+            register_mcp_servers, _parallel_safe_servers, _lock,
+            sanitize_mcp_name_component,
+        )
+        fake_config = {
+            "parallel_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": True,
+            },
+            "serial_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": False,
+            },
+            "default_srv": {
+                "command": "echo",
+                # no supports_parallel_tool_calls key
+            },
+        }
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            register_mcp_servers(fake_config)
+
+        with _lock:
+            assert sanitize_mcp_name_component("parallel_srv") in _parallel_safe_servers
+            assert sanitize_mcp_name_component("serial_srv") not in _parallel_safe_servers
+            assert sanitize_mcp_name_component("default_srv") not in _parallel_safe_servers
+            # Cleanup
+            _parallel_safe_servers.discard(sanitize_mcp_name_component("parallel_srv"))
+
+    def test_register_mcp_servers_removes_parallel_flag_on_toggle(self):
+        """Toggling supports_parallel_tool_calls to false removes server from the set."""
+        from tools.mcp_tool import (
+            register_mcp_servers, _parallel_safe_servers, _lock,
+            sanitize_mcp_name_component,
+        )
+
+        # First registration: parallel enabled
+        config_on = {
+            "toggle_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": True,
+            },
+        }
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            register_mcp_servers(config_on)
+        with _lock:
+            assert sanitize_mcp_name_component("toggle_srv") in _parallel_safe_servers
+
+        # Second registration: parallel disabled
+        config_off = {
+            "toggle_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": False,
+            },
+        }
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            register_mcp_servers(config_off)
+        with _lock:
+            assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers

@@ -26,8 +26,16 @@ describe('external link helpers', () => {
 
   it('derives readable title fallbacks from URL slugs', () => {
     expect(
-      urlSlugTitleLabel('https://www.getyourguide.com/fajardo-l882/from-fajardo-icacos-island-full-day-catamaran-trip-t19891/')
+      urlSlugTitleLabel(
+        'https://www.getyourguide.com/fajardo-l882/from-fajardo-icacos-island-full-day-catamaran-trip-t19891/'
+      )
     ).toBe('From Fajardo Icacos Island Full Day Catamaran Trip')
+  })
+
+  it('keeps x.com status fallbacks link-like instead of generic Status labels', () => {
+    expect(urlSlugTitleLabel('https://x.com/grok/status/2056065022749479209')).toBe(
+      'x.com/grok/status/2056065022749479209'
+    )
   })
 
   it('normalizes scheme-less links', () => {
@@ -65,7 +73,9 @@ describe('external link helpers', () => {
 
     vi.stubGlobal('fetch', fetchMock)
 
-    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure.a46272756.activity-details'
+    const url =
+      'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure.a46272756.activity-details'
+
     const [first, second] = await Promise.all([fetchLinkTitle(url), fetchLinkTitle(url)])
 
     expect(first).toBe('El Yunque Tour Water Slide, Rope Swing & Pickup')
@@ -108,7 +118,8 @@ describe('external link helpers', () => {
 
     vi.stubGlobal('fetch', fetchMock)
 
-    const url = 'https://www.getyourguide.com/culebra-island-l145468/from-fajardo-full-day-cordillera-islands-catamaran-tour-t19894/'
+    const url =
+      'https://www.getyourguide.com/culebra-island-l145468/from-fajardo-full-day-cordillera-islands-catamaran-tour-t19894/'
 
     await expect(fetchLinkTitle(url)).resolves.toBe('')
   })

@@ -7764,6 +7764,25 @@ def test_image_attach_bytes_accepts_data_url_prefix(monkeypatch, tmp_path):
     assert resp["result"]["attached"] is True
 
 
+def test_image_attach_bytes_accepts_unpadded_data_url(monkeypatch, tmp_path):
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx2u"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {
+                "session_id": "abx2u",
+                "content_base64": f"data:image/png;base64,{_PNG_1X1_B64.rstrip('=')}",
+            },
+        }
+    )
+    assert resp["result"]["attached"] is True
+    assert Path(resp["result"]["path"]).read_bytes().startswith(b"\x89PNG")
+
+
 def test_image_attach_bytes_data_alias_and_magic_sniff(monkeypatch, tmp_path):
     """Older desktop builds send `data` (not content_base64); ext sniffed from bytes."""
     _attach_bytes_cli(monkeypatch)
@@ -7895,13 +7914,19 @@ def test_decode_attach_base64_helper():
 
     raw = _b64.b64encode(b"hello").decode("ascii")
     assert server._decode_attach_base64(raw, mime_prefix="image/") == b"hello"
+    assert server._decode_attach_base64(raw.rstrip("="), mime_prefix="image/") == b"hello"
     assert (
         server._decode_attach_base64(f"data:image/png;base64,{raw}", mime_prefix="image/")
+        == b"hello"
+    )
+    assert (
+        server._decode_attach_base64(f"data:image/png;base64,{raw.rstrip('=')}", mime_prefix="image/")
         == b"hello"
     )
     # whitespace inside payload is tolerated
     assert server._decode_attach_base64(raw[:4] + "\n" + raw[4:], mime_prefix="image/") == b"hello"
     assert server._decode_attach_base64("@@@", mime_prefix="image/") is None
+    assert server._decode_attach_base64("S", mime_prefix="image/") is None
 
 
 def test_sniff_image_ext_magic_and_filename():

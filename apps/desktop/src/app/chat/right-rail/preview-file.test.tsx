@@ -20,7 +20,29 @@ vi.mock('@/lib/desktop-fs', () => ({
 
 vi.mock('@/i18n', () => ({
   translateNow: (key: string) => key,
-  useI18n: () => ({ t: { preview: { loading: 'Loading…', unavailable: 'Unavailable', binaryTitle: 'Binary file', binaryBody: (l: string) => `${l} is binary`, largeTitle: 'File too large', largeBody: () => 'too large', previewAnyway: 'Preview anyway', noInlineTitle: 'Cannot preview', noInlineBody: () => 'no inline', truncated: 'Truncated', edit: 'Edit', diff: 'Diff', renderedPreview: 'Rendered', source: 'Source', diskChangedTitle: 'Changed', diskChangedBody: 'Body', overwrite: 'Overwrite', discardReload: 'Discard', saveFailed: (e: string) => e } } }))
+  useI18n: () => ({
+    configLoadError: null,
+    isLoadingConfig: false,
+    isSavingLocale: false,
+    locale: 'en' as const,
+    saveError: null,
+    setLocale: async () => {},
+    t: {
+      preview: {
+        tab: '', closeTab: () => '', closeOthers: '', closeToRight: '', closeAll: '',
+        closePane: '', loading: 'Loading…', unavailable: 'Unavailable', opening: '',
+        hide: '', openPreview: '', openInBrowser: '', linkHint: '',
+        sourceLineTitle: 'Source line', source: 'Source', renderedPreview: 'Rendered',
+        diff: 'Diff', unknownSize: '', binaryTitle: 'Binary file',
+        binaryBody: (l: string) => `${l} is binary`, largeTitle: 'File too large',
+        largeBody: (_l: string, _s: string) => 'too large', previewAnyway: 'Preview anyway',
+        truncated: 'Truncated', noInlineTitle: 'Cannot preview',
+        noInlineBody: () => 'no inline', edit: 'Edit', editing: '', unsavedChanges: '',
+        saveFailed: (e: string) => e, diskChangedTitle: 'Changed',
+        diskChangedBody: 'Body', overwrite: 'Overwrite', discardReload: 'Discard',
+      },
+    },
+  })
 }))
 
 function stubBridge() {

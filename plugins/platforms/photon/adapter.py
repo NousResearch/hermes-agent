@@ -85,6 +85,12 @@ _DEDUP_WINDOW_SECONDS = 48 * 3600
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 
+# Cap on a self-heal `npm ci`/`npm install` of the sidecar deps. A cold
+# install of the pinned spectrum-ts tree normally takes well under a minute;
+# a wedged npm (dead registry, network blackhole) must not stall the photon
+# connect path indefinitely.
+_NPM_REINSTALL_TIMEOUT = 600
+
 # Photon / Envoy / spectrum-ts error substrings that indicate a transient
 # upstream overload rather than a permanent failure.  These are not in the
 # core _RETRYABLE_ERROR_PATTERNS because they are specific to this adapter.
@@ -168,24 +174,37 @@ def _reinstall_sidecar_deps() -> None:
     if not npm:
         logger.warning("[photon] cannot reinstall stale sidecar deps: npm not on PATH")
         return
-    result = subprocess.run(  # noqa: S603
-        [npm, "ci"],
-        cwd=str(_SIDECAR_DIR),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        logger.warning(
-            "[photon] sidecar `npm ci` failed; falling back to `npm install`"
-        )
+    try:
         result = subprocess.run(  # noqa: S603
-            [npm, "install"],
+            [npm, "ci"],
             cwd=str(_SIDECAR_DIR),
             capture_output=True,
             text=True,
             check=False,
+            timeout=_NPM_REINSTALL_TIMEOUT,
         )
+        if result.returncode != 0:
+            logger.warning(
+                "[photon] sidecar `npm ci` failed; falling back to `npm install`"
+            )
+            result = subprocess.run(  # noqa: S603
+                [npm, "install"],
+                cwd=str(_SIDECAR_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_NPM_REINSTALL_TIMEOUT,
+            )
+    except subprocess.TimeoutExpired:
+        # A wedged npm (dead registry, network blackhole) must not stall the
+        # photon connect forever — give up, leave the stale deps in place, and
+        # let the readiness check report the real error. Retried on the next
+        # reconnect tick.
+        logger.error(
+            "[photon] sidecar dependency reinstall timed out after %ss",
+            _NPM_REINSTALL_TIMEOUT,
+        )
+        return
     if result.returncode != 0:
         logger.error(
             "[photon] sidecar dependency reinstall failed: %s",

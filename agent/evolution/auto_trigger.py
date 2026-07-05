@@ -62,7 +62,7 @@ class AutoTrigger:
         self._nudge_callback: Optional[Callable] = None  # Set by agent init
 
     def apply_fix(self, task_name: str, failure_type: str) -> Optional[str]:
-        """Auto-create an improvement skill for any failure type."""
+        """Auto-create an improvement. Returns nudge message if applicable."""
         from agent.evolution.improvement_proposer import (
             _generate_verification_skill,
             _generate_loop_detection_skill,
@@ -70,8 +70,12 @@ class AutoTrigger:
         )
         from agent.evolution.failure_analyzer import FailureFinding, FailureCategory
 
-        # Map failure type to skill generator
-        if failure_type in ("missing_verification", "silent_session", "missing_output"):
+        # Route execution errors → PR proposer (code-level fix)
+        if failure_type in ("missing_output",):
+            return self._propose_code_fix(task_name, failure_type)
+
+        # Route everything else → skill creation
+        if failure_type in ("missing_verification", "silent_session"):
             content = _generate_verification_skill(task_name, [])
             skill_name = "verify-before-complete"
             msg = f"I forgot to verify my work on '{task_name}'"
@@ -110,7 +114,7 @@ class AutoTrigger:
             from agent.evolution.skill_evolution import get_skill_evolution_tracker
             tracker = get_skill_evolution_tracker()
             tracker.start_session([skill_name])
-            tracker._get_or_create_record(skill_name)  # Initialize tracking
+            tracker._get_or_create_record(skill_name)
         except Exception:
             pass
 
@@ -121,6 +125,41 @@ class AutoTrigger:
             f"   Auto-created '{skill_name}' skill to prevent this.\n"
             f"   I'll handle this correctly next time."
         )
+
+    def _propose_code_fix(self, task_name: str, failure_type: str) -> Optional[str]:
+        """Route a failure to the PR proposer for code-level fixes."""
+        try:
+            from agent.evolution.pr_proposer import propose_code_fix
+
+            # Build minimal failure evidence from the current session
+            result = propose_code_fix(
+                failure_analysis={
+                    "findings": [{
+                        "category": failure_type,
+                        "confidence": 0.7,
+                        "description": f"Auto-detected {failure_type} during '{task_name}'",
+                        "evidence": f"Observer detected {failure_type} pattern. "
+                                    f"Skill-level fix insufficient — code change needed.",
+                    }],
+                    "total_occurrences": 1,
+                    "total_sessions": 1,
+                },
+                proposed_code="",  # Empty → PR is a proposal for maintainer to implement
+                tool_name=task_name[:40],
+            )
+
+            if "pr_body" in result:
+                if self.nudge_level == SILENT:
+                    return None
+                return (
+                    f"📝 HAEE detected a recurring issue with '{task_name}'.\n"
+                    f"   A code-level fix may be needed (beyond skill improvements).\n"
+                    f"   PR proposal generated for maintainer review.\n"
+                    f"   Review: hermes evolution pr-status"
+                )
+        except Exception:
+            pass
+        return None
 
     def _run_improvement_for_failure(
         self, task, cluster, failure_type, session_id

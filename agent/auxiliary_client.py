@@ -5627,6 +5627,17 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     return {}
 
 
+def _get_task_stream(task: str) -> bool:
+    """Read auxiliary.{task}.stream from config. Returns False by default."""
+    if not task:
+        return False
+    task_config = _get_auxiliary_task_config(task)
+    raw = task_config.get("stream")
+    if isinstance(raw, bool):
+        return raw
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------
@@ -6572,6 +6583,8 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    stream: Optional[bool] = None,
+    stream_options: dict = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -6581,6 +6594,10 @@ async def async_call_llm(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
+
+    # Resolve stream: explicit parameter takes precedence, then config, then False.
+    if stream is None:
+        stream = _get_task_stream(task)
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -6656,6 +6673,20 @@ async def async_call_llm(
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+
+    # Streaming path: return the raw SDK Stream iterator directly. This is used by
+    # the MoA aggregator so its tokens stream to the user. It deliberately skips
+    # _validate_llm_response and the temperature/max_tokens/payment fallback chain
+    # below — those all assume a complete response object, whereas a stream is
+    # consumed chunk-by-chunk by the caller. The caller (the agent's streaming
+    # consumer) owns chunk reassembly, stale-stream detection, and falling back to
+    # a non-streaming call on error. stream_options is best-effort: providers that
+    # reject it surface an error the caller's fallback already handles.
+    if stream:
+        kwargs["stream"] = True
+        if stream_options:
+            kwargs["stream_options"] = stream_options
+        return client.chat.completions.create(**kwargs)
 
     try:
         # Retry ONCE on the same provider for a transient transport blip

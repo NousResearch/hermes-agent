@@ -5079,3 +5079,199 @@ class TestCompressionFallbackContextFilter:
         # Empty / unknown tasks have no minimum
         assert _task_minimum_context_length("") is None
         assert _task_minimum_context_length(None) is None
+
+
+# ── async_call_llm stream support (issue #58876) ──────────────────────────
+
+
+class TestAsyncCallLlmStream:
+    """Tests for stream/stream_options parity between call_llm() and async_call_llm().
+
+    Issue #58876: async_call_llm() was missing the stream and stream_options
+    parameters that call_llm() already had, preventing async callers (e.g.
+    vision_analyze) from enabling streaming — which is needed to work around
+    providers that reject large non-streaming request bodies (HTTP 400).
+    """
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_stream_true_returns_raw_stream(self):
+        """When stream=True, async_call_llm returns the raw SDK stream iterator,
+        not a validated response object."""
+        fake_client = MagicMock()
+        fake_stream = MagicMock()
+        # In streaming path, create() is called and returned directly (not awaited).
+        # Use a regular Mock so it returns the value directly.
+        fake_client.chat.completions.create = MagicMock(return_value=fake_stream)
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai", "gpt-4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(fake_client, "gpt-4")),
+            patch("agent.auxiliary_client._is_anthropic_compat_endpoint", return_value=False),
+        ):
+            result = await async_call_llm(
+                task="vision",
+                provider="openai",
+                model="gpt-4",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+            )
+
+        assert result is fake_stream
+        fake_client.chat.completions.create.assert_called_once()
+        call_kwargs = fake_client.chat.completions.create.call_args[1]
+        assert call_kwargs["stream"] is True
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_stream_false_returns_validated_response(self):
+        """When stream=False (default), async_call_llm returns a validated response."""
+        fake_client = MagicMock()
+        fake_response = MagicMock()
+        fake_client.chat.completions.create = AsyncMock(return_value=fake_response)
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai", "gpt-4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(fake_client, "gpt-4")),
+            patch("agent.auxiliary_client._is_anthropic_compat_endpoint", return_value=False),
+            patch("agent.auxiliary_client._validate_llm_response", return_value="validated"),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                provider="openai",
+                model="gpt-4",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=False,
+            )
+
+        assert result == "validated"
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_stream_options_passed_through(self):
+        """stream_options is passed through to the SDK when stream=True."""
+        fake_client = MagicMock()
+        fake_stream = MagicMock()
+        # Streaming path returns create() result directly (not awaited)
+        fake_client.chat.completions.create = MagicMock(return_value=fake_stream)
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai", "gpt-4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(fake_client, "gpt-4")),
+            patch("agent.auxiliary_client._is_anthropic_compat_endpoint", return_value=False),
+        ):
+            result = await async_call_llm(
+                task="vision",
+                provider="openai",
+                model="gpt-4",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+
+        assert result is fake_stream
+        call_kwargs = fake_client.chat.completions.create.call_args[1]
+        assert call_kwargs["stream_options"] == {"include_usage": True}
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_stream_config_option(self):
+        """auxiliary.<task>.stream config option enables streaming without explicit param."""
+        import tempfile, os
+
+        # Create a temporary home with config that enables stream for vision
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            with open(config_path, "w") as f:
+                f.write("auxiliary:\n  vision:\n    stream: true\n")
+
+            env_patch = patch.dict(os.environ, {"HERMES_HOME": tmpdir})
+            env_patch.start()
+
+            # Re-import to pick up new config
+            import importlib
+            import agent.auxiliary_client as aux_mod
+            importlib.reload(aux_mod)
+
+            fake_client = MagicMock()
+            fake_stream = MagicMock()
+            # Streaming path returns create() result directly (not awaited)
+            fake_client.chat.completions.create = MagicMock(return_value=fake_stream)
+
+            with (
+                patch.object(aux_mod, "_resolve_task_provider_model", return_value=("openai", "gpt-4", None, None, None)),
+                patch.object(aux_mod, "_get_cached_client", return_value=(fake_client, "gpt-4")),
+                patch.object(aux_mod, "_is_anthropic_compat_endpoint", return_value=False),
+                patch.object(aux_mod, "_validate_llm_response", return_value="validated"),
+            ):
+                # Call with stream=None (read from config)
+                result = await aux_mod.async_call_llm(
+                    task="vision",
+                    provider="openai",
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=None,
+                )
+
+            # Should have returned raw stream (config said stream=True)
+            assert result is fake_stream
+
+            env_patch.stop()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_stream_explicit_false_overrides_config(self):
+        """Explicit stream=False overrides config stream=True."""
+        import tempfile, os
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            with open(config_path, "w") as f:
+                f.write("auxiliary:\n  vision:\n    stream: true\n")
+
+            env_patch = patch.dict(os.environ, {"HERMES_HOME": tmpdir})
+            env_patch.start()
+
+            import importlib
+            import agent.auxiliary_client as aux_mod
+            importlib.reload(aux_mod)
+
+            fake_client = MagicMock()
+            fake_response = MagicMock()
+            fake_client.chat.completions.create = AsyncMock(return_value=fake_response)
+
+            with (
+                patch.object(aux_mod, "_resolve_task_provider_model", return_value=("openai", "gpt-4", None, None, None)),
+                patch.object(aux_mod, "_get_cached_client", return_value=(fake_client, "gpt-4")),
+                patch.object(aux_mod, "_is_anthropic_compat_endpoint", return_value=False),
+                patch.object(aux_mod, "_validate_llm_response", return_value="validated"),
+            ):
+                # Explicit stream=False should override config
+                result = await aux_mod.async_call_llm(
+                    task="vision",
+                    provider="openai",
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=False,
+                )
+
+            # Should have returned validated response (explicit False)
+            assert result == "validated"
+
+            env_patch.stop()
+
+    def test_get_task_stream_reads_config_true(self):
+        """_get_task_stream reads True from auxiliary.{task}.stream config."""
+        import tempfile, os
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            with open(config_path, "w") as f:
+                f.write("auxiliary:\n  vision:\n    stream: true\n")
+
+            env_patch = patch.dict(os.environ, {"HERMES_HOME": tmpdir})
+            env_patch.start()
+
+            import importlib
+            import agent.auxiliary_client as aux_mod
+            importlib.reload(aux_mod)
+
+            assert aux_mod._get_task_stream("vision") is True
+            assert aux_mod._get_task_stream("compression") is False
+
+            env_patch.stop()

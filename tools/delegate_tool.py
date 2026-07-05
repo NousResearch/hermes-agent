@@ -31,7 +31,6 @@ from typing import Any, Dict, List, Optional
 from toolsets import TOOLSETS
 from agent.metrics import (
     SUBAGENT_STARTUP_LATENCY_SECONDS,
-    SUBAGENT_STALE_CYCLES_TOTAL,
     SUBAGENT_ERRORS_TOTAL,
 )
 
@@ -904,7 +903,7 @@ def _build_child_progress_callback(
         if event_type in ("subagent.tool_started", "subagent.task_progress", "subagent.task_completed", "subagent.task_failed"):
             if hasattr(child, "_first_event_ts"):
                 latency = time.monotonic() - child._first_event_ts
-                SUBAGENT_STARTUP_LATENCY_SECONDS.labels(task_id=child_task_id, model=effective_model).observe(latency)
+                SUBAGENT_STARTUP_LATENCY_SECONDS.labels(model=model or parent_agent.model).observe(latency)
             else:
                 child._first_event_ts = time.monotonic()
         # -------------------------

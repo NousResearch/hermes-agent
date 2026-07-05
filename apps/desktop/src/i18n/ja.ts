@@ -1441,6 +1441,8 @@ export const ja = defineLocale({
     editingInComposer: 'コンポーザーで編集中',
     editingQueuedInComposer: 'コンポーザーでキュー済みターンを編集中',
     queueEdit: '編集',
+    queueSendAll: 'すべて送信',
+    queueSendAllNext: 'すべて次に送信',
     queueSendNext: '次に送信',
     queueSend: '送信',
     queueDelete: '削除',

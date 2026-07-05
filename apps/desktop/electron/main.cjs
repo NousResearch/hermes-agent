@@ -327,6 +327,9 @@ const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.j
 // ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
+// selected-profile-scope.json records the sidebar/rail context only. Unlike
+// active-profile.json, changing it must not tear down or relaunch the backend.
+const DESKTOP_PROFILE_SCOPE_CONFIG_PATH = path.join(app.getPath('userData'), 'selected-profile-scope.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -4401,6 +4404,30 @@ function writeActiveDesktopProfile(name) {
   return value || null
 }
 
+function readSelectedDesktopProfileScope() {
+  const parsed = readJson(DESKTOP_PROFILE_SCOPE_CONFIG_PATH)
+  const name = parsed && typeof parsed.profile === 'string' ? parsed.profile.trim() : ''
+
+  if (name && (name === 'default' || PROFILE_NAME_RE.test(name))) {
+    return name
+  }
+
+  return null
+}
+
+function writeSelectedDesktopProfileScope(name) {
+  const value = typeof name === 'string' ? name.trim() : ''
+
+  if (value && value !== 'default' && !PROFILE_NAME_RE.test(value)) {
+    throw new Error(`Invalid profile scope: ${value}`)
+  }
+
+  fs.mkdirSync(path.dirname(DESKTOP_PROFILE_SCOPE_CONFIG_PATH), { recursive: true })
+  writeFileAtomic(DESKTOP_PROFILE_SCOPE_CONFIG_PATH, JSON.stringify({ profile: value || null }, null, 2))
+
+  return value || null
+}
+
 // Sanitize a connection config into the renderer-facing shape. With no
 // `profile` this describes the global/default connection (the existing
 // behavior); with a `profile` it describes that profile's per-profile remote
@@ -5676,6 +5703,10 @@ ipcMain.handle('hermes:profile:set', async (_event, name) => {
 
   return { profile: next }
 })
+ipcMain.handle('hermes:profile-scope:get', async () => ({ profile: readSelectedDesktopProfileScope() }))
+ipcMain.handle('hermes:profile-scope:set', async (_event, name) => ({
+  profile: writeSelectedDesktopProfileScope(name)
+}))
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)

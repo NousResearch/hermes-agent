@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
   profile: {
     get: () => ipcRenderer.invoke('hermes:profile:get'),
+    getScope: () => ipcRenderer.invoke('hermes:profile-scope:get'),
+    setScope: name => ipcRenderer.invoke('hermes:profile-scope:set', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   api: request => ipcRenderer.invoke('hermes:api', request),

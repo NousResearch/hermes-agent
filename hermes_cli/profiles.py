@@ -45,6 +45,7 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
+    "plugins",
     # Back-compat/Docker HOME for tool subprocesses. Host subprocesses keep
     # the user's real HOME by default so normal CLI credentials remain visible;
     # containers still use this directory for persistent HOME state.
@@ -75,6 +76,9 @@ _CLONE_ALL_STRIP: list[str] = [
     "gateway_state.json",
     "processes.json",
 ]
+
+_NOAM_OBSIDIAN_VAULT_PATH = "/media/endlessblink/data/app-data/sync/Dropbox/OBSIDIAN_SYNCED"
+_NOAM_OBSIDIAN_PLUGIN = "obsidian-source-of-truth"
 
 # Infrastructure artifacts excluded from --clone-all when the source is the
 # default profile (``~/.hermes``).  Named profiles never contain these
@@ -822,6 +826,79 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
     return serve
 
 
+def _ensure_noam_obsidian_guardrails(profile_dir: Path) -> None:
+    """Best-effort local vault guardrails for Noam's Hermes profiles.
+
+    This is intentionally status-free and non-secret-printing. It keeps newly
+    created profiles aligned with the canonical visible Obsidian vault.
+    """
+    # Ensure the profile has the Obsidian source-of-truth plugin when the
+    # default profile has it installed. Fresh profile creation otherwise seeds
+    # directories/config but not local plugins.
+    try:
+        src = _get_default_hermes_home() / "plugins" / _NOAM_OBSIDIAN_PLUGIN
+        dst = profile_dir / "plugins" / _NOAM_OBSIDIAN_PLUGIN
+        if src.is_dir() and not dst.exists():
+            shutil.copytree(src, dst)
+    except OSError:
+        pass
+
+    # Ensure `.env` carries only the vault path setting we need; do not read or
+    # print any other values. API keys/secrets may also live in this file.
+    env_path = profile_dir / ".env"
+    try:
+        text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        lines = text.splitlines()
+        out: list[str] = []
+        seen = False
+        for line in lines:
+            if line.startswith("OBSIDIAN_VAULT_PATH="):
+                out.append(f"OBSIDIAN_VAULT_PATH={_NOAM_OBSIDIAN_VAULT_PATH}")
+                seen = True
+            else:
+                out.append(line)
+        if not seen:
+            if out and out[-1].strip():
+                out.append("")
+            out.append(f"OBSIDIAN_VAULT_PATH={_NOAM_OBSIDIAN_VAULT_PATH}")
+        new_text = "\n".join(out) + "\n"
+        if new_text != text:
+            env_path.write_text(new_text, encoding="utf-8")
+            try:
+                os.chmod(str(env_path), 0o600)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    # Keep the plugin enabled and the vault path visible in config.yaml for
+    # tooling that reads config instead of the environment.
+    cfg_path = profile_dir / "config.yaml"
+    try:
+        text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
+        new_text = text
+        if "OBSIDIAN_VAULT_PATH:" not in new_text:
+            new_text = new_text.rstrip() + f"\nOBSIDIAN_VAULT_PATH: {_NOAM_OBSIDIAN_VAULT_PATH}\n"
+        else:
+            new_text = re.sub(
+                r"^OBSIDIAN_VAULT_PATH:.*$",
+                f"OBSIDIAN_VAULT_PATH: {_NOAM_OBSIDIAN_VAULT_PATH}",
+                new_text,
+                flags=re.M,
+            )
+        if _NOAM_OBSIDIAN_PLUGIN not in new_text:
+            if "plugins:" not in new_text:
+                new_text = new_text.rstrip() + f"\nplugins:\n  enabled:\n  - {_NOAM_OBSIDIAN_PLUGIN}\n  disabled: []\n"
+            elif "  enabled:" in new_text:
+                new_text = new_text.replace("  enabled:\n", f"  enabled:\n  - {_NOAM_OBSIDIAN_PLUGIN}\n", 1)
+            else:
+                new_text = new_text.rstrip() + f"\nplugins:\n  enabled:\n  - {_NOAM_OBSIDIAN_PLUGIN}\n"
+        if new_text != text:
+            cfg_path.write_text(new_text, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -989,6 +1066,8 @@ def create_profile(
     # explicit runtime/history stripping above.
     if not clone_all:
         _migrate_profile_config_if_outdated(profile_dir)
+
+    _ensure_noam_obsidian_guardrails(profile_dir)
 
     # Persist description if the caller provided one. Done last so a
     # partial-create failure doesn't strand a description file in an

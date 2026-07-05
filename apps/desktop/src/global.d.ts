@@ -36,6 +36,10 @@ declare global {
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
       profile: {
         get: () => Promise<DesktopActiveProfile>
+        // Persists the sidebar/rail context only. This does not relaunch or
+        // re-home the backend.
+        getScope: () => Promise<DesktopActiveProfile>
+        setScope: (name: string | null) => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.

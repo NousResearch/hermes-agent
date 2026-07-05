@@ -5,10 +5,11 @@ Verifies that:
 - SessionEntry captures auto_reset_reason
 - SessionResetPolicy.notify controls whether notifications are sent
 - notify_exclude_platforms skips notifications for excluded platforms
+- resume_pending_expired auto-reset sets the correct reason and DB end_reason
 """
 
 from datetime import datetime, timedelta
-
+from unittest.mock import MagicMock, patch
 
 from gateway.config import (
     GatewayConfig,
@@ -278,3 +279,146 @@ class TestSessionEntryAutoResetRoundtrip:
         assert reloaded.was_auto_reset is False
         assert reloaded.auto_reset_reason is None
         assert reloaded.reset_had_activity is False
+
+
+# ---------------------------------------------------------------------------
+# resume_pending_expired: auto_reset_reason and DB end_reason (#58933)
+# ---------------------------------------------------------------------------
+
+def _make_db_mock() -> MagicMock:
+    """Return a SessionDB mock with safe defaults for all lookup methods."""
+    db = MagicMock()
+    db.get_session.return_value = None
+    db.get_compression_tip.return_value = None  # avoids MagicMock leaking into session_id
+    db.find_latest_gateway_session_for_peer.return_value = None
+    db.reopen_session.return_value = None
+    db.create_session.return_value = None
+    return db
+
+
+def _make_store_with_db(tmp_path, db_mock=None, policy=None) -> SessionStore:
+    """Build a SessionStore with a mock SessionDB, bypassing disk load."""
+    cfg_policy = policy or SessionResetPolicy(mode="none")
+    config = GatewayConfig(default_reset_policy=cfg_policy)
+    with patch("gateway.session.SessionStore._ensure_loaded"):
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+    store._db = db_mock if db_mock is not None else _make_db_mock()
+    store._loaded = True
+    return store
+
+
+class TestResumePendingExpiredAutoReset:
+    """resume_pending sessions past the freshness window should fire
+    was_auto_reset=True with auto_reset_reason='resume_pending_expired' and
+    persist that reason to state.db (#58933)."""
+
+    def _seed_stale_resume_pending(self, store, source, freshness_seconds=3600):
+        """Create a session, mark it resume_pending, then backdate the mark
+        past the freshness window so get_or_create_session treats it as a
+        zombie."""
+        entry = store.get_or_create_session(source)
+        store.mark_resume_pending(entry.session_key)
+        with store._lock:
+            entry = store._entries[entry.session_key]
+            entry.last_resume_marked_at = (
+                datetime.now() - timedelta(seconds=freshness_seconds + 60)
+            )
+            entry.updated_at = datetime.now()  # keep updated_at fresh
+            store._save()
+        return entry
+
+    def test_stale_resume_pending_sets_auto_reset_reason(
+        self, tmp_path, monkeypatch
+    ):
+        """Stale resume_pending triggers was_auto_reset=True with reason
+        'resume_pending_expired', NOT 'idle'."""
+        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
+        store = _make_store_with_db(tmp_path)
+        source = _make_source()
+
+        old = self._seed_stale_resume_pending(store, source)
+
+        new = store.get_or_create_session(source)
+
+        assert new.session_id != old.session_id, "should have created a new session"
+        assert new.was_auto_reset is True
+        assert new.auto_reset_reason == "resume_pending_expired"
+
+    def test_stale_resume_pending_had_activity_flag(
+        self, tmp_path, monkeypatch
+    ):
+        """reset_had_activity reflects whether the old session was used."""
+        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
+        store = _make_store_with_db(tmp_path)
+        source = _make_source()
+
+        old = self._seed_stale_resume_pending(store, source)
+        # Simulate some conversation on the old session.
+        with store._lock:
+            old.last_prompt_tokens = 50_000
+            store._save()
+
+        new = store.get_or_create_session(source)
+        assert new.reset_had_activity is True
+
+    def test_stale_resume_pending_db_end_reason_is_specific(
+        self, tmp_path, monkeypatch
+    ):
+        """state.db must record end_reason='resume_pending_expired', NOT the
+        generic 'session_reset', so the event is auditable (#58933 fix)."""
+        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
+        db = _make_db_mock()
+        store = _make_store_with_db(tmp_path, db)
+        source = _make_source()
+
+        old = self._seed_stale_resume_pending(store, source)
+        store.get_or_create_session(source)
+
+        db.end_session.assert_called_once()
+        ended_id, ended_reason = db.end_session.call_args.args
+        assert ended_id == old.session_id
+        assert ended_reason == "resume_pending_expired", (
+            f"expected 'resume_pending_expired', got {ended_reason!r} — "
+            "the DB end_reason must not be the generic 'session_reset'"
+        )
+
+    def test_idle_reset_db_end_reason_reflects_idle(
+        self, tmp_path
+    ):
+        """Regular idle auto-reset persists 'idle' as end_reason so that all
+        auto-reset paths are auditable (#58933 should not regress the common
+        idle/daily path)."""
+        db = _make_db_mock()
+        store = _make_store_with_db(
+            tmp_path, db, policy=SessionResetPolicy(mode="idle", idle_minutes=1)
+        )
+        source = _make_source()
+
+        entry = store.get_or_create_session(source)
+        # Age past idle threshold.
+        with store._lock:
+            entry.updated_at = datetime.now() - timedelta(minutes=5)
+            store._save()
+
+        store.get_or_create_session(source)
+
+        db.end_session.assert_called_once()
+        _, ended_reason = db.end_session.call_args.args
+        assert ended_reason == "idle"
+
+    def test_freshness_disabled_skips_resume_pending_expired(
+        self, tmp_path, monkeypatch
+    ):
+        """When gateway_auto_continue_freshness=0, resume_pending is never
+        expired — the same session is returned regardless of age."""
+        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "0")
+        db = _make_db_mock()
+        store = _make_store_with_db(tmp_path, db)
+        source = _make_source()
+
+        old = self._seed_stale_resume_pending(store, source, freshness_seconds=999_999)
+
+        refreshed = store.get_or_create_session(source)
+        # Freshness disabled → same session, no DB end_session call.
+        assert refreshed.session_id == old.session_id
+        db.end_session.assert_not_called()

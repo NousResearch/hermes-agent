@@ -2047,8 +2047,12 @@ class SessionStore:
 
         # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:
+            # Use the specific reset reason so state.db is auditable (e.g.
+            # "resume_pending_expired" is distinguishable from a normal
+            # "session_reset" caused by idle/daily expiry).
+            _db_end_reason = auto_reset_reason if auto_reset_reason else "session_reset"
             try:
-                self._db.end_session(db_end_session_id, "session_reset")
+                self._db.end_session(db_end_session_id, _db_end_reason)
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 

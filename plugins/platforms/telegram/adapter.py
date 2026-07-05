@@ -35,6 +35,11 @@ def _redact_telegram_error_text(error: object) -> str:
         return "<telegram error redacted>"
 
 
+def _redact_proxy_url_for_log(proxy_url: object) -> str:
+    text = "" if proxy_url is None else str(proxy_url)
+    return re.sub(r"(://)[^/@]+@", r"\1***@", text, count=1)
+
+
 def _consume_abandoned_task(task: asyncio.Task) -> None:
     """Observe a detached task's terminal exception to avoid noisy loop logs."""
     try:
@@ -3084,7 +3089,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     },
                 )
             elif proxy_url:
-                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
+                logger.info(
+                    "[%s] Proxy detected; passing explicitly to HTTPXRequest: %s",
+                    self.name,
+                    _redact_proxy_url_for_log(proxy_url),
+                )
                 request = HTTPXRequest(
                     **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
                 )

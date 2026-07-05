@@ -26,6 +26,7 @@ HTTPXRequest falls back to PTB's default 5.0s keepalive) fails this test.
 """
 
 import asyncio
+import logging
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -158,6 +159,17 @@ def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):
     _assert_keepalive_tight(instances)
     # Sanity: the proxy was actually threaded through (we're on the proxy branch).
     assert any(inst.kwargs.get("proxy") == "http://127.0.0.1:9/" for inst in instances)
+
+
+def test_proxy_branch_redacts_proxy_credentials_from_log(monkeypatch, caplog):
+    proxy_url = "http://agent-vault-token:hermes@proxy.example:14322"
+
+    caplog.set_level(logging.INFO, logger=tg_adapter.__name__)
+    instances = _drive_connect(monkeypatch, proxy_url=proxy_url)
+
+    assert any(inst.kwargs.get("proxy") == proxy_url for inst in instances)
+    assert "agent-vault-token" not in caplog.text
+    assert "http://***@proxy.example:14322" in caplog.text
 
 
 def test_plain_branch_general_pool_has_tight_keepalive(monkeypatch):

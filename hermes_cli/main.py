@@ -12685,10 +12685,35 @@ def main():
     # =========================================================================
     # project command — named, multi-folder workspaces
     # =========================================================================
-    from hermes_cli.projects_cmd import build_parser as _build_project_parser
+    # Issue #58588: gate CLI registration behind ``projects.enabled`` so users
+    # with an established filesystem-anchored project model can opt out without
+    # patching the parser registration. The predicate lives in
+    # hermes_cli.projects_gate so the RPC and toolset surfaces share the same
+    # config read.
+    from hermes_cli.projects_gate import projects_enabled
 
-    project_parser = _build_project_parser(subparsers)
-    project_parser.set_defaults(func=cmd_project)
+    if projects_enabled():
+        from hermes_cli.projects_cmd import build_parser as _build_project_parser
+
+        project_parser = _build_project_parser(subparsers)
+        project_parser.set_defaults(func=cmd_project)
+    else:
+        # Inject a stub parser so `hermes project` (no args) still produces a
+        # helpful error instead of argparse's "unrecognized arguments". The
+        # stub deliberately doesn't accept any subcommand; the help text
+        # explains the opt-out.
+        from hermes_cli.projects_gate import projects_disabled_message
+
+        project_parser = subparsers.add_parser(
+            "project",
+            help="Manage projects (named, multi-folder workspaces) — DISABLED",
+            description=projects_disabled_message(),
+        )
+        project_parser.set_defaults(
+            func=lambda _a: (
+                print(projects_disabled_message(), file=sys.stderr) or 1
+            )
+        )
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

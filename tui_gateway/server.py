@@ -2538,6 +2538,15 @@ def _load_enabled_toolsets() -> list[str] | None:
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding in the `project` toolset here is the gate that exposes them on
         # exactly the surface that can follow a project move.
+        #
+        # Issue #58588: surface-scoping is not a substitute for user opt-out.
+        # Users with a filesystem-anchored project model can disable the
+        # whole subsystem via ``projects.enabled: false``; we must honour
+        # that here so the model never sees the toolset either.
+        from hermes_cli.projects_gate import projects_enabled
+
+        if not projects_enabled():
+            return enabled
         return sorted(enabled | {"project"})
     except Exception:
         if fallback_notice is not None:
@@ -10326,6 +10335,7 @@ def _(rid, params: dict) -> dict:
 _E_PROJECTS = 5061  # generic failure
 _E_NO_PROJECT = 5062  # id resolved to nothing
 _E_PROJECT_ARG = 5063  # invalid argument (e.g. bad name/slug)
+_E_PROJECTS_DISABLED = 5064  # feature disabled via projects.enabled: false (issue #58588)
 
 
 class _NoProject(Exception):
@@ -10347,12 +10357,33 @@ def _projects_method(name: str):
     Every project CRUD handler opened the per-profile DB, mapped a missing id to
     5062, bad args to 5063, and everything else to 5061. This collapses that
     boilerplate so each handler is just its one meaningful operation.
+
+    Issue #58588: short-circuit before opening the DB when the user has
+    opted out via ``projects.enabled: false``. Without this guard every
+    registered handler would still answer and materialise ``projects.db``
+    on first call — defeating the opt-out for desktop / TUI users.
     """
 
     def decorator(fn):
         @method(name)
         def handler(rid, params: dict) -> dict:
             try:
+                # Lazy import + single config read; runs on every RPC
+                # invocation but is cheap (a single dict.get). When the
+                # feature is enabled this is one extra frame; when disabled
+                # we never reach ``projects_db.connect_closing()``.
+                from hermes_cli.projects_gate import (
+                    projects_disabled_message,
+                    projects_enabled,
+                )
+
+                if not projects_enabled():
+                    return _err(
+                        rid,
+                        _E_PROJECTS_DISABLED,
+                        projects_disabled_message(),
+                    )
+
                 from hermes_cli import projects_db as pdb
 
                 with pdb.connect_closing() as conn:

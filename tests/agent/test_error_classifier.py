@@ -55,6 +55,7 @@ class TestFailoverReason:
             "auth", "auth_permanent", "billing", "rate_limit",
             "upstream_rate_limit",
             "overloaded", "server_error", "timeout",
+            "ssl_cert_verification",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
@@ -1678,6 +1679,77 @@ class TestSSLTransientPatterns:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True
+
+
+# ── Test: SSL certificate verification failures (fail fast) ────────────
+
+class TestSSLCertVerificationFailFast:
+    """Certificate verification failures are deterministic for the host —
+    a TLS-inspecting proxy, missing custom CA, expired or self-signed cert
+    fails identically on every retry. They must classify as non-retryable
+    ``ssl_cert_verification`` so the user sees the fix hint immediately,
+    instead of matching the transient "[ssl:" pattern and retrying forever.
+
+    Inspired by Claude Code v2.1.199 (July 2026).
+    """
+
+    def test_python_cert_verify_failed_is_non_retryable(self):
+        import ssl
+        e = ssl.SSLCertVerificationError(
+            1,
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+            "unable to get local issuer certificate (_ssl.c:1006)",
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.retryable is False
+        assert result.should_compress is False
+
+    def test_wrapped_cert_verify_message_is_non_retryable(self):
+        """SDKs often re-raise without chaining — match on message alone."""
+        e = Exception(
+            "Connection error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate "
+            "verify failed: self-signed certificate in certificate chain"
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.retryable is False
+
+    def test_expired_certificate_is_non_retryable(self):
+        e = Exception("certificate verify failed: certificate has expired")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.retryable is False
+
+    def test_node_undici_phrasing_is_non_retryable(self):
+        """MCP bridges surface Node's phrasing."""
+        e = Exception("fetch failed: unable to verify the first certificate")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.retryable is False
+
+    def test_cert_verify_wins_over_transient_ssl_prefix(self):
+        """The '[SSL:' prefix also appears in cert-verify messages; the
+        cert check must run first so this doesn't retry as timeout."""
+        e = Exception("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.retryable is False
+
+    def test_transient_ssl_alert_still_retries(self):
+        """Regression guard: genuine transient alerts keep retrying."""
+        e = Exception("[SSL: BAD_RECORD_MAC] sslv3 alert bad record mac")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+    def test_cert_verify_on_large_session_does_not_compress(self):
+        e = Exception("certificate verify failed: unable to get local issuer certificate")
+        result = classify_api_error(
+            e, approx_tokens=180000, context_length=200000, num_messages=300,
+        )
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.should_compress is False
 
 # ── Test: RateLimitError without status_code (Copilot/GitHub Models) ──────────
 

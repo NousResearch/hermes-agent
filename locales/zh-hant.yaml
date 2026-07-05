@@ -107,6 +107,8 @@ gateway:
     no_pending:            "沒有待拒絕的指令。"
     denied_singular:       "❌ 指令已拒絕。"
     denied_plural:         "❌ 指令已拒絕（{count} 條指令）。"
+    denied_reason_singular: "❌ 指令已拒絕。 已將原因轉達給代理: \"{reason}\""
+    denied_reason_plural:  "❌ 指令已拒絕（{count} 條指令）。 已將原因轉達給代理: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast 僅適用於支援 Priority Processing 的 OpenAI 模型。"

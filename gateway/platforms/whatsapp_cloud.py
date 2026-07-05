@@ -1220,7 +1220,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await proc.communicate()
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
             if proc.returncode != 0 or not Path(out_path).exists():
                 logger.error(
                     "[whatsapp_cloud] ffmpeg opus conversion failed "

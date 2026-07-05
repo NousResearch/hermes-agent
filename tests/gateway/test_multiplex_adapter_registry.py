@@ -79,12 +79,12 @@ class TestProfileMessageHandler:
         assert seen["profile"] == "writer"
 
 
-class TestPortBindingHardError:
-    """A secondary profile enabling a port-binding platform aborts startup."""
+class TestPortBindingSkip:
+    """A secondary profile enabling a port-binding platform is skipped with a
+    warning, not a fatal crash — the default profile owns the shared listener."""
 
     @pytest.mark.asyncio
-    async def test_secondary_webhook_raises(self, monkeypatch):
-        from gateway.run import MultiplexConfigError
+    async def test_secondary_webhook_skipped(self, monkeypatch):
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
         runner = GatewayRunner.__new__(GatewayRunner)
@@ -99,15 +99,15 @@ class TestPortBindingHardError:
         monkeypatch.setattr(
             "gateway.config.load_gateway_config", lambda: reviewer_cfg
         )
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: None)
 
-        with pytest.raises(MultiplexConfigError) as ei:
-            await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
-        assert "webhook" in str(ei.value)
-        assert "reviewer" in str(ei.value)
+        # Should NOT raise — webhook is skipped with a warning
+        connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        assert connected == 0  # nothing connected, but no crash
 
     @pytest.mark.asyncio
     async def test_secondary_non_binding_platform_ok(self, monkeypatch):
-        """A non-port-binding platform (e.g. telegram) is NOT rejected."""
+        """A non-port-binding platform (e.g. telegram) is NOT skipped."""
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
         runner = GatewayRunner.__new__(GatewayRunner)
@@ -126,7 +126,7 @@ class TestPortBindingHardError:
         monkeypatch.setattr(runner, "_create_adapter", lambda p, c: None)
 
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
-        assert connected == 0  # nothing connected, but no MultiplexConfigError
+        assert connected == 0  # nothing connected, but no crash
 
     def test_port_binding_set_covers_known_listeners(self):
         from gateway.run import _PORT_BINDING_PLATFORM_VALUES

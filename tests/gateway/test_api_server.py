@@ -400,6 +400,84 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["max_iterations"] == 200
 
+    def test_create_agent_handles_fallback_model_kwarg_collision(self, monkeypatch):
+        """When the primary provider auth-fails, _resolve_runtime_agent_kwargs()
+        returns a runtime dict that carries its own ``model`` key. _create_agent
+        must pop it and let it override the config model — otherwise the explicit
+        ``model=`` collides with ``**runtime_kwargs`` and every request 500s with
+        "got multiple values for keyword argument 'model'"."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+                "model": "anthropic/claude-haiku",  # from the fallback entry
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "primary/model")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Must not raise TypeError on the duplicate 'model' kwarg.
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        # Fallback model overrides the config model, mirroring the native path.
+        assert captured["model"] == "anthropic/claude-haiku"
+
+    def test_create_agent_keeps_config_model_when_runtime_omits_it(self, monkeypatch):
+        """Happy path (no fallback active): runtime_kwargs has no 'model', so the
+        resolved gateway model is used unchanged. Regression guard for the pop."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "primary/model")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "primary/model"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -694,12 +772,21 @@ class TestHealthDetailedEndpoint:
                 assert data["gateway_drainable"] is False
 
     @pytest.mark.asyncio
-    async def test_health_detailed_does_not_require_auth(self, auth_adapter):
-        """Health detailed endpoint should be accessible without auth, like /health."""
+    async def test_health_detailed_requires_auth(self, auth_adapter):
+        """Detailed health must not leak runtime state without Bearer auth."""
         app = _create_app(auth_adapter)
         with patch("gateway.status.read_runtime_status", return_value=None):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
+                assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_health_detailed_allows_authenticated_request(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        headers = {"Authorization": f"Bearer {auth_adapter._api_key}"}
+        with patch("gateway.status.read_runtime_status", return_value={"gateway_state": "running"}):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health/detailed", headers=headers)
                 assert resp.status == 200
 
 
@@ -3711,3 +3798,278 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
+
+
+# ---------------------------------------------------------------------------
+# Per-client model routing (model_routes)
+# ---------------------------------------------------------------------------
+
+
+def _make_routing_adapter(routes) -> APIServerAdapter:
+    """Create an adapter with model_routes configured."""
+    config = PlatformConfig(enabled=True, extra={"model_routes": routes})
+    return APIServerAdapter(config)
+
+
+def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
+    """Stub out every external dependency of _create_agent."""
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_key": "sk-global",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: {})
+    )
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None)
+    )
+    monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+
+class TestModelRoutesParsing:
+    def test_valid_routes_are_parsed(self):
+        routes = {"minimax-m2": {"model": "minimax/minimax-m1", "provider": "openrouter"}}
+        adapter = _make_routing_adapter(routes)
+        assert adapter._model_routes == routes
+
+    def test_non_dict_routes_config_is_ignored(self):
+        adapter = _make_routing_adapter("not-a-dict")
+        assert adapter._model_routes == {}
+
+    def test_route_without_model_is_dropped(self):
+        adapter = _make_routing_adapter({"bad": {"provider": "openrouter"}})
+        assert adapter._model_routes == {}
+
+    def test_route_with_non_dict_value_is_dropped(self):
+        adapter = _make_routing_adapter({"bad": "gpt-5", "good": {"model": "openai/gpt-5"}})
+        assert set(adapter._model_routes) == {"good"}
+
+    def test_unknown_route_keys_are_stripped(self):
+        adapter = _make_routing_adapter(
+            {"a": {"model": "m", "provider": "p", "evil_extra": "x"}}
+        )
+        assert adapter._model_routes["a"] == {"model": "m", "provider": "p"}
+
+    def test_resolve_route_lookup(self):
+        adapter = _make_routing_adapter({"minimax-m2": {"model": "minimax/minimax-m1"}})
+        assert adapter._resolve_route("minimax-m2") == {"model": "minimax/minimax-m1"}
+        assert adapter._resolve_route("unknown-model") is None
+        assert adapter._resolve_route(None) is None
+        assert adapter._resolve_route(123) is None
+
+    def test_no_routes_configured(self):
+        adapter = _make_routing_adapter({})
+        assert adapter._resolve_route("hermes-agent") is None
+
+
+class TestModelRoutesModelsEndpoint:
+    @pytest.mark.asyncio
+    async def test_models_endpoint_lists_route_aliases(self):
+        routes = {
+            "minimax-m2": {"model": "minimax/minimax-m1", "provider": "openrouter"},
+            "gpt-5": {"model": "openai/gpt-5"},
+        }
+        adapter = _make_routing_adapter(routes)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/models")
+            assert resp.status == 200
+            data = await resp.json()
+            ids = {m["id"] for m in data["data"]}
+            assert adapter._model_name in ids
+            assert "minimax-m2" in ids
+            assert "gpt-5" in ids
+
+    @pytest.mark.asyncio
+    async def test_models_endpoint_route_alias_fields_and_no_secrets(self):
+        routes = {"my-alias": {"model": "openai/gpt-5", "api_key": "sk-route-secret"}}
+        adapter = _make_routing_adapter(routes)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/models")
+            data = await resp.json()
+            alias_entry = next(m for m in data["data"] if m["id"] == "my-alias")
+            assert alias_entry["root"] == "openai/gpt-5"
+            assert alias_entry["parent"] == adapter._model_name
+            # per-route api_key must never leak through the discovery endpoint
+            assert "sk-route-secret" not in json.dumps(data)
+
+
+class TestModelRoutesHandlers:
+    @pytest.mark.asyncio
+    async def test_chat_completions_passes_route_to_run_agent(self):
+        routes = {"minimax-m2": {"model": "minimax/minimax-m1", "provider": "openrouter"}}
+        adapter = _make_routing_adapter(routes)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+                resp = await cli.post("/v1/chat/completions", json={
+                    "model": "minimax-m2",
+                    "messages": [{"role": "user", "content": "hello"}],
+                })
+                assert resp.status == 200
+                kwargs = mock_run.call_args.kwargs
+                assert kwargs.get("route") == {
+                    "model": "minimax/minimax-m1", "provider": "openrouter",
+                }
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_no_route_for_unknown_model(self):
+        adapter = _make_routing_adapter({"minimax-m2": {"model": "minimax/minimax-m1"}})
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+                resp = await cli.post("/v1/chat/completions", json={
+                    "model": "unknown-model",
+                    "messages": [{"role": "user", "content": "hello"}],
+                })
+                assert resp.status == 200
+                assert mock_run.call_args.kwargs.get("route") is None
+
+    @pytest.mark.asyncio
+    async def test_responses_api_passes_route_to_run_agent(self):
+        routes = {"xiaozhi": {"model": "minimax/minimax-m1", "provider": "openrouter"}}
+        adapter = _make_routing_adapter(routes)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+                resp = await cli.post("/v1/responses", json={
+                    "model": "xiaozhi",
+                    "input": "hello",
+                })
+                assert resp.status == 200
+                assert mock_run.call_args.kwargs.get("route") == {
+                    "model": "minimax/minimax-m1", "provider": "openrouter",
+                }
+
+
+class TestModelRoutesAgentCreation:
+    def test_route_overrides_model_and_credentials(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = _make_routing_adapter(
+            {"alias": {
+                "model": "minimax/minimax-m1",
+                "api_key": "sk-route",
+                "base_url": "https://route.example/v1",
+            }}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        agent = adapter._create_agent(
+            session_id="s1", route=adapter._resolve_route("alias")
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "minimax/minimax-m1"
+        assert captured["api_key"] == "sk-route"
+        assert captured["base_url"] == "https://route.example/v1"
+
+    def test_route_provider_resolves_provider_credentials(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            lambda provider: {
+                "provider": provider,
+                "api_key": f"sk-{provider}",
+                "base_url": f"https://{provider}.example/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "other/model", "provider": "otherprov"}}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+
+        assert captured["model"] == "other/model"
+        assert captured["provider"] == "otherprov"
+        assert captured["api_key"] == "sk-otherprov"
+
+    def test_no_route_keeps_global_model(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = _make_routing_adapter({"alias": {"model": "other/model"}})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", route=None)
+
+        assert captured["model"] == "global/model"
+        assert captured["api_key"] == "sk-global"
+
+    def test_session_model_override_beats_route(self, monkeypatch):
+        """A user-issued /model on the session must win over static route config."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = _make_routing_adapter({"alias": {"model": "route/model", "api_key": "sk-route"}})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(
+            adapter,
+            "_session_model_override_for",
+            lambda key: {"model": "session/override-model"},
+        )
+
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+
+        # The route must NOT be applied — the session override path (global
+        # runtime here, since the gateway applies /model separately) wins.
+        assert captured["model"] == "global/model"
+        assert captured["api_key"] == "sk-global"
+
+    def test_session_override_lookup_reads_gateway_runner(self, monkeypatch):
+        """_session_model_override_for consults GatewayRunner._session_model_overrides."""
+        adapter = _make_routing_adapter({})
+
+        class FakeRunner:
+            _session_model_overrides = {"chan-1": {"model": "user/model"}}
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: FakeRunner())
+        assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
+        assert adapter._session_model_override_for("chan-2") is None
+        assert adapter._session_model_override_for(None) is None

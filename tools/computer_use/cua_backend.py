@@ -567,6 +567,7 @@ class _CuaDriverSession:
         different task than it was entered in" warning emitted by the
         previous _aenter/_aexit split.
         """
+        import time as _time
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
         from tools.environments.local import _sanitize_subprocess_env
@@ -574,6 +575,7 @@ class _CuaDriverSession:
         # Build the shutdown event on the loop's thread so the asyncio
         # primitive belongs to the correct loop.
         self._shutdown_event = asyncio.Event()
+        _t0 = _time.monotonic()
 
         try:
             if not cua_driver_binary_available():
@@ -583,6 +585,7 @@ class _CuaDriverSession:
             # the MCP server, instead of hardcoding ["mcp"]. Falls back
             # transparently for older drivers / any discovery failure.
             command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
+            _t_manifest = _time.monotonic()
             params = StdioServerParameters(
                 command=command,
                 args=args,
@@ -594,12 +597,20 @@ class _CuaDriverSession:
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
+                    _t_init = _time.monotonic()
                     # Populate capabilities + capability_version BEFORE
                     # exposing the session to callers, so the first
                     # tool call already sees them.
                     await self._populate_capabilities(session)
                     self._session = session
                     self._ready_event.set()
+                    logger.info(
+                        "cua-driver session ready in %.1fs "
+                        "(manifest=%.1fs, mcp_init=%.1fs)",
+                        _time.monotonic() - _t0,
+                        _t_manifest - _t0,
+                        _t_init - _t_manifest,
+                    )
                     # Hold the contexts open until stop() / restart asks
                     # us to wind down. Tool calls run as their own tasks
                     # on the same loop and touch self._session directly.
@@ -677,10 +688,10 @@ class _CuaDriverSession:
         self._lifecycle_future = asyncio.run_coroutine_threadsafe(
             self._lifecycle_coro(), loop
         )
-        if not self._ready_event.wait(timeout=15.0):
+        if not self._ready_event.wait(timeout=30.0):
             # Best-effort: signal shutdown if the future is still alive.
             self._signal_shutdown_locked()
-            raise RuntimeError("cua-driver session never reached ready (timeout 15s)")
+            raise RuntimeError("cua-driver session never reached ready (timeout 30s)")
         # If setup failed, the lifecycle coroutine set _setup_error
         # before setting _ready_event. Re-raise it on the caller's thread.
         if self._setup_error is not None:
@@ -909,6 +920,41 @@ def _image_from_tool_result(out: Dict[str, Any]) -> tuple[Optional[str], Optiona
     return None, None
 
 
+def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalise cua-driver ``list_windows`` entries, dropping unusable ones.
+
+    Every downstream operation needs both an integer ``pid`` (for
+    get_window_state / action tools) and ``window_id`` (for screenshot /
+    element clicks), so a window missing either is uncapturable.
+
+    Crucially, on X11 a window's PID comes from the *optional*
+    ``_NET_WM_PID`` property — the desktop root, panels, and
+    override-redirect popups routinely omit it, so the driver reports
+    ``pid: null`` for them. Coercing every entry unconditionally
+    (``int(w["pid"])``) let one such window abort enumeration of the real,
+    targetable windows. We skip the unusable entries instead so capture()
+    and focus_app() still find the windows that matter.
+    """
+    windows: List[Dict[str, Any]] = []
+    for w in raw_windows:
+        pid, window_id = w.get("pid"), w.get("window_id")
+        if pid is None or window_id is None:
+            continue
+        try:
+            pid_int, window_id_int = int(pid), int(window_id)
+        except (TypeError, ValueError):
+            continue
+        windows.append({
+            "app_name": w.get("app_name", ""),
+            "pid": pid_int,
+            "window_id": window_id_int,
+            "off_screen": not w.get("is_on_screen", True),
+            "title": w.get("title", ""),
+            "z_index": w.get("z_index", 0),
+        })
+    return windows
+
+
 # ---------------------------------------------------------------------------
 # The backend itself
 # ---------------------------------------------------------------------------
@@ -1028,17 +1074,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "off_screen": not w.get("is_on_screen", True),
-                "title": w.get("title", ""),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = _ingest_windows(raw_windows)
         # Sort by z_index descending (lowest z_index = frontmost on macOS).
         windows.sort(key=lambda w: w["z_index"])
 
@@ -1433,15 +1469,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = _ingest_windows(raw_windows)
         windows.sort(key=lambda w: w["z_index"])
 
         app_lower = app.lower()

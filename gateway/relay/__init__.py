@@ -172,7 +172,7 @@ def relay_endpoint() -> Optional[str]:
 
 
 def relay_route_keys() -> list[str]:
-    """Discriminators (guild_ids / chat_ids / paths) this gateway's tenant owns.
+    """Discriminators (scope_ids / chat_ids / paths) this gateway's tenant owns.
 
     Gateway-provided config, paired with ``relay_endpoint()``: the connector
     writes one route row per (routeKey -> tenant, endpoint), so route keys only

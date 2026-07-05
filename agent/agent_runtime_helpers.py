@@ -306,7 +306,13 @@ def sanitize_tool_call_arguments(
             try:
                 json.loads(arguments)
             except json.JSONDecodeError:
-                tool_call_id = tool_call.get("id")
+                # Use the canonical ``call_id || id`` precedence so both the
+                # scan for an existing tool result and any inserted stub key
+                # on the same id the rest of the pipeline uses. Keying on bare
+                # ``id`` here would fail to find a result built with ``call_id``
+                # (Codex Responses format) and insert a duplicate stub that
+                # itself becomes an orphan (#58168).
+                tool_call_id = _ra().AIAgent._get_tool_call_id_static(tool_call) or None
                 function_name = function.get("name", "?")
                 preview = arguments[:80]
                 log.warning(
@@ -368,6 +374,18 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     host code) can feed in already-broken histories.
 
     Repairs applied:
+      0. Consecutive ``assistant`` messages with no intervening
+         ``tool``/``user`` turn — merged into a single assistant turn
+         (union of ``tool_calls``, concatenated ``content``). Strict
+         OpenAI-compatible providers (DeepSeek v4, Moonshot/Kimi) reject
+         a history where an ``assistant`` message carrying ``tool_calls``
+         is immediately followed by another ``assistant`` message instead
+         of its ``tool`` results — HTTP 400 "An assistant message with
+         'tool_calls' must be followed by tool messages…". The split
+         shape is produced by recovery/continuation paths that append an
+         interim assistant turn (thinking-prefill, codex
+         incomplete-continuation) or by host-fed / legacy-persisted /
+         resumed histories. Refs #29148, #49147.
       1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
          any preceding assistant tool_call — dropped.
       2. Consecutive ``user`` messages — merged with newline separator
@@ -387,12 +405,89 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
 
     repairs = 0
 
+    # Pass 0: merge consecutive assistant messages. Runs BEFORE Pass 1 so
+    # the merged turn's union of tool_call ids is known when Pass 1
+    # validates which tool-result messages are orphans. Two assistant
+    # messages are only adjacent here when nothing (no tool result, no
+    # user turn) separates them — an intervening ``tool`` message means
+    # two distinct, valid tool-call rounds that must NOT be merged.
+    #
+    # Codex Responses interim turns are exempt: the codex_responses
+    # api_mode legitimately keeps multiple consecutive incomplete
+    # assistant turns in history, each carrying its own encrypted
+    # continuation state (codex_reasoning_items / codex_message_items)
+    # that must be replayed verbatim. Collapsing them corrupts the
+    # Responses replay chain (the duplicate-detection logic at
+    # conversation_loop.py already de-dups identical codex interims).
+    def _is_codex_interim(m: Dict) -> bool:
+        return bool(
+            m.get("codex_reasoning_items")
+            or m.get("codex_message_items")
+            or m.get("finish_reason") == "incomplete"
+        )
+
+    collapsed: List[Dict] = []
+    for msg in messages:
+        if (
+            collapsed
+            and isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and isinstance(collapsed[-1], dict)
+            and collapsed[-1].get("role") == "assistant"
+            and not _is_codex_interim(msg)
+            and not _is_codex_interim(collapsed[-1])
+        ):
+            prev = collapsed[-1]
+            # Union tool_calls (preserve order, both may carry them).
+            prev_calls = list(prev.get("tool_calls") or [])
+            new_calls = list(msg.get("tool_calls") or [])
+            if new_calls:
+                prev["tool_calls"] = prev_calls + new_calls
+            elif prev_calls:
+                prev["tool_calls"] = prev_calls
+            # Concatenate plain-text content; leave multimodal (list)
+            # content on either side alone to avoid mangling attachment
+            # blocks — fall back to keeping the existing content.
+            prev_content = prev.get("content")
+            new_content = msg.get("content")
+            if isinstance(prev_content, str) and isinstance(new_content, str):
+                joined = "\n".join(
+                    p for p in (prev_content.strip(), new_content.strip()) if p
+                )
+                prev["content"] = joined
+            elif not prev_content and new_content is not None:
+                prev["content"] = new_content
+            # Carry reasoning_content from the later turn only if the
+            # earlier turn lacks it (strict thinking providers require a
+            # reasoning_content on the merged tool-call turn; the first
+            # non-empty one suffices).
+            if not prev.get("reasoning_content") and msg.get("reasoning_content"):
+                prev["reasoning_content"] = msg["reasoning_content"]
+            repairs += 1
+            continue
+        collapsed.append(msg)
+
     # Pass 1: drop stray tool messages that don't follow a known
     # assistant tool_call_id. Uses a rolling set of known ids refreshed
     # on each assistant message.
+    #
+    # Both ``id`` AND ``call_id`` are registered for every assistant
+    # tool_call. In the Codex Responses API format the two differ
+    # (``id`` = ``fc_...`` response-item id, ``call_id`` = ``call_...``
+    # the function-call id), and a tool result's ``tool_call_id`` may be
+    # matched against *either* depending on which code path built it
+    # (the OpenAI-compatible path stores ``tc.id``; codex paths store
+    # ``call_id``). Registering only ``id`` — as this pass did before —
+    # made a valid tool result look orphaned whenever the assistant
+    # tool_call carried a distinct ``call_id`` (or only ``call_id``); the
+    # pass then dropped it, leaving the assistant tool_call unanswered and
+    # producing an HTTP 400 on strict providers (DeepSeek, Kimi). Matching
+    # on the *superset* of both keys achieves the same tolerance as
+    # ``_get_tool_call_id_static``'s ``call_id || id`` — a match set must
+    # accept every legitimate reference, not just the canonical one (#58168).
     known_tool_ids: set = set()
     filtered: List[Dict] = []
-    for msg in messages:
+    for msg in collapsed:
         if not isinstance(msg, dict):
             filtered.append(msg)
             continue
@@ -400,14 +495,23 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         if role == "assistant":
             known_tool_ids = set()
             for tc in (msg.get("tool_calls") or []):
-                tc_id = tc.get("id") if isinstance(tc, dict) else None
-                if tc_id:
-                    known_tool_ids.add(tc_id)
+                if not isinstance(tc, dict):
+                    continue
+                for key in ("id", "call_id"):
+                    tc_id = tc.get(key)
+                    if tc_id:
+                        known_tool_ids.add(tc_id)
             filtered.append(msg)
         elif role == "tool":
             tc_id = msg.get("tool_call_id")
             if tc_id and tc_id in known_tool_ids:
                 filtered.append(msg)
+                # Consume the id so a SECOND tool result carrying the same
+                # tool_call_id (duplicate from a retry/crash/session-resume
+                # glitch) falls into the drop branch below instead of being
+                # replayed — strict providers (DeepSeek) reject a duplicate
+                # tool_call_id with HTTP 400 (#58327). Credit: #55436.
+                known_tool_ids.discard(tc_id)
             else:
                 repairs += 1
         else:
@@ -1110,11 +1214,38 @@ def restore_primary_runtime(agent) -> bool:
         if pool is not None and pool.has_available():
             entry = pool.select()
             if entry is not None:
+                entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
+                primary_provider = str(rt.get("provider") or "").strip().lower()
+                entry_matches_primary = entry_provider == primary_provider
+                # Custom endpoints all carry the generic ``custom`` provider on
+                # the agent while the pool entry is keyed ``custom:<name>`` (see
+                # CUSTOM_POOL_PREFIX). Resolve the primary's base_url to its
+                # ``custom:<name>`` key via the canonical helper and compare
+                # against the entry's key — this mirrors the sibling guard in
+                # ``recover_with_credential_pool`` (see above) and correctly
+                # disambiguates multiple custom providers that share one gateway
+                # base_url. Fixes #56885.
+                from agent.credential_pool import CUSTOM_POOL_PREFIX
+                if (
+                    primary_provider == "custom"
+                    and entry_provider.startswith(CUSTOM_POOL_PREFIX)
+                ):
+                    entry_matches_primary = False
+                    try:
+                        from agent.credential_pool import get_custom_provider_pool_key
+                        primary_base_url = str(rt.get("base_url") or "").strip()
+                        primary_key = (
+                            get_custom_provider_pool_key(primary_base_url) or ""
+                        ).strip().lower()
+                        entry_matches_primary = bool(primary_key) and primary_key == entry_provider
+                    except Exception:
+                        entry_matches_primary = False
+
                 entry_key = (
                     getattr(entry, "runtime_api_key", None)
                     or getattr(entry, "access_token", "")
                 )
-                if entry_key:
+                if entry_key and entry_matches_primary:
                     # ``_swap_credential`` rebuilds the OpenAI/Anthropic client,
                     # reapplies base-url-scoped headers, and carries the
                     # accumulated base_url / OAuth-detection fixes (#33163).
@@ -1123,6 +1254,14 @@ def restore_primary_runtime(agent) -> bool:
                         "Restore re-selected pool entry %s (%s)",
                         getattr(entry, "id", "?"),
                         getattr(entry, "label", "?"),
+                    )
+                elif entry_key:
+                    logger.info(
+                        "Restore skipped pool entry %s (%s): provider %s does not match primary provider %s",
+                        getattr(entry, "id", "?"),
+                        getattr(entry, "label", "?"),
+                        entry_provider or "?",
+                        primary_provider or "?",
                     )
 
         # ── Reset fallback chain for the new turn ──
@@ -1369,6 +1508,46 @@ def anthropic_prompt_cache_policy(
     eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
     eff_model = (model if model is not None else agent.model) or ""
 
+    # MoA virtual provider: the agent's model/provider are the preset name and
+    # "moa" — neither matches any caching branch, so the ACTING AGGREGATOR
+    # (often Claude on OpenRouter) silently lost prompt caching entirely
+    # (measured: 85% cache share solo vs 2% on the identical model via MoA —
+    # tens of millions of re-billed input tokens per benchmark run). Resolve
+    # the policy from the preset's real aggregator slot instead.
+    if eff_provider.strip().lower() == "moa":
+        try:
+            from hermes_cli.config import load_config as _load_moa_cfg
+            from hermes_cli.moa_config import resolve_moa_preset
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            _preset = resolve_moa_preset(
+                _load_moa_cfg().get("moa") or {}, eff_model or None
+            )
+            _agg = _preset.get("aggregator") or {}
+            _agg_provider = str(_agg.get("provider") or "").strip()
+            _agg_model = str(_agg.get("model") or "").strip()
+            if _agg_provider and _agg_model:
+                _agg_base_url = ""
+                _agg_api_mode = ""
+                try:
+                    _rt = resolve_runtime_provider(
+                        requested=_agg_provider, target_model=_agg_model
+                    )
+                    _agg_base_url = _rt.get("base_url") or ""
+                    _agg_api_mode = _rt.get("api_mode") or ""
+                except Exception:
+                    pass
+                return anthropic_prompt_cache_policy(
+                    agent,
+                    provider=_agg_provider,
+                    base_url=_agg_base_url,
+                    api_mode=_agg_api_mode,
+                    model=_agg_model,
+                )
+        except Exception as _moa_exc:  # pragma: no cover - defensive
+            logger.debug("MoA aggregator cache-policy resolution failed: %s", _moa_exc)
+        return False, False
+
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
@@ -1439,6 +1618,7 @@ def anthropic_prompt_cache_policy(
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+    from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only. Callers pass agent._client_kwargs (or shallow
     # copies of it) in; any in-place mutation leaks back into the stored dict and is
     # reused on subsequent requests. #10933 hit this by injecting an httpx.Client
@@ -1448,6 +1628,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
+    ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
+    httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
     if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
@@ -1471,7 +1654,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
             }
             if "http_client" not in safe_kwargs:
-                keepalive_http = agent._build_keepalive_http_client(base_url)
+                keepalive_http = agent._build_keepalive_http_client(
+                    base_url, verify=httpx_verify,
+                )
                 if keepalive_http is not None:
                     safe_kwargs["http_client"] = keepalive_http
             client = GeminiNativeClient(**safe_kwargs)
@@ -1500,7 +1685,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
     if "http_client" not in client_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
+        keepalive_http = agent._build_keepalive_http_client(
+            client_kwargs.get("base_url", ""), verify=httpx_verify,
+        )
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
     # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop,
@@ -1704,6 +1891,24 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "api_key": effective_key,
                 "base_url": effective_base,
             }
+            try:
+                from hermes_cli.config import (
+                    apply_custom_provider_tls_to_client_kwargs,
+                    get_compatible_custom_providers,
+                    load_config_readonly,
+                )
+
+                # Read custom_providers from live config (not the init-time
+                # snapshot on ``agent._custom_providers``) so ssl_ca_cert /
+                # ssl_verify edits are honored when switching mid-session,
+                # matching the context-length reload below (#15779).
+                apply_custom_provider_tls_to_client_kwargs(
+                    agent._client_kwargs,
+                    str(effective_base or ""),
+                    get_compatible_custom_providers(load_config_readonly()),
+                )
+            except Exception:
+                logger.debug("custom-provider TLS resolution skipped on switch_model", exc_info=True)
             _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
             if _sm_timeout is not None:
                 agent._client_kwargs["timeout"] = _sm_timeout
@@ -2183,6 +2388,54 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    # --- Repair tool_calls whose function.name is empty/missing ---
+    # Some providers (and partially-streamed responses) emit a tool_call with
+    # id="call_xxx" but function.name="". Downstream Responses-API adapters
+    # silently DROP such function_call items while still emitting the matching
+    # function_call_output, producing the gateway's HTTP 400
+    # "No tool call found for function call output with call_id ...".
+    #
+    # We do NOT drop the call: hermes' own dispatch loop intentionally keeps an
+    # empty-name call paired with a synthesized anti-priming tool result
+    # ("tool name was empty", see #47967) so weak models self-correct instead of
+    # being fed the full tool catalog. Dropping the call here would (a) orphan
+    # that result and strip the anti-priming signal, and (b) still leave any
+    # provider-side orphan. Instead, rename the blank name to a non-empty
+    # sentinel so the call and its result stay PAIRED — the adapter no longer
+    # drops the function_call, so there is no orphaned output and no 400, while
+    # the result content the model needs is preserved.
+    _EMPTY_NAME_SENTINEL = "invalid_tool_call"
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        tcs = msg.get("tool_calls") or []
+        if not tcs:
+            continue
+        for tc in tcs:
+            if isinstance(tc, dict):
+                fn = tc.get("function")
+                name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", None) if fn else None
+            if isinstance(name, str) and name.strip():
+                continue
+            _ra().logger.warning(
+                "Pre-call sanitizer: repairing tool_call with empty "
+                "function.name -> %r (id=%s)",
+                _EMPTY_NAME_SENTINEL,
+                _ra().AIAgent._get_tool_call_id_static(tc),
+            )
+            if isinstance(fn, dict):
+                fn["name"] = _EMPTY_NAME_SENTINEL
+            elif fn is not None and hasattr(fn, "name"):
+                try:
+                    fn.name = _EMPTY_NAME_SENTINEL
+                except Exception:
+                    pass
+            elif isinstance(tc, dict):
+                tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
+
     surviving_call_ids: set = set()
     for msg in messages:
         if msg.get("role") == "assistant":
@@ -2230,6 +2483,50 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         _ra().logger.debug(
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
+        )
+
+    # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a
+    # payload where the same tool_call_id appears more than once with HTTP 400
+    # "Duplicate value for 'tool_call_id'" (#58327). Duplicates can arise from
+    # retries, crash/resume glitches, or a compression window that re-emits a
+    # tool result. This is the final pre-API chokepoint, so dedup defensively
+    # here even though repair_message_sequence also consumes matched ids.
+    #   (a) collapse duplicate tool_calls WITHIN an assistant message
+    #   (b) drop later tool result messages reusing an already-seen id
+    seen_assistant_call_ids: set = set()
+    seen_result_call_ids: set = set()
+    deduped: List[Dict[str, Any]] = []
+    removed_dupes = 0
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            kept_tcs = []
+            for tc in msg.get("tool_calls") or []:
+                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                if cid and cid in seen_assistant_call_ids:
+                    removed_dupes += 1
+                    continue
+                if cid:
+                    seen_assistant_call_ids.add(cid)
+                kept_tcs.append(tc)
+            if len(kept_tcs) != len(msg.get("tool_calls") or []):
+                msg = {**msg, "tool_calls": kept_tcs}
+            deduped.append(msg)
+        elif role == "tool":
+            cid = (msg.get("tool_call_id") or "").strip()
+            if cid and cid in seen_result_call_ids:
+                removed_dupes += 1
+                continue
+            if cid:
+                seen_result_call_ids.add(cid)
+            deduped.append(msg)
+        else:
+            deduped.append(msg)
+    if removed_dupes:
+        messages = deduped
+        _ra().logger.debug(
+            "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
+            removed_dupes,
         )
     return messages
 

@@ -280,6 +280,38 @@ _MCP_MESSAGE_HANDLER_SUPPORTED = _check_message_handler_support()
 if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
     logger.debug("MCP SDK does not support message_handler -- dynamic tool discovery disabled")
 
+
+def _check_logging_callback_support() -> bool:
+    """Check if ClientSession accepts the ``logging_callback`` kwarg.
+
+    Mirrors ``_check_message_handler_support`` for backward compatibility
+    with older MCP SDK versions.  Without a logging_callback, the SDK's
+    default handler silently discards every ``notifications/message`` a
+    server emits, so server-side diagnostics never reach Hermes' logs.
+    """
+    if not _MCP_AVAILABLE:
+        return False
+    try:
+        return "logging_callback" in inspect.signature(ClientSession).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+_MCP_LOGGING_CALLBACK_SUPPORTED = _check_logging_callback_support()
+
+# MCP logging levels (RFC 5424 syslog severities) -> Python logging levels.
+# Port of anomalyco/opencode#34529's serverLog mapping.
+_MCP_LOG_LEVEL_MAP = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "notice": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.ERROR,
+    "alert": logging.ERROR,
+    "emergency": logging.ERROR,
+}
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -357,6 +389,19 @@ _CREDENTIAL_PATTERN = re.compile(
 # Supports any non-} characters in the variable name (hyphens, dots, etc.)
 # so providers like MY-VAR or my.var work correctly.
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+def _env_ref_name(ref: str) -> str:
+    """Normalize a ``${...}`` reference body into an env-var name.
+
+    Accepts Cursor-style ``${env:VAR}`` in addition to plain ``${VAR}`` by
+    stripping a leading ``env:`` prefix. The result is the bare variable name
+    to look up in the secret scope / ``os.environ``.
+    """
+    ref = ref.strip()
+    if ref.startswith("env:"):
+        ref = ref[len("env:"):].strip()
+    return ref
 
 
 # ---------------------------------------------------------------------------
@@ -1526,6 +1571,40 @@ class MCPServerTask:
         task.add_done_callback(self._pending_refresh_tasks.discard)
         return task
 
+    def _make_logging_callback(self):
+        """Build a ``logging_callback`` for ``ClientSession``.
+
+        Routes MCP ``notifications/message`` log notifications from the
+        server into Hermes' logging (agent.log via hermes_logging), tagged
+        with the server name.  Without this, the SDK's default callback
+        silently discards them, so server-side warnings/errors during a
+        tool call were invisible.  Port of anomalyco/opencode#34529.
+        """
+        async def _on_log(params):
+            try:
+                level = _MCP_LOG_LEVEL_MAP.get(
+                    str(getattr(params, "level", "info")).lower(), logging.INFO,
+                )
+                data = getattr(params, "data", None)
+                if not isinstance(data, str):
+                    try:
+                        data = json.dumps(data, ensure_ascii=False, default=str)
+                    except (TypeError, ValueError):
+                        data = str(data)
+                # Cap pathological payloads so a chatty/broken server can't
+                # flood agent.log with megabyte lines.
+                if len(data) > 2000:
+                    data = data[:2000] + "... [truncated]"
+                logger_name = getattr(params, "logger", None)
+                origin = f"{self.name}/{logger_name}" if logger_name else self.name
+                logger.log(level, "MCP server log [%s]: %s", origin, data)
+            except Exception:
+                logger.debug(
+                    "Failed to handle MCP log notification from '%s'",
+                    self.name, exc_info=True,
+                )
+        return _on_log
+
     def _make_message_handler(self):
         """Build a ``message_handler`` callback for ``ClientSession``.
 
@@ -1851,6 +1930,8 @@ class MCPServerTask:
             sampling_kwargs.update(self._elicitation.session_kwargs())
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = self._make_message_handler()
+        if _MCP_LOGGING_CALLBACK_SUPPORTED:
+            sampling_kwargs["logging_callback"] = self._make_logging_callback()
 
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()
@@ -1867,7 +1948,15 @@ class MCPServerTask:
                 write_stream,
             ):
                 # Capture the newly spawned subprocess PID for force-kill cleanup.
-                new_pids = _snapshot_child_pids() - pids_before
+                # Filter out non-MCP children that race into the snapshot window:
+                # slash_worker and LSP servers (jdtls/pyright/yaml-ls) are spawned
+                # directly by the gateway without start_new_session, so their pgid
+                # equals the TUI parent PID. If they leak into _stdio_pgids, the
+                # shutdown sweep's killpg() kills the TUI parent itself.
+                # See agent/lsp/client.py for the complementary start_new_session fix.
+                new_pids = _filter_mcp_children(
+                    _snapshot_child_pids() - pids_before
+                )
                 if new_pids:
                     # Capture pgid while the child is alive — once it exits we
                     # can no longer call ``os.getpgid`` on it, and the cleanup
@@ -2058,6 +2147,8 @@ class MCPServerTask:
             sampling_kwargs.update(self._elicitation.session_kwargs())
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = self._make_message_handler()
+        if _MCP_LOGGING_CALLBACK_SUPPORTED:
+            sampling_kwargs["logging_callback"] = self._make_logging_callback()
 
         # SSE transport (for MCP servers that implement the SSE transport protocol
         # rather than Streamable HTTP). Configure with ``transport: sse`` in the
@@ -3005,6 +3096,56 @@ def _snapshot_child_pids() -> set:
     return set()
 
 
+# Non-MCP gateway children that can race into the _snapshot_child_pids() delta
+# during stdio MCP server spawn. LSP servers and slash_worker now use
+# start_new_session=True too; this remains defense-in-depth for any future
+# non-MCP child spawn that briefly appears in the MCP snapshot delta. Match
+# argv markers instead of argv[0] because Python/Java children begin with the
+# interpreter or binary path.
+_NON_MCP_CHILD_CMDLINE_MARKERS: tuple[str, ...] = (
+    "tui_gateway.slash_worker",
+    "tui_gateway.entry",
+    "-dorg.eclipse.equinox.launcher",  # jdtls (legacy arg style)
+    "eclipse.jdt.ls",
+    "org.eclipse.equinox.launcher_",
+)
+
+
+def _filter_mcp_children(pids: set) -> set:
+    """Remove non-MCP children from a PID snapshot delta.
+
+    _snapshot_child_pids() returns *all* direct children of the gateway. When
+    a stdio MCP server spawns concurrently with a slash_worker or LSP server
+    spawn, the delta ``_snapshot_child_pids() - pids_before`` can include
+    PIDs that are NOT the MCP server. Tracking those PIDs in _stdio_pgids is
+    catastrophic if a future child lacks start_new_session: its pgid can be the
+    TUI parent's PID, so the shutdown sweep's killpg() kills the TUI itself.
+    """
+    if not pids:
+        return pids
+    try:
+        import psutil
+    except ImportError:
+        # psutil unavailable — keep all PIDs (preserves prior behavior).
+        return pids
+    filtered: set = set()
+    for pid in pids:
+        try:
+            argv = psutil.Process(pid).cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            # Process raced away or is a zombie — skip it; it cannot be the
+            # MCP server we just spawned and is not safe to track.
+            continue
+        if any(
+            marker in arg
+            for arg in argv[1:]
+            for marker in _NON_MCP_CHILD_CMDLINE_MARKERS
+        ):
+            continue
+        filtered.add(pid)
+    return filtered
+
+
 def _mcp_loop_exception_handler(loop, context):
     """Suppress benign 'Event loop is closed' noise during shutdown.
 
@@ -3149,17 +3290,20 @@ def _interrupted_call_result() -> str:
 def _interpolate_env_vars(value):
     """Recursively resolve ``${VAR}`` placeholders.
 
-    Resolves from the active profile's secret scope when multiplexing is on
-    (so an MCP server config's ``${API_KEY}`` picks up the routed profile's
-    value, not the process-global ``os.environ`` which may hold another
-    profile's), falling back to ``os.environ`` otherwise. Unset vars keep the
-    literal ``${VAR}`` placeholder, as before.
+    Both ``${VAR}`` and Cursor-style ``${env:VAR}`` are accepted — the
+    ``env:`` prefix is stripped so a doc copied from a Cursor / Claude MCP
+    config resolves the same secret. Resolves from the active profile's secret
+    scope when multiplexing is on (so an MCP server config's ``${API_KEY}``
+    picks up the routed profile's value, not the process-global ``os.environ``
+    which may hold another profile's), falling back to ``os.environ``
+    otherwise. Unset vars keep the literal placeholder, as before.
     """
     from agent.secret_scope import get_secret as _get_secret
 
     if isinstance(value, str):
         def _replace(m):
-            return _get_secret(m.group(1), m.group(0)) or m.group(0)
+            name = _env_ref_name(m.group(1))
+            return _get_secret(name, m.group(0)) or m.group(0)
         return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
         return {k: _interpolate_env_vars(v) for k, v in value.items()}
@@ -3731,11 +3875,43 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         return {"type": "object", "properties": {}}
 
     def _rewrite_local_refs(node):
+        """Walk the schema, promoting legacy ``definitions`` to ``$defs``.
+
+        The promotion is contextual: ``definitions`` is renamed only when it
+        appears as a JSON Schema *meta-keyword* (sibling of ``properties`` /
+        ``$ref`` at a schema node), never when it appears as the *name of a
+        property* (i.e., as a key inside a ``properties`` dict).
+
+        Without this gate, MCP servers that legitimately expose a tool
+        parameter named ``definitions`` (e.g. a CI/pipelines tool that uses
+        ``definitions`` for an array of pipeline-definition IDs) would have
+        that user-facing property name silently rewritten to ``$defs``.
+        Anthropic and OpenAI both reject ``$`` in property names
+        (``^[a-zA-Z0-9_.-]{1,64}$``), so the whole tool array gets a 400 and
+        every conversation breaks.
+
+        The gate works by treating ``properties`` and ``patternProperties``
+        specially during descent: we iterate the property-name -> schema map
+        directly, leaving the property names verbatim, then recurse into each
+        property's schema where ordinary JSON Schema semantics resume (so any
+        legitimately-nested ``definitions`` meta-keyword inside a property's
+        schema is still promoted).
+        """
         if isinstance(node, dict):
             normalized = {}
             for key, value in node.items():
-                out_key = "$defs" if key == "definitions" else key
-                normalized[out_key] = _rewrite_local_refs(value)
+                if key in ("properties", "patternProperties") and isinstance(value, dict):
+                    # Keys of this dict are user-facing property names, not
+                    # meta-keywords. Preserve them verbatim; recurse only into
+                    # each property's schema, where ``definitions`` again has
+                    # its JSON Schema meaning.
+                    normalized[key] = {
+                        prop_name: _rewrite_local_refs(prop_schema)
+                        for prop_name, prop_schema in value.items()
+                    }
+                else:
+                    out_key = "$defs" if key == "definitions" else key
+                    normalized[out_key] = _rewrite_local_refs(value)
             ref = normalized.get("$ref")
             if isinstance(ref, str) and ref.startswith("#/definitions/"):
                 normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]

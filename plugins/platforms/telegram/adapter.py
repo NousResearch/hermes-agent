@@ -591,6 +591,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # intentionally handled inside the adapter so button taps can execute
         # safe status commands without spending an agent turn.
         self._mobile_panel_commands: Dict[str, Dict[str, str]] = {
+            "active": {
+                "label": "👀 正在执行",
+                "command": "python3 - <<'PY2'\nimport subprocess\nfrom pathlib import Path\nprint('👀 Hermes 正在执行')\nprint('━━━━━━━━')\nstatus=Path.home()/'Downloads/Hermes输出/状态/Hermes任务状态.md'\nif status.exists():\n    lines=status.read_text(errors='replace').splitlines()[:60]\n    print('任务状态文件：')\n    print('\\n'.join(lines) or '（空）')\nelse:\n    print('任务状态文件：暂无')\nprint('\\nHermes 相关进程：')\ncmd=\"ps aux | grep -Ei 'hermes|run_agent|gateway' | grep -v grep | awk '{print $2, $3\"%\", $4\"%\", $11, $12, $13}' | head -12\"\nout=subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8).stdout.strip()\nprint(out or '未发现活跃 Hermes 进程')\nPY2",
+            },
+            "sessions": {
+                "label": "💬 最近会话",
+                "command": "(hermes sessions list --source telegram --limit 8 2>/dev/null || hermes sessions list --limit 8 2>/dev/null || echo '无法读取会话列表') | sed -n '1,80p'",
+            },
             "sys": {
                 "label": "🖥 Mac 状态",
                 "command": "python3 - <<'PY2'\nimport subprocess, re\nprint('🖥 Mac 状态')\nprint('━━━━━━━━')\ndef sh(cmd):\n    return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=8).stdout.strip()\ncpu=sh(\"top -l 1 -n 0 | grep 'CPU usage' | awk '{print $3}'\") or 'N/A'\nvm=sh('vm_stat')\nm=re.search(r'Pages free:\\s+(\\d+)', vm)\nmem=f'{int(m.group(1))*4096/1024/1024/1024:.1f} GB' if m else 'N/A'\ndisk=sh(\"df -h / | tail -1 | awk '{print $4}'\") or 'N/A'\nbatt=sh(\"pmset -g batt 2>/dev/null | grep -Eo '[0-9]+%' | head -1\") or 'N/A'\nip=sh('curl -s --max-time 5 ifconfig.me') or 'N/A'\nprocs=sh(\"ps aux | wc -l | tr -d ' '\") or 'N/A'\nprint(f'CPU: {cpu}')\nprint(f'内存空闲: {mem}')\nprint(f'磁盘剩余: {disk}')\nprint(f'电池: {batt}')\nprint(f'公网 IP: {ip}')\nprint(f'进程数: {procs}')\nPY2",
@@ -7459,6 +7467,10 @@ class TelegramAdapter(BasePlatformAdapter):
     def _mobile_panel_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
+                InlineKeyboardButton("👀 正在执行", callback_data="mpanel:active"),
+                InlineKeyboardButton("💬 最近会话", callback_data="mpanel:sessions"),
+            ],
+            [
                 InlineKeyboardButton("🖥 Mac 状态", callback_data="mpanel:sys"),
                 InlineKeyboardButton("⏳ 任务状态", callback_data="mpanel:tasks"),
             ],
@@ -7475,14 +7487,19 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _mobile_panel_text(self) -> str:
         return (
-            "📱 <b>Hermes 手机控制面板</b>\n"
+            "📱 <b>Hermes 手机控制台</b>\n"
             "━━━━━━━━\n"
-            "点按钮即可查看电脑状态，不需要记命令。\n\n"
+            "用手机查看 Hermes 当前在做什么、最近有哪些会话，"
+            "也可以快速检查这台 Mac 的状态。\n\n"
+            "推荐手机操作：\n"
+            "• 点 <b>正在执行</b>：看后台任务 / Agent / Gateway 进程\n"
+            "• 点 <b>最近会话</b>：找到 Telegram 历史会话，之后可用 <code>/resume</code> 继续\n"
+            "• 点 <b>任务状态</b>：查看长任务交付文件\n\n"
             "常用命令：\n"
-            "• <code>/sys</code> 系统状态\n"
-            "• <code>/tasks</code> 长任务状态\n"
+            "• <code>/sessions</code> 浏览历史会话\n"
+            "• <code>/agents</code> 查看活跃 Agent 和任务\n"
+            "• <code>/status</code> 查看当前会话/模型/Token 状态\n"
             "• <code>/shot</code> 截图回传\n"
-            "• <code>/downloads</code> 最近下载\n"
         )
 
     async def _send_mobile_panel_for_message(self, msg: Message) -> None:

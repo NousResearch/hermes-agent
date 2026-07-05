@@ -129,6 +129,20 @@ class TestTelegramMobileQuickLabels:
         assert "明天上午 9 点提醒我看周报" in kwargs["text"]
         assert kwargs["reply_markup"] is not None
 
+    def test_mobile_panel_surfaces_execution_and_sessions(self):
+        adapter = _make_adapter()
+
+        text = adapter._mobile_panel_text()
+
+        assert "Hermes 手机控制台" in text
+        assert "正在执行" in text
+        assert "最近会话" in text
+        assert "/sessions" in text
+        assert "/agents" in text
+        assert "active" in adapter._mobile_panel_commands
+        assert "sessions" in adapter._mobile_panel_commands
+        assert "hermes sessions list --source telegram" in adapter._mobile_panel_commands["sessions"]["command"]
+
 
 # ===========================================================================
 # send_exec_approval — inline keyboard buttons

@@ -712,6 +712,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
     # ── chat_completions (default) ─────────────────────────────────────
     _ct = agent._get_transport()
+    _ctx_len = getattr(agent, "context_compressor", None)
+    _ctx_len = _ctx_len.context_length if _ctx_len else None
 
     # Provider detection flags
     _is_qwen = agent._is_qwen_portal()
@@ -814,6 +816,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens=agent.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
             max_tokens_param_fn=agent._max_tokens_param,
+            context_length=_ctx_len,
             reasoning_config=agent.reasoning_config,
             request_overrides=agent.request_overrides,
             session_id=getattr(agent, "session_id", None),
@@ -846,6 +849,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         max_tokens=agent.max_tokens,
         ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param,
+        context_length=_ctx_len,
         reasoning_config=agent.reasoning_config,
         request_overrides=agent.request_overrides,
         session_id=getattr(agent, "session_id", None),

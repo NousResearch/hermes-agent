@@ -74,6 +74,25 @@ class TestParseAvailableOutputTokens:
         msg = "max_tokens: 9999 > context_window: 10000 - input_tokens: 9999 = available_tokens: 1"
         assert self._parse(msg) == 1
 
+    def test_vllm_exact_input_tokens_format(self):
+        msg = (
+            "This model's maximum context length is 131072 tokens. However, "
+            "you requested 65536 output tokens and your prompt contains 70000 "
+            "input tokens, for a total of 135536 tokens."
+        )
+        assert self._parse(msg) == 61_072
+
+    def test_vllm_at_least_input_tokens_is_not_exact_available_budget(self):
+        """vLLM lower-bound wording is not the real prompt token count."""
+        msg = (
+            "This model's maximum context length is 131072 tokens. However, "
+            "you requested 65536 output tokens and your prompt contains at least "
+            "65537 input tokens, for a total of at least 131073 tokens. Please "
+            "reduce the length of the input prompt or the number of requested "
+            "output tokens."
+        )
+        assert self._parse(msg) is None
+
     # ── Should NOT detect (returns None) ─────────────────────────────────
 
     def test_prompt_too_long_is_not_output_cap_error(self):
@@ -261,6 +280,31 @@ class TestEphemeralMaxOutputTokens:
 
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["max_tokens"] == 8_192
+
+
+class TestChatCompletionsOutputCapClamp:
+    def _build(self, *, content_chars: int, context_length: int = 131_072, max_tokens: int = 65_536):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        transport = ChatCompletionsTransport()
+        return transport.build_kwargs(
+            model="/models/Qwen3.6-35B-A3B-NVFP4",
+            messages=[{"role": "user", "content": "x" * content_chars}],
+            tools=None,
+            max_tokens=max_tokens,
+            max_tokens_param_fn=lambda value: {"max_tokens": value},
+            context_length=context_length,
+        )
+
+    def test_clamps_output_cap_when_prompt_plus_output_would_exceed_context(self):
+        kwargs = self._build(content_chars=280_000)
+
+        assert 1 <= kwargs["max_tokens"] < 65_536
+
+    def test_leaves_output_cap_when_prompt_plus_output_fits_context(self):
+        kwargs = self._build(content_chars=4_000)
+
+        assert kwargs["max_tokens"] == 65_536
 
 
 # ---------------------------------------------------------------------------

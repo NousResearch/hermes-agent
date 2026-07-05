@@ -9677,11 +9677,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if repair_uv:
                     repair_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
                     _install_python_dependencies_with_optional_fallback(
-                        [repair_uv, "pip"], env=repair_env, group="all"
+                        [repair_uv, "pip"], env=repair_env, group="termux-all" if _is_termux_env(repair_env) else "all"
                     )
                 else:
                     _install_python_dependencies_with_optional_fallback(
-                        [sys.executable, "-m", "pip"], group="all"
+                        [sys.executable, "-m", "pip"], group="termux-all" if _is_termux_env() else "all"
                     )
                 _clear_update_incomplete_marker()
                 healthy_after, detail_after = _venv_core_imports_healthy()

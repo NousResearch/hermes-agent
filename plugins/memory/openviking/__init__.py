@@ -26,6 +26,7 @@ Capabilities:
 from __future__ import annotations
 
 import atexit
+import errno
 import json
 import logging
 import mimetypes
@@ -42,7 +43,7 @@ import zipfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 from urllib.request import url2pathname
 
 from agent.message_content import flatten_message_text
@@ -50,6 +51,11 @@ from agent.memory_provider import MemoryProvider
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 from utils import atomic_json_write, env_var_enabled
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +117,9 @@ _LOCAL_OPENVIKING_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LOCAL_OPENVIKING_AUTOSTART_TIMEOUT = 60.0
 _OPENVIKING_SERVER_LOG_RELATIVE_PATH = Path("logs") / "openviking-server.log"
 _OPENVIKING_RESPONDED_FAILURE_PREFIX = "OpenViking server responded"
+_PENDING_SESSIONS_RELATIVE_DIR = Path("openviking") / "pending_sessions"
+_RUN_LOCKS_RELATIVE_DIR = Path("openviking") / "runs"
+_LOCK_BUSY_ERRNOS = {errno.EWOULDBLOCK, errno.EACCES, errno.EAGAIN}
 _SETUP_CANCELLED = object()
 
 
@@ -205,6 +214,11 @@ def _atexit_commit_sessions():
         provider.on_session_end([])
     except Exception:
         pass  # best-effort at shutdown time
+    finally:
+        try:
+            provider._release_run_lock()
+        except Exception:
+            pass
 
 
 atexit.register(_atexit_commit_sessions)
@@ -1800,6 +1814,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = ""
         self._session_id = ""
         self._turn_count = 0
+        self._hermes_home = ""
+        self._run_id = uuid.uuid4().hex
+        self._run_lock_file: Optional[Any] = None
+        self._run_lock_path: Optional[Path] = None
         # Guards the (_session_id, _turn_count) pair. sync_turn runs on the
         # MemoryManager's background sync executor while on_session_end /
         # on_session_switch run on the caller's thread, so the snapshot+reset
@@ -2088,6 +2106,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return
 
         self._client = client
+        self._recover_pending_sessions(self._session_id)
         _emit_runtime_status(
             f"Local OpenViking server at {endpoint} is reachable; OpenViking memory is active for later turns.",
             status_callback,
@@ -2139,6 +2158,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = settings["agent"]
         self._session_id = session_id
         self._turn_count = 0
+        hermes_home = str(kwargs.get("hermes_home") or "").strip()
+        if not hermes_home:
+            try:
+                from hermes_constants import get_hermes_home
+                hermes_home = str(get_hermes_home())
+            except Exception:
+                hermes_home = str(Path.home() / ".hermes")
+        self._hermes_home = hermes_home
+        self._acquire_run_lock()
         warning_callback = (
             kwargs.get("warning_callback")
             if kwargs.get("platform") == "cli"
@@ -2170,6 +2198,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
+
+        if self._client:
+            self._recover_pending_sessions(session_id)
 
         # Register as the last active provider for atexit safety net
         global _last_active_provider
@@ -2423,6 +2454,278 @@ class OpenVikingMemoryProvider(MemoryProvider):
         with self._committed_session_lock:
             self._committed_session_ids.add(sid)
 
+    def _pending_session_dir(self) -> Optional[Path]:
+        if not self._hermes_home:
+            return None
+        return Path(self._hermes_home) / _PENDING_SESSIONS_RELATIVE_DIR
+
+    def _pending_session_marker_path(self, sid: str) -> Optional[Path]:
+        sid = str(sid or "").strip()
+        directory = self._pending_session_dir()
+        if not sid or directory is None:
+            return None
+        return directory / f"{quote(sid, safe='')}.json"
+
+    def _run_lock_dir(self) -> Optional[Path]:
+        if not self._hermes_home:
+            return None
+        return Path(self._hermes_home) / _RUN_LOCKS_RELATIVE_DIR
+
+    def _run_lock_path_for(self, run_id: str) -> Optional[Path]:
+        run_id = str(run_id or "").strip()
+        directory = self._run_lock_dir()
+        if not run_id or directory is None:
+            return None
+        return directory / f"{quote(run_id, safe='')}.lock"
+
+    def _acquire_run_lock(self) -> None:
+        if self._run_lock_path is not None:
+            return
+        path = self._run_lock_path_for(self._run_id)
+        if path is None:
+            return
+        lock_file = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = path.open("a+", encoding="utf-8")
+            self._run_lock_path = path
+            if fcntl is None:
+                logger.debug("OpenViking run locks are not supported on this platform")
+                lock_file.close()
+                return
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._run_lock_file = lock_file
+        except Exception as e:
+            if lock_file is not None:
+                try:
+                    lock_file.close()
+                except Exception:
+                    pass
+            self._run_lock_path = None
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            logger.debug("Could not acquire OpenViking run lock %s: %s", path, e)
+
+    def _release_run_lock(self) -> None:
+        lock_file = self._run_lock_file
+        path = self._run_lock_path
+        self._run_lock_file = None
+        self._run_lock_path = None
+        if lock_file is not None:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except Exception as e:
+                logger.debug("Could not unlock OpenViking run lock %s: %s", path, e)
+            try:
+                lock_file.close()
+            except Exception as e:
+                logger.debug("Could not close OpenViking run lock %s: %s", path, e)
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception as e:
+                logger.debug("Could not remove OpenViking run lock %s: %s", path, e)
+
+    def _claim_owner_run_for_recovery(self, owner_run_id: str) -> tuple[bool, Optional[Any]]:
+        owner_run_id = str(owner_run_id or "").strip()
+        if not owner_run_id:
+            # Legacy markers predate owner_run_id; recover them without a
+            # liveness check so old pending sessions do not strand forever.
+            return True, None
+        if owner_run_id == self._run_id:
+            return False, None
+        path = self._run_lock_path_for(owner_run_id)
+        if path is None:
+            return False, None
+        if not path.exists():
+            return True, None
+        if fcntl is None:
+            logger.debug(
+                "Skipping OpenViking pending-session recovery for owner %s; "
+                "advisory locks are not supported",
+                owner_run_id,
+            )
+            return False, None
+
+        lock_file = None
+        try:
+            lock_file = path.open("a+", encoding="utf-8")
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True, lock_file
+        except FileNotFoundError:
+            return True, None
+        except BlockingIOError:
+            if lock_file is not None:
+                lock_file.close()
+            return False, None
+        except OSError as e:
+            if lock_file is not None:
+                lock_file.close()
+            if e.errno in _LOCK_BUSY_ERRNOS:
+                return False, None
+            logger.debug(
+                "Skipping OpenViking pending-session recovery for owner %s; "
+                "could not check run lock %s: %s",
+                owner_run_id,
+                path,
+                e,
+            )
+            return False, None
+        except Exception as e:
+            if lock_file is not None:
+                lock_file.close()
+            logger.debug(
+                "Skipping OpenViking pending-session recovery for owner %s; "
+                "could not check run lock %s: %s",
+                owner_run_id,
+                path,
+                e,
+            )
+            return False, None
+
+    def _release_owner_run_claim(
+        self,
+        owner_run_id: str,
+        lock_file: Optional[Any],
+        *,
+        cleanup: bool,
+    ) -> None:
+        if lock_file is not None:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                lock_file.close()
+            except Exception:
+                pass
+        if cleanup:
+            self._cleanup_owner_run_lock(owner_run_id)
+
+    def _cleanup_owner_run_lock(self, owner_run_id: str) -> None:
+        owner_run_id = str(owner_run_id or "").strip()
+        if not owner_run_id or owner_run_id == self._run_id:
+            return
+        path = self._run_lock_path_for(owner_run_id)
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.debug("Could not remove OpenViking owner run lock %s: %s", path, e)
+
+    def _mark_session_pending(self, sid: str) -> None:
+        if not sid or self._has_committed_session(sid):
+            return
+        path = self._pending_session_marker_path(sid)
+        if path is None:
+            return
+        if self._run_lock_path is None:
+            logger.debug("Could not safely mark OpenViking session %s pending without a run lock", sid)
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_json_write(
+                path,
+                {"session_id": sid, "owner_run_id": self._run_id},
+                mode=0o600,
+            )
+        except Exception as e:
+            logger.debug("Could not mark OpenViking session %s pending: %s", sid, e)
+
+    def _clear_pending_session(self, sid: str) -> None:
+        path = self._pending_session_marker_path(sid)
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.debug("Could not clear OpenViking pending session %s: %s", sid, e)
+
+    def _pending_sessions(self) -> List[tuple[str, str]]:
+        directory = self._pending_session_dir()
+        if directory is None or not directory.is_dir():
+            return []
+        sessions: List[tuple[str, str]] = []
+        for path in sorted(directory.glob("*.json")):
+            sid = ""
+            owner_run_id = ""
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    sid = str(raw.get("session_id") or "").strip()
+                    owner_run_id = str(raw.get("owner_run_id") or "").strip()
+            except Exception:
+                sid = ""
+            sid = sid or unquote(path.stem).strip()
+            if sid:
+                sessions.append((sid, owner_run_id))
+        return sessions
+
+    def _recover_pending_sessions(self, current_sid: str) -> None:
+        if not self._client:
+            return
+        pending_by_owner: Dict[str, List[str]] = {}
+        for sid, owner_run_id in self._pending_sessions():
+            pending_by_owner.setdefault(owner_run_id, []).append(sid)
+
+        for owner_run_id, sids in pending_by_owner.items():
+            recoverable, owner_lock_file = self._claim_owner_run_for_recovery(owner_run_id)
+            if not recoverable:
+                continue
+
+            holder: List[threading.Thread] = []
+
+            def _recover_owner(
+                pending_sids: tuple = tuple(sids),
+                pending_owner_run_id: str = owner_run_id,
+                pending_owner_lock_file: Optional[Any] = owner_lock_file,
+            ) -> None:
+                try:
+                    for pending_sid in pending_sids:
+                        with self._deferred_commit_lock:
+                            if self._shutting_down or pending_sid in self._deferred_commit_sids:
+                                continue
+                            self._deferred_commit_sids.add(pending_sid)
+                        try:
+                            if self._has_committed_session(pending_sid):
+                                self._clear_pending_session(pending_sid)
+                                continue
+                            if self._shutting_down:
+                                continue
+                            self._commit_session(
+                                pending_sid,
+                                0,
+                                context="during startup recovery",
+                                clear_missing=True,
+                            )
+                        finally:
+                            with self._deferred_commit_lock:
+                                self._deferred_commit_sids.discard(pending_sid)
+                finally:
+                    self._release_owner_run_claim(
+                        pending_owner_run_id,
+                        pending_owner_lock_file,
+                        cleanup=True,
+                    )
+                    with self._deferred_commit_lock:
+                        if holder:
+                            self._deferred_commit_threads.discard(holder[0])
+
+            thread = threading.Thread(
+                target=_recover_owner,
+                daemon=True,
+                name=f"openviking-recover-owner-{owner_run_id or 'legacy'}",
+            )
+            holder.append(thread)
+            with self._deferred_commit_lock:
+                self._deferred_commit_threads.add(thread)
+            thread.start()
+
     def _session_needs_commit(self, sid: str, turn_count: int) -> bool:
         # Already-committed sessions never need a second commit, regardless of
         # the turn counter — a racing sync_turn can re-increment _turn_count
@@ -2433,16 +2736,28 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return True
         return self._session_has_pending_tokens(sid)
 
-    def _commit_session(self, sid: str, turn_count: int, *, context: str) -> bool:
+    def _commit_session(
+        self,
+        sid: str,
+        turn_count: int,
+        *,
+        context: str,
+        clear_missing: bool = False,
+    ) -> bool:
         try:
             self._client.post(
                 f"/api/v1/sessions/{sid}/commit",
                 {"keep_recent_count": 0},
             )
             self._mark_session_committed(sid)
+            self._clear_pending_session(sid)
             logger.info("OpenViking session %s committed %s (%d turns)", sid, context, turn_count)
             return True
         except Exception as e:
+            if clear_missing and _status_code_from_error(e) == 404:
+                self._clear_pending_session(sid)
+                logger.debug("OpenViking pending session %s no longer exists; dropped marker", sid)
+                return False
             logger.warning("OpenViking session commit failed for %s: %s", sid, e)
             return False
 
@@ -3105,6 +3420,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return
             self._turn_count += 1
 
+        self._mark_session_pending(sid)
+
         def _sync():
             def _post_turn(client: _VikingClient) -> None:
                 if batch_messages:
@@ -3343,6 +3660,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         global _last_active_provider
         if _last_active_provider is self:
             _last_active_provider = None
+        self._release_run_lock()
 
     # -- Tool implementations ------------------------------------------------
 

@@ -1410,6 +1410,80 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     }
 
 
+def _flatten_toolset_names(raw_entries: list, platform: str) -> List[str]:
+    """Normalise a ``platform_toolsets.<platform>`` list into flat str names.
+
+    A well-formed entry is a flat list of strings. But a stray indentation
+    in ``config.yaml`` nests names under a mapping — the single most common
+    hand-edit mistake:
+
+        discord:
+          - hermes-discord:
+              - browser
+              - terminal
+
+    YAML parses that as ``[{'hermes-discord': ['browser', 'terminal']}]``.
+    The old normalisation (``[str(ts) for ts in toolset_names]``) turned the
+    mapping into the literal string ``"{'hermes-discord': [...]}"`` — a name
+    that matches no toolset, so ``has_explicit_config`` stayed False for the
+    real toolsets and every nested toolset was silently dropped. The platform
+    then loaded almost no tools while ``config.yaml`` *looked* correct, with
+    zero warning anywhere. Recover the intended names (both mapping keys and
+    their nested values) so the platform still works, and log loudly so the
+    malformed config is visible and fixable.
+
+    Well-formed configs pass through unchanged (no warning, same order).
+    """
+    flat: List[str] = []
+    malformed = False
+
+    def _extract(node) -> None:
+        if isinstance(node, bool):
+            flat.append(str(node))
+        elif isinstance(node, str):
+            flat.append(node)
+        elif isinstance(node, (int, float)):
+            flat.append(str(node))
+        elif isinstance(node, dict):
+            for key, value in node.items():
+                _extract(key)
+                _extract(value)
+        elif isinstance(node, (list, tuple, set)):
+            for item in node:
+                _extract(item)
+        elif node is not None:
+            flat.append(str(node))
+
+    for entry in raw_entries:
+        if isinstance(entry, (str, int, float, bool)):
+            # YAML may parse bare numeric names (e.g. ``12306:``) as int.
+            flat.append(str(entry))
+        else:
+            malformed = True
+            _extract(entry)
+
+    # De-duplicate while preserving first-seen order.
+    seen: Set[str] = set()
+    result: List[str] = []
+    for name in flat:
+        if name not in seen:
+            seen.add(name)
+            result.append(name)
+
+    if malformed:
+        logger.warning(
+            "platform_toolsets.%s in config.yaml is malformed: it contains a "
+            "nested list/mapping instead of a flat list of toolset names "
+            "(usually a YAML indentation error). Recovered toolset names: %s. "
+            "Fix the indentation so each toolset is its own top-level "
+            "'- <name>' entry.",
+            platform,
+            ", ".join(result) if result else "(none)",
+        )
+
+    return result
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -1431,9 +1505,11 @@ def _get_platform_tools(
             default_ts = f"hermes-{platform}"
         toolset_names = [default_ts]
 
-    # YAML may parse bare numeric names (e.g. ``12306:``) as int.
-    # Normalise to str so downstream sorted() never mixes types.
-    toolset_names = [str(ts) for ts in toolset_names]
+    # Normalise to a flat list of str names. Handles the bare-numeric YAML
+    # case (``12306:`` → int) and, critically, recovers from nested/malformed
+    # entries instead of stringifying a mapping into an unmatchable name that
+    # silently drops every real toolset. See _flatten_toolset_names.
+    toolset_names = _flatten_toolset_names(toolset_names, platform)
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_ts_keys = _get_plugin_toolset_keys()

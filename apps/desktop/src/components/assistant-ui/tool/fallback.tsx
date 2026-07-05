@@ -393,6 +393,19 @@ function ToolEntry({ part }: ToolEntryProps) {
   const trailing =
     isPending && !embedded ? <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={elapsed} /> : undefined
 
+  const copyHeaderAction = !isPending && copyAction.text ? (
+    <CopyButton
+      appearance="icon"
+      buttonSize="icon-xs"
+      className="size-5 rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:text-(--ui-text-primary) hover:opacity-100 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80"
+      iconClassName="size-3"
+      label={copyAction.label}
+      showLabel={false}
+      stopPropagation
+      text={copyAction.text}
+    />
+  ) : undefined
+
   // Once a turn has settled, a hover/focus-revealed dismiss lets the user clear
   // a completed/failed row that would otherwise sit at the tail of the chat.
   // It goes in the in-flow `action` slot (not `trailing`) so it can't overlap
@@ -418,6 +431,13 @@ function ToolEntry({ part }: ToolEntryProps) {
         <Codicon name="close" size="0.75rem" />
       </Button>
     </Tip>
+  ) : undefined
+
+  const headerAction = copyHeaderAction || dismissAction ? (
+    <span className="flex items-center gap-0.5">
+      {copyHeaderAction}
+      {dismissAction}
+    </span>
   ) : undefined
 
   if (dismissed) {
@@ -447,7 +467,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     >
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
-          action={dismissAction}
+          action={headerAction}
           onToggle={hasExpandableContent ? () => setToolDisclosureOpen(disclosureId, !open) : undefined}
           open={open}
           trailing={trailing}

@@ -12,40 +12,39 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Entry Points                                  │
-│                                                                      │
-│  CLI (cli.py)    Gateway (gateway/run.py)    ACP (acp_adapter/)     │
-│  Batch Runner    API Server                  Python Library          │
+│                        Entry Points                                 │
+│                                                                     │
+│  CLI (cli.py)      TUI (ui-tui/)       Desktop (apps/desktop/)      │
+│  Gateway           Web Dashboard/API   ACP (acp_adapter/)           │
+│  Cron              Batch Runner        Python Library               │
 └──────────┬──────────────┬───────────────────────┬───────────────────┘
            │              │                       │
            ▼              ▼                       ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     AIAgent (run_agent.py)                          │
 │                                                                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
-│  │ Prompt       │  │ Provider     │  │ Tool         │               │
-│  │ Builder      │  │ Resolution   │  │ Dispatch     │               │
-│  │ (prompt_     │  │ (runtime_    │  │ (model_      │               │
-│  │  builder.py) │  │  provider.py)│  │  tools.py)   │               │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘               │
-│         │                 │                 │                       │
-│  ┌──────┴───────┐  ┌──────┴───────┐  ┌──────┴───────┐               │
-│  │ Compression  │  │ 3 API Modes  │  │ Tool Registry│               │
-│  │ & Caching    │  │ chat_compl.  │  │ (registry.py)│               │
-│  │              │  │ codex_resp.  │  │ 70+ tools    │               │
-│  │              │  │ anthropic    │  │ 28 toolsets  │               │
-│  └──────────────┘  └──────────────┘  └──────────────┘               │
-└─────────┴─────────────────┴─────────────────┴───────────────────────┘
-           │                                    │
-           ▼                                    ▼
-┌───────────────────┐              ┌──────────────────────┐
-│ Session Storage   │              │ Tool Backends         │
-│ (SQLite + FTS5)   │              │ Terminal (6 backends) │
-│ hermes_state.py   │              │ Browser (5 backends)  │
-│ gateway/session.py│              │ Web (4 backends)      │
-└───────────────────┘              │ MCP (dynamic)         │
-                                   │ File, Vision, etc.    │
-                                   └──────────────────────┘
+│  ┌──────────────┐         ┌──────────────┐         ┌──────────────┐ │
+│  │ Prompt       │         │ Provider     │         │ Tool         │ │
+│  │ Builder      │         │ Resolution   │         │ Dispatch     │ │
+│  │ (prompt_     │         │ (runtime_    │         │ (model_      │ │
+│  │  builder.py) │         │  provider.py)│         │  tools.py)   │ │
+│  └──────┬───────┘         └──────┬───────┘         └──────┬───────┘ │
+│         │                        │                        │         │
+│  ┌──────┴───────┐         ┌──────┴───────┐         ┌──────┴───────┐ │
+│  │ Compression  │         │ 3 API Modes  │         │ Tool Registry│ │
+│  │ & Caching    │         │ chat_compl.  │         │ (registry.py)│ │
+│  │              │         │ codex_resp.  │         │ ~70 tools    │ │
+│  │              │         │ anthropic    │         │ 28 toolsets  │ │
+│  └──────────────┘         └──────────────┘         └──────────────┘ │
+└─────────┴────────────────────────┴────────────────────────┴─────────┘
+          │                        │                        │
+          ▼                        ▼                        ▼
+┌───────────────────┐   ┌──────────────────────┐   ┌──────────────────┐
+│ Session Storage   │   │ Tool Backends        │   │ Plugins & Skills │
+│ (SQLite + FTS5)   │   │ Terminal (6 backends)│   │ providers, hooks │
+│ hermes_state.py   │   │ Browser, Web, MCP    │   │ platforms, memory│
+│ gateway/session.py│   │ File, Vision, etc.   │   │ procedural skills│
+└───────────────────┘   └──────────────────────┘   └──────────────────┘
 ```
 
 ## Directory Structure
@@ -61,6 +60,7 @@ hermes-agent/
 ├── batch_runner.py           # Batch trajectory generation
 │
 ├── agent/                    # Agent internals
+│   ├── system_prompt.py      # Prompt part orchestration
 │   ├── prompt_builder.py     # System prompt assembly
 │   ├── context_engine.py     # ContextEngine ABC (pluggable)
 │   ├── context_compressor.py # Default engine — lossy summarization
@@ -69,10 +69,13 @@ hermes-agent/
 │   ├── model_metadata.py     # Model context lengths, token estimation
 │   ├── models_dev.py         # models.dev registry integration
 │   ├── anthropic_adapter.py  # Anthropic Messages API format conversion
+│   ├── codex_responses_adapter.py # OpenAI Responses API conversion
 │   ├── display.py            # KawaiiSpinner, tool preview formatting
 │   ├── skill_commands.py     # Skill slash commands
-│   ├── memory_manager.py    # Memory manager orchestration
-│   ├── memory_provider.py   # Memory provider ABC
+│   ├── memory_manager.py     # Memory manager orchestration
+│   ├── memory_provider.py    # Memory provider ABC
+│   ├── *_provider.py         # Provider ABCs (browser, web, image, video, TTS, etc.)
+│   ├── *_registry.py         # Provider registries
 │   └── trajectory.py         # Trajectory saving helpers
 │
 ├── hermes_cli/               # CLI subcommands and setup
@@ -98,8 +101,9 @@ hermes-agent/
 │   ├── terminal_tool.py      # Terminal orchestration
 │   ├── process_registry.py   # Background process management
 │   ├── file_tools.py         # read_file, write_file, patch, search_files
+│   ├── file_operations.py    # Backend-agnostic file operations
 │   ├── web_tools.py          # web_search, web_extract
-│   ├── browser_tool.py       # 10 browser automation tools
+│   ├── browser_tool.py       # Browser automation tools
 │   ├── code_execution_tool.py # execute_code sandbox
 │   ├── delegate_tool.py      # Subagent delegation
 │   ├── mcp_tool.py           # MCP client (large file)
@@ -117,20 +121,24 @@ hermes-agent/
 │   ├── mirror.py             # Cross-session message mirroring
 │   ├── status.py             # Token locks, profile-scoped process tracking
 │   ├── builtin_hooks/        # Extension point for always-registered hooks (none shipped)
-│   └── platforms/            # 20 adapters: telegram, discord, slack, whatsapp,
-│                             #   signal, matrix, mattermost, email, sms,
-│                             #   dingtalk, feishu, wecom, wecom_callback, weixin,
-│                             #   bluebubbles, qqbot, homeassistant, webhook, api_server,
-│                             #   yuanbao
+│   └── platforms/            # Core adapters only; most platform integrations
+│                             # now live under plugins/platforms/
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
+├── tui_gateway/              # Python JSON-RPC backend for the Ink TUI
+├── ui-tui/                   # React Ink terminal UI (`hermes --tui`)
+├── web/                      # React dashboard source (Vite)
+├── apps/
+│   ├── desktop/              # Electron desktop chat app
+│   ├── shared/               # Shared TS JSON-RPC client/helpers
+│   └── bootstrap-installer/  # Tauri bootstrap installer
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)
-├── plugins/memory/           # Memory provider plugins
-├── plugins/context_engine/   # Context engine plugins
+├── plugins/                  # Bundled plugins: platforms, providers, hooks,
+│                             # dashboards, memory, web/browser/image/video, etc.
 ├── skills/                   # Bundled skills (always available)
 ├── optional-skills/          # Official optional skills (install explicitly)
 ├── website/                  # Docusaurus documentation site
-└── tests/                    # Pytest suite (~25,000 tests across ~1,250 files)
+└── tests/                    # Large pytest suite; TS tests live by package
 ```
 
 ## Data Flow
@@ -138,9 +146,9 @@ hermes-agent/
 ### CLI Session
 
 ```text
-User input → HermesCLI.process_input()
+User input → HermesCLI prompt loop / TUI JSON-RPC submit
   → AIAgent.run_conversation()
-    → prompt_builder.build_system_prompt()
+    → system_prompt/prompt_builder build prompt parts
     → runtime_provider.resolve_runtime_provider()
     → API call (chat_completions / codex_responses / anthropic_messages)
     → tool_calls? → model_tools.handle_function_call() → loop
@@ -211,7 +219,7 @@ A shared runtime resolver used by CLI, gateway, cron, ACP, and auxiliary calls. 
 
 ### Tool System
 
-Central tool registry (`tools/registry.py`) with 70+ registered tools across ~28 toolsets. Each tool file self-registers at import time. The registry handles schema collection, dispatch, availability checking, and error wrapping. Terminal tools support 6 backends (local, Docker, SSH, Daytona, Modal, Singularity).
+Central tool registry (`tools/registry.py`) with about 70 registered tools across ~28 runtime toolsets. Each tool file self-registers at import time. The registry handles schema collection, dispatch, availability checking, and error wrapping. Terminal tools support 6 primary backends (local, Docker, SSH, Daytona, Modal, Singularity).
 
 → [Tools Runtime](./tools-runtime.md)
 
@@ -223,13 +231,13 @@ SQLite-based session storage with FTS5 full-text search. Sessions have lineage t
 
 ### Messaging Gateway
 
-Long-running process with 20 platform adapters, unified session routing, user authorization (allowlists + DM pairing), slash command dispatch, hook system, cron ticking, and background maintenance.
+Long-running process with a small set of core adapters plus platform plugins under `plugins/platforms/`. It provides unified session routing, user authorization (allowlists + DM pairing), slash command dispatch, hook system, cron ticking, and background maintenance.
 
 → [Gateway Internals](./gateway-internals.md)
 
 ### Plugin System
 
-Three discovery sources: `~/.hermes/plugins/` (user), `.hermes/plugins/` (project), and pip entry points. Plugins register tools, hooks, and CLI commands through a context API. Two specialized plugin types exist: memory providers (`plugins/memory/`) and context engines (`plugins/context_engine/`). Both are single-select — only one of each can be active at a time, configured via `hermes plugins` or `config.yaml`.
+Three discovery sources: `~/.hermes/plugins/` (user), `.hermes/plugins/` (project), and pip entry points. Plugins register tools, hooks, CLI commands, platform adapters, and provider backends through a context API. Bundled plugin categories include platform adapters, model providers, web/browser providers, image/video generation providers, memory providers, dashboard auth, observability, cron providers, and feature plugins such as kanban.
 
 → [Plugin Guide](/guides/build-a-hermes-plugin), [Memory Provider Plugin](./memory-provider-plugin.md)
 

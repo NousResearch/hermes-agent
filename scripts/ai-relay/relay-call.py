@@ -67,7 +67,11 @@ DEFAULT_ACCOUNTS = {
                  # สายสมอง: fable โดน limit/พัง → opus 4.8 อัตโนมัติ (แก้ทีเดียวใช้ทุกเครื่อง)
                  "brain": ["opus"]},
     "limits": {"max_rounds_per_issue": 3, "max_calls_per_session": 50,
-               "max_fable_calls_per_session": 3, "session_hours": 12, "budget": None},
+               "max_fable_calls_per_session": 3, "session_hours": 12, "budget": None,
+               # นาฬิกาปลุกต่อการเรียก 1 ครั้ง (วินาที) · เกินเวลา = ถือว่า "ค้าง" ตัดทิ้งแล้วสลับตัวถัดไป
+               # ปรับได้ใน accounts.yaml (limits.call_timeout_seconds) หรือต่อ tool ใน adapters.yaml (timeout)
+               # coder = 900 (15 นาที) · สมอง (brain: fable/opus) คิดนานกว่า = 1800 (30 นาที) แยกกัน
+               "call_timeout_seconds": 900, "brain_call_timeout_seconds": 1800},
     "cooldown": {"fail_threshold": 3, "window_seconds": 300, "minutes": 10},
     "ollama_models": {"default": "qwen3:8b", "code": "deepseek-r1:7b"},
 }
@@ -184,6 +188,8 @@ def classify(exit_code, stdout, stderr):
     out = stdout or ""
     err = stderr or ""
     err_low = err.lower()
+    if exit_code == 124 and TIMEOUT_MARK in err:
+        return "timeout"   # ค้างจริง (run_once ตั้งป้ายนี้ตอน subprocess เกินนาฬิกาปลุก · CLI ที่บังเอิญ exit 124 เอง ไม่เข้าเงื่อนไขนี้ → ตกไป crash)
     if exit_code == 127:
         return "not_found"
     if exit_code == 0:
@@ -266,7 +272,24 @@ def write_ledger(cwd: Path, row: dict):
         if fcntl: fcntl.flock(fh, fcntl.LOCK_UN)
     return str(f)
 
-def run_once(spec, prompt, cwd, model):
+TIMEOUT_MARK = "__relay_timeout__"   # ป้ายเฉพาะบอกว่า "ค้างจริง" (กันสับสนกับ CLI ที่บังเอิญ exit 124)
+
+def resolve_timeout(spec, limits):
+    # นาฬิกาปลุกต่อการเรียก · ต่อ tool (adapters.yaml: timeout) ชนะก่อน → ค่ากลาง (accounts.yaml) → ค่าปริยาย
+    # สมอง (brain: fable/opus) คิดนานกว่า coder → ใช้ค่ากลาง+ปริยายของสมองแยก (ไม่ให้โดนตัดเร็วเกิน)
+    limits = limits or {}
+    is_brain = bool(spec.get("brain"))
+    fallback = 1800 if is_brain else 900
+    mid_key = "brain_call_timeout_seconds" if is_brain else "call_timeout_seconds"
+    for v in (spec.get("timeout"), limits.get(mid_key), fallback):
+        try:
+            if v is not None and int(v) > 0:
+                return int(v)
+        except (TypeError, ValueError):
+            pass
+    return fallback
+
+def run_once(spec, prompt, cwd, model, timeout=900):
     cmd = [a.replace("{prompt}",prompt).replace("{cwd}",str(cwd)).replace("{model}",model or "") for a in spec["cmd"]]
     workdir = str(cwd) if spec.get("run_in_cwd") else None
     env = os.environ.copy()
@@ -274,13 +297,13 @@ def run_once(spec, prompt, cwd, model):
         # ตัด token org ที่ใช้ไม่ได้ เพื่อให้ claude ใช้ login ของเครื่องแทน (จับ path เต็มด้วย)
         env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
     try:
-        p = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=1800,
+        p = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout,
                            stdin=subprocess.DEVNULL, env=env)  # ปิด stdin · กัน codex exec ค้างรออ่าน input
         return p.returncode, p.stdout, p.stderr
     except FileNotFoundError:
         return 127, "", "command not found"
     except subprocess.TimeoutExpired:
-        return 124, "", "timeout"
+        return 124, "", TIMEOUT_MARK
 
 # ---- ตัวนับงบระดับ session (ไฟล์เล็กใน cfg dir · ล็อกไฟล์กันนับพลาดเมื่อรันพร้อมกัน) ----
 def bump_counter(cwd: Path, name: str, session_hours=12):
@@ -463,8 +486,9 @@ def main():
             rotated_from = tool
             continue
         model = models.get("code") if tool == "ollama" else ""
+        call_timeout = resolve_timeout(adapters[tool], limits)
         relay_now("set", tool, a.task_id, "กำลังเขียนโค้ด")
-        code, out, err = run_once(adapters[tool], prompt, cwd, model)
+        code, out, err = run_once(adapters[tool], prompt, cwd, model, timeout=call_timeout)
         st = classify(code, out, err)
         tried.append(f"{tool}:{st}")
 
@@ -482,7 +506,8 @@ def main():
 
         # ไม่ ok → จดความพยายามลง ledger ก่อน (relay-report จะได้เห็นครั้งที่พัง/ชนโควต้าด้วย) แล้วค่อยตัดสินว่าสลับหรือหยุด
         attempt_row(tool, st, rotated_from)
-        if st in ("quota", "crash"):
+        if st in ("quota", "crash", "timeout"):
+            # timeout = ค้าง/หมดเวลา · นับเป็นพังเข้า cooldown + สลับตัวถัดไปเหมือน crash
             record_fail(cwd, tool, cd_cfg, time.time())  # พังซ้ำครบเกณฑ์ = พักตัวนี้ชั่วคราว
             rotated_from = tool
             continue   # สลับตัวถัดไปในสาย

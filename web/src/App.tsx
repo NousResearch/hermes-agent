@@ -373,7 +373,6 @@ export default function App() {
   const isMobile = useBelowBreakpoint(1024);
   const isDesktopCollapsed = collapsed && !isMobile;
   const tooltipWarmRef = useRef(0);
-  const sidebarStatus = useSidebarStatus();
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
@@ -661,58 +660,12 @@ export default function App() {
               )}
             </nav>
 
-            <SidebarSystemActions
-              collapsed={isDesktopCollapsed}
-              onNavigate={closeMobile}
-              status={sidebarStatus}
+            <SidebarLowerChrome
+              closeMobile={closeMobile}
+              isDesktopCollapsed={isDesktopCollapsed}
+              t={t}
               tooltipWarmRef={tooltipWarmRef}
             />
-
-            <div
-              className={cn(
-                "flex shrink-0 items-center gap-2",
-                "px-3 py-2",
-                "border-t border-current/20",
-                isDesktopCollapsed
-                  ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
-                  : "justify-between",
-              )}
-            >
-              <div
-                className={cn(
-                  "flex min-w-0 items-center gap-2",
-                  isDesktopCollapsed && "lg:flex-col lg:items-start",
-                )}
-              >
-                <PluginSlot name="header-right" />
-
-                <SidebarIconWithTooltip
-                  collapsed={isDesktopCollapsed}
-                  label={t.theme?.switchTheme ?? "Switch theme"}
-                  tooltipWarmRef={tooltipWarmRef}
-                >
-                  <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
-                </SidebarIconWithTooltip>
-
-                <SidebarIconWithTooltip
-                  collapsed={isDesktopCollapsed}
-                  label={t.language.switchTo}
-                  tooltipWarmRef={tooltipWarmRef}
-                >
-                  <LanguageSwitcher collapsed={isDesktopCollapsed} dropUp />
-                </SidebarIconWithTooltip>
-              </div>
-            </div>
-
-            <div
-              className={cn(
-                "flex shrink-0 flex-col",
-                isDesktopCollapsed && "lg:hidden",
-              )}
-            >
-              <AuthWidget />
-              <SidebarFooter status={sidebarStatus} />
-            </div>
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
@@ -888,6 +841,72 @@ function SidebarNavLink({
         <SidebarTooltip anchor={tooltipAnchor} label={navLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
+  );
+}
+
+function SidebarLowerChrome({
+  closeMobile,
+  isDesktopCollapsed,
+  t,
+  tooltipWarmRef,
+}: SidebarLowerChromeProps) {
+  const sidebarStatus = useSidebarStatus();
+
+  return (
+    <>
+      <SidebarSystemActions
+        collapsed={isDesktopCollapsed}
+        onNavigate={closeMobile}
+        status={sidebarStatus}
+        tooltipWarmRef={tooltipWarmRef}
+      />
+
+      <div
+        className={cn(
+          "flex shrink-0 items-center gap-2",
+          "px-3 py-2",
+          "border-t border-current/20",
+          isDesktopCollapsed
+            ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
+            : "justify-between",
+        )}
+      >
+        <div
+          className={cn(
+            "flex min-w-0 items-center gap-2",
+            isDesktopCollapsed && "lg:flex-col lg:items-start",
+          )}
+        >
+          <PluginSlot name="header-right" />
+
+          <SidebarIconWithTooltip
+            collapsed={isDesktopCollapsed}
+            label={t.theme?.switchTheme ?? "Switch theme"}
+            tooltipWarmRef={tooltipWarmRef}
+          >
+            <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
+          </SidebarIconWithTooltip>
+
+          <SidebarIconWithTooltip
+            collapsed={isDesktopCollapsed}
+            label={t.language.switchTo}
+            tooltipWarmRef={tooltipWarmRef}
+          >
+            <LanguageSwitcher collapsed={isDesktopCollapsed} dropUp />
+          </SidebarIconWithTooltip>
+        </div>
+      </div>
+
+      <div
+        className={cn(
+          "flex shrink-0 flex-col",
+          isDesktopCollapsed && "lg:hidden",
+        )}
+      >
+        <AuthWidget />
+        <SidebarFooter status={sidebarStatus} />
+      </div>
+    </>
   );
 }
 
@@ -1320,6 +1339,13 @@ interface SidebarNavLinkProps {
   closeMobile: () => void;
   collapsed: boolean;
   item: NavItem;
+  t: Translations;
+  tooltipWarmRef: TooltipWarmRef;
+}
+
+interface SidebarLowerChromeProps {
+  closeMobile: () => void;
+  isDesktopCollapsed: boolean;
   t: Translations;
   tooltipWarmRef: TooltipWarmRef;
 }

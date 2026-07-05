@@ -1,0 +1,156 @@
+# Hermes Agent
+
+> Hermes Agent is an autonomous AI agent by Nous Research that runs on any infrastructure and is controlled via messaging platforms.
+
+Hermes Agent deploys on local machines, Docker, SSH, or cloud serverless environments. Users interact through Telegram, Discord, Slack, and other messaging platforms while the agent executes tasks, builds persistent memory, and accumulates procedural skills over time.
+
+## Getting Started
+
+- [Documentation Home](https://hermes-agent.nousresearch.com/docs): Top-level entry point for all Hermes Agent documentation.
+- [Installation](https://hermes-agent.nousresearch.com/docs/getting-started/installation): Step-by-step instructions for installing Hermes Agent.
+- [Learning Path](https://hermes-agent.nousresearch.com/docs/getting-started/learning-path): Recommended sequence for learning Hermes Agent concepts and features.
+- [Platform Support](https://hermes-agent.nousresearch.com/docs/zh-Hans/getting-started/platform-support): Overview of supported deployment platforms and operating systems.
+- [Updating](https://hermes-agent.nousresearch.com/docs/zh-Hans/getting-started/updating): Instructions for updating Hermes Agent to newer versions.
+
+## Core Features
+
+- [Features Overview](https://hermes-agent.nousresearch.com/docs/user-guide/features/overview): Summary of all major agent capabilities.
+- [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills): How the agent creates, stores, and reuses procedural skills.
+- [Memory Providers](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory-providers): Configuration options for persistent memory across sessions.
+- [Goals](https://hermes-agent.nousresearch.com/docs/user-guide/features/goals): How to define and manage long-running agent goals.
+- [Delegation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation): How the agent delegates subtasks to other agents or processes.
+- [Computer Use](https://hermes-agent.nousresearch.com/docs/user-guide/features/computer-use): Agent capability for interacting with desktop GUIs.
+- [Browser](https://hermes-agent.nousresearch.com/docs/user-guide/features/browser): Agent web browsing capabilities and setup options.
+- [Vision](https://hermes-agent.nousresearch.com/docs/user-guide/features/vision): Image understanding capabilities within the agent.
+- [Image Generation](https://hermes-agent.nousresearch.com/docs/user-guide/features/image-generation): Generating images from within the agent.
+- [Code Execution](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/features/code-execution): How the agent executes code during tasks.
+- [Batch Processing](https://hermes-agent.nousresearch.com/docs/user-guide/features/batch-processing): Running multiple tasks or requests in parallel.
+- [Deliverable Mode](https://hermes-agent.nousresearch.com/docs/user-guide/features/deliverable-mode): Mode for producing structured, finalized outputs.
+- [Kanban](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/features/kanban): Built-in kanban board for task tracking.
+- [Personality](https://hermes-agent.nousresearch.com/docs/user-guide/features/personality): Configuring the agent's persona and communication style.
+- [Provider Routing](https://hermes-agent.nousresearch.com/docs/user-guide/features/provider-routing): Routing requests across multiple LLM providers.
+- [Fallback Providers](https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers): Configuring backup providers when primary fails.
+- [Tool Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway): Gateway for managing and routing tool calls.
+- [Tool Search](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-search): Searching available tools at runtime.
+- [Tools](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools): Overview of built-in tools available to the agent.
+- [Built-in Plugins](https://hermes-agent.nousresearch.com/docs/user-guide/features/built-in-plugins): Plugins included with Hermes Agent by default.
+- [MCP Support](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/features/mcp): Model Context Protocol integration details.
+- [ACP](https://hermes-agent.nousresearch.com/docs/user-guide/features/acp): Agent Communication Protocol feature documentation.
+- [API Server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server): Running Hermes Agent as an API server.
+- [Web Dashboard](https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard): Web UI for monitoring and managing the agent.
+- [TTS](https://hermes-agent.nousresearch.com/docs/user-guide/features/tts): Text-to-speech output configuration.
+- [LSP](https://hermes-agent.nousresearch.com/docs/user-guide/features/lsp): Language Server Protocol integration for code tasks.
+- [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files): Using files as context for agent sessions.
+- [Context References](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-references): Referencing external content within agent context.
+
+## Messaging Platform Setup
+
+- [Messaging Overview](https://hermes-agent.nousresearch.com/docs/user-guide/messaging): Index of all supported messaging platform integrations.
+- [Telegram](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/telegram/): Setting up Hermes Agent with Telegram.
+- [Slack](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/messaging/slack): Setting up Hermes Agent with Slack.
+- [Discord](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/messaging): Setting up Hermes Agent with Discord.
+- [WhatsApp](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp): Setting up Hermes Agent with WhatsApp.
+- [WhatsApp Cloud](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp-cloud): Setting up Hermes Agent with WhatsApp Cloud API.
+- [Microsoft Teams](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams): Setting up Hermes Agent with Microsoft Teams.
+- [Email](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/email): Setting up Hermes Agent with email.
+- [Google Chat](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat): Setting up Hermes Agent with Google Chat.
+- [Feishu / Lark](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/feishu): Setting up Hermes Agent with Feishu.
+- [DingTalk](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/dingtalk): Setting up Hermes Agent with DingTalk.
+- [Line](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/line): Setting up Hermes Agent with Line.
+- [Signal](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/messaging/signal): Setting up Hermes Agent with Signal.
+- [SimpleX](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/simplex): Setting up Hermes Agent with SimpleX Chat.
+- [BlueBubbles](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/bluebubbles): Setting up Hermes Agent with BlueBubbles (iMessage).
+- [Home Assistant](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/homeassistant): Setting up Hermes Agent with Home Assistant.
+- [Webhooks](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks): Configuring generic webhook-based messaging.
+- [MS Graph Webhook](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/msgraph-webhook): Integrating via Microsoft Graph webhooks.
+- [WeChat (Weixin)](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin): Setting up Hermes Agent with WeChat.
+
+## Configuration & Deployment
+
+- [Configuration](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/configuration): General configuration options for Hermes Agent.
+- [Profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles): Creating and managing agent configuration profiles.
+- [Profile Distributions](https://hermes-agent.nousresearch.com/docs/user-guide/profile-distributions): Distributing profiles across deployments.
+- [Multi-Profile Gateways](https://hermes-agent.nousresearch.com/docs/user-guide/multi-profile-gateways): Running multiple profiles through a single gateway.
+- [Secrets Management](https://hermes-agent.nousresearch.com/docs/user-guide/secrets): Managing API keys and secrets for the agent.
+- [Bitwarden Secrets](https://hermes-agent.nousresearch.com/docs/user-guide/secrets/bitwarden): Using Bitwarden for secrets storage.
+- [Configuring Models](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/configuring-models): Selecting and configuring LLM models.
+- [Security](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/security): Security considerations and hardening options.
+- [Desktop App](https://hermes-agent.nousresearch.com/docs/user-guide/desktop): Using the Hermes Agent desktop application.
+- [Windows Native](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/windows-native): Running Hermes Agent natively on Windows.
+- [Windows WSL Quickstart](https://hermes-agent.nousresearch.com/docs/user-guide/windows-wsl-quickstart): Quickstart guide for Windows Subsystem for Linux.
+- [Checkpoints and Rollback](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/checkpoints-and-rollback): Saving and restoring agent state.
+- [Environment Variables Reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables): All supported environment variables and their defaults.
+
+## Skills
+
+- [Skills Overview](https://hermes-agent.nousresearch.com/docs/skills): Introduction to the skills system.
+- [Bundled Skills Catalog](https://hermes-agent.nousresearch.com/docs/reference/skills-catalog): Reference list of all skills included by default.
+- [Optional Skills Catalog](https://hermes-agent.nousresearch.com/docs/reference/optional-skills-catalog): Reference list of all installable optional skills.
+- [Skill Authoring](https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring): Guide to writing custom skills for Hermes Agent.
+
+## Integrations
+
+- [Integrations Overview](https://hermes-agent.nousresearch.com/docs/integrations): Index of supported third-party integrations.
+- [Providers](https://hermes-agent.nousresearch.com/docs/zh-Hans/integrations/providers): Supported LLM and service providers.
+- [MCP Config Reference](https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference): Configuration reference for Model Context Protocol.
+- [Toolsets Reference](https://hermes-agent.nousresearch.com/docs/reference/toolsets-reference): Reference for available toolsets and their configuration.
+
+## Guides
+
+- [Tips](https://hermes-agent.nousresearch.com/docs/guides/tips): Practical tips for effective use of Hermes Agent.
+- [Delegation Patterns](https://hermes-agent.nousresearch.com/docs/guides/delegation-patterns): Patterns for delegating tasks between agents.
+- [Team Telegram Assistant](https://hermes-agent.nousresearch.com/docs/guides/team-telegram-assistant): Setting up a shared Telegram assistant for a team.
+- [Daily Briefing Bot](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/daily-briefing-bot): Building a scheduled daily briefing with Hermes Agent.
+- [GitHub PR Review Agent](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/github-pr-review-agent): Automating GitHub pull request reviews.
+- [Use MCP with Hermes](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/use-mcp-with-hermes): Connecting MCP tools to Hermes Agent.
+- [Use Soul with Hermes](https://hermes-agent.nousresearch.com/docs/guides/use-soul-with-hermes): Integrating Soul framework with Hermes Agent.
+- [Voice Mode](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/use-voice-mode-with-hermes): Enabling and using voice interaction with Hermes Agent.
+- [Local LLM on Mac](https://hermes-agent.nousresearch.com/docs/guides/local-llm-on-mac): Running a local LLM with Hermes Agent on macOS.
+- [Run Nemotron 3 Ultra Free](https://hermes-agent.nousresearch.com/docs/guides/run-nemotron-3-ultra-free): Guide to running Nemotron 3 Ultra at no cost.
+- [Google Gemini](https://hermes-agent.nousresearch.com/docs/guides/google-gemini): Configuring Google Gemini as a provider.
+- [Azure Foundry](https://hermes-agent.nousresearch.com/docs/guides/azure-foundry): Using Azure AI Foundry as a provider.
+- [AWS Bedrock](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/aws-bedrock): Using AWS Bedrock as a provider.
+- [Google Vertex](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/google-vertex): Using Google Vertex AI as a provider.
+- [Pipe Script Output](https://hermes-agent.nousresearch.com/docs/guides/pipe-script-output): Piping script output into Hermes Agent.
+- [Cron Troubleshooting](https://hermes-agent.nousresearch.com/docs/guides/cron-troubleshooting): Diagnosing issues with scheduled cron tasks.
+- [Work with Skills](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/work-with-skills): Practical guide to installing and using skills.
+
+## Developer Guide
+
+- [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture): Internal architecture overview of Hermes Agent.
+- [Agent Loop](https://hermes-agent.nousresearch.com/docs/developer-guide/agent-loop): How the core agent reasoning and execution loop works.
+- [Adding Tools](https://hermes-agent.nousresearch.com/docs/developer-guide/adding-tools): How to implement and register new tools.
+- [Adding Providers](https://hermes-agent.nousresearch.com/docs/developer-guide/adding-providers): How to add new LLM providers.
+- [Adding Platform Adapters](https://hermes-agent.nousresearch.com/docs/developer-guide/adding-platform-adapters): How to add new messaging platform adapters.
+- [Memory Provider Plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/memory-provider-plugin): Building custom memory provider plugins.
+- [Context Engine Plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/context-engine-plugin): Building custom context engine plugins.
+- [Web Search Provider Plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/web-search-provider-plugin): Building custom web search provider plugins.
+- [Programmatic Integration](https://hermes-agent.nousresearch.com/docs/developer-guide/programmatic-integration): Using Hermes Agent as a library in code.
+- [Session Storage](https://hermes-agent.nousresearch.com/docs/developer-guide/session-storage): How session data is stored and retrieved.
+- [Provider Runtime](https://hermes-agent.nousresearch.com/docs/developer-guide/provider-runtime): Internals of the provider execution runtime.
+- [ACP Internals](https://hermes-agent.nousresearch.com/docs/developer-guide/acp-internals): Internal implementation of the Agent Communication Protocol.
+- [Cron Internals](https://hermes-agent.nousresearch.com/docs/developer-guide/cron-internals): How scheduled cron tasks are implemented internally.
+- [Browser Supervisor](https://hermes-agent.nousresearch.com/docs/developer-guide/browser-supervisor): Internal browser management and supervision.
+- [Context Compression and Caching](https://hermes-agent.nousresearch.com/docs/developer-guide/context-compression-and-caching): How context is compressed and cached for efficiency.
+
+## Reference
+
+- [Slash Commands](https://hermes-agent.nousresearch.com/docs/reference/slash-commands): All available slash commands and their usage.
+- [Profile Commands](https://hermes-agent.nousresearch.com/docs/reference/profile-commands): Commands for managing profiles via CLI.
+- [Model Catalog](https://hermes-agent.nousresearch.com/docs/zh-Hans/reference/model-catalog): List of supported models and their identifiers.
+- [FAQ](https://hermes-agent.nousresearch.com/docs/zh-Hans/reference/faq): Frequently asked questions about Hermes Agent.
+- [User Stories](https://hermes-agent.nousresearch.com/docs/user-stories): Example use cases and real-world usage scenarios.
+
+## Optional
+
+- [Python Library Guide](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/python-library): Using Hermes Agent via the Python library.
+- [Microsoft Graph App Registration](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/microsoft-graph-app-registration): Registering an app for Microsoft Graph integration.
+- [Operate Teams Meeting Pipeline](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/operate-teams-meeting-pipeline): Guide to running the Teams meeting pipeline skill.
+- [Cron Script Only Guide](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/cron-script-only): Running Hermes Agent in cron-only script mode.
+- [Kanban Tutorial](https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban-tutorial): Step-by-step tutorial for using the kanban feature.
+- [Kanban Worker Lanes](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/features/kanban-worker-lanes): Configuring worker lanes in the kanban board.
+- [Hooks](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/features/hooks): Configuring event hooks for agent actions.
+- [Curator](https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/features/curator): Curator feature for content curation tasks.
+- [Prompt Assembly Internals](https://hermes-agent.nousresearch.com/docs/zh-Hans/developer-guide/prompt-assembly): How prompts are assembled internally.
+- [Gateway Internals](https://hermes-agent.nousresearch.com/docs/zh-Hans/developer-guide/gateway-internals): Internal workings of the gateway component.
+- Individual bundled and optional skill pages (software development, MLOps, research, creative, finance, blockchain, gaming, health, productivity, and more) — see [Bundled Skills Catalog](https://hermes-agent.nousresearch.com/docs/reference/skills-catalog) and [Optional Skills Catalog](https://hermes-agent.nousresearch.com/docs/reference/optional-skills-catalog) for the full list.

@@ -3289,9 +3289,10 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             self._release_platform_lock()
-            message = f"Telegram startup failed: {e}"
+            safe_error = _redact_telegram_error_text(e)
+            message = f"Telegram startup failed: {safe_error}"
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
-            logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
+            logger.error("[%s] Failed to connect to Telegram: %s", self.name, safe_error)
             return False
 
     async def _set_status_indicator(self, online: bool) -> None:
@@ -3429,7 +3430,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self._app.stop()
                 await self._app.shutdown()
             except Exception as e:
-                logger.warning("[%s] Error during Telegram disconnect: %s", self.name, e, exc_info=True)
+                logger.warning(
+                    "[%s] Error during Telegram disconnect: %s",
+                    self.name, _redact_telegram_error_text(e),
+                )
         self._release_platform_lock()
 
         self._app = None
@@ -6082,7 +6086,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] Failed to send document: %s", self.name, e, exc_info=True)
+            logger.warning(
+                "[%s] Failed to send document: %s",
+                self.name, _redact_telegram_error_text(e),
+            )
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_video(
@@ -6129,7 +6136,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] Failed to send video: %s", self.name, e, exc_info=True)
+            logger.warning(
+                "[%s] Failed to send video: %s",
+                self.name, _redact_telegram_error_text(e),
+            )
             return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
 
     async def send_image(

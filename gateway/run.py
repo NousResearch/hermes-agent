@@ -10308,7 +10308,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_text = (
                     f"[Triggering message id: `{event.message_id}` — use as "
                     f"`message_id` for reply/react/pin via the discord tools.]\n\n"
-                    f"{message_text}"
+                    + message_text
                 )
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
@@ -10322,7 +10322,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'
-                    f"{message_text}"
+                    + message_text
                 )
             else:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'

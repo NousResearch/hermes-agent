@@ -595,7 +595,7 @@ class GatewaySlashCommandsMixin:
                 "gateway.status.context",
                 used=f"{context_used:,}",
                 total=f"{context_total:,}",
-                pct=f"{pct}",
+                pct=str(pct),
             )
         elif context_used:
             context_line = t("gateway.status.context_used", used=f"{context_used:,}")

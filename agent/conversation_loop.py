@@ -1722,7 +1722,7 @@ def run_conversation(
                         "⚠️  The model declined to respond to this request "
                         "(safety refusal — not a Hermes/gateway failure).\n\n"
                         f"{_refusal_detail}\n\n"
-                        f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                        + _CONTENT_POLICY_RECOVERY_HINT
                     )
 
                     agent._cleanup_task_resources(effective_task_id)
@@ -3728,17 +3728,17 @@ def run_conversation(
                     if classified.reason == FailoverReason.content_policy_blocked:
                         agent._emit_status(
                             f"❌ Provider safety filter blocked this request: "
-                            f"{_nonretryable_summary}"
+                            + _nonretryable_summary
                         )
                     elif classified.reason == FailoverReason.ssl_cert_verification:
                         agent._emit_status(
                             f"❌ TLS certificate verification failed: "
-                            f"{_nonretryable_summary}"
+                            + _nonretryable_summary
                         )
                     else:
                         agent._emit_status(
                             f"❌ Non-retryable error (HTTP {status_code}): "
-                            f"{_nonretryable_summary}"
+                            + _nonretryable_summary
                         )
                     agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
                     agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
@@ -3864,7 +3864,7 @@ def run_conversation(
                             "⚠️  The model provider's safety filter blocked this request "
                             "(not a Hermes/gateway failure).\n\n"
                             f"Provider message: {_nonretryable_summary}\n\n"
-                            f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                            + _CONTENT_POLICY_RECOVERY_HINT
                         )
                         return _content_policy_blocked_result(
                             messages,

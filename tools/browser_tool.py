@@ -955,7 +955,7 @@ def _annotate_lightpanda_fallback(result: Dict[str, Any], reason: str) -> Dict[s
     """Add a user-visible Chrome fallback warning to a browser command result."""
     warning = (
         "⚠ Lightpanda fallback: Chrome was used for this browser action. "
-        f"{reason}"
+        + reason
     )
     annotated = dict(result)
     annotated["fallback_warning"] = warning

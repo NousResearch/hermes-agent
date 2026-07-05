@@ -970,7 +970,7 @@ class MoAChatCompletions:
                 f"References: {', '.join(label for label, _, _ in reference_outputs)}\n\n"
                 "Use the reference responses below as private context. You are the aggregator and acting model: "
                 "answer the user directly or call tools as needed.\n\n"
-                f"{joined}"
+                + joined
             )
             _attach_reference_guidance(agg_messages, guidance)
 

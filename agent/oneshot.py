@@ -65,7 +65,7 @@ def _commit_message_template(variables: Dict[str, Any]) -> Tuple[str, str]:
     if recent.strip():
         parts.append(
             "Recent commit subjects from this repo (match their style/conventions):\n"
-            f"{recent}"
+            + recent
         )
     parts.append("Diff to describe:\n" + (diff or "(no textual diff available)"))
 

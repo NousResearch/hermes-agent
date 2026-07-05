@@ -541,7 +541,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 agent._buffer_status(
                     f"⚠️ No response from provider for {int(_elapsed)}s "
                     f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"{_silent_hint}"
+                    + _silent_hint
                 )
             else:
                 agent._buffer_status(
@@ -567,7 +567,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     result["error"] = TimeoutError(
                         f"Non-streaming API call timed out after {int(_elapsed)}s "
                         f"with no response (threshold: {int(_stale_timeout)}s). "
-                        f"{_silent_hint}"
+                        + _silent_hint
                     )
                 else:
                     result["error"] = TimeoutError(

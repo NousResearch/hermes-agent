@@ -1656,7 +1656,7 @@ def run_curator_review(
                     prompt = (
                         f"{CURATOR_DRY_RUN_BANNER}\n\n"
                         f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n"
-                        f"{candidate_list}"
+                        + candidate_list
                     )
                 else:
                     prompt = f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n{candidate_list}"

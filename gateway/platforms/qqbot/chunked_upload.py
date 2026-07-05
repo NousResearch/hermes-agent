@@ -332,7 +332,7 @@ class ChunkedUploader:
             )
         except RuntimeError as exc:
             err_msg = str(exc)
-            if f"{_BIZ_CODE_DAILY_LIMIT}" in err_msg:
+            if str(_BIZ_CODE_DAILY_LIMIT) in err_msg:
                 raise UploadDailyLimitExceededError(
                     file_name, file_size, err_msg
                 ) from exc
@@ -471,7 +471,7 @@ class ChunkedUploader:
                 return
             except RuntimeError as exc:
                 err_msg = str(exc)
-                if f"{_BIZ_CODE_PART_RETRYABLE}" not in err_msg:
+                if str(_BIZ_CODE_PART_RETRYABLE) not in err_msg:
                     raise
                 elapsed = loop.time() - start
                 if elapsed >= retry_timeout:

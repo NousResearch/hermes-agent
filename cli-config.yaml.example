@@ -1240,6 +1240,24 @@ display:
 #     provider: custom
 #     base_url: "https://ollama.com/v1"
 
+# model_picker — provider-list rendering options for `/model` and the
+# gateway inline keyboards (Telegram, Discord, TUI, Desktop). All keys
+# default to a flat list and require explicit opt-in.
+#
+# model_picker:
+#   # Sub-provider drill-down: providers whose model IDs follow the
+#   # ``<upstream>/<model>`` shape get grouped by upstream, so a 200+ entry
+#   # catalog becomes ``"openai (12 models)"`` / ``"anthropic (3 models)"``
+#   # rows the user first picks before seeing concrete model IDs. Recommended
+#   # for aggregator providers that proxy many upstreams under one API key.
+#   #
+#   # Threshold (in code, not configurable): at least 3 slashed models AND
+#   # at least 50% of the catalog must be in ``<upstream>/<model>`` form for
+#   # grouping to kick in — otherwise the flat list is shown.
+#   group_by_subprovider:
+#     - openrouter
+#     # - huggingface
+
 # =============================================================================
 # Privacy
 # =============================================================================

@@ -1377,6 +1377,76 @@ def _model_flow_named_custom(config, provider_info):
             models = configured_models
 
     if models:
+        # Sub-provider drill-down (opt-in via ``model_picker.group_by_subprovider``).
+        # If the user has opted-in to grouping this provider, present the
+        # upstream sub-providers first; the chosen one re-enters this same
+        # block with ``models`` filtered to that sub.
+        from hermes_cli.model_switch import (
+            _group_provider_models_by_subprovider,
+            _load_subprovider_picker_config,
+        )
+        group_cfg = _load_subprovider_picker_config()
+        grouped = (
+            _group_provider_models_by_subprovider(provider_key or "", models)
+            if (provider_key and provider_key in group_cfg)
+            else None
+        )
+        if grouped:
+            subs = grouped["subproviders"]
+            sub_models_map = grouped["sub_models"]
+            sub_labels = grouped["sub_labels"]
+            # Preserve the saved sub if possible (e.g. user previously saved
+            # "openrouter/openai/gpt-4o-mini" → land them straight back on openai).
+            current_sub = ""
+            if saved_model:
+                for sub in subs:
+                    if any(saved_model == m or saved_model.endswith("/" + m.split("/", 1)[-1])
+                           for m in sub_models_map.get(sub, [])):
+                        if saved_model.startswith(f"{sub}/"):
+                            current_sub = sub
+                            break
+            print(f"Found {len(models)} model(s) across {len(subs)} upstream(s):\n")
+            try:
+                from hermes_cli.curses_ui import curses_radiolist
+
+                default_sub_idx = subs.index(current_sub) if current_sub in subs else 0
+                idx = curses_radiolist(
+                    f"Select upstream from {name}:",
+                    sub_labels,
+                    selected=default_sub_idx,
+                    cancel_returns=-1,
+                )
+                print()
+                if idx < 0 or idx >= len(subs):
+                    print("Cancelled.")
+                    return
+                sub = subs[idx]
+            except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
+                for i, s in enumerate(sub_labels, 1):
+                    print(f"  {i}. {s}")
+                print(f"  {len(sub_labels) + 1}. Cancel")
+                print()
+                try:
+                    val = input(f"Choice [1-{len(sub_labels) + 1}]: ").strip()
+                    if not val:
+                        print("Cancelled.")
+                        return
+                    idx = int(val) - 1
+                    if idx < 0 or idx >= len(sub_labels):
+                        print("Cancelled.")
+                        return
+                    sub = subs[idx]
+                except (ValueError, KeyboardInterrupt, EOFError):
+                    print("\nCancelled.")
+                    return
+            # Drill into the sub-catalog — fall through to the normal picker
+            # below with the filtered list.
+            models = sub_models_map.get(sub, [])
+            if not models:
+                print(f"No models available for upstream '{sub}'.")
+                return
+            print(f"\n  → {len(models)} model(s) under '{sub}'")
+
         default_idx = 0
         if saved_model and saved_model in models:
             default_idx = models.index(saved_model)
@@ -2734,6 +2804,95 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model_list = list(dict.fromkeys(mid for mid in model_list if mid))
 
     if model_list:
+        # Sub-provider drill-down for the API-key wizard. OpenRouter-style
+        # aggregator providers ship models in ``<upstream>/<model>``
+        # form, e.g. ``openai/gpt-4o-mini``. When the user has opted-in via
+        # ``model_picker.group_by_subprovider`` we show the upstream list
+        # first, then filter ``model_list`` to the chosen sub so the model
+        # picker only shows the upstream's catalog.
+        try:
+            from hermes_cli.model_switch import (
+                _group_provider_models_by_subprovider,
+                _load_subprovider_picker_config,
+            )
+
+            group_cfg = _load_subprovider_picker_config()
+        except Exception:
+            group_cfg = set()
+
+        if (
+            provider_id in group_cfg
+            and len(model_list) >= 3
+            and any(isinstance(m, str) and "/" in m for m in model_list)
+        ):
+            grouped = _group_provider_models_by_subprovider(provider_id, model_list)
+            if grouped:
+                subs = grouped["subproviders"]
+                sub_models_map = grouped["sub_models"]
+                sub_labels = grouped["sub_labels"]
+                current_sub = ""
+                if current_model:
+                    for sub in subs:
+                        if current_model.startswith(f"{sub}/"):
+                            current_sub = sub
+                            break
+                print(
+                    f"Found {len(model_list)} model(s) across {len(subs)} upstream(s):"
+                )
+                try:
+                    from hermes_cli.curses_ui import curses_radiolist
+
+                    default_sub_idx = (
+                        subs.index(current_sub) if current_sub in subs else 0
+                    )
+                    sub_idx = curses_radiolist(
+                        f"Select upstream from {pconfig.name}:",
+                        sub_labels,
+                        selected=default_sub_idx,
+                        cancel_returns=-1,
+                    )
+                    print()
+                    if 0 <= sub_idx < len(subs):
+                        model_list = sub_models_map[subs[sub_idx]]
+                        if not model_list:
+                            print("No models available for that upstream.")
+                            return
+                        print(
+                            f"  → {len(model_list)} model(s) under "
+                            f"'{subs[sub_idx]}'"
+                        )
+                    else:
+                        print("Cancelled.")
+                        return
+                except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
+                    for i, s in enumerate(sub_labels, 1):
+                        print(f"  {i}. {s}")
+                    print(f"  {len(sub_labels) + 1}. Cancel")
+                    print()
+                    try:
+                        val = input(
+                            f"Choice [1-{len(sub_labels) + 1}]: "
+                        ).strip()
+                        if not val:
+                            print("Cancelled.")
+                            return
+                        sub_idx = int(val) - 1
+                        if 0 <= sub_idx < len(sub_labels):
+                            model_list = sub_models_map[subs[sub_idx]]
+                            if not model_list:
+                                print("No models available for that upstream.")
+                                return
+                            print(
+                                f"  → {len(model_list)} model(s) under "
+                                f"'{subs[sub_idx]}'"
+                            )
+                        else:
+                            print("Cancelled.")
+                            return
+                    except (ValueError, KeyboardInterrupt, EOFError):
+                        print("\nCancelled.")
+                        return
+
         selected = _prompt_model_selection(
             model_list,
             current_model=current_model,

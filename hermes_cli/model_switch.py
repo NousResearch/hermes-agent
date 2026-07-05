@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional
 
@@ -1677,7 +1678,7 @@ def list_authenticated_providers(
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
 
-        results.append({
+        entry = {
             "slug": slug,
             "name": display_name,
             "is_current": slug == current_provider or mdev_id == current_provider,
@@ -1685,7 +1686,16 @@ def list_authenticated_providers(
             "models": top,
             "total_models": total,
             "source": "built-in",
-        })
+        }
+        # Opt-in drill-down: providers with lots of upstream/<model> IDs get
+        # grouped by the segment before the first ``/`` (OpenRouter, HuggingFace, etc.).
+        if slug in _load_subprovider_picker_config():
+            grouped = _group_provider_models_by_subprovider(slug, model_ids)
+            if grouped:
+                entry.update(grouped)
+                entry["models"] = grouped["sub_labels"]
+                entry["total_models"] = total
+        results.append(entry)
         seen_slugs.add(slug.lower())
         seen_mdev_ids.add(mdev_id)
         _record_builtin_endpoint(slug)
@@ -1839,7 +1849,7 @@ def list_authenticated_providers(
         else:
             top = model_ids[:max_models] if max_models is not None else model_ids
 
-        results.append({
+        entry = {
             "slug": hermes_slug,
             "name": get_label(hermes_slug),
             "is_current": hermes_slug == current_provider or pid == current_provider,
@@ -1847,7 +1857,18 @@ def list_authenticated_providers(
             "models": top,
             "total_models": total,
             "source": "hermes",
-        })
+        }
+        # Opt-in drill-down: providers with lots of upstream/<model> IDs get
+        # grouped by the segment before the first ``/`` (OpenRouter-style, etc.).
+        if hermes_slug in _load_subprovider_picker_config():
+            grouped = _group_provider_models_by_subprovider(hermes_slug, model_ids)
+            if grouped:
+                entry.update(grouped)
+                entry["models"] = grouped["sub_labels"]
+                # Keep total_models = total model count (not sub-providers) so
+                # the "X more available" hint in the picker stays accurate.
+                entry["total_models"] = total
+        results.append(entry)
         seen_slugs.add(pid.lower())
         seen_slugs.add(hermes_slug.lower())
         _record_builtin_endpoint(hermes_slug)
@@ -1914,7 +1935,7 @@ def list_authenticated_providers(
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models] if max_models is not None else _cp_model_ids
 
-        results.append({
+        _cp_entry = {
             "slug": _cp.slug,
             "name": _cp.label,
             "is_current": _cp.slug == current_provider,
@@ -1922,7 +1943,14 @@ def list_authenticated_providers(
             "models": _cp_top,
             "total_models": _cp_total,
             "source": "canonical",
-        })
+        }
+        if _cp.slug in _load_subprovider_picker_config():
+            _cp_grouped = _group_provider_models_by_subprovider(_cp.slug, _cp_model_ids)
+            if _cp_grouped:
+                _cp_entry.update(_cp_grouped)
+                _cp_entry["models"] = _cp_grouped["sub_labels"]
+                _cp_entry["total_models"] = _cp_total
+        results.append(_cp_entry)
         seen_slugs.add(_cp.slug.lower())
         _record_builtin_endpoint(_cp.slug)
 
@@ -2340,6 +2368,63 @@ def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = 
         return [moa_row] + [p for p in providers if str(p.get("slug", "")).lower() != "moa"]
     except Exception:
         return providers
+def _load_subprovider_picker_config() -> list[str]:
+    """Return the slugs that should be drilled-down by upstream sub-provider.
+
+    Reads ``model_picker.group_by_subprovider`` from the user config. The list
+    is opt-in and defaults to ``[]`` so the picker behaviour is unchanged for
+    every other provider. Typical entry: ``["openrouter"]`` — these
+    aggregators proxy 100+ models across many upstream vendors and a flat
+    list is unusable.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        return []
+    raw = cfg.get("model_picker", {})
+    if not isinstance(raw, dict):
+        return []
+    slugs = raw.get("group_by_subprovider", [])
+    if not isinstance(slugs, list):
+        return []
+    return [str(s).strip().lower() for s in slugs if str(s).strip()]
+
+
+def _group_provider_models_by_subprovider(
+    slug: str,
+    all_models: List[str],
+) -> Optional[dict]:
+    """Group a flat model list by its first ``/`` segment.
+
+    Returns ``None`` if the provider has too few ``/``-bearing models to be
+    worth grouping (under 50% of the catalog or under 3 entries), so callers
+    fall back to the flat list. Otherwise returns a dict shaped like a picker
+    provider entry but with ``models`` replaced by sub-provider labels
+    (e.g. ``"openai (12 models)"``) and an extra ``is_subprovider_picker=True``
+    flag the drill-down UI uses to filter on the second step.
+    """
+    if not all_models:
+        return None
+    counts: "OrderedDict[str, int]" = OrderedDict()
+    slashed = 0
+    for m in all_models:
+        if not isinstance(m, str) or "/" not in m:
+            continue
+        sub = m.split("/", 1)[0].strip()
+        if not sub:
+            continue
+        counts[sub] = counts.get(sub, 0) + 1
+        slashed += 1
+    if slashed < 3 or slashed * 2 < len(all_models):
+        return None
+    sub_labels = [f"{sub} ({n} models)" for sub, n in counts.items()]
+    return {
+        "subproviders": list(counts.keys()),
+        "sub_models": {sub: [m for m in all_models if m.startswith(f"{sub}/")] for sub in counts},
+        "is_subprovider_picker": True,
+        "sub_labels": sub_labels,
+    }
 
 
 def list_picker_providers(

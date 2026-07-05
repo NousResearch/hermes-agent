@@ -7852,6 +7852,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._close_model_picker()
                 return
             provider_data = providers[selected]
+            # Sub-provider drill-down: when list_authenticated_providers()
+            # marked the row with is_subprovider_picker=True (OpenRouter-style
+            # aggregators), ``provider_data["models"]`` is
+            # actually a list of sub-labels like "openai (12 models)" that
+            # MUST NOT be passed straight to switch_model — that path
+            # triggers "Model names cannot contain spaces." Insert a
+            # subprovider stage so the user picks an upstream before we
+            # expose the real model IDs.
+            if provider_data.get("is_subprovider_picker") and provider_data.get("sub_labels"):
+                state["stage"] = "subprovider"
+                state["provider_data"] = provider_data
+                state["sub_list"] = provider_data.get("sub_labels") or []
+                state["selected"] = 0
+                self._invalidate(min_interval=0.0)
+                return
             # Use the curated model list from list_authenticated_providers()
             # (same lists as `hermes model` and gateway pickers).
             # Only fall back to the live provider catalog when the curated
@@ -7871,14 +7886,80 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             state["selected"] = 0
             self._invalidate(min_interval=0.0)
             return
+        if stage == "subprovider":
+            provider_data = state.get("provider_data") or {}
+            sub_list = state.get("sub_list") or []
+            back_idx = len(sub_list)
+            cancel_idx = len(sub_list) + 1
+            if selected == back_idx:
+                state["stage"] = "provider"
+                state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
+                self._invalidate(min_interval=0.0)
+                return
+            if selected >= cancel_idx:
+                self._close_model_picker()
+                return
+            if 0 <= selected < len(sub_list):
+                # The picker shows sub_labels (e.g. "openai (12 models)"),
+                # but the real dispatch key is the bare sub-provider slug
+                # ("openai") that maps into the sub_models dict produced by
+                # _group_provider_models_by_subprovider().
+                chosen_sub_label = sub_list[selected]
+                sub_models_map = provider_data.get("sub_models") or {}
+                # Match by either the bare sub slug or the displayed label,
+                # so a future change to the label format can't silently
+                # break the lookup.
+                chosen_sub = None
+                for sub_slug in (provider_data.get("subproviders") or []):
+                    if chosen_sub_label == sub_slug or chosen_sub_label.startswith(f"{sub_slug} ("):
+                        chosen_sub = sub_slug
+                        break
+                if chosen_sub is None or not sub_models_map.get(chosen_sub):
+                    # Defensive fallthrough — should never fire because
+                    # sub_list mirrors sub_labels 1:1, but a stale state
+                    # must not silently index into labels and crash
+                    # validate_requested_model.
+                    _cprint(f"  ✗ Sub-provider picker out of sync — use /model again.")
+                    self._close_model_picker()
+                    return
+                state["stage"] = "model"
+                state["chosen_sub"] = chosen_sub
+                state["model_list"] = sub_models_map[chosen_sub]
+                state["selected"] = 0
+                self._invalidate(min_interval=0.0)
+                return
+            self._close_model_picker()
+            return
         if stage == "model":
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
             back_idx = len(model_list)
             cancel_idx = len(model_list) + 1
             if selected == back_idx:
-                state["stage"] = "provider"
-                state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
+                # Back from the model list should return to the
+                # subprovider stage (when one was used) so the user can
+                # switch upstream without re-picking the provider.
+                if provider_data.get("is_subprovider_picker") and provider_data.get("sub_labels"):
+                    state["stage"] = "subprovider"
+                    chosen_sub = state.get("chosen_sub")
+                    state["selected"] = (
+                        (provider_data.get("sub_labels") or []).index(
+                            next(
+                                (
+                                    lbl
+                                    for lbl in (provider_data.get("sub_labels") or [])
+                                    if chosen_sub and (lbl == chosen_sub or lbl.startswith(f"{chosen_sub} ("))
+                                ),
+                                provider_data["sub_labels"][0],
+                            )
+                        )
+                        if (provider_data.get("sub_labels") or [])
+                        and chosen_sub
+                        else 0
+                    )
+                else:
+                    state["stage"] = "provider"
+                    state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
                 self._invalidate(min_interval=0.0)
                 return
             if selected >= cancel_idx:
@@ -13543,9 +13624,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             state = self._model_picker_state
             if not state:
                 return
-            if state.get("stage") == "provider":
+            stage = state.get("stage")
+            if stage == "provider":
                 max_idx = len(state.get("providers") or [])
+            elif stage == "subprovider":
+                # sub_list + "← Back" + "Cancel" (2 extra rows)
+                max_idx = len(state.get("sub_list") or []) + 1
             else:
+                # model_list + "← Back" + "Cancel" (2 extra rows)
                 max_idx = len(state.get("model_list") or []) + 1
             state["selected"] = min(max_idx, state.get("selected", 0) + 1)
             event.app.invalidate()
@@ -14632,10 +14718,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     choices.append(label)
                 choices.append("Cancel")
                 hint = f"Current: {state.get('current_model', 'unknown')} on {state.get('current_provider', 'unknown')}"
+            elif stage == "subprovider":
+                provider_data = state.get("provider_data") or {}
+                provider_name = provider_data.get("name", provider_data.get("slug", "Provider"))
+                title = f"⚙ Model Picker — {provider_name} › Select Sub-Provider"
+                sub_list = state.get("sub_list") or []
+                choices = list(sub_list) + ["← Back", "Cancel"]
+                if sub_list:
+                    hint = f"Pick the upstream vendor to drill into ({len(sub_list)} available)"
+                else:
+                    hint = "No sub-providers listed for this provider. Use Back or Cancel."
             else:
                 provider_data = state.get("provider_data") or {}
+                provider_name = provider_data.get("name", provider_data.get("slug", "Provider"))
+                chosen_sub = state.get("chosen_sub")
+                if chosen_sub:
+                    title = f"⚙ Model Picker — {provider_name} › {chosen_sub}"
+                else:
+                    title = f"⚙ Model Picker — {provider_name}"
                 model_list = state.get("model_list") or []
-                title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
                 choices = list(model_list) + ["← Back", "Cancel"]
                 if model_list:
                     hint = f"Select a model ({len(model_list)} available)"

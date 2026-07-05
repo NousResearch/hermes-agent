@@ -178,13 +178,28 @@ function ModelResults({
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
   // "Add provider" footer button, which opens the full onboarding selector.
-  const configured = providers.filter(p => (p.models ?? []).length > 0)
+  const configured = providers.filter(p => {
+    // Sub-provider pickers (openrouter-style, etc.) have `models` replaced by
+    // sub-labels — reconstruct the flat model list from `sub_models` so
+    // the search-driven desktop picker shows real model IDs, not labels.
+    if (p.is_subprovider_picker && p.sub_models) {
+      return Object.values(p.sub_models).some(models => models.length > 0)
+    }
+
+    return (p.models ?? []).length > 0
+  })
 
   return (
     <>
       {configured.map(provider => {
         // Preserve the backend's curated order — filter in place, no re-sort.
-        const models = (provider.models ?? []).filter(m => matches(provider, m))
+        // For sub-provider pickers, flatten sub_models into a flat list so
+        // the search-driven UI can match on real model IDs.
+        const providerModels = provider.is_subprovider_picker && provider.sub_models
+          ? Object.values(provider.sub_models).flat()
+          : (provider.models ?? [])
+
+        const models = providerModels.filter(m => matches(provider, m))
 
         if (models.length === 0) {
           return null
@@ -311,7 +326,9 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
     <span className="flex min-w-0 items-center gap-2">
       <span className="truncate">{provider.name}</span>
       <span className="font-mono text-xs font-normal normal-case tracking-normal text-muted-foreground">
-        {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
+        {provider.slug} · {provider.is_subprovider_picker && provider.sub_models
+          ? Object.values(provider.sub_models).reduce((n, models) => n + models.length, 0)
+          : (provider.total_models ?? provider.models?.length ?? 0)}
       </span>
       {tierBadge}
     </span>

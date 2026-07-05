@@ -134,3 +134,41 @@ class TestPortBindingHardError:
                   "wecom_callback", "bluebubbles", "sms"):
             assert p in _PORT_BINDING_PLATFORM_VALUES
 
+
+
+class TestAdapterForSource:
+    def test_default_adapter_without_profile(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._active_profile_name = lambda: "default"
+        runner.adapters = {"telegram": "default-tg"}
+        runner._profile_adapters = {}
+
+        class _Src:
+            platform = "telegram"
+            profile = None
+
+        assert runner._adapter_for_source(_Src()) == "default-tg"
+
+    def test_secondary_profile_adapter(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._active_profile_name = lambda: "default"
+        runner.adapters = {"telegram": "default-tg"}
+        runner._profile_adapters = {"secondary": {"telegram": "secondary-tg"}}
+
+        class _Src:
+            platform = "telegram"
+            profile = "secondary"
+
+        assert runner._adapter_for_source(_Src()) == "secondary-tg"
+
+    def test_active_profile_uses_default_map(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._active_profile_name = lambda: "default"
+        runner.adapters = {"telegram": "default-tg"}
+        runner._profile_adapters = {"default": {"telegram": "profile-default-tg"}}
+
+        class _Src:
+            platform = "telegram"
+            profile = "default"
+
+        assert runner._adapter_for_source(_Src()) == "profile-default-tg"

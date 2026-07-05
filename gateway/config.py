@@ -19,6 +19,29 @@ from enum import Enum
 from hermes_cli.config import get_hermes_home
 from utils import env_int, env_var_enabled, is_truthy_value
 
+try:
+    from agent.secret_scope import get_secret as _raw_profile_secret
+except ImportError:  # pragma: no cover - fallback for older installs
+    _raw_profile_secret = os.getenv
+
+
+def _profile_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Read a secret from the active profile scope, falling back to default.
+
+    Mirrors os.getenv semantics so the rest of the config loader can swap
+    os.getenv for this helper without changing behavior.
+    """
+    val = _raw_profile_secret(name, default)
+    if val is None and default is not None:
+        return default
+    return val
+
+
+def _profile_secret_str(name: str, default: str = "") -> str:
+    """Like _profile_secret but always returns a str (never None)."""
+    val = _raw_profile_secret(name, default)
+    return val if val is not None else default
+
 logger = logging.getLogger(__name__)
 
 
@@ -1341,19 +1364,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         return platform_config
     
     # Telegram
-    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    telegram_token = _profile_secret("TELEGRAM_BOT_TOKEN")
     if telegram_token:
         telegram_config = _enable_from_env(Platform.TELEGRAM)
         telegram_config.token = telegram_token
     
     # Reply threading mode for Telegram (off/first/all)
-    telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
+    telegram_reply_mode = _profile_secret_str("TELEGRAM_REPLY_TO_MODE").lower()
     if telegram_reply_mode in {"off", "first", "all"}:
         if Platform.TELEGRAM not in config.platforms:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
         config.platforms[Platform.TELEGRAM].reply_to_mode = telegram_reply_mode
     
-    telegram_fallback_ips = os.getenv("TELEGRAM_FALLBACK_IPS", "")
+    telegram_fallback_ips = _profile_secret_str("TELEGRAM_FALLBACK_IPS")
     if telegram_fallback_ips:
         if Platform.TELEGRAM not in config.platforms:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
@@ -1361,40 +1384,40 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             ip.strip() for ip in telegram_fallback_ips.split(",") if ip.strip()
         ]
 
-    telegram_home = os.getenv("TELEGRAM_HOME_CHANNEL")
+    telegram_home = _profile_secret("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:
         config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
             platform=Platform.TELEGRAM,
             chat_id=telegram_home,
-            name=os.getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
-            thread_id=os.getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
+            name=_profile_secret_str("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
+            thread_id=_profile_secret("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
         )
     
     # Discord
-    discord_token = os.getenv("DISCORD_BOT_TOKEN")
+    discord_token = _profile_secret("DISCORD_BOT_TOKEN")
     if discord_token:
         discord_config = _enable_from_env(Platform.DISCORD)
         discord_config.token = discord_token
     
-    discord_home = os.getenv("DISCORD_HOME_CHANNEL")
+    discord_home = _profile_secret("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:
         config.platforms[Platform.DISCORD].home_channel = HomeChannel(
             platform=Platform.DISCORD,
             chat_id=discord_home,
-            name=os.getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
-            thread_id=os.getenv("DISCORD_HOME_CHANNEL_THREAD_ID") or None,
+            name=_profile_secret_str("DISCORD_HOME_CHANNEL_NAME", "Home"),
+            thread_id=_profile_secret("DISCORD_HOME_CHANNEL_THREAD_ID") or None,
         )
     
     # Reply threading mode for Discord (off/first/all)
-    discord_reply_mode = os.getenv("DISCORD_REPLY_TO_MODE", "").lower()
+    discord_reply_mode = _profile_secret_str("DISCORD_REPLY_TO_MODE").lower()
     if discord_reply_mode in {"off", "first", "all"}:
         if Platform.DISCORD not in config.platforms:
             config.platforms[Platform.DISCORD] = PlatformConfig()
         config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
     
     # WhatsApp (typically uses different auth mechanism)
-    whatsapp_enabled = env_var_enabled("WHATSAPP_ENABLED")
-    whatsapp_disabled_explicitly = os.getenv("WHATSAPP_ENABLED", "").lower() in {"false", "0", "no"}
+    whatsapp_enabled = _profile_secret_str("WHATSAPP_ENABLED").lower() in {"true", "1", "yes"}
+    whatsapp_disabled_explicitly = _profile_secret_str("WHATSAPP_ENABLED").lower() in {"false", "0", "no"}
     if Platform.WHATSAPP in config.platforms:
         # YAML config exists — respect explicit disable
         wa_cfg = config.platforms[Platform.WHATSAPP]
@@ -1405,21 +1428,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         # else: keep whatever the YAML set
     elif whatsapp_enabled:
         config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True)
-    whatsapp_home = os.getenv("WHATSAPP_HOME_CHANNEL")
+    whatsapp_home = _profile_secret("WHATSAPP_HOME_CHANNEL")
     if whatsapp_home and Platform.WHATSAPP in config.platforms:
         config.platforms[Platform.WHATSAPP].home_channel = HomeChannel(
             platform=Platform.WHATSAPP,
             chat_id=whatsapp_home,
-            name=os.getenv("WHATSAPP_HOME_CHANNEL_NAME", "Home"),
-            thread_id=os.getenv("WHATSAPP_HOME_CHANNEL_THREAD_ID") or None,
+            name=_profile_secret_str("WHATSAPP_HOME_CHANNEL_NAME", "Home"),
+            thread_id=_profile_secret("WHATSAPP_HOME_CHANNEL_THREAD_ID") or None,
         )
 
     # WhatsApp Cloud API (official Business Platform via Meta).
     # Distinct from the Baileys bridge: pure HTTP graph.facebook.com calls
     # outbound, public webhook inbound. Both adapters can run in parallel
     # against different phone numbers.
-    whatsapp_cloud_phone_id = os.getenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
-    whatsapp_cloud_token = os.getenv("WHATSAPP_CLOUD_ACCESS_TOKEN")
+    whatsapp_cloud_phone_id = _profile_secret("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
+    whatsapp_cloud_token = _profile_secret("WHATSAPP_CLOUD_ACCESS_TOKEN")
     if whatsapp_cloud_phone_id and whatsapp_cloud_token:
         if Platform.WHATSAPP_CLOUD not in config.platforms:
             config.platforms[Platform.WHATSAPP_CLOUD] = PlatformConfig()
@@ -1429,48 +1452,48 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "access_token": whatsapp_cloud_token,
         })
         # Optional: app_id / app_secret (signature verification)
-        wa_cloud_app_id = os.getenv("WHATSAPP_CLOUD_APP_ID")
+        wa_cloud_app_id = _profile_secret("WHATSAPP_CLOUD_APP_ID")
         if wa_cloud_app_id:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["app_id"] = wa_cloud_app_id
-        wa_cloud_app_secret = os.getenv("WHATSAPP_CLOUD_APP_SECRET")
+        wa_cloud_app_secret = _profile_secret("WHATSAPP_CLOUD_APP_SECRET")
         if wa_cloud_app_secret:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["app_secret"] = wa_cloud_app_secret
         # Optional: WABA id (analytics, future use)
-        wa_cloud_waba_id = os.getenv("WHATSAPP_CLOUD_WABA_ID")
+        wa_cloud_waba_id = _profile_secret("WHATSAPP_CLOUD_WABA_ID")
         if wa_cloud_waba_id:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["waba_id"] = wa_cloud_waba_id
         # Webhook verify token — Meta hub.verify_token shared secret
-        wa_cloud_verify_token = os.getenv("WHATSAPP_CLOUD_VERIFY_TOKEN")
+        wa_cloud_verify_token = _profile_secret("WHATSAPP_CLOUD_VERIFY_TOKEN")
         if wa_cloud_verify_token:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["verify_token"] = wa_cloud_verify_token
         # Webhook server bind config (defaults baked into the adapter)
-        wa_cloud_host = os.getenv("WHATSAPP_CLOUD_WEBHOOK_HOST")
+        wa_cloud_host = _profile_secret("WHATSAPP_CLOUD_WEBHOOK_HOST")
         if wa_cloud_host:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_host"] = wa_cloud_host
-        wa_cloud_port = os.getenv("WHATSAPP_CLOUD_WEBHOOK_PORT")
+        wa_cloud_port = _profile_secret("WHATSAPP_CLOUD_WEBHOOK_PORT")
         if wa_cloud_port:
             try:
                 config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_port"] = int(wa_cloud_port)
             except ValueError:
                 pass
-        wa_cloud_path = os.getenv("WHATSAPP_CLOUD_WEBHOOK_PATH")
+        wa_cloud_path = _profile_secret("WHATSAPP_CLOUD_WEBHOOK_PATH")
         if wa_cloud_path:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_path"] = wa_cloud_path
         # Graph API version override (rarely needed)
-        wa_cloud_api_version = os.getenv("WHATSAPP_CLOUD_API_VERSION")
+        wa_cloud_api_version = _profile_secret("WHATSAPP_CLOUD_API_VERSION")
         if wa_cloud_api_version:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["api_version"] = wa_cloud_api_version
-    whatsapp_cloud_home = os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL")
+    whatsapp_cloud_home = _profile_secret("WHATSAPP_CLOUD_HOME_CHANNEL")
     if whatsapp_cloud_home and Platform.WHATSAPP_CLOUD in config.platforms:
         config.platforms[Platform.WHATSAPP_CLOUD].home_channel = HomeChannel(
             platform=Platform.WHATSAPP_CLOUD,
             chat_id=whatsapp_cloud_home,
-            name=os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL_NAME", "Home"),
-            thread_id=os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL_THREAD_ID") or None,
+            name=_profile_secret_str("WHATSAPP_CLOUD_HOME_CHANNEL_NAME", "Home"),
+            thread_id=_profile_secret("WHATSAPP_CLOUD_HOME_CHANNEL_THREAD_ID") or None,
         )
 
     # Slack
-    slack_token = os.getenv("SLACK_BOT_TOKEN")
+    slack_token = _profile_secret("SLACK_BOT_TOKEN")
     if slack_token:
         if Platform.SLACK not in config.platforms:
             # No yaml config for Slack — env-only setup, enable it
@@ -1493,104 +1516,104 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         # explicit enabled: false). Token is still stored so skills that
         # send Slack messages can use it without activating the gateway adapter.
         config.platforms[Platform.SLACK].token = slack_token
-    slack_home = os.getenv("SLACK_HOME_CHANNEL")
+    slack_home = _profile_secret("SLACK_HOME_CHANNEL")
     if slack_home and Platform.SLACK in config.platforms:
         config.platforms[Platform.SLACK].home_channel = HomeChannel(
             platform=Platform.SLACK,
             chat_id=slack_home,
-            name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
-            thread_id=os.getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
+            name=_profile_secret_str("SLACK_HOME_CHANNEL_NAME"),
+            thread_id=_profile_secret("SLACK_HOME_CHANNEL_THREAD_ID") or None,
         )
     
     # Signal
-    signal_url = os.getenv("SIGNAL_HTTP_URL")
-    signal_account = os.getenv("SIGNAL_ACCOUNT")
+    signal_url = _profile_secret("SIGNAL_HTTP_URL")
+    signal_account = _profile_secret("SIGNAL_ACCOUNT")
     if signal_url and signal_account:
         signal_config = _enable_from_env(Platform.SIGNAL)
         signal_config.extra.update({
             "http_url": signal_url,
             "account": signal_account,
-            "ignore_stories": env_var_enabled("SIGNAL_IGNORE_STORIES", "true"),
+            "ignore_stories": _profile_secret_str("SIGNAL_IGNORE_STORIES", "true").lower() in {"true", "1", "yes"},
         })
-    signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
+    signal_home = _profile_secret("SIGNAL_HOME_CHANNEL")
     if signal_home and Platform.SIGNAL in config.platforms:
         config.platforms[Platform.SIGNAL].home_channel = HomeChannel(
             platform=Platform.SIGNAL,
             chat_id=signal_home,
-            name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
-            thread_id=os.getenv("SIGNAL_HOME_CHANNEL_THREAD_ID") or None,
+            name=_profile_secret_str("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+            thread_id=_profile_secret("SIGNAL_HOME_CHANNEL_THREAD_ID") or None,
         )
 
     # Mattermost
-    mattermost_token = os.getenv("MATTERMOST_TOKEN")
+    mattermost_token = _profile_secret("MATTERMOST_TOKEN")
     if mattermost_token:
-        mattermost_url = os.getenv("MATTERMOST_URL", "")
+        mattermost_url = _profile_secret_str("MATTERMOST_URL")
         if not mattermost_url:
             logger.warning("MATTERMOST_TOKEN set but MATTERMOST_URL is missing")
         mattermost_config = _enable_from_env(Platform.MATTERMOST)
         mattermost_config.token = mattermost_token
         mattermost_config.extra["url"] = mattermost_url
-    mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
+    mattermost_home = _profile_secret("MATTERMOST_HOME_CHANNEL")
     if mattermost_home and Platform.MATTERMOST in config.platforms:
         config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(
             platform=Platform.MATTERMOST,
             chat_id=mattermost_home,
-            name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
-            thread_id=os.getenv("MATTERMOST_HOME_CHANNEL_THREAD_ID") or None,
+            name=_profile_secret_str("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
+            thread_id=_profile_secret("MATTERMOST_HOME_CHANNEL_THREAD_ID") or None,
         )
 
     # Matrix
-    matrix_token = os.getenv("MATRIX_ACCESS_TOKEN")
-    matrix_homeserver = os.getenv("MATRIX_HOMESERVER", "")
-    if matrix_token or os.getenv("MATRIX_PASSWORD"):
+    matrix_token = _profile_secret("MATRIX_ACCESS_TOKEN")
+    matrix_homeserver = _profile_secret_str("MATRIX_HOMESERVER")
+    if matrix_token or _profile_secret("MATRIX_PASSWORD"):
         if not matrix_homeserver:
             logger.warning("MATRIX_ACCESS_TOKEN/MATRIX_PASSWORD set but MATRIX_HOMESERVER is missing")
         matrix_config = _enable_from_env(Platform.MATRIX)
         if matrix_token:
             matrix_config.token = matrix_token
         matrix_config.extra["homeserver"] = matrix_homeserver
-        matrix_user = os.getenv("MATRIX_USER_ID", "")
+        matrix_user = _profile_secret_str("MATRIX_USER_ID")
         if matrix_user:
             matrix_config.extra["user_id"] = matrix_user
-        matrix_password = os.getenv("MATRIX_PASSWORD", "")
+        matrix_password = _profile_secret("MATRIX_PASSWORD")
         if matrix_password:
             matrix_config.extra["password"] = matrix_password
-        matrix_e2ee_mode = os.getenv("MATRIX_E2EE_MODE", "").strip().lower()
+        matrix_e2ee_mode = _profile_secret_str("MATRIX_E2EE_MODE").strip().lower()
         matrix_e2ee = (
             matrix_e2ee_mode in ("required", "require", "optional", "prefer", "preferred")
-            or env_var_enabled("MATRIX_ENCRYPTION")
+            or _profile_secret_str("MATRIX_ENCRYPTION").lower() in ("true", "1", "yes")
         )
         matrix_config.extra["encryption"] = matrix_e2ee
         if matrix_e2ee_mode:
             matrix_config.extra["e2ee_mode"] = matrix_e2ee_mode
-        matrix_device_id = os.getenv("MATRIX_DEVICE_ID", "")
+        matrix_device_id = _profile_secret_str("MATRIX_DEVICE_ID")
         if matrix_device_id:
             matrix_config.extra["device_id"] = matrix_device_id
-    matrix_home = os.getenv("MATRIX_HOME_ROOM")
+    matrix_home = _profile_secret("MATRIX_HOME_ROOM")
     if matrix_home and Platform.MATRIX in config.platforms:
         config.platforms[Platform.MATRIX].home_channel = HomeChannel(
             platform=Platform.MATRIX,
             chat_id=matrix_home,
-            name=os.getenv("MATRIX_HOME_ROOM_NAME", "Home"),
-            thread_id=os.getenv("MATRIX_HOME_ROOM_THREAD_ID") or None,
+            name=_profile_secret_str("MATRIX_HOME_ROOM_NAME", "Home"),
+            thread_id=_profile_secret("MATRIX_HOME_ROOM_THREAD_ID") or None,
         )
 
     # Home Assistant
-    hass_token = os.getenv("HASS_TOKEN")
+    hass_token = _profile_secret("HASS_TOKEN")
     if hass_token:
         if Platform.HOMEASSISTANT not in config.platforms:
             config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
         config.platforms[Platform.HOMEASSISTANT].enabled = True
         config.platforms[Platform.HOMEASSISTANT].token = hass_token
-        hass_url = os.getenv("HASS_URL")
+        hass_url = _profile_secret("HASS_URL")
         if hass_url:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
 
     # Email
-    email_addr = os.getenv("EMAIL_ADDRESS")
-    email_pwd = os.getenv("EMAIL_PASSWORD")
-    email_imap = os.getenv("EMAIL_IMAP_HOST")
-    email_smtp = os.getenv("EMAIL_SMTP_HOST")
+    email_addr = _profile_secret("EMAIL_ADDRESS")
+    email_pwd = _profile_secret("EMAIL_PASSWORD")
+    email_imap = _profile_secret("EMAIL_IMAP_HOST")
+    email_smtp = _profile_secret("EMAIL_SMTP_HOST")
     if all([email_addr, email_pwd, email_imap, email_smtp]):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
@@ -1600,37 +1623,37 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })
-    email_home = os.getenv("EMAIL_HOME_ADDRESS")
+    email_home = _profile_secret("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:
         config.platforms[Platform.EMAIL].home_channel = HomeChannel(
             platform=Platform.EMAIL,
             chat_id=email_home,
-            name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
-            thread_id=os.getenv("EMAIL_HOME_ADDRESS_THREAD_ID") or None,
+            name=_profile_secret_str("EMAIL_HOME_ADDRESS_NAME", "Home"),
+            thread_id=_profile_secret("EMAIL_HOME_ADDRESS_THREAD_ID") or None,
         )
 
     # SMS (Twilio)
-    twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    twilio_sid = _profile_secret("TWILIO_ACCOUNT_SID")
     if twilio_sid:
         if Platform.SMS not in config.platforms:
             config.platforms[Platform.SMS] = PlatformConfig()
         config.platforms[Platform.SMS].enabled = True
-        config.platforms[Platform.SMS].api_key = os.getenv("TWILIO_AUTH_TOKEN", "")
-    sms_home = os.getenv("SMS_HOME_CHANNEL")
+        config.platforms[Platform.SMS].api_key = _profile_secret_str("TWILIO_AUTH_TOKEN")
+    sms_home = _profile_secret("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:
         config.platforms[Platform.SMS].home_channel = HomeChannel(
             platform=Platform.SMS,
             chat_id=sms_home,
-            name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
-            thread_id=os.getenv("SMS_HOME_CHANNEL_THREAD_ID") or None,
+            name=_profile_secret_str("SMS_HOME_CHANNEL_NAME", "Home"),
+            thread_id=_profile_secret("SMS_HOME_CHANNEL_THREAD_ID") or None,
         )
 
     # API Server
-    api_server_enabled = env_var_enabled("API_SERVER_ENABLED")
-    api_server_key = os.getenv("API_SERVER_KEY", "")
-    api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
-    api_server_port = os.getenv("API_SERVER_PORT")
-    api_server_host = os.getenv("API_SERVER_HOST")
+    api_server_enabled = _profile_secret("API_SERVER_ENABLED", "").lower() in {"true", "1", "yes"}
+    api_server_key = _profile_secret("API_SERVER_KEY", "")
+    api_server_cors_origins = _profile_secret("API_SERVER_CORS_ORIGINS", "")
+    api_server_port = _profile_secret("API_SERVER_PORT")
+    api_server_host = _profile_secret("API_SERVER_HOST")
     if api_server_enabled or api_server_key:
         if Platform.API_SERVER not in config.platforms:
             config.platforms[Platform.API_SERVER] = PlatformConfig()
@@ -1648,14 +1671,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if api_server_host:
             config.platforms[Platform.API_SERVER].extra["host"] = api_server_host
-        api_server_model_name = os.getenv("API_SERVER_MODEL_NAME", "")
+        api_server_model_name = _profile_secret("API_SERVER_MODEL_NAME", "")
         if api_server_model_name:
             config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
 
     # Webhook platform
-    webhook_enabled = env_var_enabled("WEBHOOK_ENABLED")
-    webhook_port = os.getenv("WEBHOOK_PORT")
-    webhook_secret = os.getenv("WEBHOOK_SECRET", "")
+    webhook_enabled = _profile_secret("WEBHOOK_ENABLED", "").lower() in {"true", "1", "yes"}
+    webhook_port = _profile_secret("WEBHOOK_PORT")
+    webhook_secret = _profile_secret("WEBHOOK_SECRET", "")
     if webhook_enabled:
         if Platform.WEBHOOK not in config.platforms:
             config.platforms[Platform.WEBHOOK] = PlatformConfig()
@@ -1669,9 +1692,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 
     # Microsoft Graph webhook platform
-    msgraph_webhook_enabled = env_var_enabled("MSGRAPH_WEBHOOK_ENABLED")
-    msgraph_webhook_port = os.getenv("MSGRAPH_WEBHOOK_PORT")
-    msgraph_webhook_client_state = os.getenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "")
+    msgraph_webhook_enabled = _profile_secret("MSGRAPH_WEBHOOK_ENABLED", "").lower() in {
+        "true",
+        "1",
+        "yes",
+    }
+    msgraph_webhook_port = _profile_secret("MSGRAPH_WEBHOOK_PORT")
+    msgraph_webhook_client_state = _profile_secret("MSGRAPH_WEBHOOK_CLIENT_STATE", "")
     msgraph_webhook_resources = os.getenv("MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES", "")
     msgraph_webhook_allowed_cidrs = os.getenv(
         "MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS", ""

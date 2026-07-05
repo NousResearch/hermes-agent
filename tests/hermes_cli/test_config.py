@@ -24,6 +24,7 @@ from hermes_cli.config import (
     save_env_value,
     save_env_value_secure,
     sanitize_env_file,
+    set_config_value,
     write_platform_config_field,
     _sanitize_env_lines,
 )
@@ -267,6 +268,17 @@ class TestLoadConfigParseFailure:
 
 
 class TestSaveAndLoadRoundtrip:
+    @staticmethod
+    def _deny_config_reads(config_path):
+        real_open = open
+
+        def fake_open(file, mode="r", *args, **kwargs):
+            if Path(file) == config_path and "r" in mode:
+                raise PermissionError("denied")
+            return real_open(file, mode, *args, **kwargs)
+
+        return fake_open
+
     def test_roundtrip(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config = load_config()
@@ -281,6 +293,30 @@ class TestSaveAndLoadRoundtrip:
             saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert saved["agent"]["max_turns"] == 42
             assert "max_turns" not in saved
+
+    def test_save_config_refuses_to_overwrite_unreadable_existing_config(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        original = "model: test/original\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+                with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                    save_config({"model": "test/replacement"})
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_config_set_refuses_to_overwrite_unreadable_existing_config(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  provider: openrouter\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+                with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                    set_config_value("model.provider", "openai")
+
+        assert config_path.read_text(encoding="utf-8") == original
 
     def test_save_config_normalizes_legacy_root_level_max_turns(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

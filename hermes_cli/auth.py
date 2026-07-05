@@ -43,7 +43,12 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
-from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
+from hermes_cli.config import (
+    get_hermes_home,
+    get_config_path,
+    read_raw_config,
+    require_readable_config_before_write,
+)
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
@@ -6335,6 +6340,7 @@ def _update_config_for_provider(
     # Update config.yaml model section
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    require_readable_config_before_write(config_path)
 
     config = read_raw_config()
 
@@ -6427,6 +6433,7 @@ def _reset_config_provider() -> Path:
     config_path = get_config_path()
     if not config_path.exists():
         return config_path
+    require_readable_config_before_write(config_path)
 
     config = read_raw_config()
     if not config:

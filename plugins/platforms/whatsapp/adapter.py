@@ -16,6 +16,7 @@ with different backends via a bridge pattern.
 """
 
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -829,6 +830,45 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._close_bridge_log()
         print(f"[{self.name}] Disconnected")
     
+    @staticmethod
+    def _clean_poll_option(text: str) -> str:
+        text = re.sub(r"\s+", " ", str(text or "")).strip()
+        return text[:100]
+
+    @classmethod
+    def _extract_outgoing_poll_intent(cls, content: str) -> tuple[str, Optional[str], list[str]]:
+        """Extract a native WhatsApp poll from outgoing assistant text.
+
+        Normal assistant output may only create a native poll through an
+        explicit hidden marker. Structured gateway-owned approval/clarify
+        prompts call ``send_poll()`` directly and do not go through this
+        prose formatter.
+        """
+        text = str(content or "")
+
+        marker_re = re.compile(r"\n?<!--\s*hermes:poll\s*(\{.*?\})\s*-->\s*", re.DOTALL | re.IGNORECASE)
+        match = marker_re.search(text)
+        if not match:
+            return text, None, []
+
+        try:
+            payload = json.loads(match.group(1))
+        except Exception:
+            return text, None, []
+
+        question = cls._clean_poll_option(payload.get("question"))[:255]
+        raw_options = payload.get("options")
+        if not question or not isinstance(raw_options, list):
+            return text, None, []
+
+        options = [cls._clean_poll_option(opt) for opt in raw_options]
+        options = [opt for opt in options if opt]
+        if len(options) < 2 or len(options) > 12:
+            return text, None, []
+
+        text = f"{text[:match.start()]}{text[match.end():]}".rstrip()
+        return text, question, options
+
     async def send(
         self,
         chat_id: str,
@@ -855,18 +895,28 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             import aiohttp
 
+            poll_question: Optional[str] = None
+            poll_options: list[str] = []
+            auto_poll_enabled = True
+            if isinstance(metadata, dict) and metadata.get("whatsapp_auto_poll") is False:
+                auto_poll_enabled = False
+            if auto_poll_enabled:
+                content, poll_question, poll_options = self._extract_outgoing_poll_intent(content)
+
             # Format and chunk the message
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
 
+            sent_message_ids: list[str] = []
             last_message_id = None
-            for chunk in chunks:
+            for idx, chunk in enumerate(chunks):
                 payload: Dict[str, Any] = {
                     "chatId": chat_id,
                     "message": chunk,
                 }
-                if reply_to and last_message_id is None:
-                    # Only reply-to on the first chunk
+                if reply_to and idx == 0:
+                    # Only reply-to on the first text chunk, even if the bridge
+                    # response omits a parseable message id.
                     payload["replyTo"] = reply_to
 
                 async with self._http_session.post(
@@ -885,9 +935,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if len(chunks) > 1:
                     await asyncio.sleep(0.3)
 
+            poll_message_id = None
+            if poll_question and poll_options:
+                poll_result = await self.send_poll(chat_id, poll_question, poll_options)
+                if poll_result.success:
+                    poll_message_id = poll_result.message_id
+                    if poll_message_id:
+                        sent_message_ids.append(str(poll_message_id))
+
             return SendResult(
                 success=True,
-                message_id=last_message_id,
+                message_id=poll_message_id or last_message_id,
+                continuation_message_ids=tuple(sent_message_ids[:-1]),
+                raw_response={"messageIds": sent_message_ids, "pollMessageId": poll_message_id},
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -974,6 +1034,138 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_poll(
+        self,
+        chat_id: str,
+        question: str,
+        options: list[str],
+        *,
+        selectable_count: int = 1,
+    ) -> SendResult:
+        """Send a native WhatsApp poll via the Baileys bridge.
+
+        This is a low-level transport primitive only. Gateway approval UX must
+        remain gateway-owned and add text fallback plus explicit confirmation
+        semantics before approval prompts are ever mapped onto polls.
+        """
+        if not self._running or not self._http_session:
+            return SendResult(success=False, error="Not connected")
+        bridge_exit = await self._check_managed_bridge_exit()
+        if bridge_exit:
+            return SendResult(success=False, error=bridge_exit)
+        try:
+            import aiohttp
+
+            payload: Dict[str, Any] = {
+                "chatId": to_whatsapp_jid(chat_id),
+                "question": question,
+                "options": list(options or []),
+                "selectableCount": selectable_count,
+            }
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/send-poll",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return SendResult(
+                        success=True,
+                        message_id=data.get("messageId"),
+                        raw_response=data,
+                    )
+                error = await resp.text()
+                return SendResult(success=False, error=error)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render multiple-choice clarify as a native WhatsApp poll.
+
+        The gateway registers the pending clarify before calling this method.
+        When Baileys later emits a poll_update with the selected option as
+        message text, the normal clarify text-intercept resolves the pending
+        question and the blocked agent continues. Open-ended clarifies use the
+        text fallback so the user's next typed message is captured.
+        """
+        clean_choices = [str(choice).strip() for choice in (choices or []) if str(choice).strip()]
+        if 2 <= len(clean_choices) <= 12:
+            result = await self.send_poll(
+                chat_id,
+                str(question or "").strip(),
+                clean_choices,
+                selectable_count=1,
+            )
+            if result.success:
+                return result
+            logger.warning(
+                "[%s] Native WhatsApp clarify poll failed; falling back to text: %s",
+                self.name,
+                result.error,
+            )
+        return await super().send_clarify(
+            chat_id=chat_id,
+            question=question,
+            choices=choices,
+            clarify_id=clarify_id,
+            session_key=session_key,
+            metadata=metadata,
+        )
+
+    async def send_location(
+        self,
+        chat_id: str,
+        latitude: float,
+        longitude: float,
+        *,
+        name: Optional[str] = None,
+        address: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a native WhatsApp location pin via the Baileys bridge."""
+        if not self._running or not self._http_session:
+            return SendResult(success=False, error="Not connected")
+        bridge_exit = await self._check_managed_bridge_exit()
+        if bridge_exit:
+            return SendResult(success=False, error=bridge_exit)
+        try:
+            import aiohttp
+
+            payload: Dict[str, Any] = {
+                "chatId": to_whatsapp_jid(chat_id),
+                "latitude": float(latitude),
+                "longitude": float(longitude),
+            }
+            if name:
+                payload["name"] = name
+            if address:
+                payload["address"] = address
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/send-location",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return SendResult(
+                        success=True,
+                        message_id=data.get("messageId"),
+                        raw_response=data,
+                    )
+                error = await resp.text()
+                return SendResult(success=False, error=error)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_image(
         self,
         chat_id: str,
@@ -1038,6 +1230,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a document/file as a downloadable attachment via bridge."""
+        if caption is None and Path(file_path).suffix.lower() in {".html", ".htm"}:
+            caption = (
+                "HTML is attached as a downloadable document in WhatsApp, "
+                "not an interactive lesson. For visual walkthroughs, ask for "
+                "a screenshot, video, or browser-accessible link."
+            )
         return await self._send_media_to_bridge(
             chat_id, file_path, "document", caption,
             file_name or os.path.basename(file_path),
@@ -1196,14 +1394,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
             # Determine message type
             msg_type = MessageType.TEXT
-            if data.get("hasMedia"):
-                media_type = data.get("mediaType", "")
+            media_type = str(data.get("mediaType", "") or "")
+            if media_type in {"location", "live_location"}:
+                msg_type = MessageType.LOCATION
+            elif media_type == "sticker":
+                msg_type = MessageType.STICKER
+            elif data.get("hasMedia"):
                 if "image" in media_type:
                     msg_type = MessageType.PHOTO
                 elif "video" in media_type:
                     msg_type = MessageType.VIDEO
-                elif "audio" in media_type or "ptt" in media_type:  # ptt = voice note
+                elif "ptt" in media_type:  # ptt = WhatsApp voice note
                     msg_type = MessageType.VOICE
+                elif "audio" in media_type:
+                    msg_type = MessageType.AUDIO
                 else:
                     msg_type = MessageType.DOCUMENT
             
@@ -1226,39 +1430,40 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             cached_urls = []
             media_types = []
             for url in raw_urls:
+                bridge_mime = str(data.get("mime") or "").strip()
                 if msg_type == MessageType.PHOTO and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_image_from_url(url, ext=".jpg")
                         cached_urls.append(cached_path)
-                        media_types.append("image/jpeg")
+                        media_types.append(bridge_mime or "image/jpeg")
                         print(f"[{self.name}] Cached user image: {cached_path}", flush=True)
                     except Exception as e:
                         print(f"[{self.name}] Failed to cache image: {e}", flush=True)
                         cached_urls.append(url)
-                        media_types.append("image/jpeg")
+                        media_types.append(bridge_mime or "image/jpeg")
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
                     # Local file path — bridge already downloaded the image
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
-                        media_types.append("image/jpeg")
+                        media_types.append(bridge_mime or "image/jpeg")
                         print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
                     else:
                         print(f"[{self.name}] Rejected bridge image path outside cache dir: {url}", flush=True)
-                elif msg_type == MessageType.VOICE and url.startswith(("http://", "https://")):
+                elif msg_type in {MessageType.VOICE, MessageType.AUDIO} and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_audio_from_url(url, ext=".ogg")
                         cached_urls.append(cached_path)
-                        media_types.append("audio/ogg")
-                        print(f"[{self.name}] Cached user voice: {cached_path}", flush=True)
+                        media_types.append(bridge_mime or ("audio/ogg" if msg_type == MessageType.VOICE else "audio/mpeg"))
+                        print(f"[{self.name}] Cached user audio: {cached_path}", flush=True)
                     except Exception as e:
-                        print(f"[{self.name}] Failed to cache voice: {e}", flush=True)
+                        print(f"[{self.name}] Failed to cache audio: {e}", flush=True)
                         cached_urls.append(url)
-                        media_types.append("audio/ogg")
-                elif msg_type == MessageType.VOICE and os.path.isabs(url):
+                        media_types.append(bridge_mime or ("audio/ogg" if msg_type == MessageType.VOICE else "audio/mpeg"))
+                elif msg_type in {MessageType.VOICE, MessageType.AUDIO} and os.path.isabs(url):
                     # Local file path — bridge already downloaded the audio
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
-                        media_types.append("audio/ogg")
+                        media_types.append(bridge_mime or ("audio/ogg" if msg_type == MessageType.VOICE else "audio/mpeg"))
                         print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
                     else:
                         print(f"[{self.name}] Rejected bridge audio path outside cache dir: {url}", flush=True)
@@ -1267,7 +1472,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
                         ext = Path(url).suffix.lower()
-                        mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                        mime = bridge_mime or SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
                         media_types.append(mime)
                         print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
                     else:
@@ -1275,7 +1480,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 elif msg_type == MessageType.VIDEO and os.path.isabs(url):
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
-                        media_types.append("video/mp4")
+                        media_types.append(bridge_mime or "video/mp4")
                         print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
                     else:
                         print(f"[{self.name}] Rejected bridge video path outside cache dir: {url}", flush=True)
@@ -1290,14 +1495,23 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
 
-            # If this is a reply, include the quoted message text so the agent
-            # knows exactly what the user is responding to (fixes "approve" context issue)
+            # If this is a reply, keep the quoted message in structured fields
+            # only. GatewayRunner._prepare_inbound_message_text owns rendering
+            # the `[Replying to: ...]` pointer for every platform; pre-rendering
+            # it here makes WhatsApp replies show the quote twice.
             quoted_text = str(data.get("quotedText") or "").strip()
-            if quoted_text and data.get("hasQuotedMessage"):
-                # Truncate long quoted text to keep prompts reasonable
-                if len(quoted_text) > 300:
-                    quoted_text = quoted_text[:297] + "..."
-                body = f"[Replying to: \"{quoted_text}\"]\n{body}"
+            reply_to_text = quoted_text or None
+            reply_to_message_id = None
+            reply_to_author_id = None
+            reply_to_is_own_message = False
+            if data.get("hasQuotedMessage"):
+                raw_reply_id = data.get("quotedMessageId")
+                if raw_reply_id is not None:
+                    reply_to_message_id = str(raw_reply_id)
+                quoted_participant = self._normalize_whatsapp_id(data.get("quotedParticipant"))
+                if quoted_participant:
+                    reply_to_author_id = quoted_participant
+                reply_to_is_own_message = self._message_is_reply_to_bot(data)
             MAX_TEXT_INJECT_BYTES = 100 * 1024
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:
@@ -1326,6 +1540,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
             metadata: Dict[str, Any] = {}
+            native_type = str(data.get("nativeType") or "").strip()
+            native_metadata = data.get("nativeMetadata")
+            if native_type:
+                metadata["whatsapp_native_type"] = native_type
+            if isinstance(native_metadata, dict) and native_metadata:
+                metadata["whatsapp_native"] = native_metadata
             # The bridge sets ``fromOwner: true`` on inbound fromMe messages
             # that look owner-typed (linked-device send, not echoed from our
             # own /send).  Surfaced under a platform-prefixed key so plugins
@@ -1350,6 +1570,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 media_urls=cached_urls,
                 media_types=media_types,
                 metadata=metadata,
+                reply_to_message_id=reply_to_message_id,
+                reply_to_text=reply_to_text,
+                reply_to_author_id=reply_to_author_id,
+                reply_to_is_own_message=reply_to_is_own_message,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

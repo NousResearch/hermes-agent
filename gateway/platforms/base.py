@@ -104,6 +104,11 @@ def _reply_anchor_for_event(event) -> str | None:
         return None
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
+    if platform == "whatsapp":
+        # WhatsApp replies are very visually heavy. Do not quote every normal
+        # bot response just because a message id exists; use plain chat flow by
+        # default and reserve native quotes for explicit/manual sends.
+        return None
     return getattr(event, "message_id", None)
 
 
@@ -3465,6 +3470,25 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
+    async def send_location(
+        self,
+        chat_id: str,
+        latitude: float,
+        longitude: float,
+        *,
+        name: Optional[str] = None,
+        address: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a location. Platforms without native pins get a maps link."""
+        label = name or address or "Location"
+        maps_url = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
+        text = f"📍 {label}\n{maps_url}"
+        if address and address != label:
+            text = f"📍 {label}\n{address}\n{maps_url}"
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+
     @staticmethod
     def validate_media_delivery_path(path: str) -> Optional[str]:
         """Return a resolved path if it is safe for native attachment upload."""
@@ -3674,6 +3698,150 @@ class BasePlatformAdapter(ABC):
                 cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
+
+    @staticmethod
+    def extract_locations(content: str) -> Tuple[List[Dict[str, Any]], str]:
+        """Extract outbound LOCATION directives from response text.
+
+        Syntax, intended as an internal final-response directive on its own line:
+
+            LOCATION:41.015,28.979|Place name|Optional address
+
+        The directive is stripped from visible text. Unsupported platforms fall
+        back to a maps link via ``send_location``; WhatsApp sends a native pin.
+        """
+        locations: List[Dict[str, Any]] = []
+        cleaned = content
+        pattern = re.compile(
+            r"^[ \t]*LOCATION:[ \t]*"
+            r"(?P<lat>[+-]?(?:\d+(?:\.\d*)?|\.\d+))[ \t]*,[ \t]*"
+            r"(?P<lon>[+-]?(?:\d+(?:\.\d*)?|\.\d+))"
+            r"(?:[ \t]*\|(?P<name>[^\n|]*))?"
+            r"(?:[ \t]*\|(?P<address>[^\n]*))?"
+            r"[ \t]*$",
+            re.MULTILINE,
+        )
+
+        spans: List[Tuple[int, int]] = []
+        scan_content = BasePlatformAdapter._mask_protected_spans(content)
+        scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
+        for match in pattern.finditer(scan_content):
+            try:
+                lat = float(match.group("lat"))
+                lon = float(match.group("lon"))
+            except (TypeError, ValueError):
+                continue
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                continue
+            name = (match.group("name") or "").strip() or None
+            address = (match.group("address") or "").strip() or None
+            locations.append({
+                "latitude": lat,
+                "longitude": lon,
+                "name": name,
+                "address": address,
+            })
+            spans.append(match.span())
+
+        if spans:
+            chars = list(cleaned)
+            for start, end in sorted(spans, reverse=True):
+                if end < len(chars) and chars[end] == "\n":
+                    end += 1
+                elif start > 0 and chars[start - 1] == "\n":
+                    start -= 1
+                del chars[start:end]
+            cleaned = re.sub(r"\n{3,}", "\n\n", "".join(chars)).strip()
+
+        return locations, cleaned
+
+    @staticmethod
+    def extract_ordered_media_parts(content: str) -> Tuple[List[Tuple[str, Any]], str]:
+        """Return text/native parts preserving explicit directive order.
+
+        Text parts are split only at real outbound native-delivery directives
+        (``MEDIA:`` and ``LOCATION:``). Protected spans use the same masking
+        rules as the extraction helpers so examples in code blocks, quotes, or
+        stored JSON remain ordinary text.
+        """
+        media, media_cleaned = BasePlatformAdapter.extract_media(content)
+        locations, cleaned = BasePlatformAdapter.extract_locations(media_cleaned)
+        if not media and not locations:
+            return [("text", cleaned)] if cleaned else [], cleaned
+
+        has_voice_tag = "[[audio_as_voice]]" in content
+        stripped_content = (
+            content
+            .replace("[[audio_as_voice]]", "")
+            .replace("[[as_document]]", "")
+        )
+        scan_content = BasePlatformAdapter._mask_protected_spans(stripped_content)
+        scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
+
+        spans: list[tuple[int, int, str, Any]] = []
+        seen_paths = set()
+        for match in MEDIA_TAG_CLEANUP_RE.finditer(scan_content):
+            path = _normalize_media_tag_path(match.group("path"))
+            if not path:
+                continue
+            try:
+                expanded = os.path.expanduser(path)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            spans.append((match.start(), match.end(), "media", (expanded, has_voice_tag)))
+            seen_paths.add(expanded)
+
+        for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
+            path = _normalize_media_tag_path(match.group("path"))
+            if not path or not _path_lacks_deliverable_extension(path):
+                continue
+            safe = validate_media_delivery_path(path)
+            if safe and safe not in seen_paths:
+                spans.append((match.start(), match.end(), "media", (safe, has_voice_tag)))
+                seen_paths.add(safe)
+
+        location_pattern = re.compile(
+            r"^[ \t]*LOCATION:[ \t]*"
+            r"(?P<lat>[+-]?(?:\d+(?:\.\d*)?|\.\d+))[ \t]*,[ \t]*"
+            r"(?P<lon>[+-]?(?:\d+(?:\.\d*)?|\.\d+))"
+            r"(?:[ \t]*\|(?P<name>[^\n|]*))?"
+            r"(?:[ \t]*\|(?P<address>[^\n]*))?"
+            r"[ \t]*$",
+            re.MULTILINE,
+        )
+        for match in location_pattern.finditer(scan_content):
+            try:
+                lat = float(match.group("lat"))
+                lon = float(match.group("lon"))
+            except (TypeError, ValueError):
+                continue
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                continue
+            spans.append((
+                match.start(),
+                match.end(),
+                "location",
+                {
+                    "latitude": lat,
+                    "longitude": lon,
+                    "name": (match.group("name") or "").strip() or None,
+                    "address": (match.group("address") or "").strip() or None,
+                },
+            ))
+
+        parts: list[tuple[str, Any]] = []
+        cursor = 0
+        for start, end, kind, native_part in sorted(spans, key=lambda item: item[0]):
+            text = stripped_content[cursor:start]
+            text = re.sub(r'\n{3,}', '\n\n', text).strip()
+            if text:
+                parts.append(("text", text))
+            parts.append((kind, native_part))
+            cursor = end
+        tail = re.sub(r'\n{3,}', '\n\n', stripped_content[cursor:]).strip()
+        if tail:
+            parts.append(("text", tail))
+        return parts, cleaned
 
     @staticmethod
     def strip_media_directives_for_display(text: str) -> str:
@@ -4904,6 +5072,10 @@ class BasePlatformAdapter(ABC):
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
 
+                # Extract LOCATION:lat,lon|name|address directives for native
+                # location pins (or platform-neutral maps-link fallback).
+                locations, response = self.extract_locations(response)
+
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561).
@@ -4929,7 +5101,7 @@ class BasePlatformAdapter(ABC):
                 # empty text with no attachment, and the `if text_content` guard
                 # below then drops it silently. Recover on every platform (#33842
                 # was Discord-only); the guard avoids duplicating an attachment.
-                if not (text_content or images or local_files or media_files):
+                if not (text_content or images or local_files or media_files or locations):
                     # Recover from the post-extract_media `response`, not the raw
                     # snapshot: extract_media already stripped MEDIA (incl. spaced
                     # paths) with its full grammar, so no fragment can leak.
@@ -4948,6 +5120,29 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+                from urllib.parse import quote as _quote
+
+                _ordered_parts, _ = self.extract_ordered_media_parts(_response_pre_extract)
+                _filtered_ordered_parts = []
+                for _kind, _value in _ordered_parts:
+                    if _kind == "media":
+                        _filtered_media = self.filter_media_delivery_paths([_value])
+                        if _filtered_media:
+                            _filtered_ordered_parts.append((_kind, _filtered_media[0]))
+                    elif _kind == "location":
+                        _filtered_ordered_parts.append((_kind, _value))
+                    elif _value:
+                        _filtered_ordered_parts.append((_kind, _value))
+                _seen_native_part = False
+                _use_ordered_media_delivery = False
+                for _kind, _value in _filtered_ordered_parts:
+                    if _kind in {"media", "location"}:
+                        _seen_native_part = True
+                    elif _seen_native_part and str(_value).strip():
+                        _use_ordered_media_delivery = True
+                        break
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -5000,7 +5195,115 @@ class BasePlatformAdapter(ABC):
                             pass
 
                 # Send the text portion
-                if text_content and not _tts_caption_delivered:
+                human_delay = self._get_human_delay()
+                _ordered_media_delivered = False
+
+                async def _send_ordered_media_file(media_path: str, is_voice: bool):
+                    nonlocal _ordered_media_delivered
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
+                    ext = Path(media_path).suffix.lower()
+                    if (
+                        ext in _IMAGE_EXTS
+                        and not is_voice
+                        and not force_document_attachments
+                    ):
+                        await self.send_multiple_images(
+                            chat_id=event.source.chat_id,
+                            images=[(f"file://{_quote(media_path)}", "")],
+                            metadata=_final_thread_metadata,
+                            human_delay=0,
+                        )
+                        _ordered_media_delivered = True
+                        _record_delivery(SendResult(success=True))
+                        return
+                    if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
+                        media_result = await self.send_voice(
+                            chat_id=event.source.chat_id,
+                            audio_path=media_path,
+                            metadata=_final_thread_metadata,
+                        )
+                    elif ext in _VIDEO_EXTS:
+                        media_result = await self.send_video(
+                            chat_id=event.source.chat_id,
+                            video_path=media_path,
+                            metadata=_final_thread_metadata,
+                        )
+                    else:
+                        media_result = await self.send_document(
+                            chat_id=event.source.chat_id,
+                            file_path=media_path,
+                            metadata=_final_thread_metadata,
+                        )
+                    _record_delivery(media_result)
+                    if getattr(media_result, "success", False):
+                        _ordered_media_delivered = True
+                    elif media_result is not None:
+                        logger.warning(
+                            "[%s] Failed to send ordered media (%s): %s",
+                            self.name, ext, media_result.error,
+                        )
+
+                async def _send_ordered_location(location: dict):
+                    nonlocal _ordered_media_delivered
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
+                    loc_result = await self.send_location(
+                        chat_id=event.source.chat_id,
+                        latitude=location["latitude"],
+                        longitude=location["longitude"],
+                        name=location.get("name"),
+                        address=location.get("address"),
+                        metadata=_final_thread_metadata,
+                    )
+                    _record_delivery(loc_result)
+                    if getattr(loc_result, "success", False):
+                        _ordered_media_delivered = True
+                    elif loc_result is not None:
+                        logger.warning(
+                            "[%s] Failed to send ordered location pin: %s",
+                            self.name,
+                            loc_result.error,
+                        )
+
+                if _use_ordered_media_delivery:
+                    logger.info(
+                        "[%s] Sending response with ordered MEDIA parts to %s",
+                        self.name,
+                        event.source.chat_id,
+                    )
+                    for _kind, _value in _filtered_ordered_parts:
+                        if _kind == "text":
+                            result = await self._send_with_retry(
+                                chat_id=event.source.chat_id,
+                                content=_value,
+                                reply_to=_reply_anchor_for_event(event),
+                                metadata=_final_thread_metadata,
+                            )
+                            _record_delivery(result)
+                            if (
+                                _ephemeral_ttl
+                                and _ephemeral_ttl > 0
+                                and result.success
+                                and result.message_id
+                            ):
+                                self._schedule_ephemeral_delete(
+                                    chat_id=event.source.chat_id,
+                                    message_id=result.message_id,
+                                    ttl_seconds=_ephemeral_ttl,
+                                )
+                        else:
+                            try:
+                                if _kind == "location":
+                                    await _send_ordered_location(_value)
+                                else:
+                                    await _send_ordered_media_file(*_value)
+                            except Exception as media_err:
+                                logger.warning("[%s] Error sending ordered native part: %s", self.name, media_err)
+                    text_content = ""
+                    media_files = []
+                    locations = []
+                elif text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     result = await self._send_with_retry(
@@ -5026,8 +5329,28 @@ class BasePlatformAdapter(ABC):
                             ttl_seconds=_ephemeral_ttl,
                         )
 
-                # Human-like pacing delay between text and media
-                human_delay = self._get_human_delay()
+                # Send native/fallback location pins after the explanatory text.
+                for location in locations:
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
+                    try:
+                        loc_result = await self.send_location(
+                            chat_id=event.source.chat_id,
+                            latitude=location["latitude"],
+                            longitude=location["longitude"],
+                            name=location.get("name"),
+                            address=location.get("address"),
+                            metadata=_final_thread_metadata,
+                        )
+                        _record_delivery(loc_result)
+                        if loc_result is not None and not loc_result.success:
+                            logger.warning(
+                                "[%s] Failed to send location pin: %s",
+                                self.name,
+                                loc_result.error,
+                            )
+                    except Exception as loc_err:
+                        logger.warning("[%s] Error sending location pin: %s", self.name, loc_err)
 
                 # Send extracted images as native attachments
                 if images:
@@ -5044,16 +5367,12 @@ class BasePlatformAdapter(ABC):
 
 
                 # Send extracted media files — route by file type
-                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
-                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
-
                 # Partition images out of media_files + local_files so they
                 # can be sent as a single batch (Signal RPC). When
                 # ``[[as_document]]`` was set on the original response, image
                 # files skip the photo path and route to send_document below
                 # so they're delivered with original bytes (no Telegram
                 # sendPhoto recompression).
-                from urllib.parse import quote as _quote
                 _image_paths: list = []
                 _non_image_media: list = []
                 for media_path, is_voice in media_files:
@@ -5138,7 +5457,7 @@ class BasePlatformAdapter(ABC):
                 # deliverable, fail loudly rather than dropping it in silence.
                 _anything_delivered = (
                     delivery_attempted or _tts_caption_delivered
-                    or images or local_files or media_files
+                    or _ordered_media_delivered or images or local_files or media_files or locations
                 )
                 if not _anything_delivered and _response_pre_extract.strip():
                     logger.error(

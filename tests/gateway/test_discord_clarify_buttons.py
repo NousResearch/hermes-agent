@@ -29,6 +29,7 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
     ClarifyChoiceView,
     DiscordAdapter,
 )
+import plugins.platforms.discord.adapter as discord_adapter  # noqa: E402
 from gateway.config import PlatformConfig  # noqa: E402
 
 
@@ -171,6 +172,18 @@ class TestClarifyChoiceViewConstruction:
         assert last_char in {"-", ",", ".", ")", " "}, (
             f"Label cuts mid-word at {last_char!r}: {first_label!r}"
         )
+
+    def test_allow_other_false_omits_other_button(self):
+        view = ClarifyChoiceView(
+            choices=["apple", "banana"],
+            clarify_id="cidNoOther",
+            allowed_user_ids={"42"},
+            allow_other=False,
+        )
+
+        labels = [b.label for b in view.children]
+        assert len(labels) == 2
+        assert all("Other" not in label for label in labels)
 
 
 # ===========================================================================
@@ -330,6 +343,50 @@ class TestClarifyOtherButton:
 
 
 # ===========================================================================
+# Multi-select view → stage then submit
+# ===========================================================================
+
+class TestClarifyMultiSelectView:
+    """Multi-select should not resolve until the user submits staged choices."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    async def test_select_stages_then_submit_resolves_joined_choices(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("cidMS", "sk-MS", "Pick many", ["red", "green", "blue"], multi_select=True)
+        view = discord_adapter.ClarifyMultiSelectView(
+            choices=["red", "green", "blue"],
+            clarify_id="cidMS",
+            allowed_user_ids={"42"},
+        )
+
+        interaction = _make_interaction(user_id="42")
+        interaction.data = {"values": ["0", "2"]}
+        await view._on_select(interaction)
+
+        assert view.selected_indices == {0, 2}
+        with cm._lock:
+            entry = cm._entries.get("cidMS")
+        assert entry is not None
+        assert not entry.event.is_set()
+        interaction.response.edit_message.assert_called_once()
+
+        interaction2 = _make_interaction(user_id="42")
+        await view._on_submit(interaction2)
+
+        with cm._lock:
+            entry = cm._entries.get("cidMS")
+        assert entry is not None
+        assert entry.response == "red, blue"
+        assert entry.event.is_set()
+        assert all(child.disabled for child in view.children)
+        interaction2.response.edit_message.assert_called_once()
+
+
+# ===========================================================================
 # DiscordAdapter.send_clarify integration
 # ===========================================================================
 
@@ -366,6 +423,57 @@ class TestDiscordSendClarify:
         assert isinstance(kwargs["view"], ClarifyChoiceView)
         # 3 choice buttons + 1 Other
         assert len(kwargs["view"].children) == 4
+
+    @pytest.mark.asyncio
+    async def test_allow_other_false_omits_single_select_other_button(self):
+        adapter = _make_adapter(allowed_users={"42"})
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 123458
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Pick a color",
+            choices=["red", "green"],
+            clarify_id="cidNoOtherSend",
+            session_key="sk-no-other-send",
+            allow_other=False,
+        )
+
+        assert result.success is True
+        kwargs = channel.send.call_args.kwargs
+        view = kwargs["view"]
+        assert isinstance(view, ClarifyChoiceView)
+        assert len(view.children) == 2
+        assert all("Other" not in child.label for child in view.children)
+        embed = kwargs["embed"]
+        assert all("Other" not in field["value"] for field in embed.fields)
+
+    @pytest.mark.asyncio
+    async def test_multi_select_attaches_native_multiselect_view(self):
+        adapter = _make_adapter(allowed_users={"42"})
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 123457
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Pick colors",
+            choices=["red", "green", "blue"],
+            clarify_id="cidMS2",
+            session_key="sk-MS2",
+            multi_select=True,
+        )
+
+        assert result.success is True
+        kwargs = channel.send.call_args.kwargs
+        assert isinstance(kwargs["view"], discord_adapter.ClarifyMultiSelectView)
+        embed = kwargs["embed"]
+        assert any("one or more" in field["value"] for field in embed.fields)
 
     @pytest.mark.asyncio
     async def test_open_ended_omits_view(self):

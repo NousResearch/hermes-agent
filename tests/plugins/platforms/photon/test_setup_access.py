@@ -73,12 +73,10 @@ def test_env_enablement_home_channel_defaults_name(monkeypatch: pytest.MonkeyPat
 
 def test_setup_hint_uses_gateway_service_command(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    # The dashboard id *is* the Spectrum project id (ids unified), so setup no
+    # longer enables Spectrum or fetches a separate spectrumProjectId — it
+    # reuses this id directly.
     monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
-    monkeypatch.setattr(
-        cli.photon_auth,
-        "ensure_spectrum_enabled",
-        lambda token, dashboard_id: {"spectrumProjectId": "project_123"},
-    )
     monkeypatch.setattr(
         cli.photon_auth,
         "regenerate_project_secret",

@@ -27,7 +27,7 @@ def _make_env_config(**overrides):
 
 
 class TestFileToolsContainerConfig:
-    def _run(self, env_config, task_id):
+    def _run(self, env_config, task_id, task_env_overrides=None):
         captured = {}
         mock_env = MagicMock()
 
@@ -35,31 +35,51 @@ class TestFileToolsContainerConfig:
             captured.update(kwargs)
             return mock_env
 
-        with patch("tools.terminal_tool._get_env_config", return_value=env_config),              patch("tools.terminal_tool._task_env_overrides", {}),              patch("tools.terminal_tool._active_environments", {}),              patch("tools.terminal_tool._creation_locks", {}),              patch("tools.terminal_tool._creation_locks_lock", __import__("threading").Lock()),              patch("tools.terminal_tool._create_environment", side_effect=fake_create_env),              patch("tools.terminal_tool._start_cleanup_thread"),              patch("tools.terminal_tool._check_disk_usage_warning"),              patch("tools.file_tools._file_ops_cache", {}),              patch("tools.file_tools._file_ops_lock", __import__("threading").Lock()):
+        with patch("tools.terminal_tool._get_env_config", return_value=env_config), \
+             patch("tools.terminal_tool._task_env_overrides", task_env_overrides or {}), \
+             patch("tools.terminal_tool._active_environments", {}), \
+             patch("tools.terminal_tool._creation_locks", {}), \
+             patch("tools.terminal_tool._creation_locks_lock", __import__("threading").Lock()), \
+             patch("tools.terminal_tool._create_environment", side_effect=fake_create_env), \
+             patch("tools.terminal_tool._start_cleanup_thread"), \
+             patch("tools.terminal_tool._check_disk_usage_warning"), \
+             patch("tools.file_tools._file_ops_cache", {}), \
+             patch("tools.file_tools._file_ops_lock", __import__("threading").Lock()):
             file_tools._get_file_ops(task_id)
 
-        return captured.get("container_config", {})
+        return captured
 
     def test_docker_mount_cwd_to_workspace_passed(self):
         """docker_mount_cwd_to_workspace is forwarded to container_config."""
-        cc = self._run(_make_env_config(docker_mount_cwd_to_workspace=True), "t1")
+        cc = self._run(_make_env_config(docker_mount_cwd_to_workspace=True), "t1").get("container_config", {})
         assert cc.get("docker_mount_cwd_to_workspace") is True
 
     def test_docker_forward_env_passed(self):
         """docker_forward_env is forwarded to container_config."""
-        cc = self._run(_make_env_config(docker_forward_env=["MY_SECRET"]), "t2")
+        cc = self._run(_make_env_config(docker_forward_env=["MY_SECRET"]), "t2").get("container_config", {})
         assert cc.get("docker_forward_env") == ["MY_SECRET"]
 
     def test_docker_mount_cwd_defaults_to_false(self):
         """docker_mount_cwd_to_workspace defaults to False when absent from config."""
         cfg = _make_env_config()
         del cfg["docker_mount_cwd_to_workspace"]
-        cc = self._run(cfg, "t3")
+        cc = self._run(cfg, "t3").get("container_config", {})
         assert cc.get("docker_mount_cwd_to_workspace") is False
 
     def test_docker_forward_env_defaults_to_empty_list(self):
         """docker_forward_env defaults to [] when absent from config."""
         cfg = _make_env_config()
         del cfg["docker_forward_env"]
-        cc = self._run(cfg, "t4")
+        cc = self._run(cfg, "t4").get("container_config", {})
         assert cc.get("docker_forward_env") == []
+
+    def test_cwd_only_raw_task_override_reaches_file_environment(self):
+        """CWD-only task overrides collapse to default but must keep their cwd."""
+        captured = self._run(
+            _make_env_config(env_type="local", cwd="/config-cwd"),
+            "desktop-session-cwd",
+            task_env_overrides={"desktop-session-cwd": {"cwd": "/workspace/session"}},
+        )
+
+        assert captured["task_id"] == "default"
+        assert captured["cwd"] == "/workspace/session"

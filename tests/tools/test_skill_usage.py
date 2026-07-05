@@ -341,6 +341,29 @@ def test_agent_created_skips_archive_and_hub_dirs(skills_home):
     assert "old-skill" not in names
 
 
+def test_agent_created_excludes_external_dir_even_with_stale_agent_record(skills_home, monkeypatch):
+    from tools.skill_usage import (
+        agent_created_report,
+        is_agent_created,
+        list_agent_created_skill_names,
+        save_usage,
+    )
+
+    skills_dir = skills_home / "skills"
+    external = skills_dir / "shared-vault"
+    _write_skill(external, "external-skill")
+    save_usage({"external-skill": {"created_by": "agent"}})
+
+    monkeypatch.setattr(
+        "agent.skill_utils.get_external_skills_dirs",
+        lambda: [external.resolve()],
+    )
+
+    assert "external-skill" not in list_agent_created_skill_names()
+    assert "external-skill" not in {r["name"] for r in agent_created_report()}
+    assert is_agent_created("external-skill") is False
+
+
 # ---------------------------------------------------------------------------
 # Archive / restore
 # ---------------------------------------------------------------------------
@@ -382,6 +405,23 @@ def test_archive_refuses_hub_skill(skills_home):
 
     ok, msg = archive_skill("hub-skill")
     assert not ok
+
+
+def test_archive_refuses_external_skill(skills_home, monkeypatch):
+    from tools.skill_usage import archive_skill
+
+    skills_dir = skills_home / "skills"
+    external = skills_dir / "shared-vault"
+    skill_dir = _write_skill(external, "external-skill")
+    monkeypatch.setattr(
+        "agent.skill_utils.get_external_skills_dirs",
+        lambda: [external.resolve()],
+    )
+
+    ok, msg = archive_skill("external-skill")
+    assert not ok
+    assert "external" in msg.lower()
+    assert skill_dir.exists()
 
 
 def test_archive_missing_skill_returns_error(skills_home):
@@ -451,6 +491,76 @@ def test_archive_collision_gets_suffix(skills_home):
     archived = sorted(p.name for p in (skills_dir / ".archive").iterdir() if p.is_dir())
     assert "dup" in archived
     assert any(n.startswith("dup-") and n != "dup" for n in archived)
+
+
+def test_restore_does_not_pull_unrelated_sibling_out_of_archive(skills_home):
+    """Restoring a name with no exact archive entry must NOT grab a different
+    archived skill that merely shares a ``<name>-`` prefix.
+
+    The timestamped-duplicate fallback recognises only the suffix
+    ``archive_skill`` writes on a collision (``-YYYYMMDDHHMMSS``). A bare
+    ``startswith(f"{name}-")`` also matches sibling skills, so restoring
+    ``git`` would rip an archived ``git-helpers`` out of the archive, rename
+    it to ``git``, and report success — destroying the sibling's only copy."""
+    from tools.skill_usage import (
+        archive_skill, restore_skill, list_archived_skill_names, mark_agent_created,
+    )
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "git-helpers")
+    mark_agent_created("git-helpers")
+    ok, msg = archive_skill("git-helpers")
+    assert ok, msg
+
+    # "git" was never archived; only its prefix-sharing sibling was.
+    ok, msg = restore_skill("git")
+    assert not ok, f"restore('git') should not match 'git-helpers': {msg}"
+    assert "not found" in msg.lower()
+
+    # The sibling must be untouched: still in the archive, never moved to skills/git.
+    assert (skills_dir / ".archive" / "git-helpers" / "SKILL.md").exists()
+    assert "git-helpers" in list_archived_skill_names()
+    assert not (skills_dir / "git").exists()
+
+
+def test_restore_still_matches_timestamped_duplicate(skills_home):
+    """The fix must not over-narrow: a real collision dupe written by
+    ``archive_skill`` (``<name>-YYYYMMDDHHMMSS``) is still restorable by name
+    when no bare ``<name>`` entry exists."""
+    from tools.skill_usage import restore_skill
+    skills_dir = skills_home / "skills"
+    dupe = skills_dir / ".archive" / "report-tool-20260101000000"
+    dupe.mkdir(parents=True)
+    (dupe / "SKILL.md").write_text(
+        "---\nname: report-tool\ndescription: x\n---\n", encoding="utf-8",
+    )
+
+    ok, msg = restore_skill("report-tool")
+    assert ok, msg
+    assert (skills_dir / "report-tool" / "SKILL.md").exists()
+
+
+def test_restore_prefers_timestamped_dupe_over_unrelated_sibling(skills_home):
+    """With both a real timestamped duplicate and an unrelated sibling present,
+    restoring the bare name picks the duplicate and leaves the sibling alone."""
+    from tools.skill_usage import restore_skill
+    archive = skills_home / "skills" / ".archive"
+
+    dupe = archive / "report-20260101000000"          # real collision dupe of "report"
+    sibling = archive / "report-card"                  # unrelated sibling skill
+    for d, frontname in ((dupe, "report"), (sibling, "report-card")):
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {frontname}\ndescription: x\n---\n", encoding="utf-8",
+        )
+
+    ok, msg = restore_skill("report")
+    assert ok, msg
+    # The duplicate (name: report) was restored, not the sibling (name: report-card).
+    restored = (skills_home / "skills" / "report" / "SKILL.md").read_text()
+    assert "name: report\n" in restored
+    assert "name: report-card" not in restored
+    assert not dupe.exists()       # the dupe moved out of the archive
+    assert sibling.exists()        # the unrelated sibling stayed put
 
 
 # ---------------------------------------------------------------------------

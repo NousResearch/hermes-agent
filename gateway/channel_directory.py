@@ -171,7 +171,7 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
         return channels
 
     try:
-        import discord as _discord  # noqa: F401 — SDK presence check
+        import discord as _discord
     except ImportError:
         return channels
 

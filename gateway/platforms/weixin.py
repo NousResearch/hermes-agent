@@ -610,7 +610,7 @@ def _assert_weixin_cdn_url(url: str) -> None:
         parsed = urlparse(url)
         scheme = parsed.scheme.lower()
         host = parsed.hostname or ""
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ValueError(f"Unparseable media URL: {url!r}") from exc
 
     if scheme not in {"http", "https"}:

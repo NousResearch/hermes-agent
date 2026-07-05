@@ -185,6 +185,11 @@ def _auto_sso_response(request: Request) -> Response | None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     provider = providers[0]
+    # Basic auth (password) has no OAuth redirect flow; auto-redirecting to
+    # /auth/login would just NotImplementedError. Let /login render.
+    if provider.name == "basic":
+        return None
+
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

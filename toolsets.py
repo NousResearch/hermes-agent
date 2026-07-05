@@ -63,6 +63,10 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # One-shot text completion via auxiliary provider chain (cheap/local
+    # model escape hatch for text-transform work that doesn't need an
+    # agent loop or tools — #59070).
+    "delegate_completion",
     # Cronjob management
     "cronjob",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

@@ -35,6 +35,9 @@ LOG_FILES = {
     "gateway": "gateway.log",
     "gui": "gui.log",
     "desktop": "desktop.log",
+    # Every stdio MCP subprocess's stderr (tools/mcp_tool.py redirects it
+    # here, with per-server session markers) — the "MCP output channel".
+    "mcp": "mcp-stderr.log",
 }
 
 # Log line timestamp regex — matches "2026-04-05 22:35:00,123" or

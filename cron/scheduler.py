@@ -31,7 +31,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -1217,6 +1217,62 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
+def _is_channel_dm_topic(
+    runtime_adapter: Any,
+    chat_id: Any,
+    loop: Any,
+    job_id: str,
+) -> bool:
+    """Decide whether an (already-ambiguous) Telegram topic target is a genuine
+    Bot API *channel* Direct-Messages topic (route via
+    ``direct_messages_topic_id``) rather than a forum-style topic in a private
+    chat (route via ``message_thread_id``).
+
+    Callers gate this on the ambiguous shape first
+    (``telegram:<positive_chat_id>:<numeric_thread_id>``) — that shape is
+    identical for both cases, so shape alone cannot decide (this was the #52060
+    regression).  The real signal is the chat *type*: a genuine channel DM topic
+    lives on a ``channel`` chat.  Probe the live adapter's ``get_chat_info`` once
+    and only return True when the chat is a channel.
+
+    Fails SAFE to ``message_thread_id`` (returns False) for adapters without a
+    probe, or any probe error/timeout — that is the pre-#22773 behaviour and the
+    correct default for the common forum-topic case.
+    """
+    # Resolve on the CLASS, not the instance (general pitfall #11): a MagicMock
+    # instance auto-creates a truthy ``get_chat_info`` attribute, so an
+    # instance-level probe would misclassify test doubles. Real adapters expose
+    # the coroutine on the class regardless.
+    get_chat_info = getattr(type(runtime_adapter), "get_chat_info", None)
+    if not callable(get_chat_info):
+        return False
+    try:
+        from agent.async_utils import safe_schedule_threadsafe
+
+        future = safe_schedule_threadsafe(
+            get_chat_info(runtime_adapter, str(chat_id)), loop,  # type: ignore[arg-type]
+        )
+        if future is None:
+            return False
+        # Lighter than a send (metadata-only Bot API call), so a shorter bound
+        # than the 30s/60s send waits elsewhere in this file is intentional.
+        info = future.result(timeout=10)
+    except Exception:
+        logger.debug(
+            "Job '%s': get_chat_info probe failed for chat=%s — "
+            "defaulting to message_thread_id routing",
+            job_id, chat_id, exc_info=True,
+        )
+        return False
+    is_channel = isinstance(info, dict) and str(info.get("type") or "").lower() == "channel"
+    if is_channel:
+        logger.info(
+            "Job '%s': chat=%s is a channel — routing via direct_messages_topic_id",
+            job_id, chat_id,
+        )
+    return is_channel
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -1440,14 +1496,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 opened_thread_id = new_thread_id
 
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            # Telegram three-mode topic routing (#22773): a private chat
-            # (positive chat_id) with a NUMERIC topic id is a Bot API Direct
-            # Messages topic and must be addressed via ``direct_messages_topic_id``
-            # — a bare ``message_thread_id`` is rejected/mis-routed by Bot API
-            # 10.0 and lands in General.  Forum/supergroup targets (negative
-            # chat_id) and named DM-topic lanes keep the default thread_id
-            # handling.  Compute the routed metadata ONCE so both the text send
-            # (via DeliveryRouter) and the media send use the same routing.
+            # Telegram topic routing (#22773, regression fixed #52060): a
+            # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is
+            # ambiguous — a forum-style topic in a private chat and a genuine
+            # Bot API channel Direct-Messages topic share the same shape and
+            # need OPPOSITE routing. Disambiguate at delivery time via
+            # ``_is_channel_dm_topic`` (see its docstring for the full
+            # rationale); ``thread_id`` goes in ``route_metadata`` so the
+            # anchorless cron send bypasses the DeliveryRouter's private-chat
+            # reply-anchor requirement. Compute the routed metadata ONCE so both
+            # the text send (via DeliveryRouter) and the media send agree.
             from gateway.delivery import (
                 DeliveryRouter,
                 DeliveryTarget,
@@ -1455,14 +1513,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 looks_like_telegram_private_chat_id,
             )
 
-            is_private_dm_topic = (
+            is_ambiguous_telegram_topic = (
                 platform == Platform.TELEGRAM
                 and thread_id is not None
                 and looks_like_telegram_private_chat_id(str(chat_id))
                 and _looks_like_int(str(thread_id))
             )
-            if is_private_dm_topic:
-                # Routed via direct_messages_topic_id (mode 2), no bare thread_id.
+            route_via_dm_topic = is_ambiguous_telegram_topic and _is_channel_dm_topic(
+                runtime_adapter, chat_id, loop, job["id"],
+            )
+            if route_via_dm_topic:
+                # Genuine Bot API channel Direct-Messages topic (#22773 mode 2):
+                # routed via direct_messages_topic_id, no bare thread_id.
                 route_thread_id = None
                 route_metadata = {
                     "direct_messages_topic_id": str(thread_id),
@@ -1472,8 +1534,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # the same DM topic instead of the General lane (#22773).
                 media_metadata = {"direct_messages_topic_id": str(thread_id)}
             else:
+                # Forum-style topic (private chat / supergroup) or non-topic
+                # target: route via message_thread_id (#52060).  Put thread_id in
+                # *route_metadata* (not just the DeliveryTarget) deliberately —
+                # the DeliveryRouter's private-chat topic detection
+                # (gateway/delivery.py) demands a reply anchor when thread_id is
+                # absent from metadata; cron deliveries have no inbound reply
+                # anchor, so the metadata key bypasses that check and lets the
+                # adapter route via a plain message_thread_id.
                 route_thread_id = str(thread_id) if thread_id is not None else None
                 route_metadata = {"job_id": job["id"]}
+                if route_thread_id:
+                    route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 
             try:
@@ -2620,10 +2692,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml
+        # Reasoning config from config.yaml (raw value — a YAML boolean False
+        # means thinking disabled, see parse_reasoning_effort)
         from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        reasoning_config = parse_reasoning_effort(effort)
+        reasoning_config = parse_reasoning_effort(
+            _cfg.get("agent", {}).get("reasoning_effort", "")
+        )
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
@@ -3112,7 +3186,26 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             )
             return True  # not an error — already handled/removed
 
-        success, output, final_response, error = run_job(job)
+        # Run the job under the profile's secret scope. get_secret() fails
+        # closed outside a scope once profile isolation is in play (multiple
+        # gateway profiles / room→profile multiplexing), and cron fires from
+        # the ticker thread where no per-turn scope is installed — so
+        # resolve_runtime_provider() raised UnscopedSecretError before model
+        # selection, breaking every cron job. Mirrors the per-turn pattern in
+        # gateway/run.py (_profile_runtime_scope).
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            reset_secret_scope,
+            set_secret_scope,
+        )
+
+        _scope_token = set_secret_scope(
+            build_profile_secret_scope(_get_hermes_home())
+        )
+        try:
+            success, output, final_response, error = run_job(job)
+        finally:
+            reset_secret_scope(_scope_token)
 
         output_file = save_job_output(job["id"], output)
         if verbose:

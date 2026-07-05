@@ -737,6 +737,10 @@ class AIAgent:
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
+        # Copilot x-initiator: True for the first API call of a user turn,
+        # False for tool-loop follow-ups (#3040).
+        self._is_user_initiated_turn = False
+
         # Context engine reset/transition (works for built-in compressor and plugins)
         self._transition_context_engine_session(
             old_session_id=old_session_id,
@@ -1328,6 +1332,13 @@ class AIAgent:
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
+
+    def _is_copilot_url(self) -> bool:
+        """Return True when the base URL targets GitHub Copilot or GitHub Models."""
+        return (
+            "api.githubcopilot.com" in self._base_url_lower
+            or "models.github.ai" in self._base_url_lower
+        )
 
     def _anthropic_prompt_cache_policy(
         self,
@@ -4114,7 +4125,7 @@ class AIAgent:
         #
         # When an agent is using a non-singleton credential — e.g. a manual
         # pool entry (``hermes auth add xai-oauth``) whose tokens belong to
-        # a different account than the loopback_pkce singleton, or an agent
+        # a different account than the device_code singleton, or an agent
         # constructed with an explicit ``api_key=`` arg — force-refreshing
         # the singleton here and adopting its tokens silently re-routes the
         # rest of the conversation onto the singleton's account.  The
@@ -4385,6 +4396,22 @@ class AIAgent:
         # applied across credential swaps and client rebuilds, not just at
         # first construction.
         self._apply_user_default_headers()
+
+        # Per-provider extra HTTP headers (providers.<name>.extra_headers /
+        # custom_providers[].extra_headers) — applied last so the most
+        # specific config level survives credential swaps and rebuilds too.
+        # SECURITY: values may carry credentials — never log them.
+        if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
+            try:
+                from hermes_cli.config import (
+                    apply_custom_provider_extra_headers_to_client_kwargs,
+                )
+
+                apply_custom_provider_extra_headers_to_client_kwargs(
+                    self._client_kwargs, base_url,
+                )
+            except Exception:
+                logger.debug("custom-provider extra_headers skipped", exc_info=True)
 
     def _apply_user_default_headers(self) -> None:
         """Merge user-configured request headers onto the OpenAI client.
@@ -5609,7 +5636,10 @@ class AIAgent:
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
         invocation paths (concurrent, sequential, inline).
         """
-        from tools.delegate_tool import delegate_task as _delegate_task
+        from tools.delegate_tool import (
+            _strip_model_hidden_task_fields,
+            delegate_task as _delegate_task,
+        )
         # Delegations from the top-level MODEL always run in the background —
         # the model does not get to choose. delegate_task returns immediately
         # with a handle (one per task) and each subagent's result re-enters the
@@ -5625,12 +5655,10 @@ class AIAgent:
         return _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
-            tasks=function_args.get("tasks"),
+            tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             model=function_args.get("model"),
             provider=function_args.get("provider"),
             max_iterations=function_args.get("max_iterations"),
-            acp_command=function_args.get("acp_command"),
-            acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
             background=(not _is_subagent),
             parent_agent=self,

@@ -111,7 +111,10 @@ def _cmd_propose(args) -> int:
     )
     print(f"Staged SkillOpt proposal: {staged.run_id}")
     print(f"Run directory: {staged.run_dir}")
-    print("Live skill was not modified; run `hermes skillopt evaluate` before `adopt`.")
+    if getattr(args, "dry_run", False):
+        print("Dry run: live skill was not modified.")
+    else:
+        print("Live skill was not modified; run `hermes skillopt evaluate` before `adopt`.")
     return 0
 
 
@@ -212,6 +215,7 @@ def register_cli(subparsers) -> None:
     propose.add_argument("--candidate", required=True, help="Path to candidate SKILL.md content")
     propose.add_argument("--rationale", default="")
     propose.add_argument("--from-session", default=None)
+    propose.add_argument("--dry-run", action="store_true", help="Explicitly confirm staging-only behavior; live skill is never mutated")
     show = sub.add_parser("show", help="Show a staged proposal")
     show.add_argument("run_id")
     show.add_argument("--json", action="store_true")

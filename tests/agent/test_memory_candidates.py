@@ -78,18 +78,59 @@ def test_reject_memory_candidate_marks_status_and_prevents_promotion(tmp_path):
     assert _with_home(home, run) == ("rejected", "candidate is not staged")
 
 
-def test_memory_wiki_find_read_grep_helpers(tmp_path):
+def test_memory_candidate_rollback_removes_exact_last_promoted_entry(tmp_path):
+    home = tmp_path / ".hermes"
+    mem_dir = home / "memories"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "MEMORY.md").write_text("Existing fact", encoding="utf-8")
+
+    def run():
+        from agent.memory_candidates import load_memory_candidate, promote_memory_candidate, rollback_memory_candidate, stage_memory_candidate
+
+        candidate = stage_memory_candidate(target="memory", content="New verified fact")
+        promote_memory_candidate(candidate.candidate_id)
+        rollback_memory_candidate(candidate.candidate_id)
+        return load_memory_candidate(candidate.candidate_id).status, (mem_dir / "MEMORY.md").read_text(encoding="utf-8")
+
+    assert _with_home(home, run) == ("rolled_back", "Existing fact")
+
+
+def test_memory_candidate_rollback_preserves_existing_bytes(tmp_path):
+    home = tmp_path / ".hermes"
+    mem_dir = home / "memories"
+    mem_dir.mkdir(parents=True)
+    original = "  Existing fact with spacing  \n\n§\nSecond fact\n"
+    (mem_dir / "MEMORY.md").write_text(original, encoding="utf-8")
+
+    def run():
+        from agent.memory_candidates import promote_memory_candidate, rollback_memory_candidate, stage_memory_candidate
+
+        candidate = stage_memory_candidate(target="memory", content="New verified fact")
+        promote_memory_candidate(candidate.candidate_id)
+        rollback_memory_candidate(candidate.candidate_id)
+        return (mem_dir / "MEMORY.md").read_text(encoding="utf-8")
+
+    assert _with_home(home, run) == original
+
+
+def test_memory_wiki_find_read_grep_retrieve_helpers(tmp_path):
     home = tmp_path / ".hermes"
     mem_dir = home / "memories"
     mem_dir.mkdir(parents=True)
     (mem_dir / "MEMORY.md").write_text("Project uses pytest\n§\nSpark host runs local LLM", encoding="utf-8")
 
     def run():
-        from agent.memory_candidates import memory_wiki_find, memory_wiki_grep, memory_wiki_read
+        from agent.memory_candidates import memory_wiki_find, memory_wiki_grep, memory_wiki_read, memory_wiki_retrieve
 
         found = memory_wiki_find("pytest")
         read = memory_wiki_read(found[0]["id"])
         grep = memory_wiki_grep("Spark")
-        return found[0]["title"], read["text"], grep[0]["title"]
+        retrieved = memory_wiki_retrieve("local LLM", max_chars=500)
+        return found[0]["title"], read["text"], grep[0]["title"], retrieved["entries"][0]["title"]
 
-    assert _with_home(home, run) == ("Project uses pytest", "Project uses pytest", "Spark host runs local LLM")
+    assert _with_home(home, run) == (
+        "Project uses pytest",
+        "Project uses pytest",
+        "Spark host runs local LLM",
+        "Spark host runs local LLM",
+    )

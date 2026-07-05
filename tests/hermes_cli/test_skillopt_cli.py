@@ -71,6 +71,34 @@ def test_skillopt_propose_stages_candidate_without_mutating_live_skill(tmp_path)
     assert (staged[0] / "candidate.SKILL.md").read_text(encoding="utf-8") == "# Better Demo\n"
 
 
+def test_skillopt_propose_supports_from_session_dry_run_metadata(tmp_path, capsys):
+    home = tmp_path / ".hermes"
+    _write_skill(home, "demo", "# Demo\n")
+    candidate = tmp_path / "candidate.md"
+    candidate.write_text("# Better Demo\n", encoding="utf-8")
+
+    def run():
+        from agent.skillopt_state import load_skillopt_proposal
+        from hermes_cli.skillopt import cmd_skillopt
+
+        rc = cmd_skillopt(
+            argparse.Namespace(
+                skillopt_command="propose",
+                skill="demo",
+                candidate=str(candidate),
+                rationale="unit test",
+                from_session="session-123",
+                dry_run=True,
+            )
+        )
+        staged = next((home / "skillopt" / "runs").glob("demo-*"))
+        loaded = load_skillopt_proposal(staged)
+        return rc, loaded.proposal["source"]["from_session"]
+
+    assert _with_home(home, run) == (0, "session-123")
+    assert "Dry run" in capsys.readouterr().out
+
+
 def test_skillopt_reject_marks_proposal_rejected(tmp_path):
     home = tmp_path / ".hermes"
     skill_path = _write_skill(home, "demo")

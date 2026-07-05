@@ -120,10 +120,33 @@ def promote_memory_candidate(candidate_id: str) -> MemoryCandidate:
     parts = [part.strip() for part in existing.split("\n§\n") if part.strip()]
     if candidate.content not in parts:
         sep = "\n§\n" if existing.strip() else ""
-        target_path.write_text(existing.rstrip() + sep + candidate.content, encoding="utf-8")
+        target_path.write_text(existing + sep + candidate.content, encoding="utf-8")
     payload = dict(candidate.payload)
     payload["status"] = "promoted"
     payload["promoted_at"] = _now_iso()
+    _write_payload(candidate.path, payload)
+    return _shape(candidate.path, payload)
+
+
+def rollback_memory_candidate(candidate_id: str) -> MemoryCandidate:
+    """Rollback a promoted append when the candidate is still the last entry."""
+    candidate = load_memory_candidate(candidate_id)
+    if candidate.status == "rolled_back":
+        return candidate
+    if candidate.status != "promoted":
+        raise ValueError("candidate is not promoted")
+    target_path = _target_file(candidate.target)
+    existing = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
+    suffixes = [f"\n§\n{candidate.content}", candidate.content]
+    for suffix in suffixes:
+        if existing.endswith(suffix):
+            target_path.write_text(existing[: -len(suffix)], encoding="utf-8")
+            break
+    else:
+        raise ValueError("cannot rollback: promoted content is not the last memory entry")
+    payload = dict(candidate.payload)
+    payload["status"] = "rolled_back"
+    payload["rolled_back_at"] = _now_iso()
     _write_payload(candidate.path, payload)
     return _shape(candidate.path, payload)
 
@@ -149,6 +172,11 @@ def memory_wiki_read(entry_id: str) -> dict[str, Any]:
         if entry.get("id") == entry_id:
             return entry
     raise KeyError(entry_id)
+
+
+def memory_wiki_retrieve(query: str, *, max_chars: int = 1200) -> dict[str, Any]:
+    """Retrieve a fenced, budgeted memory-wiki context block for a query."""
+    return select_memory_context(query, max_chars=max_chars)
 
 
 def memory_wiki_grep(pattern: str) -> list[dict[str, Any]]:

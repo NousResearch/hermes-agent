@@ -8,6 +8,8 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
+  markQueuedPromptAutoDrain,
+  markQueuedPromptsAutoDrain,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
@@ -34,6 +36,7 @@ interface UseComposerQueueArgs {
   onDraftQueued?: () => void
   queueEditRef: RefObject<QueueEditState | null>
   queueSessionKey: ChatBarProps['queueSessionKey']
+  sendBlocked: boolean
   sessionId: string | null | undefined
   transformDraftText?: (text: string) => string
 }
@@ -60,6 +63,7 @@ export function useComposerQueue({
   onDraftQueued,
   queueEditRef,
   queueSessionKey,
+  sendBlocked,
   sessionId,
   transformDraftText
 }: UseComposerQueueArgs) {
@@ -172,7 +176,13 @@ export function useComposerQueue({
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: transformDraftText?.(text) ?? text, attachments })) {
+    if (
+      !enqueueQueuedPrompt(activeQueueSessionKey, {
+        text: transformDraftText?.(text) ?? text,
+        attachments,
+        autoDrain: sendBlocked
+      })
+    ) {
       return false
     }
 
@@ -182,7 +192,7 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, onDraftQueued, transformDraftText])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, onDraftQueued, sendBlocked, transformDraftText])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
@@ -238,13 +248,17 @@ export function useComposerQueue({
         return false
       }
 
-      if (busy) {
+      if (sendBlocked) {
         // Promote to the head, then interrupt. The gateway always emits a
         // settle (message.complete + session.info running:false) when the
         // turn unwinds, and the busy→false auto-drain below sends this entry.
         promoteQueuedPrompt(activeQueueSessionKey, id)
+        markQueuedPromptAutoDrain(activeQueueSessionKey, id)
         triggerHaptic('selection')
-        void Promise.resolve(onCancel())
+
+        if (busy) {
+          void Promise.resolve(onCancel())
+        }
 
         return true
       }
@@ -255,15 +269,46 @@ export function useComposerQueue({
 
       return runDrain(entries => entries.find(e => e.id === id))
     },
-    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
+    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain, sendBlocked]
   )
+
+  const sendAllQueued = useCallback(() => {
+    if (!activeQueueSessionKey || queueEdit || queuedPrompts.length === 0) {
+      return false
+    }
+
+    queuedPrompts.forEach(entry => drainFailuresRef.current.delete(entry.id))
+    markQueuedPromptsAutoDrain(activeQueueSessionKey)
+
+    if (sendBlocked) {
+      triggerHaptic('selection')
+
+      if (busy) {
+        void Promise.resolve(onCancel())
+      }
+
+      return true
+    }
+
+    return drainNextQueued()
+  }, [activeQueueSessionKey, busy, drainNextQueued, onCancel, queueEdit, queuedPrompts, sendBlocked])
+
+  const implicitQueueDrainAllowed = useCallback(() => {
+    const entry = pickDrainHead(queuedPrompts)
+
+    return shouldAutoDrain({
+      isBusy: sendBlocked,
+      nextAutoDrain: Boolean(entry?.autoDrain),
+      queueLength: queuedPrompts.length
+    })
+  }, [pickDrainHead, queuedPrompts, sendBlocked])
 
   // Edge-independent auto-drain: send the head whenever the session is idle and
   // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
   // a stale-session 404) can't strand the entry permanently nor spin-loop. The
   // drain lock serializes sends; a remount/reconnect resets the failure counts.
   const autoDrainNext = useCallback(() => {
-    if (busy || drainingQueueRef.current || !activeQueueSessionKey) {
+    if (sendBlocked || drainingQueueRef.current || !activeQueueSessionKey) {
       return
     }
 
@@ -294,7 +339,7 @@ export function useComposerQueue({
         }
       })
       .catch(onFail)
-  }, [activeQueueSessionKey, busy, pickDrainHead, queuedPrompts, runDrain, t])
+  }, [activeQueueSessionKey, pickDrainHead, queuedPrompts, runDrain, sendBlocked, t])
 
   // Re-key on a runtime session-id change. A stable stored id (queueSessionKey)
   // never churns, so a change there is a real session switch and must NOT
@@ -311,14 +356,14 @@ export function useComposerQueue({
     migrateQueuedPrompts(prev, activeQueueSessionKey)
   }, [activeQueueSessionKey, queueSessionKey])
 
-  // Queued turns flow whenever the session is idle — on the busy→false settle
-  // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't
-  // strand them. To cancel queued turns, the user deletes them from the panel.
+  // Auto-drain only live follow-up turns. Older persisted/manual queue entries
+  // stay visible until the user sends them, so reopening an idle session cannot
+  // fire stale queue contents into the wrong context.
   useEffect(() => {
-    if (shouldAutoDrain({ isBusy: busy, queueLength: queuedPrompts.length })) {
+    if (implicitQueueDrainAllowed()) {
       autoDrainNext()
     }
-  }, [autoDrainNext, busy, queuedPrompts.length])
+  }, [autoDrainNext, implicitQueueDrainAllowed])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.
@@ -346,9 +391,11 @@ export function useComposerQueue({
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
+    implicitQueueDrainAllowed,
     queueCurrentDraft,
     queueEdit,
     queuedPrompts,
+    sendAllQueued,
     sendQueuedNow,
     stepQueuedEdit
   }

@@ -24,16 +24,20 @@ afterEach(cleanup)
 // state stays stale while the DOM already holds the text.
 function Harness({
   busy = false,
+  compacting = false,
   disabled = false,
   queued = [],
+  queuedAutoDrain = false,
   onSubmit,
   onQueue,
   onCancel,
   onDrain
 }: {
   busy?: boolean
+  compacting?: boolean
   disabled?: boolean
   queued?: readonly string[]
+  queuedAutoDrain?: boolean
   onSubmit: (text: string) => void
   onQueue: (text: string) => void
   onCancel: () => void
@@ -45,6 +49,7 @@ function Harness({
   // it lags the DOM until React re-renders (the source of the bug).
   const [draft, setDraft] = useState('')
   const attachments: unknown[] = []
+  const sendBlocked = busy || compacting
 
   const composerPlainText = (el: HTMLElement) => el.textContent ?? ''
 
@@ -72,13 +77,13 @@ function Harness({
     const text = draftRef.current
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
-    if (busy) {
+    if (sendBlocked) {
       if (payloadPresent) {
         onQueue(text)
-      } else {
+      } else if (busy) {
         onCancel()
       }
-    } else if (!payloadPresent && queued.length > 0) {
+    } else if (!payloadPresent && queued.length > 0 && queuedAutoDrain) {
       onDrain()
     } else if (payloadPresent) {
       onSubmit(text)
@@ -96,13 +101,13 @@ function Harness({
         return
       }
 
-      if (!busy && !hasLivePayload && queued.length > 0) {
+      if (!sendBlocked && !hasLivePayload && queued.length > 0 && queuedAutoDrain) {
         onDrain()
 
         return
       }
 
-      if (busy && !hasLivePayload) {
+      if (sendBlocked && !hasLivePayload) {
         return
       }
 
@@ -167,6 +172,25 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     expect(onCancel).not.toHaveBeenCalled()
   })
 
+  it('queues a fast-typed message while compacting instead of submitting into session busy', async () => {
+    const onQueue = vi.fn()
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness compacting onCancel={vi.fn()} onDrain={vi.fn()} onQueue={onQueue} onSubmit={onSubmit} />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'wait until summarizing finishes'
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    expect(onQueue).toHaveBeenCalledWith('wait until summarizing finishes')
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
   it('treats an empty Enter while busy as a no-op (never an accidental Stop)', async () => {
     const onCancel = vi.fn()
     const onSubmit = vi.fn()
@@ -188,12 +212,59 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     expect(onQueue).not.toHaveBeenCalled()
   })
 
-  it('drains the next queued prompt on Enter when idle with a truly empty editor', async () => {
+  it('treats an empty Enter while compacting as a no-op', async () => {
+    const onCancel = vi.fn()
+    const onSubmit = vi.fn()
+    const onQueue = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness compacting onCancel={onCancel} onDrain={vi.fn()} onQueue={onQueue} onSubmit={onSubmit} />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = ''
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(onQueue).not.toHaveBeenCalled()
+  })
+
+  it('does not drain a stale/manual queued prompt on Enter when idle with a truly empty editor', async () => {
     const onDrain = vi.fn()
     const onSubmit = vi.fn()
 
     const { getByTestId } = render(
       <Harness onCancel={vi.fn()} onDrain={onDrain} onQueue={vi.fn()} onSubmit={onSubmit} queued={['queued-1']} />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = ''
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    expect(onDrain).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('drains a fresh auto-follow-up queued prompt on Enter when idle with a truly empty editor', async () => {
+    const onDrain = vi.fn()
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        onCancel={vi.fn()}
+        onDrain={onDrain}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        queued={['queued-1']}
+        queuedAutoDrain
+      />
     )
 
     const editor = getByTestId('editor')

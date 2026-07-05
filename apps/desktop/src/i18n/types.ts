@@ -1425,6 +1425,8 @@ export interface Translations {
     editingInComposer: string
     editingQueuedInComposer: string
     queueEdit: string
+    queueSendAllNext: string
+    queueSendAll: string
     queueSendNext: string
     queueSend: string
     queueDelete: string

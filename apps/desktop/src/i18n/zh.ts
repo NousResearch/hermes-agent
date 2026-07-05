@@ -1903,6 +1903,8 @@ export const zh: Translations = {
     editingInComposer: '正在输入框中编辑',
     editingQueuedInComposer: '正在输入框中编辑排队回合',
     queueEdit: '编辑',
+    queueSendAllNext: '全部下一条发送',
+    queueSendAll: '全部发送',
     queueSendNext: '下一个',
     queueSend: '发送',
     queueDelete: '删除',

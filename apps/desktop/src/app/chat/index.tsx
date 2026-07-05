@@ -23,6 +23,7 @@ import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-ru
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
+import { $compactionActive } from '@/store/compaction'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $gatewaySwapTarget } from '@/store/profile'
 import {
@@ -288,6 +289,7 @@ export function ChatView({
   const activeSessionId = useStore($activeSessionId)
   const awaitingResponse = useStore($awaitingResponse)
   const busy = useStore($busy)
+  const compacting = useStore($compactionActive)
   const contextSuggestions = useStore($contextSuggestions)
   const currentCwd = useStore($currentCwd)
   const currentModel = useStore($currentModel)
@@ -499,6 +501,7 @@ export function ChatView({
           <Suspense fallback={<ChatBarFallback />}>
             <ChatBar
               busy={busy}
+              compacting={compacting}
               cwd={currentCwd}
               disabled={!gatewayOpen}
               focusKey={activeSessionId}

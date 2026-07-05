@@ -71,6 +71,7 @@ import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
   busy,
+  compacting = false,
   cwd,
   disabled,
   focusKey,
@@ -105,6 +106,7 @@ export function ChatBar({
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore($activeSessionAwaitingInput)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const sendBlocked = busy || compacting
 
   useEffect(() => {
     let cancelled = false
@@ -209,9 +211,11 @@ export function ChatBar({
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
+    implicitQueueDrainAllowed,
     queueCurrentDraft,
     queueEdit,
     queuedPrompts,
+    sendAllQueued,
     sendQueuedNow,
     stepQueuedEdit
   } = useComposerQueue({
@@ -227,6 +231,7 @@ export function ChatBar({
     onDraftQueued: clearMessageReply,
     queueEditRef,
     queueSessionKey,
+    sendBlocked,
     sessionId,
     transformDraftText: textWithReplyContext
   })
@@ -236,7 +241,7 @@ export function ChatBar({
   const { stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
-  const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+  const busyAction = sendBlocked && hasComposerPayload ? 'queue' : 'stop'
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
@@ -259,6 +264,7 @@ export function ChatBar({
     editorRef,
     exitQueuedEdit,
     focusInput,
+    implicitQueueDrainAllowed,
     inputDisabled,
     loadIntoComposer,
     onCancel,
@@ -267,7 +273,7 @@ export function ChatBar({
     onSubmitAccepted: replyActive ? clearMessageReply : undefined,
     queueCurrentDraft,
     queueEdit,
-    queuedPrompts,
+    sendBlocked,
     sessionId,
     setComposerText,
     stashAt,
@@ -618,18 +624,17 @@ export function ChatBar({
         return
       }
 
-      if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
+      if (!sendBlocked && !hasLivePayload && implicitQueueDrainAllowed()) {
         void drainNextQueued()
 
         return
       }
 
-      // Empty Enter while busy is a no-op — interrupting is explicit (Stop/Esc),
-      // never a stray Enter after sending. With a payload, submitDraft queues it.
-      // Gate on the live DOM payload (not the render-lagged composer state) so a
-      // message typed fast / via IME while busy still reaches submitDraft() and
-      // gets queued instead of being mistaken for an empty Enter.
-      if (busy && !hasLivePayload) {
+      // Empty Enter while busy/compacting is a no-op — interrupting is explicit
+      // (Stop/Esc), never a stray Enter after sending. With a payload,
+      // submitDraft queues it. Gate on the live DOM payload (not the render-
+      // lagged composer state) so fast/IME text still reaches submitDraft().
+      if (sendBlocked && !hasLivePayload) {
         return
       }
 
@@ -728,7 +733,7 @@ export function ChatBar({
   const controls = (
     <ComposerControls
       autoSpeak={autoSpeak}
-      busy={busy}
+      busy={busy || (compacting && hasComposerPayload)}
       busyAction={busyAction}
       canSteer={canSteer}
       canSubmit={canSubmit}
@@ -921,6 +926,7 @@ export function ChatBar({
                     }
                   }}
                   onEdit={beginQueuedEdit}
+                  onSendAll={() => void sendAllQueued()}
                   onSendNow={id => void sendQueuedNow(id)}
                 />
               ) : null

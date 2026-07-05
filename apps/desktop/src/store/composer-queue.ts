@@ -7,6 +7,7 @@ export interface QueuedPromptEntry {
   text: string
   attachments: ComposerAttachment[]
   queuedAt: number
+  autoDrain?: boolean
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
@@ -72,6 +73,17 @@ const nextId = () => `queued-${Date.now()}-${Math.random().toString(36).slice(2,
 
 const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
 
+const attachmentKey = (attachment: ComposerAttachment) =>
+  [attachment.kind, attachment.refText ?? '', attachment.label ?? '', attachment.id].join('\u0000')
+
+const sameQueuedPayload = (
+  entry: QueuedPromptEntry,
+  payload: { text: string; attachments: ComposerAttachment[] }
+): boolean =>
+  entry.text === payload.text &&
+  entry.attachments.length === payload.attachments.length &&
+  entry.attachments.every((attachment, index) => attachmentKey(attachment) === attachmentKey(payload.attachments[index]!))
+
 export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEntry[] => {
   const sid = sidOf(key)
 
@@ -80,7 +92,7 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[] }
+  payload: { text: string; attachments: ComposerAttachment[]; autoDrain?: boolean }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -88,11 +100,27 @@ export const enqueueQueuedPrompt = (
     return null
   }
 
+  const existing = queueFor(sid).find(entry => sameQueuedPayload(entry, payload))
+
+  if (existing) {
+    if (payload.autoDrain && !existing.autoDrain) {
+      writeSession(
+        sid,
+        queueFor(sid).map(entry => (entry.id === existing.id ? { ...entry, autoDrain: true } : entry))
+      )
+
+      return { ...existing, autoDrain: true }
+    }
+
+    return existing
+  }
+
   const entry: QueuedPromptEntry = {
     id: nextId(),
     text: payload.text,
     attachments: cloneAttachments(payload.attachments),
-    queuedAt: Date.now()
+    queuedAt: Date.now(),
+    ...(payload.autoDrain && { autoDrain: true })
   }
 
   writeSession(sid, [...queueFor(sid), entry])
@@ -153,6 +181,43 @@ export const promoteQueuedPrompt = (key: string | null | undefined, id: string):
 
   const entry = queue[index]!
   writeSession(sid, [entry, ...queue.slice(0, index), ...queue.slice(index + 1)])
+
+  return true
+}
+
+export const markQueuedPromptsAutoDrain = (key: string | null | undefined): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return false
+  }
+
+  const queue = queueFor(sid)
+
+  if (queue.length === 0 || queue.every(entry => entry.autoDrain)) {
+    return false
+  }
+
+  writeSession(sid, queue.map(entry => (entry.autoDrain ? entry : { ...entry, autoDrain: true })))
+
+  return true
+}
+
+export const markQueuedPromptAutoDrain = (key: string | null | undefined, id: string): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return false
+  }
+
+  const queue = queueFor(sid)
+  const entry = queue.find(item => item.id === id)
+
+  if (!entry || entry.autoDrain) {
+    return false
+  }
+
+  writeSession(sid, queue.map(item => (item.id === id ? { ...item, autoDrain: true } : item)))
 
   return true
 }
@@ -244,19 +309,18 @@ export const migrateQueuedPrompts = (fromKey: string | null | undefined, toKey: 
 export interface AutoDrainInput {
   isBusy: boolean
   queueLength: number
+  nextAutoDrain: boolean
 }
 
 /**
  * Decide whether the composer should auto-drain the next queued prompt.
  *
- * Edge-independent on purpose: the queue must advance whenever the session is
- * idle and has pending entries, NOT only on an observed busy true → false edge.
- * A backend bounce / websocket reconnect remounts the composer and resets the
- * busy ref to the current value, swallowing the settle edge — an edge-gated
- * drain would then strand the entry forever. The caller's drain lock
- * (`drainingQueueRef`) serializes sends so being edge-free can't double-submit.
+ * Edge-independent on purpose, but only for entries that were explicitly queued
+ * as follow-up turns. Older persisted/manual entries remain visible until the
+ * user sends them, so reopening a session cannot fire stale queue contents.
  */
-export const shouldAutoDrain = ({ isBusy, queueLength }: AutoDrainInput): boolean => !isBusy && queueLength > 0
+export const shouldAutoDrain = ({ isBusy, nextAutoDrain, queueLength }: AutoDrainInput): boolean =>
+  !isBusy && queueLength > 0 && nextAutoDrain
 
 /** Auto-drain attempts for one entry before we stop retrying and toast. The
  * entry stays queued for a manual send; a remount/reconnect resets the count. */

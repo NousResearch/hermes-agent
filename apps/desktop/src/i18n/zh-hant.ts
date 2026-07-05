@@ -1625,6 +1625,8 @@ export const zhHant = defineLocale({
     editingInComposer: '在輸入框中編輯',
     editingQueuedInComposer: '在輸入框中編輯排隊回合',
     queueEdit: '編輯',
+    queueSendAllNext: '全部下一個傳送',
+    queueSendAll: '全部傳送',
     queueSendNext: '下一個',
     queueSend: '傳送',
     queueDelete: '刪除',

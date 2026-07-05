@@ -1364,6 +1364,12 @@ class TestHomeChannelEnvOverrides:
                 {"SMS_HOME_CHANNEL": "+15559876543", "SMS_HOME_CHANNEL_NAME": "My Phone"},
                 ("+15559876543", "My Phone"),
             ),
+            (
+                Platform.QQBOT,
+                PlatformConfig(enabled=True, extra={"app_id": "from-config"}),
+                {"QQBOT_HOME_CHANNEL": "direct:owner", "QQBOT_HOME_CHANNEL_NAME": "Owner QQ"},
+                ("direct:owner", "Owner QQ"),
+            ),
         ]
 
         for platform, platform_config, env, expected in cases:
@@ -1374,6 +1380,38 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+    def test_qqbot_home_channel_prefers_active_profile_secret_scope(self, monkeypatch):
+        config = GatewayConfig(
+            platforms={
+                Platform.QQBOT: PlatformConfig(
+                    enabled=True,
+                    extra={"app_id": "from-config"},
+                )
+            }
+        )
+        monkeypatch.setenv("QQBOT_HOME_CHANNEL", "direct:default")
+        monkeypatch.setenv("QQBOT_HOME_CHANNEL_NAME", "Default QQ")
+        monkeypatch.setenv("QQBOT_HOME_CHANNEL_THREAD_ID", "default-thread")
+
+        secret_token = set_secret_scope(
+            {
+                "QQBOT_HOME_CHANNEL": "direct:profile",
+                "QQBOT_HOME_CHANNEL_NAME": "Profile QQ",
+                "QQBOT_HOME_CHANNEL_THREAD_ID": "profile-thread",
+            }
+        )
+        try:
+            _apply_env_overrides(config)
+        finally:
+            reset_secret_scope(secret_token)
+
+        assert config.platforms[Platform.QQBOT].home_channel == HomeChannel(
+            platform=Platform.QQBOT,
+            chat_id="direct:profile",
+            name="Profile QQ",
+            thread_id="profile-thread",
+        )
 
 
 class TestMultiplexProfilesEnvOverride:

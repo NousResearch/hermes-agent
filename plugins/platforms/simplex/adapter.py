@@ -211,7 +211,7 @@ class SimplexAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the simplex-chat daemon and start the WebSocket listener."""
         try:
-            import websockets  # noqa: F401
+            import websockets
         except ImportError:
             logger.error(
                 "SimpleX: 'websockets' package not installed. "
@@ -1102,7 +1102,7 @@ def check_requirements() -> bool:
     if not os.getenv("SIMPLEX_WS_URL"):
         return False
     try:
-        import websockets  # noqa: F401
+        import websockets
     except ImportError:
         return False
     return True

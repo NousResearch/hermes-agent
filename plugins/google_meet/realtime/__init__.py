@@ -5,6 +5,6 @@ wrapper so the Meet bot can play synthesized speech through the
 virtual audio bridge.
 """
 
-from .openai_client import RealtimeSession, RealtimeSpeaker  # noqa: F401
+from .openai_client import RealtimeSession, RealtimeSpeaker
 
 __all__ = ["RealtimeSession", "RealtimeSpeaker"]

@@ -162,7 +162,7 @@ def _cmd_setup() -> int:
     print(f"  platform       : {system}  [{'ok' if system_ok else 'unsupported'}]")
 
     try:
-        import playwright  # noqa: F401
+        import playwright
         pw_ok = True
         pw_msg = "installed"
     except ImportError:

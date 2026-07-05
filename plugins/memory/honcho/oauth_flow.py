@@ -252,7 +252,7 @@ def _bind_loopback_server() -> tuple[HTTPServer, dict[str, str]]:
     captured: dict[str, str] = {}
 
     class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802 - stdlib API name
+        def do_GET(self):
             parsed = urlparse(self.path)
             if parsed.path != "/callback":
                 self.send_response(404)

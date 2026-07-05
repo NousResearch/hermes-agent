@@ -61,7 +61,7 @@ def check_mattermost_requirements() -> bool:
         logger.warning("Mattermost: MATTERMOST_URL not set")
         return False
     try:
-        import aiohttp  # noqa: F401
+        import aiohttp
         return True
     except ImportError:
         logger.warning("Mattermost: aiohttp not installed")
@@ -1097,7 +1097,7 @@ async def _standalone_send(
             }
     except aiohttp.ClientError as exc:
         return {"error": f"Mattermost send failed (network): {exc}"}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"error": f"Mattermost send failed: {exc}"}
 
 

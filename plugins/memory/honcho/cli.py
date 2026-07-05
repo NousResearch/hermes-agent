@@ -504,7 +504,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 def _ensure_sdk_installed() -> bool:
     """Check honcho-ai is importable; offer to install if not. Returns True if ready."""
     try:
-        import honcho  # noqa: F401
+        import honcho
         return True
     except ImportError:
         pass
@@ -1026,7 +1026,7 @@ def cmd_status(args) -> None:
         return
 
     try:
-        import honcho  # noqa: F401
+        import honcho
     except ImportError:
         print("  honcho-ai is not installed. Run: hermes honcho setup\n")
         return

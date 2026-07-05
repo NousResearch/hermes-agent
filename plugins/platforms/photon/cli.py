@@ -383,14 +383,14 @@ def _install_sidecar() -> int:
     # `npm install` when the lockfile is missing or drifted (e.g. a dev
     # checkout mid-upgrade).
     print(f"  $ cd {_SIDECAR_DIR} && {npm} ci")
-    proc = subprocess.run(  # noqa: S603
+    proc = subprocess.run(
         [npm, "ci"],
         cwd=str(_SIDECAR_DIR),
         check=False,
     )
     if proc.returncode != 0:
         print(f"  npm ci failed — falling back to:  {npm} install")
-        proc = subprocess.run(  # noqa: S603
+        proc = subprocess.run(
             [npm, "install"],
             cwd=str(_SIDECAR_DIR),
             check=False,

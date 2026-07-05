@@ -187,7 +187,7 @@ def discover_cron_schedulers() -> List[Tuple[str, str, bool]]:
     return results
 
 
-def load_cron_scheduler(name: str) -> Optional["CronScheduler"]:  # noqa: F821
+def load_cron_scheduler(name: str) -> Optional["CronScheduler"]:
     """Load and return a CronScheduler instance by name.
 
     Checks both bundled (``plugins/cron_providers/<name>/``) and user-installed
@@ -212,7 +212,7 @@ def load_cron_scheduler(name: str) -> Optional["CronScheduler"]:  # noqa: F821
         return None
 
 
-def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  # noqa: F821
+def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:
     """Import a provider module and extract the CronScheduler instance.
 
     The module must have either:

@@ -215,7 +215,7 @@ def _load_config_drain_auth_section() -> dict:
         from hermes_cli.config import cfg_get, load_config
 
         cfg = load_config()
-    except Exception as exc:  # noqa: BLE001 — broad catch is intentional
+    except Exception as exc:
         logger.debug(
             "dashboard-auth-drain: load_config() raised %s; "
             "falling back to env-only configuration",
@@ -278,7 +278,7 @@ def register(ctx) -> None:
         from hermes_cli.dashboard_auth.token_auth import register_token_route
 
         register_token_route(DRAIN_ROUTE_PATH)
-    except Exception as exc:  # noqa: BLE001 — seam import must not crash plugin load
+    except Exception as exc:
         logger.warning(
             "dashboard-auth-drain: could not register token route %s: %s",
             DRAIN_ROUTE_PATH, exc,

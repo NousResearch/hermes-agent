@@ -190,7 +190,7 @@ def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
     if api_key:
         req.add_header("Authorization", f"Bearer {api_key}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = resp.read().decode("utf-8", errors="replace")
         data = json.loads(payload)
     except Exception as exc:

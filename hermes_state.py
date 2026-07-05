@@ -2491,6 +2491,52 @@ class SessionDB:
 
         return self._execute_write(_do) or 0
 
+    def finalize_abandoned_sessions(
+        self,
+        older_than_days: int,
+        source: str = None,
+        end_reason: str = "abandoned_cleanup",
+    ) -> int:
+        """Mark old unended sessions as abandoned so pruning can delete them.
+
+        Uses last activity (latest message timestamp, falling back to
+        ``started_at``) rather than ``started_at`` alone. This protects
+        long-lived sessions that are still receiving messages while allowing
+        genuinely abandoned unended rows to become prune-eligible. The method
+        is intentionally non-destructive: it only sets ``ended_at`` and
+        ``end_reason`` for rows whose ``ended_at`` is still NULL.
+        """
+        if older_than_days is None or older_than_days <= 0:
+            return 0
+        cutoff = time.time() - (older_than_days * 86400)
+        reason = str(end_reason or "abandoned_cleanup").strip() or "abandoned_cleanup"
+
+        def _do(conn):
+            now = time.time()
+            params: list[Any] = [now, reason, cutoff]
+            source_clause = ""
+            if source:
+                source_clause = " AND source = ?"
+                params.append(source)
+            result = conn.execute(
+                f"""
+                UPDATE sessions
+                SET ended_at = ?,
+                    end_reason = ?
+                WHERE ended_at IS NULL
+                  AND COALESCE((
+                        SELECT MAX(messages.timestamp)
+                        FROM messages
+                        WHERE messages.session_id = sessions.id
+                      ), started_at) < ?
+                  {source_clause}
+                """,
+                tuple(params),
+            )
+            return result.rowcount
+
+        return self._execute_write(_do) or 0
+
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
         with self._lock:
@@ -5876,11 +5922,17 @@ class SessionDB:
 
         Returns a dict with keys:
           - ``"skipped"`` (bool) — true if within min_interval_hours of last run
+          - ``"finalized_abandoned"`` (int) — old unended sessions marked ended
           - ``"pruned"`` (int)   — number of sessions deleted
           - ``"vacuumed"`` (bool) — true if VACUUM ran
           - ``"error"`` (str, optional) — present only on failure
         """
-        result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
+        result: Dict[str, Any] = {
+            "skipped": False,
+            "finalized_abandoned": 0,
+            "pruned": 0,
+            "vacuumed": False,
+        }
         try:
             # Skip if another process/call did maintenance recently.
             last_raw = self.get_meta("last_auto_prune")
@@ -5893,6 +5945,11 @@ class SessionDB:
                         return result
                 except (TypeError, ValueError):
                     pass  # corrupt meta; treat as no prior run
+
+            finalized = self.finalize_abandoned_sessions(
+                older_than_days=retention_days,
+            )
+            result["finalized_abandoned"] = finalized
 
             pruned = self.prune_sessions(
                 older_than_days=retention_days,
@@ -5913,9 +5970,10 @@ class SessionDB:
             # every startup within the min_interval_hours window.
             self.set_meta("last_auto_prune", str(now))
 
-            if pruned > 0:
+            if finalized > 0 or pruned > 0:
                 logger.info(
-                    "state.db auto-maintenance: pruned %d session(s) older than %d days%s",
+                    "state.db auto-maintenance: finalized %d abandoned + pruned %d session(s) older than %d days%s",
+                    finalized,
                     pruned,
                     retention_days,
                     " + VACUUM" if result["vacuumed"] else "",

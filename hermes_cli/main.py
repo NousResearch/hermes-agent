@@ -13626,14 +13626,21 @@ def main():
             source_msg = f" from '{args.source}'" if args.source else ""
             if not args.yes:
                 if not _confirm_prompt(
-                    f"Delete all ended sessions older than {days} days{source_msg}? [y/N] "
+                    "Mark abandoned unended sessions as ended, then delete all "
+                    f"ended sessions older than {days} days{source_msg}? [y/N] "
                 ):
                     print("Cancelled.")
                     return
             sessions_dir = get_hermes_home() / "sessions"
+            finalized = db.finalize_abandoned_sessions(
+                older_than_days=days,
+                source=args.source,
+            )
             count = db.prune_sessions(
                 older_than_days=days, source=args.source, sessions_dir=sessions_dir
             )
+            if finalized:
+                print(f"Marked {finalized} abandoned session(s) as ended.")
             print(f"Pruned {count} session(s).")
 
         elif action == "rename":

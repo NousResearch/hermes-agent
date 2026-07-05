@@ -3927,6 +3927,52 @@ class TestAutoMaintenance:
         )
         db._conn.commit()
 
+    def _make_old_unended(self, db, sid: str, days_old: int = 100, source: str = "cli"):
+        """Create an unended session whose start time is `days_old` days ago."""
+        db.create_session(session_id=sid, source=source)
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - days_old * 86400, sid),
+        )
+        db._conn.commit()
+
+    def test_finalize_abandoned_then_prune_old_unended(self, db):
+        self._make_old_unended(db, "abandoned", days_old=100)
+
+        finalized = db.finalize_abandoned_sessions(older_than_days=90)
+        assert finalized == 1
+        session = db.get_session("abandoned")
+        assert session["ended_at"] is not None
+        assert session["end_reason"] == "abandoned_cleanup"
+
+        pruned = db.prune_sessions(older_than_days=90)
+        assert pruned == 1
+        assert db.get_session("abandoned") is None
+
+    def test_finalize_abandoned_protects_recent_and_recently_active(self, db):
+        self._make_old_unended(db, "old_empty", days_old=100)
+        self._make_old_unended(db, "recent_empty", days_old=1)
+        self._make_old_unended(db, "old_but_active", days_old=100)
+        db.append_message("old_but_active", role="user", content="recent activity")
+
+        finalized = db.finalize_abandoned_sessions(older_than_days=90)
+        assert finalized == 1
+        assert db.get_session("old_empty")["end_reason"] == "abandoned_cleanup"
+        assert db.get_session("recent_empty")["ended_at"] is None
+        assert db.get_session("old_but_active")["ended_at"] is None
+
+    def test_finalize_abandoned_respects_source_filter(self, db):
+        self._make_old_unended(db, "old_cli", days_old=100, source="cli")
+        self._make_old_unended(db, "old_tg", days_old=100, source="telegram")
+
+        finalized = db.finalize_abandoned_sessions(
+            older_than_days=90,
+            source="telegram",
+        )
+        assert finalized == 1
+        assert db.get_session("old_cli")["ended_at"] is None
+        assert db.get_session("old_tg")["end_reason"] == "abandoned_cleanup"
+
     def test_first_run_prunes_and_vacuums(self, db):
         self._make_old_ended(db, "old1", days_old=100)
         self._make_old_ended(db, "old2", days_old=100)
@@ -3941,6 +3987,17 @@ class TestAutoMaintenance:
         assert db.get_session("old2") is None
         assert db.get_session("new") is not None
 
+    def test_auto_maintenance_finalizes_abandoned_before_prune(self, db):
+        self._make_old_unended(db, "abandoned", days_old=100)
+        db.create_session(session_id="recent", source="cli")
+
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["skipped"] is False
+        assert result["finalized_abandoned"] == 1
+        assert result["pruned"] == 1
+        assert db.get_session("abandoned") is None
+        assert db.get_session("recent") is not None
+
     def test_second_call_within_interval_skips(self, db):
         self._make_old_ended(db, "old", days_old=100)
         first = db.maybe_auto_prune_and_vacuum(
@@ -3952,12 +4009,15 @@ class TestAutoMaintenance:
         # Create another prunable session; a second call within
         # min_interval_hours should still skip without touching it.
         self._make_old_ended(db, "old2", days_old=100)
+        self._make_old_unended(db, "abandoned2", days_old=100)
         second = db.maybe_auto_prune_and_vacuum(
             retention_days=90, min_interval_hours=24
         )
         assert second["skipped"] is True
+        assert second["finalized_abandoned"] == 0
         assert second["pruned"] == 0
         assert db.get_session("old2") is not None  # untouched
+        assert db.get_session("abandoned2")["ended_at"] is None
 
     def test_second_call_after_interval_runs_again(self, db):
         self._make_old_ended(db, "old", days_old=100)

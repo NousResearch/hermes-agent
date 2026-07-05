@@ -346,7 +346,10 @@ hermes sessions prune --older-than 30 --yes
 ```
 
 :::info
-Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
+Pruning deletes **ended** sessions. Before deleting, Hermes also marks old
+unended sessions whose last activity is beyond the prune threshold as
+`end_reason='abandoned_cleanup'`, making abandoned rows prune-eligible while
+protecting recently active sessions.
 :::
 
 ### Session Statistics
@@ -532,7 +535,7 @@ Key tables in `state.db`:
 
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
-- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions older than `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
+- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, old abandoned unended sessions are first marked ended, then ended sessions older than `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
 - After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
@@ -546,7 +549,9 @@ sessions:
   min_interval_hours: 24    # don't re-run the sweep more often than this
 ```
 
-Active sessions are never auto-pruned, regardless of age.
+Recently active sessions are never auto-pruned. Abandoned cleanup uses the
+latest message timestamp, falling back to session start time for empty
+sessions.
 
 ### Manual Cleanup
 

@@ -2891,9 +2891,11 @@ DEFAULT_CONFIG = {
     # reports 384MB+ databases with 68K+ messages, which slows down FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
-        # When true, prune ended sessions older than retention_days once
-        # per (roughly) min_interval_hours at CLI/gateway/cron startup.
-        # Only touches ended sessions — active sessions are always preserved.
+        # When true, mark abandoned unended sessions as ended, then prune
+        # ended sessions older than retention_days once per (roughly)
+        # min_interval_hours at CLI/gateway/cron startup. Abandoned detection
+        # is based on last activity so recently/currently active sessions are
+        # preserved.
         # Default false: session history is valuable for search recall, and
         # silently deleting it could surprise users.  Opt in explicitly.
         "auto_prune": False,

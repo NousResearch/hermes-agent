@@ -5574,7 +5574,7 @@ def _is_connected(config) -> bool:
     """Feishu is connected when app_id is configured. Mirrors the legacy
     _PLATFORM_CONNECTED_CHECKERS[Platform.FEISHU] = lambda cfg: bool(app_id)."""
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("app_id"))
+    return bool(extra.get("app_id") or os.getenv("FEISHU_APP_ID"))
 
 
 def _build_adapter(config):

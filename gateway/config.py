@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
-from utils import env_int, is_truthy_value
+from utils import env_int, env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -325,13 +325,47 @@ class SessionResetPolicy:
 
 
 @dataclass
+class ChannelOverride:
+    """
+    Per-channel override for model, provider, and system prompt.
+
+    Used in config under platforms.<name>.channel_overrides[channel_id].
+    Enables different channels (e.g. Discord #daily vs #dev) to use different
+    models and personas without running separate gateway instances.
+    """
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    system_prompt: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if self.model is not None:
+            out["model"] = self.model
+        if self.provider is not None:
+            out["provider"] = self.provider
+        if self.system_prompt is not None:
+            out["system_prompt"] = self.system_prompt
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
+        if not data:
+            return cls()
+        return cls(
+            model=data.get("model"),
+            provider=data.get("provider"),
+            system_prompt=data.get("system_prompt"),
+        )
+
+
+@dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
     enabled: bool = False
     token: Optional[str] = None  # Bot token (Telegram, Discord)
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
-    
+
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
     # - "first": Only first chunk threads to user's message (default)
@@ -354,6 +388,9 @@ class PlatformConfig:
     # gateway/platforms/base.py.
     typing_indicator: bool = True
 
+    # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
+    channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -371,6 +408,10 @@ class PlatformConfig:
             result["api_key"] = self.api_key
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
+        if self.channel_overrides:
+            result["channel_overrides"] = {
+                cid: ov.to_dict() for cid, ov in self.channel_overrides.items()
+            }
         return result
 
     @classmethod
@@ -394,6 +435,13 @@ class PlatformConfig:
         if _typing is None:
             _typing = data.get("extra", {}).get("typing_indicator")
 
+        channel_overrides: Dict[str, ChannelOverride] = {}
+        raw_overrides = data.get("channel_overrides") or {}
+        if isinstance(raw_overrides, dict):
+            for cid, ov_data in raw_overrides.items():
+                if isinstance(ov_data, dict):
+                    channel_overrides[str(cid)] = ChannelOverride.from_dict(ov_data)
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -402,6 +450,7 @@ class PlatformConfig:
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
+            channel_overrides=channel_overrides,
             extra=data.get("extra", {}),
         )
 
@@ -554,6 +603,7 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
+    stt_echo_transcripts: bool = True  # Whether to echo raw STT transcripts back to the user
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -677,6 +727,7 @@ class GatewayConfig:
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
+            "stt_echo_transcripts": self.stt_echo_transcripts,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
@@ -723,6 +774,13 @@ class GatewayConfig:
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
+        stt_echo_transcripts = data.get("stt_echo_transcripts")
+        if stt_echo_transcripts is None:
+            stt_echo_transcripts = (
+                data.get("stt", {}).get("echo_transcripts")
+                if isinstance(data.get("stt"), dict)
+                else None
+            )
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
@@ -766,6 +824,7 @@ class GatewayConfig:
                 data.get("filter_silence_narration"), True
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
+            stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
@@ -868,6 +927,8 @@ def load_gateway_config() -> GatewayConfig:
             stt_cfg = yaml_cfg.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
+            if "stt_echo_transcripts" in yaml_cfg:
+                gw_data["stt_echo_transcripts"] = yaml_cfg["stt_echo_transcripts"]
 
             if "group_sessions_per_user" in yaml_cfg:
                 gw_data["group_sessions_per_user"] = yaml_cfg["group_sessions_per_user"]
@@ -1054,8 +1115,20 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
                 if "typing_indicator" in platform_cfg:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
+                has_channel_overrides = "channel_overrides" in platform_cfg
+                if has_channel_overrides:
+                    raw_overrides = platform_cfg.get("channel_overrides")
+                    if isinstance(raw_overrides, dict):
+                        plat_data, _extra = _ensure_platform_extra_dict(
+                            platforms_data, plat.value
+                        )
+                        plat_data["channel_overrides"] = {
+                            str(cid): ov_data
+                            for cid, ov_data in raw_overrides.items()
+                            if isinstance(ov_data, dict)
+                        }
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
-                if not bridged and not enabled_was_explicit:
+                if not bridged and not enabled_was_explicit and not has_channel_overrides:
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
@@ -1320,7 +1393,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
     
     # WhatsApp (typically uses different auth mechanism)
-    whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in {"true", "1", "yes"}
+    whatsapp_enabled = env_var_enabled("WHATSAPP_ENABLED")
     whatsapp_disabled_explicitly = os.getenv("WHATSAPP_ENABLED", "").lower() in {"false", "0", "no"}
     if Platform.WHATSAPP in config.platforms:
         # YAML config exists — respect explicit disable
@@ -1437,7 +1510,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         signal_config.extra.update({
             "http_url": signal_url,
             "account": signal_account,
-            "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower() in {"true", "1", "yes"},
+            "ignore_stories": env_var_enabled("SIGNAL_IGNORE_STORIES", "true"),
         })
     signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
     if signal_home and Platform.SIGNAL in config.platforms:
@@ -1485,7 +1558,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         matrix_e2ee_mode = os.getenv("MATRIX_E2EE_MODE", "").strip().lower()
         matrix_e2ee = (
             matrix_e2ee_mode in ("required", "require", "optional", "prefer", "preferred")
-            or os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+            or env_var_enabled("MATRIX_ENCRYPTION")
         )
         matrix_config.extra["encryption"] = matrix_e2ee
         if matrix_e2ee_mode:
@@ -1553,7 +1626,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # API Server
-    api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in {"true", "1", "yes"}
+    api_server_enabled = env_var_enabled("API_SERVER_ENABLED")
     api_server_key = os.getenv("API_SERVER_KEY", "")
     api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = os.getenv("API_SERVER_PORT")
@@ -1580,7 +1653,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
 
     # Webhook platform
-    webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").lower() in {"true", "1", "yes"}
+    webhook_enabled = env_var_enabled("WEBHOOK_ENABLED")
     webhook_port = os.getenv("WEBHOOK_PORT")
     webhook_secret = os.getenv("WEBHOOK_SECRET", "")
     if webhook_enabled:
@@ -1596,11 +1669,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 
     # Microsoft Graph webhook platform
-    msgraph_webhook_enabled = os.getenv("MSGRAPH_WEBHOOK_ENABLED", "").lower() in {
-        "true",
-        "1",
-        "yes",
-    }
+    msgraph_webhook_enabled = env_var_enabled("MSGRAPH_WEBHOOK_ENABLED")
     msgraph_webhook_port = os.getenv("MSGRAPH_WEBHOOK_PORT")
     msgraph_webhook_client_state = os.getenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "")
     msgraph_webhook_resources = os.getenv("MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES", "")
@@ -1794,7 +1863,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "webhook_host": os.getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
             "webhook_port": env_int("BLUEBUBBLES_WEBHOOK_PORT", 8645),
             "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
-            "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in {"true", "1", "yes"},
+            "send_read_receipts": env_var_enabled("BLUEBUBBLES_SEND_READ_RECEIPTS", "true"),
         })
         bluebubbles_require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")
         if bluebubbles_require_mention is not None:

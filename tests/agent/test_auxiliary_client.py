@@ -168,6 +168,112 @@ class TestResolveTaskProviderModel:
         assert api_key == "sk-test"
         assert api_mode is None
 
+    def test_explicit_provider_adopts_configured_task_endpoint(self):
+        """Explicit provider matching the configured one must not bypass
+        auxiliary.<task>.base_url/api_key (#58515)."""
+        task_config = {
+            "provider": "custom",
+            "model": "meta/llama-3.2-11b-vision-instruct",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key": "nvapi-secret",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="vision",
+                provider="custom",
+                model="meta/llama-3.2-11b-vision-instruct",
+            )
+
+        assert resolved_provider == "custom"
+        assert base_url == "https://integrate.api.nvidia.com/v1"
+        assert api_key == "nvapi-secret"
+        assert model == "meta/llama-3.2-11b-vision-instruct"
+        assert api_mode is None
+
+    def test_explicit_provider_adopts_endpoint_when_config_names_no_provider(self):
+        task_config = {
+            "base_url": "https://nim.example/v1",
+            "api_key": "cfg-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="vision",
+                provider="custom",
+            )
+
+        assert resolved_provider == "custom"
+        assert base_url == "https://nim.example/v1"
+        assert api_key == "cfg-key"
+
+    def test_explicit_first_class_provider_with_matching_config_keeps_identity(self):
+        task_config = {
+            "provider": "anthropic",
+            "base_url": "https://anthropic-proxy.example/v1",
+            "api_key": "cfg-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="compression",
+                provider="anthropic",
+            )
+
+        assert resolved_provider == "anthropic"
+        assert base_url == "https://anthropic-proxy.example/v1"
+        assert api_key == "cfg-key"
+
+    def test_explicit_auto_provider_keeps_auto_resolution(self):
+        """provider="auto" is a sentinel for "inherit / auto-detect" and must
+        not adopt the configured endpoint — the auto chain owns resolution."""
+        task_config = {
+            "base_url": "https://nim.example/v1",
+            "api_key": "cfg-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="vision",
+                provider="auto",
+            )
+
+        assert resolved_provider == "auto"
+        assert base_url is None
+        assert api_key is None
+
+    def test_explicit_provider_differing_from_config_ignores_config_endpoint(self):
+        """A caller forcing a different provider keeps full explicit-arg
+        priority — the configured endpoint belongs to cfg_provider only."""
+        task_config = {
+            "provider": "custom",
+            "base_url": "https://nim.example/v1",
+            "api_key": "cfg-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="vision",
+                provider="nous",
+            )
+
+        assert resolved_provider == "nous"
+        assert base_url is None
+        assert api_key is None
+
+    def test_explicit_provider_and_base_url_still_win_over_config(self):
+        task_config = {
+            "provider": "custom",
+            "base_url": "https://configured.example/v1",
+            "api_key": "cfg-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="vision",
+                provider="custom",
+                base_url="https://explicit.example/v1",
+                api_key="explicit-key",
+            )
+
+        assert resolved_provider == "custom"
+        assert base_url == "https://explicit.example/v1"
+        assert api_key == "explicit-key"
+
 
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).

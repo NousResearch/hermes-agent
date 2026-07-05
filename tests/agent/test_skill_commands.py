@@ -803,3 +803,149 @@ class TestInlineShellExpansion:
         # The command's intended stdout never made it through — only the
         # timeout marker (which echoes the command text) survives.
         assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")
+
+
+class TestStackedSkillCommands:
+    """Stacked slash-skill invocations — inspired by Claude Code v2.1.199."""
+
+    def _setup_three_skills(self, tmp_path):
+        _make_skill(tmp_path, "skill-a", body="Body A.")
+        _make_skill(tmp_path, "skill-b", body="Body B.")
+        _make_skill(tmp_path, "skill-c", body="Body C.")
+
+    def test_split_consumes_leading_skill_tokens(self, tmp_path):
+        from agent.skill_commands import split_stacked_skill_commands
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            keys, instruction = split_stacked_skill_commands(
+                "/skill-b /skill-c do the thing"
+            )
+        assert keys == ["/skill-b", "/skill-c"]
+        assert instruction == "do the thing"
+
+    def test_split_stops_at_non_skill_token(self, tmp_path):
+        from agent.skill_commands import split_stacked_skill_commands
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            keys, instruction = split_stacked_skill_commands(
+                "/skill-b /not-a-skill /skill-c hello"
+            )
+        assert keys == ["/skill-b"]
+        # Parsing stops at the first unresolvable token; everything from
+        # there on is the user instruction (slash included).
+        assert instruction == "/not-a-skill /skill-c hello"
+
+    def test_split_plain_instruction_passthrough(self, tmp_path):
+        from agent.skill_commands import split_stacked_skill_commands
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            keys, instruction = split_stacked_skill_commands("just do the thing")
+        assert keys == []
+        assert instruction == "just do the thing"
+
+    def test_split_underscore_form_resolves(self, tmp_path):
+        """Telegram autocomplete sends /skill_b — must resolve like /skill-b."""
+        from agent.skill_commands import split_stacked_skill_commands
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            keys, instruction = split_stacked_skill_commands("/skill_b go")
+        assert keys == ["/skill-b"]
+        assert instruction == "go"
+
+    def test_split_caps_at_five_total(self, tmp_path):
+        from agent.skill_commands import split_stacked_skill_commands
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            for i in range(7):
+                _make_skill(tmp_path, f"stk-{i}")
+            scan_skill_commands()
+            rest = " ".join(f"/stk-{i}" for i in range(1, 7)) + " run"
+            keys, instruction = split_stacked_skill_commands(rest)
+        # First skill was already consumed by the caller — split returns at
+        # most 4 extras so the total stays at 5.
+        assert len(keys) == 4
+        assert instruction.startswith("/stk-5")
+
+    def test_split_dedupes_repeated_skill(self, tmp_path):
+        from agent.skill_commands import split_stacked_skill_commands
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            keys, instruction = split_stacked_skill_commands(
+                "/skill-b /skill-b go"
+            )
+        # The duplicate stops parsing (treated as instruction text).
+        assert keys == ["/skill-b"]
+        assert instruction == "/skill-b go"
+
+    def test_stacked_message_contains_all_bodies_and_instruction(self, tmp_path):
+        from agent.skill_commands import build_stacked_skill_invocation_message
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            result = build_stacked_skill_invocation_message(
+                ["/skill-a", "/skill-b"], "do the thing"
+            )
+        assert result is not None
+        msg, loaded, missing = result
+        assert loaded == ["skill-a", "skill-b"]
+        assert missing == []
+        assert "Body A." in msg
+        assert "Body B." in msg
+        assert "User instruction: do the thing" in msg
+
+    def test_stacked_message_skips_missing_skills(self, tmp_path):
+        from agent.skill_commands import build_stacked_skill_invocation_message
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            result = build_stacked_skill_invocation_message(
+                ["/skill-a", "/gone"], "go"
+            )
+        assert result is not None
+        msg, loaded, missing = result
+        assert loaded == ["skill-a"]
+        assert missing == ["gone"]
+        assert "Skills missing (skipped): gone" in msg
+
+    def test_stacked_message_none_when_nothing_loads(self, tmp_path):
+        from agent.skill_commands import build_stacked_skill_invocation_message
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            result = build_stacked_skill_invocation_message(["/gone"], "go")
+        assert result is None
+
+    def test_memory_extractor_recovers_instruction_from_stacked_turn(self, tmp_path):
+        """The stacked scaffolding reuses bundle markers so memory providers
+        recover the user's instruction, not N skill bodies."""
+        from agent.skill_commands import (
+            build_stacked_skill_invocation_message,
+            extract_user_instruction_from_skill_message,
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            result = build_stacked_skill_invocation_message(
+                ["/skill-a", "/skill-b"], "summarize the repo"
+            )
+        assert result is not None
+        msg, _, _ = result
+        assert extract_user_instruction_from_skill_message(msg) == "summarize the repo"
+
+    def test_memory_extractor_returns_none_for_bare_stacked_turn(self, tmp_path):
+        from agent.skill_commands import (
+            build_stacked_skill_invocation_message,
+            extract_user_instruction_from_skill_message,
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            result = build_stacked_skill_invocation_message(
+                ["/skill-a", "/skill-b"], ""
+            )
+        assert result is not None
+        msg, _, _ = result
+        assert extract_user_instruction_from_skill_message(msg) is None

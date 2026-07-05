@@ -485,7 +485,19 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     """
     try:
         from hermes_cli.config import cfg_get, load_config
-        user_headers = cfg_get(load_config(), "model", "default_headers")
+        _cfg = load_config()
+        user_headers = cfg_get(_cfg, "model", "default_headers")
+        # ``model.extra_headers`` is an accepted alias (matches the
+        # per-provider ``extra_headers`` key on providers/custom_providers
+        # entries). When both are set they merge, with ``extra_headers``
+        # winning. SECURITY: values may carry credentials — never log them.
+        alias_headers = cfg_get(_cfg, "model", "extra_headers")
+        if isinstance(alias_headers, dict) and alias_headers:
+            merged_user: dict = {}
+            if isinstance(user_headers, dict):
+                merged_user.update(user_headers)
+            merged_user.update(alias_headers)
+            user_headers = merged_user
     except Exception:
         return headers
     if not isinstance(user_headers, dict) or not user_headers:
@@ -2380,11 +2392,19 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
         return None, None
 
     pool_present, entry = _select_pool_entry("anthropic")
-    if pool_present:
-        if entry is None:
-            return None, None
+    if pool_present and entry is not None:
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
+        # Pool absent, OR pool present but no usable entry (expired token +
+        # stale refresh_token, all entries exhausted, etc). Fall through to the
+        # legacy resolver instead of hard-failing: a temporarily dead pool
+        # entry must not wedge auxiliary tasks when a valid standalone
+        # credential (ANTHROPIC_TOKEN, credentials file, API key) exists. This
+        # matches the openrouter and codex paths, which already fall back to
+        # their env/auth-store credential on (True, None). Without this, the
+        # goal judge and every other Anthropic-routed side channel died with
+        # "no auxiliary client configured" while the main session stayed
+        # healthy (it resolves the env token directly).
         entry = None
         token = explicit_api_key or resolve_anthropic_token()
     if not token:
@@ -4222,7 +4242,7 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    # ── xAI Grok OAuth (loopback PKCE → Responses API) ───────────────
+    # ── xAI Grok OAuth (device code → Responses API) ───────────────
     # Without this branch, an xai-oauth main provider falls through to the
     # generic ``oauth_external`` arm below and returns ``(None, None)``,
     # silently re-routing every auxiliary task (compression, web extract,
@@ -4955,9 +4975,35 @@ def resolve_vision_provider_client(
                     main_provider,
                 )
             else:
+                # Custom endpoints (``custom`` / ``custom:<name>``) carry no
+                # built-in base_url/api_key — resolve_provider_client("custom")
+                # would return None ("no endpoint credentials found") and the
+                # whole chain would fall through to the aggregators, breaking
+                # vision for every user on a custom provider that has no
+                # separate ``auxiliary.vision`` block.  Recover the live main
+                # endpoint that ``set_runtime_main()`` recorded for this turn so
+                # Step 1 can build a working client.
+                rpc_base_url = None
+                rpc_api_key = None
+                rpc_api_mode = resolved_api_mode
+                if main_provider == "custom" or main_provider.startswith("custom:"):
+                    if _RUNTIME_MAIN_BASE_URL:
+                        rpc_base_url = _RUNTIME_MAIN_BASE_URL
+                        rpc_api_key = _RUNTIME_MAIN_API_KEY or None
+                        rpc_api_mode = resolved_api_mode or _RUNTIME_MAIN_API_MODE or None
+                    else:
+                        # No live runtime recorded (non-gateway caller): fall
+                        # back to resolving the configured custom endpoint.
+                        custom_base, custom_key, custom_mode = _resolve_custom_runtime()
+                        if custom_base:
+                            rpc_base_url = custom_base
+                            rpc_api_key = custom_key
+                            rpc_api_mode = resolved_api_mode or custom_mode or None
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
-                    api_mode=resolved_api_mode,
+                    api_mode=rpc_api_mode,
+                    explicit_base_url=rpc_base_url,
+                    explicit_api_key=rpc_api_key,
                     is_vision=True)
                 if rpc_client is not None:
                     logger.info(
@@ -5513,6 +5559,18 @@ def _resolve_task_provider_model(
     if cfg_provider:
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
+    # An explicit provider arg without an explicit base_url must not bypass
+    # the task's configured endpoint: adopt auxiliary.<task>.base_url/api_key
+    # when the config targets the same provider (or names none), so the
+    # early `if provider:` return below carries the configured endpoint
+    # instead of falling through to main-runtime resolution (#58515).
+    # An explicit "auto" is excluded — it means "inherit / auto-detect" and
+    # must keep flowing through the existing auto-resolution chain.
+    if provider and provider != "auto" and not base_url and cfg_base_url and cfg_provider in (None, provider):
+        base_url = cfg_base_url
+        if not api_key:
+            api_key = cfg_api_key
+
     if base_url and _preserve_provider_with_base_url(provider):
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if base_url:
@@ -5917,7 +5975,7 @@ def call_llm(
     api_key: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
-    temperature: float = None,
+    temperature: Optional[float] = None,
     max_tokens: int = None,
     tools: list = None,
     timeout: float = None,
@@ -6548,7 +6606,7 @@ async def async_call_llm(
     api_key: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
-    temperature: float = None,
+    temperature: Optional[float] = None,
     max_tokens: int = None,
     tools: list = None,
     timeout: float = None,

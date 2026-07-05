@@ -3196,7 +3196,7 @@ class TestConfigRoundTrip:
                 mismatches.append(f"{key}: expected bool, got {type(val).__name__}")
             elif expected == "list" and not isinstance(val, list):
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
-        assert not mismatches, f"Type mismatches:\n" + "\n".join(mismatches)
+        assert not mismatches, "Type mismatches:\n" + "\n".join(mismatches)
 
 
 # ---------------------------------------------------------------------------
@@ -3551,7 +3551,7 @@ class TestNewEndpoints:
         assert spawned == [
             (
                 ["-p", "builder", "skills", "install", "someuser/some-skill", "--yes"],
-                "skills-install",
+                web_server._hub_action_name("install", "someuser/some-skill"),
             )
         ]
 
@@ -3800,12 +3800,16 @@ class TestNewEndpoints:
                 "description": "active",
                 "category": "demo",
                 "enabled": True,
+                "usage": 0,
+                "provenance": "agent",
             },
             {
                 "name": "disabled-skill",
                 "description": "disabled",
                 "category": "demo",
                 "enabled": False,
+                "usage": 0,
+                "provenance": "agent",
             },
         ]
 
@@ -4012,6 +4016,74 @@ class TestNewEndpoints:
             json={"provider": "whatever"},
         )
         assert resp.status_code == 400
+
+    def test_get_toolset_models_no_catalog_toolset(self):
+        """Toolsets without a model catalog report has_models: false."""
+        resp = self.client.get("/api/tools/toolsets/web/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["has_models"] is False
+        assert body["models"] == []
+
+    def test_get_toolset_models_fal_catalog(self):
+        """image_gen with the FAL backend returns its model catalog."""
+        resp = self.client.get(
+            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        # Behavior contract, not a snapshot: FAL always has >= 1 model and
+        # each row carries the picker columns.
+        assert body["has_models"] is True
+        assert body["plugin"] == "fal"
+        assert len(body["models"]) >= 1
+        for row in body["models"]:
+            assert "id" in row
+            assert "speed" in row
+            assert "strengths" in row
+            assert "price" in row
+        # current resolves to a real catalog entry (default when unset).
+        ids = {row["id"] for row in body["models"]}
+        assert body["current"] in ids
+        assert body["default"] in ids
+
+    def test_select_toolset_model_persists_and_validates(self):
+        """PUT .../model writes image_gen.model; bad ids/toolsets are 400."""
+        catalog = self.client.get(
+            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
+        ).json()
+        model_id = catalog["models"][0]["id"]
+
+        resp = self.client.put(
+            "/api/tools/toolsets/image_gen/model",
+            json={"model": model_id, "provider": "FAL.ai"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["image_gen"]["model"] == model_id
+
+        # The next catalog read reflects the persisted choice.
+        after = self.client.get(
+            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
+        ).json()
+        assert after["current"] == model_id
+
+        # Unknown model id → 400.
+        resp = self.client.put(
+            "/api/tools/toolsets/image_gen/model",
+            json={"model": "not-a-real-model", "provider": "FAL.ai"},
+        )
+        assert resp.status_code == 400
+
+        # Toolset without a model catalog → 400.
+        resp = self.client.put(
+            "/api/tools/toolsets/web/model", json={"model": model_id}
+        )
+        assert resp.status_code == 400
+
 
     def test_config_raw_get(self):
         resp = self.client.get("/api/config/raw")

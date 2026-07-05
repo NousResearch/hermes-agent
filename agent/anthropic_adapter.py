@@ -1346,8 +1346,8 @@ def run_oauth_setup_token() -> Optional[str]:
     # concern does not apply to an interactive login the user explicitly
     # invokes.  noqa: subprocess-stdin
     try:
-        subprocess.run([claude_path, "setup-token"])
-    except (KeyboardInterrupt, EOFError):
+        subprocess.run([claude_path, "setup-token"], timeout=300)
+    except (KeyboardInterrupt, EOFError, subprocess.TimeoutExpired):
         return None
 
     # Check if credentials were saved to Claude Code's config files

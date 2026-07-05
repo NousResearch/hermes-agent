@@ -404,6 +404,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 5000,
+      // Enable screen-reader mode so VoiceOver / NVDA can discover the
+      // off-screen textarea xterm creates for assistive technology.
+      // Without this the chat composer is invisible to screen readers.
+      // See #36784.
+      screenReaderMode: true,
       theme: terminalTheme,
     });
     termRef.current = term;
@@ -529,6 +534,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(new WebLinksAddon());
 
     term.open(host);
+
+    // Let Tab / Shift-Tab escape the terminal so screen-reader and keyboard
+    // users can navigate to other page controls (WCAG 2.1.2 No Keyboard Trap).
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.key === "Tab") return false;
+      return true;
+    });
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -1035,6 +1047,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         >
           <div
             ref={hostRef}
+            role="region"
+            aria-label="Chat terminal"
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 

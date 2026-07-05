@@ -563,8 +563,8 @@ class TestEscapeNormalizedNewString:
 
     The fix unescapes ``\\t`` -> tab and ``\\r`` -> CR in new_string when
     the matched file region actually contains those control characters,
-    regardless of which match strategy fired. ``\\n`` is excluded because
-    newlines serialize correctly through JSON.
+    regardless of which match strategy fired. ``\\n`` is only unescaped when
+    escape-normalized matching proved old_string needed the same conversion.
     """
 
     def test_tab_in_new_string_unescaped_under_escape_normalized(self):
@@ -626,6 +626,34 @@ class TestEscapeNormalizedNewString:
         # And there should be no real newline added where ``\\n`` sat.
         assert "alpha\nbeta" not in new
 
+    def test_newline_in_new_string_unescaped_under_escape_normalized(self):
+        content = "line1\nline2\nline3\n"
+        old_string = "line1\\nline2"
+        new_string = "lineA\\nlineB"
+
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert new == "lineA\nlineB\nline3\n"
+
+    def test_tab_only_escape_normalized_preserves_literal_newline_escape(self):
+        """If only tabs caused escape-normalized matching, source string
+        literals containing ``\\n`` must not be converted to real newlines.
+        """
+        content = 'def f():\n\tvalue = "old"\n\treturn value\n'
+        old_string = 'def f():\n\\tvalue = "old"\n\\treturn value\n'
+        new_string = 'def f():\n\\tvalue = "line1\\nline2"\n\\treturn value\n'
+
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert '\tvalue = "line1\\nline2"' in new
+        assert '"line1\nline2"' not in new
+
     def test_mixed_tab_and_newline_only_tab_unescaped(self):
         """When new_string contains both \\t and \\n, only \\t is converted."""
         content = "def foo():\n\tpass\n"
@@ -665,4 +693,3 @@ class TestEscapeNormalizedNewString:
         assert err is None
         assert count == 1
         assert "return 2" in new
-

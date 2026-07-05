@@ -128,11 +128,19 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             # untouched — those files have a backslash+t in the matched
             # region, not a real tab, so we leave new_string alone.
             #
-            # ``\n`` is intentionally excluded: newlines serialize correctly
-            # through JSON, and rewriting backslash-n would mangle escape
-            # sequences in source code constants far more often than help.
+            # ``\n`` is only unescaped when the escape-normalized strategy
+            # matched because old_string's newline escapes were needed.
+            # Escape-normalized also handles tabs/CRs; treating every
+            # escape-normalized multiline match as permission to rewrite
+            # backslash-n would corrupt source-code string literals.
             effective_new = _maybe_unescape_new_string(
                 new_string, content, matches,
+                unescape_newlines=(
+                    strategy_name == "escape_normalized"
+                    and _escape_normalized_used_newline_escape(
+                        content, old_string, matches,
+                    )
+                ),
             )
             # Unicode-preservation guard: when strategy 7 (unicode_normalized)
             # matched, the file has Unicode characters (em-dashes, smart quotes,
@@ -282,8 +290,10 @@ def _reindent_replacement(file_region: str, old_string: str, new_string: str) ->
 
 def _maybe_unescape_new_string(new_string: str,
                                content: str,
-                               matches: List[Tuple[int, int]]) -> str:
-    """Conditionally unescape ``\\t``/``\\r`` in new_string.
+                               matches: List[Tuple[int, int]],
+                               *,
+                               unescape_newlines: bool = False) -> str:
+    """Conditionally unescape common control sequences in new_string.
 
     LLMs frequently send the two-character sequences ``\\t`` (backslash + t)
     and ``\\r`` (backslash + r) inside JSON tool-call arguments where they
@@ -298,22 +308,47 @@ def _maybe_unescape_new_string(new_string: str,
     ``sep = "\\t"``) get a backslash+t in the matched region instead of a
     tab, so we leave new_string alone.
 
-    ``\\n`` is intentionally excluded: newlines serialize correctly through
-    JSON and rewriting backslash-n would corrupt escape sequences in
+    ``\\n`` is only unescaped when the caller knows the matching strategy
+    unescaped ``old_string`` the same way. Rewriting backslash-n for exact or
+    unrelated fuzzy matches would corrupt source-code escape sequences in
     string literals far more often than it would help.
     """
     # Cheap pre-check — bail out unless new_string actually contains one of
     # the suspect sequences. Keeps the common case free.
-    if "\\t" not in new_string and "\\r" not in new_string:
+    if (
+        "\\t" not in new_string
+        and "\\r" not in new_string
+        and (not unescape_newlines or "\\n" not in new_string)
+    ):
         return new_string
 
     matched_regions = "".join(content[start:end] for start, end in matches)
     out = new_string
+    if unescape_newlines and "\\n" in out and "\n" in matched_regions:
+        out = out.replace("\\n", "\n")
     if "\\t" in out and "\t" in matched_regions:
         out = out.replace("\\t", "\t")
     if "\\r" in out and "\r" in matched_regions:
         out = out.replace("\\r", "\r")
     return out
+
+
+def _escape_normalized_used_newline_escape(
+    content: str,
+    pattern: str,
+    matches: List[Tuple[int, int]],
+) -> bool:
+    """Return True when escape-normalized matching needed ``\\n`` conversion."""
+    if "\\n" not in pattern:
+        return False
+
+    pattern_without_newline_unescape = (
+        pattern.replace("\\t", "\t").replace("\\r", "\r")
+    )
+    matches_without_newline_unescape = set(
+        _strategy_exact(content, pattern_without_newline_unescape)
+    )
+    return bool(set(matches) - matches_without_newline_unescape)
 
 
 def _preserve_unicode_in_replacement(

@@ -131,6 +131,7 @@ export const zh: Translations = {
     },
     voice: {
       configureSpeechToText: '配置语音转文字后即可使用语音模式。',
+      confirmationRequired: '发送前需确认',
       couldNotStartSession: '无法启动语音会话',
       microphoneAccessDenied: '麦克风访问被拒绝。',
       microphoneConstraintsUnsupported: '此设备不支持当前麦克风约束。',
@@ -143,6 +144,7 @@ export const zh: Translations = {
       noSpeechDetected: '没有检测到语音',
       playbackFailed: '语音播放失败',
       recordingFailed: '语音录制失败',
+      riskyTranscriptHeld: '这条语音指令可能执行高风险操作，已放入输入框而未自动发送。请检查后手动发送。',
       transcriptionFailed: '语音转写失败',
       transcriptionUnavailable: '语音转写暂不可用。',
       tryRecordingAgain: '请再录一次。',

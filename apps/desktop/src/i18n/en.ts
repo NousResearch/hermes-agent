@@ -135,6 +135,7 @@ export const en: Translations = {
     },
     voice: {
       configureSpeechToText: 'Configure speech-to-text to use voice mode.',
+      confirmationRequired: 'Confirm before sending',
       couldNotStartSession: 'Could not start voice session',
       microphoneAccessDenied: 'Microphone access denied.',
       microphoneConstraintsUnsupported: 'Microphone constraints are not supported by this device.',
@@ -147,6 +148,8 @@ export const en: Translations = {
       noSpeechDetected: 'No speech detected',
       playbackFailed: 'Voice playback failed',
       recordingFailed: 'Voice recording failed',
+      riskyTranscriptHeld:
+        'That voice command could perform a risky action, so it was placed in the composer instead of being sent. Review it and send manually.',
       transcriptionFailed: 'Voice transcription failed',
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',

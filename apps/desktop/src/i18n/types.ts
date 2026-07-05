@@ -176,6 +176,7 @@ export interface Translations {
     }
     voice: {
       configureSpeechToText: string
+      confirmationRequired: string
       couldNotStartSession: string
       microphoneAccessDenied: string
       microphoneConstraintsUnsupported: string
@@ -188,6 +189,7 @@ export interface Translations {
       noSpeechDetected: string
       playbackFailed: string
       recordingFailed: string
+      riskyTranscriptHeld: string
       transcriptionFailed: string
       transcriptionUnavailable: string
       tryRecordingAgain: string

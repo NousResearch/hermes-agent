@@ -12528,6 +12528,10 @@ def _try_termux_fast_tui_launch() -> bool:
 
 def cmd_memory(args):
     sub = getattr(args, "memory_command", None)
+    if sub == "wiki-index":
+        from hermes_cli.memory_wiki import run_memory_wiki_index
+
+        return run_memory_wiki_index(args)
     if sub == "off":
         from hermes_cli.config import load_config, save_config
 

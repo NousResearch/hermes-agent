@@ -20239,34 +20239,39 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     released — so this is a no-op on the normal shutdown path and the actual
     cleanup on the early-exit paths.
 
-    Logging IS flushed here: the rotating file handlers are driven by an
+    Logging IS drained here: the rotating file handlers are driven by an
     async ``QueueListener`` on a dedicated thread (see
     ``hermes_logging._register_queued_handler``), so records emitted right
     before shutdown may still be sitting in the in-memory queue. ``os._exit``
     below bypasses ``atexit``, so the ``atexit``-registered listener drain
-    never runs on this path — we must drain explicitly here or lose the last
-    log lines (including the shutdown reason on the early-exit paths). Stdio
-    is flushed too.
+    never runs on this path — we drain explicitly (bounded, via
+    ``drain_log_queue``) or lose the last log lines (including the shutdown
+    reason on the early-exit paths). Stdio is flushed too.
     """
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
         except Exception:
             pass
-    # Drain the async log queue: os._exit bypasses atexit, so the listener's
-    # atexit drain won't fire. flush_log_queue() no-ops when logging never
-    # initialized a queue (e.g. very early aborts), so this is always safe.
-    try:
-        from hermes_logging import flush_log_queue
-        flush_log_queue()
-    except Exception:
-        pass
-    # Guaranteed cleanup chokepoint: os._exit skips atexit, and the early
-    # SystemExit exit paths never run _stop_impl, so release here (idempotent).
+    # Release PID + runtime lock BEFORE the log drain: the drain is bounded but
+    # could still take up to its timeout on a wedged disk, and these locks must
+    # never be stranded. os._exit skips atexit, and the early SystemExit exit
+    # paths never run _stop_impl, so release here (idempotent).
     try:
         from gateway.status import remove_pid_file, release_gateway_runtime_lock
         remove_pid_file()
         release_gateway_runtime_lock()
+    except Exception:
+        pass
+    # Drain the async log queue: os._exit bypasses atexit, so the listener's
+    # atexit drain won't fire. Use drain_log_queue() (bounded, no restart), NOT
+    # flush_log_queue(): if the listener is wedged on the rotation lock — the
+    # exact failure this async-logging change survives — an unbounded stop()
+    # join would re-freeze the shutdown. drain_log_queue() no-ops when logging
+    # never initialized a queue (very early aborts), so this is always safe.
+    try:
+        from hermes_logging import drain_log_queue
+        drain_log_queue(timeout=1.0)
     except Exception:
         pass
     os._exit(exit_code)

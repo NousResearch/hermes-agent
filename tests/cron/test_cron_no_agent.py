@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import patch
 
 import pytest
@@ -278,6 +279,51 @@ def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
         run_job(job)
 
     ai_mock.assert_not_called()
+
+
+def test_no_agent_job_reloads_env_before_short_circuit(hermes_env, monkeypatch):
+    """no_agent jobs must re-read .env before short-circuiting so a
+    freshly-added credential takes effect without a gateway restart.
+
+    Regression for #59030: the fresh-env reload used to live only in the
+    agent path, AFTER the no_agent short-circuit ``return``, so a no_agent
+    script ran against the stale ``os.environ`` captured at gateway startup.
+
+    FAIL-BEFORE: with the reload only in the agent path, the no_agent path
+    returns before any reload → the stale value survives → this assertion
+    fails. PASS-AFTER: the hoisted reload applies the on-disk .env value.
+    """
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    # Simulate a value captured at gateway startup that is now stale.
+    monkeypatch.setenv("HERMES_TEST_CRON_SECRET", "stale-startup-value")
+
+    # A newer value was written to the on-disk .env after startup (e.g. the
+    # user just added a credential) but the gateway was never restarted.
+    (hermes_env / ".env").write_text("HERMES_TEST_CRON_SECRET=fresh-from-dotenv\n")
+
+    # A trivial script — the assertion below inspects the process env directly.
+    # (The delivered stdout is passed through secret redaction, so it cannot be
+    # used to observe a credential value; os.environ is the true invariant.)
+    script_path = hermes_env / "scripts" / "noop.sh"
+    script_path.write_text("#!/bin/bash\necho tick\n")
+
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="noop.sh",
+        no_agent=True,
+        deliver="local",
+    )
+
+    success, doc, final_response, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    # The reload must have applied the fresh on-disk .env value before the
+    # no_agent script ran — proving the reload precedes the short-circuit.
+    assert os.environ["HERMES_TEST_CRON_SECRET"] == "fresh-from-dotenv"
 
 
 # ---------------------------------------------------------------------------

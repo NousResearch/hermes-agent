@@ -2332,6 +2332,30 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
+    # Re-read .env + config.yaml BEFORE any branch (agent OR no_agent) so a
+    # credential/key change takes effect without a gateway restart. no_agent
+    # script jobs short-circuit and return below, so this reload MUST precede
+    # that block — it previously lived only in the agent path (#33465 covered
+    # agent jobs; the no_agent path was left running on the stale os.environ
+    # captured at gateway startup, so a script never saw freshly-added creds).
+    # Route through load_hermes_dotenv (not a bare load_dotenv) and reset the
+    # secret-source cache first: startup already applied external secrets and
+    # recorded this HERMES_HOME in _APPLIED_HOMES, so a naive reload would
+    # re-apply only the .env placeholder and never re-resolve a Bitwarden/
+    # BSM-backed secret — leaving cron jobs 401'ing on the placeholder (#33465).
+    # Clearing the cache forces the re-pull; the resolved secret overrides the
+    # placeholder only when secrets.bitwarden.override_existing is set (mirrors
+    # startup), and the Bitwarden value-cache keeps the forced re-pull off the
+    # network. load_hermes_dotenv also handles the utf-8/latin-1 encoding
+    # fallback internally. Only needs _get_hermes_home(), so it is safe to run
+    # before the per-job workdir/TERMINAL_CWD setup below. (#59030)
+    from hermes_cli.env_loader import (
+        load_hermes_dotenv,
+        reset_secret_source_cache,
+    )
+    reset_secret_source_cache()
+    load_hermes_dotenv(hermes_home=_get_hermes_home())
+
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
     # ---------------------------------------------------------------
@@ -2601,24 +2625,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
-        # Re-read .env and config.yaml fresh every run so provider/key
-        # changes take effect without a gateway restart. Route through
-        # load_hermes_dotenv (not a bare load_dotenv) and reset the secret-
-        # source cache first: startup already applied external secrets and
-        # recorded this HERMES_HOME in _APPLIED_HOMES, so a naive reload would
-        # re-apply only the .env placeholder and never re-resolve a Bitwarden/
-        # BSM-backed secret — leaving cron jobs 401'ing on the placeholder
-        # (#33465). Clearing the cache forces the re-pull; the resolved secret
-        # overrides the placeholder only when secrets.bitwarden.override_existing
-        # is set (mirrors startup), and the Bitwarden value-cache keeps the
-        # forced re-pull off the network. load_hermes_dotenv also handles the
-        # utf-8/latin-1 encoding fallback internally.
-        from hermes_cli.env_loader import (
-            load_hermes_dotenv,
-            reset_secret_source_cache,
-        )
-        reset_secret_source_cache()
-        load_hermes_dotenv(hermes_home=_get_hermes_home())
+        # NOTE: the fresh .env + secret-source-cache reload now runs at the top
+        # of run_job(), before the no_agent short-circuit, so both branches see
+        # freshly-added credentials (#33465, #59030). It is intentionally not
+        # repeated here.
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

@@ -2443,6 +2443,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # ---------------------------------------------------------------
     from run_agent import AIAgent
 
+    # Sanitize SSL_CERT_FILE before agent init. A stale env var (inherited
+    # from a Windows scheduled-task context, a prior update that moved the
+    # venv, or a TLI recovery) would otherwise cause verify_ca_bundle() to
+    # raise SSLConfigurationError even when certifi's bundle is intact.
+    # The gateway path handles this in _ensure_ssl_certs() (gateway/run.py);
+    # the cron scheduler must do the same before constructing an agent.
+    from agent.ssl_guard import sanitize_ssl_cert_env
+    sanitize_ssl_cert_env()
+
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
     _session_db = None

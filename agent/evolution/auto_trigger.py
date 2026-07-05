@@ -126,7 +126,10 @@ class AutoTrigger:
         1. User correction (strong signal something is wrong)
         2. Tool usage (we know which tool was involved)
         """
-        has_correction = bool(observer._current_user_messages)
+        has_correction = any(
+            any(s in msg.lower() for s in ["no", "wrong", "incorrect", "doesn't work", "forgot", "missing"])
+            for msg in observer._current_user_messages
+        ) if observer._current_user_messages else False
         has_tools = bool(observer._current_tool_sequence)
         return has_correction and has_tools
 

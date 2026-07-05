@@ -3184,6 +3184,9 @@ def run_job(
             _terminal_cwd_lock.release_write()
         else:
             _terminal_cwd_lock.release_read()
+        # Clean up HERMES_CRON_SESSION so interactive gateway sessions sharing
+        # this process don't inherit cron-mode approval behavior (#59236).
+        os.environ.pop("HERMES_CRON_SESSION", None)
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:

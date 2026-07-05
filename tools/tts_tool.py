@@ -2417,9 +2417,24 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
+        elif want_opus and provider == "piper":
+            # Piper always writes raw WAV bytes regardless of the output
+            # path extension (see _generate_piper_tts docstring).  When
+            # the caller supplies an .ogg path (e.g. _send_voice_reply in
+            # gateway/run.py), the file contains WAV data in an .ogg
+            # container — ffmpeg needs a .wav input to handle it correctly.
+            if file_str.endswith(".ogg"):
+                wav_path = file_str[:-4] + ".wav"
+                os.rename(file_str, wav_path)
+                opus_path = _convert_to_opus(wav_path)
+            else:
+                opus_path = _convert_to_opus(file_str)
+            if opus_path:
+                file_str = opus_path
+                voice_compatible = True
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in {"edge", "neutts", "minimax", "xai", "kittentts"}
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)

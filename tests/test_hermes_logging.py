@@ -530,6 +530,66 @@ class TestRecordFactory:
         finally:
             logger.removeHandler(handler)
 
+    def test_plain_formatter_redacts_literal_message_secret(self):
+        """Non-Hermes handlers receive sanitized record.msg values."""
+        secret = "sk-" + "a" * 32
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("_test_plain_literal_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            logger.info("literal secret " + secret)
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        output = stream.getvalue()
+        assert "literal secret" in output
+        assert secret not in output
+        assert "..." in output
+
+    def test_plain_formatter_redacts_args_without_breaking_numeric_formatting(self):
+        """Non-Hermes handlers receive sanitized record.args values."""
+        github_token = "ghp_" + "b" * 36
+        openai_key = "sk-" + "c" * 32
+        payload = {
+            "headers": {"Authorization": f"Bearer {openai_key}"},
+            "tokens": [github_token],
+            "attempt": 3,
+        }
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("_test_plain_args_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            logger.info("payload=%s retries=%d", payload, 7)
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        output = stream.getvalue()
+        assert "payload=" in output
+        assert "retries=7" in output
+        assert github_token not in output
+        assert openai_key not in output
+        assert "..." in output
+
 
 class TestComponentFilter:
     """Unit tests for _ComponentFilter."""

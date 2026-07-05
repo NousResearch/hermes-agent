@@ -184,6 +184,34 @@ def test_relay_suggest_reviewer_must_be_different_vendor_from_coder():
     assert reg[out["reviewer"]]["vendor"] != reg[out["coder"]]["vendor"]
 
 
+def load_relay_report():
+    path = ROOT / "relay-report.py"
+    assert path.exists(), "ต้องมี scripts/ai-relay/relay-report.py"
+    return load_module("relay_report", "relay-report.py")
+
+
+def test_relay_report_compute_cost_in_baht():
+    relay_report = load_relay_report()
+    calls = {"fable": 3, "codex": 10, "grok": 20, "ollama": 5, "mystery": 4}
+    prices = {"fable": 12, "codex": 3, "grok": 2, "ollama": 0}
+    out = relay_report.compute_cost(calls, prices)
+    assert out["cost_by_tool"]["fable"] == 36.0     # 3 × 12
+    assert out["cost_by_tool"]["codex"] == 30.0     # 10 × 3
+    assert out["cost_by_tool"]["grok"] == 40.0      # 20 × 2
+    assert out["cost_by_tool"]["ollama"] == 0.0     # ฟรี
+    assert out["total_thb"] == 106.0
+    assert out["fable_thb"] == 36.0
+    # tool ที่ไม่มีราคา + มีการเรียก → ไม่นับเงิน แต่รายงานแยกไว้ (ไม่เดา)
+    assert out["no_price_tools"] == ["mystery"]
+
+
+def test_relay_report_registry_has_prices():
+    # ทะเบียนตัวอย่างต้องมี price_per_call_thb เพื่อให้ relay-report คิดเงินได้
+    reg = relay_call.load_registry(Path("/tmp/no-local-registry"))
+    assert reg["fable"]["price_per_call_thb"] == 12
+    assert reg["ollama"]["price_per_call_thb"] == 0
+
+
 def test_load_registry_example_has_expected_ai_metadata():
     reg = relay_call.load_registry(Path("/tmp/no-local-registry"))
 

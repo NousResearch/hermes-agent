@@ -34,6 +34,50 @@ def parse_md_table(path: Path):
     return rows
 
 
+def load_prices(cwd):
+    # ราคาต่อการเรียก 1 ครั้ง (บาท) อ่านจากทะเบียน (registry) ช่อง price_per_call_thb
+    # ค่าเป็น [สมมติ] เจ้าของแก้ได้ในทะเบียน · อ่านไม่ได้/ไม่มี = {} (รายงานจะบอกว่าไม่มีราคา)
+    try:
+        import importlib.util
+        p = Path(__file__).resolve().parent / "relay-call.py"
+        spec = importlib.util.spec_from_file_location("relay_call_for_price", p)
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        reg = m.load_registry(cwd)
+    except Exception:
+        return {}
+    prices = {}
+    for name, meta in (reg or {}).items():
+        if not isinstance(meta, dict):
+            continue
+        v = meta.get("price_per_call_thb")
+        try:
+            if v is not None:
+                prices[str(name)] = float(v)
+        except (TypeError, ValueError):
+            pass
+    return prices
+
+
+def compute_cost(calls_by_tool, prices):
+    # ฟังก์ชันบริสุทธิ์ (เทสต์ง่าย): เรียกกี่ครั้ง × ราคาต่อครั้ง = บาท ต่อ tool + รวม + fable
+    # ตัวที่ไม่มีราคาในทะเบียน = ไม่นับเงิน (ไม่เดา) แต่รายงานแยกว่า "ไม่มีราคา"
+    cost_by_tool, unknown = {}, []
+    raw_total = 0.0
+    for tool, calls in (calls_by_tool or {}).items():
+        if tool in prices:
+            raw = calls * prices[tool]
+            raw_total += raw                       # รวมยอดดิบก่อน แล้วค่อยปัด (กันเศษเพี้ยนสะสม)
+            cost_by_tool[tool] = round(raw, 2)     # ค่ารายตัวปัดไว้แค่ตอนแสดง
+        elif calls:
+            unknown.append(tool)
+    total = round(raw_total, 2)
+    fable = cost_by_tool.get("fable", 0.0)
+    return {"cost_by_tool": cost_by_tool, "total_thb": total,
+            "fable_thb": fable, "no_price_tools": sorted(set(unknown)),
+            # total_thb = ยอดเฉพาะ tool ที่มีราคา · ถ้ามี no_price_tools แปลว่ายังไม่ครบทั้งหมด
+            "total_is_partial": bool(unknown)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cwd", default=os.environ.get("AI_RELAY_ROOT") or ".",
@@ -89,8 +133,15 @@ def main():
 
     all_days = sorted(set(days) | set(gates), reverse=True)[: a.days]
 
+    # คิดเงิน (บาท) จากจำนวนครั้งจริง × ราคาต่อครั้งในทะเบียน (ราคา [สมมติ] เจ้าของแก้ได้)
+    calls_by_tool = defaultdict(int)
+    for d in all_days:
+        for tool, e in days.get(d, {}).items():
+            calls_by_tool[tool] += e["calls"]
+    cost = compute_cost(calls_by_tool, load_prices(cwd))
+
     if a.json:
-        out = {"root": str(cwd), "fable_total": fable_total,
+        out = {"root": str(cwd), "fable_total": fable_total, "cost": cost,
                "days": {d: {"calls": {t: v for t, v in days[d].items()}, "gate": gates.get(d, {})}
                         for d in all_days}}
         print(json.dumps(out, ensure_ascii=False, indent=1))
@@ -118,6 +169,18 @@ def main():
             gn = g.get("no_gate", 0) if i == 0 else ""
             ge = g.get("error", 0) if i == 0 else ""
             print(f"| {d} | {tool} | {e['calls']} | {e['ok']} | {e['fail']} | {e['rotated']} | {gp} | {gf} | {gn} | {ge} |")
+    print()
+    # ── ค่าใช้จ่าย (บาท) ── ตอบคำถามเจ้าของ "เดือนนี้ Fable กี่บาท คุ้มไหม"
+    if cost["cost_by_tool"]:
+        print("═══ ค่าใช้จ่ายประมาณ (บาท · ราคาต่อครั้งเป็นค่า [สมมติ] แก้ได้ในทะเบียน registry) ═══")
+        for tool, thb in sorted(cost["cost_by_tool"].items(), key=lambda x: -x[1]):
+            print(f"  {tool}: {thb:,.2f} บาท ({calls_by_tool[tool]} ครั้ง)")
+        total_label = "รวมเฉพาะที่มีราคา" if cost.get("total_is_partial") else "รวมทั้งหมด"
+        print(f"  {total_label}: {cost['total_thb']:,.2f} บาท · สมองพิเศษ (fable): {cost['fable_thb']:,.2f} บาท ({fable_total} ครั้ง)")
+    else:
+        print("ค่าใช้จ่าย: ยังไม่มีราคาในทะเบียน (ใส่ price_per_call_thb ต่อ AI ใน registry เพื่อให้คิดเงินได้)")
+    if cost["no_price_tools"]:
+        print(f"  (ยังไม่ได้ตั้งราคา จึงไม่นับเงิน: {', '.join(cost['no_price_tools'])})")
     print()
     print("อ่านยังไง: 'สลับมา' = จำนวนครั้งที่งานถูกโยนมาจากตัวที่พัง · gate ผ่าน/ตก/no_gate/พัง มาจาก gate-run จริง")
 

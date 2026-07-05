@@ -36,7 +36,7 @@ class _Snowflake:
 
     __slots__ = ("id",)
 
-    def __init__(self, id: int) -> None:  # noqa: A002 - matches discord API
+    def __init__(self, id: int) -> None:
         self.id = id
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
@@ -529,7 +529,7 @@ class VoiceReceiver:
         encrypted = bytes(payload_with_nonce[:-4])
 
         try:
-            import nacl.secret  # noqa: E402 — delayed import, only in voice path
+            import nacl.secret
             box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:

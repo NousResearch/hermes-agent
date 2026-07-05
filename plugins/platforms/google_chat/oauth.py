@@ -361,8 +361,8 @@ def _write_private_json(path: Path, data: Any) -> None:
 def _ensure_deps() -> None:
     """Check deps available; install if not; exit on failure."""
     try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
+        import googleapiclient
+        import google_auth_oauthlib
     except ImportError:
         if not install_deps():
             sys.exit(1)
@@ -370,8 +370,8 @@ def _ensure_deps() -> None:
 
 def install_deps() -> bool:
     try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
+        import googleapiclient
+        import google_auth_oauthlib
         print("Dependencies already installed.")
         return True
     except ImportError:

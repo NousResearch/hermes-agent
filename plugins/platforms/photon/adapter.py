@@ -749,7 +749,7 @@ class PhotonAdapter(BasePlatformAdapter):
     def _find_listener_pids(port: int) -> List[int]:
         """PIDs listening on a local TCP port (empty if none/undeterminable)."""
         try:
-            out = subprocess.run(  # noqa: S603, S607
+            out = subprocess.run(
                 ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
                 capture_output=True, text=True, timeout=5.0, check=False,
             )
@@ -761,7 +761,7 @@ class PhotonAdapter(BasePlatformAdapter):
     def _pid_is_sidecar(pid: int) -> bool:
         """True if ``pid``'s command line is a Photon sidecar process."""
         try:
-            out = subprocess.run(  # noqa: S603, S607
+            out = subprocess.run(
                 ["ps", "-p", str(pid), "-o", "command="],
                 capture_output=True, text=True, timeout=5.0, check=False,
             )
@@ -855,7 +855,7 @@ class PhotonAdapter(BasePlatformAdapter):
         env["PHOTON_SIDECAR_WATCH_STDIN"] = "1"
 
         try:
-            patch = subprocess.run(  # noqa: S603
+            patch = subprocess.run(
                 [
                     self._node_bin,
                     str(_SIDECAR_DIR / "patch-spectrum-mixed-attachments.mjs"),
@@ -876,7 +876,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 exc,
             )
 
-        self._sidecar_proc = subprocess.Popen(  # noqa: S603
+        self._sidecar_proc = subprocess.Popen(
             [self._node_bin, str(_SIDECAR_DIR / "index.mjs")],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -1574,9 +1574,9 @@ async def _standalone_send(
     chat_id: str,
     message: str,
     *,
-    thread_id: Optional[str] = None,  # noqa: ARG001 — Spectrum has no threads yet
+    thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
-    force_document: bool = False,  # noqa: ARG001 — iMessage auto-detects file kind
+    force_document: bool = False,
 ) -> Dict[str, Any]:
     if not HTTPX_AVAILABLE:
         return {"error": "httpx not installed"}

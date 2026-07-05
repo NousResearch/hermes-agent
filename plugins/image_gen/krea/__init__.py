@@ -124,7 +124,7 @@ def _load_krea_config() -> Dict[str, Any]:
         cfg = load_config()
         section = cfg.get("image_gen") if isinstance(cfg, dict) else None
         return section if isinstance(section, dict) else {}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Could not load image_gen config: %s", exc)
         return {}
 
@@ -173,7 +173,7 @@ def _resolve_managed_krea_gateway():
     try:
         from tools.managed_tool_gateway import resolve_managed_tool_gateway
         from tools.tool_backend_helpers import prefers_gateway
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Managed Krea gateway resolution unavailable: %s", exc)
         return None
 
@@ -182,7 +182,7 @@ def _resolve_managed_krea_gateway():
 
     try:
         return resolve_managed_tool_gateway("krea")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Managed Krea gateway resolution failed: %s", exc)
         return None
 
@@ -191,11 +191,11 @@ def _managed_krea_gateway_ready() -> bool:
     """Cheap, offline-friendly probe for managed Krea availability."""
     try:
         from tools.managed_tool_gateway import is_managed_tool_gateway_ready
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     try:
         return bool(is_managed_tool_gateway_ready("krea"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -458,7 +458,7 @@ class KreaImageGenProvider(ImageGenProvider):
                     if isinstance(body.get("error"), dict)
                     else body.get("message") or body.get("detail")
                 ) or (resp.text[:300] if resp is not None else str(exc))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 err_msg = resp.text[:300] if resp is not None else str(exc)
             logger.error("Krea submit failed (%d): %s", status, err_msg)
             # On a managed 4xx, surface actionable remediation mirroring the
@@ -516,7 +516,7 @@ class KreaImageGenProvider(ImageGenProvider):
 
         try:
             submit_body = response.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return error_response(
                 error=f"Krea returned invalid JSON on submit: {exc}",
                 error_type="invalid_response",
@@ -591,7 +591,7 @@ class KreaImageGenProvider(ImageGenProvider):
 
             try:
                 job = poll_resp.json()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("Krea poll returned invalid JSON for job %s: %s", job_id, exc)
                 if time.monotonic() >= deadline:
                     return error_response(
@@ -703,7 +703,7 @@ class KreaImageGenProvider(ImageGenProvider):
         # what we do for xAI / OpenAI URL responses (#26942).
         try:
             saved_path = save_url_image(result_image_url, prefix=f"krea_{model_id}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "Krea image URL %s could not be cached (%s); falling back to bare URL.",
                 result_image_url,

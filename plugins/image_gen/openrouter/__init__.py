@@ -79,7 +79,7 @@ def _load_image_gen_config() -> Dict[str, Any]:
         cfg = load_config()
         section = cfg.get("image_gen") if isinstance(cfg, dict) else None
         return section if isinstance(section, dict) else {}
-    except Exception as exc:  # noqa: BLE001 - config is best-effort
+    except Exception as exc:
         logger.debug("could not load image_gen config: %s", exc)
         return {}
 
@@ -215,7 +215,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
     def is_available(self) -> bool:
         try:
             runtime = self._resolve_runtime()
-        except Exception as exc:  # noqa: BLE001 - treat resolution failure as unavailable
+        except Exception as exc:
             logger.debug("%s runtime resolution failed: %s", self._name, exc)
             return False
         return bool(str(runtime.get("api_key") or "").strip())
@@ -292,7 +292,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
         try:
             runtime = self._resolve_runtime()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return error_response(
                 error=f"Could not resolve {self._display} credentials: {exc}",
                 error_type="missing_api_key",
@@ -362,7 +362,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 status = resp.status_code if resp is not None else 0
                 try:
                     err_msg = resp.json().get("error", {}).get("message", resp.text[:300])
-                except Exception:  # noqa: BLE001
+                except Exception:
                     err_msg = resp.text[:300] if resp is not None else str(exc)
                 logger.error("%s image gen failed (%d) on %s: %s", self._name, status, model_id, err_msg)
                 hint = _access_error_hint(self._display, model_id, self._model_env_var, status, err_msg)
@@ -413,7 +413,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
             try:
                 result = response.json()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return error_response(
                     error=f"{self._display} returned invalid JSON: {exc}",
                     error_type="invalid_response",
@@ -454,7 +454,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                     saved_path = save_b64_image(b64, prefix=f"{self._name}_gen")
                 else:
                     saved_path = save_url_image(first, prefix=f"{self._name}_gen")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return error_response(
                     error=f"Could not save generated image: {exc}",
                     error_type="io_error",

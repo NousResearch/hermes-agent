@@ -170,7 +170,7 @@ async def add_comment_reaction(
     Returns ``True`` on success, ``False`` on failure (errors are logged).
     """
     try:
-        from lark_oapi import AccessTokenType  # noqa: F401
+        from lark_oapi import AccessTokenType
     except ImportError:
         logger.error("[Feishu-Comment] lark_oapi not available")
         return False

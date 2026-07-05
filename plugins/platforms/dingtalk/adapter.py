@@ -42,7 +42,7 @@ try:
     from dingtalk_stream.frames import CallbackMessage, AckMessage
 
     DINGTALK_STREAM_AVAILABLE = True
-except Exception:  # noqa: BLE001 — broad: optional SDK's transitive deps (cryptography) may raise non-ImportError; degrade gracefully (#41112)
+except Exception:
     DINGTALK_STREAM_AVAILABLE = False
     dingtalk_stream = None  # type: ignore[assignment]
     ChatbotMessage = None  # type: ignore[assignment]
@@ -168,7 +168,7 @@ class DingTalkAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     @property
-    def SUPPORTS_MESSAGE_EDITING(self) -> bool:  # noqa: N802
+    def SUPPORTS_MESSAGE_EDITING(self) -> bool:
         """Edits only meaningful when AI Cards are configured.
 
         The gateway gates streaming cursor + edit behaviour on this flag,
@@ -177,7 +177,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         return bool(self._card_template_id and self._card_sdk)
 
     @property
-    def REQUIRES_EDIT_FINALIZE(self) -> bool:  # noqa: N802
+    def REQUIRES_EDIT_FINALIZE(self) -> bool:
         """AI Card lifecycle requires an explicit ``finalize=True`` edit
         to close the streaming indicator, even when the final content is
         identical to the last streamed update.  Enabled only when cards

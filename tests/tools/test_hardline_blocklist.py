@@ -151,6 +151,12 @@ _HARDLINE_BLOCK = [
     # backslash-escaping is needed): the extracted payload is itself
     # another -c invocation. Must still be caught (bounded recursion).
     "sh -c 'sh -c \"rm -rf /\"'",
+    # Nested one level deep with the SAME quote char, so the shell requires
+    # backslash-escaping the inner quotes. The extracted outer payload still
+    # contains that one level of escaping verbatim (`\"` pairs) — must be
+    # unescaped before the inner `-c` is re-tokenized, or the inner quoted
+    # word truncates at its first embedded space and the recursion misses it.
+    'sh -c "sh -c \\"rm -rf /\\""',
 ]
 
 

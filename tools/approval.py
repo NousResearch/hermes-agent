@@ -743,12 +743,21 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
-def _normalize_command_for_detection(command: str) -> str:
-    """Normalize a command string before dangerous-pattern matching.
+def _structurally_normalize_command_for_detection(command: str) -> str:
+    """Normalize a command string without disturbing its quote structure.
 
     Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip),
     null bytes, and normalizes Unicode fullwidth characters so that
     obfuscation techniques cannot bypass the pattern-based detection.
+    Deliberately excludes the backslash-escape / empty-quote strip that
+    ``_normalize_command_for_detection`` layers on top: those are
+    per-character deobfuscation passes that don't understand quoting, so
+    running them before ``_iter_interpreter_c_payloads`` extracts nested
+    ``-c`` payloads corrupts genuine backslash-escaped quotes (e.g. the
+    outer ``\\"`` pairs in ``sh -c "sh -c \\"rm -rf /\\""``) into
+    unbalanced bare quotes, truncating the recovered payload. Callers that
+    need the destructive strip too should go through
+    ``_normalize_command_for_detection`` instead.
     """
     from tools.ansi_strip import strip_ansi
 
@@ -760,13 +769,14 @@ def _normalize_command_for_detection(command: str) -> str:
     command = unicodedata.normalize('NFKC', command)
     # Collapse shell line continuations (backslash-newline). The shell removes
     # BOTH characters and joins the tokens, so `rm -rf \<newline>/` executes as
-    # `rm -rf /`. This must run BEFORE the generic backslash-escape strip below,
-    # whose [^\n] class deliberately skips newlines and would otherwise leave
-    # the dangling backslash wedged between tokens — defeating the structured
-    # rm/mkfs/dd patterns (notably the HARDLINE root-delete floor, which cannot
-    # be bypassed even with yolo). Handles both \n and \r\n line endings. Line
-    # continuations carry no path separator, so this is a no-op on the Windows
-    # home-prefix folds below (which match C:\Users\alice\... — no newline).
+    # `rm -rf /`. This must run BEFORE the generic backslash-escape strip in
+    # `_normalize_command_for_detection`, whose [^\n] class deliberately skips
+    # newlines and would otherwise leave the dangling backslash wedged between
+    # tokens — defeating the structured rm/mkfs/dd patterns (notably the
+    # HARDLINE root-delete floor, which cannot be bypassed even with yolo).
+    # Handles both \n and \r\n line endings. Line continuations carry no path
+    # separator, so this is a no-op on the Windows home-prefix folds below
+    # (which match C:\Users\alice\... — no newline).
     command = re.sub(r'\\\r?\n', '', command)
     # Fold absolute home / active-profile-home prefixes into their canonical
     # ~/ and ~/.hermes/ forms so static user-sensitive patterns catch
@@ -775,16 +785,31 @@ def _normalize_command_for_detection(command: str) -> str:
     # it tracks HOME / HERMES_HOME even when those are set after this module is
     # imported — as the hermetic test conftest and profile/session launchers do.
     #
-    # This MUST run before the backslash-escape strip below: on Windows the home
-    # prefix is separated by backslashes (C:\Users\alice\...), which that strip
-    # would otherwise dissolve (-> C:Usersalice) and make the fold impossible.
-    # The fold matches either separator, so POSIX paths are unaffected by order.
+    # This MUST run before the backslash-escape strip in
+    # `_normalize_command_for_detection`: on Windows the home prefix is
+    # separated by backslashes (C:\Users\alice\...), which that strip would
+    # otherwise dissolve (-> C:Usersalice) and make the fold impossible. The
+    # fold matches either separator, so POSIX paths are unaffected by order.
     #
     # Fold the (more specific) Hermes home first: on Windows it nests under the
     # user home (C:\Users\alice\AppData\...\hermes), so folding the user home
     # first would eat the prefix the Hermes-home fold needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
+    return command
+
+
+def _normalize_command_for_detection(command: str) -> str:
+    """Normalize a command string before dangerous-pattern matching.
+
+    Layers the destructive, quote-agnostic deobfuscation passes (backslash-
+    escape strip, empty-quote collapse, $IFS fold) on top of
+    ``_structurally_normalize_command_for_detection``. Do not feed this
+    output into ``_iter_interpreter_c_payloads`` — see that function's
+    docstring for why the destructive passes must run per-payload, after
+    nested ``-c`` extraction, rather than once on the whole command.
+    """
+    command = _structurally_normalize_command_for_detection(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
@@ -1042,6 +1067,35 @@ def _strip_optional_shell_quotes(word: str) -> str:
     if len(word) >= 2 and word[0] == word[-1] and word[0] in ("'", '"'):
         return word[1:-1]
     return word
+
+
+def _unescape_double_quoted_payload(payload: str) -> str:
+    """Resolve one level of POSIX double-quote backslash-escaping.
+
+    Inside double quotes a backslash keeps its special meaning only before
+    ``$``, `` ` ``, ``"``, ``\\``, or a newline; every other backslash is
+    literal. ``_read_shell_word`` skips over such escaped pairs verbatim
+    when reading a double-quoted word, so a payload extracted from inside
+    one (e.g. the outer ``"..."`` of ``sh -c "sh -c \\"rm -rf /\\""``) still
+    contains that one level of escaping as literal backslash-quote pairs.
+    Re-tokenizing it as a fresh command without resolving that escaping
+    first hits a literal backslash where a real quote should be, so the
+    inner quoted argument never spans its embedded spaces and the nested
+    ``-c`` payload comes out truncated. Called once per extraction so bounded
+    recursion still only unescapes one level per nesting step.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(payload)
+    while i < n:
+        ch = payload[i]
+        if ch == "\\" and i + 1 < n and payload[i + 1] in ('"', "\\", "$", "`", "\n"):
+            out.append(payload[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _is_simple_shell_literal(value: str) -> bool:
@@ -1317,6 +1371,19 @@ def _iter_interpreter_c_payloads(command: str, _depth: int = 0):
     slips the unconditional floor entirely while the identical
     ``rm -rf /`` alone is caught. Recursion is depth-capped so a chain of
     nested ``-c`` payloads cannot cause unbounded work.
+
+    ``command`` must be structurally normalized (see
+    ``_structurally_normalize_command_for_detection``) but NOT run through
+    the destructive backslash-escape strip in
+    ``_normalize_command_for_detection``: that strip is quote-agnostic and
+    corrupts genuine backslash-escaped quotes needed to correctly locate
+    where a same-quote-char nested payload (e.g. the inner ``\\"`` pairs of
+    ``sh -c "sh -c \\"rm -rf /\\""``) actually ends. Each yielded payload
+    still needs the destructive strip applied by the caller before pattern
+    matching — this function only resolves one level of double-quote
+    backslash-escaping per nesting step, via
+    ``_unescape_double_quoted_payload``, so the *next* recursion sees a
+    clean, real quote structure instead of a literal escaped one.
     """
     if _depth >= 4:
         return
@@ -1336,7 +1403,13 @@ def _iter_interpreter_c_payloads(command: str, _depth: int = 0):
                 break
             if re.fullmatch(r"-[^\s]*c", lower_flag):
                 _, _, payload_word = _read_shell_word(command, flag_end)
+                was_double_quoted = (
+                    len(payload_word) >= 2
+                    and payload_word[0] == payload_word[-1] == '"'
+                )
                 payload = _strip_optional_shell_quotes(payload_word)
+                if was_double_quoted:
+                    payload = _unescape_double_quoted_payload(payload)
                 if payload:
                     yield payload
                     yield from _iter_interpreter_c_payloads(payload, _depth + 1)
@@ -1379,11 +1452,22 @@ def _command_detection_variants(command: str):
     # position, but it's written as an ordinary quoted argument — invisible
     # to the `_CMDPOS`-anchored rm/shutdown/systemctl rules. See
     # `_iter_interpreter_c_payloads` for why this needs its own pass.
-    for payload in _iter_interpreter_c_payloads(normalized):
-        if payload in seen:
+    #
+    # Extracted from the structurally-normalized command, NOT `normalized`:
+    # the destructive backslash-escape strip baked into `normalized` doesn't
+    # understand quoting and corrupts genuine backslash-escaped quotes (the
+    # inner `\"` pairs of a same-quote-char nested payload like
+    # `sh -c "sh -c \"rm -rf /\""`) before extraction ever sees them,
+    # truncating the recovered payload at its first unescaped space. Each
+    # extracted payload gets the full (destructive) normalization applied
+    # individually below, once it's already been correctly delimited.
+    structural = _structurally_normalize_command_for_detection(command)
+    for payload in _iter_interpreter_c_payloads(structural):
+        normalized_payload = _normalize_command_for_detection(payload)
+        if normalized_payload in seen:
             continue
-        seen.add(payload)
-        yield payload
+        seen.add(normalized_payload)
+        yield normalized_payload
 
 
 def detect_dangerous_command(command: str) -> tuple:

@@ -336,6 +336,11 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Additional startup notification targets (group topics etc.)
+    # Each entry is a HomeChannel — the gateway will also send the
+    # "♻️ Gateway online" message to these on top of ``home_channel``.
+    additional_startup_channels: List[Any] = field(default_factory=list)
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -1265,7 +1270,34 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             name=os.getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
             thread_id=os.getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
         )
-    
+
+    # Additional startup notification targets for Telegram (e.g. group topics).
+    # Format: "chat_id:thread_id,chat_id2:thread_id2" or "chat_id" without thread.
+    telegram_additional_startup = os.getenv("TELEGRAM_ADDITIONAL_STARTUP_CHANNELS", "")
+    if telegram_additional_startup and Platform.TELEGRAM in config.platforms:
+        extra_channels = []
+        for entry in telegram_additional_startup.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if ":" in entry:
+                chat_id_part, thread_id_part = entry.rsplit(":", 1)
+                extra_channels.append(HomeChannel(
+                    platform=Platform.TELEGRAM,
+                    chat_id=chat_id_part.strip(),
+                    name="Group",
+                    thread_id=thread_id_part.strip() or None,
+                ))
+            else:
+                extra_channels.append(HomeChannel(
+                    platform=Platform.TELEGRAM,
+                    chat_id=entry,
+                    name="Group",
+                    thread_id=None,
+                ))
+        if extra_channels:
+            config.platforms[Platform.TELEGRAM].additional_startup_channels = extra_channels
+
     # Discord
     discord_token = os.getenv("DISCORD_BOT_TOKEN")
     if discord_token:

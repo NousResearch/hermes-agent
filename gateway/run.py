@@ -5867,19 +5867,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Notify the chat that initiated /restart that the gateway is back.
         planned_restart_notification_pending = _planned_restart_notification_pending()
-        await self._send_restart_notification()
+        restart_target = await self._send_restart_notification()
 
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
-            try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
-                )
-            finally:
+        # Always notify home channels on startup (planned /restart, SIGUSR1,
+        # or systemd/SIGTERM restart). _send_restart_notification() above
+        # already handled the chat-originated /restart reply target, so skip
+        # that precise target to avoid a duplicate in the same chat/topic.
+        _restart_skip = {restart_target} if restart_target else None
+        try:
+            await self._send_home_channel_startup_notifications(
+                skip_targets=_restart_skip,
+            )
+        finally:
+            if planned_restart_notification_pending:
                 _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
@@ -8885,13 +8885,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        _msg_preview = (event.text or "")[:80].replace("\n", " ")
+        _msg_len = len(event.text or "")
         _reply_id = getattr(event, "reply_to_message_id", None)
-        _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
+        _reply_txt_len = len(getattr(event, "reply_to_text", None) or "")
         logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
+            "inbound message: platform=%s user=%s chat=%s msg_len=%s reply_to_id=%s reply_to_text_len=%s",
             _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
+            source.chat_id or "unknown", _msg_len, _reply_id, _reply_txt_len,
         )
 
         # Get or create session
@@ -12787,6 +12787,65 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home.chat_id,
                     exc,
                 )
+
+            # Additional startup channels (e.g. group topics) — same platform.
+            platform_cfg = self.config.platforms.get(platform)
+            for extra_home in getattr(platform_cfg, "additional_startup_channels", []) or []:
+                if not getattr(extra_home, "chat_id", None):
+                    continue
+                extra_thread = getattr(extra_home, "thread_id", None)
+                extra_target = (
+                    platform.value,
+                    str(extra_home.chat_id),
+                    str(extra_thread) if extra_thread else None,
+                )
+                if extra_target in skipped or extra_target in delivered:
+                    continue
+                try:
+                    extra_meta = self._thread_metadata_for_target(
+                        platform,
+                        extra_home.chat_id,
+                        extra_thread,
+                        adapter=adapter,
+                    )
+                    if extra_meta:
+                        extra_result = await adapter.send(
+                            str(extra_home.chat_id),
+                            message,
+                            metadata=_non_conversational_metadata(extra_meta, platform=platform),
+                        )
+                    else:
+                        _extra_startup_meta = _non_conversational_metadata(platform=platform)
+                        if _extra_startup_meta:
+                            extra_result = await adapter.send(
+                                str(extra_home.chat_id),
+                                message,
+                                metadata=_extra_startup_meta,
+                            )
+                        else:
+                            extra_result = await adapter.send(str(extra_home.chat_id), message)
+                    if extra_result is not None and getattr(extra_result, "success", True) is False:
+                        logger.warning(
+                            "Additional startup notification failed for %s:%s: %s",
+                            platform.value,
+                            extra_home.chat_id,
+                            getattr(extra_result, "error", "send returned success=False"),
+                        )
+                        continue
+                    delivered.add(extra_target)
+                    logger.info(
+                        "Sent additional startup notification to %s:%s (thread=%s)",
+                        platform.value,
+                        extra_home.chat_id,
+                        extra_thread,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Additional startup notification failed for %s:%s: %s",
+                        platform.value,
+                        extra_home.chat_id,
+                        exc,
+                    )
 
         return delivered
 

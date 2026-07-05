@@ -10,6 +10,7 @@ import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { sessionChannelOriginLabel } from '@/lib/session-channel-origin'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -68,6 +69,7 @@ export function SidebarSessionRow({
   const r = t.sidebar.row
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
+  const channelLabel = sessionChannelOriginLabel(session.channel_origin)
   const handleLabel = `Reorder ${title}`
   // A handed-off session's live source is local, but it originated on a
   // messaging platform — surface that origin as a small badge so e.g. a
@@ -122,6 +124,7 @@ export function SidebarSessionRow({
         }
         className={cn(
           'group row-hover relative',
+          channelLabel && 'min-h-[2.25rem]',
           isSelected && 'bg-(--ui-row-active-background)',
           isWorking && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
@@ -152,7 +155,7 @@ export function SidebarSessionRow({
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <SidebarRowBody
-          className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
+          className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5', channelLabel && 'py-1')}
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
@@ -207,9 +210,19 @@ export function SidebarSessionRow({
               />
             </Tip>
           ) : null}
-          <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
-          </SidebarRowLabel>
+          <span className="flex min-w-0 flex-1 flex-col justify-center">
+            <SidebarRowLabel className="font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+              {title}
+            </SidebarRowLabel>
+            {channelLabel ? (
+              <span
+                className="mt-0.5 truncate text-[0.625rem] leading-none text-(--ui-text-tertiary) group-hover:text-(--ui-text-secondary)"
+                title={channelLabel}
+              >
+                {channelLabel}
+              </span>
+            ) : null}
+          </span>
         </SidebarRowBody>
       </SidebarRowShell>
     </SessionContextMenu>

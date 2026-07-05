@@ -948,6 +948,111 @@ class TestWebServerEndpoints:
         row = next(s for s in rows if s["id"] == "session-no-cwd")
         assert row["cwd"] is None
 
+    def test_get_sessions_includes_safe_channel_origin_summary(self):
+        """Shared-channel rows expose room labels without raw origin IDs."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="shared-safe-session", source="webhook")
+        finally:
+            db.close()
+
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / "sessions.json").write_text(
+            json.dumps(
+                {
+                    "webhook:room-raw-123": {
+                        "session_id": "shared-safe-session",
+                        "origin": {
+                            "platform": "webhook",
+                            "chat_id": "room-raw-123",
+                            "chat_name": " Ops Room [Alpha] ",
+                            "chat_type": "group",
+                            "thread_id": "topic-raw-456",
+                            "chat_topic": "Incident planning",
+                            "user_id": "human-raw-789",
+                            "message_id": "message-raw-000",
+                        },
+                    }
+                }
+            )
+        )
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+        row = next(s for s in resp.json()["sessions"] if s["id"] == "shared-safe-session")
+
+        assert row["channel_origin"] == {
+            "display_name": "Ops Room (Alpha)",
+            "chat_name": "Ops Room (Alpha)",
+            "chat_topic": "Incident planning",
+            "chat_type": "group",
+            "platform": "webhook",
+            "has_thread": True,
+        }
+        payload = json.dumps(row)
+        assert "room-raw-123" not in payload
+        assert "topic-raw-456" not in payload
+        assert "human-raw-789" not in payload
+        assert "message-raw-000" not in payload
+
+    def test_profiles_sessions_includes_safe_channel_origin_summary(self, monkeypatch):
+        """The cross-profile desktop list enriches rows from each profile home."""
+        import hermes_state
+        from hermes_cli import profiles as profiles_mod
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        home = get_hermes_home()
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: [SimpleNamespace(name="default", path=home)],
+        )
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="profile-shared-session", source="webhook")
+        finally:
+            db.close()
+
+        sessions_dir = home / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / "sessions.json").write_text(
+            json.dumps(
+                {
+                    "webhook:room-raw-profile": {
+                        "session_id": "profile-shared-session",
+                        "origin": {
+                            "platform": "webhook",
+                            "chat_id": "room-raw-profile",
+                            "chat_name": "Build Room",
+                            "chat_type": "channel",
+                            "chat_topic": "Release coordination",
+                            "user_id": "profile-user-raw",
+                        },
+                    }
+                }
+            )
+        )
+
+        resp = self.client.get("/api/profiles/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+        row = next(
+            s for s in resp.json()["sessions"] if s["id"] == "profile-shared-session"
+        )
+
+        assert row["channel_origin"]["display_name"] == "Build Room"
+        assert row["channel_origin"]["chat_topic"] == "Release coordination"
+        assert row["profile"] == "default"
+        payload = json.dumps(row)
+        assert "room-raw-profile" not in payload
+        assert "profile-user-raw" not in payload
+
     def test_get_sessions_forwards_min_messages(self, monkeypatch):
         """The ?min_messages= filter must reach SessionDB.
 
@@ -1408,6 +1513,64 @@ class TestWebServerEndpoints:
             r["session_id"] == "branch-child" and r.get("lineage_root") == "branch-child"
             for r in results
         )
+
+    def test_search_matches_safe_channel_origin_summary(self):
+        """Shared-channel sessions can be found by room labels without leaking IDs."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="origin-search-session", source="webhook")
+            db.append_message(
+                session_id="origin-search-session",
+                role="user",
+                content="message body intentionally does not contain the room label",
+            )
+        finally:
+            db.close()
+
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / "sessions.json").write_text(
+            json.dumps(
+                {
+                    "webhook:origin-room-raw": {
+                        "session_id": "origin-search-session",
+                        "origin": {
+                            "platform": "webhook",
+                            "chat_id": "origin-room-raw",
+                            "chat_name": "Build Room",
+                            "chat_type": "channel",
+                            "thread_id": "origin-thread-raw",
+                            "chat_topic": "Release coordination",
+                            "user_id": "origin-user-raw",
+                            "message_id": "origin-message-raw",
+                        },
+                    }
+                }
+            )
+        )
+
+        resp = self.client.get("/api/sessions/search?q=Build%20Room")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+        hit = next(r for r in results if r["session_id"] == "origin-search-session")
+
+        assert hit["snippet"] == "Shared channel: Build Room \u00b7 Release coordination"
+        assert hit["channel_origin"] == {
+            "display_name": "Build Room",
+            "chat_name": "Build Room",
+            "chat_topic": "Release coordination",
+            "chat_type": "channel",
+            "platform": "webhook",
+            "has_thread": True,
+        }
+        payload = json.dumps(hit)
+        assert "origin-room-raw" not in payload
+        assert "origin-thread-raw" not in payload
+        assert "origin-user-raw" not in payload
+        assert "origin-message-raw" not in payload
 
     def test_get_session_messages_follows_compression_tip(self):
         """Reading a compressed session by its old id should hydrate from the

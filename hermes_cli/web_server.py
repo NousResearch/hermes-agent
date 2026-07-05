@@ -3851,6 +3851,112 @@ def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, A
     return sessions
 
 
+_CHANNEL_ORIGIN_TEXT_LIMIT = 96
+
+
+def _safe_channel_origin_text(value: Any, limit: int = _CHANNEL_ORIGIN_TEXT_LIMIT) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    text = re.sub(r"\s+", " ", value).strip()
+    if not text:
+        return None
+    text = text.replace("[", "(").replace("]", ")")
+    if len(text) > limit:
+        text = text[: max(0, limit - 3)].rstrip() + "..."
+    return text
+
+
+def _channel_origin_summary(origin: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    chat_name = _safe_channel_origin_text(origin.get("chat_name"))
+    chat_topic = _safe_channel_origin_text(origin.get("chat_topic"))
+    chat_type = _safe_channel_origin_text(origin.get("chat_type"), limit=32)
+    platform = _safe_channel_origin_text(origin.get("platform"), limit=48)
+    user_name = _safe_channel_origin_text(origin.get("user_name"))
+
+    display_name = chat_name or chat_topic
+    if not display_name and chat_type == "dm" and user_name:
+        display_name = f"DM with {user_name}"
+    if not display_name:
+        return None
+
+    summary: Dict[str, Any] = {"display_name": display_name}
+    if chat_name:
+        summary["chat_name"] = chat_name
+    if chat_topic:
+        summary["chat_topic"] = chat_topic
+    if chat_type:
+        summary["chat_type"] = chat_type
+    if platform:
+        summary["platform"] = platform
+    summary["has_thread"] = bool(origin.get("thread_id"))
+    return summary
+
+
+def _load_channel_origin_summaries(hermes_home: Path) -> Dict[str, Dict[str, Any]]:
+    sessions_file = Path(hermes_home) / "sessions" / "sessions.json"
+    try:
+        with sessions_file.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        _log.debug("Failed to read shared-channel session origins", exc_info=True)
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    summaries: Dict[str, Dict[str, Any]] = {}
+    for entry in data.values():
+        if not isinstance(entry, dict):
+            continue
+        session_id = entry.get("session_id")
+        origin = entry.get("origin")
+        if not isinstance(session_id, str) or not isinstance(origin, dict):
+            continue
+        summary = _channel_origin_summary(origin)
+        if summary:
+            summaries[session_id] = summary
+    return summaries
+
+
+def _attach_channel_origin_summaries(rows: List[Dict[str, Any]], hermes_home: Path) -> None:
+    summaries = _load_channel_origin_summaries(hermes_home)
+    if not summaries:
+        return
+
+    for row in rows:
+        summary = None
+        for key in ("id", "session_id", "_lineage_root_id", "lineage_root"):
+            value = row.get(key)
+            if value:
+                summary = summaries.get(str(value))
+                if summary is not None:
+                    break
+        if summary is not None:
+            row["channel_origin"] = dict(summary)
+
+
+def _channel_origin_summary_matches(summary: Dict[str, Any], query: str) -> bool:
+    needle = query.strip().lower()
+    if not needle:
+        return False
+    for key in ("display_name", "chat_name", "chat_topic", "chat_type", "platform"):
+        value = summary.get(key)
+        if isinstance(value, str) and needle in value.lower():
+            return True
+    return False
+
+
+def _channel_origin_search_snippet(summary: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for key in ("display_name", "chat_topic"):
+        value = summary.get(key)
+        if isinstance(value, str) and value and value not in parts:
+            parts.append(value)
+    return "Shared channel: " + " · ".join(parts or ["session"])
+
+
 @app.get("/api/sessions")
 def get_sessions(
     limit: int = 20,
@@ -3928,6 +4034,7 @@ def get_sessions(
                 exclude_children=True,
             )
             now = time.time()
+            _attach_channel_origin_summaries(sessions, get_hermes_home())
             for s in sessions:
                 s["is_active"] = (
                     s.get("ended_at") is None
@@ -4038,6 +4145,7 @@ def get_profiles_sessions(
                 # Same SQL-level blob skip as /api/sessions (see above).
                 compact_rows=not full,
             )
+            _attach_channel_origin_summaries(rows, Path(home))
             profile_total = db.session_count(
                 source=source_filter,
                 exclude_sources=exclude_list or None,
@@ -4094,6 +4202,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
     try:
         db = _open_session_db_for_profile(profile)
         try:
+            hermes_home = get_hermes_home()
             safe_limit = max(1, min(int(limit or 20), 100))
 
             # Walk parent_session_id to the compression root, memoized so a
@@ -4202,6 +4311,27 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                     },
                 )
 
+            origin_summaries = _load_channel_origin_summaries(hermes_home)
+            for sid, summary in origin_summaries.items():
+                if len(seen) >= safe_limit:
+                    break
+                if not _channel_origin_summary_matches(summary, q):
+                    continue
+                row = db.get_session(sid)
+                if not row:
+                    continue
+                add_lineage_result(
+                    sid,
+                    {
+                        "snippet": _channel_origin_search_snippet(summary),
+                        "role": None,
+                        "source": row.get("source"),
+                        "model": row.get("model"),
+                        "session_started": row.get("started_at"),
+                        "channel_origin": dict(summary),
+                    },
+                )
+
             # Auto-add prefix wildcards so partial words match
             # e.g. "nimb" → "nimb*" matches "nimby"
             # Preserve quoted phrases and existing wildcards as-is
@@ -4231,7 +4361,9 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                         "session_started": m.get("session_started"),
                     },
                 )
-            return {"results": list(seen.values())}
+            results = list(seen.values())
+            _attach_channel_origin_summaries(results, hermes_home)
+            return {"results": results}
         finally:
             db.close()
     except HTTPException:

@@ -24,6 +24,7 @@ import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
+import { searchResultToSession } from '@/lib/session-search-result'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $cronJobs } from '@/store/cron'
@@ -172,29 +173,49 @@ const HEADER_ACTION_BTN =
 const HEADER_NAV_BTN =
   'text-(--ui-text-tertiary) opacity-70 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100'
 
-// FTS results cover sessions that aren't in the loaded page; synthesize a
-// minimal SessionInfo so they render in the same row component (resume works
-// by id; the snippet stands in for the preview).
-function searchResultToSession(result: SessionSearchResult): SessionInfo {
-  const ts = result.session_started ?? Date.now() / 1000
+function workspaceGroupsFor(
+  sessions: SessionInfo[],
+  noWorkspaceLabel: string,
+  options: { preserveSessionOrder?: boolean } = {}
+): SidebarSessionGroup[] {
+  const groups = new Map<string, SidebarSessionGroup>()
+
+  for (const session of sessions) {
+    const path = session.cwd?.trim() || ''
+    const id = path || '__no_workspace__'
+    const label = baseName(path) || path || noWorkspaceLabel
+
+    const group = groups.get(id) ?? { id, label, path: path || null, sessions: [] }
+    group.sessions.push(session)
+    groups.set(id, group)
+  }
+
+  if (!options.preserveSessionOrder) {
+    // Groups keep recency order (Map insertion = first-seen in the recency-sorted
+    // input, so an active project floats up), but rows *within* a group sort by
+    // creation time so they don't reshuffle every time a message lands — keeps
+    // muscle memory intact.
+    for (const group of groups.values()) {
+      group.sessions.sort((a, b) => b.started_at - a.started_at)
+    }
+  }
+
+  return [...groups.values()]
+}
+
+function useSortableBindings(id: string) {
+  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id })
 
   return {
-    archived: false,
-    cwd: null,
-    ended_at: null,
-    id: result.session_id,
-    _lineage_root_id: result.lineage_root ?? null,
-    input_tokens: 0,
-    is_active: false,
-    last_active: ts,
-    message_count: 0,
-    model: result.model ?? null,
-    output_tokens: 0,
-    preview: result.snippet?.trim() || null,
-    source: result.source ?? null,
-    started_at: ts,
-    title: null,
-    tool_call_count: 0
+    dragging: isDragging,
+    dragHandleProps: { ...attributes, ...listeners },
+    ref: setNodeRef,
+    reorderable: true as const,
+    style: {
+      transform: CSS.Transform.toString(transform),
+      transition: isDragging ? undefined : transition,
+      willChange: isDragging ? 'transform' : undefined
+    }
   }
 }
 

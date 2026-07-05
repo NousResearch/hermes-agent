@@ -16,8 +16,6 @@ import json
 import logging
 import os
 import re
-import shutil
-import subprocess
 import sys
 import threading
 
@@ -39,10 +37,15 @@ from typing import Any, List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
+from cron.run_pipeline import run_one_job_pipeline
+from cron.script_runner import (
+    DEFAULT_SCRIPT_TIMEOUT as _DEFAULT_SCRIPT_TIMEOUT,
+    get_script_timeout as _script_runner_get_script_timeout,
+    run_job_script as _script_runner_run_job_script,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1876,166 +1879,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     return None
 
 
-_DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 
 
 def _get_script_timeout() -> int:
     """Resolve cron pre-run script timeout from module/env/config with a safe default."""
-    if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
-        try:
-            timeout = int(float(_SCRIPT_TIMEOUT))
-            if timeout > 0:
-                return timeout
-        except Exception:
-            logger.warning("Invalid patched _SCRIPT_TIMEOUT=%r; using env/config/default", _SCRIPT_TIMEOUT)
-
-    env_value = os.getenv("HERMES_CRON_SCRIPT_TIMEOUT", "").strip()
-    if env_value:
-        try:
-            timeout = int(float(env_value))
-            if timeout > 0:
-                return timeout
-        except Exception:
-            logger.warning("Invalid HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)
-
-    try:
-        cfg = load_config() or {}
-        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
-        configured = cron_cfg.get("script_timeout_seconds")
-        if configured is not None:
-            timeout = int(float(configured))
-            if timeout > 0:
-                return timeout
-    except Exception as exc:
-        logger.debug("Failed to load cron script timeout from config: %s", exc)
-
-    return _DEFAULT_SCRIPT_TIMEOUT
+    return _script_runner_get_script_timeout(
+        timeout_override=_SCRIPT_TIMEOUT,
+        load_config_fn=load_config,
+    )
 
 
 def _run_job_script(script_path: str) -> tuple[bool, str]:
-    """Execute a cron job's data-collection script and capture its output.
-
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
-    absolute paths are resolved and validated against this directory to
-    prevent arbitrary script execution via path traversal or absolute
-    path injection.
-
-    Supported interpreters (chosen by file extension):
-
-    * ``.sh`` / ``.bash`` — run with ``/bin/bash``
-    * anything else — run with the current Python interpreter
-      (``sys.executable``), preserving the original behaviour for
-      Python-based pre-check and data-collection scripts.
-
-    Shell support lets ``no_agent=True`` jobs ship classic bash watchdogs
-    (the `memory-watchdog.sh` pattern) without wrapping them in Python.
-
-    Subprocess environment is passed through ``_sanitize_subprocess_env`` so
-    provider credentials and other Hermes-managed secrets are not inherited
-    (SECURITY.md §2.3), matching terminal and MCP child processes.
-
-    Args:
-        script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
-
-    Returns:
-        (success, output) — on failure *output* contains the error message so the
-        LLM can report the problem to the user.
-    """
-    scripts_dir = _get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    scripts_dir_resolved = scripts_dir.resolve()
-
-    raw = Path(script_path).expanduser()
-    if raw.is_absolute():
-        path = raw.resolve()
-    else:
-        path = (scripts_dir / raw).resolve()
-
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
-        return False, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
-        )
-
-    if not path.exists():
-        return False, f"Script not found: {path}"
-    if not path.is_file():
-        return False, f"Script path is not a file: {path}"
-
-    script_timeout = _get_script_timeout()
-
-    # Pick an interpreter by extension.  Bash for .sh/.bash, Python for
-    # everything else.  We deliberately do NOT honour the file's own
-    # shebang: the scripts dir is trusted, but keeping the interpreter
-    # choice explicit here keeps the allowed surface small and auditable.
-    suffix = path.suffix.lower()
-    if suffix in {".sh", ".bash"}:
-        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
-        # all work.  On native Windows without Git for Windows installed
-        # shutil.which returns None — fall back to a clear error rather
-        # than a FileNotFoundError with a confusing "[WinError 2]"
-        # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
-        if _bash is None:
-            return False, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
-                "On Windows, install Git for Windows (which ships Git Bash) "
-                "or rewrite the script as Python (.py)."
-            )
-        argv = [_bash, str(path)]
-    else:
-        argv = [sys.executable, str(path)]
-
-    try:
-        from tools.environments.local import _sanitize_subprocess_env
-
-        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=script_timeout,
-            cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
-            **popen_kwargs,
-        )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-
-        # Redact secrets from both stdout and stderr before any return path.
-        try:
-            from agent.redact import redact_sensitive_text
-            stdout = redact_sensitive_text(stdout)
-            stderr = redact_sensitive_text(stderr)
-        except Exception as e:
-            logger.warning("Failed to redact sensitive text from output: %s", e)
-            stdout = "[REDACTED - redaction failed]"
-            stderr = "[REDACTED - redaction failed]"
-
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
-            if stderr:
-                parts.append(f"stderr:\n{stderr}")
-            if stdout:
-                parts.append(f"stdout:\n{stdout}")
-            return False, "\n".join(parts)
-
-        return True, stdout
-
-    except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {script_timeout}s: {path}"
-    except Exception as exc:
-        return False, f"Script execution failed: {exc}"
+    """Compatibility shim for the extracted script runner."""
+    return _script_runner_run_job_script(
+        script_path,
+        hermes_home=_get_hermes_home(),
+        timeout_override=_SCRIPT_TIMEOUT,
+        load_config_fn=load_config,
+    )
 
 
 def _parse_wake_gate(script_output: str) -> bool:
@@ -3264,118 +3127,23 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     Returns True if the job was processed (even if the job itself failed —
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
-    try:
-        # Pre-run dispatch claim (issue #38758): atomically commit a finite
-        # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
-        # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot
-        # re-fire the job forever on restart. No-op for recurring jobs (they
-        # use advance_next_run) and infinite/no-repeat jobs. This lives here in
-        # the shared body so BOTH the built-in ticker and the external provider
-        # (Chronos fire_due) get at-most-times semantics.
-        if not claim_dispatch(job["id"]):
-            logger.info(
-                "Job '%s': one-shot dispatch limit reached — skipping",
-                job.get("name", job["id"]),
-            )
-            return True  # not an error — already handled/removed
-
-        # Run the job under the profile's secret scope. get_secret() fails
-        # closed outside a scope once profile isolation is in play (multiple
-        # gateway profiles / room→profile multiplexing), and cron fires from
-        # the ticker thread where no per-turn scope is installed — so
-        # resolve_runtime_provider() raised UnscopedSecretError before model
-        # selection, breaking every cron job. Mirrors the per-turn pattern in
-        # gateway/run.py (_profile_runtime_scope).
-        from agent.secret_scope import (
-            build_profile_secret_scope,
-            reset_secret_scope,
-            set_secret_scope,
-        )
-
-        _scope_token = set_secret_scope(
-            build_profile_secret_scope(_get_hermes_home())
-        )
-        # Defer the cron agent's async-resource teardown until AFTER delivery.
-        # run_job normally closes the agent (and reaps stale async clients) in
-        # its finally block; doing that before _deliver_result runs means the
-        # live send races a torn-down async client (#58720). Passing a holder
-        # list makes run_job hand the agent back instead, and we tear it down
-        # below once delivery is done. Defense-in-depth alongside the
-        # interpreter-shutdown guard in _deliver_result.
-        _deferred_agents: list = []
-        try:
-            success, output, final_response, error = run_job(
-                job, defer_agent_teardown=_deferred_agents
-            )
-        except BaseException:
-            # run_job's finally still hands back the agent when it raises; tear
-            # it down here so a failed run never leaks its async resources
-            # (#10200), then re-raise into the outer handler. BaseException
-            # (not just Exception) so a KeyboardInterrupt/SystemExit mid-run
-            # still triggers teardown before propagating.
-            for _deferred_agent in _deferred_agents:
-                _teardown_cron_agent(_deferred_agent, job["id"])
-            raise
-        finally:
-            reset_secret_scope(_scope_token)
-
-        # Everything from here through delivery runs with the agent still live
-        # (deferred teardown). Wrap it ALL in a try/finally so that if any step
-        # between run_job returning and delivery — save_job_output, the [SILENT]
-        # / empty-response computation, or _deliver_result itself — raises, the
-        # deferred agent is still torn down. Otherwise the outer `except` would
-        # swallow the error and leak the agent's subprocesses/clients (#10200).
-        delivery_error = None
-        try:
-            output_file = save_job_output(job["id"], output)
-            if verbose:
-                logger.info("Output saved to: %s", output_file)
-
-            # Deliver the final response to the origin/target chat.
-            # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-            # Treat whitespace-only final responses the same as empty
-            # responses: do not deliver a blank message, and let the
-            # empty-response guard below mark the run as a soft failure.
-            should_deliver = bool(deliver_content.strip())
-            # Cron silence suppression — see _is_cron_silence_response.  Replaces the
-            # old `SILENT_MARKER in ...upper()` substring check, which both leaked
-            # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
-            # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
-            # #46917).  Keeps the intentional bracketed-prefix / trailing-line
-            # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
-                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                should_deliver = False
-
-            if should_deliver:
-                try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                except Exception as de:
-                    delivery_error = str(de)
-                    logger.error("Delivery failed for job %s: %s", job["id"], de)
-        finally:
-            # Tear down the deferred agent(s) now that save + delivery have run
-            # (or raised). Must happen on every path so cron agents never leak
-            # their subprocesses/clients (#10200).
-            for _deferred_agent in _deferred_agents:
-                _teardown_cron_agent(_deferred_agent, job["id"])
-
-        # Treat empty final_response as a soft failure so last_status
-        # is not "ok" — the agent ran but produced nothing useful.
-        # (issue #8585)
-        if success and not final_response.strip():
-            success = False
-            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        return True
-
-    except Exception as e:
-        logger.error("Error processing job %s: %s", job['id'], e)
-        mark_job_run(job["id"], False, str(e))
-        return False
+    return run_one_job_pipeline(
+        job,
+        run_job_fn=run_job,
+        save_job_output_fn=save_job_output,
+        mark_job_run_fn=mark_job_run,
+        claim_dispatch_fn=claim_dispatch,
+        deliver_result_fn=_deliver_result,
+        summarize_failure_fn=_summarize_cron_failure_for_delivery,
+        is_silence_response_fn=_is_cron_silence_response,
+        get_hermes_home_fn=_get_hermes_home,
+        teardown_agent_fn=_teardown_cron_agent,
+        silent_marker=SILENT_MARKER,
+        adapters=adapters,
+        loop=loop,
+        verbose=verbose,
+        pipeline_logger=logger,
+    )
 
 
 def _notify_provider_jobs_changed() -> None:

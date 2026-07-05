@@ -43,6 +43,9 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -533,55 +536,106 @@ _UNIVERSALLY_SUPPORTED_MIMES = frozenset({
 
 
 def _transcode_to_png(raw: bytes) -> Optional[bytes]:
-    """Decode arbitrary image bytes with Pillow and re-encode as PNG.
+    """Decode arbitrary image bytes and re-encode as PNG.
 
-    Returns None if Pillow isn't installed or can't decode the input
-    (rare formats, corrupted bytes, missing optional decoder plugin for
-    HEIC/AVIF, or vector formats like SVG). Caller falls back to skipping
-    the image so the rest of the turn still works.
-
-    HEIC/HEIF and AVIF need optional Pillow plugins; we try to register
-    them on demand and swallow ImportError so a missing plugin just
-    looks like 'Pillow can't decode this' rather than crashing.
+    Pillow handles most raster formats. On macOS, fall back to ImageIO via
+    ``sips`` for iPhone HEIC/HEIF photos when optional Pillow plugins are not
+    installed. Returns None if no available decoder can read the bytes.
     """
     try:
         from PIL import Image
     except ImportError:
         logger.info(
-            "image_routing: Pillow not installed; cannot transcode "
-            "non-standard image format to PNG. Install with `pip install Pillow` "
+            "image_routing: Pillow not installed; trying platform fallback for "
+            "non-standard image format. Install with `pip install Pillow` "
             "(and `pillow-heif` / `pillow-avif-plugin` for those formats)."
         )
+    else:
+        # Optional plugin registration. Silent on failure: an unsupported
+        # format will just fall through to Image.open raising below.
+        try:
+            import pillow_heif  # type: ignore
+
+            pillow_heif.register_heif_opener()
+        except Exception:
+            pass
+        try:
+            import pillow_avif  # type: ignore  # noqa: F401  -- registers AVIF on import
+        except Exception:
+            pass
+        try:
+            from io import BytesIO
+
+            with Image.open(BytesIO(raw)) as im:
+                # Pick an output mode PNG can serialise. Anything other than
+                # the standard set gets normalised to RGBA so transparency is
+                # preserved where the source had it.
+                if im.mode not in {"RGB", "RGBA", "L", "LA", "P"}:
+                    im = im.convert("RGBA")
+                buf = BytesIO()
+                im.save(buf, format="PNG", optimize=False)
+                return buf.getvalue()
+        except Exception as exc:
+            logger.info(
+                "image_routing: Pillow could not transcode image to PNG -- %s", exc
+            )
+
+    return _transcode_to_png_with_sips(raw)
+
+
+def _transcode_to_png_with_sips(raw: bytes) -> Optional[bytes]:
+    """Use macOS ImageIO (sips) as a best-effort transcode fallback."""
+    sips_path = shutil.which("sips")
+    if not sips_path:
         return None
-    # Optional plugin registration. Silent on failure: an unsupported
-    # format will just fall through to Image.open raising below.
-    try:
-        import pillow_heif  # type: ignore
 
-        pillow_heif.register_heif_opener()
-    except Exception:
-        pass
-    try:
-        import pillow_avif  # type: ignore  # noqa: F401  -- registers AVIF on import
-    except Exception:
-        pass
-    try:
-        from io import BytesIO
+    mime = _sniff_mime_from_bytes(raw) or ""
+    suffix = {
+        "image/avif": ".avif",
+        "image/heic": ".heic",
+        "image/heif": ".heic",
+        "image/tiff": ".tiff",
+        "image/bmp": ".bmp",
+        "image/x-icon": ".ico",
+    }.get(mime, ".img")
 
-        with Image.open(BytesIO(raw)) as im:
-            # Pick an output mode PNG can serialise. Anything other than
-            # the standard set gets normalised to RGBA so transparency is
-            # preserved where the source had it.
-            if im.mode not in {"RGB", "RGBA", "L", "LA", "P"}:
-                im = im.convert("RGBA")
-            buf = BytesIO()
-            im.save(buf, format="PNG", optimize=False)
-            return buf.getvalue()
-    except Exception as exc:
-        logger.info(
-            "image_routing: Pillow could not transcode image to PNG -- %s", exc
+    in_path = None
+    out_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as src:
+            src.write(raw)
+            in_path = src.name
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as dst:
+            out_path = dst.name
+
+        result = subprocess.run(
+            [sips_path, "-s", "format", "png", in_path, "--out", out_path],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
         )
+        if result.returncode != 0:
+            logger.info(
+                "image_routing: sips could not transcode image to PNG -- %s",
+                (result.stderr or result.stdout).decode("utf-8", errors="replace").strip(),
+            )
+            return None
+        png = Path(out_path).read_bytes()
+        if png.startswith(b"\x89PNG\r\n\x1a\n"):
+            return png
+        logger.info("image_routing: sips output was not a PNG")
         return None
+    except Exception as exc:
+        logger.info("image_routing: sips transcode failed -- %s", exc)
+        return None
+    finally:
+        for path in (in_path, out_path):
+            if path:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 
 def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:

@@ -768,6 +768,65 @@ class TestFormatCompatibility:
         assert url is not None
         assert url.startswith("data:image/png;base64,")
 
+    def test_sips_fallback_uses_resolved_binary_and_returns_png(self, monkeypatch):
+        """The macOS fallback is covered without depending on CI having sips."""
+        from types import SimpleNamespace
+        from pathlib import Path
+        import subprocess
+        from agent import image_routing
+
+        heic_bytes = b"\x00\x00\x00\x20ftypheic" + b"\x00" * 32
+        monkeypatch.setattr(image_routing.shutil, "which", lambda name: "/usr/bin/sips")
+
+        def fake_run(cmd, **kwargs):
+            assert cmd[0] == "/usr/bin/sips"
+            assert cmd[1:4] == ["-s", "format", "png"]
+            assert kwargs["check"] is False
+            assert kwargs["stdout"] is subprocess.PIPE
+            assert kwargs["stderr"] is subprocess.PIPE
+            assert kwargs["timeout"] == 15
+            out_path = Path(cmd[-1])
+            out_path.write_bytes(_png_bytes())
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(image_routing.subprocess, "run", fake_run)
+
+        assert image_routing._transcode_to_png_with_sips(heic_bytes) == _png_bytes()
+
+    def test_heic_transcoded_to_png_via_macos_imageio_fallback(self, tmp_path: Path, monkeypatch):
+        """iPhone HEIC photos should route on macOS even without pillow-heif."""
+        import shutil
+        import subprocess
+        import pytest
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; test needs a seed PNG")
+        from agent.image_routing import _file_to_data_url
+
+        if not shutil.which("sips"):
+            pytest.skip("macOS sips unavailable")
+
+        png_path = tmp_path / "seed.png"
+        heic_path = tmp_path / "iphone.heic"
+        Image.new("RGB", (4, 4), (10, 20, 30)).save(png_path, format="PNG")
+        result = subprocess.run(
+            ["sips", "-s", "format", "heic", str(png_path), "--out", str(heic_path)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0 or not heic_path.exists():
+            pytest.skip(f"sips cannot create HEIC fixture: {result.stderr or result.stdout}")
+
+        def fail_pillow_decode(*args, **kwargs):
+            raise OSError("force fallback path")
+
+        monkeypatch.setattr(Image, "open", fail_pillow_decode)
+
+        url = _file_to_data_url(heic_path)
+
+        assert url is not None
+        assert url.startswith("data:image/png;base64,")
+
     def test_png_passes_through_no_transcode(self, tmp_path: Path):
         """Universal-safe formats must NOT be re-encoded — preserves bytes."""
         from agent.image_routing import _file_to_data_url

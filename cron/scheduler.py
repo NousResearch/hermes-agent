@@ -243,6 +243,31 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
+
+def _classify_silent_marker(deliver_content: str) -> str:
+    """Classify whether ``deliver_content`` should be suppressed as a SILENT
+    response.
+
+    Returns one of:
+        - "deliver"     : normal report, deliver as usual
+        - "silent_clean": the whole response is exactly the marker → suppress
+        - "silent_dirty": marker is the LAST non-empty line, but the response
+                          also contains other non-empty content before it →
+                          suppress, but warn (agent violated "exactly [SILENT]"
+                          contract).
+
+    The last-line rule (rather than whole-text equality) exists because some
+    models prepend reasoning/prose before the marker despite the prompt.
+    """
+    if not deliver_content or not deliver_content.strip():
+        return "deliver"  # empty is handled by a separate guard
+    non_empty = [ln.strip() for ln in deliver_content.splitlines() if ln.strip()]
+    if not non_empty:
+        return "deliver"
+    if non_empty[-1].upper() != SILENT_MARKER:
+        return "deliver"
+    return "silent_clean" if len(non_empty) == 1 else "silent_dirty"
+
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
 # The tick function submits jobs here and returns immediately so the ticker
@@ -2337,9 +2362,21 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # responses: do not deliver a blank message, and let the
         # empty-response guard below mark the run as a soft failure.
         should_deliver = bool(deliver_content.strip())
-        if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-            should_deliver = False
+        if should_deliver and success:
+            _silent_kind = _classify_silent_marker(deliver_content)
+            if _silent_kind == "silent_clean":
+                logger.info(
+                    "Job '%s': agent returned %s — skipping delivery",
+                    job["id"], SILENT_MARKER,
+                )
+                should_deliver = False
+            elif _silent_kind == "silent_dirty":
+                logger.warning(
+                    "Job '%s': agent prepended reasoning before %s marker — "
+                    "suppressed anyway, but prompt should be tightened",
+                    job["id"], SILENT_MARKER,
+                )
+                should_deliver = False
 
         delivery_error = None
         if should_deliver:

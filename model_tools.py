@@ -929,6 +929,16 @@ def _coerce_json(value: str, expected_python_type: type):
 
 def _coerce_number(value: str, integer_only: bool = False):
     """Try to parse *value* as a number.  Returns original string on failure."""
+    stripped = value.strip()
+    # Parse integer literals directly so values outside IEEE-754's exact
+    # integer range (for example 2^53 + 1) do not round through float().
+    if re.fullmatch(r"[+-]?\d+", stripped):
+        try:
+            return int(stripped)
+        except ValueError:
+            # Extremely long digit strings can trip Python's int digit limit.
+            return value
+
     try:
         f = float(value)
     except (ValueError, OverflowError):

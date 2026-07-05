@@ -62,6 +62,20 @@ class TestCoerceNumber:
     def test_large_number(self):
         assert _coerce_number("1000000") == 1000000
 
+    def test_large_integer_string_preserves_precision(self):
+        """Integer literals must not round through float() before int()."""
+        value = "9007199254740993"
+        result = _coerce_number(value)
+        assert result == 9007199254740993
+        assert isinstance(result, int)
+
+    def test_large_integer_only_string_preserves_precision(self):
+        """Schema integer coercion should preserve values above 2^53 exactly."""
+        value = "9007199254740993"
+        result = _coerce_number(value, integer_only=True)
+        assert result == 9007199254740993
+        assert isinstance(result, int)
+
     def test_scientific_notation(self):
         assert _coerce_number("1e5") == 100000
 
@@ -410,6 +424,14 @@ class TestCoerceToolArgs:
         assert isinstance(result["offset"], int)
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
+
+    def test_real_read_file_schema_preserves_large_integer_string(self):
+        """Regression for #59186: offset must not lose precision via float()."""
+        large_offset = 9007199254740993
+        args = {"path": "foo.py", "offset": str(large_offset), "limit": "100"}
+        result = coerce_tool_args("read_file", args)
+        assert result["offset"] == large_offset
+        assert isinstance(result["offset"], int)
 
 
 # ── Schema-guided nested JSON-string normalization (cline/cline#11803) ─────

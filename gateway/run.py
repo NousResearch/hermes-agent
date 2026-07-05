@@ -18087,6 +18087,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # plus a per-child monotonic tool index for its card entries.
         _slack_subagent_streams: Dict[str, Any] = {}
         _slack_subagent_tool_idx: Dict[str, int] = {}
+        # FIFO gate serializing stream OPENS (main first, then children in
+        # relay order) — thread position is startStream completion order,
+        # so unserialized opens race and children can render above main.
+        _slack_subagent_open_lock = asyncio.Lock()
 
         def _slack_task_event(event_type: str, tool_name: str, preview, args, kwargs) -> None:
             """Route a tool lifecycle event onto the Slack native task stream.
@@ -18229,6 +18233,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     ),
                 )
                 _slack_subagent_streams[key] = sub
+                # Thread position = startStream COMPLETION order, and the
+                # main + child streams otherwise race their first HTTP
+                # calls (observed live: SUBAGENT #2 rendered above main,
+                # #1 below). Open this child's stream NOW, in relay order,
+                # gated on: main open first, then children strictly by
+                # arrival (task order). asyncio.Lock is FIFO, so awaiting
+                # openers in schedule order serializes thread placement.
+                async def _open_ordered(s=sub):
+                    async with _slack_subagent_open_lock:
+                        await _slack_task_stream.ensure_started()
+                        await s.ensure_started()
+                _fut = safe_schedule_threadsafe(
+                    _open_ordered(),
+                    _voice_ack_loop,
+                    logger=logger,
+                    log_message="slack subagent stream open error",
+                )
+                if _fut is not None:
+                    _slack_task_futures.append(_fut)
             if sub is None or sub.disabled:
                 # Child stream unavailable → legacy single-card fallback on
                 # the main stream (keeps observability rather than dropping).

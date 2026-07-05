@@ -1182,3 +1182,32 @@ class TestAsyncQueueLogging:
         # INFO must not reach the WARNING+ errors.log even through the queue.
         if errors_log.exists():
             assert "info-level line" not in errors_log.read_text()
+
+
+class TestDrainLogQueue:
+    """drain_log_queue() must null the listener under the lock so a later
+    teardown never stops the same QueueListener twice (which raises
+    AttributeError on CPython <3.13, whose stop() is not idempotent)."""
+
+    def test_drain_nulls_the_listener(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging._queue_listener is not None
+        hermes_logging.drain_log_queue(timeout=1.0)
+        # After a drain the global must be cleared, so nothing can stop the
+        # already-stopped listener a second time.
+        assert hermes_logging._queue_listener is None
+
+    def test_flush_after_drain_does_not_raise(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.drain_log_queue(timeout=1.0)
+        # Before the fix this double-stopped the drained listener:
+        # AttributeError: 'NoneType' object has no attribute 'join'.
+        hermes_logging.flush_log_queue()
+
+    def test_forced_resetup_after_drain_does_not_raise(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.drain_log_queue(timeout=1.0)
+        # A forced re-setup after a drain must not stop the already-drained
+        # listener a second time; before the fix the stale global tripped the
+        # non-idempotent stop() and raised AttributeError.
+        hermes_logging.setup_logging(hermes_home=hermes_home, force=True)

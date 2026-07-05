@@ -676,7 +676,15 @@ def drain_log_queue(timeout: float = 1.0) -> None:
     proceed. Availability beats the last log line when the disk is already
     wedged.
     """
-    listener = _queue_listener
+    global _queue_listener
+    # Grab-and-null under the state lock, mirroring every sibling teardown path
+    # (_stop_queue_listener_locked / flush_log_queue / _register_queued_handler).
+    # This closes the unlocked-read gap on the shared global AND prevents a later
+    # flush_log_queue()/setup_logging(force=True) from stopping the same listener a
+    # second time — on CPython <3.13 QueueListener.stop() is not idempotent and a
+    # second stop joins a None thread -> AttributeError.
+    with _queue_state_lock:
+        listener, _queue_listener = _queue_listener, None
     if listener is None:
         return
 

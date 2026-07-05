@@ -286,6 +286,16 @@ file-export = [
   "weasyprint==62.3",
   "pydyf==0.10.0",
 ]
+# hc-401: DuckDuckGo search backend. The cloud container image baked `ddgs`
+# unpinned in its own build line (build_native_agent_image.sh `uv pip install
+# ddgs`). To let the cloud image be built FROM this fork (unify the two runtime
+# assembly lines), ddgs must be installable here — the fork previously left it
+# out on purpose (it is the CN search-only backend, not a desktop default). Kept
+# in a dedicated extra (only the Dockerfile opts in via `--extra cloud-search`)
+# so plain source / desktop installs don't pull it. Unpinned to match the cloud
+# bake line exactly (no pin was discoverable in cloud prod); pin here if cloud
+# later pins it.
+cloud-search = ["ddgs"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every

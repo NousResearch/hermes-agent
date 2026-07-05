@@ -82,3 +82,59 @@ def register(ctx) -> None:  # noqa: ARG001 — ctx unused; this is a boot hook
             )
     except Exception:
         logger.warning("apex-overlay: feishu_supervisor seam failed to load", exc_info=True)
+
+    # hc-401: seams porting the four cloud build-time in-place patches into the
+    # overlay so the cloud container image can be built from this fork (unify the
+    # two runtime assembly lines). Each is idempotent + fail-safe.
+
+    try:
+        from apex_overlay import web_tools_extract
+
+        if not web_tools_extract.apply():
+            logger.warning(
+                "apex-overlay: hc-401 web_extract capability-gate seam did not "
+                "fully apply (see prior error). web_extract stays gated by the "
+                "broad check_web_api_key and may hang on search-only backends "
+                "like ddgs (model calls it, request spins to Feishu timeout)."
+            )
+    except Exception:
+        logger.warning("apex-overlay: web_tools_extract seam failed to load", exc_info=True)
+
+    try:
+        from apex_overlay import stt_no_lazy_install
+
+        if not stt_no_lazy_install.apply():
+            logger.warning(
+                "apex-overlay: hc-401 managed-runtime STT lazy-install guard seam "
+                "did not fully apply (see prior error). A managed (768MB) container "
+                "may OOM-kill the gateway lazy-installing faster-whisper on first "
+                "transcription."
+            )
+    except Exception:
+        logger.warning("apex-overlay: stt_no_lazy_install seam failed to load", exc_info=True)
+
+    try:
+        from apex_overlay import first_turn_ack
+
+        if not first_turn_ack.apply():
+            logger.warning(
+                "apex-overlay: hc-401 first_turn_ack seam did not fully apply "
+                "(see prior error). Native no-edit CN-IM entries "
+                "(wecom/weixin/dingtalk/qqbot) will sit in ~14.6s of first-turn "
+                "silence with no 'received, working' ack."
+            )
+    except Exception:
+        logger.warning("apex-overlay: first_turn_ack seam failed to load", exc_info=True)
+
+    try:
+        from apex_overlay import cn_im_messages
+
+        if not cn_im_messages.apply():
+            logger.warning(
+                "apex-overlay: hc-401 CN-IM message localization seam did not "
+                "fully apply (see prior error). Gateway control/status messages "
+                "(busy-ack, gateway-busy, no-home-channel, mid-run rejections) "
+                "may leak English to wecom/weixin/dingtalk/qqbot users."
+            )
+    except Exception:
+        logger.warning("apex-overlay: cn_im_messages seam failed to load", exc_info=True)

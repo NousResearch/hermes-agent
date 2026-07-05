@@ -19,6 +19,11 @@ _SEAM_MODULES = (
     "models_dev_fast",
     "gateway_bootstrap",
     "feishu_supervisor",
+    # hc-401 seams (ported cloud build-time patches).
+    "web_tools_extract",
+    "stt_no_lazy_install",
+    "first_turn_ack",
+    "cn_im_messages",
 )
 
 

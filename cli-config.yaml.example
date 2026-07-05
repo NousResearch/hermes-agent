@@ -1346,6 +1346,33 @@ display:
   #
   skin: default
 
+  # Per-platform display overrides (display.platforms.<platform>.<setting>).
+  # These win over the global display.<setting> values above and the built-in
+  # per-platform tier defaults.
+  platforms:
+    # hc-401 (first_turn_ack): the native no-edit CN-IM entries
+    # (wecom/weixin/dingtalk/wecom_callback/qqbot) have no edit_message and run
+    # on the low display tier (streaming + heartbeats off), so the ~14.6s
+    # first-inference window after the gateway is up is dead silence. Send one
+    # short "received, working" ack at the start of a fresh turn on these
+    # platforms only. The apex-overlay first_turn_ack seam applies the same
+    # default in code, so this stanza is documentation + an explicit override
+    # point (set to false to opt a platform out). Feishu / international
+    # platforms already have streaming or heartbeats, so they stay off.
+    # Kill switches: HERMES_GATEWAY_FIRST_TURN_ACK_ENABLED (default true),
+    # HERMES_GATEWAY_FIRST_TURN_ACK_COOLDOWN (seconds, default 30),
+    # HERMES_GATEWAY_FIRST_TURN_ACK_TEXT (default "⏳ 收到，正在处理中…").
+    wecom:
+      first_turn_ack: true
+    weixin:
+      first_turn_ack: true
+    dingtalk:
+      first_turn_ack: true
+    wecom_callback:
+      first_turn_ack: true
+    qqbot:
+      first_turn_ack: true
+
 # =============================================================================
 # Model Aliases — short names for /model command
 # =============================================================================

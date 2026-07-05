@@ -21,6 +21,16 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # install survives the /opt/data volume overlay at runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 
+# hc-401: managed-runtime marker. The CLOUD image build passes
+# `--build-arg HERMES_MANAGED_RUNTIME=1`; the DESKTOP build does NOT, so it
+# stays empty there. The apex_overlay STT seam (apex_overlay/stt_no_lazy_install)
+# keys on this env at runtime to force-disable faster-whisper lazy-install ONLY
+# on managed containers (a 768MB box OOM-kills the gateway installing whisper),
+# while desktop keeps upstream lazy-install behavior. Default empty → unset for
+# a plain `docker build` / desktop build.
+ARG HERMES_MANAGED_RUNTIME=
+ENV HERMES_MANAGED_RUNTIME=${HERMES_MANAGED_RUNTIME}
+
 # Install system dependencies in one layer, clear APT cache.
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
 # subprocesses, git, bun, etc.) that would otherwise accumulate when hermes
@@ -30,8 +40,11 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils \
+    libcairo2 libglib2.0-0 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 shared-mime-info fonts-noto-cjk && \
     rm -rf /var/lib/apt/lists/*
+# hc-401: WeasyPrint runtime libs (Pango/Cairo/gdk-pixbuf) + CJK fonts, from
+# cloud image bake line; PDF export plugin needs these at runtime.
 
 # ---------- s6-overlay install ----------
 # s6-overlay provides supervision for the main hermes process, the dashboard,
@@ -187,7 +200,13 @@ RUN npm install --prefer-offline --no-audit && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra feishu --extra edge-tts --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+# hc-401: --extra cloud-search bakes ddgs (DuckDuckGo search); --extra dingtalk
+# bakes dingtalk-stream==0.24.3 (needed at module-load so the DingTalk handler
+# can subclass the real ChatbotHandler — hc-213). Both were previously separate
+# cloud-image bake lines (build_native_agent_image.sh); folding them into the
+# fork's uv sync lets the cloud container image be built FROM this fork. Desktop
+# images built from this fork also carry them — harmless.
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra feishu --extra edge-tts --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra cloud-search --extra dingtalk
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't

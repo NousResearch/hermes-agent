@@ -81,6 +81,21 @@ def _activity_event(event_id: str, **overrides):
     return event
 
 
+class _ExitedBridgeProc:
+    def __init__(self, returncode: int = 1, pid: int = 1234):
+        self.pid = pid
+        self.returncode = returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def terminate(self):
+        return None
+
+    def kill(self):
+        return None
+
+
 class TestRaftWakePayload:
     def test_detects_content_fields(self):
         assert _has_content_field({"text": "hello"}) is True
@@ -213,6 +228,57 @@ class TestRaftWakeHttp:
         pending = adapter._pending_messages[session_key]
         assert pending.message_id == "wake-busy"
         assert "raft manual get" in pending.text
+
+
+class TestRaftBridgeSupervision:
+    @pytest.mark.asyncio
+    async def test_bridge_exit_marks_retryable_fatal(self):
+        adapter = _make_adapter()
+        proc = _ExitedBridgeProc(returncode=7)
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._bridge_process = proc
+
+        await adapter._monitor_bridge_process(proc)
+
+        assert adapter._bridge_process is None
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_code == "raft_bridge_exited"
+        assert adapter.fatal_error_retryable is True
+        assert "status 7" in (adapter.fatal_error_message or "")
+        fatal_handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_planned_shutdown_bridge_exit_is_not_fatal(self):
+        adapter = _make_adapter()
+        proc = _ExitedBridgeProc(returncode=0)
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = False
+        adapter._bridge_process = proc
+
+        await adapter._monitor_bridge_process(proc)
+
+        assert adapter._bridge_process is None
+        assert adapter.has_fatal_error is False
+        fatal_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stale_bridge_monitor_does_not_mark_fatal(self):
+        adapter = _make_adapter()
+        old_proc = _ExitedBridgeProc(returncode=1, pid=111)
+        new_proc = _ExitedBridgeProc(returncode=0, pid=222)
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._bridge_process = new_proc
+
+        await adapter._monitor_bridge_process(old_proc)
+
+        assert adapter._bridge_process is new_proc
+        assert adapter.has_fatal_error is False
+        fatal_handler.assert_not_awaited()
 
 
 class TestRaftActivityHttp:

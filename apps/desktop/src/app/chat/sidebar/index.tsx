@@ -352,8 +352,10 @@ export function ChatSidebar({
     for (const s of [...cronSessions, ...visibleSessions]) {
       map.set(s.id, s)
 
-      if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
-        map.set(s._lineage_root_id, s)
+      for (const id of [s._lineage_root_id, ...(s._lineage_ids ?? [])]) {
+        if (id && !map.has(id)) {
+          map.set(id, s)
+        }
       }
     }
 

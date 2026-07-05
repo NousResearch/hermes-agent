@@ -172,10 +172,10 @@ class TestSyncMode:
 
 
 class TestSequentialPool:
-    """Sequential (workdir/profile) jobs use the persistent cron-seq pool.
+    """Sequential (workdir) jobs use the persistent cron-seq pool.
 
-    Verifies the follow-up fix: env/context-mutating jobs no longer run inline
-    in the ticker thread, so a long workdir/profile job can't starve the
+    Verifies the follow-up fix: env-mutating jobs no longer run inline
+    in the ticker thread, so a long workdir job can't starve the
     schedule the same way the parallel path used to.
     """
 

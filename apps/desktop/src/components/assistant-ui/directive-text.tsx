@@ -63,7 +63,7 @@ export function directiveIconSvg(type: string) {
   return `<svg ${SVG_ATTRS} class="size-3 shrink-0 opacity-80">${inner}</svg>`
 }
 
-export function directiveIconElement(type: string) {
+function iconElementFromPaths(paths: string[]) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   svg.setAttribute('class', 'size-3 shrink-0 opacity-80')
   svg.setAttribute('fill', 'none')
@@ -74,13 +74,53 @@ export function directiveIconElement(type: string) {
   svg.setAttribute('viewBox', '0 0 24 24')
   svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
 
-  for (const d of iconPathsFor(type)) {
+  for (const d of paths) {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
     path.setAttribute('d', d)
     svg.append(path)
   }
 
   return svg
+}
+
+export function directiveIconElement(type: string) {
+  return iconElementFromPaths(iconPathsFor(type))
+}
+
+/** Per-type slash-command pill styling. The composer inserts these chips when a
+ *  command is picked; the kind drives a theme-aware accent so commands, skills,
+ *  and themes read distinctly (Cursor-style). */
+export type SlashChipKind = 'command' | 'skill' | 'theme'
+
+const SLASH_ICON_PATHS: Record<SlashChipKind, string[]> = {
+  command: ['M5 7l5 5l-5 5', 'M12 19l7 0'],
+  skill: ['M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11'],
+  theme: [
+    'M3 21v-4a4 4 0 1 1 4 4h-4',
+    'M21 3a16 16 0 0 0 -12.8 10.2',
+    'M21 3a16 16 0 0 1 -10.2 12.8',
+    'M10.6 9a9 9 0 0 1 4.4 4.4'
+  ]
+}
+
+const SLASH_CHIP_VARIANT: Record<SlashChipKind, string> = {
+  command:
+    'bg-[color-mix(in_srgb,var(--ui-accent)_14%,transparent)] text-[color-mix(in_srgb,var(--ui-accent)_82%,var(--foreground))]',
+  skill:
+    'bg-[color-mix(in_srgb,var(--ui-warm)_18%,transparent)] text-[color-mix(in_srgb,var(--ui-warm)_82%,var(--foreground))]',
+  theme:
+    'bg-[color-mix(in_srgb,var(--ui-accent-secondary)_16%,transparent)] text-[color-mix(in_srgb,var(--ui-accent-secondary)_82%,var(--foreground))]'
+}
+
+export const SLASH_CHIP_BASE_CLASS =
+  'mx-0.5 inline-flex max-w-64 items-center gap-1 rounded px-1.5 py-0.5 align-middle text-[0.86em] font-medium leading-none'
+
+export function slashChipClass(kind: SlashChipKind): string {
+  return `${SLASH_CHIP_BASE_CLASS} ${SLASH_CHIP_VARIANT[kind]}`
+}
+
+export function slashIconElement(kind: SlashChipKind) {
+  return iconElementFromPaths(SLASH_ICON_PATHS[kind])
 }
 
 const DirectiveIcon: FC<{ type: string }> = ({ type }) => (
@@ -119,7 +159,12 @@ export const DIRECTIVE_CHIP_CLASS =
 const CANONICAL_DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/g
 
 const HERMES_DIRECTIVE_RE = new RegExp(
-  '@(file|folder|url|image|tool|line|terminal|session):(' + '`[^`\\n]+`' + '|"[^"\\n]+"' + "|'[^'\\n]+'" + '|\\S+' + ')',
+  '@(file|folder|url|image|tool|line|terminal|session):(' +
+    '`[^`\\n]+`' +
+    '|"[^"\\n]+"' +
+    "|'[^'\\n]+'" +
+    '|\\S+' +
+    ')',
   'g'
 )
 
@@ -282,13 +327,29 @@ function shortLabel(type: HermesRefType, id: string): string {
   return tail || id
 }
 
+function safeEmbeddedImages(text: string) {
+  try {
+    return extractEmbeddedImages(text)
+  } catch {
+    return { cleanedText: text, images: [] as string[] }
+  }
+}
+
+function safeDirectiveSegments(text: string): Unstable_DirectiveSegment[] {
+  try {
+    return [...hermesDirectiveFormatter.parse(text)]
+  } catch {
+    return [{ kind: 'text', text }]
+  }
+}
+
 /**
  * Renders text containing Hermes directives (`@file:...`, `@image:...`) as
  * inline chips. Embedded MEDIA images render below as a thumbnail row.
  */
 export function DirectiveContent({ text }: { text: string }) {
-  const { cleanedText, images } = useMemo(() => extractEmbeddedImages(text ?? ''), [text])
-  const segments = useMemo(() => hermesDirectiveFormatter.parse(cleanedText), [cleanedText])
+  const { cleanedText, images } = useMemo(() => safeEmbeddedImages(text ?? ''), [text])
+  const segments = useMemo(() => safeDirectiveSegments(cleanedText), [cleanedText])
 
   return (
     <span className="whitespace-pre-line" data-slot="aui_directive-text">
@@ -342,9 +403,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
     // Remote gateway: the image lives on the gateway's disk, not ours — fetch
     // it over the authenticated API. Local: read it straight off this disk.
     const load =
-      window.hermesDesktop && isRemoteGateway()
-        ? gatewayMediaDataUrl(id)
-        : window.hermesDesktop?.readFileDataUrl(id)
+      window.hermesDesktop && isRemoteGateway() ? gatewayMediaDataUrl(id) : window.hermesDesktop?.readFileDataUrl(id)
 
     void Promise.resolve(load)
       .then(url => alive && url && setSrc(url))

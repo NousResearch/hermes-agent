@@ -16,8 +16,10 @@ import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
+import { hexToRgb, mix, readableOn } from './color'
 import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
+import { $userThemes, resolveTheme } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
 // for any profile without its own assignment, so single-profile users and old
@@ -41,7 +43,7 @@ const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
 const normalizeSkin = (name: string | null): string =>
-  name && BUILTIN_THEMES[name] && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+  name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
 const normalizeMode = (value: string | null): ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
@@ -71,44 +73,8 @@ const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_K
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
 
 // ─── Color math (for synthesised light variants of dark-only skins) ────────
-
-function hexToRgb(hex: string): [number, number, number] | null {
-  const clean = hex.trim().replace(/^#/, '')
-
-  if (!/^[0-9a-f]{6}$/i.test(clean)) {
-    return null
-  }
-
-  return [0, 2, 4].map(i => parseInt(clean.slice(i, i + 2), 16)) as [number, number, number]
-}
-
-const rgbToHex = ([r, g, b]: [number, number, number]) =>
-  `#${[r, g, b].map(n => Math.round(n).toString(16).padStart(2, '0')).join('')}`
-
-function mix(a: string, b: string, amount: number): string {
-  const ar = hexToRgb(a)
-  const br = hexToRgb(b)
-
-  return ar && br
-    ? rgbToHex([ar[0] + (br[0] - ar[0]) * amount, ar[1] + (br[1] - ar[1]) * amount, ar[2] + (br[2] - ar[2]) * amount])
-    : a
-}
-
-function readableOn(hex: string): string {
-  const rgb = hexToRgb(hex)
-
-  if (!rgb) {
-    return '#ffffff'
-  }
-
-  const [r, g, b] = rgb.map(v => {
-    const c = v / 255
-
-    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
-  })
-
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.58 ? '#161616' : '#ffffff'
-}
+// hexToRgb / mix / readableOn live in ./color so the VS Code converter shares
+// the exact same math.
 
 function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
   const accent = seed.colors.ring || seed.colors.primary
@@ -148,7 +114,7 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
 
 /** Returns the seed palette for a given skin + mode (no overrides applied). */
 export function getBaseColors(skinName: string, mode: 'light' | 'dark'): DesktopThemeColors {
-  const seed = BUILTIN_THEMES[skinName] ?? nousTheme
+  const seed = resolveTheme(skinName) ?? nousTheme
 
   if (mode === 'dark') {
     return seed.darkColors ?? seed.colors
@@ -158,7 +124,7 @@ export function getBaseColors(skinName: string, mode: 'light' | 'dark'): Desktop
 }
 
 function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
-  const seed = BUILTIN_THEMES[skinName] ?? nousTheme
+  const seed = resolveTheme(skinName) ?? nousTheme
 
   return {
     ...seed,
@@ -191,6 +157,12 @@ function renderedModeFor(colors: DesktopThemeColors, mode: 'light' | 'dark'): 'l
 // Per-mode mix knobs. Light/dark fallbacks live in styles.css `:root` /
 // `:root.dark`; setting them inline keeps active-skin overrides surviving
 // the boot-time paint.
+// styles.css --theme-neutral-chrome — keep in sync.
+const NEUTRAL_CHROME = { light: '#f3f3f3', dark: '#0d0d0e' } as const
+
+const chromeBackground = (background: string, isDark: boolean) =>
+  mix(background, NEUTRAL_CHROME[isDark ? 'dark' : 'light'], isDark ? 0.26 : 0.08)
+
 const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-chrome': isDark ? '74%' : '92%',
   '--theme-mix-sidebar': '100%',
@@ -256,10 +228,23 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     root.style.setProperty(k, v)
   }
 
+  const chromeBg = chromeBackground(c.background, isDark)
+
   window.hermesDesktop?.setTitleBarTheme?.({
-    background: c.background,
+    background: chromeBg,
     foreground: c.foreground
   })
+
+  // Raw (non-JSON) keys read by the inline pre-paint script in index.html —
+  // they let a brand-new window paint the themed background on its very first
+  // frame, before this module has even loaded.
+  try {
+    window.localStorage.setItem('hermes-boot-background', chromeBg)
+    window.localStorage.setItem('hermes-boot-color-scheme', rendered)
+  } catch {
+    // Storage may be unavailable (private mode / quota); the inline script
+    // falls back to prefers-color-scheme.
+  }
 
   if (typo.fontUrl && !INJECTED_FONT_URLS.has(typo.fontUrl)) {
     const link = document.createElement('link')
@@ -271,13 +256,23 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   }
 }
 
+// Pin Electron's nativeTheme to the app's mode so the NATIVE window chrome
+// (macOS vibrancy material, titlebar, pre-paint background) matches the app
+// theme instead of the OS appearance. An explicit light/dark pick is forced;
+// 'system' stays 'system' so prefers-color-scheme keeps tracking the OS.
+const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
+  window.hermesDesktop?.setNativeTheme?.(pref === 'system' ? 'system' : rendered)
+
 // Boot-time paint to avoid a flash before <ThemeProvider> mounts. Use the last
 // active profile's appearance so a non-default profile relaunch paints its own
 // skin + light/dark mode.
 if (typeof window !== 'undefined') {
   const profile = readBootProfileKey()
-  const resolved = resolveMode(modePref.resolve(profile))
-  applyTheme(deriveTheme(skinPref.resolve(profile), resolved), resolved)
+  const pref = modePref.resolve(profile)
+  const resolved = resolveMode(pref)
+  const theme = deriveTheme(skinPref.resolve(profile), resolved)
+  applyTheme(theme, resolved)
+  syncNativeTheme(pref, renderedModeFor(theme.colors, resolved))
 }
 
 // ─── Context ────────────────────────────────────────────────────────────────
@@ -286,7 +281,15 @@ interface ThemeContextValue {
   theme: DesktopTheme
   themeName: string
   mode: ThemeMode
+  /** The light/dark switch the user picked. */
   resolvedMode: 'light' | 'dark'
+  /**
+   * The mode actually painted, derived from the active background's luminance.
+   * Differs from `resolvedMode` for skins that keep a bright surface in "dark"
+   * (or vice-versa). Surface-bound UI (e.g. the terminal palette) should key off
+   * this so it matches what's on screen instead of inverting.
+   */
+  renderedMode: 'light' | 'dark'
   availableThemes: Array<{ name: string; label: string; description: string }>
   setTheme: (name: string) => void
   setMode: (mode: ThemeMode) => void
@@ -299,6 +302,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   themeName: DEFAULT_SKIN_NAME,
   mode: 'light',
   resolvedMode: 'light',
+  renderedMode: 'light',
   availableThemes: SKIN_LIST,
   setTheme: () => {},
   setMode: () => {}
@@ -309,6 +313,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // appearance shows. Single-profile users only ever see "default", so their
   // behavior is unchanged.
   const profileKey = normalizeProfileKey(useStore($activeGatewayProfile))
+
+  // Built-ins + user-installed themes. Reactive so an import shows up live in
+  // the palette, settings grid, and `/skin` without a reload.
+  const userThemes = useStore($userThemes)
+
+  const availableThemes = useMemo(
+    () =>
+      [...Object.values(BUILTIN_THEMES), ...Object.values(userThemes)].map(({ name, label, description }) => ({
+        name,
+        label,
+        description
+      })),
+    [userThemes]
+  )
 
   const [themeName, setThemeNameState] = useState(() =>
     typeof window === 'undefined' ? DEFAULT_SKIN_NAME : skinPref.resolve(readBootProfileKey())
@@ -330,7 +348,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const resolvedMode = resolveMode(mode, systemDark)
   const activeTheme = useMemo(() => deriveTheme(themeName, resolvedMode), [themeName, resolvedMode])
 
+  // What actually gets painted (matches the `.dark` class applyTheme toggles).
+  const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, resolvedMode), [activeTheme, resolvedMode])
+
   useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
+
+  // Keep the native window appearance pinned to the app theme (vibrancy
+  // material, titlebar, new-window pre-paint background).
+  useEffect(() => syncNativeTheme(mode, renderedMode), [mode, renderedMode])
 
   // Assign to whichever profile is live right now (read fresh so the callbacks
   // stay stable across profile switches).
@@ -351,8 +376,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // (`appearance.toggleMode`) so it shows up in the hotkey map and is rebindable.
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ theme: activeTheme, themeName, mode, resolvedMode, availableThemes: SKIN_LIST, setTheme, setMode }),
-    [activeTheme, themeName, mode, resolvedMode, setTheme, setMode]
+    () => ({ theme: activeTheme, themeName, mode, resolvedMode, renderedMode, availableThemes, setTheme, setMode }),
+    [activeTheme, themeName, mode, resolvedMode, renderedMode, availableThemes, setTheme, setMode]
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>

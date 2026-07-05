@@ -68,8 +68,8 @@ def _ra():
     return run_agent
 
 
-def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
-    """Build the one-time notice shown when Codex gpt-5.5 raises compaction.
+def _build_codex_gpt55_autoraise_warning(autoraise: Dict[str, float]) -> str:
+    """Build the one-time warning shown when Codex gpt-5.5 raises compaction.
 
     ``autoraise`` is ``{"from": <old_ratio>, "to": <new_ratio>}``. The same
     text is printed inline for CLI users and replayed via ``status_callback``
@@ -1402,15 +1402,18 @@ def init_agent(
     # 85% (the Codex backend caps the window at 272K, so the default 50% would
     # compact at ~136K — half the usable context). Gated by an opt-out config
     # flag so the user can fall back to the global threshold; when the override
-    # fires we stash a one-time notification (replayed on the first turn) that
-    # tells the user what changed and how to revert. The notice has its own
-    # display gate so users can keep the threshold autoraise without getting
-    # the banner on gateway turns.
+    # fires we stash a one-time warning (replayed on the first turn) that tells
+    # the user what changed and how to revert. The warning has its own display
+    # gate so users can keep the threshold autoraise without getting the banner
+    # on gateway turns.
     _codex_gpt55_autoraise = str(
         _compression_cfg.get("codex_gpt55_autoraise", True)
     ).lower() in {"true", "1", "yes"}
-    _codex_gpt55_autoraise_notice = str(
-        _compression_cfg.get("codex_gpt55_autoraise_notice", True)
+    _codex_gpt55_autoraise_warning = str(
+        _compression_cfg.get(
+            "codex_gpt55_autoraise_warning",
+            _compression_cfg.get("codex_gpt55_autoraise_notice", True),
+        )
     ).lower() in {"true", "1", "yes"}
     agent._compression_threshold_autoraised = None
     try:
@@ -1426,8 +1429,8 @@ def init_agent(
         if _model_cthresh is not None:
             _prev_threshold = compression_threshold
             compression_threshold = _model_cthresh
-            # Notify only for the Codex gpt-5.5 autoraise (the Arcee Trinity
-            # override is a long-standing silent default). Skip the notice when
+            # Warn only for the Codex gpt-5.5 autoraise (the Arcee Trinity
+            # override is a long-standing silent default). Skip the warning when
             # the user's global threshold already meets/exceeds the raised
             # value, since nothing actually changed for them.
             if (
@@ -1891,24 +1894,24 @@ def init_agent(
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
-        # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
+        # One-time warning when the Codex gpt-5.5 autoraise kicked in, with the
         # exact opt-back-out command. Printed inline at startup for CLI users;
         # gateway users get the same text replayed via _compression_warning on
         # turn 1 (set below, after the warning slot is initialized).
         _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled and _codex_gpt55_autoraise_notice:
-            print(_build_codex_gpt55_autoraise_notice(_autoraise))
+        if _autoraise and compression_enabled and _codex_gpt55_autoraise_warning:
+            print(_build_codex_gpt55_autoraise_warning(_autoraise))
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored
     # in _compression_warning and replayed in the first run_conversation().
     agent._compression_warning = None
-    # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
+    # Gateway parity for the Codex gpt-5.5 autoraise warning: the startup print
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
     _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled and _codex_gpt55_autoraise_notice:
-        agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
+    if _autoraise and compression_enabled and _codex_gpt55_autoraise_warning:
+        agent._compression_warning = _build_codex_gpt55_autoraise_warning(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network
     # probe of the auxiliary provider chain + /models lookup) on every agent

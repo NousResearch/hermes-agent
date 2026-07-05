@@ -1,4 +1,4 @@
-"""Regression tests for the Codex gpt-5.5 autoraise notice gate."""
+"""Regression tests for the Codex gpt-5.5 autoraise warning gate."""
 
 from __future__ import annotations
 
@@ -10,7 +10,12 @@ from hermes_state import SessionDB
 from run_agent import AIAgent
 
 
-def _config(*, show_notice: bool) -> dict:
+def _config(*, show_warning: bool, legacy_notice_key: bool = False) -> dict:
+    warning_key = (
+        "codex_gpt55_autoraise_notice"
+        if legacy_notice_key
+        else "codex_gpt55_autoraise_warning"
+    )
     return {
         "compression": {
             "enabled": True,
@@ -19,7 +24,7 @@ def _config(*, show_notice: bool) -> dict:
             "protect_first_n": 3,
             "protect_last_n": 20,
             "codex_gpt55_autoraise": True,
-            "codex_gpt55_autoraise_notice": show_notice,
+            warning_key: show_warning,
         },
         "prompt_caching": {"cache_ttl": "5m"},
         "sessions": {},
@@ -27,11 +32,24 @@ def _config(*, show_notice: bool) -> dict:
     }
 
 
-def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
+def _make_codex_agent(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    show_warning: bool,
+    legacy_notice_key: bool = False,
+):
     """Construct a real Codex gpt-5.5 agent under an isolated config."""
     from hermes_cli import config as config_mod
 
-    monkeypatch.setattr(config_mod, "load_config", lambda: _config(show_notice=show_notice))
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: _config(
+            show_warning=show_warning,
+            legacy_notice_key=legacy_notice_key,
+        ),
+    )
     db = SessionDB(db_path=tmp_path / "state.db")
     stdout = io.StringIO()
 
@@ -46,7 +64,7 @@ def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
             quiet_mode=False,
             skip_memory=True,
             session_db=db,
-            session_id="codex-notice-test",
+            session_id="codex-warning-test",
         )
 
     return agent, stdout.getvalue()
@@ -57,8 +75,8 @@ def _threshold_ratio(agent: AIAgent) -> float:
     return round(compressor.threshold_tokens / compressor.context_length, 2)
 
 
-def test_codex_gpt55_autoraise_notice_enabled_by_default(monkeypatch, tmp_path):
-    agent, stdout = _make_codex_agent(monkeypatch, tmp_path, show_notice=True)
+def test_codex_gpt55_autoraise_warning_enabled_by_default(monkeypatch, tmp_path):
+    agent, stdout = _make_codex_agent(monkeypatch, tmp_path, show_warning=True)
 
     assert _threshold_ratio(agent) == 0.85
     warning = getattr(agent, "_compression_warning")
@@ -67,10 +85,23 @@ def test_codex_gpt55_autoraise_notice_enabled_by_default(monkeypatch, tmp_path):
     assert "auto-compaction was raised" in stdout
 
 
-def test_codex_gpt55_autoraise_notice_can_be_suppressed_without_disabling_autoraise(
+def test_codex_gpt55_autoraise_warning_can_be_suppressed_without_disabling_autoraise(
     monkeypatch, tmp_path
 ):
-    agent, stdout = _make_codex_agent(monkeypatch, tmp_path, show_notice=False)
+    agent, stdout = _make_codex_agent(monkeypatch, tmp_path, show_warning=False)
+
+    assert _threshold_ratio(agent) == 0.85
+    assert getattr(agent, "_compression_warning") is None
+    assert "auto-compaction was raised" not in stdout
+
+
+def test_legacy_notice_key_still_suppresses_warning(monkeypatch, tmp_path):
+    agent, stdout = _make_codex_agent(
+        monkeypatch,
+        tmp_path,
+        show_warning=False,
+        legacy_notice_key=True,
+    )
 
     assert _threshold_ratio(agent) == 0.85
     assert getattr(agent, "_compression_warning") is None

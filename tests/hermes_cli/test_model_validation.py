@@ -411,6 +411,44 @@ class TestCopilotNormalization:
         }]
         assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
 
+    def test_copilot_api_mode_non_gpt_responses_only_uses_responses(self):
+        """A non-GPT Responses-only model (e.g. mai-code) must use codex_responses.
+
+        The ID regex only recognises GPT-5+ models, so without the catalog
+        fallback mai-code-1-flash-picker falls through to chat_completions and
+        the request fails with HTTP 400 'not accessible via /chat/completions'.
+        """
+        catalog = [{
+            "id": "mai-code-1-flash-picker",
+            "supported_endpoints": ["/responses"],
+        }]
+        assert (
+            copilot_model_api_mode("mai-code-1-flash-picker", catalog=catalog)
+            == "codex_responses"
+        )
+
+    def test_copilot_api_mode_non_gpt_messages_only_uses_anthropic(self):
+        """A non-GPT Messages-only model keeps routing to anthropic_messages."""
+        catalog = [{
+            "id": "claude-opus-4.6",
+            "supported_endpoints": ["/v1/messages"],
+        }]
+        assert (
+            copilot_model_api_mode("claude-opus-4.6", catalog=catalog)
+            == "anthropic_messages"
+        )
+
+    def test_copilot_api_mode_non_gpt_chat_capable_stays_chat(self):
+        """Non-GPT models that advertise /chat/completions keep using it."""
+        catalog = [{
+            "id": "claude-opus-4.6",
+            "supported_endpoints": ["/chat/completions", "/v1/messages"],
+        }]
+        assert (
+            copilot_model_api_mode("claude-opus-4.6", catalog=catalog)
+            == "chat_completions"
+        )
+
     def test_normalize_opencode_model_id_strips_provider_prefix(self):
         assert normalize_opencode_model_id("opencode-go", "opencode-go/kimi-k2.5") == "kimi-k2.5"
         assert normalize_opencode_model_id("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "claude-sonnet-4-6"

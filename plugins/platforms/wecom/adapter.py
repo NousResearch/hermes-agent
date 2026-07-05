@@ -93,6 +93,7 @@ CONNECT_TIMEOUT_SECONDS = 20.0
 REQUEST_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+CALLBACK_WATCHDOG_TIMEOUT_SECONDS = 300.0
 
 DEDUP_MAX_SIZE = 1000
 
@@ -194,6 +195,12 @@ class WeComAdapter(BasePlatformAdapter):
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
 
+        # Callback watchdog: track DM vs group callback timestamps separately
+        # to detect partial routing loss after WebSocket reconnect (#58649).
+        self._last_group_msg_at: float = 0.0
+        self._last_dm_msg_at: float = 0.0
+        self._watchdog_task: Optional[asyncio.Task] = None
+
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
@@ -226,6 +233,7 @@ class WeComAdapter(BasePlatformAdapter):
             self._mark_connected()
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            self._watchdog_task = asyncio.create_task(self._callback_watchdog_loop())
             logger.info("[%s] Connected to %s", self.name, self._ws_url)
             return True
         except Exception as exc:
@@ -258,6 +266,14 @@ class WeComAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._watchdog_task = None
 
         self._fail_pending_responses(RuntimeError("WeCom adapter disconnected"))
         await self._cleanup_ws()
@@ -354,6 +370,10 @@ class WeComAdapter(BasePlatformAdapter):
                 try:
                     await self._open_connection()
                     backoff_idx = 0
+                    # Reset callback timestamps so the watchdog starts fresh
+                    # after reconnect — avoids immediate re-trigger (#58649).
+                    self._last_group_msg_at = 0.0
+                    self._last_dm_msg_at = 0.0
                     self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
@@ -393,6 +413,49 @@ class WeComAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             pass
 
+    async def _callback_watchdog_loop(self) -> None:
+        """Detect partial callback routing loss after WebSocket reconnect.
+
+        After a reconnect, WeCom may restore DM routing but silently drop
+        group routing.  The general heartbeat only confirms the WebSocket
+        is alive — it cannot detect missing *application-level* callbacks.
+        This watchdog tracks DM and group callback timestamps separately
+        and forces a reconnect when group callbacks go silent while DM
+        callbacks continue (the most common partial-loss pattern).
+        """
+        try:
+            while self._running:
+                await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+                if not self._ws or self._ws.closed:
+                    continue
+                loop = asyncio.get_running_loop()
+                now = loop.time()
+
+                # Only check group-specific idle when we have evidence of
+                # prior group activity — avoids false positives when the
+                # deployment has group_policy=disabled or no group traffic.
+                if self._last_group_msg_at > 0:
+                    group_idle = now - self._last_group_msg_at
+                    if group_idle > CALLBACK_WATCHDOG_TIMEOUT_SECONDS:
+                        # Confirm DM is still flowing (partial loss, not total).
+                        dm_alive = (
+                            self._last_dm_msg_at > 0
+                            and (now - self._last_dm_msg_at)
+                            < CALLBACK_WATCHDOG_TIMEOUT_SECONDS
+                        )
+                        if dm_alive:
+                            logger.warning(
+                                "[%s] No group callbacks for %ds (DM still active) "
+                                "— forcing reconnect to restore group routing",
+                                self.name,
+                                int(group_idle),
+                            )
+                            await self._ws.close()
+                        # If DM is also idle, the general _listen_loop will
+                        # handle reconnection on the next WebSocket error.
+        except asyncio.CancelledError:
+            pass
+
     async def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
         """Route inbound websocket payloads."""
         req_id = self._payload_req_id(payload)
@@ -405,6 +468,14 @@ class WeComAdapter(BasePlatformAdapter):
             return
 
         if cmd in CALLBACK_COMMANDS:
+            # Track DM vs group callback timestamps for watchdog (#58649).
+            body = payload.get("body")
+            if isinstance(body, dict):
+                loop = asyncio.get_running_loop()
+                if str(body.get("chattype") or "").lower() == "group":
+                    self._last_group_msg_at = loop.time()
+                else:
+                    self._last_dm_msg_at = loop.time()
             await self._on_message(payload)
             return
         if cmd in {APP_CMD_PING, APP_CMD_EVENT_CALLBACK}:

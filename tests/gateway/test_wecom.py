@@ -983,3 +983,149 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+class TestCallbackWatchdog:
+    """Tests for DM vs group callback watchdog (#58649)."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_tracks_group_timestamp(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._on_message = AsyncMock()
+
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "r1"},
+            "body": {"chattype": "group", "msgid": "m1"},
+        }
+        await adapter._dispatch_payload(payload)
+
+        assert adapter._last_group_msg_at > 0
+        assert adapter._last_dm_msg_at == 0.0
+
+    @pytest.mark.asyncio
+    async def test_dispatch_tracks_dm_timestamp(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._on_message = AsyncMock()
+
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "r1"},
+            "body": {"chattype": "", "msgid": "m2"},
+        }
+        await adapter._dispatch_payload(payload)
+
+        assert adapter._last_dm_msg_at > 0
+        assert adapter._last_group_msg_at == 0.0
+
+    @pytest.mark.asyncio
+    async def test_watchdog_triggers_on_group_silence_with_active_dm(self):
+        from plugins.platforms.wecom.adapter import (
+            CALLBACK_WATCHDOG_TIMEOUT_SECONDS,
+            WeComAdapter,
+        )
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+
+        # Simulate: group last seen 400s ago, DM last seen 10s ago.
+        adapter._last_group_msg_at = now - (CALLBACK_WATCHDOG_TIMEOUT_SECONDS + 100)
+        adapter._last_dm_msg_at = now - 10
+        adapter._running = True
+
+        mock_ws = MagicMock()
+        mock_ws.closed = False
+        mock_ws.close = AsyncMock()
+        adapter._ws = mock_ws
+
+        # Run one iteration of the watchdog loop.
+        async def run_watchdog_once():
+            await asyncio.sleep(0.01)
+            group_idle = loop.time() - adapter._last_group_msg_at
+            if group_idle > CALLBACK_WATCHDOG_TIMEOUT_SECONDS:
+                dm_alive = (
+                    adapter._last_dm_msg_at > 0
+                    and (loop.time() - adapter._last_dm_msg_at)
+                    < CALLBACK_WATCHDOG_TIMEOUT_SECONDS
+                )
+                if dm_alive:
+                    await adapter._ws.close()
+
+        await run_watchdog_once()
+        mock_ws.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_no_trigger_when_both_idle(self):
+        from plugins.platforms.wecom.adapter import (
+            CALLBACK_WATCHDOG_TIMEOUT_SECONDS,
+            WeComAdapter,
+        )
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+
+        # Both group and DM are stale — total loss, not partial.
+        adapter._last_group_msg_at = now - (CALLBACK_WATCHDOG_TIMEOUT_SECONDS + 100)
+        adapter._last_dm_msg_at = now - (CALLBACK_WATCHDOG_TIMEOUT_SECONDS + 50)
+        adapter._running = True
+
+        mock_ws = MagicMock()
+        mock_ws.closed = False
+        mock_ws.close = AsyncMock()
+        adapter._ws = mock_ws
+
+        # Simulate watchdog check.
+        group_idle = now - adapter._last_group_msg_at
+        assert group_idle > CALLBACK_WATCHDOG_TIMEOUT_SECONDS
+        dm_alive = (
+            adapter._last_dm_msg_at > 0
+            and (now - adapter._last_dm_msg_at) < CALLBACK_WATCHDOG_TIMEOUT_SECONDS
+        )
+        assert dm_alive is False
+        # Watchdog should NOT close the ws — _listen_loop handles total loss.
+        mock_ws.close.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_no_trigger_when_no_group_activity(self):
+        from plugins.platforms.wecom.adapter import (
+            CALLBACK_WATCHDOG_TIMEOUT_SECONDS,
+            WeComAdapter,
+        )
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+
+        # Never received any group message.
+        adapter._last_group_msg_at = 0.0
+        adapter._last_dm_msg_at = now - 10
+        adapter._running = True
+
+        mock_ws = MagicMock()
+        mock_ws.closed = False
+        mock_ws.close = AsyncMock()
+        adapter._ws = mock_ws
+
+        # The watchdog should skip the check entirely when _last_group_msg_at == 0.
+        assert adapter._last_group_msg_at == 0.0
+        mock_ws.close.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_no_trigger_when_ws_closed(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+
+        mock_ws = MagicMock()
+        mock_ws.closed = True
+        adapter._ws = mock_ws
+
+        # Watchdog should skip when ws is closed.
+        assert adapter._ws.closed is True

@@ -28,6 +28,7 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import tempfile
@@ -432,6 +433,71 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     })
 
 
+def _compress_signature_target(compress_fn: Any) -> Any:
+    """Return the callable whose signature best reflects this compress call.
+
+    Most production context engines expose a normal bound ``compress`` method,
+    so inspecting ``compress_fn`` is enough. Several tests patch that method
+    with ``unittest.mock`` and put the real callable on ``side_effect``; the mock
+    itself advertises ``**kwargs`` and would make us forward optional kwargs the
+    side-effect callable cannot accept.  Inspect the side effect when present so
+    the compatibility shim behaves the same under patched call sites.
+    """
+    side_effect = getattr(compress_fn, "side_effect", None)
+    if callable(side_effect):
+        return side_effect
+    wraps = getattr(compress_fn, "_mock_wraps", None)
+    if callable(wraps):
+        return wraps
+    return compress_fn
+
+
+def _compress_kwargs_for_engine(
+    compress_fn: Any,
+    *,
+    approx_tokens: Optional[int],
+    focus_topic: Optional[str],
+    force: bool,
+) -> dict[str, Any]:
+    """Return kwargs supported by a context engine's ``compress`` method.
+
+    ``focus_topic`` and ``force`` are host-side optional capabilities. Older
+    external context engines may implement the pre-focus/pre-force signature;
+    those engines should keep working, but real ``TypeError`` bugs raised from
+    inside ``compress`` must not be swallowed as a signature mismatch.
+    """
+    kwargs: dict[str, Any] = {"current_tokens": approx_tokens}
+    signature_target = _compress_signature_target(compress_fn)
+    try:
+        signature = inspect.signature(signature_target)
+    except (TypeError, ValueError):
+        return kwargs
+
+    parameters = signature.parameters
+    accepts_var_kwargs = any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in parameters.values()
+    )
+
+    def accepts(name: str) -> bool:
+        return accepts_var_kwargs or name in parameters
+
+    if focus_topic is not None and accepts("focus_topic"):
+        kwargs["focus_topic"] = focus_topic
+    elif focus_topic is not None:
+        engine = getattr(compress_fn, "__self__", None)
+        logger.debug(
+            "Context engine '%s' does not accept focus_topic; compressing without it",
+            getattr(engine, "name", None)
+            or getattr(compress_fn, "__qualname__", type(compress_fn).__name__),
+        )
+
+    if accepts("force"):
+        kwargs["force"] = force
+
+    return kwargs
+
+
 def compress_context(
     agent: Any,
     messages: list,
@@ -621,15 +687,13 @@ def compress_context(
             pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
-    except TypeError:
-        # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
-        try:
-            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
-        except BaseException:
-            _release_lock()
-            raise
+        compress_kwargs = _compress_kwargs_for_engine(
+            agent.context_compressor.compress,
+            approx_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+        )
+        compressed = agent.context_compressor.compress(messages, **compress_kwargs)
     except BaseException:
         # ANY exception during compress() must release the lock so the
         # session isn't permanently blocked from future compression.

@@ -469,24 +469,32 @@ class ConversationObserver:
             trigger = AutoTrigger()
 
             # Check for obvious failures first (no cluster needed)
-            # — user corrections and loops are always worth fixing
+            nudge = None
+
+            # User corrections — always create skill + check for code-level issues
             if self._current_user_messages:
                 for msg in self._current_user_messages:
                     for signal in ["no", "wrong", "incorrect", "doesn't work", "forgot", "missing"]:
                         if signal in msg.lower():
-                            return trigger.apply_fix("user-task", "user_correction")
+                            nudge = trigger.apply_fix("user-task", "user_correction")
+                            break
 
             # Loop detection: 3+ same tool = obvious failure
             tools = self._current_tool_sequence
             for i in range(len(tools) - 2):
                 if tools[i] == tools[i+1] == tools[i+2]:
-                    return trigger.apply_fix("repetitive-task", "loop_detected")
+                    loop_nudge = trigger.apply_fix("repetitive-task", "loop_detected")
+                    return loop_nudge or nudge
 
             # Tool errors → PR proposer (code-level fix)
+            # Can fire alongside user correction — combined nudge for both
             if trigger.should_propose_pr(self):
-                result = trigger._propose_code_fix("tool-error", "execution_error")
-                if result:
-                    return result
+                pr_nudge = trigger._propose_code_fix("tool-error", "execution_error")
+                if pr_nudge:
+                    return f"{nudge}\n{pr_nudge}" if nudge else pr_nudge
+
+            if nudge:
+                return nudge
 
             # Missing output: did work, no files
             work_tools = {"write_file", "patch", "execute_code"}

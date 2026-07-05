@@ -875,3 +875,320 @@ class TestSiblingProvidersEnvResolution:
             from agent.web_search_provider import get_provider_env
 
             assert get_provider_env("WSP_TEST_UNSET_KEY") == ""
+class TestWebFailover:
+    """Test suite for web backend failover on credit/quota errors."""
+
+    def setup_method(self):
+        """Reset exhaustion state before each test."""
+        import tools.web_tools
+        tools.web_tools._exhausted_backends.clear()
+
+    def teardown_method(self):
+        """Reset exhaustion state after each test."""
+        import tools.web_tools
+        tools.web_tools._exhausted_backends.clear()
+
+    # ── _is_credit_error ─────────────────────────────────────────
+
+    def test_credit_error_detects_insufficient_credits(self):
+        from tools.web_tools import _is_credit_error
+        assert _is_credit_error({"error": "Insufficient credits"}) is True
+
+    def test_credit_error_detects_quota_exceeded(self):
+        from tools.web_tools import _is_credit_error
+        assert _is_credit_error({"error": "Quota exceeded for this billing period"}) is True
+
+    def test_credit_error_detects_402(self):
+        from tools.web_tools import _is_credit_error
+        assert _is_credit_error({"error": "402 Payment Required"}) is True
+
+    def test_credit_error_detects_rate_limit(self):
+        from tools.web_tools import _is_credit_error
+        assert _is_credit_error({"error": "Rate limit exceeded. Try again later."}) is True
+
+    def test_credit_error_ignores_other_errors(self):
+        from tools.web_tools import _is_credit_error
+        assert _is_credit_error({"error": "Not found"}) is False
+        assert _is_credit_error({"error": "Internal server error"}) is False
+        assert _is_credit_error({"error": ""}) is False
+        assert _is_credit_error({}) is False
+
+    # ── _get_failover_list ─────────────────────────────────────────
+
+    def test_failover_list_from_config_list(self):
+        from tools.web_tools import _get_failover_list
+        with patch("tools.web_tools._load_web_config",
+                   return_value={"failover": ["tavily", "parallel", "ddgs"]}):
+            assert _get_failover_list() == ["tavily", "parallel", "ddgs"]
+
+    def test_failover_list_from_config_string(self):
+        from tools.web_tools import _get_failover_list
+        with patch("tools.web_tools._load_web_config",
+                   return_value={"failover": "tavily, parallel, ddgs"}):
+            assert _get_failover_list() == ["tavily", "parallel", "ddgs"]
+
+    def test_failover_list_empty_when_not_configured(self):
+        from tools.web_tools import _get_failover_list
+        with patch("tools.web_tools._load_web_config", return_value={}):
+            assert _get_failover_list() == []
+
+    def test_failover_list_handles_non_list_config(self):
+        from tools.web_tools import _get_failover_list
+        with patch("tools.web_tools._load_web_config",
+                   return_value={"failover": "tavily"}):
+            assert _get_failover_list() == ["tavily"]
+
+    # ── _exhausted_backends tracking ───────────────────────────────
+
+    def test_exhausted_backend_is_skipped(self):
+        """A backend in _exhausted_backends should be skipped during dispatch."""
+        import tools.web_tools
+        tools.web_tools._exhausted_backends.add("firecrawl")
+
+        fake_tavily = MagicMock(
+            name="TavilyWebSearchProvider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_tavily.search.return_value = {"success": True, "data": {"web": []}}
+        fake_tavily.name = "tavily"
+
+        with patch("tools.web_tools._get_search_backend", return_value="firecrawl"), \
+             patch("tools.web_tools._get_failover_list", return_value=["tavily"]), \
+             patch("agent.web_search_registry.get_provider") as mock_get_provider, \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            # firecrawl returns None (unregistered), tavily returns our fake
+            def _get_provider_side_effect(name):
+                if name == "tavily":
+                    return fake_tavily
+                return None
+            mock_get_provider.side_effect = _get_provider_side_effect
+
+            result = json.loads(tools.web_tools.web_search_tool("test", limit=3))
+
+        assert result["success"] is True
+        # Should have skipped firecrawl and used tavily
+        # (limit bucketed to 10 by the TTL memo layer)
+        fake_tavily.search.assert_called_once_with("test", 10)
+
+    def test_all_backends_exhausted_returns_error(self):
+        """When all backends in the chain are exhausted, return a clear error."""
+        import tools.web_tools
+        tools.web_tools._exhausted_backends.update(["firecrawl", "tavily"])
+
+        with patch("tools.web_tools._get_search_backend", return_value="firecrawl"), \
+             patch("tools.web_tools._get_failover_list", return_value=["tavily"]), \
+             patch("agent.web_search_registry.get_provider", return_value=None), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("test", limit=3))
+
+        assert result["success"] is False
+        # When all backends are pre-exhausted (skipped before trying),
+        # the error says no provider is configured
+        assert "no web search provider configured" in result["error"].lower()
+
+    def test_credit_error_triggers_failover(self):
+        """When primary returns a credit error, failover backend is tried."""
+        import tools.web_tools
+        tools.web_tools._exhausted_backends.clear()
+
+        fake_firecrawl = MagicMock(
+            name="FirecrawlWebSearchProvider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_firecrawl.search.return_value = {
+            "success": False,
+            "error": "Insufficient credits",
+        }
+        fake_firecrawl.name = "firecrawl"
+
+        fake_tavily = MagicMock(
+            name="TavilyWebSearchProvider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_tavily.search.return_value = {"success": True, "data": {"web": []}}
+        fake_tavily.name = "tavily"
+
+        with patch("tools.web_tools._get_search_backend", return_value="firecrawl"), \
+             patch("tools.web_tools._get_failover_list", return_value=["tavily"]), \
+             patch("agent.web_search_registry.get_provider") as mock_get_provider, \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            def _get_provider_side_effect(name):
+                if name == "firecrawl":
+                    return fake_firecrawl
+                if name == "tavily":
+                    return fake_tavily
+                return None
+            mock_get_provider.side_effect = _get_provider_side_effect
+
+            result = json.loads(tools.web_tools.web_search_tool("test", limit=3))
+
+        assert result["success"] is True
+        # Firecrawl should be marked exhausted
+        assert "firecrawl" in tools.web_tools._exhausted_backends
+        # Tavily should have been called as failover
+        # (limit bucketed to 10 by the TTL memo layer)
+        fake_tavily.search.assert_called_once_with("test", 10)
+
+    def test_reset_exhausted_backends_clears_state(self):
+        """_reset_exhausted_backends() clears the exhaustion set."""
+        from tools.web_tools import _reset_exhausted_backends, _exhausted_backends
+        _exhausted_backends.add("firecrawl")
+        _exhausted_backends.add("tavily")
+        _reset_exhausted_backends()
+        assert len(_exhausted_backends) == 0
+
+    # ── web_extract failover tests ────────────────────────────────
+
+    def test_extract_search_only_backend_returns_typed_error(self):
+        """A search-only backend on attempt 0 returns the typed error, not silent fallback."""
+        import asyncio
+        import tools.web_tools
+        tools.web_tools._reset_exhausted_backends()
+
+        fake_ddgs = MagicMock(
+            name="DDGSWebSearchProvider",
+            display_name="DDGS",
+            supports_extract=MagicMock(return_value=False),
+        )
+        fake_ddgs.name = "ddgs"
+
+        with patch("tools.web_tools._get_extract_backend", return_value="ddgs"), \
+             patch("tools.web_tools._get_failover_list", return_value=[]), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_ddgs), \
+             patch("tools.url_safety.async_is_safe_url", return_value=True), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(
+                asyncio.run(tools.web_tools.web_extract_tool(["https://example.com"]))
+            )
+
+        assert result["success"] is False
+        assert "search-only" in result["error"].lower()
+        assert "ddgs" in result["error"].lower()
+
+    def test_extract_credit_error_triggers_failover(self):
+        """When primary extract backend returns credit error, failover is tried."""
+        import asyncio
+        import tools.web_tools
+        tools.web_tools._reset_exhausted_backends()
+
+        fake_firecrawl = MagicMock(
+            name="FirecrawlWebExtractProvider",
+            supports_extract=MagicMock(return_value=True),
+        )
+        fake_firecrawl.name = "firecrawl"
+        fake_firecrawl.display_name = "Firecrawl"
+
+        fake_tavily = MagicMock(
+            name="TavilyWebExtractProvider",
+            supports_extract=MagicMock(return_value=True),
+        )
+        fake_tavily.name = "tavily"
+        fake_tavily.display_name = "Tavily"
+
+        # Firecrawl extract raises a credit error
+        fake_firecrawl.extract.side_effect = Exception("Insufficient credits")
+        fake_tavily.extract.return_value = [
+            {"url": "https://example.com", "title": "Example", "content": "Hello"}
+        ]
+
+        with patch("tools.web_tools._get_extract_backend", return_value="firecrawl"), \
+             patch("tools.web_tools._get_failover_list", return_value=["tavily"]), \
+             patch("agent.web_search_registry.get_provider") as mock_get_provider, \
+             patch("tools.url_safety.async_is_safe_url", return_value=True), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            def _get_provider_side_effect(name):
+                if name == "firecrawl":
+                    return fake_firecrawl
+                if name == "tavily":
+                    return fake_tavily
+                return None
+            mock_get_provider.side_effect = _get_provider_side_effect
+
+            result = json.loads(
+                asyncio.run(tools.web_tools.web_extract_tool(["https://example.com"]))
+            )
+
+        assert result["results"] is not None
+        assert result["results"][0]["content"] == "Hello"
+        # Firecrawl should be marked exhausted
+        assert "firecrawl" in tools.web_tools._exhausted_backends
+        fake_tavily.extract.assert_called_once()
+
+    def test_extract_all_backends_exhausted_returns_error(self):
+        """When all extract backends are exhausted, return a clear error."""
+        import asyncio
+        import tools.web_tools
+        tools.web_tools._exhausted_backends.update(["firecrawl", "tavily"])
+
+        with patch("tools.web_tools._get_extract_backend", return_value="firecrawl"), \
+             patch("tools.web_tools._get_failover_list", return_value=["tavily"]), \
+             patch("agent.web_search_registry.get_provider", return_value=None), \
+             patch("agent.web_search_registry.get_active_extract_provider", return_value=None), \
+             patch("tools.url_safety.async_is_safe_url", return_value=True), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(
+                asyncio.run(tools.web_tools.web_extract_tool(["https://example.com"]))
+            )
+
+        assert result["success"] is False
+        assert "no web extract provider configured" in result["error"].lower()
+
+    def test_extract_per_url_credit_error_triggers_failover(self):
+        """When all per-URL results are credit errors, failover is triggered."""
+        import asyncio
+        import tools.web_tools
+        tools.web_tools._reset_exhausted_backends()
+
+        fake_firecrawl = MagicMock(
+            name="FirecrawlWebExtractProvider",
+            supports_extract=MagicMock(return_value=True),
+        )
+        fake_firecrawl.name = "firecrawl"
+        fake_firecrawl.display_name = "Firecrawl"
+
+        fake_tavily = MagicMock(
+            name="TavilyWebExtractProvider",
+            supports_extract=MagicMock(return_value=True),
+        )
+        fake_tavily.name = "tavily"
+        fake_tavily.display_name = "Tavily"
+
+        # Firecrawl returns per-URL credit errors
+        fake_firecrawl.extract.return_value = [
+            {"url": "https://example.com", "error": "Insufficient credits"},
+            {"url": "https://test.com", "error": "Quota exceeded"},
+        ]
+        fake_tavily.extract.return_value = [
+            {"url": "https://example.com", "title": "Example", "content": "Hello"}
+        ]
+
+        with patch("tools.web_tools._get_extract_backend", return_value="firecrawl"), \
+             patch("tools.web_tools._get_failover_list", return_value=["tavily"]), \
+             patch("agent.web_search_registry.get_provider") as mock_get_provider, \
+             patch("tools.url_safety.async_is_safe_url", return_value=True), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            def _get_provider_side_effect(name):
+                if name == "firecrawl":
+                    return fake_firecrawl
+                if name == "tavily":
+                    return fake_tavily
+                return None
+            mock_get_provider.side_effect = _get_provider_side_effect
+
+            result = json.loads(
+                asyncio.run(tools.web_tools.web_extract_tool(["https://example.com"]))
+            )
+
+        assert result["results"] is not None
+        assert result["results"][0]["content"] == "Hello"
+        assert "firecrawl" in tools.web_tools._exhausted_backends

@@ -660,6 +660,56 @@ def _get_extract_char_limit() -> int:
     return DEFAULT_EXTRACT_CHAR_LIMIT
 
 
+# Per-session exhaustion tracking: backends that have returned credit/quota
+# errors are skipped for the remainder of the session. Cleared on /reset.
+_exhausted_backends: set[str] = set()
+
+
+def _reset_exhausted_backends() -> None:
+    """Clear the exhaustion set. Called on session start (/reset)."""
+    _exhausted_backends.clear()
+
+
+def _is_credit_error(response: dict) -> bool:
+    """Return True when a provider response indicates exhausted credits.
+
+    Matches common credit/quota error patterns across Firecrawl, Tavily,
+    Parallel, and Exa. The check is intentionally broad — false positives
+    cause a harmless extra backend attempt; false negatives mean the
+    failover chain is not triggered.
+    """
+    error = response.get("error", "") or ""
+    error_lower = error.lower()
+    return any(
+        phrase in error_lower
+        for phrase in (
+            "insufficient credits",
+            "quota exceeded",
+            "402",
+            "payment required",
+            "credit limit",
+            "out of credits",
+            "no credits remaining",
+            "rate limit exceeded",
+            "too many requests",
+        )
+    )
+
+
+def _get_failover_list() -> list[str]:
+    """Return the ordered failover backend list from config, or empty list."""
+    try:
+        cfg = _load_web_config()
+        raw = cfg.get("failover")
+        if isinstance(raw, list):
+            return [b.strip().lower() for b in raw if b and isinstance(b, str)]
+        if isinstance(raw, str):
+            return [b.strip().lower() for b in raw.split(",") if b.strip()]
+    except Exception:
+        pass
+    return []
+
+
 def convert_base64_images_to_links(text: str) -> str:
     """Replace inline base64 image blobs with labeled markdown links.
 
@@ -902,65 +952,81 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _disabled_web_plugin_for,
         )
 
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            from tools.tool_backend_helpers import (
-                selection_error,
-                selection_exists,
-            )
+        # Build the ordered backend list: primary + failover chain
+        primary_backend = _get_search_backend()
+        failover_backends = _get_failover_list()
+        backend_chain = [primary_backend] + [
+            b for b in failover_backends if b != primary_backend
+        ]
 
-            if provider is None and backend and selection_exists("web"):
-                disabled_key = _disabled_web_plugin_for(capability="search")
-                if disabled_key:
-                    _vendor = disabled_key.split("/", 1)[-1]
-                    error_text = (
-                        f"web.search_backend is set to '{_vendor}', but its "
-                        f"plugin ('{disabled_key}') is disabled in config. "
-                        f"Re-enable it with `hermes plugins enable {disabled_key}` "
-                        "(or remove it from plugins.disabled)."
+        response_data = None
+        last_error = None
+        for attempt, backend in enumerate(backend_chain):
+            if backend in _exhausted_backends:
+                logger.debug("Skipping exhausted backend '%s'", backend)
+                continue
+            provider = _wsp_get_provider(backend) if backend else None
+            if provider is None or not provider.supports_search():
+                if attempt == 0:
+                    from tools.tool_backend_helpers import (
+                        selection_error,
+                        selection_exists,
                     )
+
+                    if provider is None and backend and selection_exists("web"):
+                        disabled_key = _disabled_web_plugin_for(capability="search")
+                        if disabled_key:
+                            _vendor = disabled_key.split("/", 1)[-1]
+                            error_text = (
+                                f"web.search_backend is set to '{_vendor}', but its "
+                                f"plugin ('{disabled_key}') is disabled in config. "
+                                f"Re-enable it with `hermes plugins enable {disabled_key}` "
+                                "(or remove it from plugins.disabled)."
+                            )
+                        else:
+                            error_text = selection_error(
+                                "web",
+                                f"'{backend}'",
+                                "no registered web search provider has that name",
+                            )
+                        response_data = {"success": False, "error": error_text}
+                        result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+                        debug_call_data["error"] = error_text
+                        _debug.log_call("web_search_tool", debug_call_data)
+                        _debug.save()
+                        return result_json
+                    # Never-configured install: fall back to the availability-walked
+                    # active provider (legacy autodetect behavior).
+                    provider = get_active_search_provider()
+                    if provider is None:
+                        # A bundled web plugin the user explicitly disabled looks
+                        # identical to "no provider" here — point at the real cause
+                        # (re-enable the plugin) rather than a generic setup hint.
+                        disabled_key = _disabled_web_plugin_for(capability="search")
+                        if disabled_key:
+                            _vendor = disabled_key.split("/", 1)[-1]
+                            response_data = {
+                                "success": False,
+                                "error": (
+                                    f"web.search_backend is set to '{_vendor}', but its "
+                                    f"plugin ('{disabled_key}') is disabled in config. "
+                                    f"Re-enable it with `hermes plugins enable {disabled_key}` "
+                                    "(or remove it from plugins.disabled)."
+                                ),
+                            }
+                        else:
+                            response_data = {
+                                "success": False,
+                                "error": (
+                                    "No web search provider configured. "
+                                    "Run `hermes tools` to set one up."
+                                ),
+                            }
+                        break
                 else:
-                    error_text = selection_error(
-                        "web",
-                        f"'{backend}'",
-                        "no registered web search provider has that name",
-                    )
-                response_data = {"success": False, "error": error_text}
-                result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-                debug_call_data["error"] = error_text
-                _debug.log_call("web_search_tool", debug_call_data)
-                _debug.save()
-                return result_json
-            # Never-configured install: fall back to the availability-walked
-            # active provider (legacy autodetect behavior).
-            provider = get_active_search_provider()
+                    # Failover attempt: skip backends that don't support search
+                    continue
 
-        if provider is None:
-            # A bundled web plugin the user explicitly disabled looks
-            # identical to "no provider" here — point at the real cause
-            # (re-enable the plugin) rather than a generic setup hint.
-            disabled_key = _disabled_web_plugin_for(capability="search")
-            if disabled_key:
-                _vendor = disabled_key.split("/", 1)[-1]
-                response_data = {
-                    "success": False,
-                    "error": (
-                        f"web.search_backend is set to '{_vendor}', but its "
-                        f"plugin ('{disabled_key}') is disabled in config. "
-                        f"Re-enable it with `hermes plugins enable {disabled_key}` "
-                        "(or remove it from plugins.disabled)."
-                    ),
-                }
-            else:
-                response_data = {
-                    "success": False,
-                    "error": (
-                        "No web search provider configured. "
-                        "Run `hermes tools` to set one up."
-                    ),
-                }
-        else:
             logger.info(
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
@@ -1026,6 +1092,39 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                                 provider.name, query, limit, response_data
                             )
             response_data = _slice_search_response(response_data, limit)
+
+            if _is_credit_error(response_data):
+                logger.warning(
+                    "Backend '%s' returned credit error; marking exhausted",
+                    provider.name,
+                )
+                _exhausted_backends.add(provider.name)
+                last_error = response_data.get("error", "Credit limit reached")
+                response_data = None
+                continue
+
+            # Success — use this result
+            break
+
+        if response_data is None:
+            # All backends exhausted or none available
+            if last_error:
+                response_data = {
+                    "success": False,
+                    "error": (
+                        f"All web search backends exhausted. "
+                        f"Last error: {last_error}. "
+                        f"Run `hermes tools` to configure additional backends."
+                    ),
+                }
+            else:
+                response_data = {
+                    "success": False,
+                    "error": (
+                        "No web search provider configured. "
+                        "Run `hermes tools` to set one up."
+                    ),
+                }
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1160,7 +1259,12 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_extract_backend()
+            # Build the ordered backend list: primary + failover chain
+            primary_backend = _get_extract_backend()
+            failover_backends = _get_failover_list()
+            backend_chain = [primary_backend] + [
+                b for b in failover_backends if b != primary_backend
+            ]
 
             # All bundled providers (brave-free, ddgs, searxng, exa, parallel,
             # tavily, firecrawl, keenable) now live as plugins. The dispatcher is a
@@ -1176,129 +1280,53 @@ async def web_extract_tool(
                 _disabled_web_plugin_for,
             )
 
-            provider = _wsp_get_provider(backend) if backend else None
-            if provider is None or not provider.supports_extract():
-                # When the configured name IS registered but doesn't support
-                # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
-                if provider is not None and not provider.supports_extract():
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, keenable, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
-                from tools.tool_backend_helpers import (
-                    selection_error,
-                    selection_exists,
+            results = None
+            last_error = None
+
+            async def _dispatch_extract(provider) -> Optional[list]:
+                """Run the cache + fetch + rescue + merge pipeline for one provider.
+
+                Returns the merged results list (safe_urls order), or None when
+                the provider returned credit errors — the caller marks it
+                exhausted and tries the next backend in the chain.
+                """
+                # ── Extract cache (tools/web_result_cache.py) ─────────────────
+                # Disk-backed via cache/web: a URL extracted within the TTL is
+                # served from disk instead of re-scraped. Deliberately placed
+                # AFTER the secret-URL gate, SSRF gate, provider resolution, and
+                # strict-selection validation, and gated per-URL on the website
+                # blocklist policy — a hit skips only the vendor call, never a
+                # control. Policy-blocked URLs are treated as cache misses so
+                # dispatch handles them exactly as it would without a cache.
+                # Keys include the provider and format, so switching backends or
+                # formats within the TTL never serves the other's content.
+                from tools.web_result_cache import (
+                    extract_cache_get as _extract_cache_get,
+                    extract_cache_put as _extract_cache_put,
                 )
-
-                if backend and selection_exists("web"):
-                    # Strict selection: a stored-but-unregistered backend
-                    # errors by name instead of silently switching to
-                    # whatever the availability walk finds.
-                    disabled_key = _disabled_web_plugin_for(capability="extract")
-                    if disabled_key:
-                        _vendor = disabled_key.split("/", 1)[-1]
-                        error_text = (
-                            f"web.extract_backend is set to '{_vendor}', but "
-                            f"its plugin ('{disabled_key}') is disabled in "
-                            f"config. Re-enable it with `hermes plugins "
-                            f"enable {disabled_key}` (or remove it from "
-                            "plugins.disabled)."
+                from tools.website_policy import check_website_access as _check_site
+                cached_results: Dict[int, Dict[str, Any]] = {}
+                fetch_urls: List[str] = []
+                fetch_positions: List[int] = []
+                for position, url in enumerate(safe_urls):
+                    hit = None
+                    try:
+                        _policy_block = _check_site(url)
+                    except Exception:  # noqa: BLE001 — policy errors fail open like dispatch
+                        _policy_block = None
+                    if _policy_block is None:
+                        hit = _extract_cache_get(
+                            url, format=format, provider=provider.name
                         )
+                    if hit is not None:
+                        cached_results[position] = hit
                     else:
-                        error_text = selection_error(
-                            "web",
-                            f"'{backend}'",
-                            "no registered web extract provider has that name",
-                        )
-                    return json.dumps(
-                        {"success": False, "error": error_text},
-                        ensure_ascii=False,
-                    )
-                provider = get_active_extract_provider()
-                if provider is None:
-                    # If the configured backend is a bundled web plugin the
-                    # user explicitly disabled, the backend is set correctly
-                    # and the real fix is to re-enable the plugin — say so
-                    # instead of telling them to set web.extract_backend
-                    # (which they already did). #40190 follow-up.
-                    disabled_key = _disabled_web_plugin_for(capability="extract")
-                    if disabled_key:
-                        _vendor = disabled_key.split("/", 1)[-1]
-                        return json.dumps(
-                            {
-                                "success": False,
-                                "error": (
-                                    f"web.extract_backend is set to '{_vendor}', "
-                                    f"but its plugin ('{disabled_key}') is disabled "
-                                    "in config. Re-enable it with "
-                                    f"`hermes plugins enable {disabled_key}` "
-                                    "(or remove it from plugins.disabled)."
-                                ),
-                            },
-                            ensure_ascii=False,
-                        )
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, keenable, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
+                        fetch_urls.append(url)
+                        fetch_positions.append(position)
 
+                if not fetch_urls:
+                    return [cached_results[i] for i in range(len(safe_urls))]
 
-            # ── Extract cache (tools/web_result_cache.py) ─────────────────
-            # Disk-backed via cache/web: a URL extracted within the TTL is
-            # served from disk instead of re-scraped. Deliberately placed
-            # AFTER the secret-URL gate, SSRF gate, provider resolution, and
-            # strict-selection validation, and gated per-URL on the website
-            # blocklist policy — a hit skips only the vendor call, never a
-            # control. Policy-blocked URLs are treated as cache misses so
-            # dispatch handles them exactly as it would without a cache.
-            # Keys include the provider and format, so switching backends or
-            # formats within the TTL never serves the other's content.
-            from tools.web_result_cache import (
-                extract_cache_get as _extract_cache_get,
-                extract_cache_put as _extract_cache_put,
-            )
-            from tools.website_policy import check_website_access as _check_site
-            cached_results: Dict[int, Dict[str, Any]] = {}
-            fetch_urls: List[str] = []
-            fetch_positions: List[int] = []
-            for position, url in enumerate(safe_urls):
-                hit = None
-                try:
-                    _policy_block = _check_site(url)
-                except Exception:  # noqa: BLE001 — policy errors fail open like dispatch
-                    _policy_block = None
-                if _policy_block is None:
-                    hit = _extract_cache_get(
-                        url, format=format, provider=provider.name
-                    )
-                if hit is not None:
-                    cached_results[position] = hit
-                else:
-                    fetch_urls.append(url)
-                    fetch_positions.append(position)
-
-            if not fetch_urls:
-                results = [cached_results[i] for i in range(len(safe_urls))]
-            else:
                 logger.info(
                     "Web extract via %s: %d URL(s)", provider.name, len(fetch_urls)
                 )
@@ -1317,6 +1345,26 @@ async def web_extract_tool(
                             provider.extract, fetch_urls, format=format
                         )
                 except Exception as exc:  # noqa: BLE001 — candidate for rescue
+                    error_msg = str(exc).lower()
+                    if any(
+                        phrase in error_msg
+                        for phrase in (
+                            "insufficient credits",
+                            "quota exceeded",
+                            "402",
+                            "payment required",
+                            "credit limit",
+                            "out of credits",
+                            "no credits remaining",
+                            "rate limit exceeded",
+                            "too many requests",
+                        )
+                    ):
+                        logger.warning(
+                            "Backend '%s' raised credit error; marking exhausted: %s",
+                            provider.name, exc,
+                        )
+                        return None
                     if _rescue_eligible(provider):
                         _extract_rescued = True
                         failed = [
@@ -1341,6 +1389,24 @@ async def web_extract_tool(
                         results = await asyncio.to_thread(
                             _rescue_extract, provider.name, fetch_urls, results
                         )
+
+                    # Check if all results are credit errors (per-URL failure
+                    # pattern). Skip when the batch was rescue-served: those
+                    # errors came from the keyless ring, not the configured
+                    # backend, and must not mark it exhausted.
+                    if (
+                        not _extract_rescued
+                        and results
+                        and all(
+                            r.get("error") and _is_credit_error({"error": r["error"]})
+                            for r in results
+                        )
+                    ):
+                        logger.warning(
+                            "Backend '%s' returned credit errors on all URLs; marking exhausted",
+                            provider.name,
+                        )
+                        return None
 
                 # Cache each successful fetch's full clean text for TTL reuse
                 # (best-effort; oversized pages are skipped by the cache).
@@ -1384,6 +1450,171 @@ async def web_extract_tool(
                             }
                         )
                     results = merged
+                return results
+
+            for attempt, backend in enumerate(backend_chain):
+                if backend in _exhausted_backends:
+                    logger.debug("Skipping exhausted backend '%s'", backend)
+                    continue
+
+                provider = _wsp_get_provider(backend) if backend else None
+                if provider is None or not provider.supports_extract():
+                    if attempt == 0:
+                        # When the configured name IS registered but doesn't
+                        # support extract (search-only providers like
+                        # brave-free / ddgs / searxng), surface that as a typed
+                        # "search-only" error rather than silently switching
+                        # backends. When the name isn't registered at all
+                        # (typo / uninstalled plugin), fall through to the
+                        # active-provider walk.
+                        if provider is not None and not provider.supports_extract():
+                            return json.dumps(
+                                {
+                                    "success": False,
+                                    "error": (
+                                        f"{provider.display_name} is a search-only "
+                                        "backend and cannot extract URL content. "
+                                        "Set web.extract_backend to firecrawl, "
+                                        "tavily, keenable, exa, or parallel."
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
+                        from tools.tool_backend_helpers import (
+                            selection_error,
+                            selection_exists,
+                        )
+
+                        if backend and selection_exists("web"):
+                            # Strict selection: a stored-but-unregistered backend
+                            # errors by name instead of silently switching to
+                            # whatever the availability walk finds.
+                            disabled_key = _disabled_web_plugin_for(capability="extract")
+                            if disabled_key:
+                                _vendor = disabled_key.split("/", 1)[-1]
+                                error_text = (
+                                    f"web.extract_backend is set to '{_vendor}', but "
+                                    f"its plugin ('{disabled_key}') is disabled in "
+                                    f"config. Re-enable it with `hermes plugins "
+                                    f"enable {disabled_key}` (or remove it from "
+                                    "plugins.disabled)."
+                                )
+                            else:
+                                error_text = selection_error(
+                                    "web",
+                                    f"'{backend}'",
+                                    "no registered web extract provider has that name",
+                                )
+                            return json.dumps(
+                                {"success": False, "error": error_text},
+                                ensure_ascii=False,
+                            )
+                        provider = get_active_extract_provider()
+                        if provider is None:
+                            # If the configured backend is a bundled web plugin the
+                            # user explicitly disabled, the backend is set correctly
+                            # and the real fix is to re-enable the plugin — say so
+                            # instead of telling them to set web.extract_backend
+                            # (which they already did). #40190 follow-up.
+                            disabled_key = _disabled_web_plugin_for(capability="extract")
+                            if disabled_key:
+                                _vendor = disabled_key.split("/", 1)[-1]
+                                return json.dumps(
+                                    {
+                                        "success": False,
+                                        "error": (
+                                            f"web.extract_backend is set to '{_vendor}', "
+                                            f"but its plugin ('{disabled_key}') is disabled "
+                                            "in config. Re-enable it with "
+                                            f"`hermes plugins enable {disabled_key}` "
+                                            "(or remove it from plugins.disabled)."
+                                        ),
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            return json.dumps(
+                                {
+                                    "success": False,
+                                    "error": (
+                                        "No web extract provider configured. "
+                                        "Set web.extract_backend to firecrawl, "
+                                        "tavily, keenable, exa, or parallel."
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
+                    else:
+                        # Failover attempt: skip backends that don't support extract
+                        continue
+
+                results = await _dispatch_extract(provider)
+                if results is None:
+                    _exhausted_backends.add(provider.name)
+                    last_error = "Credit limit reached"
+                    continue
+
+                # Success — use this result
+                break
+
+            if results is None:
+                # All backends exhausted
+                if last_error:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                f"All web extract backends exhausted. "
+                                f"Last error: {last_error}. "
+                                f"Run `hermes tools` to configure additional backends."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                # Every backend in the chain was pre-exhausted (skipped before
+                # any attempt ran). Fall back to the active-provider walk so a
+                # session that exhausted its configured chain still serves
+                # whatever provider is available.
+                provider = get_active_extract_provider()
+                if provider is None:
+                    disabled_key = _disabled_web_plugin_for(capability="extract")
+                    if disabled_key:
+                        _vendor = disabled_key.split("/", 1)[-1]
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    f"web.extract_backend is set to '{_vendor}', "
+                                    f"but its plugin ('{disabled_key}') is disabled "
+                                    "in config. Re-enable it with "
+                                    f"`hermes plugins enable {disabled_key}` "
+                                    "(or remove it from plugins.disabled)."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                "No web extract provider configured. "
+                                "Set web.extract_backend to firecrawl, "
+                                "tavily, keenable, exa, or parallel."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                results = await _dispatch_extract(provider)
+                if results is None:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                "All web extract backends exhausted. "
+                                "Run `hermes tools` to configure additional backends."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
 
         # Reconstruct the original input order across invalid, blocked, and
         # provider-processed entries. Providers are expected to preserve the

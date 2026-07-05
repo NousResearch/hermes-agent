@@ -278,6 +278,62 @@ KANBAN_GUIDANCE = (
     "cross-agent handoffs that outlive one API loop."
 )
 
+
+def resolve_kanban_guidance(
+    profile_name: Optional[str] = None,
+    config: Optional[dict] = None,
+) -> str:
+    """Return kanban worker guidance for *profile_name*.
+
+    ``kanban.guidance_override.<profile>`` may append to or replace the built-in
+    guidance. Malformed config is ignored so existing prompt behavior remains
+    unchanged unless a profile has a valid inline override.
+    """
+    if profile_name is None:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            profile_name = get_active_profile_name()
+        except Exception as exc:
+            logger.debug("Could not resolve active profile for kanban guidance: %s", exc)
+            profile_name = "default"
+
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception as exc:
+            logger.debug("Could not read kanban guidance override config: %s", exc)
+            return KANBAN_GUIDANCE
+
+    if not isinstance(profile_name, str) or not profile_name.strip():
+        return KANBAN_GUIDANCE
+    if not isinstance(config, dict):
+        return KANBAN_GUIDANCE
+
+    kanban_config = config.get("kanban", {})
+    if not isinstance(kanban_config, dict):
+        return KANBAN_GUIDANCE
+
+    overrides = kanban_config.get("guidance_override", {})
+    if not isinstance(overrides, dict):
+        return KANBAN_GUIDANCE
+
+    override = overrides.get(profile_name.strip())
+    if not isinstance(override, dict):
+        return KANBAN_GUIDANCE
+
+    text = override.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return KANBAN_GUIDANCE
+    text = text.strip()
+
+    mode = override.get("mode", "append")
+    if isinstance(mode, str) and mode.strip().lower() == "replace":
+        return text
+    return f"{KANBAN_GUIDANCE}\n\n{text}"
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

@@ -1089,9 +1089,9 @@ def init_agent(
     # Resolving the ~835-token block once here avoids re-running the
     # membership test + reference on every system-prompt rebuild
     # (init + each context compression).
-    from agent.prompt_builder import KANBAN_GUIDANCE
+    from agent.prompt_builder import resolve_kanban_guidance
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        resolve_kanban_guidance() if "kanban_show" in agent.valid_tool_names else ""
     )
 
     # Check tool requirements

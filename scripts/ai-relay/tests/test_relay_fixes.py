@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import time
@@ -108,24 +109,36 @@ def test_detect_gate_prefers_repo_python(tmp_path):
 
 
 def _capture_env_for(monkey_cmd):
-    """เรียก run_once แล้วดักค่า env ที่ถูกส่งเข้า subprocess.run"""
+    """เรียก run_once แล้วดักค่า env ที่ถูกส่งเข้า subprocess.Popen"""
     captured = {}
 
     class _FakeProc:
-        returncode = 0
-        stdout = "OK"
-        stderr = ""
+        pid = 999999
 
-    def fake_run(cmd, **kwargs):
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = io.StringIO("OK\n")
+            self.stderr = io.StringIO("")
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_popen(cmd, **kwargs):
         captured["env"] = kwargs.get("env")
         return _FakeProc()
 
-    orig_run = relay_call.subprocess.run
-    relay_call.subprocess.run = fake_run
+    orig_popen = relay_call.subprocess.Popen
+    relay_call.subprocess.Popen = fake_popen
     try:
         relay_call.run_once({"cmd": monkey_cmd}, "hi", Path("/tmp"), "")
     finally:
-        relay_call.subprocess.run = orig_run
+        relay_call.subprocess.Popen = orig_popen
     return captured["env"]
 
 
@@ -162,11 +175,26 @@ def test_fable_allowed_only_on_owner_machines():
     assert relay_call.fable_allowed_here("some-random-host.local") is False
 
 
+def test_run_once_no_newline_output_not_killed_as_silence():
+    # GPT-5 fix: coder ที่พ่น byte ต่อเนื่องแต่ไม่มีขึ้นบรรทัดใหม่ (เช่น json ก้อนเดียว/progress)
+    # ต้องไม่ถูกนับว่า "เงียบ" · read1 ต้องเห็น byte แล้วเลื่อน last_output → งานจบปกติ ไม่โดนตัด
+    cmd = ["sh", "-c", "i=0; while [ $i -lt 12 ]; do printf x; sleep 0.2; i=$((i+1)); done"]
+    code, out, err = relay_call.run_once({"cmd": cmd}, "hi", Path("/tmp"), "",
+                                         timeout=60, silence_timeout=1)
+    assert code == 0
+    assert out.count("x") == 12
+    assert relay_call.TIMEOUT_MARK not in err
+
+
 def test_classify_timeout_only_with_sentinel():
     # ค้างจริงจาก run_once (มีป้าย TIMEOUT_MARK) → "timeout"
     assert relay_call.classify(124, "", relay_call.TIMEOUT_MARK) == "timeout"
     # CLI ที่บังเอิญ exit 124 เอง (ไม่มีป้าย) → ต้องไม่ใช่ timeout · ตกไป crash (ยังสลับตัวได้ ปลอดภัย)
     assert relay_call.classify(124, "", "some cli error") == "crash"
+
+
+def test_classify_timeout_mark_with_silence_suffix():
+    assert relay_call.classify(124, "", relay_call.TIMEOUT_MARK + ":silence") == "timeout"
 
 
 def test_resolve_timeout_coder_and_brain():
@@ -196,6 +224,64 @@ def test_run_once_returns_timeout_mark_on_timeout():
     assert code == 124
     assert err == relay_call.TIMEOUT_MARK
     assert relay_call.classify(code, out, err) == "timeout"
+
+
+def test_run_once_kills_group_on_timeout(tmp_path):
+    started = time.monotonic()
+
+    code, out, err = relay_call.run_once({"cmd": ["sh", "-c", "sleep 30"]}, "hi", tmp_path, "", timeout=1)
+
+    assert code == 124
+    assert out == ""
+    assert relay_call.TIMEOUT_MARK in err
+    assert time.monotonic() - started < 10
+
+
+def test_run_once_silence_cut(tmp_path):
+    started = time.monotonic()
+
+    code, out, err = relay_call.run_once(
+        {"cmd": ["sh", "-c", "sleep 30"]},
+        "hi",
+        tmp_path,
+        "",
+        timeout=60,
+        silence_timeout=1,
+    )
+
+    assert code == 124
+    assert out == ""
+    assert relay_call.TIMEOUT_MARK in err
+    assert time.monotonic() - started < 10
+
+
+def test_run_once_silence_not_triggered_by_active_output(tmp_path):
+    code, out, err = relay_call.run_once(
+        {"cmd": ["sh", "-c", "for i in 1 2 3; do echo x; sleep 0.4; done"]},
+        "hi",
+        tmp_path,
+        "",
+        timeout=60,
+        silence_timeout=2,
+    )
+
+    assert code == 0
+    assert "x" in out
+    assert err == ""
+
+
+def test_resolve_silence_precedence():
+    assert relay_call.resolve_silence({"silence_timeout": 45}, {"silence_timeout_seconds": 90}) == 45
+    assert relay_call.resolve_silence({}, {"silence_timeout_seconds": 90}) == 90
+    assert relay_call.resolve_silence({}, {}) == 180
+    assert relay_call.resolve_silence({"silence_timeout": 0}, {"silence_timeout_seconds": 90}) is None
+    assert relay_call.resolve_silence({"silence_timeout": None}, {"silence_timeout_seconds": 90}) is None
+    assert relay_call.resolve_silence({"silence_timeout": "nope"}, {"silence_timeout_seconds": 90}) is None
+    assert relay_call.resolve_silence({}, {"silence_timeout_seconds": 0}) is None
+    assert relay_call.resolve_silence({}, {"silence_timeout_seconds": None}) is None
+    assert relay_call.resolve_silence({}, {"silence_timeout_seconds": "nope"}) is None
+    assert relay_call.resolve_silence({"brain": True}, {}) is None
+    assert relay_call.resolve_silence({"brain": True, "silence_timeout": 30}, {}) == 30
 
 
 def test_fable_allowlist_env_override_adds_host():

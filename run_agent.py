@@ -4816,9 +4816,18 @@ class AIAgent:
             self._record_streamed_assistant_text(text)
 
     def _fire_reasoning_delta(self, text: str) -> None:
-        """Fire reasoning callback if registered."""
+        """Fire reasoning callback if registered.
+
+        Also latches ``_reasoning_streamed_this_response`` so the
+        post-completion path in ``_build_assistant_message`` can tell that
+        reasoning was already delivered incrementally and skip its full-text
+        re-fire (previously it guessed via ``stream_delta_callback``, which
+        is the *text*-streaming consumer — None on gateway platforms — so
+        gateway consumers received every reasoning burst twice).
+        """
         cb = self.reasoning_callback
         if cb is not None:
+            self._reasoning_streamed_this_response = True
             try:
                 cb(text)
             except Exception:

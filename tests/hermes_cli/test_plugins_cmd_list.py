@@ -68,6 +68,45 @@ def test_cmd_list_plain_compact_output(monkeypatch, capsys):
     assert "Search" not in out  # plain mode stays compact, no descriptions
 
 
+def test_discover_all_plugins_includes_entry_points(monkeypatch):
+    """Entry-point plugins the loader sees must appear in the display path.
+
+    Regression for #58644: `hermes plugins list` scanned only bundled/user
+    dirs, so a pip-installed plugin (e.g. rtk-hermes) was loaded and active
+    but invisible in the listing.
+    """
+    from hermes_cli.plugins import PluginManager, PluginManifest
+
+    # No bundled/user dirs to scan — isolate the entry-point path.
+    monkeypatch.setattr(plugins_cmd, "_scan_level", lambda *a, **k: None)
+    monkeypatch.setattr(
+        PluginManager,
+        "_scan_entry_points",
+        lambda self: [
+            PluginManifest(
+                name="rtk-rewrite",
+                version="1.2.3",
+                description="RTK",
+                source="entrypoint",
+                path="rtk_hermes:register",
+                key="rtk-rewrite",
+            )
+        ],
+    )
+
+    entries = plugins_cmd._discover_all_plugins()
+    ep = [e for e in entries if e[3] == "entrypoint"]
+    assert ep, "entry-point plugin missing from _discover_all_plugins"
+    name, version, description, source, dir_path, key = ep[0]
+    assert (name, key, source, dir_path) == (
+        "rtk-rewrite", "rtk-rewrite", "entrypoint", None,
+    )
+    # dir_path is None for entry points — must not break resolve/render.
+    assert plugins_cmd._resolve_plugin_key_and_source("rtk-rewrite") == (
+        "rtk-rewrite", "entrypoint",
+    )
+
+
 def test_cmd_list_json_output(monkeypatch, capsys):
     entries = [("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus")]
     monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)

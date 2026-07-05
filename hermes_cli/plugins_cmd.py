@@ -1020,6 +1020,18 @@ def _discover_all_plugins() -> list:
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
+
+    # Pip-installed plugins registered via the ``hermes_agent.plugins``
+    # entry-point group. The real loader (PluginManager.discover_and_load)
+    # scans these; the display path must too, or an active pip plugin like
+    # rtk-hermes is invisible in `hermes plugins list`. Reuse the loader's
+    # scanner instead of duplicating the importlib.metadata logic.
+    from hermes_cli.plugins import PluginManager
+    for m in PluginManager()._scan_entry_points():
+        key = m.key or m.name
+        seen.setdefault(
+            key, (m.name, m.version, m.description, m.source, None, key)
+        )
     return list(seen.values())
 
 

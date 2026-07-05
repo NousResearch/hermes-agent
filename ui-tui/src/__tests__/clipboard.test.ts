@@ -206,21 +206,11 @@ describe('writeClipboardText', () => {
 
     const start = vi.fn().mockReturnValue(child)
 
-    await expect(
-      writeClipboardText('x11 text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })
-    ).resolves.toBe(true)
-    expect(start).toHaveBeenNthCalledWith(
-      1,
-      'wl-copy',
-      ['--type', 'text/plain'],
-      expect.anything()
+    await expect(writeClipboardText('x11 text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })).resolves.toBe(
+      true
     )
-    expect(start).toHaveBeenNthCalledWith(
-      2,
-      'xclip',
-      ['-selection', 'clipboard', '-in'],
-      expect.anything()
-    )
+    expect(start).toHaveBeenNthCalledWith(1, 'wl-copy', ['--type', 'text/plain'], expect.anything())
+    expect(start).toHaveBeenNthCalledWith(2, 'xclip', ['-selection', 'clipboard', '-in'], expect.anything())
   })
 
   it('falls back to xsel when both wl-copy and xclip fail', async () => {
@@ -263,13 +253,22 @@ describe('writeClipboardText', () => {
 
     const start = vi.fn().mockReturnValue(child)
 
-    await expect(writeClipboardText('wsl text', 'linux', start as any, { WSL_DISTRO_NAME: 'Ubuntu' })).resolves.toBe(true)
+    await expect(writeClipboardText('wsl text', 'linux', start as any, { WSL_DISTRO_NAME: 'Ubuntu' })).resolves.toBe(
+      true
+    )
     expect(start).toHaveBeenCalledWith(
       'powershell.exe',
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
     )
-    expect(stdin.end).toHaveBeenCalledWith('wsl text')
+    // PowerShell uses base64-encoded UTF-8 via command argument, not stdin
+    expect(stdin.end).not.toHaveBeenCalled()
+    const calledArgs = start.mock.calls[0][1] as string[]
+    const commandIdx = calledArgs.indexOf('-Command')
+    expect(commandIdx).toBeGreaterThan(-1)
+    const script = calledArgs[commandIdx + 1]
+    expect(script).toContain('FromBase64String')
+    expect(script).toContain(Buffer.from('wsl text', 'utf8').toString('base64'))
   })
 
   it('prefers the Windows clipboard path over wl-copy inside WSLg', async () => {
@@ -300,7 +299,13 @@ describe('writeClipboardText', () => {
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
     )
-    expect(stdin.end).toHaveBeenCalledWith('wslg text')
+    // PowerShell uses base64-encoded UTF-8 via command argument, not stdin
+    expect(stdin.end).not.toHaveBeenCalled()
+    const calledArgs = start.mock.calls[0][1] as string[]
+    const commandIdx = calledArgs.indexOf('-Command')
+    const script = calledArgs[commandIdx + 1]
+    expect(script).toContain('FromBase64String')
+    expect(script).toContain(Buffer.from('wslg text', 'utf8').toString('base64'))
   })
 
   it('uses PowerShell on Windows', async () => {
@@ -325,5 +330,32 @@ describe('writeClipboardText', () => {
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
     )
+    // PowerShell uses base64-encoded UTF-8 via command argument, not stdin
+    expect(stdin.end).not.toHaveBeenCalled()
+  })
+
+  it('preserves CJK text via base64 encoding in PowerShell on WSL', async () => {
+    const stdin = { end: vi.fn() }
+
+    const child = {
+      once: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === 'close') {
+          cb(0)
+        }
+
+        return child
+      }),
+      stdin
+    }
+
+    const start = vi.fn().mockReturnValue(child)
+    const cjkText = '你好世界，测试中文 🎉'
+
+    await expect(writeClipboardText(cjkText, 'linux', start as any, { WSL_INTEROP: '/tmp/socket' })).resolves.toBe(true)
+    const calledArgs = start.mock.calls[0][1] as string[]
+    const commandIdx = calledArgs.indexOf('-Command')
+    const script = calledArgs[commandIdx + 1]
+    expect(script).toContain(Buffer.from(cjkText, 'utf8').toString('base64'))
+    expect(script).toContain('UTF8.GetString')
   })
 })

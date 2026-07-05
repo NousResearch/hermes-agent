@@ -129,11 +129,12 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality):
+        def _collect(token, *, prompt, size, quality, input_images=None):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
                 quality=quality,
+                input_images=input_images,
             ))
             return _b64_png()
 
@@ -142,7 +143,7 @@ class TestGenerate:
         result = provider.generate("a cat", aspect_ratio="portrait")
         assert result["success"] is True
 
-        assert captured["model"] == "gpt-5.4"
+        assert captured["model"] == "gpt-5.5"
         assert captured["store"] is False
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"
@@ -159,6 +160,93 @@ class TestGenerate:
         assert tool["output_format"] == "png"
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
+
+    def test_capabilities_advertise_image_inputs(self, provider):
+        caps = provider.capabilities()
+        assert caps["modalities"] == ["text", "image"]
+        assert caps["max_reference_images"] == 16
+
+    def test_codex_stream_request_includes_source_images(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        image_path = tmp_path / "source.png"
+        image_path.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                input_images=input_images,
+            ))
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate(
+            "put this same person in a navy JK uniform",
+            aspect_ratio="portrait",
+            image_url=str(image_path),
+            reference_image_urls=["https://example.com/ref.png"],
+        )
+
+        assert result["success"] is True
+        assert result["modality"] == "image"
+        assert result["input_image_count"] == 2
+
+        content = captured["input"][0]["content"]
+        assert content[0] == {
+            "type": "input_text",
+            "text": "put this same person in a navy JK uniform",
+        }
+        assert content[1]["type"] == "input_image"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+        assert content[2] == {"type": "input_image", "image_url": "https://example.com/ref.png"}
+
+    def test_generate_clamps_reference_images_to_cap(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured["input_images"] = input_images
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        refs = [f"https://example.com/ref-{idx}.png" for idx in range(20)]
+        result = provider.generate("combine the references", reference_image_urls=refs)
+
+        assert result["success"] is True
+        assert result["modality"] == "image"
+        assert result["input_image_count"] == 16
+        assert len(captured["input_images"]) == 16
+        assert captured["input_images"][-1]["image_url"] == "https://example.com/ref-15.png"
+
+    def test_rejects_non_image_local_source(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        text_path = tmp_path / "not-image.txt"
+        text_path.write_text("hello")
+
+        result = provider.generate("edit this", image_url=str(text_path))
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_image_input"
+        assert "not a supported image" in result["error"]
+
+    def test_rejects_svg_local_source(self, provider, monkeypatch, tmp_path):
+        # The shared magic-byte sniffer recognizes SVG, but gpt-image-2's
+        # input_image accepts raster only — SVG must fail locally with a clear
+        # error, not get embedded and rejected server-side with an opaque 400.
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        svg_path = tmp_path / "vector.svg"
+        svg_path.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+
+        result = provider.generate("edit this", image_url=str(svg_path))
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_image_input"
+        assert "not a supported image" in result["error"]
 
     def test_partial_image_event_used_when_done_missing(self):
         """If output_item.done is missing, partial_image_b64 is accepted."""

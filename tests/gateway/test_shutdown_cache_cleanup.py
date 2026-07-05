@@ -57,13 +57,23 @@ class _FakeGateway:
     def _update_runtime_status(self, *_a, **_kw):
         pass
 
+    async def _run_in_executor_with_context(self, func, *args):
+        # stop() offloads agent-resource cleanup off the loop (#53175); run
+        # inline in tests so the bounded-cleanup path is exercised.
+        return func(*args)
+
+    async def _cleanup_agent_resources_off_loop(self, agent, *, context=""):
+        # Mirror the real bounded helper, inline (no executor/timeout) so the
+        # fake exercises the same call shape stop() now uses.
+        self._cleanup_agent_resources(agent)
+
     async def _notify_active_sessions_of_shutdown(self):
         pass
 
     async def _drain_active_agents(self, timeout):
         return {}, False
 
-    def _finalize_shutdown_agents(self, agents):
+    async def _finalize_shutdown_agents(self, agents):
         for agent in agents.values():
             self._cleanup_agent_resources(agent)
 
@@ -83,6 +93,12 @@ class _FakeGateway:
 
     def _evict_cached_agent(self, key):
         pass
+
+    def _release_running_agent_state(self, session_key, **_kwargs):
+        agent = self._running_agents.pop(session_key, None)
+        self._running_agents_ts.pop(session_key, None)
+        self._cleanup_agent_resources(agent)
+        return agent is not None
 
 
 def _make_mock_agent():

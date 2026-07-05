@@ -34,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -599,11 +600,17 @@ class PhotonAdapter(BasePlatformAdapter):
                 payload, name, mime, force_audio=is_voice
             )
             if cached:
+                cached_path, cached_mime = cached
+                cached_type = (
+                    MessageType.VOICE
+                    if is_voice
+                    else _attachment_message_type(cached_mime)
+                )
                 return (
                     "(voice)" if is_voice else "(attachment)",
-                    mtype,
-                    [cached],
-                    [mime or ("audio/mp4" if is_voice else "application/octet-stream")],
+                    cached_type,
+                    [cached_path],
+                    [cached_mime],
                 )
             label = "voice" if is_voice else "attachment"
             duration = payload.get("duration")
@@ -1494,10 +1501,20 @@ _IMAGE_EXT_BY_MIME = {
     "image/png": ".png",
     "image/gif": ".gif",
     "image/webp": ".webp",
-    "image/heic": ".jpg",
-    "image/heif": ".jpg",
-    "image/tiff": ".jpg",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+    "image/heic-sequence": ".heic",
+    "image/heif-sequence": ".heif",
+    "image/tiff": ".tiff",
 }
+_APPLE_HEIF_MIMES = {
+    "image/heic",
+    "image/heif",
+    "image/heic-sequence",
+    "image/heif-sequence",
+}
+_APPLE_HEIF_SUFFIXES = {".heic", ".heif"}
+_MACOS_SIPS_PATH = Path("/usr/bin/sips")
 _AUDIO_EXT_BY_MIME = {
     "audio/mp3": ".mp3",
     "audio/mpeg": ".mp3",
@@ -1509,21 +1526,70 @@ _AUDIO_EXT_BY_MIME = {
 }
 
 
+def _is_heif_image(mime: str, suffix: str) -> bool:
+    return (
+        (mime or "").lower() in _APPLE_HEIF_MIMES
+        or (suffix or "").lower() in _APPLE_HEIF_SUFFIXES
+    )
+
+
+def _transcode_heif_to_jpeg(raw: bytes, suffix: str) -> Optional[bytes]:
+    """Use macOS ImageIO via ``sips`` to convert iPhone HEIC/HEIF to JPEG.
+
+    Native model/image providers universally accept JPEG, while HEIC often
+    requires optional Python plugins (``pillow-heif``) that are not installed in
+    the Hermes runtime venv. Since Photon iMessage runs on the user's Mac, the
+    OS already has a reliable HEIC decoder through ImageIO; ``sips`` gives us a
+    small dependency-free bridge to it. Returning ``None`` keeps attachment
+    handling non-fatal and lets the caller surface a metadata marker instead of
+    handing the agent an unreadable HEIC path.
+    """
+    if sys.platform != "darwin":
+        return None
+    if not _MACOS_SIPS_PATH.is_file():
+        return None
+    sips = str(_MACOS_SIPS_PATH)
+    safe_suffix = (suffix or ".heic").lower()
+    if safe_suffix not in _APPLE_HEIF_SUFFIXES:
+        safe_suffix = ".heic"
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-photon-heif-") as tmp:
+            src = Path(tmp) / f"source{safe_suffix}"
+            dst = Path(tmp) / "converted.jpg"
+            src.write_bytes(raw)
+            proc = subprocess.run(  # noqa: S603 - fixed executable + temp paths
+                [sips, "-s", "format", "jpeg", str(src), "--out", str(dst)],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            if proc.returncode != 0 or not dst.is_file():
+                detail = (proc.stderr or proc.stdout or "sips conversion failed").strip()
+                logger.warning("[photon] HEIC->JPEG conversion failed: %s", detail[:300])
+                return None
+            converted = dst.read_bytes()
+    except Exception as exc:
+        logger.warning("[photon] HEIC->JPEG conversion failed: %s", exc)
+        return None
+    if not converted.startswith(b"\xff\xd8\xff"):
+        logger.warning("[photon] HEIC->JPEG conversion produced non-JPEG bytes")
+        return None
+    return converted
+
+
 def _cache_inbound_attachment(
     content: Dict[str, Any],
     name: str,
     mime: str,
     *,
     force_audio: bool = False,
-) -> Optional[str]:
+) -> Optional[tuple[str, str]]:
     """Decode a base64-inlined inbound attachment and cache it locally.
 
-    The sidecar inlines the attachment bytes as ``content["data"]`` (base64).
-    We decode them and route to the shared media cache by MIME type, returning
-    the cached absolute path so the caller can populate ``media_urls`` (which
-    the gateway then hands to the model). Returns ``None`` when there are no
-    bytes (over the sidecar's inline cap or a failed read) or when caching
-    fails, so the caller can fall back to a text marker.
+    Returns ``(cached_path, cached_mime)``. The MIME may differ from the inbound
+    metadata when we transcode an iPhone HEIC/HEIF photo to JPEG for provider
+    compatibility.
     """
     data_b64 = content.get("data")
     if not data_b64:
@@ -1544,21 +1610,28 @@ def _cache_inbound_attachment(
     # Prefer the real extension from the filename; fall back to the MIME map.
     suffix = Path(name).suffix if name else ""
     try:
+        if _is_heif_image(mime, suffix):
+            converted = _transcode_heif_to_jpeg(raw, suffix)
+            if converted is None:
+                return None
+            return cache_image_from_bytes(converted, ".jpg"), "image/jpeg"
         if mime.startswith("image/"):
             ext = suffix or _IMAGE_EXT_BY_MIME.get(mime, ".jpg")
             try:
-                return cache_image_from_bytes(raw, ext)
+                return cache_image_from_bytes(raw, ext), (mime or "image/jpeg")
             except ValueError:
-                # Bytes don't look like a supported image (e.g. HEIC magic) —
-                # still deliver them as a document rather than dropping them.
-                return cache_document_from_bytes(raw, name)
+                # The provider labelled this as image/* but the bytes do not
+                # pass the platform cache's narrow magic check. Preserve the
+                # image MIME so the gateway's image router can still sniff or
+                # transcode broader formats like TIFF/BMP/AVIF.
+                return cache_document_from_bytes(raw, name), mime
         if force_audio or mime.startswith("audio/"):
             ext = suffix or _AUDIO_EXT_BY_MIME.get(
                 mime, ".m4a" if force_audio else ".mp3"
             )
-            return cache_audio_from_bytes(raw, ext)
+            return cache_audio_from_bytes(raw, ext), (mime or "audio/mp4")
         # Video, application/*, and everything else → document cache.
-        return cache_document_from_bytes(raw, name)
+        return cache_document_from_bytes(raw, name), (mime or "application/octet-stream")
     except Exception as exc:
         logger.warning("[photon] failed to cache inbound attachment %s: %s", name, exc)
         return None

@@ -15,6 +15,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
+import plugins.platforms.photon.adapter as photon_adapter
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -87,6 +88,9 @@ _PNG_1X1_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhf"
     "DwAChwGA60e6kgAAAABJRU5ErkJggg=="
 )
+_JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01" + b"\x00" * 32
+_HEIC_MAGIC_BYTES = b"\x00\x00\x00\x24ftypheic\x00\x00\x00\x00" + b"\x00" * 64
+_TIFF_MAGIC_BYTES = b"II*\x00" + b"\x00" * 64
 
 
 def _attachment_event(
@@ -164,6 +168,135 @@ async def test_dispatch_attachment_downloads_image(
         assert cached.is_file()
         assert cached.read_bytes() == raw
         assert ev.text == "(attachment)"
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_heic_attachment_transcodes_to_jpeg_for_native_vision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """iPhone HEIC photos must become provider-readable JPEG image media.
+
+    Before this regression guard, Photon cached HEIC bytes as a document path
+    while still labelling the attachment as ``image/heic``. Native image routing
+    then tried to attach that HEIC path, failed to transcode without
+    ``pillow-heif``, and the model saw only the iMessage placeholder glyph.
+    """
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    def fake_sips(args, capture_output, text, timeout, check):  # noqa: ANN001
+        assert args[:4] == [str(fake_sips_path), "-s", "format", "jpeg"]
+        out_path = Path(args[args.index("--out") + 1])
+        out_path.write_bytes(_JPEG_BYTES)
+        return photon_adapter.subprocess.CompletedProcess(args=args, returncode=0)
+
+    fake_sips_path = tmp_path / "sips"
+    fake_sips_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(photon_adapter.sys, "platform", "darwin")
+    monkeypatch.setattr(photon_adapter, "_MACOS_SIPS_PATH", fake_sips_path)
+    monkeypatch.setattr(photon_adapter.subprocess, "run", fake_sips)
+
+    event = _attachment_event(
+        {
+            "name": "IMG_4127.HEIC",
+            "mimeType": "image/heic",
+            "size": len(_HEIC_MAGIC_BYTES),
+            "data": base64.b64encode(_HEIC_MAGIC_BYTES).decode("ascii"),
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.PHOTO
+    assert ev.media_types == ["image/jpeg"]
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.suffix.lower() == ".jpg"
+        assert cached.read_bytes() == _JPEG_BYTES
+        assert ev.text == "(attachment)"
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_heic_suffix_transcodes_without_image_mime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Photon should recover iPhone HEIC photos even with generic MIME metadata."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    def fake_sips(args, capture_output, text, timeout, check):  # noqa: ANN001
+        assert args[:4] == [str(fake_sips_path), "-s", "format", "jpeg"]
+        out_path = Path(args[args.index("--out") + 1])
+        out_path.write_bytes(_JPEG_BYTES)
+        return photon_adapter.subprocess.CompletedProcess(args=args, returncode=0)
+
+    fake_sips_path = tmp_path / "sips"
+    fake_sips_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(photon_adapter.sys, "platform", "darwin")
+    monkeypatch.setattr(photon_adapter, "_MACOS_SIPS_PATH", fake_sips_path)
+    monkeypatch.setattr(photon_adapter.subprocess, "run", fake_sips)
+
+    event = _attachment_event(
+        {
+            "name": "IMG_4127.HEIC",
+            "mimeType": "application/octet-stream",
+            "size": len(_HEIC_MAGIC_BYTES),
+            "data": base64.b64encode(_HEIC_MAGIC_BYTES).decode("ascii"),
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.PHOTO
+    assert ev.media_types == ["image/jpeg"]
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.suffix.lower() == ".jpg"
+        assert cached.read_bytes() == _JPEG_BYTES
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_non_heic_image_preserves_mime_when_cached_as_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsupported image-cache formats should still reach image routing."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _attachment_event(
+        {
+            "name": "scan.tiff",
+            "mimeType": "image/tiff",
+            "size": len(_TIFF_MAGIC_BYTES),
+            "data": base64.b64encode(_TIFF_MAGIC_BYTES).decode("ascii"),
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.PHOTO
+    assert ev.media_types == ["image/tiff"]
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.suffix.lower() == ".tiff"
+        assert cached.read_bytes() == _TIFF_MAGIC_BYTES
     finally:
         cached.unlink(missing_ok=True)
 

@@ -2910,6 +2910,33 @@ This compaction should PRIORITISE preserving all information related to the focu
         # is not role=user, so we must pin the summary to "user" and
         # prevent the flip logic below from reverting it (#52160).
         _force_user_leading = last_head_role == "system"
+        # Zero-user-turn guard (#58753). The #52160 guard above only fires
+        # when the system prompt sits *inside* ``messages`` (the gateway
+        # ``/compress`` path). The main auto-compression path passes the
+        # transcript WITHOUT the system prompt (it is prepended at
+        # request-build time), so ``last_head_role`` defaults to "user" and
+        # the summary is emitted as role="assistant". On a session whose only
+        # genuine user turn falls into the compressed middle — e.g. a
+        # ``hermes kanban`` worker seeded with a single short
+        # ``"work kanban task <id>"`` prompt followed by nothing but
+        # assistant/tool turns — that leaves the compressed transcript with
+        # ZERO user-role messages. OpenAI-compatible backends (vLLM/Qwen)
+        # reject such a request with a non-retryable
+        # ``400 No user query found in messages``, crashing the worker with no
+        # possible recovery (every resume replays the same poisoned history).
+        # If no user-role message survives in either the protected head or the
+        # preserved tail, the summary MUST carry role="user" so the request
+        # always has at least one user turn.
+        if not _force_user_leading:
+            _user_survives = any(
+                messages[i].get("role") == "user"
+                for i in range(0, compress_start)
+            ) or any(
+                messages[i].get("role") == "user"
+                for i in range(compress_end, n_messages)
+            )
+            if not _user_survives:
+                _force_user_leading = True
         # Pick a role that avoids consecutive same-role with both neighbors.
         # Priority: avoid colliding with head (already committed), then tail.
         if last_head_role in {"assistant", "tool"} or _force_user_leading:

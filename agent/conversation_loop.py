@@ -52,6 +52,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
+    is_local_endpoint,
     is_output_cap_error,
     parse_available_output_tokens_from_error,
     save_context_length,
@@ -101,6 +102,48 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     if 512 <= max_dimension <= 8000:
         return max_dimension
     return None
+
+
+def _usage_extra_value(usage: Any, key: str) -> Any:
+    if isinstance(usage, dict):
+        return usage.get(key)
+    value = getattr(usage, key, None)
+    if value is not None:
+        return value
+    for extra_name in ("model_extra", "extra", "__pydantic_extra__"):
+        extra = getattr(usage, extra_name, None)
+        if isinstance(extra, dict) and key in extra:
+            return extra.get(key)
+    return None
+
+
+def _extract_usage_cache_info(usage: Any) -> dict[str, Any] | None:
+    cache = _usage_extra_value(usage, "cache")
+    if cache is None:
+        return None
+    if not isinstance(cache, dict):
+        data = getattr(cache, "model_dump", lambda: None)()
+        if isinstance(data, dict):
+            cache = data
+        elif hasattr(cache, "__dict__"):
+            cache = dict(cache.__dict__)
+        else:
+            return None
+
+    out: dict[str, Any] = {}
+    for key in (
+        "restore",
+        "slot",
+        "prefix_tokens",
+        "prompt_tokens",
+        "effective_prompt_tokens",
+        "prefix_reuse_ratio",
+        "disk_hit",
+        "pflash_compressed",
+    ):
+        if key in cache:
+            out[key] = cache[key]
+    return out or None
 
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
@@ -2099,6 +2142,19 @@ def run_conversation(
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
                     agent.context_compressor.update_from_response(usage_dict)
+                    cache_info = _extract_usage_cache_info(response.usage)
+                    if cache_info:
+                        agent._last_local_cache_usage = cache_info
+                        if is_local_endpoint(getattr(agent, "base_url", "")):
+                            logger.info(
+                                "Local cache usage: restore=%s prefix=%s/%s slot=%s disk=%s pflash=%s",
+                                cache_info.get("restore"),
+                                cache_info.get("prefix_tokens"),
+                                cache_info.get("effective_prompt_tokens"),
+                                cache_info.get("slot"),
+                                cache_info.get("disk_hit"),
+                                cache_info.get("pflash_compressed"),
+                            )
 
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed

@@ -1443,6 +1443,43 @@ def init_agent(
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+    # Local backends can be well under their advertised context window and
+    # still be too slow for interactive turns: first-token prefill can dominate
+    # latency, and falling back to another local model pays the same prefill
+    # cost again. This guard lets the conversation loop compact earlier for
+    # selected local models. Set to 0 to disable.
+    compression_local_prefill_guard = _compression_cfg.get(
+        "local_prefill_compact_tokens",
+        80_000,
+    )
+    try:
+        if isinstance(compression_local_prefill_guard, bool):
+            raise ValueError
+        compression_local_prefill_guard = max(0, int(compression_local_prefill_guard))
+    except (TypeError, ValueError):
+        compression_local_prefill_guard = 80_000
+    compression_local_prefill_models = _compression_cfg.get(
+        "local_prefill_compact_models",
+        ["dflash"],
+    )
+    if isinstance(compression_local_prefill_models, str):
+        compression_local_prefill_models = [
+            p.strip()
+            for p in compression_local_prefill_models.split(",")
+            if p.strip()
+        ]
+    elif isinstance(compression_local_prefill_models, (list, tuple)):
+        compression_local_prefill_models = [
+            str(p).strip()
+            for p in compression_local_prefill_models
+            if str(p).strip()
+        ]
+    else:
+        compression_local_prefill_models = ["dflash"]
+    if not compression_local_prefill_models:
+        compression_local_prefill_models = ["dflash"]
+    agent._local_prefill_compact_tokens = compression_local_prefill_guard
+    agent._local_prefill_compact_models = tuple(compression_local_prefill_models)
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
     # implicitly protected by the compressor).  Floor at 0 — a value of

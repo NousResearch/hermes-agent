@@ -115,6 +115,35 @@ def test_openai_prompt_tokens_unchanged(monkeypatch):
     assert agent.context_compressor.last_prompt_tokens == 5000
 
 
+def test_local_cache_usage_metadata_is_recorded(monkeypatch):
+    resp = lambda: SimpleNamespace(
+        choices=[SimpleNamespace(index=0, message=SimpleNamespace(
+            role="assistant", content="ok", tool_calls=None, reasoning_content=None,
+        ), finish_reason="stop")],
+        usage=SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=8,
+            total_tokens=128,
+            cache={
+                "restore": True,
+                "slot": 3,
+                "prefix_tokens": 80,
+                "effective_prompt_tokens": 100,
+                "disk_hit": False,
+                "pflash_compressed": True,
+            },
+        ),
+        model="dflash",
+    )
+    agent = _make_agent(monkeypatch, "chat_completions", "local", resp)
+    agent.model = "dflash"
+    agent.run_conversation("hi")
+    assert agent.context_compressor.last_prompt_tokens == 120
+    assert agent._last_local_cache_usage["restore"] is True
+    assert agent._last_local_cache_usage["prefix_tokens"] == 80
+    assert agent._last_local_cache_usage["pflash_compressed"] is True
+
+
 # -- Codex: no cache fields, getattr returns 0 --
 
 def test_codex_no_cache_fields(monkeypatch):

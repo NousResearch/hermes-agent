@@ -733,6 +733,86 @@ class TestPreflightCompression:
         mock_compress.assert_called_once()
         assert result["completed"] is True
 
+    def test_local_dflash_prefill_guard_compresses_below_context_threshold(self, agent):
+        """Large local dflash prompts compact before the normal context ceiling."""
+        agent.compression_enabled = True
+        agent.base_url = "http://127.0.0.1:9090/v1"
+        agent.model = "dflash"
+        agent.provider = "local"
+        agent.context_compressor.context_length = 262_144
+        agent.context_compressor.threshold_tokens = 131_072
+        agent._local_prefill_compact_tokens = 80_000
+        agent._local_prefill_compact_models = ("dflash",)
+
+        big_history = []
+        for i in range(20):
+            big_history.append({"role": "user", "content": f"Message {i} padded"})
+            big_history.append({"role": "assistant", "content": f"Response {i} padded"})
+
+        ok_resp = _mock_response(content="Done. Local prefill guard compacted.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+        status_messages = []
+        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
+
+        rough_calls = {"n": 0}
+
+        def _rough_estimate(*_args, **_kwargs):
+            rough_calls["n"] += 1
+            return 90_000 if rough_calls["n"] == 1 else 35_000
+
+        with (
+            patch("agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
+            patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=_rough_estimate),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}],
+                "new system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "Done. Local prefill guard compacted."
+        assert any(
+            ev == "lifecycle" and "Local model prefill guard" in msg
+            for ev, msg in status_messages
+        )
+
+    def test_local_prefill_guard_does_not_apply_to_cloud_endpoint(self, agent):
+        agent.compression_enabled = True
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "dflash"
+        agent.context_compressor.context_length = 262_144
+        agent.context_compressor.threshold_tokens = 131_072
+        agent._local_prefill_compact_tokens = 80_000
+        agent._local_prefill_compact_models = ("dflash",)
+
+        big_history = []
+        for i in range(20):
+            big_history.append({"role": "user", "content": f"Message {i} padded"})
+            big_history.append({"role": "assistant", "content": f"Response {i} padded"})
+
+        ok_resp = _mock_response(content="No local guard", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        with (
+            patch("agent.turn_context.estimate_request_tokens_rough", return_value=90_000),
+            patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=90_000),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        mock_compress.assert_not_called()
+        assert result["completed"] is True
+        assert result["final_response"] == "No local guard"
+
     def test_no_preflight_when_under_threshold(self, agent):
         """When history fits within context, no preflight compression needed."""
         agent.compression_enabled = True

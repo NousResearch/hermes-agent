@@ -1340,6 +1340,12 @@ DEFAULT_CONFIG = {
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
+        "local_prefill_compact_tokens": 80000,  # earlier compaction guard for
+                                      # selected local models whose long
+                                      # prefill can stall before first token
+                                      # (0 disables; env override:
+                                      # HERMES_LOCAL_PREFILL_COMPACT_TOKENS)
+        "local_prefill_compact_models": ["dflash"],  # substring list, or ["*"]
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to

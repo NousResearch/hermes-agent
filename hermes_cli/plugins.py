@@ -69,6 +69,13 @@ try:
 except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 
+
+class PluginToolOverrideError(PermissionError):
+    """Raised when a plugin attempts to override a built-in tool without
+    operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override``.
+    """
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -398,7 +405,24 @@ class PluginContext:
         same name (e.g. swap the default ``browser_navigate`` for a custom
         CDP-backed implementation). Without it, attempting to register a name
         already claimed by a different toolset is rejected.
+
+        ``override=True`` against a built-in tool requires the operator to
+        opt in via ``plugins.entries.<plugin_id>.allow_tool_override: true``
+        in config.yaml — mirrors the trust gate pattern used for
+        ``ctx.llm`` provider/model overrides (#23194). Without that gate,
+        any enabled plugin could silently replace a privileged built-in
+        like ``shell_exec`` or ``write_file`` and exfiltrate everything
+        the model invokes through it.
         """
+        if override and not self._tool_override_allowed(name):
+            plugin_id = self.manifest.key or self.manifest.name
+            raise PluginToolOverrideError(
+                f"Plugin {self.manifest.name!r} cannot override built-in tool "
+                f"{name!r}. Set "
+                f"plugins.entries.{plugin_id}.allow_tool_override: true "
+                f"in config.yaml to allow this plugin to replace built-in tools."
+            )
+
         from tools.registry import registry
 
         registry.register(
@@ -418,6 +442,32 @@ class PluginContext:
             "Plugin %s registered tool: %s%s",
             self.manifest.name, name, " (override)" if override else "",
         )
+
+    # -- override trust gate ------------------------------------------------
+
+    def _tool_override_allowed(self, tool_name: str) -> bool:
+        """Return True if this plugin is configured to override built-in tools.
+
+        Bundled plugins (shipped with Hermes core) are trusted by default —
+        an override there is a deliberate maintainer choice, not a third-party
+        plugin trying to elevate privilege. For every other source, require
+        ``allow_tool_override: true`` under
+        ``plugins.entries.<plugin_id>`` in config.yaml.
+        """
+        source = getattr(self.manifest, "source", "") or ""
+        if source == "bundled":
+            return True
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+        except Exception:
+            # If we can't load config, fail closed — better to break the
+            # override than silently grant it.
+            return False
+        plugin_id = self.manifest.key or self.manifest.name
+        entries = (cfg.get("plugins") or {}).get("entries") or {}
+        entry = entries.get(plugin_id) or {}
+        return bool(entry.get("allow_tool_override", False))
 
     # -- message injection --------------------------------------------------
 
@@ -1658,6 +1708,13 @@ class PluginManager:
             manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,
         )
 
+        from tools.registry import registry as _registry
+        _plugin_id = manifest.key or manifest.name
+        _slug = _plugin_id.replace("/", "__").replace("-", "_")
+        _registry.register_plugin_override_policy(
+            f"{_NS_PARENT}.{_slug}",
+            PluginContext(manifest, self)._tool_override_allowed(""),
+        )
         try:
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
@@ -1725,7 +1782,6 @@ class PluginManager:
                 "Failed to load plugin '%s': %s",
                 manifest.name, exc, exc_info=_PLUGINS_DEBUG,
             )
-
         self._plugins[manifest.key or manifest.name] = loaded
 
     def _load_directory_module(self, manifest: PluginManifest) -> types.ModuleType:
@@ -1990,7 +2046,7 @@ def clear_thread_tool_whitelist() -> None:
     _thread_tool_whitelist.allowed = None
 
 
-def get_pre_tool_call_block_message(
+def get_pre_tool_call_directive(
     tool_name: str,
     args: Optional[Dict[str, Any]],
     task_id: str = "",
@@ -1999,22 +2055,38 @@ def get_pre_tool_call_block_message(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[str]:
-    """Check ``pre_tool_call`` hooks for a blocking directive.
+) -> tuple[Optional[str], Optional[str]]:
+    """Check ``pre_tool_call`` hooks for a blocking or approval directive.
 
     Plugins that need to enforce policy (rate limiting, security
-    restrictions, approval workflows) can return::
+    restrictions, approval workflows) can return one of::
 
-        {"action": "block", "message": "Reason the tool was blocked"}
+        {"action": "block",   "message": "Reason the tool was blocked"}
+        {"action": "approve", "message": "Why this needs human confirmation"}
 
-    from their ``pre_tool_call`` callback.  The first valid block
-    directive wins.  Invalid or irrelevant hook return values are
-    silently ignored so existing observer-only hooks are unaffected.
+    from their ``pre_tool_call`` callback.
+
+    - ``block`` vetoes the tool call outright (the message becomes the tool
+      result the model sees).
+    - ``approve`` ESCALATES to the existing human-approval gate
+      (``prompt_dangerous_approval`` on CLI, the approval callback on the
+      gateway) — the same mechanism Tier-2 dangerous shell patterns use.
+      This lets a plugin require a human ``[o]nce/[s]ession/[a]lways/[d]eny``
+      decision on ANY tool, not just terminal command strings. The caller is
+      responsible for invoking the gate (see
+      :func:`tools.approval.request_tool_approval`).
+
+    The first valid directive wins. Invalid or irrelevant hook return values
+    are silently ignored so existing observer-only hooks are unaffected.
+
+    Returns:
+        ``(directive, message)`` where ``directive`` is ``"block"``,
+        ``"approve"``, or ``None``.
     """
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
-        return fmt.format(tool_name=tool_name)
+        return ("block", fmt.format(tool_name=tool_name))
 
     hook_results = invoke_hook(
         "pre_tool_call",
@@ -2031,12 +2103,91 @@ def get_pre_tool_call_block_message(
     for result in hook_results:
         if not isinstance(result, dict):
             continue
-        if result.get("action") != "block":
+        action = result.get("action")
+        if action not in ("block", "approve"):
             continue
         message = result.get("message")
-        if isinstance(message, str) and message:
-            return message
+        message = message if isinstance(message, str) and message else None
+        # A block directive requires a message (it becomes the tool result);
+        # an approve directive can carry an optional reason.
+        if action == "block" and not message:
+            continue
+        return (action, message)
 
+    return (None, None)
+
+
+def get_pre_tool_call_block_message(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
+    """Back-compat shim: return only a ``block`` message (or ``None``).
+
+    Deprecated in favor of :func:`get_pre_tool_call_directive`, which also
+    surfaces the ``approve`` escalation directive. Kept so any external caller
+    importing the old name keeps working; ``approve`` directives are invisible
+    to this shim (it only reports blocks).
+    """
+    directive, message = get_pre_tool_call_directive(
+        tool_name, args, task_id=task_id, session_id=session_id,
+        tool_call_id=tool_call_id, turn_id=turn_id,
+        api_request_id=api_request_id, middleware_trace=middleware_trace,
+    )
+    return message if directive == "block" else None
+
+
+def resolve_pre_tool_block(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
+    """Resolve the pre_tool_call directive to a final block message (or None).
+
+    Single entry point for every tool-dispatch site: fetches the plugin
+    directive and, for an ``approve`` escalation, invokes the human-approval
+    gate (:func:`tools.approval.request_tool_approval`). Returns the message
+    the tool result should carry when the call is blocked, or ``None`` when
+    the call may proceed.
+
+    Centralizing this keeps the security-critical fail-closed logic in ONE
+    place instead of copy-pasted across the concurrent/sequential/helper
+    dispatch paths: an ``approve`` directive whose gate errors, denies, or
+    times out is fail-closed to a block; ``block`` blocks with its message;
+    anything else proceeds.
+    """
+    directive, message = get_pre_tool_call_directive(
+        tool_name, args, task_id=task_id, session_id=session_id,
+        tool_call_id=tool_call_id, turn_id=turn_id,
+        api_request_id=api_request_id, middleware_trace=middleware_trace,
+    )
+    if directive == "block":
+        return message
+    if directive == "approve":
+        try:
+            from tools.approval import request_tool_approval
+            result = request_tool_approval(
+                tool_name, message or "", rule_key=tool_name,
+            )
+        except Exception:
+            # Fail-closed: if the gate itself errors, block rather than
+            # silently execute an action a plugin flagged for approval.
+            return f"BLOCKED: plugin approval gate failed for {tool_name}"
+        if not result.get("approved"):
+            return str(
+                result.get("message")
+                or f"BLOCKED: plugin approval required for {tool_name}"
+            )
     return None
 
 

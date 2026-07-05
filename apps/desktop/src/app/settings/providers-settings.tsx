@@ -10,13 +10,14 @@ import {
   ProviderRow,
   providerTitle,
   sortProviders
-} from '@/components/desktop-onboarding-overlay'
+} from '@/components/onboarding'
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
@@ -400,7 +401,7 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
   const keyGroups = buildProviderKeyGroups(vars)
 
   if (showApiKeys) {
-    const q = keyQuery.trim().toLowerCase()
+    const q = normalize(keyQuery)
 
     const visibleGroups = q
       ? keyGroups.filter(group => {

@@ -448,6 +448,7 @@ AUTHOR_MAP = {
     "simpolism@gmail.com": "simpolism",
     "jake@nousresearch.com": "simpolism",
     "mgongzai@gmail.com": "vKongv",
+    "perkintahmaz50@gmail.com": "devatnull",
     "0x.badfriend@gmail.com": "discodirector",
     "altriatree@gmail.com": "TruaShamu",
     "contact-me@stark-x.cn": "Stark-X",

@@ -41,7 +41,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
-import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
+import { $cronFocusJobId, $cronJobs, getCachedCronRuns, setCachedCronRuns, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
 
@@ -653,7 +653,7 @@ function CronJobRuns({
   jobId: string
   onOpenSession?: (sessionId: string) => void
 }) {
-  const [runs, setRuns] = useState<null | SessionInfo[]>(null)
+  const [runs, setRuns] = useState<null | SessionInfo[]>(() => getCachedCronRuns(jobId))
 
   useEffect(() => {
     let cancelled = false
@@ -662,6 +662,7 @@ function CronJobRuns({
       getCronJobRuns(jobId)
         .then(result => {
           if (!cancelled) {
+            setCachedCronRuns(jobId, result)
             setRuns(result)
           }
         })

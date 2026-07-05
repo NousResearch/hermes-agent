@@ -10,6 +10,7 @@ import { getCronJobRuns, type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { fmtDayTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import { getCachedCronRuns, setCachedCronRuns } from '@/store/cron'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
@@ -269,7 +270,7 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
   const { t } = useI18n()
   const c = t.cron
   const selectedSessionId = useStore($selectedStoredSessionId)
-  const [runs, setRuns] = useState<null | SessionInfo[]>(null)
+  const [runs, setRuns] = useState<null | SessionInfo[]>(() => getCachedCronRuns(jobId))
 
   useEffect(() => {
     let cancelled = false
@@ -278,6 +279,7 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
       getCronJobRuns(jobId, PEEK_RUN_LIMIT)
         .then(result => {
           if (!cancelled) {
+            setCachedCronRuns(jobId, result)
             setRuns(result)
           }
         })

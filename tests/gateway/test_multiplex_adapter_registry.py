@@ -263,6 +263,79 @@ class TestSlashCommandProfileRouting:
         assert default_tg.resumed == []
 
 
+class _SendAdapter(_TypingAdapter):
+    """Fake adapter that records _send_with_retry calls."""
+    def __init__(self, name):
+        super().__init__(name)
+        self.sent = []
+
+    def _unwrap_ephemeral(self, reply):
+        return (reply, 0)
+
+    async def _send_with_retry(self, *, chat_id, content, reply_to=None, metadata=None):
+        self.sent.append((chat_id, content))
+
+
+class TestBareTextApprovalRouting:
+    """Plain-text approval (yes/approve) must send confirmation via
+    _adapter_for_source, not self.adapters.get — same bug class as the
+    slash-command /approve path but in _handle_active_session_busy_message."""
+
+    def _make_runner(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._active_profile_name = lambda: "default"
+        default_tg = _SendAdapter("default")
+        secondary_tg = _SendAdapter("secondary")
+        runner.adapters = {"telegram": default_tg}
+        runner._profile_adapters = {"secondary": {"telegram": secondary_tg}}
+        runner._pending_approvals = {}
+        return runner, default_tg, secondary_tg
+
+    def _make_event(self, text="yes"):
+        class _Src:
+            platform = "telegram"
+            chat_id = "chat-2"
+            profile = "secondary"
+            user_id = "u1"
+            thread_id = None
+        class _Event:
+            def __init__(self):
+                self.source = _Src()
+                self.text = text
+                self.message_id = 1
+            def get_command_args(self):
+                return ""
+        return _Event()
+
+    @pytest.mark.asyncio
+    async def test_bare_yes_routes_to_secondary_adapter(self, monkeypatch):
+        """Bare 'yes' approval must send confirmation via secondary adapter."""
+        runner, default_tg, secondary_tg = self._make_runner()
+        runner._session_key_for_source = lambda s: "secondary-session"
+        runner._is_user_authorized = lambda s: True
+        runner._reply_anchor_for_event = lambda e: None
+        runner._thread_metadata_for_source = lambda s, a: {}
+
+        monkeypatch.setattr(
+            "tools.approval.has_blocking_approval",
+            lambda *a, **kw: True,
+        )
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda *a, **kw: 1,
+        )
+
+        result = await runner._handle_active_session_busy_message(
+            self._make_event("yes"), "secondary-session"
+        )
+
+        assert result is True
+        # secondary adapter sent the confirmation, not default
+        assert len(secondary_tg.sent) == 1
+        assert secondary_tg.sent[0][0] == "chat-2"
+        assert default_tg.sent == []
+
+
 class _ConcreteAdapter(BasePlatformAdapter):
     """Minimal concrete adapter for testing profile stamping."""
     async def connect(self): pass

@@ -5200,7 +5200,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Approval response via plain text: session=%s verb=%s args=%r",
                         session_key, _verb, _normalized_args,
                     )
-                    _adapter = self.adapters.get(event.source.platform)
+                    _adapter = self._adapter_for_source(event.source)
                     if _adapter and _reply:
                         _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
                         if _text:

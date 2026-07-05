@@ -31,6 +31,11 @@ describe('formatAgo', () => {
   })
 })
 
+// Mirror the production formatter's locale/options so expectations assert the
+// unit/value without hardcoding English output — otherwise the suite breaks on
+// a non-English CI/dev runtime, since `relativeTime` uses the runtime locale.
+const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
+
 describe('relativeTime', () => {
   it('rolls to the coarser unit at the top edge of a bucket', () => {
     // 59.5 min rounds to 60 minutes → should read "in 1 hr", not "in 60 min".
@@ -42,9 +47,9 @@ describe('relativeTime', () => {
   })
 
   it('keeps non-boundary values in their own bucket', () => {
-    expect(relativeTime(2 * HOUR, 0)).toBe('in 2 hr.')
-    expect(relativeTime(5 * MINUTE, 0)).toBe('in 5 min.')
-    expect(relativeTime(30 * SECOND, 0)).toBe('in 30 sec.')
+    expect(relativeTime(2 * HOUR, 0)).toBe(rtf.format(2, 'hour'))
+    expect(relativeTime(5 * MINUTE, 0)).toBe(rtf.format(5, 'minute'))
+    expect(relativeTime(30 * SECOND, 0)).toBe(rtf.format(30, 'second'))
   })
 
   it('preserves the past direction when a value carries to the coarser unit', () => {

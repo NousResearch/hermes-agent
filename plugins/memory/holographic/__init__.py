@@ -372,10 +372,26 @@ class HolographicMemoryProvider(MemoryProvider):
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
             re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
+            # French — patterns à fort signal uniquement (resserrés 2026-07-03).
+            # Les patterns larges (c'est…, il faut…, ok pour…, je vais…) ont été
+            # retirés : ils capturaient du bruit conversationnel et diluaient
+            # les trust scores du fact store.
+            # Préférence/usage : je préfère X, j'aime X, j'utilise X, je garde X
+            re.compile(r"\b(?:je|j['’]e?)\s*(?:préfère|aime|adore|utilise|garde|prends)\s+(.+)", re.IGNORECASE),
+            # Souhait explicite : je voudrais X, j'aimerais X
+            re.compile(r"\b(?:je|j['’]e?)\s*(?:voudrais|aimerais)\s+(.+)", re.IGNORECASE),
+            # Habitude déclarée : je … toujours/jamais/souvent X
+            re.compile(r"\bje\s+(?:\w+\s+)?(?:toujours|jamais|souvent)\s+(.+)", re.IGNORECASE),
+            # Action durable au passé : j'ai installé/configuré/supprimé/changé X
+            re.compile(r"\bj['’]?ai\s+(?:installé|configuré|supprimé|changé|modifié|ajouté|mis)\s+(.+)", re.IGNORECASE),
         ]
         _DECISION_PATTERNS = [
             re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
             re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
+            # French — décision explicite : on a décidé/choisi (de) X
+            re.compile(r"\b(?:on\s+a|nous\s+avons)\s+(?:décidé|choisi)\s+(?:de\s+)?(.+)", re.IGNORECASE),
+            # Action future décidée avec verbe d'action : on va installer/configurer X
+            re.compile(r"\b(?:on\s+va|nous\s+allons)\s+(?:installer|configurer|mettre|utiliser|garder|supprimer|changer|modifier|ajouter)\s+(.+)", re.IGNORECASE),
         ]
 
         extracted = 0

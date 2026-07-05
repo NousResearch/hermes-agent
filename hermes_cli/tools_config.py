@@ -971,19 +971,51 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-Command", ps_oneliner,
         ]
-        use_shell = False
         manual_hint = (
             'powershell -NoProfile -ExecutionPolicy Bypass -Command '
             f'"{ps_oneliner}"'
         )
+        script_path = None
     else:
-        install_cmd = (
-            "/bin/bash -c \"$(curl -fsSL "
+        # Download-then-exec instead of `bash -c "$(curl …)"`: no shell=True,
+        # no command substitution, and the script lands in a mkstemp file
+        # (unpredictable name, 0600) rather than a fixed /tmp path — avoiding
+        # both the shell-injection surface and a symlink/TOCTOU race on
+        # multi-user machines. The manual hint stays the upstream one-liner
+        # since that's what the docs/README teach.
+        import tempfile as _tempfile
+
+        install_url = (
             "https://raw.githubusercontent.com/trycua/cua/main/"
-            "libs/cua-driver/scripts/install.sh)\""
+            "libs/cua-driver/scripts/install.sh"
         )
-        use_shell = True
-        manual_hint = install_cmd
+        manual_hint = f'/bin/bash -c "$(curl -fsSL {install_url})"'
+        fd, script_path = _tempfile.mkstemp(prefix="cua-driver-install-", suffix=".sh")
+        os.close(fd)
+        try:
+            dl = subprocess.run(
+                ["curl", "-fsSL", "-o", script_path, install_url],
+                capture_output=True, text=True, timeout=120,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            _print_warning(f"    cua-driver installer download failed: {e}")
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
+            return False
+        if dl.returncode != 0:
+            _print_warning(
+                "    cua-driver installer download failed: "
+                f"{(dl.stderr or '').strip()[:200]}"
+            )
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
+            return False
+        install_cmd = ["/bin/bash", script_path]
+    use_shell = False
 
     if verbose:
         _print_info(f"    {label} cua-driver (background computer-use)...")
@@ -1099,6 +1131,12 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
     except Exception as e:
         _print_warning(f"    cua-driver {label.lower()} failed: {e}")
         return False
+    finally:
+        if script_path:
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
 
 
 def _run_post_setup(post_setup_key: str):

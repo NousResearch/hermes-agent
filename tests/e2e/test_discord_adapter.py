@@ -153,3 +153,113 @@ class TestRepliedToMediaDispatch:
         assert event.media_urls == [cached_path]
         assert event.media_types == ["image/png"]
         assert event.message_type.value == "photo"
+
+
+class TestGuildSubscriptionPriming:
+    """on_ready must wait for every guild to report ``available=True``
+    before letting ``on_message`` through, otherwise MESSAGE_CREATE for
+    new guilds is silently dropped until the next reconnect race (#58866).
+    """
+
+    async def test_wait_until_all_guilds_ready_returns_when_all_available(
+        self, discord_adapter,
+    ):
+        client = discord_adapter._client
+        if client is None:
+            pytest.skip("discord_adapter fixture did not wire a client")
+        # Replace the guild list with two mocks that are already available.
+        class _G:
+            def __init__(self, gid, available):
+                self.id = gid
+                self.available = available
+        client.guilds = [_G("111", True), _G("222", True)]
+        # No sleep — returns immediately on the first poll.
+        await discord_adapter._wait_until_all_guilds_ready()
+
+    async def test_wait_until_all_guilds_ready_returns_when_no_guilds(
+        self, discord_adapter,
+    ):
+        """Zero-guild account (DM-only bot) must not block startup."""
+        client = discord_adapter._client
+        if client is None:
+            pytest.skip("discord_adapter fixture did not wire a client")
+        client.guilds = []
+        await discord_adapter._wait_until_all_guilds_ready()
+
+    async def test_wait_until_all_guilds_ready_times_out_and_warns(
+        self, discord_adapter, monkeypatch,
+    ):
+        """If ``Guild.available`` never flips True within the timeout we
+        still proceed (logged warning + return) instead of blocking startup
+        forever. Fixture patches the constants to keep the test fast.
+        """
+        client = discord_adapter._client
+        if client is None:
+            pytest.skip("discord_adapter fixture did not wire a client")
+
+        class _G:
+            def __init__(self, gid):
+                self.id = gid
+                self.available = False
+        client.guilds = [_G("999")]
+
+        monkeypatch.setattr(
+            discord_adapter, "_GUILD_READY_POLL_INTERVAL_S", 0.0,
+        )
+        monkeypatch.setattr(
+            discord_adapter, "_GUILD_READY_TIMEOUT_S", 0.05,
+        )
+        # Should NOT raise; just timeout + return.
+        await discord_adapter._wait_until_all_guilds_ready()
+        assert client.guilds[0].available is False  # unchanged
+
+    async def test_wait_until_all_guilds_ready_polled_until_available(
+        self, discord_adapter, monkeypatch,
+    ):
+        """A guild flipping available after a couple of polls must clear
+        the wait. Verifies the poll loop itself is wired correctly.
+        """
+        client = discord_adapter._client
+        if client is None:
+            pytest.skip("discord_adapter fixture did not wire a client")
+
+        class _G:
+            def __init__(self, gid):
+                self.id = gid
+                self.available = False
+
+        class _FlippableGuild:
+            def __init__(self):
+                self.id = "flippable"
+                self.available = False
+            def flip(self):
+                self.available = True
+
+        flippable = _FlippableGuild()
+        client.guilds = [flippable]
+
+        # Flip available=True on the third poll iteration.
+        polls = {"n": 0}
+        real_sleep = discord_adapter._GUILD_READY_POLL_INTERVAL_S
+        monkeypatch.setattr(discord_adapter, "_GUILD_READY_POLL_INTERVAL_S", 0.0)
+
+        async def _maybe_flip():
+            polls["n"] += 1
+            if polls["n"] >= 3:
+                flippable.flip()
+        monkeypatch.setattr(
+            "asyncio.sleep",
+            lambda _delay: _maybe_flip(),
+        )  # asyncio.sleep is a top-level import in adapter.py
+        monkeypatch.setattr(
+            discord_adapter, "_GUILD_READY_TIMEOUT_S", 5.0,
+        )
+
+        await discord_adapter._wait_until_all_guilds_ready()
+        assert flippable.available is True
+
+        # Restore real sleep constant so the test process doesn't leave
+        # asyncio.sleep patched for any later test in the same session.
+        monkeypatch.setattr(
+            discord_adapter, "_GUILD_READY_POLL_INTERVAL_S", real_sleep,
+        )

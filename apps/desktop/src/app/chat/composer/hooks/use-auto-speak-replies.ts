@@ -41,18 +41,50 @@ export function useAutoSpeakReplies({
   const enabled = useStore($autoSpeakReplies)
   const latest = useRef({ conversationActive, failureLabel, markSpoken, pendingReply })
   latest.current = { conversationActive, failureLabel, markSpoken, pendingReply }
+  const prevSessionId = useRef(sessionId)
 
   useEffect(() => {
     if (!enabled) {
       return undefined
     }
 
-    // Don't read whatever reply already sits at the bottom when the toggle flips
-    // on (or a chat opens) — consume it so only later replies are spoken.
-    latest.current.markSpoken()
+    const isNewSession = prevSessionId.current !== sessionId
+    prevSessionId.current = sessionId
+
+    if (!isNewSession) {
+      // Toggle flipped on mid-conversation — consume the existing last reply
+      // immediately so only replies that arrive afterward are spoken.
+      latest.current.markSpoken()
+    }
+
+    // Skip-count strategy to handle the $messages timing gap on session switch:
+    //
+    // $messages.subscribe() fires immediately with the current value. On a session
+    // switch, the store still holds the OLD session's messages at that point, so
+    // the first tick from subscribe is stale data. The second tick is the first
+    // real $messages update — the new session's existing messages (which must be
+    // silently consumed, not spoken). Only the third tick onward (genuinely new
+    // replies) should trigger audio.
+    //
+    // For the toggle-on case (same session), skip count is 1: the initial
+    // subscribe fire with the same data that markSpoken() already consumed above.
+    let skipCount = isNewSession ? 2 : 1
 
     const speakLatest = () => {
       const { conversationActive, failureLabel, markSpoken, pendingReply } = latest.current
+
+      if (skipCount > 0) {
+        skipCount -= 1
+
+        // On the very last skip (the first real $messages update carrying the
+        // new session's existing data), consume that reply silently so it's
+        // not spoken.
+        if (skipCount === 0) {
+          markSpoken()
+        }
+
+        return
+      }
 
       if (conversationActive || $voicePlayback.get().status !== 'idle') {
         return

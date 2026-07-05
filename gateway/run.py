@@ -20239,16 +20239,28 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     released — so this is a no-op on the normal shutdown path and the actual
     cleanup on the early-exit paths.
 
-    Logging is not flushed here: the gateway's handlers are synchronous
-    ``RotatingFileHandler``s that write each record immediately (no
-    ``MemoryHandler``/``QueueHandler`` buffering), so there is nothing pending.
-    Only stdio is buffered, so only stdio is flushed.
+    Logging IS flushed here: the rotating file handlers are driven by an
+    async ``QueueListener`` on a dedicated thread (see
+    ``hermes_logging._register_queued_handler``), so records emitted right
+    before shutdown may still be sitting in the in-memory queue. ``os._exit``
+    below bypasses ``atexit``, so the ``atexit``-registered listener drain
+    never runs on this path — we must drain explicitly here or lose the last
+    log lines (including the shutdown reason on the early-exit paths). Stdio
+    is flushed too.
     """
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
         except Exception:
             pass
+    # Drain the async log queue: os._exit bypasses atexit, so the listener's
+    # atexit drain won't fire. flush_log_queue() no-ops when logging never
+    # initialized a queue (e.g. very early aborts), so this is always safe.
+    try:
+        from hermes_logging import flush_log_queue
+        flush_log_queue()
+    except Exception:
+        pass
     # Guaranteed cleanup chokepoint: os._exit skips atexit, and the early
     # SystemExit exit paths never run _stop_impl, so release here (idempotent).
     try:

@@ -885,7 +885,7 @@ def camofox_vision(question: str, annotate: bool = False,
 
         vision_prompt = (
             f"Analyze this browser screenshot and answer: {question}"
-            f"{annotation_context}"
+            + annotation_context
         )
 
         try:

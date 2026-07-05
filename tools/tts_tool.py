@@ -1618,7 +1618,7 @@ def _rewrite_gemini_tts_audio_tags(text: str, persona_prompt: str = "") -> str:
         "PERSONA AND DIRECTOR CONTEXT:\n"
         f"{context}\n\n"
         "TRANSCRIPT TO TAG:\n"
-        f"{transcript}"
+        + transcript
     )
     try:
         from agent.auxiliary_client import call_llm

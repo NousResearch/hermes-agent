@@ -519,7 +519,7 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
                 f"the Nous Portal's FAL proxy. Either:\n"
                 f"  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
                 f"  • Pick a different model via `hermes tools` → Image Generation."
-                f"{gateway_message}"
+                + gateway_message
             ) from exc
         raise
 

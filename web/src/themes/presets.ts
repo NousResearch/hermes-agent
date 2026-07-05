@@ -131,6 +131,48 @@ export const monoTheme: DashboardTheme = {
   },
 };
 
+export const clarityTheme: DashboardTheme = {
+  name: "clarity",
+  label: "Clarity",
+  description: "High-contrast teal with hyperlegible UI typography",
+  palette: {
+    background: { hex: "#061214", alpha: 1 },
+    midground: { hex: "#f6f2e8", alpha: 1 },
+    foreground: { hex: "#8ee8d1", alpha: 0.2 },
+    warmGlow: "rgba(94, 234, 212, 0.16)",
+    noiseOpacity: 0.35,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Atkinson Hyperlegible", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+    baseSize: "16px",
+    lineHeight: "1.65",
+  },
+  layout: DEFAULT_LAYOUT,
+  colorOverrides: {
+    card: "#0b1b1d",
+    popover: "#0b1b1d",
+    secondary: "#102527",
+    muted: "#102527",
+    accent: "#143130",
+    border: "#315451",
+    input: "#315451",
+    ring: "#8ee8d1",
+    success: "#5eead4",
+    warning: "#facc15",
+  },
+  terminalBackground: "#050b0c",
+  terminalForeground: "#f6f2e8",
+  seriesColors: {
+    inputTokenAccent: "#f6f2e8",
+    outputTokenAccent: "#5eead4",
+  },
+  swatchColors: ["#061214", "#f6f2e8", "#5eead4"],
+};
+
 export const cyberpunkTheme: DashboardTheme = {
   name: "cyberpunk",
   label: "Cyberpunk",
@@ -235,6 +277,7 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
+  clarity: clarityTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
 };

@@ -20,6 +20,7 @@ Storage: ~/.hermes/pairing/
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import tempfile
@@ -34,6 +35,8 @@ from gateway.whatsapp_identity import (
 )
 from hermes_constants import get_hermes_dir
 from utils import atomic_replace
+
+logger = logging.getLogger(__name__)
 
 
 # Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion
@@ -213,6 +216,30 @@ class PairingStore:
         if path.exists():
             try:
                 return json.loads(path.read_text(encoding="utf-8"))
+            except PermissionError as e:
+                # Surface this loudly: a 0600 file owned by a different user
+                # (classic Docker symptom: `docker exec` runs as root and writes
+                # the file, then the gateway process — running as `hermes` after
+                # gosu drop — can't read it) would otherwise be swallowed by
+                # the generic OSError branch below, silently leaving the user
+                # marked unauthorized. See issue #10270.
+                try:
+                    st = path.stat()
+                    owner_info = f"owner_uid={st.st_uid} mode={oct(st.st_mode)[-4:]}"
+                except OSError:
+                    owner_info = "<stat failed>"
+                # os.geteuid doesn't exist on Windows; the Docker scenario is
+                # POSIX-only, but the gateway (and this fallback) runs anywhere.
+                euid = os.geteuid() if hasattr(os, "geteuid") else "n/a"
+                logger.warning(
+                    "Pairing file %s exists but is not readable as uid=%s (%s; %s). "
+                    "If you ran `docker exec <container> hermes pairing approve ...` as root, "
+                    "re-run with `docker exec -u hermes <container> ...` and "
+                    "chown the existing file to the hermes user, or restart the "
+                    "container so the entrypoint can fix ownership.",
+                    path, euid, owner_info, e,
+                )
+                return {}
             except (json.JSONDecodeError, OSError):
                 return {}
         return {}

@@ -332,6 +332,24 @@ hermes pairing revoke telegram 123456789
 hermes pairing clear-pending
 ```
 
+:::tip Docker users: run pairing commands as the `hermes` user
+The official Docker image runs the gateway as the unprivileged `hermes` user
+(uid 10000) via `gosu`, but `docker exec` defaults to root. Approval files
+created by root are written with mode `0600 root:root` and the gateway
+cannot read them — the approval is silently ignored ([#10270][i10270]).
+
+Always pass `-u hermes`:
+
+```bash
+docker exec -u hermes hermes-agent hermes pairing approve telegram ABC12DEF
+```
+
+If you already ran the command as root and the user is still unauthorized,
+restart the container — the entrypoint will fix ownership on the next start.
+
+[i10270]: https://github.com/NousResearch/hermes-agent/issues/10270
+:::
+
 **Storage:** Pairing data is stored in `~/.hermes/pairing/` with per-platform JSON files:
 - `{platform}-pending.json` — pending pairing requests
 - `{platform}-approved.json` — approved users

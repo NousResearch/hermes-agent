@@ -122,6 +122,39 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class NativeStreamingProgressAdapter(NonEditingProgressCaptureAdapter):
+    SUPPORTS_NATIVE_STREAMING_REPLIES = True
+
+    def __init__(self, platform=Platform.WECOM):
+        super().__init__(platform=platform)
+        self.stream_chunks = []
+
+    async def send_stream_chunk(
+        self,
+        chat_id,
+        content,
+        *,
+        reply_to=None,
+        stream_key=None,
+        finalize=False,
+        metadata=None,
+    ):
+        if reply_to is None:
+            source = self._pending_messages.get("__last_source__")
+            reply_to = f"native:{getattr(source, 'chat_type', '')}"
+        self.stream_chunks.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "stream_key": stream_key,
+                "finalize": finalize,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=f"stream-{len(self.stream_chunks)}")
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -661,9 +694,12 @@ class PreviewedSplitAfterCommentaryAgent:
 
 
 class StreamingRefineAgent:
+    instances = []
+
     def __init__(self, **kwargs):
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
         self.tools = []
+        type(self).instances.append(self)
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
         if self.stream_delta_callback:
@@ -744,7 +780,7 @@ async def _run_with_agent(
     platform=Platform.TELEGRAM,
     chat_id="-1001",
     chat_type="group",
-    thread_id="17585",
+    thread_id: str | None = "17585",
     adapter_cls=ProgressCaptureAdapter,
 ):
     if config_data:
@@ -759,8 +795,11 @@ async def _run_with_agent(
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    if hasattr(agent_cls, "instances"):
+        agent_cls.instances = []
 
     adapter = adapter_cls(platform=platform)
+    adapter._pending_messages = {}
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
@@ -773,6 +812,8 @@ async def _run_with_agent(
         chat_type=chat_type,
         thread_id=thread_id,
     )
+    if getattr(adapter, "SUPPORTS_NATIVE_STREAMING_REPLIES", False):
+        adapter._pending_messages["__last_source__"] = source
     session_key = f"agent:main:{platform.value}:{chat_type}:{chat_id}"
     if thread_id:
         session_key = f"{session_key}:{thread_id}"
@@ -791,6 +832,7 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        event_message_id=("origin-msg-1" if getattr(adapter, "SUPPORTS_NATIVE_STREAMING_REPLIES", False) else None),
     )
     return adapter, result
 
@@ -901,6 +943,113 @@ async def test_run_agent_streaming_does_not_enable_completed_interim_commentary(
 
     assert result.get("already_sent") is True
     assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_wecom_native_reply_streaming_allowed_for_capable_adapter(monkeypatch, tmp_path):
+    adapter = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StreamingRefineAgent,
+        session_id="sess-wecom-native-stream",
+        config_data={
+            "streaming": {
+                "enabled": True,
+                "transport": "native",
+                "edit_interval": 0.0,
+                "buffer_threshold": 1,
+            },
+            "display": {
+                "interim_assistant_messages": False,
+                "platforms": {"wecom": {"streaming": True}},
+            },
+        },
+        platform=Platform.WECOM,
+        chat_id="wecom-chat-1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=NativeStreamingProgressAdapter,
+    )
+    adapter, result = adapter
+
+    assert result["final_response"] == "Continuing to refine: Final answer."
+    assert StreamingRefineAgent.instances
+    assert StreamingRefineAgent.instances[-1].stream_delta_callback is not None
+    assert adapter.stream_chunks
+    assert any(chunk["content"] for chunk in adapter.stream_chunks)
+    assert {chunk["metadata"]["reply"]["msgid"] for chunk in adapter.stream_chunks} == {"origin-msg-1"}
+    assert adapter.sent == []
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_non_editing_adapter_without_native_streaming_capability_skips_streaming(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StreamingRefineAgent,
+        session_id="sess-generic-non-edit-no-stream",
+        config_data={
+            "streaming": {
+                "enabled": True,
+                "transport": "native",
+                "edit_interval": 0.0,
+                "buffer_threshold": 1,
+            },
+            "display": {
+                "interim_assistant_messages": False,
+            },
+        },
+        platform=Platform.WEIXIN,
+        chat_id="weixin-chat-1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    assert result["final_response"] == "Continuing to refine: Final answer."
+    assert StreamingRefineAgent.instances
+    assert StreamingRefineAgent.instances[-1].stream_delta_callback is None
+    assert not hasattr(adapter, "stream_chunks")
+    assert adapter.sent == []
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_streaming_native_capability_does_not_enable_group_fallback(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StreamingRefineAgent,
+        session_id="sess-wecom-native-group-no-fallback",
+        config_data={
+            "streaming": {
+                "enabled": True,
+                "transport": "native",
+                "edit_interval": 0.0,
+                "buffer_threshold": 1,
+            },
+            "display": {
+                "interim_assistant_messages": False,
+                "platforms": {"wecom": {"streaming": True}},
+            },
+        },
+        platform=Platform.WECOM,
+        chat_id="wecom-group-1",
+        chat_type="group",
+        thread_id=None,
+        adapter_cls=NativeStreamingProgressAdapter,
+    )
+
+    assert result["final_response"] == "Continuing to refine: Final answer."
+    assert adapter.stream_chunks
+    assert {chunk["chat_id"] for chunk in adapter.stream_chunks} == {"wecom-group-1"}
+    assert all(chunk["reply_to"] == "origin-msg-1" for chunk in adapter.stream_chunks)
+    assert {chunk["metadata"]["reply"]["msgid"] for chunk in adapter.stream_chunks} == {"origin-msg-1"}
+    assert adapter.sent == []
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio

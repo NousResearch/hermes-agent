@@ -140,11 +140,18 @@ def _entry_matches(entries: List[str], target: str) -> bool:
     return False
 
 
+def _iter_markdown_chunks(content: Any, max_length: int) -> List[str]:
+    """Split markdown into bounded chunks while preserving the full tail."""
+    content_text = "" if content is None else str(content)
+    return BasePlatformAdapter.truncate_message(content_text, max_length)
+
+
 class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False
+    SUPPORTS_NATIVE_STREAMING_REPLIES = True
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
@@ -184,6 +191,7 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._stream_states: Dict[str, Dict[str, str]] = {}
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -947,6 +955,87 @@ class WeComAdapter(BasePlatformAdapter):
             return None
         return self._reply_req_ids.get(normalized)
 
+    @staticmethod
+    def _metadata_reply_req_id(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(metadata, dict):
+            return None
+        normalized = str(metadata.get("wecom_reply_req_id") or "").strip()
+        return normalized or None
+
+    @staticmethod
+    def _metadata_reply_msgid(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(metadata, dict):
+            return None
+        reply = metadata.get("reply")
+        if not isinstance(reply, dict):
+            return None
+        normalized = str(reply.get("msgid") or "").strip()
+        return normalized or None
+
+    def _resolve_reply_req_id(
+        self,
+        chat_id: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        metadata_reply_req_id = self._metadata_reply_req_id(metadata)
+        if metadata_reply_req_id:
+            return metadata_reply_req_id
+
+        metadata_reply_msgid = self._metadata_reply_msgid(metadata)
+        if metadata_reply_msgid:
+            metadata_reply_req_id = self._reply_req_id_for_message(metadata_reply_msgid)
+            if metadata_reply_req_id:
+                return metadata_reply_req_id
+
+        reply_req_id = self._reply_req_id_for_message(reply_to)
+        if reply_req_id:
+            return reply_req_id
+
+        normalized_chat_id = str(chat_id or "").strip()
+        if normalized_chat_id:
+            return self._last_chat_req_ids.get(normalized_chat_id)
+
+        return None
+
+    @staticmethod
+    def _stream_response_id(response: Dict[str, Any]) -> Optional[str]:
+        body = response.get("body")
+        if isinstance(body, dict):
+            stream = body.get("stream")
+            if isinstance(stream, dict):
+                # We send WeCom's native field name (stream_id), but accept
+                # older/sample response fixtures that report the id as `id`.
+                stream_id = str(stream.get("stream_id") or stream.get("id") or "").strip()
+                if stream_id:
+                    return stream_id
+        return WeComAdapter._payload_req_id(response) or None
+
+    def _remember_stream_state(self, stream_key: str, reply_req_id: str, stream_id: Optional[str]) -> None:
+        normalized_stream_key = str(stream_key or "").strip()
+        normalized_reply_req_id = str(reply_req_id or "").strip()
+        if not normalized_stream_key or not normalized_reply_req_id:
+            return
+
+        state = {"reply_req_id": normalized_reply_req_id}
+        normalized_stream_id = str(stream_id or "").strip()
+        if normalized_stream_id:
+            state["stream_id"] = normalized_stream_id
+        self._stream_states[normalized_stream_key] = state
+        while len(self._stream_states) > DEDUP_MAX_SIZE:
+            self._stream_states.pop(next(iter(self._stream_states)))
+
+    def _clear_stream_state(self, stream_key: Optional[str]) -> None:
+        normalized_stream_key = str(stream_key or "").strip()
+        if normalized_stream_key:
+            self._stream_states.pop(normalized_stream_key, None)
+
+    def _stream_state(self, stream_key: Optional[str]) -> Optional[Dict[str, str]]:
+        normalized_stream_key = str(stream_key or "").strip()
+        if not normalized_stream_key:
+            return None
+        return self._stream_states.get(normalized_stream_key)
+
     # ------------------------------------------------------------------
     # Outbound messaging
     # ------------------------------------------------------------------
@@ -1260,15 +1349,20 @@ class WeComAdapter(BasePlatformAdapter):
         return response
 
     async def _send_reply_markdown(self, reply_req_id: str, content: str) -> Dict[str, Any]:
-        response = await self._send_reply_request(
-            reply_req_id,
-            {
-                "msgtype": "markdown",
-                "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
-            },
-        )
-        self._raise_for_wecom_error(response, "send reply markdown")
+        response: Dict[str, Any] = {}
+        for chunk in self._iter_markdown_chunks(content):
+            response = await self._send_reply_request(
+                reply_req_id,
+                {
+                    "msgtype": "markdown",
+                    "markdown": {"content": chunk},
+                },
+            )
+            self._raise_for_wecom_error(response, "send reply markdown")
         return response
+
+    def _iter_markdown_chunks(self, content: str) -> List[str]:
+        return _iter_markdown_chunks(content, self.MAX_MESSAGE_LENGTH)
 
     async def _send_reply_media_message(
         self,
@@ -1390,28 +1484,27 @@ class WeComAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
-        del metadata
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
         try:
-            reply_req_id = self._reply_req_id_for_message(reply_to)
-
-            if not reply_req_id and chat_id in self._last_chat_req_ids:
-                reply_req_id = self._last_chat_req_ids[chat_id]
+            reply_req_id = self._resolve_reply_req_id(chat_id=chat_id, reply_to=reply_to, metadata=metadata)
 
             if reply_req_id:
                 response = await self._send_reply_markdown(reply_req_id, content)
             else:
-                response = await self._send_request(
-                    APP_CMD_SEND,
-                    {
-                        "chatid": chat_id,
-                        "msgtype": "markdown",
-                        "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
-                    },
-                )
+                response = {}
+                for chunk in self._iter_markdown_chunks(content):
+                    response = await self._send_request(
+                        APP_CMD_SEND,
+                        {
+                            "chatid": chat_id,
+                            "msgtype": "markdown",
+                            "markdown": {"content": chunk},
+                        },
+                    )
+                    self._raise_for_wecom_error(response, "send markdown")
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
@@ -1425,6 +1518,119 @@ class WeComAdapter(BasePlatformAdapter):
         return SendResult(
             success=True,
             message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
+            raw_response=response,
+        )
+
+    async def send_stream_chunk(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        stream_key: Optional[str] = None,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        if not chat_id:
+            self._clear_stream_state(stream_key)
+            return SendResult(success=False, error="chat_id is required")
+
+        normalized_stream_key = str(stream_key or "").strip()
+        content_text = "" if content is None else str(content)
+        thinking_placeholder = content_text == "THINKING_MESSAGE"
+        existing_state = self._stream_state(normalized_stream_key)
+        reply_req_id = (
+            existing_state.get("reply_req_id")
+            if existing_state
+            else self._resolve_reply_req_id(chat_id=chat_id, reply_to=reply_to, metadata=metadata)
+        )
+        if not reply_req_id:
+            self._clear_stream_state(normalized_stream_key)
+            if thinking_placeholder:
+                return SendResult(success=True)
+            return SendResult(success=False, error="WeCom native stream reply context is required")
+
+        stream_id = existing_state.get("stream_id") if existing_state else None
+        if finalize:
+            event = "finish"
+        elif existing_state:
+            event = "continue"
+        else:
+            event = "start"
+
+        native_content = "" if thinking_placeholder else content_text
+        overflow_content = ""
+        if finalize and len(content_text) > self.MAX_MESSAGE_LENGTH:
+            native_content = content_text[: self.MAX_MESSAGE_LENGTH]
+            overflow_content = content_text[self.MAX_MESSAGE_LENGTH :]
+
+        stream_payload: Dict[str, Any] = {
+            "event": event,
+            "content": native_content,
+            "stream_id": stream_id or reply_req_id,
+        }
+
+        body = {
+            "msgtype": "stream",
+            "stream": stream_payload,
+        }
+
+        try:
+            response = await self._send_reply_request(reply_req_id, body)
+            self._raise_for_wecom_error(response, "send stream")
+        except asyncio.TimeoutError:
+            self._clear_stream_state(normalized_stream_key)
+            return SendResult(success=False, error="Timeout sending message to WeCom")
+        except Exception as exc:
+            self._clear_stream_state(normalized_stream_key)
+            logger.error("[%s] Send stream failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+        response_stream_id = self._stream_response_id(response) or stream_payload.get("stream_id")
+
+        if overflow_content:
+            try:
+                overflow_response = await self._send_reply_markdown(reply_req_id, overflow_content)
+            except asyncio.TimeoutError:
+                self._clear_stream_state(normalized_stream_key)
+                return SendResult(
+                    success=False,
+                    error="Timeout sending message to WeCom",
+                    raw_response={
+                        "confirmed_prefix_len": len(native_content),
+                        "overflow_error": "Timeout sending message to WeCom",
+                        "native_response": response,
+                    },
+                )
+            except Exception as exc:
+                self._clear_stream_state(normalized_stream_key)
+                return SendResult(
+                    success=False,
+                    error=str(exc),
+                    raw_response={
+                        "confirmed_prefix_len": len(native_content),
+                        "overflow_error": str(exc),
+                        "native_response": response,
+                    },
+                )
+            self._clear_stream_state(normalized_stream_key)
+            return SendResult(
+                success=True,
+                message_id=str(response_stream_id or self._payload_req_id(response) or uuid.uuid4().hex[:12]),
+                raw_response={
+                    "native_response": response,
+                    "overflow_response": overflow_response,
+                    "confirmed_prefix_len": len(native_content),
+                },
+            )
+
+        if finalize:
+            self._clear_stream_state(normalized_stream_key)
+        else:
+            self._remember_stream_state(normalized_stream_key, reply_req_id, str(response_stream_id or ""))
+
+        return SendResult(
+            success=True,
+            message_id=str(response_stream_id or self._payload_req_id(response) or uuid.uuid4().hex[:12]),
             raw_response=response,
         )
 

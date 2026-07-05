@@ -123,6 +123,98 @@ class TestWeComConnect:
         assert "invalid secret" in (adapter.fatal_error_message or "")
 
 
+    def test_send_uses_metadata_reply_msgid_when_reply_to_is_absent(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["origin-msg-1"] = "req-1"
+        adapter._last_chat_req_ids["chat-123"] = "stale-chat-req"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        metadata = {"reply": {"msgid": "origin-msg-1"}}
+        result = asyncio.run(adapter.send("chat-123", "tail", metadata=metadata))
+
+        assert result.success is True
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "req-1"
+        assert args[1]["markdown"]["content"] == "tail"
+
+
+    @pytest.mark.asyncio
+    async def test_send_stream_chunk_final_overflow_sends_bounded_finish_and_markdown_tail(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["origin-msg-1"] = "req-1"
+        sent = []
+
+        async def _fake_send_reply_request(reply_req_id, body):
+            sent.append((reply_req_id, body))
+            return {
+                "errcode": 0,
+                "headers": {"req_id": reply_req_id},
+                "body": {"stream": {"stream_id": "stream-1"}},
+            }
+
+        adapter._send_reply_request = _fake_send_reply_request
+        content = "A" * (adapter.MAX_MESSAGE_LENGTH + 25)
+
+        result = await adapter.send_stream_chunk(
+            chat_id="chat-123",
+            content=content,
+            stream_key="stream-key-1",
+            finalize=True,
+            metadata={"reply": {"msgid": "origin-msg-1"}},
+        )
+
+        assert result.success is True
+        assert [body["msgtype"] for _req, body in sent] == ["stream", "markdown"]
+        assert sent[0][0] == "req-1"
+        stream_content = sent[0][1]["stream"]["content"]
+        assert sent[0][1]["stream"]["event"] == "finish"
+        assert len(stream_content) == adapter.MAX_MESSAGE_LENGTH
+        assert sent[1][1]["markdown"]["content"] == "A" * 25
+        assert result.raw_response["confirmed_prefix_len"] == adapter.MAX_MESSAGE_LENGTH
+        assert adapter._stream_states == {}
+
+    @pytest.mark.asyncio
+    async def test_send_stream_chunk_final_overflow_failure_reports_confirmed_prefix(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["origin-msg-1"] = "req-1"
+        sent = []
+
+        async def _fake_send_reply_request(reply_req_id, body):
+            sent.append((reply_req_id, body))
+            if body["msgtype"] == "markdown":
+                raise RuntimeError("markdown overflow failed")
+            return {
+                "errcode": 0,
+                "headers": {"req_id": reply_req_id},
+                "body": {"stream": {"stream_id": "stream-1"}},
+            }
+
+        adapter._send_reply_request = _fake_send_reply_request
+        content = "A" * (adapter.MAX_MESSAGE_LENGTH + 25)
+
+        result = await adapter.send_stream_chunk(
+            chat_id="chat-123",
+            content=content,
+            stream_key="stream-key-1",
+            finalize=True,
+            metadata={"reply": {"msgid": "origin-msg-1"}},
+        )
+
+        assert result.success is False
+        assert result.raw_response["confirmed_prefix_len"] == adapter.MAX_MESSAGE_LENGTH
+        assert result.raw_response["overflow_error"] == "markdown overflow failed"
+        assert [body["msgtype"] for _req, body in sent] == ["stream", "markdown"]
+        assert adapter._stream_states == {}
+
+
 class TestWeComQrScan:
     @patch("plugins.platforms.wecom.adapter.time")
     @patch("plugins.platforms.wecom.adapter.json.loads")

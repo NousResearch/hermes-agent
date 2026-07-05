@@ -4014,7 +4014,21 @@ class TelegramAdapter(BasePlatformAdapter):
 
             msg = await self._send_message_with_thread_fallback(**kwargs)
 
-            # Store session_key keyed by approval_id for the callback handler
+            # Bind the platform callback id to the queued approval before the
+            # callback can be tapped.  The session key remains a legacy hint,
+            # but the approval id is the durable prompt→queue binding for
+            # authorized operator override from a different Telegram identity.
+            try:
+                from tools.approval import attach_gateway_approval_id
+                if not attach_gateway_approval_id(session_key, approval_id):
+                    logger.warning(
+                        "[%s] approval_id %s could not attach to session %s",
+                        self.name, approval_id, session_key,
+                    )
+            except Exception as exc:
+                logger.warning("[%s] attach_gateway_approval_id failed: %s", self.name, exc)
+
+            # Store session_key keyed by approval_id for the callback handler.
             self._approval_state[approval_id] = session_key
 
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4698,10 +4712,50 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
+                session_key = self._approval_state.get(approval_id)
                 if not session_key:
                     await query.answer(text="This approval has already been resolved.")
                     return
+
+                user_display = getattr(query.from_user, "first_name", "User")
+
+                # Resolve the approval before editing the prompt.  The callback
+                # user has already been authorized above, so resolve by the
+                # approval id carried in the button; this lets an operator tap a
+                # group/bot-initiated approval from their own identity without
+                # depending on a session-key match.
+                try:
+                    from tools.approval import (
+                        resolve_gateway_approval,
+                        resolve_gateway_approval_by_id,
+                    )
+                    count, resolved_session_key = resolve_gateway_approval_by_id(
+                        approval_id, choice, expected_session_key=session_key
+                    )
+                    if not count:
+                        # Legacy fallback for prompts created before approval_id
+                        # attachment existed, or tests that mock the old resolver.
+                        count = resolve_gateway_approval(session_key, choice)
+                        resolved_session_key = session_key if count else None
+                    if count:
+                        self._approval_state.pop(approval_id, None)
+                        logger.info(
+                            "Telegram button resolved %d approval(s) for session %s "
+                            "(prompt_session=%s, approval_id=%s, choice=%s, user=%s)",
+                            count, resolved_session_key, session_key,
+                            approval_id, choice, user_display,
+                        )
+                    else:
+                        self._approval_state.pop(approval_id, None)
+                        logger.warning(
+                            "Telegram button resolved 0 approval(s) "
+                            "(prompt_session=%s, approval_id=%s, choice=%s, user=%s)",
+                            session_key, approval_id, choice, user_display,
+                        )
+                except Exception as exc:
+                    logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+                    count = 0
+                    resolved_session_key = None
 
                 # Map choice to human-readable label
                 label_map = {
@@ -4710,32 +4764,32 @@ class TelegramAdapter(BasePlatformAdapter):
                     "always": "✅ Approved permanently",
                     "deny": "❌ Denied",
                 }
-                user_display = getattr(query.from_user, "first_name", "User")
                 label = label_map.get(choice, "Resolved")
 
-                await query.answer(text=label)
-
-                # Edit message to show decision, remove buttons
-                try:
-                    await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass  # non-fatal if edit fails
-
-                # Resolve the approval — unblocks the agent thread
-                try:
-                    from tools.approval import resolve_gateway_approval
-                    count = resolve_gateway_approval(session_key, choice)
-                    logger.info(
-                        "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                        count, session_key, choice, user_display,
-                    )
-                except Exception as exc:
-                    logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
-                    count = 0
+                if count:
+                    await query.answer(text=label)
+                    # Edit message to show decision, remove buttons
+                    try:
+                        await query.edit_message_text(
+                            text=self.format_message(f"{label} by {user_display}"),
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass  # non-fatal if edit fails
+                else:
+                    stale_label = "⚠️ Approval expired or no longer pending"
+                    await query.answer(text=stale_label)
+                    try:
+                        await query.edit_message_text(
+                            text=self.format_message(
+                                f"{stale_label}. Please re-run the command if it is still needed."
+                            ),
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
 
                 # Resume the typing indicator — paused when the approval was
                 # sent (gateway/run.py).  The text /approve and /deny paths

@@ -81,6 +81,15 @@ class TestIsRetryableError:
     def test_connect_timeout_is_retryable(self):
         assert _StubAdapter._is_retryable_error("ConnectTimeout: connection timed out")
 
+    @pytest.mark.parametrize("error", [
+        "httpx.ConnectError: [Errno 8] nodename nor servname provided, or not known",
+        "Temporary failure in name resolution",
+        "socket.gaierror: name resolution failed for api.telegram.org",
+    ])
+    def test_magicdns_resolution_failures_are_retryable(self, error):
+        """Resolver failures happen before Telegram receives the send request."""
+        assert _StubAdapter._is_retryable_error(error)
+
 
 # ---------------------------------------------------------------------------
 # _is_timeout_error

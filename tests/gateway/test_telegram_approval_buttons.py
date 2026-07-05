@@ -74,6 +74,23 @@ class _AuthRunner:
         return self.authorized
 
 
+@pytest.fixture(autouse=True)
+def _clear_gateway_approval_state():
+    from tools import approval as approval_mod
+
+    approval_mod._gateway_queues.clear()
+    approval_mod._gateway_notify_cbs.clear()
+    approval_mod._session_approved.clear()
+    approval_mod._permanent_approved.clear()
+    approval_mod._pending.clear()
+    yield
+    approval_mod._gateway_queues.clear()
+    approval_mod._gateway_notify_cbs.clear()
+    approval_mod._session_approved.clear()
+    approval_mod._permanent_approved.clear()
+    approval_mod._pending.clear()
+
+
 # ===========================================================================
 # send_exec_approval — inline keyboard buttons
 # ===========================================================================
@@ -330,6 +347,55 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         assert "12345" in adapter._typing_paused
+        assert "expired or no longer pending" in query.answer.call_args[1]["text"]
+        query.edit_message_text.assert_called_once()
+        assert "expired" in query.edit_message_text.call_args[1]["text"].lower()
+        assert 6 not in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_operator_button_resolves_group_initiated_approval_by_id(self):
+        """Authorized operator taps can resolve a queued approval by prompt id
+        even when the visible prompt session key is stale/mismatched."""
+        from tools import approval as approval_mod
+
+        adapter = _make_adapter()
+        prompt_session = "agent:main:telegram:group:-1003912140421:7624727786"
+        actual_queue_session = "agent:main:telegram:group:-1003912140421:8059005725"
+        approval_id = 77
+        entry = approval_mod._ApprovalEntry({
+            "command": "rm -rf /tmp/demo",
+            "approval_id": approval_id,
+        })
+        approval_mod._gateway_queues[actual_queue_session] = [entry]
+        adapter._approval_state[approval_id] = prompt_session
+        adapter.pause_typing_for_chat("-1003912140421")
+
+        query = AsyncMock()
+        query.data = f"ea:once:{approval_id}"
+        query.message = MagicMock()
+        query.message.chat_id = -1003912140421
+        query.message.chat.type = "supergroup"
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Tamas"
+        query.from_user.id = "8059005725"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "8059005725"}, clear=False):
+            await adapter._handle_callback_query(update, context)
+
+        assert entry.event.is_set() is True
+        assert entry.result == "once"
+        assert actual_queue_session not in approval_mod._gateway_queues
+        assert approval_id not in adapter._approval_state
+        assert "-1003912140421" not in adapter._typing_paused
+        query.answer.assert_called_once()
+        assert "Approved once" in query.answer.call_args[1]["text"]
+        query.edit_message_text.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_approval_callback_escapes_dynamic_user_name(self):

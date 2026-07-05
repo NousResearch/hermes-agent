@@ -35,6 +35,8 @@ class _FakeBadRequest(Exception):
         ("Flood control exceeded", "rate_limited"),
         ("ConnectError: connection refused", "transient"),
         ("ConnectTimeout", "transient"),
+        ("httpx.ConnectError: [Errno 8] nodename nor servname provided, or not known", "transient"),
+        ("Temporary failure in name resolution", "transient"),
         ("some entirely novel provider message", "unknown"),
         ("", "unknown"),
     ],

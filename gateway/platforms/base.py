@@ -2090,6 +2090,13 @@ _RETRYABLE_ERROR_PATTERNS = (
     "broken pipe",
     "remotedisconnected",
     "eoferror",
+    # macOS/Tailscale MagicDNS transient resolver failures. These happen before
+    # a Telegram request is established, so retrying the send is safe and
+    # recovers the observed self-healing failures without changing DNS/network
+    # settings.
+    "nodename nor servname",
+    "temporary failure in name resolution",
+    "name resolution",
 )
 
 

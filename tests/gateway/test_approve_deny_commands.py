@@ -155,6 +155,54 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
+    def test_attach_gateway_approval_id_marks_oldest_unbound_entry(self):
+        from tools.approval import (
+            attach_gateway_approval_id,
+            _ApprovalEntry,
+            _gateway_queues,
+        )
+
+        session_key = "test-attach"
+        e1 = _ApprovalEntry({"command": "first"})
+        e2 = _ApprovalEntry({"command": "second"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        assert attach_gateway_approval_id(session_key, 123) is True
+        assert e1.data["approval_id"] == 123
+        assert "approval_id" not in e2.data
+
+    def test_resolve_gateway_approval_by_id_ignores_session_key_mismatch(self):
+        from tools.approval import (
+            resolve_gateway_approval_by_id,
+            _ApprovalEntry,
+            _gateway_queues,
+        )
+
+        prompt_session = "agent:main:telegram:group:-1003912140421:7624727786"
+        actual_session = "agent:main:telegram:group:-1003912140421:8059005725"
+        entry = _ApprovalEntry({"command": "rm -rf /tmp/demo", "approval_id": 42})
+        _gateway_queues[actual_session] = [entry]
+
+        count, resolved_session = resolve_gateway_approval_by_id(
+            42, "once", expected_session_key=prompt_session
+        )
+
+        assert count == 1
+        assert resolved_session == actual_session
+        assert entry.event.is_set()
+        assert entry.result == "once"
+        assert actual_session not in _gateway_queues
+
+    def test_resolve_gateway_approval_by_id_returns_zero_for_stale_prompt(self):
+        from tools.approval import resolve_gateway_approval_by_id
+
+        count, resolved_session = resolve_gateway_approval_by_id(
+            999, "once", expected_session_key="missing-session"
+        )
+
+        assert count == 0
+        assert resolved_session is None
+
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
         from tools.approval import (

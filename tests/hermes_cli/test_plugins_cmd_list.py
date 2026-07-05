@@ -1,5 +1,6 @@
 import argparse
 import json
+from unittest.mock import patch, MagicMock
 
 from hermes_cli import plugins_cmd
 
@@ -86,3 +87,47 @@ def test_cmd_list_json_output(monkeypatch, capsys):
             "source": "git",
         }
     ]
+
+
+def test_discover_entry_point_plugins_returns_tuples():
+    """Entry-point plugins should produce 6-tuples like directory plugins."""
+    fake_ep = MagicMock()
+    fake_ep.name = "rtk-rewrite"
+    fake_ep.value = "rtk_hermes"
+    fake_ep.group = "hermes_agent.plugins"
+    fake_ep.dist.name = "rtk-hermes"
+
+    fake_dist_meta = MagicMock()
+    fake_dist_meta.get = lambda key, default="": {
+        "Version": "1.2.3",
+        "Summary": "RTK rewrite plugin",
+    }.get(key, default)
+
+    with patch("importlib.metadata.entry_points", return_value=MagicMock(
+            select=MagicMock(return_value=[fake_ep]))), \
+         patch("importlib.metadata.metadata", return_value=fake_dist_meta):
+        entries = plugins_cmd._discover_entry_point_plugins()
+
+    assert len(entries) == 1
+    name, version, description, source, path, key = entries[0]
+    assert name == "rtk-rewrite"
+    assert version == "1.2.3"
+    assert description == "RTK rewrite plugin"
+    assert source == "entrypoint"
+    assert key == "rtk-rewrite"
+
+
+def test_discover_all_plugins_includes_entry_points():
+    """_discover_all_plugins should include entry-point plugins."""
+    ep_entry = ("rtk-rewrite", "1.2.3", "RTK rewrite", "entrypoint", None, "rtk-rewrite")
+
+    with patch("hermes_cli.plugins_cmd._discover_entry_point_plugins",
+               return_value=[ep_entry]), \
+         patch("hermes_cli.plugins.get_bundled_plugins_dir",
+               return_value=MagicMock(is_dir=MagicMock(return_value=False))), \
+         patch("hermes_cli.plugins_cmd._plugins_dir",
+               return_value=MagicMock(is_dir=MagicMock(return_value=False))):
+        entries = plugins_cmd._discover_all_plugins()
+
+    keys = [e[5] for e in entries]
+    assert "rtk-rewrite" in keys

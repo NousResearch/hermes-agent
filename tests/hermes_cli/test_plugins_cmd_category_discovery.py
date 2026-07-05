@@ -126,9 +126,10 @@ class TestDiscoverAllPlugins:
         assert "web/tavily" in keys
         assert "image_gen/openai" in keys
 
+    @patch("hermes_cli.plugins_cmd._discover_entry_point_plugins", return_value=[])
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_mixed_flat_and_category(self, mock_user_dir, mock_bundled_dir, tmp_path):
+    def test_mixed_flat_and_category(self, mock_user_dir, mock_bundled_dir, _mock_ep, tmp_path):
         from hermes_cli.plugins_cmd import _discover_all_plugins
 
         _make_plugin_dir(tmp_path, "disk-cleanup", {
@@ -175,9 +176,10 @@ class TestDiscoverAllPlugins:
         assert "web/tavily" in keys
         assert "a/b/c" not in keys
 
+    @patch("hermes_cli.plugins_cmd._discover_entry_point_plugins", return_value=[])
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_tuple_has_six_elements(self, mock_user_dir, mock_bundled_dir, tmp_path):
+    def test_tuple_has_six_elements(self, mock_user_dir, mock_bundled_dir, _mock_ep, tmp_path):
         from hermes_cli.plugins_cmd import _discover_all_plugins
 
         _make_category_plugin(tmp_path, "web", "tavily", {
@@ -328,9 +330,10 @@ class TestCmdListJson:
         assert "web-tavily" in names
         assert "disk-cleanup" in names
 
+    @patch("hermes_cli.plugins_cmd._discover_entry_point_plugins", return_value=[])
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_json_status_uses_key(self, mock_user_dir, mock_bundled_dir, tmp_path, capsys):
+    def test_json_status_uses_key(self, mock_user_dir, mock_bundled_dir, _mock_ep, tmp_path, capsys):
         from hermes_cli.plugins_cmd import cmd_list
 
         _make_category_plugin(tmp_path, "web", "tavily", {

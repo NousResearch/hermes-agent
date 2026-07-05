@@ -3071,6 +3071,63 @@ class PluginContext:
         )
         return handle
 
+    # -- telegram handler registration ---------------------------------------
+
+    def register_telegram_handler(self, factory: Callable) -> None:
+        """Register a python-telegram-bot handler factory from a plugin.
+
+        Hermes' Telegram adapter invokes registered factories at ``connect()``
+        time, right after the PTB ``Application`` is built and **before** the
+        core handlers are added. The factory receives
+        ``(application, adapter)`` and wires its own handlers::
+
+            def _wire(application, adapter):
+                from telegram.ext import CallbackQueryHandler
+
+                application.add_handler(
+                    CallbackQueryHandler(_on_button, pattern=r"^myplugin:")
+                )
+
+            ctx.register_telegram_handler(_wire)
+
+        Notes:
+
+        * The factory is called lazily at connect time, so plugins may import
+          ``telegram`` / ``telegram.ext`` inside the factory body — the
+          plugin's ``register()`` still works when PTB is not installed.
+        * PTB dispatches only the *first* matching handler within a group,
+          and the core adapter registers a catch-all ``CallbackQueryHandler``
+          in the default group. Because plugin factories run first,
+          a pattern-scoped ``CallbackQueryHandler`` (e.g. ``pattern=r"^bd:"``)
+          takes precedence for its own callbacks while every other update
+          falls through to the core handlers unchanged. Always scope
+          callback handlers with ``pattern=`` — an unscoped handler would
+          swallow the core button flows (approvals, model picker, clarify).
+        * ``adapter`` is the ``TelegramAdapter`` instance (``adapter.bot``,
+          ``adapter.config`` etc.); treat it as read-only.
+        * Exceptions raised by the factory are caught and logged by the
+          adapter — a broken plugin cannot prevent Telegram from connecting.
+
+        Args:
+            factory: Callable receiving ``(application, adapter)``.
+
+        Raises:
+            ValueError: if ``factory`` is not callable.
+        """
+        if not callable(factory):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Telegram "
+                f"handler factory with a non-callable factory."
+            )
+        self._manager._telegram_handler_factories.append(
+            (factory, self.manifest.name)
+        )
+        logger.debug(
+            "Plugin %s registered Telegram handler factory: %s",
+            self.manifest.name,
+            getattr(factory, "__name__", repr(factory)),
+        )
+
     # -- hook registration --------------------------------------------------
 
     # -- auxiliary task registration ---------------------------------------
@@ -3692,6 +3749,12 @@ class PluginManager:
         # full plugin loads.
         self._predeclared_modules: Dict[str, types.ModuleType] = {}
         self._predeclared_tools: Dict[str, List[str]] = {}
+        # Telegram handler factories registered by plugins. Each entry is
+        # (factory, plugin_name); the Telegram adapter invokes factories at
+        # connect() time with (application, adapter) so plugins can wire
+        # their own PTB handlers (pattern-scoped CallbackQueryHandler,
+        # BusinessMessageHandler, etc.) without touching core files.
+        self._telegram_handler_factories: List[tuple] = []
 
     # -----------------------------------------------------------------------
     # Registration ledger internals
@@ -4038,6 +4101,7 @@ class PluginManager:
             self._slack_action_handlers.clear()
             self._predeclared_modules.clear()
             self._predeclared_tools.clear()
+            self._telegram_handler_factories.clear()
             self._context_engine = None
             with self._hook_timeout_lock:
                 self._hook_running_callbacks.clear()
@@ -5891,6 +5955,23 @@ class PluginManager:
         :meth:`PluginContext.register_slack_action_handler`.
         """
         return list(self._slack_action_handlers)
+
+    # -----------------------------------------------------------------------
+    # Telegram handler factory accessor
+    # -----------------------------------------------------------------------
+
+    def get_telegram_handler_factories(self) -> List[tuple]:
+        """Return the list of plugin-registered Telegram handler factories.
+
+        Each entry is a ``(factory, plugin_name)`` tuple. Consumed by the
+        Telegram adapter at connect time; each factory is invoked with
+        ``(application, adapter)`` so plugins can wire their own PTB
+        handlers before the core handlers are added.
+
+        Plugins register factories via
+        :meth:`PluginContext.register_telegram_handler`.
+        """
+        return list(self._telegram_handler_factories)
 
     # -----------------------------------------------------------------------
     # Introspection

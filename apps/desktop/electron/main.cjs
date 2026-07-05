@@ -1338,6 +1338,28 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   if (!fileExists(python)) return null
 
   const root = path.dirname(venvRoot)
+
+  // Smoke-test the venv interpreter before trusting it. A venv whose update
+  // died mid-`pip install` still has python.exe + hermes.exe on disk, but the
+  // backend dies on its first import (e.g. ModuleNotFoundError: dotenv) before
+  // the gateway ever binds. Returning it here also BYPASSED the caller's
+  // `--version` probe, so Retry/"Repair install" re-resolved the same broken
+  // venv forever instead of falling through to the bootstrap installer.
+  // Mirror isActiveRuntimeUsable(): probe with the checkout on PYTHONPATH so a
+  // healthy source-tree venv passes.
+  if (
+    !canImportHermesCli(python, {
+      env: {
+        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+      }
+    })
+  ) {
+    rememberLog(
+      `Ignoring venv Hermes at ${python}: runtime import probe failed (broken/partial venv); falling through to bootstrap.`
+    )
+    return null
+  }
+
   return {
     label: `existing Hermes Python at ${python}`,
     command: python,

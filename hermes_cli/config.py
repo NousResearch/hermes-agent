@@ -2455,6 +2455,12 @@ DEFAULT_CONFIG = {
         #     - "git push --force*"
         #     - "*curl*|*sh*"
         "deny": [],
+        # Optional operator escalation target for gateway dangerous-command
+        # prompts, formatted as "platform:chat_id" (for example,
+        # "telegram:7042601176"). When set, prompts from non-operator
+        # gateway sessions route to that target; the originating session only
+        # receives a neutral review notice.
+        "escalate_to": "",
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

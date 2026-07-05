@@ -1880,6 +1880,7 @@ Control how Hermes handles potentially dangerous commands:
 ```yaml
 approvals:
   mode: manual   # manual | smart | off
+  escalate_to: ""  # optional platform:chat_id operator target for gateway prompts
 ```
 
 | Mode | Behavior |
@@ -1889,6 +1890,16 @@ approvals:
 | `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
+
+For messaging gateways, set `approvals.escalate_to` to route dangerous-command approval prompts to an operator chat instead of the originating conversation:
+
+```yaml
+approvals:
+  mode: manual
+  escalate_to: telegram:7042601176
+```
+
+When `escalate_to` is set, the originating gateway session only receives a neutral review notice. Full command text and approval controls are sent to the configured operator target when that target supports interactive exec approvals.
 
 :::warning
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.

@@ -45,6 +45,7 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "transfer-encoding",
         "upgrade",
         "authorization",  # we replace this one
+        "x-api-key",  # provider-native auth; proxy supplies its own credential
     }
 )
 
@@ -130,6 +131,15 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         # the request body too.
         body = await request.read()
 
+        # Optional adapter body-rewrite hook (e.g. Anthropic OAuth prepends the
+        # Claude Code system block). Default: identity — other adapters unaffected.
+        _transform = getattr(adapter, "transform_body", None)
+        if callable(_transform):
+            try:
+                body = _transform(rel_path, body)
+            except Exception as exc:
+                logger.warning("proxy: adapter transform_body failed, forwarding verbatim: %s", exc)
+
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
 
         async def _send_upstream(active_cred: UpstreamCredential):
@@ -140,6 +150,15 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
 
             fwd_headers = _filter_request_headers(request.headers)
             fwd_headers["Authorization"] = f"{active_cred.token_type} {active_cred.bearer}"
+
+            # Optional adapter header hook (e.g. Anthropic OAuth beta/version/UA).
+            _extra = getattr(adapter, "extra_headers", None)
+            if callable(_extra):
+                try:
+                    for k, v in (_extra(active_cred) or {}).items():
+                        fwd_headers[k] = v
+                except Exception as exc:
+                    logger.warning("proxy: adapter extra_headers failed: %s", exc)
 
             logger.debug(
                 "proxy: forwarding %s %s -> %s (body=%d bytes)",

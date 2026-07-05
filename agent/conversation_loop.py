@@ -508,6 +508,29 @@ def _content_policy_blocked_result(
     }
 
 
+# Internal, storage/UI-only message fields that must never reach the provider.
+# They live on the canonical ``messages`` entries (for trajectory storage,
+# thinking-prefill bookkeeping, and distinct /steer rendering in the UI) but
+# are stripped from the per-call API copy — strict providers (Mistral,
+# Fireworks, …) reject unknown fields on a message.
+_EPHEMERAL_API_MESSAGE_FIELDS = (
+    "reasoning",          # trajectory storage only; copied to reasoning_content
+    "finish_reason",      # not accepted by strict APIs
+    "_thinking_prefill",  # internal thinking-prefill marker
+    "_steer_applied",     # out-of-band /steer metadata (text is already in content)
+)
+
+
+def strip_ephemeral_api_fields(api_msg: dict) -> None:
+    """Remove internal-only fields from a message before it is sent to the API.
+
+    Mutates ``api_msg`` in place. Safe to call on a shallow copy of a canonical
+    message; the original ``messages`` entry keeps the fields for persistence.
+    """
+    for _field in _EPHEMERAL_API_MESSAGE_FIELDS:
+        api_msg.pop(_field, None)
+
+
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     """Refresh the in-flight system message after a provider failover.
 
@@ -829,15 +852,11 @@ def run_conversation(
             # This ensures multi-turn reasoning context is preserved
             agent._copy_reasoning_content_for_api(msg, api_msg)
 
-            # Remove 'reasoning' field - it's for trajectory storage only
-            # We've copied it to 'reasoning_content' for the API above
-            if "reasoning" in api_msg:
-                api_msg.pop("reasoning")
-            # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
-            if "finish_reason" in api_msg:
-                api_msg.pop("finish_reason")
-            # Strip internal thinking-prefill marker
-            api_msg.pop("_thinking_prefill", None)
+            # Strip internal storage/UI-only fields (reasoning, finish_reason,
+            # thinking-prefill, and out-of-band /steer metadata). reasoning was
+            # copied to reasoning_content above; the /steer text is already in
+            # the tool result content, so none of these belong in the API copy.
+            strip_ephemeral_api_fields(api_msg)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields

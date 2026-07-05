@@ -3159,25 +3159,47 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
 
 
 
-def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
+def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> bool:
     """Append any pending /steer text to the last tool result in this turn.
 
     Called at the end of a tool-call batch, before the next API call.
     The steer is appended to the last ``role:"tool"`` message's content
     with a clear marker so the model understands it came from the user
     and NOT from the tool itself. Role alternation is preserved —
-    nothing new is inserted, we only modify existing content.
+    nothing new is inserted into ``messages``, we only modify existing
+    content.
+
+    In addition to the in-content marker (which the model reads), the raw
+    steer text is recorded as ``_steer_applied`` metadata on the same tool
+    message. This is an internal, out-of-band field that lets a UI reading the
+    live message list (e.g. the WebUI mid-session) render the steer as a
+    distinct user entry rather than as tool output — without inserting a
+    synthetic message that would break API role alternation. The field never
+    reaches the provider; it is stripped from the API copy in
+    ``conversation_loop`` alongside the other internal markers (``reasoning``,
+    ``_thinking_prefill``).
+
+    NOTE: this is a live-session hint only. The session DB is append-once and
+    the tool row is written before the steer is applied, so ``_steer_applied``
+    (like the in-content marker) is NOT persisted and does not survive a
+    reload/fork today. Durable persistence needs a message-UPDATE path in
+    ``hermes_state`` and is tracked as a follow-up.
 
     Args:
         messages: The running messages list.
         num_tool_msgs: Number of tool results appended in this batch;
             used to locate the tail slice safely.
+
+    Returns:
+        ``True`` if a pending steer was consumed and injected, ``False``
+        otherwise. Callers use this to break out of a tool-execution loop
+        so the model can act on the steer before running more tools.
     """
     if num_tool_msgs <= 0 or not messages:
-        return
+        return False
     steer_text = agent._drain_pending_steer()
     if not steer_text:
-        return
+        return False
     # Find the last tool-role message in the recent tail. Skipping
     # non-tool messages defends against future code appending
     # something else at the boundary.
@@ -3201,7 +3223,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         else:
             existing = getattr(agent, "_pending_steer", None)
             agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
-        return
+        return False
     marker = format_steer_marker(steer_text)
     existing_content = messages[target_idx].get("content", "")
     if not isinstance(existing_content, str):
@@ -3216,11 +3238,20 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             messages[target_idx]["content"] = f"{existing_content}{marker}"
     else:
         messages[target_idx]["content"] = existing_content + marker
+    # Record the steer as distinct out-of-band metadata (stripped before the
+    # API call). Accumulate into a list so multiple steers landing on the same
+    # tool result are each preserved for the UI / session reload.
+    _applied = messages[target_idx].get("_steer_applied")
+    if isinstance(_applied, list):
+        _applied.append(steer_text)
+    else:
+        messages[target_idx]["_steer_applied"] = [steer_text]
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars): %s",
         len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
+    return True
 
 
 

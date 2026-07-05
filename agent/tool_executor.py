@@ -323,6 +323,19 @@ def _run_agent_tool_execution_middleware(
     return result, observed_args
 
 
+def _steer_deferred_tool_result_text(tool_name: str) -> str:
+    """Placeholder result for a tool deferred because a /steer was consumed.
+
+    Shared by the sequential and concurrent paths so both feed the model the
+    exact same guidance for a deferred tool (the wording is what the model
+    reads to decide what to do next).
+    """
+    return (
+        f"[Tool execution deferred — {tool_name} was not started. "
+        "A user /steer was received; the model will process it first]"
+    )
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -669,6 +682,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         futures = []
         future_to_index = {}
         timed_out_indices: set[int] = set()
+        steer_deferred_indices: set[int] = set()
         timeout_s = _resolve_concurrent_tool_timeout()
         deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         if runnable_calls:
@@ -726,6 +740,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 # or a new message during concurrent tool execution.
                 _conc_start = time.time()
                 _interrupt_logged = False
+                _steer_logged = False
                 while True:
                     wait_timeout = 5.0
                     if deadline is not None:
@@ -796,6 +811,33 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         concurrent.futures.wait(not_done, timeout=3.0)
                         break
 
+                    # Check for pending steer — cancel any tools that have NOT
+                    # started yet so the model can act on the user's mid-turn
+                    # guidance sooner. Unlike an interrupt, we do NOT abandon
+                    # the batch: already-running tools finish and their results
+                    # are still collected; only unstarted futures are deferred.
+                    # cancel() only succeeds for not-yet-running futures, so a
+                    # small batch that is already fully in-flight is unaffected.
+                    # We keep polling (no break) so deadline/interrupt handling
+                    # for the still-running tools stays intact. Fixes #28172
+                    # (concurrent path).
+                    if getattr(agent, "_pending_steer", None) is not None:
+                        _newly_deferred = [
+                            future_to_index[f]
+                            for f in not_done
+                            if f in future_to_index and f.cancel()
+                        ]
+                        if _newly_deferred:
+                            steer_deferred_indices.update(_newly_deferred)
+                            if not _steer_logged:
+                                _steer_logged = True
+                                agent._vprint(
+                                    f"{agent.log_prefix}🧭 Steer pending — deferring "
+                                    f"{len(_newly_deferred)} unstarted concurrent tool(s) "
+                                    f"so the model can process it first",
+                                    force=True,
+                                )
+
                     _conc_elapsed = int(time.time() - _conc_start)
                     # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
@@ -852,8 +894,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             )
             tool_duration = float(timeout_s or 0.0)
         elif r is None:
-            # Tool was cancelled (interrupt) or thread didn't return
-            if agent._interrupt_requested:
+            # Tool was cancelled (interrupt / steer) or thread didn't return
+            if i in steer_deferred_indices:
+                function_result = _steer_deferred_tool_result_text(name)
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=name,
+                    function_args=args,
+                    result=function_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tc, "id", "") or "",
+                    status="cancelled",
+                    error_type="steer_deferred",
+                    error_message="Tool deferred because a user /steer was received",
+                    middleware_trace=list(middleware_trace),
+                )
+            elif agent._interrupt_requested:
                 function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
                 _emit_terminal_post_tool_call(
                     agent,
@@ -1692,7 +1748,40 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Drain pending steer BETWEEN individual tool calls so the
         # injection lands as soon as a tool finishes — not after the
         # entire batch.  The model sees it on the next API iteration.
-        agent._apply_pending_steer_to_tool_results(messages, 1)
+        _steer_consumed = agent._apply_pending_steer_to_tool_results(messages, 1)
+
+        # If a steer was consumed, stop executing the rest of the batch so
+        # the model can act on the user's guidance before more tools run.
+        # Without this break, all remaining tools finish first and the steer
+        # only takes effect a full turn later — defeating /steer. The
+        # deferred tools get a placeholder result so role alternation and the
+        # tool_call_id ↔ tool_result pairing the API requires stay intact.
+        # A hard interrupt supersedes a steer (clear_interrupt() even drops a
+        # pending steer), so if an interrupt is also pending we skip this
+        # block and let the interrupt check below own the breakout — the steer
+        # stays applied to the completed tool result, but the remaining tools
+        # are reported as interrupt-skipped rather than steer-deferred.
+        # Fixes #28172 (sequential path).
+        if _steer_consumed and not agent._interrupt_requested and i < len(assistant_message.tool_calls):
+            remaining = len(assistant_message.tool_calls) - i
+            agent._vprint(
+                f"{agent.log_prefix}🧭 Steer consumed — deferring {remaining} "
+                f"remaining tool call(s) so the model can process the steer",
+                force=True,
+            )
+            for skipped_tc in assistant_message.tool_calls[i:]:
+                skipped_name = skipped_tc.function.name
+                messages.append(make_tool_result_message(
+                    skipped_name,
+                    _steer_deferred_tool_result_text(skipped_name),
+                    skipped_tc.id,
+                ))
+                _flush_session_db_after_tool_progress(
+                    agent,
+                    messages,
+                    stage=f"deferred tool result {skipped_name}",
+                )
+            break
 
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             if agent.verbose_logging:

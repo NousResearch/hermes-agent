@@ -279,6 +279,31 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _structured_reasoning_only(msg, content) -> bool:
+    """True when an assistant turn carries reasoning ONLY as structured fields
+    with no visible content.
+
+    OpenAI-compatible backends (Ollama /v1 ``message.reasoning``, DeepSeek
+    ``reasoning_content``, OpenRouter ``reasoning_details``) never put
+    ``<think>`` tags in ``content`` — reasoning arrives as a separate field
+    and ``content`` stays empty, so the tag-based exhaustion detector in the
+    ``finish_reason == "length"`` branch misses them and the loop wastes
+    continuation retries on a response with no visible text to continue.
+    Live shape from Ollama hermes:latest (qwen35moe):
+    ``{"content": "", "reasoning": "…", "finish_reason": "length"}``.
+    """
+    if content is not None and str(content).strip():
+        return False
+    provider_data = getattr(msg, "provider_data", None) or {}
+    if not isinstance(provider_data, dict):
+        provider_data = {}
+    return bool(
+        getattr(msg, "reasoning", None)
+        or provider_data.get("reasoning_content")
+        or provider_data.get("reasoning_details")
+    )
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -1794,10 +1819,18 @@ def run_conversation(
                     )
                     _thinking_exhausted = (
                         not _trunc_has_tool_calls
-                        and _has_think_tags
                         and (
-                            (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
-                            or _trunc_content is None
+                            (
+                                _has_think_tags
+                                and (
+                                    (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
+                                    or _trunc_content is None
+                                )
+                            )
+                            # Structured-reasoning variant of the same exhaustion
+                            # (Ollama /v1, DeepSeek, OpenRouter): reasoning lives in a
+                            # separate message field, content is empty, no tags above.
+                            or _structured_reasoning_only(_trunc_msg, _trunc_content)
                         )
                     )
 

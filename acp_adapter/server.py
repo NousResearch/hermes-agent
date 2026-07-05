@@ -86,8 +86,10 @@ try:
 except Exception:
     HERMES_VERSION = "0.0.0"
 
-# Thread pool for running AIAgent (synchronous) in parallel.
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
+# Thread pool for running AIAgent (synchronous) in parallel. Bumped from the
+# upstream default of 4 to 16 so a single ACP process can serve more concurrent
+# sessions — the Claudio Slack bot multiplexes many threads over one process.
+_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="acp-agent")
 
 # Server-side page size for list_sessions. The ACP ListSessionsRequest schema
 # does not expose a client-side limit, so this is a fixed cap that clients

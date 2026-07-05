@@ -13,7 +13,7 @@ import type {
   DesktopUpdateStatus,
   DesktopVersionInfo
 } from '@/global'
-import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
+import { checkHermesUpdate, getActionStatus, restartGateway, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
 import { dismissNotification, notify } from '@/store/notifications'
@@ -464,6 +464,74 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
 }
 
+async function restartGatewayAfterBackendUpdate(): Promise<DesktopUpdateApplyResult | null> {
+  $backendUpdateApply.set({
+    ...$backendUpdateApply.get(),
+    applying: true,
+    stage: 'restart',
+    message: translateNow('updates.applyStatus.restarting')
+  })
+
+  try {
+    const restarted = await restartGateway()
+
+    if (!restarted.ok) {
+      const message = (restarted as { message?: string }).message || 'Gateway restart could not be started.'
+
+      return { ok: false, error: 'gateway-restart-failed', message }
+    }
+
+    return null
+  } catch {
+    // The updated backend can drop the dashboard API while the action status
+    // flips from update to restart. Wait for it once, then retry the explicit
+    // gateway restart so messaging channels are not left on the old process.
+    const returned = await waitForBackendReturn()
+
+    if (!returned) {
+      return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
+    }
+
+    try {
+      const restarted = await restartGateway()
+
+      if (!restarted.ok) {
+        const message = (restarted as { message?: string }).message || 'Gateway restart could not be started.'
+
+        return { ok: false, error: 'gateway-restart-failed', message }
+      }
+
+      return null
+    } catch (retryError) {
+      const message = retryError instanceof Error ? retryError.message : String(retryError)
+
+      return { ok: false, error: 'gateway-restart-failed', message }
+    }
+  }
+}
+
+async function finishBackendApplyWithGatewayRestart(returned: boolean): Promise<DesktopUpdateApplyResult> {
+  if (!returned) {
+    return finishBackendApply(false)
+  }
+
+  const restartFailure = await restartGatewayAfterBackendUpdate()
+
+  if (restartFailure) {
+    $backendUpdateApply.set({
+      ...$backendUpdateApply.get(),
+      applying: false,
+      stage: 'error',
+      error: restartFailure.error ?? 'gateway-restart-failed',
+      message: restartFailure.message ?? translateNow('updates.applyStatus.failed')
+    })
+
+    return restartFailure
+  }
+
+  return finishBackendApply(await waitForBackendReturn())
+}
+
 function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionStatus>>): void {
   const current = $backendUpdateApply.get()
 
@@ -529,7 +597,7 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
           message: translateNow('updates.applyStatus.restarting')
         })
 
-        return finishBackendApply(await waitForBackendReturn())
+        return finishBackendApplyWithGatewayRestart(await waitForBackendReturn())
       }
 
       if (last && !last.running) {
@@ -540,14 +608,7 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     const ok = !!last && (last.exit_code ?? 1) === 0
 
     if (ok) {
-      $backendUpdateApply.set({
-        ...$backendUpdateApply.get(),
-        applying: true,
-        stage: 'restart',
-        message: translateNow('updates.applyStatus.restarting')
-      })
-
-      return finishBackendApply(await waitForBackendReturn())
+      return finishBackendApplyWithGatewayRestart(true)
     }
 
     $backendUpdateApply.set({

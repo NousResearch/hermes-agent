@@ -34,11 +34,13 @@ vi.mock('@/store/notifications', () => ({
 const checkHermesUpdateSpy = vi.fn()
 const updateHermesSpy = vi.fn()
 const getActionStatusSpy = vi.fn()
+const restartGatewaySpy = vi.fn()
 
 vi.mock('@/hermes', () => ({
   checkHermesUpdate: (...args: unknown[]) => checkHermesUpdateSpy(...args),
   updateHermes: (...args: unknown[]) => updateHermesSpy(...args),
-  getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
+  getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args),
+  restartGateway: (...args: unknown[]) => restartGatewaySpy(...args)
 }))
 
 const {
@@ -373,6 +375,8 @@ describe('applyBackendUpdate recovery', () => {
     checkHermesUpdateSpy.mockReset()
     updateHermesSpy.mockReset()
     getActionStatusSpy.mockReset()
+    restartGatewaySpy.mockReset()
+    restartGatewaySpy.mockResolvedValue({ ok: true, name: 'gateway-restart', pid: 2 })
     $backendUpdateApply.set({
       applying: false,
       stage: 'idle',
@@ -407,6 +411,7 @@ describe('applyBackendUpdate recovery', () => {
     const result = await promise
 
     expect(result.ok).toBe(true)
+    expect(restartGatewaySpy).toHaveBeenCalledTimes(1)
     expect($backendUpdateApply.get().stage).toBe('idle')
     expect($backendUpdateApply.get().applying).toBe(false)
   })
@@ -443,6 +448,57 @@ describe('applyBackendUpdate recovery', () => {
 
     await vi.advanceTimersByTimeAsync(5000)
     await promise
+    expect(restartGatewaySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('queues a gateway restart after a successful backend update action before clearing the overlay', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 0,
+      lines: ['Update complete'],
+      name: 'update',
+      pid: 1,
+      running: false
+    })
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(3000)
+    const result = await promise
+
+    expect(result.ok).toBe(true)
+    expect(restartGatewaySpy).toHaveBeenCalledTimes(1)
+    expect($backendUpdateApply.get().stage).toBe('idle')
+    expect($backendUpdateApply.get().applying).toBe(false)
+  })
+
+  it('surfaces an error when the gateway restart cannot be queued after update', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 0,
+      lines: ['Update complete'],
+      name: 'update',
+      pid: 1,
+      running: false
+    })
+    restartGatewaySpy.mockResolvedValue({ ok: false, message: 'gateway restart unavailable' })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await promise
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('gateway-restart-failed')
+    expect($backendUpdateApply.get().stage).toBe('error')
+    expect($backendUpdateApply.get().message).toBe('gateway restart unavailable')
   })
 
   it('surfaces an error when the backend never comes back after the restart', async () => {

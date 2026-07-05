@@ -1002,13 +1002,52 @@ def _scan_level(
         _scan_level(d, source, set(), sub_prefix, depth + 1, seen)
 
 
+def _discover_entry_point_plugins() -> list:
+    """Discover pip-installed plugins via ``importlib.metadata`` entry points.
+
+    Mirrors ``PluginManager._scan_entry_points`` so that plugins distributed
+    as pip packages (e.g. rtk-hermes) show up in ``hermes plugins list``
+    alongside directory-based plugins.
+    """
+    import importlib.metadata
+
+    entries: list = []
+    try:
+        eps = importlib.metadata.entry_points()
+        group = "hermes_agent.plugins"
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=group)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(group, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == group]
+
+        for ep in group_eps:
+            # Try to extract version/description from the dist metadata.
+            version = ""
+            description = ""
+            try:
+                dist = importlib.metadata.metadata(ep.dist.name)
+                version = dist.get("Version", "") or ""
+                summary = dist.get("Summary", "")
+                description = summary if summary else ""
+            except Exception:
+                pass
+            entries.append(
+                (ep.name, version, description, "entrypoint", Path(ep.value), ep.name)
+            )
+    except Exception:
+        pass
+    return entries
+
+
 def _discover_all_plugins() -> list:
     """Return a list of (name, version, description, source, dir_path, key) for
-    every plugin the loader can see — user + bundled + project.
+    every plugin the loader can see — user + bundled + project + entry-point.
 
     Matches the ordering/dedup of ``PluginManager.discover_and_load``:
-    bundled first, then user, then project; user overrides bundled on
-    key collision.
+    bundled first, then user, then project, then entry-point; user overrides
+    bundled on key collision.
     """
     seen: dict = {}  # key -> (name, version, description, source, path, key)
 
@@ -1020,6 +1059,13 @@ def _discover_all_plugins() -> list:
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
+
+    # Pip / entry-point plugins (mirror PluginManager._scan_entry_points)
+    for entry in _discover_entry_point_plugins():
+        name, version, description, source, path, key = entry
+        if key not in seen:
+            seen[key] = entry
+
     return list(seen.values())
 
 

@@ -1873,8 +1873,11 @@ class SlackAdapter(BasePlatformAdapter):
     def _rich_blocks_enabled(self) -> bool:
         """Whether to render outbound agent messages as Slack Block Kit blocks.
 
-        Opt-in via ``platforms.slack.extra.rich_blocks`` (config.yaml). Default
-        off: messages continue to go out as flat mrkdwn ``text``. Enabling it
+        Opt-in via ``rich_blocks`` in config.yaml — under a top-level ``slack:``
+        block (``slack.rich_blocks`` or ``slack.extra.rich_blocks``) or under
+        ``platforms.slack.extra.rich_blocks``; all are bridged into
+        ``config.extra`` by ``_apply_yaml_config``. Default off: messages
+        continue to go out as flat mrkdwn ``text``. Enabling it
         renders the *final* agent message with real structural primitives
         (headers, dividers, true nested lists via ``rich_text``, and native
         Block Kit ``table`` blocks with per-column alignment); over-limit
@@ -4495,8 +4498,13 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     existing env-driven model and owns the YAML→env translation here, next to
     the adapter that consumes it. Env vars take precedence over YAML — every
     assignment is guarded by ``not os.getenv(...)`` so explicit env vars
-    survive a config.yaml update. Returns ``None`` because no extras are
-    seeded into ``PlatformConfig.extra`` directly (everything flows through env).
+    survive a config.yaml update. Most keys flow through env, but
+    ``rich_blocks`` is consumed from ``PlatformConfig.extra`` (by
+    ``_rich_blocks_enabled()``), so it is returned here for the gateway to
+    merge into ``extra`` rather than exported as an env var. Both the flat
+    ``slack.rich_blocks`` and the nested ``slack.extra.rich_blocks`` forms are
+    accepted; the flat form wins when both are set, matching the discord and
+    telegram hooks' flat-over-nested precedence.
     """
     if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
         os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
@@ -4516,7 +4524,23 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
-    return None  # all settings flow through env; nothing to merge into extras
+    # ``rich_blocks`` is consumed from PlatformConfig.extra, not env. Under a
+    # top-level ``slack:`` block it was never populated — it is not a shared
+    # key, not env-bridged, and ``_merge_platform_map`` only deep-merges the
+    # nested ``extra`` sub-dict for ``platforms:``-nested blocks — so the
+    # documented opt-in was inert there. Bridge it here; the flat
+    # ``slack.rich_blocks`` wins over the nested ``slack.extra.rich_blocks``
+    # (same flat-over-nested precedence as the discord/telegram hooks). Value
+    # coercion is the reader's job.
+    _extra_in = slack_cfg.get("extra")
+    if not isinstance(_extra_in, dict):
+        _extra_in = {}
+    seeded: dict = {}
+    if "rich_blocks" in slack_cfg:
+        seeded["rich_blocks"] = slack_cfg["rich_blocks"]
+    elif "rich_blocks" in _extra_in:
+        seeded["rich_blocks"] = _extra_in["rich_blocks"]
+    return seeded or None
 
 
 def _is_connected(config) -> bool:
@@ -4550,11 +4574,12 @@ def register(ctx) -> None:
         # Interactive setup wizard — replaces hermes_cli/setup.py::_setup_slack
         # and the static _PLATFORMS["slack"] dict in hermes_cli/gateway.py.
         setup_fn=interactive_setup,
-        # YAML→env config bridge — owns the translation of config.yaml slack:
+        # YAML→config bridge — owns the translation of config.yaml slack:
         # keys (require_mention, strict_mention, allow_bots,
         # free_response_channels, reactions, allowed_channels) into SLACK_*
-        # env vars that the adapter reads via os.getenv(). Replaces the
-        # hardcoded block in gateway/config.py. Hook contract: #24849.
+        # env vars that the adapter reads via os.getenv(), and seeds
+        # ``rich_blocks`` into PlatformConfig.extra. Replaces the hardcoded
+        # block in gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="SLACK_ALLOWED_USERS",

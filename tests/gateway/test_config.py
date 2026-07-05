@@ -937,6 +937,40 @@ class TestLoadGatewayConfig:
             "C01ABC": "Code review mode",
         }
 
+    def test_bridges_slack_rich_blocks_nested_extra_from_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        # rich_blocks under a top-level ``slack:`` block reaches extra only via
+        # the slack apply_yaml_config hook (it is not a shared key and
+        # _merge_platform_map only deep-merges the nested extra sub-dict for
+        # ``platforms:`` blocks).
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n  extra:\n    rich_blocks: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.SLACK].extra["rich_blocks"] is True
+
+    def test_bridges_slack_rich_blocks_flat_from_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n  rich_blocks: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.SLACK].extra["rich_blocks"] is True
+
     def test_bridges_feishu_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

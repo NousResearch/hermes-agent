@@ -160,10 +160,15 @@ def _resolve_mcp_invocation(
     not refuse to start just because the discovery hop failed.
     """
     try:
+        from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [driver_cmd, "manifest"],
             capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL,
+            # cua-driver is a third-party binary — never hand it provider
+            # API keys via inherited env (same policy as the MCP and CLI
+            # fallback spawns below; #53503/#55709/#58889 lineage).
+            env=_sanitize_subprocess_env(cua_driver_child_env()),
         )
     except Exception:
         return driver_cmd, list(_CUA_DRIVER_ARGS)
@@ -246,6 +251,7 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
     raises.
     """
     try:
+        from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [_CUA_DRIVER_CMD, "check-update", "--json"],
             capture_output=True, text=True, timeout=timeout,
@@ -253,7 +259,9 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
             # stdin-reading mode rather than erroring — DEVNULL gives them EOF
             # so they exit fast instead of blocking until the timeout.
             stdin=subprocess.DEVNULL,
-            env=cua_driver_child_env(),
+            # Sanitized like every other cua-driver spawn: third-party
+            # binary, no inherited provider keys (#53503/#55709/#58889).
+            env=_sanitize_subprocess_env(cua_driver_child_env()),
         )
     except Exception:
         return None

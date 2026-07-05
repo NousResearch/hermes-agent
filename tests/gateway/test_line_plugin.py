@@ -280,6 +280,13 @@ class TestMarkdownAndChunking:
         assert "print('hi')" in out
         assert "```" not in out
 
+    def test_code_fence_dotted_language_tag_kept(self):
+        # A fence info string containing '.' or '#' (html.erb, python3.11, c#)
+        # must be consumed whole — the old [a-zA-Z0-9_+-]* class stopped at the
+        # dot and leaked the suffix (".erb") into the plain-text bubble.
+        md = "```html.erb\nprint('hi')\n```"
+        assert strip_markdown_preserving_urls(md) == "print('hi')"
+
     def test_split_short_returns_single_chunk(self):
         assert split_for_line("hi") == ["hi"]
 

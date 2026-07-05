@@ -166,7 +166,7 @@ _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _MD_ITAL_RE = re.compile(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)")
 _MD_CODE_INLINE_RE = re.compile(r"`([^`]+)`")
-_MD_CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
+_MD_CODE_BLOCK_RE = re.compile(r"```[^\n]*\n?(.*?)```", re.DOTALL)
 _MD_HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _MD_BULLET_RE = re.compile(r"^[\s]*[-*+]\s+", re.MULTILINE)
 

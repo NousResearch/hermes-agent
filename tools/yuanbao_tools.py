@@ -414,7 +414,7 @@ async def send_dm(
 # Registry registration
 # ---------------------------------------------------------------------------
 
-from tools.registry import registry, tool_result  # noqa: E402
+from tools.registry import registry, tool_result
 
 
 def _check_yuanbao():

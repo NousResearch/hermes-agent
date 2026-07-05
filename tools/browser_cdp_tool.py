@@ -173,7 +173,7 @@ def _browser_cdp_private_guard(
             blocked_url = bt._current_page_private_url(task_id)  # type: ignore[attr-defined]
             if blocked_url:
                 return _private_page_guard_error(blocked_url, method)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Match the existing browser guards' posture: guard probes are
         # best-effort and should not break local/custom CDP workflows.
         logger.debug("browser_cdp: private-page guard probe failed: %s", exc)

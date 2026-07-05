@@ -941,7 +941,7 @@ def _dispatch_to_plugin_provider(
             # recovery pattern.
             _ensure_plugins_discovered(force=True)
             plugin_provider = get_provider(key)
-    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
+    except Exception as exc:
         logger.debug("STT plugin dispatch skipped (discovery failed): %s", exc)
         return None
     if plugin_provider is None:
@@ -960,7 +960,7 @@ def _dispatch_to_plugin_provider(
     # anyway so a buggy plugin can't break dispatch for everyone.
     try:
         available = plugin_provider.is_available()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "STT plugin provider '%s' is_available() raised: %s — "
             "treating as unavailable", key, exc, exc_info=True,
@@ -988,7 +988,7 @@ def _dispatch_to_plugin_provider(
             model=model,
             language=language,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "STT plugin provider '%s' raised: %s", key, exc, exc_info=True,
         )

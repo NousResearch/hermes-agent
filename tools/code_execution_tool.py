@@ -162,7 +162,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         try:
             from tools.env_passthrough import is_env_passthrough as _ep
         except Exception:
-            _ep = lambda _: False  # noqa: E731
+            _ep = lambda _: False
         is_passthrough = _ep
     if is_windows is None:
         is_windows = _IS_WINDOWS

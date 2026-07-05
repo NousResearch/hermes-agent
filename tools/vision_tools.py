@@ -106,7 +106,7 @@ _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 # through model_tools._run_async on a PER-THREAD event loop, so an asyncio
 # executor/semaphore bound to one loop cannot coordinate across them. A
 # ThreadPoolExecutor is loop- and thread-agnostic.
-import threading  # noqa: F401  (kept for downstream importers / patch targets)
+import threading
 
 
 def _detect_host_cpus() -> int:

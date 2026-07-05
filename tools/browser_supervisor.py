@@ -613,7 +613,7 @@ class CDPSupervisor:
         try:
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self._run())
-        except BaseException as e:  # noqa: BLE001 — propagate via _start_error
+        except BaseException as e:
             if not self._ready_event.is_set():
                 self._start_error = e
                 self._ready_event.set()

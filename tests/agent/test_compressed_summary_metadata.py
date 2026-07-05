@@ -91,3 +91,63 @@ class TestMetadataFlagNeverReachesWire:
             isinstance(m, dict) and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
             for m in out
         )
+
+
+class TestClassifySummaryContent:
+    """classify_summary_content distinguishes standalone handoffs from
+    merge-into-tail messages so wire consumers (ACP replay) can flag them
+    differently — collapsing a merged message would hide the preserved
+    tail content that precedes the summary."""
+
+    def test_standalone_summary(self):
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        content = SUMMARY_PREFIX + "\n## Active Task\nstuff"
+        assert ContextCompressor.classify_summary_content(content) == "standalone"
+        assert ContextCompressor._is_context_summary_content(content) is True
+
+    def test_legacy_and_historical_prefixes_are_standalone(self):
+        from agent.context_compressor import (
+            LEGACY_SUMMARY_PREFIX,
+            _HISTORICAL_SUMMARY_PREFIXES,
+        )
+
+        assert ContextCompressor.classify_summary_content(
+            LEGACY_SUMMARY_PREFIX + " body"
+        ) == "standalone"
+        for prefix in _HISTORICAL_SUMMARY_PREFIXES:
+            assert ContextCompressor.classify_summary_content(
+                prefix + " body"
+            ) == "standalone"
+
+    def test_merged_tail_summary(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            _SUMMARY_END_MARKER,
+        )
+
+        merged = (
+            _MERGED_PRIOR_CONTEXT_HEADER + "\n"
+            "old tail content\n\n"
+            + _MERGED_SUMMARY_DELIMITER + "\n\n"
+            + SUMMARY_PREFIX + "\nBODY\n\n"
+            + _SUMMARY_END_MARKER
+        )
+        assert ContextCompressor.classify_summary_content(merged) == "merged"
+        assert ContextCompressor._is_context_summary_content(merged) is True
+
+    def test_plain_messages_classify_none(self):
+        assert ContextCompressor.classify_summary_content("just a question") is None
+        assert ContextCompressor.classify_summary_content("") is None
+        assert ContextCompressor.classify_summary_content(None) is None
+
+    def test_delimiter_without_summary_prefix_is_none(self):
+        """A message merely quoting the merged delimiter (e.g. a user pasting
+        logs) is not a summary unless a handoff prefix follows it."""
+        from agent.context_compressor import _MERGED_SUMMARY_DELIMITER
+
+        content = "look at this:\n" + _MERGED_SUMMARY_DELIMITER + "\nnot a summary"
+        assert ContextCompressor.classify_summary_content(content) is None
+        assert ContextCompressor._is_context_summary_content(content) is False

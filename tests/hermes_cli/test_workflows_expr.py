@@ -115,6 +115,18 @@ def test_eval_condition_rejects_malformed_guards(cond):
         eval_condition(cond, {})
 
 
+@pytest.mark.parametrize(
+    "cond",
+    [
+        {"op": "or", "args": [{"op": "eq", "left": 1, "right": 1}, {"op": "and"}]},
+        {"op": "and", "args": [{"op": "eq", "left": 1, "right": 2}, {"op": "and"}]},
+    ],
+)
+def test_eval_condition_rejects_malformed_short_circuited_branch(cond):
+    with pytest.raises(ValueError):
+        eval_condition(cond, {})
+
+
 def test_eval_condition_invalid_regex_raises_value_error():
     with pytest.raises(ValueError):
         eval_condition({"op": "regex", "left": "approved", "right": "["}, {})

@@ -111,9 +111,11 @@ def eval_condition(cond: Mapping[str, Any], data: Any) -> bool:
     op = cond.get("op")
 
     if op == "and":
-        return all(eval_condition(arg, data) for arg in _condition_args(cond, op))
+        results = [eval_condition(arg, data) for arg in _condition_args(cond, op)]
+        return all(results)
     if op == "or":
-        return any(eval_condition(arg, data) for arg in _condition_args(cond, op))
+        results = [eval_condition(arg, data) for arg in _condition_args(cond, op)]
+        return any(results)
     if op == "not":
         if "args" in cond:
             if "arg" in cond:

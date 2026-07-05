@@ -1182,6 +1182,14 @@ DEFAULT_CONFIG = {
         "persistent_shell": True,
     },
 
+    # Security policy for MCP server loading and remote-capable tools.
+    # Defaults are conservative: allow only local hosts unless the user
+    # explicitly opts in to remote server names or hosts.
+    "mcp_security": {
+        "allowed_servers": [],
+        "allowed_hosts": ["localhost", "127.0.0.1", "::1"],
+    },
+
     "web": {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")

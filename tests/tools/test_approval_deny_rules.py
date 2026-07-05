@@ -77,6 +77,12 @@ class TestMatchUserDenyRule:
         deny_config(["git push --force*"])
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
 
+    def test_whitespace_obfuscation_still_matches(self, deny_config):
+        """Extra inter-token whitespace must not sidestep a single-spaced rule."""
+        deny_config(["git push --force*"])
+        assert mod._match_user_deny_rule("git push  --force origin main") is not None
+        assert mod._match_user_deny_rule("git push\t--force origin main") is not None
+
 
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):

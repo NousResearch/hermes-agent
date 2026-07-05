@@ -487,9 +487,18 @@ def _match_user_deny_rule(command: str) -> str | None:
     if not globs:
         return None
     for command_variant in _command_detection_variants(command):
-        candidate = command_variant.lower().strip()
+        # Collapse runs of ASCII whitespace to a single space so a deny rule
+        # written with single spaces (as the docs show, e.g. "git push
+        # --force*") still fires against a command carrying extra whitespace
+        # (double space / tab / ${IFS}-expanded runs). fnmatch has no \s+
+        # equivalent, and _command_detection_variants normalizes ${IFS} to a
+        # single space but not literal whitespace runs; without this collapse
+        # the dangerous-pattern detector (which anchors on \s+) tolerates the
+        # obfuscation while this deny matcher does not — a gap the docstring's
+        # anti-quoting-tricks promise explicitly disclaims.
+        candidate = re.sub(r"\s+", " ", command_variant.lower()).strip()
         for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+            if fnmatch.fnmatchcase(candidate, re.sub(r"\s+", " ", pattern.lower()).strip()):
                 return pattern
     return None
 

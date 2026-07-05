@@ -35,16 +35,31 @@ export function relativeTime(targetMs: number, nowMs = Date.now()): string {
   const abs = Math.abs(diff)
   const sign = diff < 0 ? -1 : 1
 
+  // Round within the bucket first, then carry up to the coarser unit when the
+  // rounded count saturates its divisor — otherwise a value in the top half of a
+  // bucket reads "in 60 min" / "in 24 hr" instead of rolling to "in 1 hr" / "1 day".
   if (abs < MINUTE) {
-    return rtf.format(sign * Math.round(abs / SECOND), 'second')
+    const seconds = Math.round(abs / SECOND)
+
+    if (seconds < 60) {
+      return rtf.format(sign * seconds, 'second')
+    }
   }
 
   if (abs < HOUR) {
-    return rtf.format(sign * Math.round(abs / MINUTE), 'minute')
+    const minutes = Math.round(abs / MINUTE)
+
+    if (minutes < 60) {
+      return rtf.format(sign * minutes, 'minute')
+    }
   }
 
   if (abs < DAY) {
-    return rtf.format(sign * Math.round(abs / HOUR), 'hour')
+    const hours = Math.round(abs / HOUR)
+
+    if (hours < 24) {
+      return rtf.format(sign * hours, 'hour')
+    }
   }
 
   return rtf.format(sign * Math.round(abs / DAY), 'day')

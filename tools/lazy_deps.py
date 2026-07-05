@@ -856,16 +856,23 @@ def feature_install_command(feature: str) -> Optional[str]:
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
+    A feature counts as "active" if its **sentinel** package (the first
+    entry in the spec tuple) is currently installed in the venv.
     Features the user has never enabled stay quiet.
+
+    Earlier versions checked *any* package, but shared CVE-floor pins
+    (``aiohttp==3.14.1`` across discord/slack/matrix/teams) caused every
+    backend that listed the pin to appear active even when the user never
+    enabled it.  Checking only the sentinel — the feature's own SDK —
+    avoids the false positive while still detecting a user who manually
+    installed the main package.
 
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        if specs and _is_present(specs[0]):
             active.append(feature)
     return active
 

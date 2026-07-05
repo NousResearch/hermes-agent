@@ -316,15 +316,29 @@ class TestActiveFeatures:
         assert "memory.hindsight" not in active
         assert "platform.slack" not in active
 
-    def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
-        # for the feature to count as active (user activated it before,
-        # one transitive may have been uninstalled separately).
+    def test_multi_package_feature_active_if_sentinel_present(self, monkeypatch):
+        # platform.slack has 3 packages; only the sentinel (first entry,
+        # slack-bolt) determines activity.  A user who installed slack-bolt
+        # is detected; a user who only has aiohttp (shared CVE pin) is not.
         monkeypatch.setattr(
             ld, "_is_present",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_shared_pin_does_not_trigger_false_positive(self, monkeypatch):
+        # aiohttp==3.14.1 is a CVE-floor pin shared by discord, slack,
+        # matrix, and teams.  If only aiohttp is installed (transitively
+        # by edge-tts, firecrawl-py, etc.), none of those backends should
+        # appear active.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "aiohttp",
+        )
+        active = ld.active_features()
+        for feat in ("platform.discord", "platform.slack",
+                     "platform.matrix", "platform.teams"):
+            assert feat not in active, f"{feat} false-positive on shared aiohttp pin"
 
 
 class TestRefreshActiveFeatures:

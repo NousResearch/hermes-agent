@@ -8823,6 +8823,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _pending_clarify = None
         if _pending_clarify is not None and _clarify_mod is not None:
             _raw_clarify_reply = (event.text or "").strip()
+            # Voice/audio messages arrive with empty event.text — the
+            # cached media file is on event.media_urls but STT has not
+            # run yet (it happens later in _handle_message_with_agent).
+            # Transcribe inline so the clarify intercept can resolve.
+            if not _raw_clarify_reply and getattr(event, "media_urls", None):
+                _voice_paths = [
+                    p
+                    for i, p in enumerate(event.media_urls)
+                    if getattr(event, "message_type", None)
+                    in (MessageType.VOICE, MessageType.AUDIO)
+                    or (
+                        i < len(getattr(event, "media_types", []) or [])
+                        and (event.media_types[i] or "").startswith("audio/")
+                    )
+                ]
+                if _voice_paths:
+                    try:
+                        from tools.transcription_tools import transcribe_audio
+                        import asyncio as _aio
+                        _parts: list[str] = []
+                        for _vp in _voice_paths:
+                            _r = await _aio.to_thread(transcribe_audio, _vp)
+                            if _r.get("success") and _r.get("transcript"):
+                                _parts.append(_r["transcript"])
+                        if _parts:
+                            _raw_clarify_reply = " ".join(_parts)
+                    except Exception:
+                        logger.debug(
+                            "Clarify voice transcription failed",
+                            exc_info=True,
+                        )
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks

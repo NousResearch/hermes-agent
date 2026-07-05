@@ -3036,12 +3036,20 @@ def _blank_slate_minimal_toolsets(config: dict):
        keep, guaranteeing a true blank slate regardless of platform/recovery
        quirks. The user re-enables any of them later via ``hermes tools`` (which
        rewrites ``platform_toolsets``) or by editing ``agent.disabled_toolsets``.
+
+    ``disabled_toolsets`` is applied at *tool* granularity, and a single tool can
+    belong to several toolsets. Aggregate bundles like ``coding`` are defined via
+    ``tools`` (not ``includes``) and re-list core tools such as ``terminal`` and
+    ``read_file``. Disabling such a bundle therefore strips those tools even
+    though ``file``/``terminal`` are the toolsets we mean to keep — leaving the
+    agent with ZERO tools despite ``platform_toolsets`` keeping them. So we never
+    disable a toolset whose tools overlap the ones we keep.
     """
     keep = {"file", "terminal"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
 
     try:
-        from toolsets import TOOLSETS
+        from toolsets import TOOLSETS, resolve_toolset
         from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
 
         all_keys = set()
@@ -3056,7 +3064,18 @@ def _blank_slate_minimal_toolsets(config: dict):
                 continue  # composite groupings, not leaf toolsets
             all_keys.add(k)
 
-        disabled = sorted(all_keys - keep)
+        # Tools the kept toolsets provide. Any toolset we disable that shares one
+        # of these would silently strip it back out (disabled_toolsets wins), so
+        # exclude every overlapping bundle from the suppression list.
+        kept_tools = set()
+        for k in keep:
+            kept_tools.update(resolve_toolset(k))
+
+        disabled = sorted(
+            k
+            for k in (all_keys - keep)
+            if not (set(resolve_toolset(k)) & kept_tools)
+        )
         if disabled:
             config.setdefault("agent", {})["disabled_toolsets"] = disabled
     except Exception as exc:

@@ -242,6 +242,37 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    def test_401_model_not_found_not_auth(self):
+        """401 with 'Not supported model' must NOT exhaust credential pool.
+
+        Opencode-go returns 401 for models that don't exist on their
+        backend (e.g. mimo-v2-pro).  Classifying this as auth would
+        exhaust the pool entry, poisoning all subsequent model switches
+        on the same provider even though the API key is valid.
+        """
+        e = MockAPIError(
+            "Not supported model mimo-v2-pro", status_code=401,
+        )
+        result = classify_api_error(e, provider="opencode-go")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+        assert result.retryable is False
+
+    def test_401_unsupported_model_not_auth(self):
+        """401 with 'unsupported model' (OpenRouter phrasing) -> model_not_found."""
+        e = MockAPIError("unsupported model xyz", status_code=401)
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_rotate_credential is False
+
+    def test_401_invalid_model_not_auth(self):
+        """401 with 'invalid model' -> model_not_found, not auth."""
+        e = MockAPIError("invalid model abc-123", status_code=401)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_rotate_credential is False
+
     def test_403_classified_as_auth(self):
         e = MockAPIError("Forbidden", status_code=403)
         result = classify_api_error(e, provider="anthropic")

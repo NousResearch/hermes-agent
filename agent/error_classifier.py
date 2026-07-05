@@ -284,6 +284,7 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no such model",
     "unknown model",
     "unsupported model",
+    "not supported model",
     # OpenRouter returns 404 with this message when none of the candidate
     # endpoints for the selected model support tool/function calling.
     # Classifying this as model_not_found triggers fallback to a different
@@ -868,6 +869,18 @@ def _classify_by_status(
     """Classify based on HTTP status code with message-aware refinement."""
 
     if status_code == 401:
+        # Some providers return 401 for model-not-found instead of 404
+        # (e.g. opencode-go returns 401 "Not supported model X" when the
+        # model doesn't exist on their backend).  Check model-not-found
+        # patterns FIRST — classifying these as auth would exhaust the
+        # credential pool, poisoning all subsequent model switches on the
+        # same provider even though the key is valid.
+        if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
+            return result_fn(
+                FailoverReason.model_not_found,
+                retryable=False,
+                should_fallback=True,
+            )
         # Not retryable on its own — credential pool rotation and
         # provider-specific refresh (Codex, Anthropic, Nous) run before
         # the retryability check in run_agent.py.  If those succeed, the

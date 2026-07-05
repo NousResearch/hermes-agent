@@ -445,8 +445,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-5",
         "mimo-v2.5-pro",
         "mimo-v2.5",
-        "mimo-v2-pro",
-        "mimo-v2-omni",
         "minimax-m3",
         "minimax-m2.7",
         "minimax-m2.5",

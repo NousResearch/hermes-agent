@@ -29,6 +29,21 @@ from agent.anthropic_adapter import (
 from agent.transports import get_transport
 
 
+@pytest.fixture(autouse=True)
+def _isolate_from_keychain(monkeypatch):
+    """Prevent all tests from reading real macOS Keychain credentials.
+
+    The Claude Code keychain read is outside ``Path.home()`` control, so
+    tests that only monkeypatch ``Path.home()`` still hit the real
+    Keychain on macOS.  This module-level autouse fixture stubs the
+    keychain function so every test starts with a clean slate.
+    """
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        lambda: None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
@@ -225,13 +240,6 @@ class TestBuildAnthropicClient:
 
 
 class TestReadClaudeCodeCredentials:
-    @pytest.fixture(autouse=True)
-    def no_keychain(self, monkeypatch):
-        monkeypatch.setattr(
-            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
-            lambda: None,
-        )
-
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)

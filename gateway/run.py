@@ -8266,6 +8266,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _phase_elapsed() -> float:
                 return time.monotonic() - _stop_started_at
 
+            def _cancel_pending_clarifies(phase: str) -> int:
+                """Unblock gateway-side clarify waits before draining agents.
+
+                ``clarify`` intentionally blocks an agent worker thread while it
+                waits for a human response.  During gateway restart/shutdown that
+                wait is no longer useful: it pins the running-agent guard until
+                the global drain timeout elapses, making `/restart` look hung.
+                Clear only the sessions that are currently running so unrelated
+                prompts in other sessions are left alone.
+                """
+                try:
+                    from tools.clarify_gateway import clear_session as _clear_clarify_session
+                except Exception as _e:
+                    logger.debug("clarify cleanup unavailable during %s: %s", phase, _e)
+                    return 0
+
+                cancelled = 0
+                for _sk, _agent in list(self._running_agents.items()):
+                    if _agent is _AGENT_PENDING_SENTINEL:
+                        continue
+                    try:
+                        cancelled += int(_clear_clarify_session(_sk) or 0)
+                    except Exception as _e:
+                        logger.debug(
+                            "clear pending clarify failed during %s for %s: %s",
+                            phase,
+                            _sk,
+                            _e,
+                        )
+                if cancelled:
+                    logger.info(
+                        "Shutdown (%s): cancelled %d pending clarify request(s)",
+                        phase,
+                        cancelled,
+                    )
+                return cancelled
+
             self._running = False
             self._draining = True
 
@@ -8275,6 +8312,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.info(
                 "Shutdown phase: notify_active_sessions done at +%.2fs",
                 _phase_elapsed(),
+            )
+
+            _cancel_pending_clarifies(
+                "restart" if self._restart_requested else "shutdown"
             )
 
             timeout = self._restart_drain_timeout

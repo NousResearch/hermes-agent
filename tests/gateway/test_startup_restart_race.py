@@ -287,3 +287,43 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
 
     assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert cron_started is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_clears_pending_clarify_before_drain(tmp_path, monkeypatch):
+    """A gateway restart must not wait the full drain timeout on clarify.
+
+    The clarify tool blocks the agent thread while waiting for a user reply.
+    During shutdown/restart that wait must be cancelled before the drain wait;
+    otherwise `/restart` appears hung until restart_drain_timeout elapses.
+    """
+    from tools import clarify_gateway
+
+    patch_startup_side_effects(monkeypatch, tmp_path)
+    runner = make_startup_runner(tmp_path)
+    runner._running = True
+    runner._running_agents = {"session-with-clarify": object()}
+    runner._running_agents_ts = {"session-with-clarify": 0.0}
+    runner._busy_ack_ts = {}
+    runner._release_running_agent_state = MagicMock(
+        side_effect=lambda key, **_kw: runner._running_agents.pop(key, None) is not None
+    )
+
+    clarify_gateway.register(
+        "clarify-shutdown-test",
+        "session-with-clarify",
+        "Which option?",
+        None,
+    )
+    assert clarify_gateway.has_pending("session-with-clarify")
+
+    async def _drain(timeout):
+        assert not clarify_gateway.has_pending("session-with-clarify")
+        return {}, False
+
+    runner._drain_active_agents = AsyncMock(side_effect=_drain)
+
+    await runner.stop()
+
+    runner._drain_active_agents.assert_awaited_once()
+    assert not clarify_gateway.has_pending("session-with-clarify")

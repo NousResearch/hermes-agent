@@ -10489,8 +10489,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # compaction summaries. Mirrors /reset and the compression-exhausted
             # path (#9893). Covers daily/idle/suspended auto-reset.
             self._evict_cached_agent(session_key)
+            # Clear per-session model cache so the post-reset turn resolves
+            # from current config, not a stale fallback. Mirrors the /new and
+            # compression-exhausted reset sites (11b4a21a5); covers the
+            # daily/idle/suspended auto-reset boundary those two missed.
+            _lrm = getattr(self, "_last_resolved_model", None)
+            if _lrm is not None:
+                _lrm.pop(session_key, None)
             session_entry.was_auto_reset = False
-        
+
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
             session_entry.created_at == session_entry.updated_at

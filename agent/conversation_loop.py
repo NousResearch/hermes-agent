@@ -4228,6 +4228,13 @@ def run_conversation(
             except Exception:
                 pass
 
+            # ── Conversation Observer: watch for recurring task patterns ──
+            try:
+                from agent.evolution.conversation_observer import get_observer
+                get_observer().observe_turn(messages)
+            except Exception:
+                pass
+
             # ── Evolution Engine: record model call in active trajectory ──
             try:
                 _evo_mgr = getattr(agent, "_evolution_manager", None)

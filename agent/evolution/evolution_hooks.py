@@ -46,6 +46,7 @@ def on_session_start(agent: Any, **kwargs: Any) -> None:
     """Initialize the Evolution Engine for a new session.
 
     Called once at agent startup. Reads config and sets up the manager.
+    Also starts the conversation observer for auto-task discovery.
     No-op if evolution is disabled in config.
     """
     global _evolution_manager
@@ -62,11 +63,17 @@ def on_session_start(agent: Any, **kwargs: Any) -> None:
 
     try:
         from agent.evolution.evolution_manager import EvolutionManager
+        from agent.evolution.conversation_observer import get_observer
 
         session_id = getattr(agent, "session_id", "")
         manager = EvolutionManager()
         manager.initialize(session_id=session_id, config=config)
         _evolution_manager = manager
+
+        # Start conversation observer for auto-task discovery
+        observer = get_observer()
+        observer.start_session(session_id)
+
         logger.info("Evolution Engine initialized for session %s", session_id)
     except Exception as e:
         logger.warning("Evolution Engine initialization failed: %s", e)
@@ -89,6 +96,14 @@ def on_session_end(agent: Any, **kwargs: Any) -> None:
         logger.debug("Evolution shutdown error: %s", e)
     finally:
         _evolution_manager = None
+
+    # Finalize conversation observer — detect patterns from this session
+    try:
+        from agent.evolution.conversation_observer import get_observer
+        observer = get_observer()
+        observer.end_session()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

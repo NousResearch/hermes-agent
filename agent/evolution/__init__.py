@@ -85,6 +85,13 @@ from agent.evolution.atropos_export import (
     export_run_to_jsonl,
     get_export_stats,
 )
+from agent.evolution.conversation_observer import (
+    ConversationObserver,
+    ObservedPattern,
+    PatternType,
+    PATTERN_LABELS,
+    get_observer,
+)
 
 __all__ = [
     # Config
@@ -141,4 +148,10 @@ __all__ = [
     "export_all_runs",
     "export_run_to_jsonl",
     "get_export_stats",
+    # Conversation Observer
+    "ConversationObserver",
+    "ObservedPattern",
+    "PatternType",
+    "PATTERN_LABELS",
+    "get_observer",
 ]

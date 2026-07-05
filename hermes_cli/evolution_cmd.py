@@ -442,6 +442,77 @@ def _cmd_export(args) -> int:
     return 0
 
 
+# ── suggest-tasks ───────────────────────────────────────────────────────
+
+
+def _cmd_suggest_tasks(args) -> int:
+    """Auto-discover task definitions from observed agent usage patterns."""
+    try:
+        from agent.evolution.conversation_observer import (
+            get_observer,
+            PATTERN_LABELS,
+        )
+        from agent.evolution.task_definition import save_task, get_task_dir
+    except Exception as e:
+        print(f"Error loading observer module: {e}")
+        return 1
+
+    observer = get_observer()
+    suggestions = observer.suggest_tasks(min_occurrences=args.min_occurrences)
+
+    if not suggestions:
+        print("No task patterns discovered yet.")
+        print()
+        print("The Conversation Observer watches your agent usage and detects")
+        print("recurring patterns (bug fixes, deployments, file work, etc.).")
+        print(f"Patterns need at least {args.min_occurrences} occurrences to be suggested.")
+        print()
+        print("Keep using Hermes normally — task suggestions will appear as")
+        print("the observer learns your workflows.")
+        return 0
+
+    print(f"Discovered {len(suggestions)} task pattern(s) from your agent usage:\n")
+
+    saved_count = 0
+    for i, pattern in enumerate(suggestions, 1):
+        label = PATTERN_LABELS.get(pattern.pattern_type, pattern.pattern_type)
+        print(f"  [{i}] {label}")
+        print(f"      Task:        {pattern.suggested_task_name}")
+        print(f"      Description: {pattern.description}")
+        print(f"      Occurrences: {pattern.occurrences} sessions")
+        print(f"      Confidence:  {pattern.confidence:.0%}")
+        print(f"      Tools used:  {', '.join(pattern.tools_used[:5])}")
+        if pattern.commands_seen:
+            print(f"      Sample cmd:  {pattern.commands_seen[-1][:80]}")
+        print(f"      Criteria:    {len(pattern.suggested_criteria)} suggested")
+
+        if args.verbose:
+            yaml_str = observer.suggest_task_yaml(pattern)
+            print(f"\n{yaml_str}")
+
+        if args.save:
+            try:
+                from agent.evolution.task_definition import TaskDefinition
+                yaml_str = observer.suggest_task_yaml(pattern)
+                task_path = get_task_dir() / f"{pattern.suggested_task_name}.yaml"
+                task_path.parent.mkdir(parents=True, exist_ok=True)
+                task_path.write_text(yaml_str)
+                saved_count += 1
+                print(f"      ✅ Saved → {task_path}")
+            except Exception as e:
+                print(f"      ❌ Save failed: {e}")
+        print()
+
+    if args.save and saved_count:
+        print(f"Saved {saved_count} task(s). Review them with: hermes evolution list-tasks")
+        print("Edit criteria as needed — these are suggestions based on observed patterns.")
+    elif not args.save:
+        print("Run with --save to auto-create these task definitions.")
+        print("Or review with --verbose to see the full YAML before saving.")
+
+    return 0
+
+
 # ── Parser setup ────────────────────────────────────────────────────────
 
 
@@ -508,3 +579,10 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
     p_export.add_argument("--domain", help="Filter by task domain")
     p_export.add_argument("--output", "-o", type=Path, help="Output file path (default: ~/.hermes/evolution/exports/)")
     p_export.set_defaults(func=_cmd_export)
+
+    # suggest-tasks
+    p_suggest = evo_subs.add_parser("suggest-tasks", help="Auto-discover task definitions from agent usage patterns")
+    p_suggest.add_argument("--min-occurrences", "-n", type=int, default=3, help="Minimum pattern occurrences (default: 3)")
+    p_suggest.add_argument("--save", action="store_true", help="Auto-save suggested tasks to task bank")
+    p_suggest.add_argument("--verbose", "-v", action="store_true", help="Show full task YAML")
+    p_suggest.set_defaults(func=_cmd_suggest_tasks)

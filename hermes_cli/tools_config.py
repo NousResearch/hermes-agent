@@ -862,6 +862,87 @@ def install_cua_driver(upgrade: bool = False) -> bool:
     return ok
 
 
+# Ceiling for one upstream-installer run. Must exceed the installer's own
+# stale-lock recovery window: _install-rust.sh serializes concurrent installs
+# with a lock dir at ~/.cua-driver/packages/.install.lock.d and only
+# force-releases a dead holder's lock after LOCK_STALE_AFTER_SECONDS=600 of
+# waiting. With a shorter Python-side timeout, a stale lock means every run
+# gets killed before the installer's recovery can fire — a permanent
+# "always times out" wedge (issue #58762). 660s = 600s lock window + 60s
+# headroom for the actual download/swap.
+_CUA_INSTALLER_TIMEOUT = 660
+
+# Upstream installer's stale-lock threshold (LOCK_STALE_AFTER_SECONDS in
+# _install-rust.sh). Used by the pre-clear below to avoid yanking a lock
+# that a live-but-slow install still holds.
+_CUA_LOCK_STALE_AFTER = 600
+
+
+def _cua_install_lock_dir() -> "Path":
+    """Path of the upstream installer's concurrent-install lock dir."""
+    home = os.environ.get("CUA_DRIVER_RS_HOME") or str(Path.home() / ".cua-driver")
+    return Path(home) / "packages" / ".install.lock.d"
+
+
+def _clear_stale_cua_install_lock() -> None:
+    """Best-effort: remove a stale installer lock left by a dead holder.
+
+    A previous timed-out/killed install can orphan
+    ``~/.cua-driver/packages/.install.lock.d`` (the holder's pid is stamped
+    into its ``info`` file). The upstream installer only reclaims it after
+    waiting 600s — longer than our old subprocess timeout — so an orphaned
+    lock wedged every subsequent refresh. Clear it up front when the holder
+    is provably dead; leave it alone when the holder is alive (a slow
+    concurrent install) or liveness can't be determined.
+
+    POSIX-only: the lock protocol lives in the bash installer; install.ps1
+    does not use it.
+    """
+    if sys.platform == "win32":
+        return
+    lock_dir = _cua_install_lock_dir()
+    try:
+        if not lock_dir.is_dir():
+            return
+        holder_pid = None
+        info = lock_dir / "info"
+        try:
+            for line in info.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("pid="):
+                    holder_pid = int(line.split("=", 1)[1].strip())
+                    break
+        except (OSError, ValueError):
+            holder_pid = None
+
+        if holder_pid is not None:
+            try:
+                os.kill(holder_pid, 0)  # windows-footgun: ok — function early-returns on win32
+                # Holder alive → a concurrent install is running; don't touch.
+                return
+            except ProcessLookupError:
+                pass  # dead holder → stale, clear below
+            except PermissionError:
+                # Alive but owned by someone else — treat as live.
+                return
+        else:
+            # No readable pid. Only clear if the lock is old enough that the
+            # upstream installer itself would consider it reclaimable.
+            import time as _time
+            try:
+                age = _time.time() - lock_dir.stat().st_mtime
+            except OSError:
+                return
+            if age < _CUA_LOCK_STALE_AFTER:
+                return
+
+        import shutil as _shutil
+        _shutil.rmtree(lock_dir, ignore_errors=True)
+        logger.info("Cleared stale cua-driver install lock at %s", lock_dir)
+        _print_info(f"    Cleared stale cua-driver install lock ({lock_dir}).")
+    except Exception as e:
+        logger.debug("stale cua install lock check failed: %s", e)
+
+
 def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -> bool:
     """Run the upstream cua-driver installer for this platform.
 
@@ -909,6 +990,30 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
     else:
         _print_info(f"    {label} cua-driver...")
     driver_cmd = _cua_driver_cmd()
+
+    # A previous timed-out install can leave the upstream installer's
+    # concurrent-install lock behind; clear it when provably stale so the
+    # refresh doesn't wedge waiting on a dead holder (issue #58762).
+    _clear_stale_cua_install_lock()
+
+    # POSIX: run the installer in its own process group so a timeout kill
+    # takes out the whole `curl | bash` pipeline (and the exec'd
+    # _install-rust.sh), not just the outer shell. Otherwise the surviving
+    # grandchildren keep holding the install lock, wedging every later run.
+    popen_kwargs = {}
+    if not is_windows:
+        popen_kwargs["start_new_session"] = True
+
+    def _kill_installer_tree(proc):
+        import signal as _signal
+        try:
+            if not is_windows:
+                os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)  # windows-footgun: ok — POSIX branch only
+            else:
+                proc.kill()
+        except (OSError, ProcessLookupError):
+            proc.kill()
+
     try:
         # When not verbose (e.g. `hermes update`'s refresh), capture the
         # installer's chatty "Next steps" wall instead of dumping it to the
@@ -916,12 +1021,32 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         # debuggable. Verbose installs (interactive `computer-use install`)
         # keep streaming live.
         if verbose:
-            result = subprocess.run(install_cmd, shell=use_shell, timeout=300, env=_cua_driver_env())
+            proc = subprocess.Popen(
+                install_cmd, shell=use_shell, env=_cua_driver_env(), **popen_kwargs
+            )
+            try:
+                proc.communicate(timeout=_CUA_INSTALLER_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                _kill_installer_tree(proc)
+                proc.communicate()
+                raise
+            result = subprocess.CompletedProcess(
+                install_cmd, proc.returncode, stdout=None, stderr=None
+            )
         else:
-            result = subprocess.run(
-                install_cmd, shell=use_shell, timeout=300, env=_cua_driver_env(),
+            proc = subprocess.Popen(
+                install_cmd, shell=use_shell, env=_cua_driver_env(),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
+                text=True, encoding="utf-8", errors="replace", **popen_kwargs
+            )
+            try:
+                out, _ = proc.communicate(timeout=_CUA_INSTALLER_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                _kill_installer_tree(proc)
+                proc.communicate()
+                raise
+            result = subprocess.CompletedProcess(
+                install_cmd, proc.returncode, stdout=out, stderr=None
             )
             # Preserve the full installer output. During `hermes update`,
             # sys.stdout is the mirroring _UpdateOutputStream whose `_log`
@@ -960,7 +1085,16 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         _print_info(f"      {manual_hint}")
         return False
     except subprocess.TimeoutExpired:
-        _print_warning(f"    cua-driver {label.lower()} timed out. Re-run manually.")
+        _print_warning(
+            f"    cua-driver {label.lower()} timed out after "
+            f"{_CUA_INSTALLER_TIMEOUT}s."
+        )
+        if not is_windows:
+            _print_info(
+                "    If this repeats, a stale installer lock may be present — "
+                f"check {_cua_install_lock_dir()}"
+            )
+        _print_info(f"    Re-run manually:  {manual_hint}")
         return False
     except Exception as e:
         _print_warning(f"    cua-driver {label.lower()} failed: {e}")

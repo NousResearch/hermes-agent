@@ -192,3 +192,137 @@ class TestArchProbeRemoval:
             runner.assert_called_once()
             # Probe deleted — no direct GitHub API call from Python.
             urlopen.assert_not_called()
+
+
+class TestStaleInstallLockClear:
+    """_clear_stale_cua_install_lock: pre-clears the upstream installer's
+    concurrent-install lock only when the holder is provably dead (or the
+    lock is old and pid-less). Issue #58762."""
+
+    def _make_lock(self, tmp_path, pid=None):
+        import os
+        home = tmp_path / ".cua-driver"
+        lock = home / "packages" / ".install.lock.d"
+        lock.mkdir(parents=True)
+        if pid is not None:
+            (lock / "info").write_text(f"pid={pid}\n")
+        os.environ["CUA_DRIVER_RS_HOME"] = str(home)
+        return lock
+
+    def teardown_method(self):
+        import os
+        os.environ.pop("CUA_DRIVER_RS_HOME", None)
+
+    def test_dead_holder_lock_is_cleared(self, tmp_path):
+        from hermes_cli import tools_config
+
+        dead_pid = 4194000  # above default pid_max on most systems
+        lock = self._make_lock(tmp_path, pid=dead_pid)
+        with patch.object(tools_config, "_print_info"):
+            tools_config._clear_stale_cua_install_lock()
+        assert not lock.exists()
+
+    def test_live_holder_lock_is_kept(self, tmp_path):
+        import os
+        from hermes_cli import tools_config
+
+        lock = self._make_lock(tmp_path, pid=os.getpid())
+        tools_config._clear_stale_cua_install_lock()
+        assert lock.exists()
+
+    def test_pidless_fresh_lock_is_kept(self, tmp_path):
+        from hermes_cli import tools_config
+
+        lock = self._make_lock(tmp_path, pid=None)
+        tools_config._clear_stale_cua_install_lock()
+        assert lock.exists()
+
+    def test_pidless_old_lock_is_cleared(self, tmp_path):
+        import os
+        import time
+        from hermes_cli import tools_config
+
+        lock = self._make_lock(tmp_path, pid=None)
+        old = time.time() - (tools_config._CUA_LOCK_STALE_AFTER + 60)
+        os.utime(lock, (old, old))
+        with patch.object(tools_config, "_print_info"):
+            tools_config._clear_stale_cua_install_lock()
+        assert not lock.exists()
+
+    def test_no_lock_is_noop(self, tmp_path):
+        import os
+        os.environ["CUA_DRIVER_RS_HOME"] = str(tmp_path / ".cua-driver")
+        from hermes_cli import tools_config
+        tools_config._clear_stale_cua_install_lock()  # must not raise
+
+
+class TestInstallerTimeoutKillsProcessGroup:
+    """On timeout the whole installer process group must be killed, so the
+    `curl | bash` grandchildren can't survive holding the install lock."""
+
+    def test_timeout_kills_process_group_and_returns_false(self, tmp_path):
+        import os
+        import signal
+        import subprocess
+        import sys as _sys
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        killed = {}
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 12345
+        # First communicate() raises TimeoutExpired, second (post-kill) returns.
+        fake_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="x", timeout=1),
+            ("", None),
+        ]
+
+        def fake_killpg(pgid, sig):
+            killed["pgid"] = pgid
+            killed["sig"] = sig
+
+        with patch("platform.system", return_value="Linux"), \
+             patch("subprocess.Popen", return_value=fake_proc), \
+             patch.object(tools_config.os, "getpgid", return_value=99999), \
+             patch.object(tools_config.os, "killpg", side_effect=fake_killpg), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config._run_cua_driver_installer(label="Refreshing", verbose=False)
+
+        assert ok is False
+        assert killed.get("pgid") == 99999
+        assert killed.get("sig") == signal.SIGKILL
+        # Post-kill reap happened.
+        assert fake_proc.communicate.call_count == 2
+
+    def test_timeout_ceiling_exceeds_upstream_lock_window(self):
+        from hermes_cli import tools_config
+        # The upstream installer waits up to 600s before reclaiming a stale
+        # lock; our ceiling must give that window room to complete.
+        assert tools_config._CUA_INSTALLER_TIMEOUT > tools_config._CUA_LOCK_STALE_AFTER
+
+    def test_installer_runs_in_new_session_on_posix(self, tmp_path):
+        import subprocess
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        captured = {}
+        fake_proc = MagicMock()
+        fake_proc.pid = 1
+        fake_proc.returncode = 1
+        fake_proc.communicate.return_value = ("", None)
+
+        def fake_popen(*args, **kwargs):
+            captured.update(kwargs)
+            return fake_proc
+
+        with patch("platform.system", return_value="Linux"), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            tools_config._run_cua_driver_installer(label="Refreshing", verbose=False)
+
+        assert captured.get("start_new_session") is True

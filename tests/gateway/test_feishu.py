@@ -261,7 +261,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         import threading
         from types import SimpleNamespace
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
 
@@ -311,7 +311,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         """
         from types import SimpleNamespace
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         # No ``_disconnect`` attribute — ``hasattr`` guard should skip.

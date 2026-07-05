@@ -208,6 +208,39 @@ class TestWindowsShellDestructiveCommands:
         )
         assert desc != "PowerShell script execution via -File flag"
 
+    def test_powershell_file_flag_double_quoted_flagged(self):
+        # Regression test found in review: the flag name itself can be
+        # shell-quoted ("-File" instead of -File) without changing what
+        # PowerShell actually receives after shell quote removal — the
+        # regex must not require the dash to immediately follow whitespace
+        # with nothing in between.
+        dangerous, key, desc = detect_dangerous_command(
+            'powershell "-File" helper.ps1'
+        )
+        assert dangerous is True
+        assert desc == "PowerShell script execution via -File flag"
+
+    def test_powershell_file_flag_single_quoted_flagged(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell '-File' helper.ps1"
+        )
+        assert dangerous is True
+        assert desc == "PowerShell script execution via -File flag"
+
+    def test_pwsh_file_flag_quoted_flagged(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'pwsh "-File" helper.ps1'
+        )
+        assert dangerous is True
+        assert desc == "PowerShell script execution via -File flag"
+
+    def test_powershell_short_f_flag_quoted_flagged(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell '-f' helper.ps1"
+        )
+        assert dangerous is True
+        assert desc == "PowerShell script execution via -File flag"
+
 
 class TestDetectDangerousSudo:
     def test_shell_via_c_flag(self):

@@ -472,6 +472,7 @@ class TestWebServerEndpoints:
         assert {opt["value"] for opt in fields["mode"]["options"]} >= {
             "cloud",
             "local_external",
+            "local_embedded",
         }
         assert fields["api_url"]["kind"] == "text"
         assert fields["api_url"]["value"]
@@ -480,6 +481,10 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["kind"] == "secret"
         assert fields["api_key"]["is_set"] is False
         assert fields["api_key"]["required"] is False
+        assert fields["llm_api_key"]["kind"] == "secret"
+        assert fields["llm_api_key"]["is_set"] is False
+        assert fields["llm_provider"]["value"] == "openai"
+        assert fields["llm_model"]["value"] == "gpt-4o-mini"
 
     def test_get_memory_provider_config_loads_dynamic_plugin_schema(self):
         resp = self.client.get("/api/memory/providers/honcho/config")

@@ -76,6 +76,7 @@ class TestWorktreeIncludeSecurity:
         finally:
             _force_remove_worktree(info)
 
+    @pytest.mark.require_symlinks
     def test_rejects_symlink_that_resolves_outside_repo(self, git_repo):
         import cli as cli_mod
 
@@ -110,6 +111,7 @@ class TestWorktreeIncludeSecurity:
         finally:
             _force_remove_worktree(info)
 
+    @pytest.mark.require_symlinks
     def test_allows_valid_directory_include(self, git_repo):
         import cli as cli_mod
 

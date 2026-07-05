@@ -599,6 +599,14 @@ def _slice_files(
 
 
 def main() -> int:
+    # Reconfigure stdout/stderr to UTF-8 to prevent UnicodeEncodeError on Windows
+    # when printing checkmarks/crosses and box-drawing symbols.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,

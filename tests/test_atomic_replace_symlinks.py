@@ -37,6 +37,7 @@ def _write_tmp(dir_: Path, content: str) -> Path:
     return tmp
 
 
+@pytest.mark.require_symlinks
 def test_atomic_replace_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
@@ -94,6 +95,7 @@ def test_atomic_replace_accepts_pathlike_and_str(tmp_path: Path) -> None:
 # ─── atomic_json_write / atomic_yaml_write wiring ──────────────────────────
 
 
+@pytest.mark.require_symlinks
 def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.json"
     link = tmp_path / "link.json"
@@ -107,6 +109,7 @@ def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
     assert loaded == {"hello": "world"}
 
 
+@pytest.mark.require_symlinks
 def test_atomic_yaml_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
@@ -120,6 +123,7 @@ def test_atomic_yaml_write_preserves_symlink(tmp_path: Path) -> None:
     assert data == {"model": {"provider": "openrouter"}}
 
 
+@pytest.mark.require_symlinks
 def test_atomic_json_write_preserves_symlink_permissions(tmp_path: Path) -> None:
     """Symlinked targets keep the real file's permission bits."""
     if os.name != "posix":
@@ -141,6 +145,7 @@ def test_atomic_json_write_preserves_symlink_permissions(tmp_path: Path) -> None
 # ─── Broken-symlink edge case ─────────────────────────────────────────────
 
 
+@pytest.mark.require_symlinks
 def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     """A symlink pointing at a missing file: the write should create the
     real target (resolving via realpath) rather than leaving the dangling

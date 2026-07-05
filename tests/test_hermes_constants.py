@@ -277,6 +277,7 @@ class TestSecureParentDir:
         # Should not raise
         secure_parent_dir(target)
 
+    @pytest.mark.require_symlinks
     def test_symlink_resolved(self, tmp_path, monkeypatch):
         """Symlinks should be resolved before checking depth."""
         real_dir = tmp_path / "a" / "b"

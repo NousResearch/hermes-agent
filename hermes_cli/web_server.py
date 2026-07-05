@@ -609,6 +609,18 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     is_mcp_oauth_callback = path.startswith("/api/mcp/oauth/callback/")
+    # A genuine CORS preflight (OPTIONS + Origin + Access-Control-Request-Method)
+    # carries no credentials by design — the session-token check would always
+    # fail and return a 401 before CORSMiddleware can answer with the proper
+    # CORS headers. Short-circuit only real preflights so CORSMiddleware handles
+    # the reply. Requiring Origin matches Starlette, which passes Origin-less
+    # requests through without emitting a preflight response.
+    if (
+        request.method == "OPTIONS"
+        and request.headers.get("origin")
+        and "access-control-request-method" in request.headers
+    ):
+        return await call_next(request)
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not is_mcp_oauth_callback:
         if not _has_valid_session_token(request) and not _has_valid_query_token(request, path):
             return JSONResponse(

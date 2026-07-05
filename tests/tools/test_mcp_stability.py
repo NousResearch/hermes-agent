@@ -560,7 +560,7 @@ class TestMCPInitialConnectionRetry:
         asyncio.get_event_loop().run_until_complete(_run())
 
     def test_initial_connect_gives_up_after_max_retries(self):
-        """Server gives up after _MAX_INITIAL_CONNECT_RETRIES failures."""
+        """Server parks (does not exit) after _MAX_INITIAL_CONNECT_RETRIES failures."""
         from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
 
         call_count = 0
@@ -583,8 +583,13 @@ class TestMCPInitialConnectionRetry:
                 assert "DNS resolution failed" in str(server._error)
                 # 1 initial + N retries = _MAX_INITIAL_CONNECT_RETRIES + 1 total attempts
                 assert call_count == _MAX_INITIAL_CONNECT_RETRIES + 1
+                # The task parks for later revival instead of exiting.
+                await asyncio.sleep(0)
+                assert not task.done(), "run task should park, not exit"
 
-                await task
+                server._shutdown_event.set()
+                server._reconnect_event.set()
+                await asyncio.wait_for(task, timeout=5)
 
         asyncio.get_event_loop().run_until_complete(_run())
 

@@ -1876,12 +1876,19 @@ class TestReconnection:
 
             with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
                  patch("asyncio.sleep", new_callable=AsyncMock):
-                await server.run({"command": "test"})
+                task = asyncio.ensure_future(server.run({"command": "test"}))
+                await server._ready.wait()
 
-            # Now retries up to _MAX_INITIAL_CONNECT_RETRIES before giving up
-            assert run_count == _MAX_INITIAL_CONNECT_RETRIES + 1
-            assert server._error is not None
-            assert "cannot connect" in str(server._error)
+                # Now retries up to _MAX_INITIAL_CONNECT_RETRIES, then PARKS
+                # (keeps the task alive for later revival) instead of exiting.
+                assert run_count == _MAX_INITIAL_CONNECT_RETRIES + 1
+                assert server._error is not None
+                assert "cannot connect" in str(server._error)
+                assert not task.done(), "run task should park, not exit"
+
+                server._shutdown_event.set()
+                server._reconnect_event.set()
+                await asyncio.wait_for(task, timeout=5)
 
         asyncio.run(_test())
 

@@ -19744,6 +19744,17 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 # hop back through run_one_job's bookkeeping.
 _CRON_SHUTDOWN_DRAIN_TIMEOUT = 65.0
 
+# Upper bound for cooperatively draining the housekeeping ticker on shutdown.
+# Housekeeping periodically refreshes the channel directory via
+# ``safe_schedule_threadsafe(build_channel_directory(...), loop)`` and blocks on
+# ``fut.result(timeout=30)`` (see ``_start_gateway_housekeeping``) — the same
+# loop-scheduled-future pattern as cron. So the cooperative bound must cover
+# that 30s future (plus margin) rather than the old 5s join, otherwise a
+# channel-directory refresh in flight at shutdown gets abandoned mid-resolve.
+# Unlike a dropped cron delivery this is not user-facing (it self-heals on the
+# next tick), but bounding it correctly keeps the drain honest.
+_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT = 35.0
+
 
 async def _await_thread_exit(
     thread: Optional[threading.Thread], timeout: float, poll: float = 0.1
@@ -20281,7 +20292,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "Cron ticker did not exit within %.0fs of shutdown — an in-flight "
             "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT,
         )
-    await _await_thread_exit(housekeeping_thread, timeout=5)
+    await _await_thread_exit(
+        housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT
+    )
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()

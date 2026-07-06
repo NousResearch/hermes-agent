@@ -727,6 +727,118 @@ def _format_exec_approval_fallback(
         + ", ".join(choices[:-1]) + f", or {choices[-1]}."
     )
 
+_APPROVAL_ESCALATED_ORIGIN_NOTICE = "I've flagged this for review."
+
+
+@dataclasses.dataclass(frozen=True)
+class _ApprovalPromptRoute:
+    adapter: Any
+    chat_id: str
+    metadata: Optional[Dict[str, Any]]
+    escalated: bool = False
+
+
+def _approval_escalate_to_target(
+    user_config: Any,
+) -> Optional[tuple["Platform", str]]:
+    """Parse approvals.escalate_to as a platform:chat_id target."""
+    approvals = user_config.get("approvals") if isinstance(user_config, dict) else None
+    if not isinstance(approvals, dict) or "escalate_to" not in approvals:
+        return None
+
+    raw = approvals.get("escalate_to")
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("approvals.escalate_to must be a platform:chat_id string")
+
+    platform_name, sep, chat_id = raw.partition(":")
+    platform_name = platform_name.strip().lower()
+    chat_id = chat_id.strip()
+    if not sep or not platform_name or not chat_id:
+        raise ValueError("approvals.escalate_to must be a platform:chat_id string")
+
+    try:
+        platform = Platform(platform_name)
+    except Exception as exc:
+        raise ValueError("approvals.escalate_to references an unknown platform") from exc
+    return platform, chat_id
+
+
+def _resolve_approval_prompt_route(
+    user_config: Any,
+    adapters: Dict[Any, Any],
+    *,
+    source: Any,
+    origin_adapter: Any,
+    origin_chat_id: str,
+    origin_metadata: Optional[Dict[str, Any]],
+) -> _ApprovalPromptRoute:
+    """Resolve where a gateway dangerous-command approval prompt should go."""
+    configured_target = _approval_escalate_to_target(user_config)
+    if configured_target is None:
+        return _ApprovalPromptRoute(
+            adapter=origin_adapter,
+            chat_id=origin_chat_id,
+            metadata=origin_metadata,
+            escalated=False,
+        )
+
+    target_platform, target_chat_id = configured_target
+    target_adapter = adapters.get(target_platform) if isinstance(adapters, dict) else None
+    if target_adapter is None:
+        raise RuntimeError("approvals.escalate_to target adapter is not connected")
+
+    origin_platform = getattr(source, "platform", None)
+    origin_has_thread = bool(
+        getattr(source, "thread_id", None)
+        or (isinstance(origin_metadata, dict) and origin_metadata.get("thread_id"))
+    )
+    escalated = (
+        target_platform != origin_platform
+        or str(target_chat_id) != str(origin_chat_id)
+        or origin_has_thread
+    )
+
+    if escalated and getattr(type(target_adapter), "send_exec_approval", None) is None:
+        raise RuntimeError(
+            "approvals.escalate_to target must support interactive exec approvals"
+        )
+
+    return _ApprovalPromptRoute(
+        adapter=target_adapter,
+        chat_id=target_chat_id,
+        metadata=None if escalated else origin_metadata,
+        escalated=escalated,
+    )
+
+
+def _send_approval_escalated_origin_notice_sync(
+    origin_adapter: Any,
+    origin_chat_id: str,
+    origin_metadata: Optional[Dict[str, Any]],
+    loop: Any,
+) -> None:
+    """Send the neutral origin notice for escalated approval prompts."""
+    if origin_adapter is None:
+        return
+    try:
+        notice_fut = safe_schedule_threadsafe(
+            origin_adapter.send(
+                origin_chat_id,
+                _APPROVAL_ESCALATED_ORIGIN_NOTICE,
+                metadata=origin_metadata,
+            ),
+            loop,
+            logger=logger,
+            log_message="Approval escalation origin notice scheduling error",
+        )
+        if notice_fut is not None:
+            notice_fut.result(timeout=15)
+    except Exception as exc:
+        logger.debug("Failed to send approval escalation origin notice: %s", exc)
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
@@ -6114,11 +6226,11 @@ class TurnRunner:
         def _approval_notify_sync(approval_data: dict) -> None:
             """Send the approval request to the user from the agent thread.
 
-                If the adapter supports interactive button-based approvals
-                (e.g. Discord's ``send_exec_approval``), use that for a richer
-                UX.  Otherwise fall back to a plain text message with
-                ``/approve`` instructions.
-                """
+            If the adapter supports interactive button-based approvals
+            (e.g. Discord's ``send_exec_approval``), use that for a richer
+            UX. Otherwise fall back to a plain text message with ``/approve``
+            instructions.
+            """
             # Pause the typing indicator while the agent waits for
             # user approval.  Critical for Slack's Assistant API where
             # assistant_threads_setStatus disables the compose box — the

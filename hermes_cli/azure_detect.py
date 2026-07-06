@@ -61,6 +61,9 @@ _AZURE_OPENAI_PROBE_API_VERSIONS = (
 # ``agent/anthropic_adapter.py`` when building the Anthropic client.
 _AZURE_ANTHROPIC_API_VERSION = "2025-04-15"
 
+_AZURE_DETECT_JSON_BODY_LIMIT_BYTES = 1 * 1024 * 1024
+_AZURE_DETECT_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+
 
 @dataclass
 class DetectionResult:
@@ -145,6 +148,19 @@ def _apply_auth_headers(req: urllib_request.Request,
         req.add_header("Authorization", f"Bearer {token}")
 
 
+def _read_response_body_limited(resp: Any, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` from a urllib response-like object."""
+    if max_bytes <= 0:
+        return b""
+    try:
+        body = resp.read(max_bytes + 1)
+    except TypeError:
+        body = resp.read()
+    if not isinstance(body, (bytes, bytearray)):
+        body = bytes(body or b"")
+    return bytes(body[:max_bytes])
+
+
 def _http_get_json(url: str,
                    api_key: Any,
                    timeout: float = 6.0,
@@ -159,7 +175,10 @@ def _http_get_json(url: str,
     req.add_header("User-Agent", "hermes-agent/azure-detect")
     try:
         with urllib_request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read()
+            body = _read_response_body_limited(
+                resp,
+                _AZURE_DETECT_JSON_BODY_LIMIT_BYTES,
+            )
             try:
                 return resp.status, json.loads(body.decode("utf-8", errors="replace"))
             except Exception:
@@ -276,7 +295,10 @@ def _probe_anthropic_messages(base_url: str,
     except HTTPError as exc:
         # 4xx with an Anthropic-shaped error body = Anthropic endpoint.
         try:
-            body = exc.read().decode("utf-8", errors="replace")
+            body = _read_response_body_limited(
+                exc,
+                _AZURE_DETECT_ERROR_BODY_LIMIT_BYTES,
+            ).decode("utf-8", errors="replace")
             lowered = body.lower()
             if "anthropic" in lowered or '"type"' in lowered and '"error"' in lowered:
                 return True

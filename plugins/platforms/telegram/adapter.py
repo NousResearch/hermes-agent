@@ -902,13 +902,6 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to = metadata.get("telegram_reply_to_message_id")
         return int(reply_to) if reply_to is not None else None
 
-    @staticmethod
-    def _looks_like_private_chat_id(chat_id: str) -> bool:
-        try:
-            return int(chat_id) > 0
-        except (TypeError, ValueError):
-            return False
-
     @classmethod
     def _is_private_dm_topic_send(
         cls,
@@ -926,10 +919,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         return bool(
             thread_id
-            and (
-                metadata and metadata.get("telegram_dm_topic_reply_fallback")
-                or cls._looks_like_private_chat_id(chat_id)
-            )
+            and metadata
+            and metadata.get("telegram_dm_topic_reply_fallback")
         )
 
     @staticmethod

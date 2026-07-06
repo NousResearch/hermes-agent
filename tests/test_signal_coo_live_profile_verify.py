@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,9 +71,21 @@ def _write_backend_artifact(profile: Path, name: str, payload: dict) -> None:
     (state / name).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def test_live_profile_verify_passes_enabled_scripts_and_snapshot_sync(tmp_path: Path) -> None:
+def _git(path: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(path), *args], check=True, text=True, capture_output=True)
+
+
+def _init_profile_git(profile: Path) -> None:
+    (profile / ".gitignore").write_text("scripts/__pycache__/\n", encoding="utf-8")
+    _git(profile, "init")
+    _git(profile, "config", "user.email", "torben-tests@example.com")
+    _git(profile, "config", "user.name", "Torben Tests")
+    _git(profile, "add", ".gitignore", "cron", "scripts")
+    _git(profile, "commit", "-m", "initial profile")
+
+
+def test_live_profile_verify_passes_enabled_scripts_and_profile_git_clean(tmp_path: Path) -> None:
     profile = tmp_path / "profile"
-    snapshot = tmp_path / "snapshot"
     _write_jobs(
         profile,
         [
@@ -81,9 +94,9 @@ def test_live_profile_verify_passes_enabled_scripts_and_snapshot_sync(tmp_path: 
         ],
     )
     _write_script(profile, "active.py")
-    _write_script(snapshot, "active.py")
+    _init_profile_git(profile)
 
-    payload = verify_torben_live_profile(profile_home=profile, repo_snapshot_home=snapshot)
+    payload = verify_torben_live_profile(profile_home=profile)
 
     assert payload["status"] == "pass"
     assert payload["wakeAgent"] is False
@@ -92,7 +105,9 @@ def test_live_profile_verify_passes_enabled_scripts_and_snapshot_sync(tmp_path: 
     active = [item for item in payload["script_checks"] if item["name"] == "active"][0]
     assert active["exists"] is True
     assert active["compiles"] is True
-    assert active["snapshot_in_sync"] is True
+    assert active["snapshot_in_sync"] is None
+    assert payload["repo_snapshot_home"] is None
+    assert payload["profile_git_health"]["status"] == "pass"
 
 
 def test_live_profile_verify_fails_missing_enabled_script(tmp_path: Path) -> None:
@@ -192,7 +207,6 @@ def test_live_profile_verify_fails_backend_forbidden_mutation_count(tmp_path: Pa
 
 def test_live_profile_verify_ignores_stale_self_status_after_repair(tmp_path: Path) -> None:
     profile = tmp_path / "profile"
-    snapshot = tmp_path / "snapshot"
     _write_jobs(
         profile,
         [
@@ -207,9 +221,9 @@ def test_live_profile_verify_ignores_stale_self_status_after_repair(tmp_path: Pa
         ],
     )
     _write_script(profile, "torben_live_profile_verify.py")
-    _write_script(snapshot, "torben_live_profile_verify.py")
+    _init_profile_git(profile)
 
-    payload = verify_torben_live_profile(profile_home=profile, repo_snapshot_home=snapshot)
+    payload = verify_torben_live_profile(profile_home=profile)
 
     assert payload["status"] == "pass"
     assert payload["wakeAgent"] is False
@@ -218,17 +232,45 @@ def test_live_profile_verify_ignores_stale_self_status_after_repair(tmp_path: Pa
     assert any("ignoring stale verifier self last_status" in warning for warning in payload["warnings"])
 
 
-def test_live_profile_verify_fails_snapshot_drift(tmp_path: Path) -> None:
+def test_live_profile_verify_fails_dirty_watched_profile_path(tmp_path: Path) -> None:
     profile = tmp_path / "profile"
-    snapshot = tmp_path / "snapshot"
     _write_jobs(profile, [{"name": "drifted", "enabled": True, "script": "job.py"}])
-    _write_script(profile, "job.py", "print('live')\n")
-    _write_script(snapshot, "job.py", "print('snapshot')\n")
+    _write_script(profile, "job.py", "print('committed')\n")
+    _init_profile_git(profile)
+    _write_script(profile, "job.py", "print('dirty')\n")
 
-    payload = verify_torben_live_profile(profile_home=profile, repo_snapshot_home=snapshot)
+    payload = verify_torben_live_profile(profile_home=profile)
 
     assert payload["status"] == "fail"
-    assert any("live script differs from repo snapshot" in error for error in payload["errors"])
+    assert any("profile_git: watched profile paths dirty" in error for error in payload["errors"])
+    assert any("scripts/job.py" in entry for entry in payload["profile_git_health"]["dirty_entries"])
+
+
+def test_live_profile_verify_fails_unpushed_profile_commit(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    remote = tmp_path / "remote.git"
+    _write_jobs(profile, [{"name": "active", "enabled": True, "script": "job.py"}])
+    _write_script(profile, "job.py")
+    _init_profile_git(profile)
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, text=True, capture_output=True)
+    _git(profile, "remote", "add", "origin", str(remote))
+    _git(profile, "push", "-u", "origin", "HEAD")
+    (profile / "config").mkdir(exist_ok=True)
+    (profile / "config" / "contract.md").write_text("contract\n", encoding="utf-8")
+    _git(profile, "add", "config/contract.md")
+    _git(profile, "commit", "-m", "unpublished profile change")
+
+    payload = verify_torben_live_profile(profile_home=profile)
+
+    assert payload["status"] == "fail"
+    assert payload["profile_git_health"]["unpushed_commit_count"] == 1
+    assert any("profile has 1 unpushed commit" in error for error in payload["errors"])
+
+
+def test_torben_profile_script_snapshot_removed_from_source_checkout() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+
+    assert not (repo_root / "profiles" / "torben" / "scripts").exists()
 
 
 def test_live_profile_verify_passes_healthy_gmail_realtime_state(tmp_path: Path) -> None:

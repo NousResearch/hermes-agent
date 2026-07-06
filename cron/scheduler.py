@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import importlib.util
 import json
 import logging
 import os
@@ -45,6 +46,46 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+_TORBEN_COMMS_RENDERER = None
+_TORBEN_COMMS_RENDERER_LOADED = False
+
+
+def _load_torben_comms_renderer():
+    global _TORBEN_COMMS_RENDERER, _TORBEN_COMMS_RENDERER_LOADED
+    if _TORBEN_COMMS_RENDERER_LOADED:
+        return _TORBEN_COMMS_RENDERER
+    _TORBEN_COMMS_RENDERER_LOADED = True
+    renderer_path = Path(get_hermes_home()) / "scripts" / "torben_comms_render.py"
+    if not renderer_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("torben_comms_render", renderer_path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        logger.warning("Could not load Torben comms renderer from %s: %s", renderer_path, exc)
+        return None
+    _TORBEN_COMMS_RENDERER = module
+    return module
+
+
+def _cron_detail_path(job: dict) -> str:
+    job_id = str(job.get("id") or "unknown")
+    return str(Path(get_hermes_home()) / "cron" / "output" / job_id)
+
+
+def _consecutive_failure_count(job: dict) -> int:
+    for key in ("consecutive_failure_count", "consecutive_failures", "failure_count"):
+        try:
+            count = int(job.get(key) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0:
+            return count
+    last_status = str(job.get("last_status") or "").lower()
+    return 2 if last_status in {"error", "failed", "fail"} else 1
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
@@ -55,6 +96,19 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     stack traces into the delivery channel.
     """
     job_name = job.get("name") or job.get("id") or "cron job"
+    renderer = _load_torben_comms_renderer()
+    if renderer is not None and hasattr(renderer, "render_failure_message"):
+        try:
+            return renderer.render_failure_message(
+                job=str(job_name),
+                raw_error=error or "unknown error",
+                consecutive_failures=_consecutive_failure_count(job),
+                detail_path=_cron_detail_path(job),
+                severity="yellow",
+                handle=job.get("last_alert_handle") or job.get("handle"),
+            )
+        except Exception as exc:
+            logger.warning("Torben comms renderer failed for cron failure delivery: %s", exc)
     text = (error or "unknown error").strip()
     lower = text.lower()
 

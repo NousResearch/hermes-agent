@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import py_compile
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ GMAIL_WATCH_RENEWAL_FLOOR = timedelta(hours=48)
 GMAIL_PUBSUB_PULL_FRESHNESS = timedelta(minutes=10)
 ALERT_STATE_VERSION = 1
 INVESTIGATION_REQUEST_VERSION = 1
+PROFILE_GIT_WATCHED_PATHS = ("scripts", "config")
 BACKEND_ARTIFACT_HEALTH = {
     "torben_gtm_radar.py": "torben-gtm-radar-latest.json",
     "torben_gtm_engagement_radar.py": "torben-gtm-engagement-radar-latest.json",
@@ -558,6 +560,72 @@ def _compile_script(path: Path) -> tuple[bool, str | None]:
     return True, None
 
 
+def _git(
+    profile: Path,
+    args: list[str],
+    *,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(profile), *args],
+        text=True,
+        capture_output=True,
+        check=check,
+    )
+
+
+def _verify_profile_git_health(profile: Path) -> dict[str, Any]:
+    """Verify the profile git repo, not a source-tree snapshot copy."""
+
+    summary: dict[str, Any] = {
+        "status": "not_applicable",
+        "watched_paths": list(PROFILE_GIT_WATCHED_PATHS),
+        "dirty_entries": [],
+        "unpushed_commit_count": 0,
+        "upstream": None,
+        "errors": [],
+        "warnings": [],
+    }
+    try:
+        inside = _git(profile, ["rev-parse", "--is-inside-work-tree"])
+    except OSError as exc:
+        summary["status"] = "fail"
+        summary["errors"] = [f"git unavailable: {exc}"]
+        return summary
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        summary["warnings"] = [f"profile is not a git worktree: {profile}"]
+        return summary
+
+    status = _git(profile, ["status", "--porcelain", "--", *PROFILE_GIT_WATCHED_PATHS])
+    if status.returncode != 0:
+        summary["status"] = "fail"
+        summary["errors"] = [f"profile git status failed: {status.stderr.strip() or status.stdout.strip()}"]
+        return summary
+    dirty_entries = [line for line in status.stdout.splitlines() if line.strip()]
+    summary["dirty_entries"] = dirty_entries
+    if dirty_entries:
+        summary["errors"].append("watched profile paths dirty: " + "; ".join(dirty_entries[:20]))
+
+    upstream = _git(profile, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    if upstream.returncode != 0:
+        summary["warnings"].append("profile git upstream is not configured; unpushed commit check skipped")
+    else:
+        upstream_name = upstream.stdout.strip()
+        summary["upstream"] = upstream_name
+        unpushed = _git(profile, ["rev-list", "--count", f"{upstream_name}..HEAD"])
+        if unpushed.returncode != 0:
+            summary["status"] = "fail"
+            summary["errors"].append(f"profile unpushed commit check failed: {unpushed.stderr.strip()}")
+            return summary
+        count = int((unpushed.stdout or "0").strip() or 0)
+        summary["unpushed_commit_count"] = count
+        if count:
+            summary["errors"].append(f"profile has {count} unpushed commit(s) relative to {upstream_name}")
+
+    summary["status"] = "fail" if summary["errors"] else "pass"
+    return summary
+
+
 def verify_torben_live_profile(
     *,
     profile_home: str | Path,
@@ -567,7 +635,6 @@ def verify_torben_live_profile(
 ) -> dict[str, Any]:
     profile = Path(profile_home)
     jobs_path = profile / "cron" / "jobs.json"
-    snapshot = Path(repo_snapshot_home) if repo_snapshot_home else None
     now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     errors: list[str] = []
     warnings: list[str] = []
@@ -645,20 +712,13 @@ def verify_torben_live_profile(
         elif str(job.get("last_status") or "").lower() in {"error", "failed", "fail"}:
             check.warnings.append(f"ignoring stale verifier self last_status: {job.get('last_status')}")
 
-        if check_snapshot_sync and snapshot is not None and script and not Path(script).is_absolute():
-            snapshot_script = snapshot / "scripts" / script
-            if not snapshot_script.exists():
-                check.warnings.append(f"repo snapshot script missing: {snapshot_script}")
-                check.snapshot_in_sync = None
-            else:
-                check.snapshot_in_sync = snapshot_script.read_bytes() == live_path.read_bytes()
-                if not check.snapshot_in_sync:
-                    check.errors.append(f"live script differs from repo snapshot: {snapshot_script}")
-
     for check in checks:
         errors.extend(f"{check.name}: {error}" for error in check.errors)
         warnings.extend(f"{check.name}: {warning}" for warning in check.warnings)
 
+    profile_git_health = _verify_profile_git_health(profile)
+    errors.extend(f"profile_git: {error}" for error in profile_git_health.get("errors") or [])
+    warnings.extend(f"profile_git: {warning}" for warning in profile_git_health.get("warnings") or [])
     gmail_realtime_health = _verify_gmail_realtime_health(profile, jobs, now_utc)
     errors.extend(f"gmail_realtime: {error}" for error in gmail_realtime_health.get("errors") or [])
     warnings.extend(f"gmail_realtime: {warning}" for warning in gmail_realtime_health.get("warnings") or [])
@@ -679,9 +739,10 @@ def verify_torben_live_profile(
         "status": status,
         "profile_home": str(profile),
         "jobs_path": str(jobs_path),
-        "repo_snapshot_home": str(snapshot) if snapshot else None,
+        "repo_snapshot_home": None,
         "enabled_jobs_checked": sum(1 for job in jobs if bool(job.get("enabled", True))),
         "script_checks": [check.to_dict() for check in checks],
+        "profile_git_health": profile_git_health,
         "gmail_realtime_health": gmail_realtime_health,
         "backend_artifact_health": backend_artifact_health,
         "submanager_contract_health": submanager_contract_health,

@@ -6329,7 +6329,7 @@ def _update_via_zip(args):
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env, cwd=PROJECT_ROOT)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -6348,7 +6348,7 @@ def _update_via_zip(args):
                 cwd=PROJECT_ROOT,
                 check=True,
             )
-        _install_python_dependencies_with_optional_fallback(pip_cmd)
+        _install_python_dependencies_with_optional_fallback(pip_cmd, cwd=PROJECT_ROOT)
 
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
@@ -7148,6 +7148,7 @@ def _run_install_with_heartbeat(
     *,
     env: dict[str, str] | None = None,
     heartbeat_interval_seconds: int = 30,
+    cwd: Path | None = None,
 ) -> None:
     """Run dependency install command with periodic heartbeat output.
 
@@ -7173,7 +7174,7 @@ def _run_install_with_heartbeat(
     try:
         subprocess.run(
             cmd,
-            cwd=PROJECT_ROOT,
+            cwd=(cwd or PROJECT_ROOT),
             check=True,
             env=env,
         )
@@ -7508,6 +7509,7 @@ def _run_quarantined_install(
     *,
     env: dict[str, str] | None = None,
     scripts_dir: Path | None = None,
+    cwd: Path | None = None,
 ) -> None:
     """Run an editable install, quarantining the running ``hermes.exe`` first.
 
@@ -7528,7 +7530,7 @@ def _run_quarantined_install(
     if scripts_dir is not None:
         moved = _quarantine_running_hermes_exe(scripts_dir)
     try:
-        _run_install_with_heartbeat(cmd, env=env)
+        _run_install_with_heartbeat(cmd, env=env, cwd=cwd)
     except BaseException:
         # Restore shims if pip/uv didn't write replacements (e.g. install
         # failed before the entry-points step). Don't swallow the error.
@@ -7633,6 +7635,7 @@ def _install_python_dependencies_with_optional_fallback(
     *,
     env: dict[str, str] | None = None,
     group: str = "all",
+    cwd: Path | None = None,
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports.
 
@@ -7647,9 +7650,7 @@ def _install_python_dependencies_with_optional_fallback(
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
     def _install(args: list[str]) -> None:
-        _run_quarantined_install(
-            install_cmd_prefix + args, env=env, scripts_dir=scripts_dir
-        )
+        _run_quarantined_install(install_cmd_prefix + args, env=env, scripts_dir=scripts_dir, cwd=cwd)
 
     try:
         _install(["install", "-e", f".[{group}]"])
@@ -7946,9 +7947,7 @@ def _verify_core_dependencies_installed(
         f"  → Force-installing remaining missing dep(s): {', '.join(specs)}"
     )
     try:
-        _run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "--reinstall", *specs], env=env
-        )
+        _run_install_with_heartbeat(install_cmd_prefix + ["install", "--reinstall", *specs], env=env, cwd=PROJECT_ROOT)
     except subprocess.CalledProcessError as e:
         logger.warning("dep verification: per-package repair failed: %s", e)
         print(
@@ -8033,10 +8032,7 @@ def _install_psutil_android_compat(
         urllib.request.urlretrieve(PSUTIL_URL, archive)
         src_root = prepare_patched_psutil_sdist(archive, tmp_path)
 
-        _run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "--no-build-isolation", str(src_root)],
-            env=env,
-        )
+        _run_install_with_heartbeat(install_cmd_prefix + ["install", "--no-build-isolation", str(src_root)], env=env, cwd=PROJECT_ROOT)
 
 
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:

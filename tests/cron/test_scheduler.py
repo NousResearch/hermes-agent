@@ -2521,10 +2521,13 @@ class TestSilentDelivery:
         assert sil("NO_REPLY")
         assert sil("NO REPLY")
         assert sil("Summary.\nSILENT")
+        assert sil("Gmail: новых действий нет.")
+        assert sil(" gmail: no new actions ")
         # Deliver: real content, mid-sentence quotes, bare words, junk.
         assert not sil("Daily report: 4 PRs merged.")
         assert not sil("I stayed [SILENT] but here is the report: 3 items.")
         assert not sil("Silent retry succeeded after 2 attempts.")
+        assert not sil("Processed 2 emails. Gmail: новых действий нет.")
         assert not sil("[SILENT")  # malformed open-bracket is not the sentinel
         assert not sil("")
         assert not sil("   \n\t ")

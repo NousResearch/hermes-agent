@@ -1795,27 +1795,45 @@ async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
                 except Exception:
                     pass
 
-    # Attempt 1: whole video within caps.
-    proc = await asyncio.to_thread(_run, [])
-    got = _find_output()
-    if got is None:
-        _clean_partials()
-        # Attempt 2: first 3 minutes (helps long talks that blow the size cap).
-        # Drop the size cap here — 3 min @ <=480p is small — and force an mp4
-        # remux so the section is finalized (not left as a .part).
-        proc = await asyncio.to_thread(
-            _run,
-            ["--download-sections", "*0-180", "--force-keyframes-at-cuts",
-             "--remux-video", "mp4"],
-        )
+    import subprocess as _sp
+
+    async def _run_safe(extra):
+        # yt-dlp timing out raises TimeoutExpired instead of returning a proc.
+        # Never let that escape with partials still on disk — always clean.
+        try:
+            return await asyncio.to_thread(_run, extra), None
+        except _sp.TimeoutExpired as e:
+            _clean_partials()
+            return None, e
+
+    proc = None
+    try:
+        # Attempt 1: whole video within the 35M cap.
+        proc, err = await _run_safe([])
         got = _find_output()
-    if got is None:
+        if got is None:
+            _clean_partials()
+            # Attempt 2: first 3 minutes (helps long talks that blow the cap).
+            # KEEP the 35M cap here too — a section download can still exceed
+            # the base64 payload limit at high bitrate — and force an mp4 remux
+            # so the section is finalized (not left as a .part).
+            proc, err = await _run_safe(
+                ["--download-sections", "*0-180", "--force-keyframes-at-cuts",
+                 "--remux-video", "mp4"],
+            )
+            got = _find_output()
+        if got is None:
+            _clean_partials()
+            stderr = (proc.stderr or "").strip()[:300] if proc is not None else "timed out"
+            raise ValueError(
+                "yt-dlp could not fetch a compact video from this URL. "
+                f"stderr: {stderr}"
+            )
+        return got
+    except BaseException:
+        # Any failure path (incl. cancellation): don't leak partials.
         _clean_partials()
-        raise ValueError(
-            "yt-dlp could not fetch a compact video from this URL. "
-            f"stderr: {(proc.stderr or '').strip()[:300]}"
-        )
-    return got
+        raise
 
 
 async def video_analyze_tool(
@@ -1874,6 +1892,16 @@ async def video_analyze_tool(
                 should_cleanup = True
             elif _ytdlp_available():
                 # Page URL (YouTube, X, Vimeo, TikTok, ...): extract via yt-dlp.
+                # SSRF guard: resolve DNS/IP and reject private/internal targets
+                # BEFORE handing the URL to yt-dlp (mirrors the direct-download
+                # path's _validate_image_url_async, minus the image-shape check
+                # that a page URL would fail). Blocks e.g. cloud metadata IPs.
+                from tools.url_safety import async_is_safe_url
+                if not await async_is_safe_url(resolved_url):
+                    raise PermissionError(
+                        "Refusing to fetch video from a private/internal or "
+                        "unresolvable address."
+                    )
                 logger.info("Non-direct video URL — fetching via yt-dlp")
                 temp_video_path = await _download_video_via_ytdlp(resolved_url, temp_dir)
                 should_cleanup = True

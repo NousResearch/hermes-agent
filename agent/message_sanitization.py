@@ -461,6 +461,254 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
     return found
 
 
+# ---------------------------------------------------------------------------
+# Tool-call-shaped envelope suppression (#59291)
+# ---------------------------------------------------------------------------
+#
+# Local / weak models (Ollama, vLLM, llama.cpp backends — e.g. gpt-oss:120b)
+# occasionally emit a JSON object that *looks* like a tool invocation
+# directly into plain assistant ``content`` instead of routing it through
+# the structured ``tool_calls`` channel.  Two shapes are observed:
+#
+#   * OpenAI-style:    {"name": "clarify", "arguments": {...}}
+#                      {"function": {"name": "...", "arguments": "..."}}
+#   * Pseudo-style:    {"action": "clarify", "question": "...",
+#                       "choices": [...]}
+#                      — the invented ``action`` key is the giveaway;
+#                      no real Hermes schema defines it.
+#
+# The other sanitizers in this module only repair JSON *inside* an
+# already-recognised ``tool_calls`` array, so a shape-alike envelope
+# sitting in plain content passes through untouched and reaches end
+# users verbatim — most visibly on the Telegram gateway, where the raw
+# JSON replaces the intended inline-keyboard / numbered-list render of
+# a ``clarify`` prompt.
+#
+# ``_strip_tool_call_envelope`` is the structural guard for that case.
+# It scans assistant content (not ``tool_calls``) for a JSON object
+# whose shape matches a tool invocation and removes it, protecting any
+# fenced or inline code regions so user-intended JSON samples survive.
+
+# Fenced code block: ```lang\n ... \n```  (non-greedy, multiline)
+_FENCED_CODE_RE = re.compile(
+    r'(```[^\n]*\n[\s\S]*?```|```[\s\S]*?```)',
+)
+# Inline code: ` ... `
+_INLINE_CODE_RE = re.compile(r'(`[^`\n]+`)')
+
+
+def _protect_code_regions(text: str) -> tuple:
+    """Replace fenced + inline code regions with NUL-byte placeholders.
+
+    Returns ``(protected_text, placeholders)`` so the caller can
+    re-hydrate the originals after editing non-code regions.
+    """
+    placeholders: dict = {}
+    counter = [0]
+
+    def _stash(match: "re.Match[str]") -> str:
+        token = f"\x00CODE{counter[0]}\x00"
+        counter[0] += 1
+        placeholders[token] = match.group(0)
+        return token
+
+    protected = _FENCED_CODE_RE.sub(_stash, text)
+    protected = _INLINE_CODE_RE.sub(_stash, protected)
+    return protected, placeholders
+
+
+def _restore_code_regions(text: str, placeholders: dict) -> str:
+    """Inverse of :func:`_protect_code_regions`."""
+    if not placeholders:
+        return text
+    out = text
+    for token, original in placeholders.items():
+        out = out.replace(token, original)
+    return out
+
+
+def _try_extract_json_object(text: str, start: int) -> tuple | None:
+    """Try to extract a balanced JSON object starting at ``text[start]``.
+
+    Walks the string tracking nesting depth while ignoring braces
+    inside string literals.  Returns ``(start, end, parsed)`` where
+    ``end`` is the index just past the closing ``}``, or ``None`` if no
+    balanced object can be located / parsed.
+    """
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    i = start
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            i += 1
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:i + 1]
+                try:
+                    parsed = json.loads(candidate, strict=False)
+                except (json.JSONDecodeError, ValueError):
+                    return None
+                if isinstance(parsed, dict):
+                    return (start, i + 1, parsed)
+                return None
+        i += 1
+    return None
+
+
+def _is_tool_call_envelope(obj: dict) -> bool:
+    """Heuristic: does this dict *look* like a tool-call invocation?
+
+    Returns True for either of the canonical shapes observed from
+    local-model emissions:
+
+      * OpenAI-style:   ``name`` + ``arguments`` (or ``args`` /
+        ``parameters``); or a ``function`` wrapper; or a top-level
+        ``tool`` / ``tool_name`` / ``tool_call`` / ``tool_calls`` key.
+      * Pseudo-style:   an invented ``action`` key — no real Hermes
+        schema defines ``action``, so its presence is a strong signal
+        of a hallucinated pseudo-call (#59291).
+    """
+    if not isinstance(obj, dict) or not obj:
+        return False
+    keys = set(obj.keys())
+    if "name" in keys and ("arguments" in keys or "args" in keys or "parameters" in keys or "params" in keys):
+        return True
+    if "function" in keys and isinstance(obj.get("function"), dict):
+        return True
+    if "tool" in keys or "tool_name" in keys or "tool_call" in keys or "tool_calls" in keys:
+        return True
+    # The invented ``action`` pseudo-key is the strongest single
+    # signal — it's not part of any registered tool schema.
+    if "action" in keys:
+        return True
+    return False
+
+
+def _strip_tool_call_envelope(
+    text: str,
+    *,
+    replacement: str = "",
+    logger_: "logging.Logger | None" = None,
+) -> str:
+    """Strip tool-call-shaped JSON envelopes from a plain-text assistant message.
+
+    Local/weak models occasionally emit a JSON object that *looks* like
+    a tool invocation directly into assistant ``content`` instead of
+    routing it through ``tool_calls``.  The literal JSON then reaches
+    end users (most visibly on the Telegram gateway, where it replaces
+    the intended inline-keyboard / numbered-list render of a
+    ``clarify`` prompt).  This helper detects and removes those
+    envelopes while preserving any fenced or inline code the user may
+    have intended to display (#59291).
+
+    Parameters
+    ----------
+    text:
+        Raw assistant content string.  ``None`` and empty strings are
+        returned unchanged.  Non-string inputs are coerced to ``""``
+        so callers can pass ``response.choices[0].message.content``
+        directly without isinstance checks.
+    replacement:
+        String used to replace each stripped envelope.  Defaults to
+        empty string (silently dropped).  Callers can pass a friendly
+        placeholder such as ``"(handled)"`` if they prefer an explicit
+        note in the rendered output.
+    logger_:
+        Optional logger override — defaults to this module's logger.
+        Each suppression logs one DEBUG line summarising how many
+        envelopes were removed and the total byte count, so operators
+        can audit which models / sessions trip the guard without
+        spamming normal output.
+
+    Notes
+    -----
+    * Code blocks (```` ``` ... ``` ````) and inline code (``...``)
+      are protected so user-intended JSON samples survive untouched.
+    * The detector is structural (matches ``name`` + ``arguments``
+      keys and the ``action``-invention pseudo-shape) rather than a
+      string heuristic — consistent with the other deterministic
+      guards in this module.
+    * Multiple envelopes in one message are all stripped in a single
+      pass.
+    """
+    if text is None or not isinstance(text, str) or not text:
+        return text if text is not None else ""
+
+    log = logger_ or logger
+    protected, placeholders = _protect_code_regions(text)
+
+    out_parts: list = []
+    cursor = 0
+    suppressed_count = 0
+    suppressed_bytes = 0
+    n = len(protected)
+
+    while cursor < n:
+        # Pass through placeholder tokens verbatim.
+        if protected[cursor] == "\x00":
+            end_tok = protected.index("\x00", cursor + 1)
+            out_parts.append(protected[cursor:end_tok + 1])
+            cursor = end_tok + 1
+            continue
+
+        if protected[cursor] != "{":
+            out_parts.append(protected[cursor])
+            cursor += 1
+            continue
+
+        extracted = _try_extract_json_object(protected, cursor)
+        if extracted is None:
+            out_parts.append(protected[cursor])
+            cursor += 1
+            continue
+
+        start, end, parsed = extracted
+        if not _is_tool_call_envelope(parsed):
+            # Not a tool-call envelope — keep the leading ``{`` and
+            # advance one character so we don't loop on the same byte.
+            out_parts.append(protected[cursor])
+            cursor += 1
+            continue
+
+        suppressed_count += 1
+        suppressed_bytes += end - start
+        if replacement:
+            out_parts.append(replacement)
+        # Skip past the entire envelope.
+        cursor = end
+
+    result = _restore_code_regions("".join(out_parts), placeholders)
+
+    if suppressed_count:
+        log.debug(
+            "Stripped %d tool-call-shaped JSON envelope(s) from assistant "
+            "content (%d bytes total)",
+            suppressed_count,
+            suppressed_bytes,
+        )
+
+    return result
+
+
 __all__ = [
     "_SURROGATE_RE",
     "close_interrupted_tool_sequence",
@@ -474,4 +722,9 @@ __all__ = [
     "_sanitize_tools_non_ascii",
     "_strip_images_from_messages",
     "_sanitize_structure_non_ascii",
+    "_strip_tool_call_envelope",
+    "_is_tool_call_envelope",
+    "_protect_code_regions",
+    "_restore_code_regions",
+    "_try_extract_json_object",
 ]

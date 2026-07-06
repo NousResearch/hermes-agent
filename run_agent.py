@@ -177,6 +177,7 @@ from agent.message_sanitization import (  # noqa: F401
     _sanitize_tools_non_ascii,
     _strip_images_from_messages,
     _sanitize_structure_non_ascii,
+    _strip_tool_call_envelope,
 )
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,

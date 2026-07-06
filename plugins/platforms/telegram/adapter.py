@@ -19,6 +19,8 @@ import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
+from agent.message_sanitization import _strip_tool_call_envelope
+
 logger = logging.getLogger(__name__)
 
 
@@ -6351,6 +6353,20 @@ class TelegramAdapter(BasePlatformAdapter):
         (headers, bold, italic, links) are translated to MarkdownV2 syntax,
         and all remaining special characters are escaped.
         """
+        if not content:
+            return content
+
+        # 0) Suppress tool-call-shaped JSON envelopes (#59291).  Local /
+        #    weak models (Ollama, vLLM — e.g. gpt-oss:120b) sometimes
+        #    emit a JSON object that *looks* like a tool invocation
+        #    directly into assistant ``content`` instead of routing it
+        #    through ``tool_calls``.  Without this guard the raw JSON
+        #    reaches the user verbatim, replacing the intended UI
+        #    affordance (inline keyboard for ``clarify``, etc.).
+        #    The sanitizer protects fenced + inline code regions so
+        #    user-intended JSON samples survive untouched.
+        content = _strip_tool_call_envelope(content)
+
         if not content:
             return content
 

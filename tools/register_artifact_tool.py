@@ -16,8 +16,9 @@ write through a leaf symlink.
 
 Resolution facts (verified against the managed runtime):
   * Workspace root is ``/workspace`` (``HERMES_WRITE_SAFE_ROOT=/workspace``;
-    see karinai/runtime/config.py). ``get_safe_write_root()`` returns its
-    realpath.
+    see karinai/runtime/config.py). Upstream allows multiple ``os.pathsep``-
+    separated roots; the managed runtime sets exactly one, and this tool uses
+    the FIRST entry's realpath as the primary workspace root.
   * The sweep dir is ``<workspace>/outputs/<PRODUCT_RUN_ID>/``. PRODUCT_RUN_ID
     is the value of the per-run HTTP header ``X-KarinAI-Run-Id`` the backend
     sends to the api_server; it is bound into per-run context as
@@ -33,7 +34,6 @@ import os
 import shutil
 from pathlib import Path
 
-from agent.file_safety import get_safe_write_root
 from gateway.session_context import get_session_env
 from tools.file_tools import _resolve_path_for_task
 from tools.path_security import validate_within_dir
@@ -96,9 +96,17 @@ def _check_file_reqs():
 
 
 def _workspace_root() -> Path:
-    """Absolute workspace root: realpath(HERMES_WRITE_SAFE_ROOT), else /workspace."""
-    root = get_safe_write_root()
-    return Path(root if root else _DEFAULT_WORKSPACE_ROOT).resolve()
+    """Absolute workspace root: realpath of the FIRST HERMES_WRITE_SAFE_ROOT
+    entry (upstream supports several os.pathsep-separated roots; the managed
+    runtime sets exactly one), else /workspace."""
+    for path in os.getenv("HERMES_WRITE_SAFE_ROOT", "").split(os.pathsep):
+        if not path:
+            continue
+        try:
+            return Path(os.path.realpath(os.path.expanduser(path)))
+        except (OSError, ValueError):
+            continue
+    return Path(_DEFAULT_WORKSPACE_ROOT).resolve()
 
 
 def _product_run_id() -> str:

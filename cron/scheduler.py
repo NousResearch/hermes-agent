@@ -3286,15 +3286,27 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # resolve_runtime_provider() raised UnscopedSecretError before model
         # selection, breaking every cron job. Mirrors the per-turn pattern in
         # gateway/run.py (_profile_runtime_scope).
+        import os as _os
         from agent.secret_scope import (
             build_profile_secret_scope,
             reset_secret_scope,
             set_secret_scope,
         )
 
-        _scope_token = set_secret_scope(
-            build_profile_secret_scope(_get_hermes_home())
-        )
+        _profile_scope = build_profile_secret_scope(_get_hermes_home())
+
+        # BSM loader injects secrets into os.environ at gateway startup, but
+        # build_profile_secret_scope only reads from .env files — merge them
+        for key in _os.environ:
+            if (
+                key.endswith("_API_KEY")
+                or key.endswith("_SECRET")
+                or key.endswith("_TOKEN")
+            ):
+                if key not in _profile_scope:
+                    _profile_scope[key] = _os.environ[key]
+
+        _scope_token = set_secret_scope(_profile_scope)
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the

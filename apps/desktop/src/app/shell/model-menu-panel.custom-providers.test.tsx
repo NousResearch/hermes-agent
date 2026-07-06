@@ -22,10 +22,10 @@ vi.mock('@/hermes', () => ({
 
 // The exact payload shape observed live from /api/model/options for a config
 // with one bare `model.provider: custom` main model plus two named
-// `custom_providers` entries. Reproduces issue #59702: the Desktop picker
-// shows only one of these three rows even though the backend/network payload
-// is always complete (verified independently 3 ways: REST with refresh, REST
-// without refresh, and the live gateway WebSocket JSON-RPC call).
+// `custom_providers` entries (issue #59702). These tests pin down that when
+// the payload carries all three rows, the panel renders all three: the #59702
+// bug lives in the backend payload (the bare custom row arriving with an
+// empty model list), not in this component's grouping or render logic.
 const MAIN_CUSTOM_PROVIDER = {
   api_url: 'http://10.0.0.1:8090/v1',
   is_current: true,
@@ -105,17 +105,10 @@ describe('ModelMenuPanel multiple custom_providers entries (#59702)', () => {
 
     await findByText(document.body, 'Custom endpoint')
 
-    expect(
-      document.body.textContent?.includes('Qwen3.6-27B-NVFP4-MTP-GGUF.gguf') ||
-        document.body.textContent?.includes('Qwen3.6 27B NVFP4 MTP GGUF.Gguf')
-    ).toBe(true)
+    // Model ids render as their humanized family display names.
+    expect(document.body.textContent).toContain('Qwen3.6 27B NVFP4 MTP GGUF.Gguf')
     expect(document.body.textContent).toContain('Gemma 4 12b Omni')
-    // spark's model id renders as its family display name, accept either the
-    // raw id or the humanized form. We only care whether the ROW exists at all.
-    expect(
-      document.body.textContent?.includes('gemma-4-26b-a4b-nvfp4') ||
-        document.body.textContent?.includes('Gemma 4 26b A4b Nvfp4')
-    ).toBe(true)
+    expect(document.body.textContent).toContain('Gemma 4 26b A4b Nvfp4')
   })
 
   it('renders all three groups via the real gateway.request path (not the REST fallback)', async () => {
@@ -126,6 +119,7 @@ describe('ModelMenuPanel multiple custom_providers entries (#59702)', () => {
     const gatewayRequest = vi.fn().mockResolvedValue({
       providers: [MAIN_CUSTOM_PROVIDER, NAMED_CUSTOM_PROVIDER_A, NAMED_CUSTOM_PROVIDER_B]
     })
+
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
     render(

@@ -2210,6 +2210,35 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 
+def test_dump_api_request_debug_merges_extra_body_like_sdk(monkeypatch, tmp_path):
+    """Dumps merge the ``extra_body`` kwarg into the body like the SDK does (#59283)."""
+    import json
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gemini-2.5-pro",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key="test-key",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+
+    thinking = {"google": {"thinking_config": {"include_thoughts": True}}}
+    dump_file = agent._dump_api_request_debug(
+        {
+            "model": "gemini-2.5-pro",
+            "messages": [{"role": "user", "content": "hi"}],
+            "extra_body": {"extra_body": thinking},
+        },
+        reason="preflight",
+    )
+
+    body = json.loads(dump_file.read_text())["request"]["body"]
+    assert body["extra_body"] == thinking
+
+
 def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, tmp_path, capsys):
     """Request debug dumps should redact secrets before disk/stdout output."""
     import json

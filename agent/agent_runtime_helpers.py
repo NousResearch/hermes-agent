@@ -1385,12 +1385,17 @@ def dump_api_request_debug(
     Dump a debug-friendly HTTP request record for the active inference API.
 
     Captures the request body from api_kwargs (excluding transport-only keys
-    like timeout). Intended for debugging provider-side 4xx failures where
-    retries are not useful.
+    like timeout). ``extra_body`` is shallow-merged into the body exactly as
+    the OpenAI SDK does at send time, so the dump matches the wire request
+    and stays replayable. Intended for debugging provider-side 4xx failures
+    where retries are not useful.
     """
     try:
         body = copy.deepcopy(api_kwargs)
         body.pop("timeout", None)
+        extra_body = body.pop("extra_body", None)
+        if isinstance(extra_body, dict):
+            body.update(extra_body)
         body = {k: v for k, v in body.items() if v is not None}
 
         api_key = None

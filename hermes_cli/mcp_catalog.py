@@ -472,6 +472,18 @@ def _build_server_config(
         cfg["url"] = t.url
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
+        elif entry.auth.type == "api_key":
+            # Mirror the manual ``hermes mcp add`` path (mcp_config.py): the
+            # api_key is prompted for and saved to .env, but an http server only
+            # authenticates if that key is interpolated into an Authorization
+            # header. Prefer an explicit auth.env_var; else fall back to the
+            # first declared env name. Guarded so an api_key entry with no
+            # declared env var writes no unresolvable ``Bearer ${}`` placeholder.
+            env_name = entry.auth.env_var or (
+                entry.auth.env[0].name if entry.auth.env else None
+            )
+            if env_name:
+                cfg["headers"] = {"Authorization": f"Bearer ${{{env_name}}}"}
     return cfg
 
 

@@ -252,45 +252,54 @@ class GatewayKanbanWatchersMixin:
                             if not subs:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
-                                owner_profile = sub.get("notifier_profile") or None
-                                if owner_profile and owner_profile != notifier_profile:
-                                    _owner_adapters = getattr(self, "_profile_adapters", {}).get(owner_profile)
-                                    if not _owner_adapters:
+                                try:
+                                    owner_profile = sub.get("notifier_profile") or None
+                                    if owner_profile and owner_profile != notifier_profile:
+                                        _owner_adapters = getattr(self, "_profile_adapters", {}).get(owner_profile)
+                                        if not _owner_adapters:
+                                            logger.debug(
+                                                "kanban notifier: subscription for %s owned by profile %s; current profile %s has no adapter for it, skipping",
+                                                sub.get("task_id"), owner_profile, notifier_profile,
+                                            )
+                                            continue
+                                    platform = (sub.get("platform") or "").lower()
+                                    if platform not in active_platforms:
                                         logger.debug(
-                                            "kanban notifier: subscription for %s owned by profile %s; current profile %s has no adapter for it, skipping",
-                                            sub.get("task_id"), owner_profile, notifier_profile,
+                                            "kanban notifier: subscription for %s on %s skipped; adapter not connected",
+                                            sub.get("task_id"), platform or "<missing>",
                                         )
                                         continue
-                                platform = (sub.get("platform") or "").lower()
-                                if platform not in active_platforms:
-                                    logger.debug(
-                                        "kanban notifier: subscription for %s on %s skipped; adapter not connected",
-                                        sub.get("task_id"), platform or "<missing>",
+                                    old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
+                                        conn,
+                                        task_id=sub["task_id"],
+                                        platform=sub["platform"],
+                                        chat_id=sub["chat_id"],
+                                        thread_id=sub.get("thread_id") or "",
+                                        kinds=TERMINAL_KINDS,
                                     )
-                                    continue
-                                old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
-                                    conn,
-                                    task_id=sub["task_id"],
-                                    platform=sub["platform"],
-                                    chat_id=sub["chat_id"],
-                                    thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
-                                )
-                                if not events:
-                                    continue
-                                task = _kb.get_task(conn, sub["task_id"])
-                                logger.debug(
-                                    "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
-                                    len(events), sub["task_id"], slug, old_cursor, cursor,
-                                )
-                                deliveries.append({
-                                    "sub": sub,
-                                    "old_cursor": old_cursor,
-                                    "cursor": cursor,
-                                    "events": events,
-                                    "task": task,
-                                    "board": slug,
-                                })
+                                    if not events:
+                                        continue
+                                    task = _kb.get_task(conn, sub["task_id"])
+                                    logger.debug(
+                                        "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
+                                        len(events), sub["task_id"], slug, old_cursor, cursor,
+                                    )
+                                    deliveries.append({
+                                        "sub": sub,
+                                        "old_cursor": old_cursor,
+                                        "cursor": cursor,
+                                        "events": events,
+                                        "task": task,
+                                        "board": slug,
+                                    })
+                                except Exception as sub_exc:
+                                    # Isolate per-subscription failures so one
+                                    # bad subscription cannot block delivery for
+                                    # all other subscriptions in this tick.
+                                    logger.warning(
+                                        "kanban notifier: subscription for %s on board %s failed: %s",
+                                        sub.get("task_id"), slug, sub_exc,
+                                    )
                         finally:
                             conn.close()
                     return deliveries

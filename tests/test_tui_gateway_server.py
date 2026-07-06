@@ -6476,7 +6476,17 @@ def test_verification_status_returns_recorded_evidence(tmp_path):
     assert verification["evidence"]["scope"] == "full"
 
 
-def test_verification_status_outside_workspace_is_not_applicable(tmp_path):
+def test_verification_status_outside_workspace_is_not_applicable(monkeypatch, tmp_path):
+    # A cwd with no project facts (outside any code workspace) must report
+    # not_applicable. Force the "no facts" precondition rather than relying on
+    # tmp_path's ancestors being pristine — a stray marker file in a shared
+    # tmp-root ancestor (e.g. /tmp/package.json left by another tool) would
+    # otherwise make _marker_root() resolve tmp_path as a workspace and flip
+    # the status to "unverified".
+    import agent.coding_context as coding_context
+
+    monkeypatch.setattr(coding_context, "project_facts_for", lambda _cwd=None: None)
+
     home = tmp_path / ".hermes"
     home.mkdir()
     token = set_hermes_home_override(home)

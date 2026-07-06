@@ -544,6 +544,24 @@ class ResponsesApiTransport(ProviderTransport):
         if params.get("request_overrides"):
             kwargs.update(params["request_overrides"])
 
+        # Text verbosity - GPT-5+ only. Preserve other text fields from overrides.
+        text_verbosity = params.get("text_verbosity", "")
+        if text_verbosity and isinstance(text_verbosity, str):
+            model_stem = model.lower().rsplit("/", 1)[-1]
+            if model_stem.startswith("gpt-"):
+                try:
+                    major = int(model_stem.split("-")[1].split(".")[0])
+                except (IndexError, ValueError):
+                    major = 0
+                if major >= 5:
+                    text_obj = kwargs.get("text", {})
+                    if not isinstance(text_obj, dict):
+                        text_obj = {}
+                    else:
+                        text_obj = dict(text_obj)
+                    text_obj["verbosity"] = text_verbosity
+                    kwargs["text"] = text_obj
+
         _bound_prompt_cache_key_field(kwargs)
 
         # Older xAI models reject ``service_tier`` (HTTP 400); only Grok 4.6 accepts Priority Processing.

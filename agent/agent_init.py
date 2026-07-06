@@ -1314,6 +1314,13 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._skill_nudge_interval = int(_agent_cfg.get("skills", {}).get("creation_nudge_interval", 10))
 
     _agent_section = _cfg_dict(_agent_cfg, "agent")
+    # Empty/unset leaves Responses text verbosity at the provider default.
+    _config_text_verbosity = str(
+        _agent_section.get("text_verbosity", "") or ""
+    ).strip()
+    if _config_text_verbosity:
+        agent.text_verbosity = _config_text_verbosity
+
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
     # of each other (gates in agent/system_prompt.py).
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
@@ -2279,6 +2286,7 @@ def init_agent(
 
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    agent.text_verbosity = ""
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False

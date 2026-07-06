@@ -12,6 +12,10 @@ provider error. This is a diagnostic improvement and is platform-agnostic.
 
 from types import SimpleNamespace
 
+from typing import Any
+
+import httpx
+
 from run_agent import AIAgent
 
 
@@ -53,4 +57,26 @@ def test_empty_body_fallback_redacts_secrets(monkeypatch):
     )
     summary = AIAgent._summarize_api_error(err)
     assert "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef" not in summary
+
+
+def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_message():
+    """Unread streaming responses must not replace the real provider error."""
+
+    class _StreamingError(Exception):
+        def __init__(self):
+            super().__init__("Gemini HTTP 429: quota exceeded")
+            self.status_code = 429
+            self.response: Any = None
+
+    err = _StreamingError()
+
+    class _UnreadStreamingResponse:
+        @property
+        def text(self):
+            raise httpx.ResponseNotRead()
+
+    err.response = _UnreadStreamingResponse()
+    summary = AIAgent._summarize_api_error(err)
+    assert "HTTP 429" in summary
+    assert "Gemini HTTP 429: quota exceeded" in summary
 

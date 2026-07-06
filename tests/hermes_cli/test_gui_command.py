@@ -153,6 +153,22 @@ def test_gui_skip_build_launches_existing_packaged_app_without_npm(tmp_path, mon
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
 
 
+def test_gui_skip_build_handles_ctrl_c_cleanly(tmp_path, monkeypatch, capsys):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    with patch("hermes_cli.main.shutil.which", return_value=None), \
+         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
+         patch("hermes_cli.main.subprocess.run", side_effect=KeyboardInterrupt), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 130
+    mock_install.assert_not_called()
+    assert "Interrupted while Hermes Desktop was running." in capsys.readouterr().out
+
+
 def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)

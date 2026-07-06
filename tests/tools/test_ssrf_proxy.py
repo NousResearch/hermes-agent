@@ -294,3 +294,39 @@ async def test_proxy_blocks_redirect_hop_to_metadata(monkeypatch):
             # 2) client follows the redirect → NEW proxied request to metadata → BLOCKED
             status2, _ = await _http_get_via_proxy(phost, int(pport), "metadata.evil", 80)
             assert "403" in status2, "redirect hop to metadata must be blocked at the proxy"
+
+
+@pytest.mark.asyncio
+async def test_handler_tasks_registered_and_cancelled(monkeypatch):
+    """A handler task registers in _tasks while in-flight and is cancelled on
+    __aexit__ — proves the fd-leak guard is actually wired (regression for the
+    _spawn-never-called bug: start_server calls _handle_client directly)."""
+    # An origin that hangs so the handler stays in-flight (pipe never ends).
+    stop = asyncio.Event()
+
+    async def hang_origin(reader, writer):
+        await reader.readuntil(b"\r\n")
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")  # promises 100, sends 0
+        await writer.drain()
+        await stop.wait()  # hold the connection open
+        writer.close()
+
+    ohost, oport, oserver = await _start_origin(hang_origin)
+    async with oserver:
+        _patch_resolve(monkeypatch, {"pub.example": ["127.0.0.1"]})
+        proxy = SsrfFilteringProxy(block_private=False)
+        async with proxy as url:
+            phost, pport = url[len("http://"):].split(":")
+            # Kick off a request but DON'T await it — leave the handler in-flight.
+            r, w = await asyncio.open_connection(phost, int(pport))
+            w.write(
+                f"GET http://pub.example:{oport}/ HTTP/1.1\r\nHost: x\r\n\r\n".encode()
+            )
+            await w.drain()
+            # Give the proxy a moment to accept + spawn the handler task.
+            await asyncio.sleep(0.2)
+            assert len(proxy._tasks) >= 1, "handler task must be registered while in-flight"
+            w.close()
+        # After __aexit__: tasks cancelled + cleared, no leak.
+        assert len(proxy._tasks) == 0
+        stop.set()

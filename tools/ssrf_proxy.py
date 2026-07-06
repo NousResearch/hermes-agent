@@ -112,14 +112,17 @@ class SsrfFilteringProxy:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
 
-    def _spawn(self, coro) -> None:
-        task = asyncio.ensure_future(coro)
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        # asyncio.start_server invokes this coroutine as its own task; register
+        # THAT task so __aexit__ can cancel any handler still piping when the
+        # context manager tears down (the fd-leak / orphaned-pipe guard). On
+        # Python <3.12, Server.wait_closed() does NOT drain handler tasks.
+        task = asyncio.current_task()
+        if task is not None:
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         try:
             request_line = await self._read_request_line(reader)
             if request_line is None:
@@ -226,7 +229,7 @@ class SsrfFilteringProxy:
         connects to the validated IP literal — no re-resolution between check and
         connect (TOCTOU-safe).
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             infos = await loop.getaddrinfo(
                 host, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM

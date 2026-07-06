@@ -22,4 +22,12 @@ def build_insights_parser(subparsers, *, cmd_insights: Callable) -> None:
     insights_parser.add_argument(
         "--source", help="Filter by platform (cli, telegram, discord, etc.)"
     )
+    insights_parser.add_argument(
+        "--provider", help="Filter usage by billing provider (e.g. openai-codex)"
+    )
+    insights_parser.add_argument(
+        "--by-credential",
+        action="store_true",
+        help="Show per-credential token usage when credential telemetry is available",
+    )
     insights_parser.set_defaults(func=cmd_insights)

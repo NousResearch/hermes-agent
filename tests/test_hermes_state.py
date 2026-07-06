@@ -254,6 +254,46 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["api_call_count"] == 3
 
+    def test_update_token_counts_records_credential_usage_rows(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts(
+            "s1",
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=10,
+            reasoning_tokens=5,
+            api_call_count=1,
+            billing_provider="openai-codex",
+            credential_label="company-plus-100",
+            model="gpt-5.5",
+        )
+        db.update_token_counts(
+            "s1",
+            input_tokens=20,
+            output_tokens=5,
+            api_call_count=1,
+            billing_provider="openai-codex",
+            credential_label="company-plus-100",
+            model="gpt-5.5",
+        )
+
+        rows = db.get_credential_usage(days=30, provider="openai-codex")
+
+        assert rows == [
+            {
+                "provider": "openai-codex",
+                "credential_label": "company-plus-100",
+                "model": "gpt-5.5",
+                "api_calls": 2,
+                "input_tokens": 120,
+                "output_tokens": 55,
+                "cache_read_tokens": 10,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 5,
+                "total_tokens": 190,
+            }
+        ]
+
     def test_update_token_counts_api_call_count_absolute(self, db):
         """absolute mode sets api_call_count directly."""
         db.create_session(session_id="s1", source="cli")

@@ -63,8 +63,12 @@ export type GatewayEventPayload = {
   question?: string
   choices?: string[] | null
   // approval.request (dangerous command / execute_code) — session-keyed
+  allowlist_key?: string
   command?: string
   description?: string
+  pattern_key?: string
+  pattern_keys?: string[]
+  rule_key?: string
   // False when a tirith content-security warning forbids a permanent allow.
   allow_permanent?: boolean
   smart_denied?: boolean

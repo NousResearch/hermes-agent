@@ -99,6 +99,39 @@ class TestRequestToolApproval:
         assert res["approved"] is False
         assert res["status"] == "approval_required"
         assert submitted["pattern_key"] == "plugin_rule:ext-nav"
+        assert submitted["pattern_keys"] == ["plugin_rule:ext-nav"]
+        assert submitted["allowlist_key"] == "plugin_rule:ext-nav"
+        assert submitted["rule_key"] == "ext-nav"
+        assert submitted["allow_permanent"] is True
+        assert res["allowlist_key"] == "plugin_rule:ext-nav"
+        assert res["rule_key"] == "ext-nav"
+
+    def test_gateway_notify_round_trip_carries_rule_metadata(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+        captured = []
+
+        def notify(data):
+            captured.append(dict(data))
+            approval.resolve_gateway_approval("test-session", "once")
+
+        approval.register_gateway_notify("test-session", notify)
+        try:
+            res = request_tool_approval(
+                "browser_navigate",
+                "external URL",
+                rule_key="ext-nav",
+            )
+        finally:
+            approval.unregister_gateway_notify("test-session")
+
+        assert res == {"approved": True, "message": None}
+        assert len(captured) == 1
+        assert captured[0]["pattern_key"] == "plugin_rule:ext-nav"
+        assert captured[0]["pattern_keys"] == ["plugin_rule:ext-nav"]
+        assert captured[0]["allowlist_key"] == "plugin_rule:ext-nav"
+        assert captured[0]["rule_key"] == "ext-nav"
+        assert captured[0]["allow_permanent"] is True
 
     def test_cron_deny_mode_blocks(self, monkeypatch):
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)

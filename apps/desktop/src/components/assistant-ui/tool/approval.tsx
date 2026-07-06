@@ -123,6 +123,8 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
   const allowAlways = choices ? choices.includes('always') : allowPermanent
   const hasMoreOptions = allowSession || allowAlways
   const hasCommand = request.command.trim().length > 0
+  const approvalRule = request.ruleKey || request.allowlistKey || request.patternKey
+  const allowlistPattern = request.allowlistKey || request.patternKey || request.ruleKey || request.description
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
@@ -259,6 +261,19 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
         )}
       </div>
 
+      {approvalRule && (
+        <div
+          className="mt-1.5 max-w-full truncate text-[0.625rem] leading-tight text-(--ui-text-tertiary)"
+          title={approvalRule}
+        >
+          <span className="font-medium">{copy.rule}</span>
+          <span aria-hidden className="mx-1 opacity-60">
+            ·
+          </span>
+          <code className="font-mono">{approvalRule}</code>
+        </div>
+      )}
+
       {showCommand && hasCommand && (
         <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-xs leading-snug text-foreground">
           {request.command.trim()}
@@ -269,7 +284,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>{copy.alwaysTitle}</DialogTitle>
-            <DialogDescription>{copy.alwaysDescription(request.description)}</DialogDescription>
+            <DialogDescription>{copy.alwaysDescription(allowlistPattern)}</DialogDescription>
           </DialogHeader>
 
           {request.command.trim() && (

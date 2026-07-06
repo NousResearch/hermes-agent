@@ -638,9 +638,13 @@ export type GatewayEvent =
   | {
       payload: {
         allow_permanent?: boolean
+        allowlist_key?: string
         choices?: string[]
         command: string
         description: string
+        pattern_key?: string
+        pattern_keys?: string[]
+        rule_key?: string
         smart_denied?: boolean
       }
       session_id?: string

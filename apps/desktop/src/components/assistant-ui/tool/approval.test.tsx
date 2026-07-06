@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { $gateway } from '@/store/gateway'
-import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
+import { $approvalRequest, clearAllPrompts, setApprovalRequest, type ApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 
 import { PendingApprovalFallback, PendingToolApproval } from './approval'
@@ -33,7 +33,7 @@ function part(toolName: string): ToolPart {
 function setRequest(
   command = 'rm -rf /tmp/x',
   allowPermanent?: boolean,
-  extra: { choices?: string[]; smartDenied?: boolean } = {}
+  extra: Partial<Pick<ApprovalRequest, 'allowlistKey' | 'choices' | 'patternKey' | 'ruleKey' | 'smartDenied'>> = {}
 ) {
   $activeSessionId.set('sess-1')
   setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
@@ -121,6 +121,22 @@ describe('PendingToolApproval', () => {
 
     expect(await screen.findByRole('menuitem', { name: /Always allow/ })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /Allow this session/ })).toBeTruthy()
+  })
+
+  it('shows the approval rule and confirms the allowlist key for permanent allows', async () => {
+    setRequest('<browser_navigate> (plugin approval rule)', undefined, {
+      allowlistKey: 'plugin_rule:ext-nav',
+      ruleKey: 'ext-nav'
+    })
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    expect(screen.getByText('Rule')).toBeTruthy()
+    expect(screen.getByText('ext-nav')).toBeTruthy()
+
+    fireEvent.keyDown(screen.getByRole('button', { name: /More approval options/ }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Always allow/ }))
+
+    expect(await screen.findByText(/plugin_rule:ext-nav/)).toBeTruthy()
   })
 
   it('hides "Always allow" when the backend disallows a permanent allow', async () => {

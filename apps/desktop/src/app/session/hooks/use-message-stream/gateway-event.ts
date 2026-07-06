@@ -632,15 +632,23 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // surfaces once the user focuses that chat.
         const command = typeof payload?.command === 'string' ? payload.command : ''
         const description = typeof payload?.description === 'string' ? payload.description : 'dangerous command'
+        const allowlistKey =
+          typeof payload?.allowlist_key === 'string' && payload.allowlist_key ? payload.allowlist_key : undefined
+        const patternKey =
+          typeof payload?.pattern_key === 'string' && payload.pattern_key ? payload.pattern_key : undefined
+        const ruleKey = typeof payload?.rule_key === 'string' && payload.rule_key ? payload.rule_key : undefined
 
         setApprovalRequest({
           // false only when a tirith warning forbids it; backend omits the field otherwise.
           allowPermanent: payload?.allow_permanent !== false,
+          allowlistKey,
           choices: Array.isArray(payload?.choices)
             ? payload.choices.filter(choice => typeof choice === 'string')
             : undefined,
           command,
           description,
+          patternKey,
+          ruleKey,
           sessionId: sessionId ?? null,
           smartDenied: payload?.smart_denied === true
         })

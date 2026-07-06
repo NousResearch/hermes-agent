@@ -67,6 +67,23 @@ describe('approval prompt store', () => {
 
     expect($approvalRequest.get()?.allowPermanent).toBe(false)
   })
+
+  it('carries approval rule metadata for desktop prompts', () => {
+    setApprovalRequest({
+      allowlistKey: 'plugin_rule:ext-nav',
+      command: '<browser_navigate> (plugin approval rule)',
+      description: 'external navigation',
+      patternKey: 'plugin_rule:ext-nav',
+      ruleKey: 'ext-nav',
+      sessionId: 's1'
+    })
+
+    expect($approvalRequest.get()).toMatchObject({
+      allowlistKey: 'plugin_rule:ext-nav',
+      patternKey: 'plugin_rule:ext-nav',
+      ruleKey: 'ext-nav'
+    })
+  })
 })
 
 describe('sudo prompt store', () => {

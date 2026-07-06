@@ -50,33 +50,33 @@ def _make_session(session_id="sess_1"):
 
 
 class TestFinalizeSkipsGatewaySessions:
-    @patch("tui_gateway.server._get_db")
-    def test_gateway_session_not_ended(self, mock_get_db):
+    @patch("tui_gateway.server._session_db")
+    def test_gateway_session_not_ended(self, mock_session_db):
         db = MagicMock()
         db.get_session.return_value = {"id": "sess_1", "source": "telegram"}
-        mock_get_db.return_value = db
+        mock_session_db.return_value.__enter__.return_value = db
 
         _finalize_session(_make_session(), end_reason="ws_orphan_reap")
 
         db.end_session.assert_not_called()
 
-    @patch("tui_gateway.server._get_db")
-    def test_tui_session_still_ended(self, mock_get_db):
+    @patch("tui_gateway.server._session_db")
+    def test_tui_session_still_ended(self, mock_session_db):
         db = MagicMock()
         db.get_session.return_value = {"id": "sess_1", "source": "tui"}
-        mock_get_db.return_value = db
+        mock_session_db.return_value.__enter__.return_value = db
 
         _finalize_session(_make_session(), end_reason="ws_orphan_reap")
 
         db.end_session.assert_called_once_with("sess_1", "ws_orphan_reap")
 
-    @patch("tui_gateway.server._get_db")
-    def test_missing_row_still_ended(self, mock_get_db):
+    @patch("tui_gateway.server._session_db")
+    def test_missing_row_still_ended(self, mock_session_db):
         """A session with no state.db row can't be gateway-owned — keep the
         pre-existing reap behavior."""
         db = MagicMock()
         db.get_session.return_value = None
-        mock_get_db.return_value = db
+        mock_session_db.return_value.__enter__.return_value = db
 
         _finalize_session(_make_session(), end_reason="tui_close")
 

@@ -166,19 +166,20 @@ class TestFinalizeSessionPersist:
         # commit_memory_session should still be called
         agent.commit_memory_session.assert_called_once()
 
-    @patch("tui_gateway.server._get_db")
-    def test_db_end_session_still_called(self, mock_get_db):
+    @patch("tui_gateway.server._session_db")
+    def test_db_end_session_still_called(self, mock_session_db):
         """Existing db.end_session() path is preserved after the new code."""
         from tui_gateway.server import _finalize_session
 
         mock_db = MagicMock()
-        mock_get_db.return_value = mock_db
+        mock_session_db.return_value.__enter__.return_value = mock_db
 
         agent = _make_agent(session_id="sess_123")
         session = _make_session(agent=agent, history=[{"role": "user", "content": "x"}])
 
         _finalize_session(session, end_reason="test")
 
+        mock_session_db.assert_called_once_with(session)
         mock_db.end_session.assert_called_once_with("sess_123", "test")
 
 
@@ -216,6 +217,44 @@ class TestFinalizeSessionPersistE2E:
         # commit_memory_session runs heavy machinery we don't exercise here.
         agent.commit_memory_session = lambda *a, **k: None
         return agent
+
+    def test_default_session_finalize_uses_launch_home_not_cached_global(
+        self, tmp_path, monkeypatch
+    ):
+        """Finalization must end the row owned by the live default session."""
+        from hermes_state import SessionDB
+        import tui_gateway.server as srv
+
+        launch_home = tmp_path / "launch"
+        other_home = tmp_path / "profiles" / "other"
+        launch_home.mkdir()
+        other_home.mkdir(parents=True)
+
+        session_id = "default-finalize"
+        launch_db = SessionDB(db_path=launch_home / "state.db")
+        stale_db = SessionDB(db_path=other_home / "state.db")
+        launch_db.create_session(session_id=session_id, source="desktop")
+        stale_db.create_session(session_id=session_id, source="desktop")
+
+        monkeypatch.setattr(srv, "_hermes_home", launch_home)
+        monkeypatch.setattr(srv, "_db", stale_db)
+        monkeypatch.setattr(srv, "_db_error", None)
+
+        agent = _make_agent(session_id=session_id)
+        session = _make_session(agent=agent, session_key=session_id)
+        session["profile_home"] = None
+
+        try:
+            srv._finalize_session(session, end_reason="ws_disconnect")
+
+            launch_row = launch_db.get_session(session_id)
+            stale_row = stale_db.get_session(session_id)
+            assert launch_row["ended_at"] is not None
+            assert launch_row["end_reason"] == "ws_disconnect"
+            assert stale_row["ended_at"] is None
+        finally:
+            launch_db.close()
+            stale_db.close()
 
     def test_unflushed_turn_survives_disconnect(self, tmp_path, monkeypatch):
         """A completed turn whose transcript flush did NOT durably persist

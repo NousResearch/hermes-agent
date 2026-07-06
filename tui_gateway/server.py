@@ -645,20 +645,20 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     _tui_owns_lifecycle = True
     if session_id:
         try:
-            db = _get_db()
-            if db is not None:
-                # Don't end gateway-originated sessions — the gateway owns
-                # their lifecycle.  The TUI is a viewer, not the owner.
-                # Ending a gateway session in state.db triggers a Groundhog
-                # Day routing loop: the gateway's #54878 self-heal detects
-                # the stale entry, recovers to the parent session, context
-                # compression splits back to the reaped child, and the cycle
-                # repeats on every inbound message.  (#60609)
-                row = db.get_session(session_id)
-                source = (row or {}).get("source", "")
-                _tui_owns_lifecycle = not _is_gateway_owned_source(source)
-                if _tui_owns_lifecycle:
-                    db.end_session(session_id, end_reason)
+            with _session_db(session) as db:
+                if db is not None:
+                    # Don't end gateway-originated sessions — the gateway owns
+                    # their lifecycle.  The TUI is a viewer, not the owner.
+                    # Ending a gateway session in state.db triggers a Groundhog
+                    # Day routing loop: the gateway's #54878 self-heal detects
+                    # the stale entry, recovers to the parent session, context
+                    # compression splits back to the reaped child, and the cycle
+                    # repeats on every inbound message.  (#60609)
+                    row = db.get_session(session_id)
+                    source = (row or {}).get("source", "")
+                    _tui_owns_lifecycle = not _is_gateway_owned_source(source)
+                    if _tui_owns_lifecycle:
+                        db.end_session(session_id, end_reason)
         except Exception:
             pass
 
@@ -1572,15 +1572,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # Build against the session's profile (global-remote): bind its
             # HERMES_HOME so config/skills/model resolve to it, and hand the
             # agent that profile's db so turns persist to the right state.db.
-            session_db = None
             if profile_home:
                 home_token = set_hermes_home_override(profile_home)
-                try:
-                    from hermes_state import SessionDB
-
-                    session_db = SessionDB(db_path=Path(profile_home) / "state.db")
-                except Exception:
-                    session_db = None
+            session_db = _new_session_db(current, "agent build")
             try:
                 # Lazy-resumed (watch) sessions carry the stored conversation
                 # id — pass it through so the upgrade continues that session
@@ -1890,6 +1884,24 @@ def _session_source(session: dict | None) -> str:
     return _resolve_session_platform()
 
 
+def _session_db_path(session: dict) -> Path:
+    """Return the state.db path that owns this live session."""
+    profile_home = session.get("profile_home")
+    if profile_home:
+        return Path(profile_home) / "state.db"
+    return Path(_hermes_home) / "state.db"
+
+
+def _new_session_db(session: dict, label: str):
+    from hermes_state import SessionDB
+
+    try:
+        return SessionDB(db_path=_session_db_path(session))
+    except Exception:
+        logger.debug("failed to open %s db for session", label, exc_info=True)
+        return None
+
+
 def _register_session_cwd(session: dict | None) -> None:
     if not session:
         return
@@ -1921,22 +1933,10 @@ def _ensure_session_db_row(session: dict) -> None:
     key = session.get("session_key")
     if not key:
         return
-    # Persist into the session's own profile db (global remote mode), not the
-    # launch profile's — otherwise the row lands in the wrong state.db, the
-    # unified list mis-tags it, and resume 404s ("session not found").
-    profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
-
-        try:
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
-        except Exception:
-            logger.debug("failed to open profile db for session row", exc_info=True)
-            return
-        close_db = True
-    else:
-        db = _get_db()
-        close_db = False
+    # Persist into the session's own DB. Even the launch/default profile uses
+    # an explicit path here so a stale process-global _get_db() handle cannot
+    # write this session into another profile's state.db.
+    db = _new_session_db(session, "row")
     if db is None:
         return
     # The session's own model/effort/fast pick — the composer override shipped on
@@ -2004,11 +2004,10 @@ def _ensure_session_db_row(session: dict) -> None:
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
     finally:
-        if close_db:
-            try:
-                db.close()
-            except Exception:
-                pass
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 def _persist_branch_seed(session: dict) -> None:
@@ -2044,26 +2043,15 @@ def _persist_branch_seed(session: dict) -> None:
 def _session_db(session: dict):
     """Yield the SessionDB that owns this session's row (profile-aware).
 
-    Mirrors :func:`_ensure_session_db_row`: a remote/profile session persists
-    into its own profile's ``state.db`` (a fresh handle we close on exit);
-    everything else borrows the shared ``_get_db()`` handle (left open). Yields
-    None when the db is unavailable.
+    Mirrors :func:`_ensure_session_db_row`: session-owned writes always use an
+    explicit ``state.db`` path derived from the live session/profile, including
+    launch-profile sessions. Yields None when the db is unavailable.
     """
-    db, close_db = None, False
-    profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
-
-        try:
-            db, close_db = SessionDB(db_path=Path(profile_home) / "state.db"), True
-        except Exception:
-            logger.debug("failed to open profile db for session", exc_info=True)
-    else:
-        db = _get_db()
+    db = _new_session_db(session, "profile")
     try:
         yield db
     finally:
-        if close_db and db is not None:
+        if db is not None:
             with contextlib.suppress(Exception):
                 db.close()
 
@@ -4752,7 +4740,10 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         # reset doesn't silently revert to global config (or to a model
         # another session set). See the cross-session-contamination note in
         # _apply_model_switch.
-        reset_kw = {"model_override": session.get("model_override")}
+        reset_kw = {
+            "model_override": session.get("model_override"),
+            "session_db": _new_session_db(session, "agent reset"),
+        }
         old_reasoning = getattr(session.get("agent"), "reasoning_config", None)
         if old_reasoning is None:
             old_reasoning = session.get("create_reasoning_override")
@@ -4921,11 +4912,14 @@ def _resolve_runtime_with_fallback(
         raise
 
 
+_SESSION_DB_UNSET = object()
+
+
 def _make_agent(
     sid: str,
     key: str,
     session_id: str | None = None,
-    session_db=None,
+    session_db=_SESSION_DB_UNSET,
     model_override: dict | str | None = None,
     provider_override: str | None = None,
     reasoning_config_override: dict | None = None,
@@ -5095,7 +5089,7 @@ def _make_agent(
         provider_data_collection=_pr.get("data_collection"),
         platform=_resolve_agent_platform(platform_override),
         session_id=session_id or key,
-        session_db=session_db if session_db is not None else _get_db(),
+        session_db=_get_db() if session_db is _SESSION_DB_UNSET else session_db,
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),

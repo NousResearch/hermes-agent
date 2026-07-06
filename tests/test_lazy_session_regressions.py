@@ -88,8 +88,9 @@ class TestFinalizeSessionUsesAgentSessionId:
             history=[{"role": "user", "content": "hello"}],
         )
 
-        # Monkeypatch _get_db to return our test DB
-        with patch.object(server, "_get_db", return_value=db):
+        # Finalization must use the DB selected from the live session.
+        with patch.object(server, "_session_db") as mock_session_db:
+            mock_session_db.return_value.__enter__.return_value = db
             with patch.object(server, "_notify_session_boundary", lambda *a: None):
                 server._finalize_session(session, end_reason="tui_close")
 
@@ -111,7 +112,8 @@ class TestFinalizeSessionUsesAgentSessionId:
 
         session = _tui_session(agent=None, session_key="orphan-key")
 
-        with patch.object(server, "_get_db", return_value=db):
+        with patch.object(server, "_session_db") as mock_session_db:
+            mock_session_db.return_value.__enter__.return_value = db
             with patch.object(server, "_notify_session_boundary", lambda *a: None):
                 server._finalize_session(session, end_reason="tui_close")
 

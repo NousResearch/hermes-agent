@@ -2060,6 +2060,85 @@ class TestPruneSessionFilters:
         assert db.get_session("ancient") is None
         assert db.get_session("fresh") is not None
 
+    @staticmethod
+    def _mk_rich(db, sid, **cols):
+        """Create an ended session then set arbitrary sessions columns."""
+        db.create_session(session_id=sid, source=cols.pop("source", "cli"))
+        db.end_session(sid, end_reason=cols.pop("end_reason", "done"))
+        cols.setdefault("started_at", time.time() - 60)
+        sets = ", ".join(f"{k} = ?" for k in cols)
+        db._conn.execute(
+            f"UPDATE sessions SET {sets} WHERE id = ?", (*cols.values(), sid)
+        )
+        db._conn.commit()
+
+    def test_model_like_filter(self, db):
+        self._mk_rich(db, "m1", model="anthropic/claude-sonnet-4.6")
+        self._mk_rich(db, "m2", model="openai/gpt-5.4")
+        self._mk_rich(db, "m3", model=None)
+
+        rows = db.list_prune_candidates(model_like="Sonnet")
+        assert [r["id"] for r in rows] == ["m1"]
+        assert db.prune_sessions(older_than_days=None, model_like="gpt-5") == 1
+        assert db.get_session("m2") is None
+        assert db.get_session("m1") is not None
+        assert db.get_session("m3") is not None
+
+    def test_provider_filter(self, db):
+        self._mk_rich(db, "p1", billing_provider="openrouter")
+        self._mk_rich(db, "p2", billing_provider="Anthropic")
+        self._mk_rich(db, "p3", billing_provider=None)
+
+        assert db.prune_sessions(older_than_days=None, provider="anthropic") == 1
+        assert db.get_session("p2") is None
+        assert db.get_session("p1") is not None
+        assert db.get_session("p3") is not None
+
+    def test_user_chat_filters(self, db):
+        self._mk_rich(db, "u1", user_id="alice", chat_id="c-1", chat_type="dm")
+        self._mk_rich(db, "u2", user_id="bob", chat_id="c-2", chat_type="group")
+
+        assert db.prune_sessions(older_than_days=None, user_id="alice") == 1
+        assert db.get_session("u1") is None
+        assert db.prune_sessions(
+            older_than_days=None, chat_id="c-2", chat_type="group"
+        ) == 1
+        assert db.get_session("u2") is None
+
+    def test_branch_like_filter(self, db):
+        self._mk_rich(db, "b1", git_branch="feature/old-experiment")
+        self._mk_rich(db, "b2", git_branch="main")
+
+        assert db.prune_sessions(older_than_days=None, branch_like="experiment") == 1
+        assert db.get_session("b1") is None
+        assert db.get_session("b2") is not None
+
+    def test_token_cost_toolcall_bounds(self, db):
+        self._mk_rich(db, "cheap", input_tokens=100, output_tokens=50,
+                      actual_cost_usd=0.001, tool_call_count=0)
+        self._mk_rich(db, "mid", input_tokens=5000, output_tokens=2000,
+                      actual_cost_usd=None, estimated_cost_usd=0.5,
+                      tool_call_count=12)
+        self._mk_rich(db, "big", input_tokens=90000, output_tokens=30000,
+                      actual_cost_usd=4.2, tool_call_count=80)
+
+        rows = db.list_prune_candidates(max_tokens=200)
+        assert [r["id"] for r in rows] == ["cheap"]
+        rows = db.list_prune_candidates(min_tokens=7000, max_tokens=10000)
+        assert [r["id"] for r in rows] == ["mid"]
+        # Cost falls back to estimated when actual is NULL
+        rows = db.list_prune_candidates(min_cost=0.4, max_cost=1.0)
+        assert [r["id"] for r in rows] == ["mid"]
+        rows = db.list_prune_candidates(min_tool_calls=50)
+        assert [r["id"] for r in rows] == ["big"]
+        assert db.prune_sessions(older_than_days=None, max_tool_calls=0) == 1
+        assert db.get_session("cheap") is None
+
+    def test_unknown_filter_rejected(self, db):
+        import pytest as _pytest
+        with _pytest.raises(TypeError):
+            db.prune_sessions(older_than_days=None, bogus_filter="x")
+
 
 class TestDeleteSessionOrphansChildren:
     def test_delete_orphans_children(self, db):

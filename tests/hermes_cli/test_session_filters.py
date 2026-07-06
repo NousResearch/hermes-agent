@@ -20,6 +20,9 @@ def _ns(**kwargs):
         older_than=None, newer_than=None, before=None, after=None,
         source=None, title=None, end_reason=None, cwd=None,
         min_messages=None, max_messages=None,
+        model=None, provider=None, user=None, chat_id=None, chat_type=None,
+        branch=None, min_tokens=None, max_tokens=None, min_cost=None,
+        max_cost=None, min_tool_calls=None, max_tool_calls=None,
     )
     defaults.update(kwargs)
     return Namespace(**defaults)
@@ -106,6 +109,34 @@ class TestBuildPruneFilters:
         assert f["cwd_prefix"] == "/tmp/x"
         assert f["min_messages"] == 1
         assert f["max_messages"] == 9
+
+    def test_passthrough_extended_filters(self):
+        f = build_prune_filters(
+            _ns(model="sonnet", provider="openrouter", user="alice",
+                chat_id="c-9", chat_type="group", branch="feature/x",
+                min_tokens=100, max_tokens=5000, min_cost=0.01,
+                max_cost=2.5, min_tool_calls=1, max_tool_calls=40)
+        )
+        assert f["model_like"] == "sonnet"
+        assert f["provider"] == "openrouter"
+        assert f["user_id"] == "alice"
+        assert f["chat_id"] == "c-9"
+        assert f["chat_type"] == "group"
+        assert f["branch_like"] == "feature/x"
+        assert f["min_tokens"] == 100
+        assert f["max_tokens"] == 5000
+        assert f["min_cost"] == 0.01
+        assert f["max_cost"] == 2.5
+        assert f["min_tool_calls"] == 1
+        assert f["max_tool_calls"] == 40
+
+    def test_describe_filters_extended(self):
+        f = build_prune_filters(_ns(model="gpt-5", provider="nous",
+                                    max_cost=0.5))
+        desc = describe_filters(f)
+        assert "model contains 'gpt-5'" in desc
+        assert "provider 'nous'" in desc
+        assert "<= $0.5" in desc
 
     def test_describe_filters_mentions_active_parts(self):
         f = build_prune_filters(_ns(newer_than="5h", source="cli"))

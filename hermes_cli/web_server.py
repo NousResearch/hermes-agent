@@ -8210,6 +8210,18 @@ class SessionPrune(BaseModel):
     cwd_prefix: Optional[str] = None
     min_messages: Optional[int] = None
     max_messages: Optional[int] = None
+    model_like: Optional[str] = None
+    provider: Optional[str] = None
+    user_id: Optional[str] = None
+    chat_id: Optional[str] = None
+    chat_type: Optional[str] = None
+    branch_like: Optional[str] = None
+    min_tokens: Optional[int] = None
+    max_tokens: Optional[int] = None
+    min_cost: Optional[float] = None
+    max_cost: Optional[float] = None
+    min_tool_calls: Optional[int] = None
+    max_tool_calls: Optional[int] = None
     include_archived: bool = False
     dry_run: bool = False
 
@@ -8235,6 +8247,18 @@ async def prune_sessions_endpoint(body: SessionPrune):
             cwd_prefix=(body.cwd_prefix or None),
             min_messages=body.min_messages,
             max_messages=body.max_messages,
+            model_like=(body.model_like or None),
+            provider=(body.provider or None),
+            user_id=(body.user_id or None),
+            chat_id=(body.chat_id or None),
+            chat_type=(body.chat_type or None),
+            branch_like=(body.branch_like or None),
+            min_tokens=body.min_tokens,
+            max_tokens=body.max_tokens,
+            min_cost=body.min_cost,
+            max_cost=body.max_cost,
+            min_tool_calls=body.min_tool_calls,
+            max_tool_calls=body.max_tool_calls,
             archived=None if body.include_archived else False,
         )
         if body.dry_run:
@@ -8248,6 +8272,7 @@ async def prune_sessions_endpoint(body: SessionPrune):
                         "id": r["id"],
                         "source": r["source"],
                         "title": r.get("title"),
+                        "model": r.get("model"),
                         "started_at": r["started_at"],
                         "message_count": r["message_count"],
                     }

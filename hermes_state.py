@@ -5278,6 +5278,18 @@ class SessionDB:
         min_messages: Optional[int] = None,
         max_messages: Optional[int] = None,
         archived: Optional[bool] = None,
+        model_like: Optional[str] = None,
+        provider: Optional[str] = None,
+        user_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        chat_type: Optional[str] = None,
+        branch_like: Optional[str] = None,
+        min_tokens: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        min_cost: Optional[float] = None,
+        max_cost: Optional[float] = None,
+        min_tool_calls: Optional[int] = None,
+        max_tool_calls: Optional[int] = None,
     ) -> Tuple[str, list]:
         """Build the shared WHERE clause for bulk prune/archive selection.
 
@@ -5285,6 +5297,14 @@ class SessionDB:
         (``ended_at IS NOT NULL``) so a live session is never selected.
         ``archived`` is a tri-state: ``None`` = both, ``True`` = only
         archived rows, ``False`` = only unarchived rows.
+
+        String matching conventions: ``model_like`` / ``branch_like`` /
+        ``title_like`` are case-insensitive substring matches (model slugs
+        and branch names vary in prefix format); ``provider`` / ``user_id``
+        / ``chat_id`` / ``chat_type`` / ``source`` / ``end_reason`` are
+        exact (case-insensitive for provider). Token bounds apply to
+        ``input_tokens + output_tokens``; cost bounds apply to
+        ``COALESCE(actual_cost_usd, estimated_cost_usd)``.
 
         The clause references the ``s`` table alias — callers must select
         ``FROM sessions s``.
@@ -5316,6 +5336,50 @@ class SessionDB:
         if max_messages is not None:
             clauses.append("s.message_count <= ?")
             params.append(max_messages)
+        if model_like:
+            clauses.append("LOWER(COALESCE(s.model, '')) LIKE ?")
+            params.append(f"%{model_like.lower()}%")
+        if provider:
+            clauses.append("LOWER(COALESCE(s.billing_provider, '')) = ?")
+            params.append(provider.lower())
+        if user_id:
+            clauses.append("s.user_id = ?")
+            params.append(user_id)
+        if chat_id:
+            clauses.append("s.chat_id = ?")
+            params.append(chat_id)
+        if chat_type:
+            clauses.append("s.chat_type = ?")
+            params.append(chat_type)
+        if branch_like:
+            clauses.append("LOWER(COALESCE(s.git_branch, '')) LIKE ?")
+            params.append(f"%{branch_like.lower()}%")
+        if min_tokens is not None:
+            clauses.append(
+                "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) >= ?"
+            )
+            params.append(min_tokens)
+        if max_tokens is not None:
+            clauses.append(
+                "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) <= ?"
+            )
+            params.append(max_tokens)
+        if min_cost is not None:
+            clauses.append(
+                "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0) >= ?"
+            )
+            params.append(min_cost)
+        if max_cost is not None:
+            clauses.append(
+                "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0) <= ?"
+            )
+            params.append(max_cost)
+        if min_tool_calls is not None:
+            clauses.append("COALESCE(s.tool_call_count, 0) >= ?")
+            params.append(min_tool_calls)
+        if max_tool_calls is not None:
+            clauses.append("COALESCE(s.tool_call_count, 0) <= ?")
+            params.append(max_tool_calls)
         if archived is True:
             clauses.append("s.archived = 1")
         elif archived is False:
@@ -5326,41 +5390,24 @@ class SessionDB:
         self,
         older_than_days: Optional[float] = None,
         source: str = None,
-        *,
-        started_before: Optional[float] = None,
-        started_after: Optional[float] = None,
-        title_like: Optional[str] = None,
-        end_reason: Optional[str] = None,
-        cwd_prefix: Optional[str] = None,
-        min_messages: Optional[int] = None,
-        max_messages: Optional[int] = None,
-        archived: Optional[bool] = None,
+        **filters,
     ) -> List[Dict[str, Any]]:
         """Return the sessions a matching :meth:`prune_sessions` /
         :meth:`archive_sessions` call would touch, without modifying anything.
 
         Backs ``--dry-run`` and pre-confirmation counts. Accepts the same
-        filters as :meth:`prune_sessions`. Rows are ordered oldest-first and
-        carry ``id, source, title, started_at, ended_at, message_count,
+        keyword filters as :meth:`_prune_filter_where` (unknown names raise
+        ``TypeError`` there). Rows are ordered oldest-first and carry
+        ``id, source, title, model, started_at, ended_at, message_count,
         archived``.
         """
-        if started_before is None and older_than_days is not None:
-            started_before = time.time() - (older_than_days * 86400)
-        where, params = self._prune_filter_where(
-            started_before=started_before,
-            started_after=started_after,
-            source=source,
-            title_like=title_like,
-            end_reason=end_reason,
-            cwd_prefix=cwd_prefix,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            archived=archived,
-        )
+        if filters.get("started_before") is None and older_than_days is not None:
+            filters["started_before"] = time.time() - (older_than_days * 86400)
+        where, params = self._prune_filter_where(source=source, **filters)
         with self._lock:
             cursor = self._conn.execute(
-                f"""SELECT s.id, s.source, s.title, s.started_at, s.ended_at,
-                           s.message_count, s.archived
+                f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
+                           s.ended_at, s.message_count, s.archived
                     FROM sessions s WHERE {where}
                     ORDER BY s.started_at ASC""",
                 params,
@@ -5371,15 +5418,7 @@ class SessionDB:
         self,
         older_than_days: Optional[float] = None,
         source: str = None,
-        *,
-        started_before: Optional[float] = None,
-        started_after: Optional[float] = None,
-        title_like: Optional[str] = None,
-        end_reason: Optional[str] = None,
-        cwd_prefix: Optional[str] = None,
-        min_messages: Optional[int] = None,
-        max_messages: Optional[int] = None,
-        archived: Optional[bool] = False,
+        **filters,
     ) -> int:
         """Bulk-archive (soft-hide) every session matching the filters.
 
@@ -5393,17 +5432,9 @@ class SessionDB:
         ``archived`` defaults to ``False`` here (only select rows not yet
         archived) so repeat runs are idempotent no-ops.
         """
+        filters.setdefault("archived", False)
         rows = self.list_prune_candidates(
-            older_than_days=older_than_days,
-            source=source,
-            started_before=started_before,
-            started_after=started_after,
-            title_like=title_like,
-            end_reason=end_reason,
-            cwd_prefix=cwd_prefix,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            archived=archived,
+            older_than_days=older_than_days, source=source, **filters
         )
         for row in rows:
             self.set_session_archived(row["id"], True)
@@ -5414,30 +5445,30 @@ class SessionDB:
         older_than_days: Optional[float] = 90,
         source: str = None,
         sessions_dir: Optional[Path] = None,
-        *,
-        started_before: Optional[float] = None,
-        started_after: Optional[float] = None,
-        title_like: Optional[str] = None,
-        end_reason: Optional[str] = None,
-        cwd_prefix: Optional[str] = None,
-        min_messages: Optional[int] = None,
-        max_messages: Optional[int] = None,
-        archived: Optional[bool] = None,
+        **filters,
     ) -> int:
         """Delete sessions matching the filters. Returns count deleted.
 
         Default behavior (no keyword filters) is unchanged: delete ended
         sessions older than ``older_than_days`` days, optionally restricted
-        to ``source``. Additional keyword filters AND together:
+        to ``source``. Additional keyword filters AND together — the full
+        set is defined by :meth:`_prune_filter_where`:
 
         * ``started_before`` / ``started_after`` — epoch bounds on
           ``started_at``. ``started_before`` overrides ``older_than_days``;
           pass ``older_than_days=None`` for no upper age bound (e.g. when
           only pruning a recent window via ``started_after``).
-        * ``title_like`` — case-insensitive substring match on title.
-        * ``end_reason`` — exact match.
+        * ``title_like`` / ``model_like`` / ``branch_like`` —
+          case-insensitive substring matches.
+        * ``end_reason`` / ``provider`` / ``user_id`` / ``chat_id`` /
+          ``chat_type`` — exact matches (provider case-insensitive, against
+          ``billing_provider``).
         * ``cwd_prefix`` — session cwd equals or is under this path.
         * ``min_messages`` / ``max_messages`` — bounds on message_count.
+        * ``min_tokens`` / ``max_tokens`` — bounds on input+output tokens.
+        * ``min_cost`` / ``max_cost`` — bounds on USD cost
+          (actual, falling back to estimated).
+        * ``min_tool_calls`` / ``max_tool_calls`` — bounds on tool_call_count.
         * ``archived`` — tri-state: None = both (default), True = only
           archived, False = only unarchived.
 
@@ -5448,19 +5479,9 @@ class SessionDB:
         ``request_dump_*``) for every pruned session, outside the DB
         transaction.
         """
-        if started_before is None and older_than_days is not None:
-            started_before = time.time() - (older_than_days * 86400)
-        where, where_params = self._prune_filter_where(
-            started_before=started_before,
-            started_after=started_after,
-            source=source,
-            title_like=title_like,
-            end_reason=end_reason,
-            cwd_prefix=cwd_prefix,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            archived=archived,
-        )
+        if filters.get("started_before") is None and older_than_days is not None:
+            filters["started_before"] = time.time() - (older_than_days * 86400)
+        where, where_params = self._prune_filter_where(source=source, **filters)
         removed_ids: list[str] = []
 
         def _do(conn):

@@ -355,6 +355,12 @@ hermes sessions prune --source telegram --older-than 60
 hermes sessions prune --newer-than 5h --title "smoke test"   # title substring
 hermes sessions prune --older-than 30 --max-messages 3        # tiny sessions
 hermes sessions prune --cwd ~/scratch --end-reason done       # by cwd / end reason
+hermes sessions prune --model gpt-5 --older-than 1w           # by model (substring)
+hermes sessions prune --provider openrouter --older-than 60   # by billing provider
+hermes sessions prune --branch feature/old-experiment         # by git branch
+hermes sessions prune --user 12345678 --chat-type group       # by messaging origin
+hermes sessions prune --max-tokens 500 --older-than 7         # by token usage
+hermes sessions prune --max-cost 0.01 --max-tool-calls 0      # cheap, tool-less runs
 
 # Preview what would be deleted, without deleting anything
 hermes sessions prune --newer-than 5h --dry-run
@@ -368,6 +374,16 @@ duration (`5h`, `30m`, `2d`, `1w`), a bare number of days, or an ISO
 timestamp (`2026-07-05`, `2026-07-05 14:30`). `--older-than`/`--before` set
 the upper bound; `--newer-than`/`--after` set the lower bound. Combine both
 for a window.
+
+Attribute filters: `--source` (platform, exact), `--title` / `--model` /
+`--branch` (case-insensitive substring), `--provider` (billing provider,
+exact), `--end-reason`, `--user`, `--chat-id`, `--chat-type` (exact),
+`--cwd` (path prefix), plus numeric bounds `--min/--max-messages`,
+`--min/--max-tokens` (input+output), `--min/--max-cost` (USD, actual falling
+back to estimated), and `--min/--max-tool-calls`. Using any attribute filter
+(other than `--source`) disables the implicit 90-day default, so
+`hermes sessions prune --model gpt-4o` matches all ages — add a time flag to
+narrow it.
 
 Archived sessions are skipped by default; pass `--include-archived` to
 delete them too.

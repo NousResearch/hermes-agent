@@ -146,6 +146,18 @@ def build_prune_filters(args: Any) -> Dict[str, Any]:
         "cwd_prefix": getattr(args, "cwd", None),
         "min_messages": getattr(args, "min_messages", None),
         "max_messages": getattr(args, "max_messages", None),
+        "model_like": getattr(args, "model", None),
+        "provider": getattr(args, "provider", None),
+        "user_id": getattr(args, "user", None),
+        "chat_id": getattr(args, "chat_id", None),
+        "chat_type": getattr(args, "chat_type", None),
+        "branch_like": getattr(args, "branch", None),
+        "min_tokens": getattr(args, "min_tokens", None),
+        "max_tokens": getattr(args, "max_tokens", None),
+        "min_cost": getattr(args, "min_cost", None),
+        "max_cost": getattr(args, "max_cost", None),
+        "min_tool_calls": getattr(args, "min_tool_calls", None),
+        "max_tool_calls": getattr(args, "max_tool_calls", None),
     }
     return filters
 
@@ -169,4 +181,28 @@ def describe_filters(filters: Dict[str, Any]) -> str:
         parts.append(f">= {filters['min_messages']} messages")
     if filters.get("max_messages") is not None:
         parts.append(f"<= {filters['max_messages']} messages")
+    if filters.get("model_like"):
+        parts.append(f"model contains '{filters['model_like']}'")
+    if filters.get("provider"):
+        parts.append(f"provider '{filters['provider']}'")
+    if filters.get("user_id"):
+        parts.append(f"user '{filters['user_id']}'")
+    if filters.get("chat_id"):
+        parts.append(f"chat '{filters['chat_id']}'")
+    if filters.get("chat_type"):
+        parts.append(f"chat type '{filters['chat_type']}'")
+    if filters.get("branch_like"):
+        parts.append(f"git branch contains '{filters['branch_like']}'")
+    if filters.get("min_tokens") is not None:
+        parts.append(f">= {filters['min_tokens']} tokens")
+    if filters.get("max_tokens") is not None:
+        parts.append(f"<= {filters['max_tokens']} tokens")
+    if filters.get("min_cost") is not None:
+        parts.append(f">= ${filters['min_cost']}")
+    if filters.get("max_cost") is not None:
+        parts.append(f"<= ${filters['max_cost']}")
+    if filters.get("min_tool_calls") is not None:
+        parts.append(f">= {filters['min_tool_calls']} tool calls")
+    if filters.get("max_tool_calls") is not None:
+        parts.append(f"<= {filters['max_tool_calls']} tool calls")
     return ", ".join(parts) if parts else "no filters (all ended sessions)"

@@ -13463,6 +13463,54 @@ def main():
             "--max-messages", type=int, help="Only match sessions with <= N messages"
         )
         p.add_argument(
+            "--model",
+            help="Only match sessions whose model name contains this substring "
+            "(e.g. 'sonnet', 'gpt-5', 'hermes')",
+        )
+        p.add_argument(
+            "--provider",
+            help="Only match sessions billed through this provider "
+            "(e.g. openrouter, anthropic, nous)",
+        )
+        p.add_argument(
+            "--user", help="Only match sessions from this user ID"
+        )
+        p.add_argument(
+            "--chat-id", help="Only match sessions from this chat/channel ID"
+        )
+        p.add_argument(
+            "--chat-type",
+            help="Only match sessions with this chat type (e.g. dm, group)",
+        )
+        p.add_argument(
+            "--branch",
+            help="Only match sessions whose git branch contains this substring",
+        )
+        p.add_argument(
+            "--min-tokens", type=int,
+            help="Only match sessions with >= N total tokens (input+output)",
+        )
+        p.add_argument(
+            "--max-tokens", type=int,
+            help="Only match sessions with <= N total tokens (input+output)",
+        )
+        p.add_argument(
+            "--min-cost", type=float,
+            help="Only match sessions costing >= N USD (actual or estimated)",
+        )
+        p.add_argument(
+            "--max-cost", type=float,
+            help="Only match sessions costing <= N USD (actual or estimated)",
+        )
+        p.add_argument(
+            "--min-tool-calls", type=int,
+            help="Only match sessions with >= N tool calls",
+        )
+        p.add_argument(
+            "--max-tool-calls", type=int,
+            help="Only match sessions with <= N tool calls",
+        )
+        p.add_argument(
             "--dry-run",
             action="store_true",
             help="List matching sessions without changing anything",
@@ -13694,13 +13742,28 @@ def main():
             )
 
             # Preserve the historical default: bare `hermes sessions prune`
-            # means "older than 90 days". Archive has no implicit default.
+            # means "older than 90 days" — and --source keeps that default
+            # too (it predates the extended filters; scripts may rely on
+            # `prune --source X --yes` meaning >90d). Any NEW attribute
+            # filter suppresses the implicit cutoff so e.g.
+            # `prune --model sonnet` matches ALL sessions for that model.
+            _non_time_filters = any(
+                getattr(args, a, None) is not None
+                for a in (
+                    "title", "end_reason", "cwd",
+                    "min_messages", "max_messages", "model", "provider",
+                    "user", "chat_id", "chat_type", "branch",
+                    "min_tokens", "max_tokens", "min_cost", "max_cost",
+                    "min_tool_calls", "max_tool_calls",
+                )
+            )
             if (
                 action == "prune"
                 and args.older_than is None
                 and args.newer_than is None
                 and args.before is None
                 and args.after is None
+                and not _non_time_filters
             ):
                 args.older_than = "90"
 
@@ -13741,10 +13804,12 @@ def main():
                     f"({describe_filters(filters)}):"
                 )
                 for s in shown:
-                    title = (s.get("title") or "")[:40]
+                    title = (s.get("title") or "")[:36]
+                    model = (s.get("model") or "-").split("/")[-1][:24]
                     print(
                         f"  {s['id']}  {format_epoch(s['started_at']):<17} "
-                        f"{s['source']:<10} {s['message_count']:>4} msgs  {title}"
+                        f"{s['source']:<10} {model:<24} "
+                        f"{s['message_count']:>4} msgs  {title}"
                     )
                 if len(candidates) > len(shown):
                     print(f"  … and {len(candidates) - len(shown)} more")

@@ -1,0 +1,45 @@
+name: computer-use-pipeline
+
+on:
+  pull_request:
+    paths:
+      - "scripts/test_computer_use_pipeline.py"
+      - "tools/computer_use/**"
+      - ".github/workflows/computer-use-pipeline.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cu-pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --locked --python 3.11
+
+      - name: Run computer-use smoke test
+        run: |
+          source .venv/bin/activate
+          python scripts/test_computer_use_pipeline.py
+        env:
+          COMPUTER_USE_CI_VERBOSE: "1"

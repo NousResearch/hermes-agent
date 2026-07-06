@@ -133,10 +133,33 @@ class SessionPortabilityMixin:
 
         Pass ``compact_rows=True`` to omit the ``system_prompt`` blob (see
         ``list_sessions_rich`` for details).
+
+        Thin wrapper over ``_get_session_rich_rows_batch`` so the enriched
+        SELECT lives in exactly one place.
         """
+        return self._get_session_rich_rows_batch(
+            [session_id], compact_rows=compact_rows
+        ).get(session_id)
+
+    def _get_session_rich_rows_batch(
+        self, session_ids, compact_rows: bool = False
+    ) -> Dict[str, Dict[str, Any]]:
+        """Fetch multiple sessions with the same enriched columns as
+        ``_get_session_rich_row``, in a single query.
+
+        Used by ``list_sessions_rich``'s compression-tip projection to resolve
+        every tip row for a page in one round trip instead of one query per
+        compression-root row. Returns a dict keyed by session id; ids that
+        don't exist are simply absent from the result (same as
+        ``_get_session_rich_row`` returning ``None`` for them).
+        """
+        ids = [sid for sid in session_ids if sid]
+        if not ids:
+            return {}
         # Same read-your-writes guarantee as list_sessions_rich.
         self.flush_token_counts()
         _sel = self._compact_session_cols() if compact_rows else "s.*"
+        placeholders = ",".join("?" for _ in ids)
         query = f"""
             SELECT {_sel},
                 COALESCE(
@@ -148,16 +171,17 @@ class SessionPortabilityMixin:
                 ) AS _preview_raw,
                 {_sql_session_last_active("s")} AS last_active
             FROM sessions s
-            WHERE s.id = ?
+            WHERE s.id IN ({placeholders})
         """
         with self._lock:
-            cursor = self._conn.execute(query, (session_id,))
-            row = cursor.fetchone()
-        if not row:
-            return None
-        s = dict(row)
-        s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
-        return s
+            cursor = self._conn.execute(query, ids)
+            rows = cursor.fetchall()
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            s = dict(row)
+            s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
+            result[s["id"]] = s
+        return result
 
     def get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """Public wrapper for :meth:`_get_session_rich_row`.

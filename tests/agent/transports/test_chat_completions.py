@@ -1,7 +1,9 @@
 """Tests for the ChatCompletionsTransport."""
 
-import pytest
+import json
 from types import SimpleNamespace
+
+import pytest
 
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
@@ -469,6 +471,69 @@ class TestChatCompletionsBuildKwargs:
         )
         assert "thinking_config" not in kw["extra_body"]
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "high",
+        }
+
+    def test_gemini_openai_compat_sdk_kwargs_serialize_to_single_wire_extra_body(self, transport):
+        """The nested SDK kwarg becomes wire-level extra_body.google.
+
+        OpenAI's Python SDK treats its ``extra_body`` parameter as fields to
+        merge into the JSON request body. Hermes therefore must pass
+        ``extra_body={"extra_body": {"google": ...}}`` as SDK kwargs so the
+        actual HTTP body contains ``extra_body.google``. Flattening the SDK
+        kwargs to ``extra_body={"google": ...}`` would send top-level
+        ``google`` instead.
+        """
+        import httpx
+        from openai import OpenAI
+
+        bodies = []
+
+        def handler(request):
+            bodies.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "gemini-3-flash-preview",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = OpenAI(
+            api_key="test-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            http_client=http_client,
+        )
+
+        try:
+            client.chat.completions.create(**kw)
+        finally:
+            client.close()
+
+        assert len(bodies) == 1
+        wire_body = bodies[0]
+        assert "google" not in wire_body
+        assert "extra_body" not in wire_body["extra_body"]
+        assert wire_body["extra_body"]["google"]["thinking_config"] == {
             "include_thoughts": True,
             "thinking_level": "high",
         }

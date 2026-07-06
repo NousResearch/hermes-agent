@@ -14899,3 +14899,65 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
         assert captured.get("persist_user_message") == "hi"
     finally:
         server._sessions.pop("sid", None)
+class TestStripInterruptSentinel:
+    """Regression tests: the dashboard/TUI websocket surface must not render
+    Hermes' local "waiting for model response" cancellation sentinel as if
+    it were assistant prose. ACP (#41720) and the gateway's chat platforms
+    (#7921) already suppress it before delivery; this surface never got the
+    same guard.
+    """
+
+    def test_strips_sentinel_prefixed_text(self):
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        text = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}12.3s elapsed)."
+        assert server._strip_interrupt_sentinel(text) == ""
+
+    def test_leaves_normal_text_untouched(self):
+        assert server._strip_interrupt_sentinel("The answer is 42.") == "The answer is 42."
+
+    def test_handles_none_and_empty(self):
+        assert server._strip_interrupt_sentinel("") == ""
+        assert server._strip_interrupt_sentinel(None) == ""
+
+    def test_chat_reply_site_strips_sentinel(self):
+        """message.complete (main chat reply) — result dicts come straight
+        from AIAgent.run_conversation()'s return value."""
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        interrupted = {
+            "final_response": f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}4.1s elapsed).",
+            "interrupted": True,
+        }
+        assert server._extract_chat_reply_text(interrupted) == ""
+
+        normal = {"final_response": "The answer is 42.", "interrupted": False}
+        assert server._extract_chat_reply_text(normal) == "The answer is 42."
+
+    def test_background_complete_site_strips_sentinel(self):
+        """background.complete (hermes chat -q-style background task)."""
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        interrupted = {
+            "final_response": f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}9s elapsed).",
+        }
+        assert server._extract_background_complete_text(interrupted) == ""
+
+        normal = {"final_response": "Done."}
+        assert server._extract_background_complete_text(normal) == "Done."
+
+        # run_conversation() can also return a bare string result.
+        assert server._extract_background_complete_text("Done.") == "Done."
+
+    def test_preview_restart_complete_site_strips_sentinel(self):
+        """preview.restart.complete (hidden restart-preview agent)."""
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        interrupted = {
+            "final_response": f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}1.2s elapsed).",
+        }
+        assert server._extract_preview_restart_text(interrupted) == ""
+
+        normal = {"final_response": "Restarted."}
+        assert server._extract_preview_restart_text(normal) == "Restarted."
+        assert server._extract_preview_restart_text("Restarted.") == "Restarted."

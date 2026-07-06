@@ -57,6 +57,11 @@ def _scan_context_content(content: str, filename: str) -> str:
     findings = _scan_for_threats(content, scope="context")
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
+        msg = (
+            f"WARNING: {filename} blocked by threat scanner ({', '.join(findings)}). "
+            f"Content not loaded into system prompt. Review the file or add an exception."
+        )
+        _record_truncation_warning(msg)
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
 
     return content

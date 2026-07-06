@@ -539,6 +539,12 @@ def _resolve_fal_model(explicit: Optional[str] = None) -> tuple:
         explicit = explicit.strip()
         if explicit in FAL_MODELS:
             return explicit, FAL_MODELS[explicit]
+        if explicit:
+            logger.warning(
+                "Unknown explicit FAL model override '%s'; falling back to %s",
+                explicit, DEFAULT_MODEL,
+            )
+            return DEFAULT_MODEL, FAL_MODELS[DEFAULT_MODEL]
 
     model_id = ""
     try:

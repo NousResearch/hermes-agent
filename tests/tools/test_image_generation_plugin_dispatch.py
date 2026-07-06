@@ -128,6 +128,52 @@ class TestPluginDispatch:
         assert payload["provider"] == "codex"
         assert payload["model"] == "gpt-image-2-high"
 
+    def test_dispatch_threads_explicit_model_override_to_fal_provider(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+        from plugins.image_gen.fal import FalImageGenProvider
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "image_gen:\n  provider: fal\n  model: fal-ai/flux-2/klein/9b\n"
+        )
+
+        captured = {}
+
+        def fake_image_generate_tool(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({
+                "success": True,
+                "image": "/tmp/fal-test.png",
+                "model": kwargs.get("model") or "fal-ai/flux-2/klein/9b",
+                "prompt": kwargs["prompt"],
+                "aspect_ratio": kwargs["aspect_ratio"],
+                "provider": "fal",
+            })
+
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: FalImageGenProvider() if name == "fal" else None,
+        )
+        monkeypatch.setattr(image_generation_tool, "image_generate_tool", fake_image_generate_tool)
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "draw cat",
+            "square",
+            provider_override="fal",
+            model_override="fal-ai/nano-banana-pro",
+        )
+        assert dispatched is not None
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert payload["provider"] == "fal"
+        assert payload["model"] == "fal-ai/nano-banana-pro"
+        assert captured["model"] == "fal-ai/nano-banana-pro"
+
     def test_handle_image_generate_threads_explicit_provider_and_model(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from agent import image_gen_registry as registry_module

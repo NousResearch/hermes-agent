@@ -138,6 +138,7 @@ class FalImageGenProvider(ImageGenProvider):
         passthrough = {
             key: kwargs[key]
             for key in (
+                "model",
                 "num_inference_steps",
                 "guidance_scale",
                 "num_images",

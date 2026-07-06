@@ -324,6 +324,12 @@ class TestModelResolution:
             mid, _ = image_tool._resolve_fal_model()
         assert mid == "fal-ai/flux-2/klein/9b"
 
+    def test_unknown_explicit_model_override_falls_back_to_default_with_warning(self, image_tool, caplog):
+        with caplog.at_level("WARNING"):
+            mid, _ = image_tool._resolve_fal_model("fal-ai/does-not-exist")
+        assert mid == "fal-ai/flux-2/klein/9b"
+        assert "Unknown explicit FAL model override 'fal-ai/does-not-exist'" in caplog.text
+
     def test_env_var_fallback_when_no_config(self, image_tool, monkeypatch):
         monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/z-image/turbo")
         with patch("hermes_cli.config.load_config", return_value={}):

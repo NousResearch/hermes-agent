@@ -125,6 +125,11 @@ class TestForceFullRedraw:
         monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: 90)
         monkeypatch.setattr(bare_cli, "_schedule_status_bar_unsuppress", lambda *_: None)
         monkeypatch.setattr(cli_mod, "_replay_output_history", lambda: events.append("replay"))
+        monkeypatch.setattr(
+            cli_mod,
+            "CLI_CONFIG",
+            {"display": {"cli_rebuild_scrollback_on_redraw": False}},
+        )
 
         bare_cli._recover_after_resize(app, original_on_resize)
 
@@ -138,15 +143,57 @@ class TestForceFullRedraw:
         assert bare_cli._last_resize_width == 90
         assert bare_cli._status_bar_suppressed_after_resize is True
 
-    def test_force_redraw_uses_full_screen_clear_without_scrollback_clear(self, bare_cli):
+    def test_force_redraw_uses_full_screen_clear_without_scrollback_clear(self, bare_cli, monkeypatch):
         app = MagicMock()
         bare_cli._app = app
+        monkeypatch.setattr(
+            cli_mod,
+            "CLI_CONFIG",
+            {"display": {"cli_rebuild_scrollback_on_redraw": False}},
+        )
 
         bare_cli._force_full_redraw()
 
         app.renderer.output.erase_screen.assert_called_once()
         app.renderer.output.cursor_goto.assert_called_once_with(0, 0)
         app.renderer.output.write_raw.assert_not_called()
+
+    def test_force_redraw_can_clear_scrollback_when_configured(self, bare_cli, monkeypatch):
+        app = MagicMock()
+        bare_cli._app = app
+        monkeypatch.setattr(
+            cli_mod,
+            "CLI_CONFIG",
+            {"display": {"cli_rebuild_scrollback_on_redraw": True}},
+        )
+
+        bare_cli._force_full_redraw()
+
+        app.renderer.output.erase_screen.assert_called_once()
+        app.renderer.output.write_raw.assert_called_once_with("\x1b[3J")
+
+    def test_resize_recovery_can_clear_scrollback_when_configured(self, bare_cli, monkeypatch):
+        app = MagicMock()
+        events = []
+        app.renderer.output.erase_screen.side_effect = lambda: events.append("erase")
+        app.renderer.output.write_raw.side_effect = lambda *_: events.append("scrollback_wipe")
+        original_on_resize = lambda: events.append("original_resize")
+
+        bare_cli._status_bar_suppressed_after_resize = False
+        bare_cli._last_resize_width = 200
+        monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: 90)
+        monkeypatch.setattr(bare_cli, "_schedule_status_bar_unsuppress", lambda *_: None)
+        monkeypatch.setattr(cli_mod, "_replay_output_history", lambda: events.append("replay"))
+        monkeypatch.setattr(
+            cli_mod,
+            "CLI_CONFIG",
+            {"display": {"cli_rebuild_scrollback_on_redraw": "true"}},
+        )
+
+        bare_cli._recover_after_resize(app, original_on_resize)
+
+        assert events[:3] == ["erase", "scrollback_wipe", "replay"]
+        assert events.index("scrollback_wipe") < events.index("original_resize")
 
     def test_resize_recovery_is_debounced(self, bare_cli, monkeypatch):
         timers = []

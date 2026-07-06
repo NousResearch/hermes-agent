@@ -463,6 +463,12 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
+            # Clear terminal scrollback as well as the visible viewport when the
+            # classic CLI performs a full redraw/resize recovery. Disabled by
+            # default because some users prefer preserving terminal history;
+            # enable when a terminal/tmux stack stamps stale prompt chrome into
+            # scrollback during fullscreen/restore resizes.
+            "cli_rebuild_scrollback_on_redraw": False,
             # Print a one-line summary of resolved modal prompts (approval /
             # clarify) into scrollback so the decision survives the repaint.
             "persist_prompts": True,
@@ -4252,12 +4258,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         app = getattr(self, "_app", None)
         if not app:
             return
-        self._clear_prompt_toolkit_screen(app)
+        self._clear_prompt_toolkit_screen(
+            app,
+            rebuild_scrollback=self._redraw_rebuilds_scrollback(),
+        )
         _replay_output_history()
         try:
             app.invalidate()
         except Exception:
             pass
+
+    @staticmethod
+    def _redraw_rebuilds_scrollback() -> bool:
+        """Return whether CLI redraw/resize recovery should clear scrollback.
+
+        Some terminal/tmux stacks move prompt_toolkit's non-fullscreen bottom
+        chrome into scrollback when the window is maximized/restored. A normal
+        CSI 2J viewport clear cannot remove those stale prompt/input-rule rows,
+        so users who hit that class of bug need CSI 3J as well, followed by the
+        existing bounded output-history replay.
+        """
+        display_config = CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else {}
+        if not isinstance(display_config, dict):
+            display_config = {}
+        raw = display_config.get("cli_rebuild_scrollback_on_redraw", False)
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"1", "true", "yes", "on", "always"}
+        return bool(raw)
 
     def _recover_terminal_after_interrupt(self) -> None:
         """Recover the terminal after an interrupted agent turn (#33271).
@@ -4380,7 +4407,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         width_changed = new_width is not None and new_width != prev_width
         if width_changed:
             try:
-                self._clear_prompt_toolkit_screen(app, rebuild_scrollback=False)
+                self._clear_prompt_toolkit_screen(
+                    app,
+                    rebuild_scrollback=self._redraw_rebuilds_scrollback(),
+                )
                 _replay_output_history()
             except Exception:
                 pass

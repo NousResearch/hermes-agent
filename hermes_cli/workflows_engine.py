@@ -201,9 +201,18 @@ def run_in_memory_until_waiting(
             expected_labels: set[str] = set()
             if branch_key is not None:
                 parallel_id, label = branch_key
-                expected_labels.add(label)
                 branch_outputs = context.setdefault("branches", {}).setdefault(parallel_id, {})
-                branches[label] = branch_outputs.setdefault(label, None)
+                direct_parallel_arrival = any(edge.from_ == f"{parallel_id}.{label}" for edge in incoming)
+                if direct_parallel_arrival:
+                    for edge in incoming:
+                        source_base, _, port = edge.from_.partition(".")
+                        source_node = spec.nodes.get(source_base)
+                        if port and source_base == parallel_id and source_node and source_node.type == "parallel":
+                            expected_labels.add(port)
+                            branches[port] = branch_outputs.setdefault(port, None)
+                else:
+                    expected_labels.add(label)
+                    branches[label] = branch_outputs.setdefault(label, None)
             for edge in incoming:
                 source_base, _, port = edge.from_.partition(".")
                 source_node = spec.nodes.get(source_base)

@@ -661,6 +661,60 @@ def test_failed_node_retry_schedules_second_attempt(tmp_path, monkeypatch):
     assert [run["status"] for run in runs] == ["failed", "failed"]
 
 
+def test_successful_retry_updates_queued_attempt_row(tmp_path, monkeypatch):
+    exec_id = _start_spec_execution(
+        tmp_path,
+        monkeypatch,
+        _fail_spec(retry={"max_attempts": 2, "backoff_seconds": 1}),
+    )
+    calls = []
+
+    def transient_then_success(spec, input_data, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return EngineResult(
+                status="failed",
+                context={
+                    "input": input_data,
+                    "workflow": {"id": spec.id, "version": spec.version},
+                    "node": {},
+                },
+                waiting_nodes=[],
+                error={"node": "flaky", "type": "transient", "output": {"reason": "boom"}},
+            )
+        return EngineResult(
+            status="succeeded",
+            context={
+                "input": input_data,
+                "workflow": {"id": spec.id, "version": spec.version},
+                "node": {"flaky": {"output": {"ok": True}}},
+            },
+            waiting_nodes=[],
+        )
+
+    monkeypatch.setattr(
+        workflows_dispatcher, "run_in_memory_until_waiting", transient_then_success
+    )
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+    assert [
+        (run["status"], run["wait_until"]) for run in _node_runs(exec_id, "flaky")
+    ] == [("failed", None), ("queued", 101)]
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 0
+    assert workflows_dispatcher.tick(limit=1, now=101) == 1
+
+    execution, _, _ = _execution_state(exec_id)
+    runs = _node_runs(exec_id, "flaky")
+    assert execution.status == "succeeded"
+    assert [(run["status"], run["wait_until"]) for run in runs] == [
+        ("failed", None),
+        ("succeeded", None),
+    ]
+    assert runs[1]["completed_at"] == 101
+    assert json.loads(runs[1]["output_json"]) == {"ok": True}
+
+
 def test_failed_node_catch_routes_after_max_attempts(tmp_path, monkeypatch):
     exec_id = _start_spec_execution(
         tmp_path,

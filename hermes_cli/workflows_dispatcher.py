@@ -473,6 +473,31 @@ def _persist_failed_attempt(
     )
 
 
+def _persist_successful_queued_attempts(
+    conn: sqlite3.Connection,
+    *,
+    execution_id: str,
+    result: EngineResult,
+    now: int,
+) -> None:
+    for node_id, node_context in result.context.get("node", {}).items():
+        output_json = None
+        if isinstance(node_context, dict) and "output" in node_context:
+            output_json = _json_dumps(node_context["output"])
+        conn.execute(
+            """
+            UPDATE workflow_node_runs
+               SET status = 'succeeded', output_json = ?, completed_at = ?, wait_until = NULL
+             WHERE id = (
+                SELECT id FROM workflow_node_runs
+                 WHERE execution_id = ? AND node_id = ? AND status = 'queued'
+                 ORDER BY id DESC LIMIT 1
+             )
+            """,
+            (output_json, now, execution_id, node_id),
+        )
+
+
 def _failed_attempts(conn: sqlite3.Connection, execution_id: str, node_id: str) -> int:
     return int(conn.execute(
         """
@@ -628,6 +653,12 @@ def _finish(
         elif result.status == "failed":
             final_payload = {"error": result.error or {}}
 
+        _persist_successful_queued_attempts(
+            conn,
+            execution_id=execution_id,
+            result=result,
+            now=now,
+        )
         _emit_progress_events(
             conn,
             execution_id=execution_id,

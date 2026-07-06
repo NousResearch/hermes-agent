@@ -120,14 +120,16 @@ def test_required_pruned_to_existing_properties():
     assert out[0]["function"]["parameters"]["required"] == ["name"]
 
 
-def test_required_all_missing_is_dropped():
+def test_required_all_missing_kept_as_empty_array():
+    """When all required names are missing, keep required: [] instead of
+    removing the key — strict backends default missing required to null."""
     tools = [_tool("t", {
         "type": "object",
         "properties": {},
         "required": ["x", "y"],
     })]
     out = sanitize_tool_schemas(tools)
-    assert "required" not in out[0]["function"]["parameters"]
+    assert out[0]["function"]["parameters"].get("required") == []
 
 
 def test_well_formed_schema_unchanged():

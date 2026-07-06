@@ -394,7 +394,9 @@ class TestSchemaConversion:
 
         assert schema["required"] == ["a"]
 
-    def test_required_removed_when_all_names_dangle(self):
+    def test_required_set_to_empty_when_all_names_dangle(self):
+        """When all required names are missing, keep required: [] instead of
+        removing the key — strict backends default missing required to null."""
         from tools.mcp_tool import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
@@ -403,7 +405,7 @@ class TestSchemaConversion:
             "required": ["ghost"],
         })
 
-        assert "required" not in schema
+        assert schema.get("required") == []
 
     def test_required_pruning_applies_recursively_inside_nested_objects(self):
         """Nested object schemas also get required pruning."""

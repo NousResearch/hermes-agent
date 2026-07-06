@@ -329,7 +329,11 @@ def _sanitize_node(node: Any, path: str) -> Any:
         props = out.get("properties") or {}
         valid = [r for r in out["required"] if isinstance(r, str) and r in props]
         if not valid:
-            out.pop("required", None)
+            # Keep an empty array rather than removing the key — some strict
+            # OpenAI-compatible backends default a missing ``required`` to
+            # ``null`` which then fails JSON-Schema validation (``null`` is
+            # not of type ``array``).  See #59386.
+            out["required"] = []
         elif len(valid) != len(out["required"]):
             out["required"] = valid
 

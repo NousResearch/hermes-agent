@@ -4157,7 +4157,10 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
                     if valid:
                         repaired["required"] = valid
                     else:
-                        repaired.pop("required", None)
+                        # Keep an empty array instead of removing the key —
+                        # strict backends default a missing ``required`` to
+                        # ``null`` which fails JSON-Schema validation.  #59386
+                        repaired["required"] = []
 
         return repaired
 

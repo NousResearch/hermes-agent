@@ -21,8 +21,23 @@ class GeminiProfile(ProviderProfile):
     def build_extra_body(
         self, *, session_id: str | None = None, **context: Any
     ) -> dict[str, Any]:
-        """Emit extra_body.thinking_config (native) or extra_body.extra_body.google.thinking_config
-        (OpenAI-compat /openai subpath), mirroring the legacy path's behavior.
+        """Emit the thinking_config the resolved endpoint expects.
+
+        The returned dict is merged into the transport's ``extra_body`` dict and
+        assigned to ``api_kwargs["extra_body"]``; the OpenAI SDK then merges *that
+        dict's contents* into the top-level JSON request body.
+
+        For Google's OpenAI-compat endpoint (`/v1beta/openai`) the thinking
+        config must arrive as a top-level field **literally named** ``extra_body``
+        (Google's documented compat extension), i.e. the wire body must contain::
+
+            {"model": …, "messages": …, "extra_body": {"google": {"thinking_config": …}}}
+
+        To make the SDK emit that top-level ``extra_body`` field, we must pass
+        ``extra_body={"extra_body": {"google": …}}`` here — the extra nesting is
+        REQUIRED, not a bug. (Verified against the live API: top-level ``google`` → HTTP 400
+        "Unknown name 'google'"; top-level ``extra_body.google`` → HTTP 200.) The
+        native REST endpoint instead speaks ``thinking_config`` directly.
         """
         from agent.transports.chat_completions import (
             _build_gemini_thinking_config,

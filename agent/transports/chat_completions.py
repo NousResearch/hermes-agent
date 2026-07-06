@@ -19,6 +19,45 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+# Effort → thinkingBudget (tokens) for Gemini 2.5 models. See
+# ``_gemini_25_thinking_budget`` for why an explicit budget is required.
+_GEMINI_25_EFFORT_BUDGET = {
+    "minimal": 512,
+    "low": 2048,
+    "medium": 8192,
+    "high": 16384,
+    "xhigh": 24576,
+}
+
+
+def _gemini_25_thinking_budget(normalized_model: str, effort: str, *, disabled: bool) -> int:
+    """Pick an explicit Gemini 2.5 ``thinkingBudget`` (tokens).
+
+    Gemini 2.5 models default to "dynamic" thinking (budget ``-1``) when the
+    field is omitted. In that mode the model can silently consume its entire
+    output allowance as internal thinking tokens and return ``finish_reason
+    "stop"`` with **zero** completion tokens — surfaced to the user as
+    "empty content after retries" (a documented, otherwise-intermittent
+    gemini-2.5-flash failure). Always pinning a budget makes completions
+    deterministic. Budgets are clamped to each family's documented range:
+
+      * gemini-2.5-pro:        128..32768 (thinking cannot be disabled)
+      * gemini-2.5-flash-lite: 0 (off) or 512..24576
+      * gemini-2.5-flash:      0 (off) or up to 24576
+    """
+    budget = 0 if disabled else _GEMINI_25_EFFORT_BUDGET.get(effort, 8192)
+
+    if "pro" in normalized_model:
+        # Pro can't turn thinking off; keep it within [128, 32768].
+        return max(128, min(budget or 128, 32768))
+    if "flash-lite" in normalized_model:
+        if budget <= 0:
+            return 0
+        return max(512, min(budget, 24576))
+    # flash (and any other 2.5 family): 0 disables, else up to 24576.
+    return max(0, min(budget, 24576))
+
+
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if reasoning_config is None or not isinstance(reasoning_config, dict):
@@ -39,18 +78,31 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if reasoning_config.get("enabled") is False:
         # Gemini can hide thought parts even when internal thinking still
         # happens; omit thinkingLevel to avoid model-specific validation quirks.
-        return {"includeThoughts": False}
+        disabled_config: Dict[str, Any] = {"includeThoughts": False}
+        if normalized_model.startswith("gemini-2.5-"):
+            disabled_config["thinkingBudget"] = _gemini_25_thinking_budget(
+                normalized_model, "none", disabled=True
+            )
+        return disabled_config
 
     effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
     if effort == "none":
-        return {"includeThoughts": False}
+        disabled_config = {"includeThoughts": False}
+        if normalized_model.startswith("gemini-2.5-"):
+            disabled_config["thinkingBudget"] = _gemini_25_thinking_budget(
+                normalized_model, "none", disabled=True
+            )
+        return disabled_config
 
     thinking_config: Dict[str, Any] = {"includeThoughts": True}
 
-    # Gemini 2.5 accepts thinkingBudget; don't guess a budget from Hermes'
-    # coarse effort levels. ``includeThoughts`` alone is enough to surface
-    # thought parts without risking request validation errors.
+    # Gemini 2.5 requires an EXPLICIT thinkingBudget — left unset it uses
+    # dynamic thinking and can return zero-token empty completions (see
+    # _gemini_25_thinking_budget). Pin an effort-scaled, family-clamped budget.
     if normalized_model.startswith("gemini-2.5-"):
+        thinking_config["thinkingBudget"] = _gemini_25_thinking_budget(
+            normalized_model, effort, disabled=False
+        )
         return thinking_config
 
     if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
@@ -433,6 +485,15 @@ class ChatCompletionsTransport(ProviderTransport):
             if _is_gemini_openai_compat_base_url(base_url):
                 thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
                 if thinking_config:
+                    # Google's OpenAI-compat endpoint expects the thinking config
+                    # under a top-level field literally named `extra_body`
+                    # (`{"extra_body": {"google": {"thinking_config": ...}}}` on
+                    # the wire). Since the OpenAI SDK merges api_kwargs["extra_body"]
+                    # into the top-level body, we must nest it once more here so the
+                    # wire ends up with that top-level `extra_body` field. This
+                    # "double nesting" is REQUIRED — verified against the live API: top-level
+                    # `google` → HTTP 400 "Unknown name 'google'"; top-level
+                    # `extra_body.google` → HTTP 200.
                     openai_compat_extra = extra_body.get("extra_body", {})
                     google_extra = openai_compat_extra.get("google", {})
                     google_extra["thinking_config"] = thinking_config

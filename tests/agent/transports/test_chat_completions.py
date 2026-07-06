@@ -353,7 +353,9 @@ class TestChatCompletionsBuildKwargs:
             "thinking_level": "high",
         }
 
-    def test_gemini_native_25_reasoning_only_enables_visible_thoughts(self, transport):
+    def test_gemini_native_25_reasoning_sets_explicit_thinking_budget(self, transport):
+        # Gemini 2.5 must always send an explicit thinkingBudget — left unset it
+        # uses dynamic thinking and can return zero-token empty completions.
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gemini-2.5-flash",
@@ -364,6 +366,43 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["thinking_config"] == {
             "includeThoughts": True,
+            "thinkingBudget": 16384,
+        }
+
+    def test_gemini_openai_compat_25_disabled_reasoning_sets_budget_zero(self, transport):
+        # Regression guard for the "empty content after retries" bug: on the
+        # OpenAI-compat endpoint, disabled reasoning on gemini-2.5-flash must
+        # pin thinking_budget=0 (fully disable thinking) so the model can't burn
+        # its whole output allowance thinking and return a zero-token completion.
+        # The wire shape must stay double-nested (extra_body.google.*) — Google's
+        # compat endpoint 400s on a top-level `google` field.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-2.5-flash",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": False},
+        )
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": False,
+            "thinking_budget": 0,
+        }
+
+    def test_gemini_25_pro_cannot_disable_thinking_budget_clamped(self, transport):
+        # gemini-2.5-pro cannot turn thinking off (min budget 128); a disabled
+        # request must clamp up to the minimum, never send 0.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-2.5-pro",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            reasoning_config={"enabled": False},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": False,
+            "thinkingBudget": 128,
         }
 
     def test_gemini_openai_compat_pro_reasoning_clamps_to_supported_levels(self, transport):

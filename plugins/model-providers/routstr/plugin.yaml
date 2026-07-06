@@ -1,0 +1,5 @@
+name: routstr-provider
+kind: model-provider
+version: 1.0.0
+description: Routstr decentralized OpenAI-compatible AI inference router
+author: Nous Research

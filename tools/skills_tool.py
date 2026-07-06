@@ -86,6 +86,15 @@ from agent.skill_utils import (
 
 logger = logging.getLogger(__name__)
 
+# Per-session skill discovery cache.  _find_all_skills() re-reads every
+# SKILL.md on every call; with hundreds of skills this is wasteful.
+# We cache by the max mtime across all scanned skill directories so a
+# write by skill_manage (which touches the directory) invalidates the
+# cache automatically.  skip_disabled True/False are cached separately.
+_SKILLS_CACHE: dict = {}          # {cache_key: (max_mtime, skills_list)}
+_SKILLS_CACHE_KEY_DISABLED = "with_disabled"
+_SKILLS_CACHE_KEY_FILTERED = "filtered"
+
 
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
 # This is the single source of truth -- agent edits, hub installs, and bundled
@@ -627,8 +636,37 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     Returns:
         List of skill metadata dicts (name, description, category).
+
+    Results are cached per-session; the cache is invalidated when any
+    scanned skill directory's mtime changes (a skill write touches the
+    directory, triggering a re-scan on the next call).
     """
     from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+
+    cache_key = _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
+
+    # Collect directories to scan (same set as the scan loop below).
+    dirs_to_scan: list = []
+    if SKILLS_DIR.exists():
+        dirs_to_scan.append(SKILLS_DIR)
+    dirs_to_scan.extend(get_external_skills_dirs())
+
+    # Compute the freshest mtime across all scanned directories.
+    max_mtime = 0.0
+    for d in dirs_to_scan:
+        try:
+            st = d.stat()
+            if st.st_mtime > max_mtime:
+                max_mtime = st.st_mtime
+        except OSError:
+            continue
+
+    # Serve from cache when nothing changed since last scan.
+    cached = _SKILLS_CACHE.get(cache_key)
+    if cached is not None:
+        cached_mtime, cached_skills = cached
+        if cached_mtime >= max_mtime:
+            return cached_skills
 
     skills = []
     seen_names: set = set()
@@ -695,6 +733,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 )
                 continue
 
+    # Store in cache keyed by the freshest directory mtime seen during
+    # this scan.  Any subsequent skill write that touches a directory
+    # will bump the mtime past the cached value and trigger a re-scan.
+    _SKILLS_CACHE[cache_key] = (max_mtime, skills)
     return skills
 
 

@@ -11,7 +11,7 @@ import json
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -19,12 +19,16 @@ from hermes_cli.config import get_hermes_home
 
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 DEFAULT_WATERMARK = get_hermes_home() / "state" / "codex_usage_alerts.json"
+DEFAULT_HISTORY = get_hermes_home() / "state" / "codex_usage_history.jsonl"
+TREND_TARGETS = (80, 95, 100)
+MIN_TREND_SAMPLE_SECONDS = 10 * 60
 
 
 def local_dt(epoch: Any) -> Optional[datetime]:
     if isinstance(epoch, str):
         try:
-            return datetime.fromisoformat(epoch).astimezone()
+            dt = datetime.fromisoformat(epoch)
+            return dt if dt.tzinfo is not None else dt.astimezone()
         except ValueError:
             return None
     if not isinstance(epoch, (int, float)):
@@ -173,6 +177,166 @@ def iter_windows(row: Dict[str, Any]) -> Iterable[Tuple[str, str, Dict[str, Any]
     yield "7d", "secondary_window", row.get("secondary_window") or {}
 
 
+def _checked_dt(payload: Dict[str, Any]) -> Optional[datetime]:
+    return local_dt(payload.get("checked_at"))
+
+
+def _history_percent(row: Dict[str, Any], window_key: str) -> Optional[float]:
+    window = row.get(window_key) or {}
+    return _window_used(window)
+
+
+def _matching_previous_window(
+    history: Iterable[Dict[str, Any]],
+    *,
+    label: str,
+    window_key: str,
+    reset_at: Any,
+    checked_at: datetime,
+) -> Optional[tuple[datetime, Dict[str, Any]]]:
+    best: Optional[tuple[datetime, Dict[str, Any]]] = None
+    for snapshot in history:
+        previous_checked = _checked_dt(snapshot)
+        if previous_checked is None or previous_checked >= checked_at:
+            continue
+        if (checked_at - previous_checked).total_seconds() < MIN_TREND_SAMPLE_SECONDS:
+            continue
+        for row in snapshot.get("accounts") or []:
+            if str(row.get("label")) != label or not row.get("ok", True):
+                continue
+            window = row.get(window_key) or {}
+            previous_reset = local_dt(window.get("reset_at"))
+            current_reset = local_dt(reset_at)
+            if previous_reset is None or current_reset is None or previous_reset != current_reset:
+                continue
+            if _history_percent(row, window_key) is None:
+                continue
+            if best is None or previous_checked > best[0]:
+                best = (previous_checked, window)
+    return best
+
+
+def _eta_map(*, checked_at: datetime, reset_at: Optional[datetime], used: float, burn_per_hour: float) -> dict[str, dict[str, Any]]:
+    eta: dict[str, dict[str, Any]] = {}
+    for target in TREND_TARGETS:
+        if used >= target:
+            eta[str(target)] = {"reached": True}
+            continue
+        if burn_per_hour <= 0:
+            eta[str(target)] = {"reached": False, "at": None, "remaining": None, "before_reset": False}
+            continue
+        eta_at = checked_at + timedelta(hours=(target - used) / burn_per_hour)
+        before_reset = bool(reset_at is None or eta_at <= reset_at)
+        eta[str(target)] = {
+            "reached": False,
+            "at": eta_at.isoformat(timespec="seconds"),
+            "remaining": human_delta(eta_at, checked_at),
+            "before_reset": before_reset,
+        }
+    return eta
+
+
+def annotate_usage_trends(
+    payload: Dict[str, Any],
+    *,
+    history: Optional[Iterable[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Attach burn-rate and ETA trend data to each quota window in-place.
+
+    Prefer the most recent prior sample with the same credential label, window,
+    and reset timestamp. If no prior sample exists, fall back to the current
+    window average from the inferred window start so the first run is still
+    informative while clearly marking the source as `window_avg`.
+    """
+    checked_at = _checked_dt(payload)
+    if checked_at is None:
+        return payload
+    history_rows = list(history or [])
+    for row in payload.get("accounts") or []:
+        if not row.get("ok"):
+            continue
+        label = str(row.get("label"))
+        for _display, window_key, window in iter_windows(row):
+            used = _window_used(window)
+            reset_at = local_dt(window.get("reset_at"))
+            if used is None or reset_at is None:
+                continue
+            source = "window_avg"
+            burn_per_hour: Optional[float] = None
+            previous = _matching_previous_window(
+                history_rows,
+                label=label,
+                window_key=window_key,
+                reset_at=window.get("reset_at"),
+                checked_at=checked_at,
+            )
+            if previous:
+                prev_checked, prev_window = previous
+                prev_used = _window_used(prev_window)
+                elapsed_hours = (checked_at - prev_checked).total_seconds() / 3600
+                if prev_used is not None and elapsed_hours > 0:
+                    delta = used - prev_used
+                    if delta >= 0:
+                        burn_per_hour = delta / elapsed_hours
+                        source = "recent"
+            if burn_per_hour is None:
+                window_seconds = window.get("limit_window_seconds")
+                if isinstance(window_seconds, (int, float)) and window_seconds > 0:
+                    start_at = reset_at - timedelta(seconds=float(window_seconds))
+                    elapsed_hours = (checked_at - start_at).total_seconds() / 3600
+                    if elapsed_hours > 0:
+                        burn_per_hour = max(0.0, used / elapsed_hours)
+            if burn_per_hour is None:
+                continue
+            burn_per_hour = round(burn_per_hour, 2)
+            window["trend"] = {
+                "source": source,
+                "burn_percent_per_hour": burn_per_hour,
+                "eta": _eta_map(checked_at=checked_at, reset_at=reset_at, used=used, burn_per_hour=burn_per_hour),
+            }
+    return payload
+
+
+def load_history(path: Path, *, limit: int = 200) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in lines[-limit:]:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def save_history_snapshot(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = {
+        "checked_at": payload.get("checked_at"),
+        "accounts": [
+            {
+                "label": row.get("label"),
+                "ok": row.get("ok"),
+                "primary_window": {
+                    "used_percent": (row.get("primary_window") or {}).get("used_percent"),
+                    "reset_at": (row.get("primary_window") or {}).get("reset_at"),
+                },
+                "secondary_window": {
+                    "used_percent": (row.get("secondary_window") or {}).get("used_percent"),
+                    "reset_at": (row.get("secondary_window") or {}).get("reset_at"),
+                },
+            }
+            for row in payload.get("accounts") or []
+        ],
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
 def render_text(payload: Dict[str, Any]) -> str:
     lines = [f"Codex usage ({payload['checked_at']})"]
     accounts = payload.get("accounts") or []
@@ -319,6 +483,70 @@ def _next_reset(accounts: list[dict[str, Any]], min_used: Optional[float] = None
     return min(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
+def _trend_for(row: dict[str, Any], window_key: str) -> Optional[dict[str, Any]]:
+    window = row.get(window_key) or {}
+    trend = window.get("trend")
+    return trend if isinstance(trend, dict) else None
+
+
+def _fmt_burn(value: Any) -> str:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return "?%/h"
+    return f"+{f:.1f}%/h"
+
+
+def _fmt_eta_at(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value).strftime("%m/%d %H:%M")
+    except ValueError:
+        return None
+
+
+def _render_trend_detail(trend: Optional[dict[str, Any]]) -> str:
+    if not trend:
+        return ""
+    parts = [f"burn {_fmt_burn(trend.get('burn_percent_per_hour'))}"]
+    eta95 = (trend.get("eta") or {}).get("95") or {}
+    if eta95.get("reached"):
+        parts.append("ETA95 도달")
+    else:
+        eta_at = _fmt_eta_at(eta95.get("at"))
+        if eta_at:
+            suffix = "" if eta95.get("before_reset") else "*"
+            parts.append(f"ETA95 {eta_at}{suffix}")
+    return " · ".join(parts)
+
+
+def _recommended_row(payload: Dict[str, Any]) -> Optional[dict[str, Any]]:
+    rec_label = (payload.get("recommendation") or {}).get("label")
+    accounts = payload.get("accounts") or []
+    if rec_label:
+        for row in accounts:
+            if row.get("ok") and str(row.get("label")) == str(rec_label):
+                return row
+    for row in accounts:
+        if row.get("ok"):
+            return row
+    return None
+
+
+def _burn_summary(payload: Dict[str, Any]) -> str:
+    row = _recommended_row(payload)
+    if not row:
+        return ""
+    parts: list[str] = []
+    for display, key, _window in iter_windows(row):
+        trend = _trend_for(row, key)
+        if trend:
+            source = "avg " if trend.get("source") == "window_avg" else ""
+            parts.append(f"{display} {source}{_fmt_burn(trend.get('burn_percent_per_hour'))}")
+    return "🔥 Burn: " + " · ".join(parts) if parts else ""
+
+
 def render_compact(payload: Dict[str, Any]) -> str:
     accounts = payload.get("accounts") or []
     worst = _worst_risk(accounts)
@@ -329,6 +557,9 @@ def render_compact(payload: Dict[str, Any]) -> str:
         explanation = _recommendation_explanation(payload)
         if explanation:
             lines.append(explanation)
+    burn_summary = _burn_summary(payload)
+    if burn_summary:
+        lines.append(burn_summary)
     next_reset = _next_reset(accounts)
     if next_reset:
         lines.append(f"⏱ 다음 회복: {next_reset['label']} {next_reset['window']} · {next_reset['remaining']} ({next_reset['reset']})")
@@ -346,13 +577,17 @@ def render_compact(payload: Dict[str, Any]) -> str:
             lines.append(f"└ ERROR {row.get('http', '')} {row.get('error', '')}".rstrip())
             continue
         lines.append(f"\n• {label} · {plan}")
-        for display, _key, window in iter_windows(row):
+        for display, key, window in iter_windows(row):
             r = window.get("risk") or risk(window.get("used_percent"))
             used = window.get("used_percent")
-            lines.append(
+            line = (
                 f"  {display:>2} {_fmt_percent(used)} {r.get('icon')} "
                 f"[{usage_bar(used)}] reset {short_reset(window.get('reset_at'))} · {window.get('remaining', '?')}"
             )
+            trend_detail = _render_trend_detail(_trend_for(row, key))
+            if trend_detail:
+                line = f"{line} · {trend_detail}"
+            lines.append(line)
     return "\n".join(lines)
 
 def load_seen(path: Path) -> set[str]:
@@ -530,6 +765,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     payload = collect()
+    history = load_history(DEFAULT_HISTORY)
+    annotate_usage_trends(payload, history=history)
+    save_history_snapshot(DEFAULT_HISTORY, payload)
     alert_mode = any(
         value is not None
         for value in (args.alert_threshold, args.primary_threshold, args.secondary_threshold)

@@ -1,4 +1,5 @@
 from hermes_cli.codex_usage import (
+    annotate_usage_trends,
     apply_alert_policy,
     compute_recommendation,
     render_alert,
@@ -44,6 +45,109 @@ def test_recommendation_prefers_lowest_weekly_then_five_hour_usage():
     rec = compute_recommendation(accounts)
 
     assert rec == {"label": "b", "reason": "7d 40%, 5h 60%"}
+
+
+def test_annotate_usage_trends_uses_recent_history_for_burn_and_eta():
+    payload = {
+        "checked_at": "2026-07-06T20:00:00+09:00",
+        "accounts": [
+            {
+                "label": "company-plus-100",
+                "ok": True,
+                "plan_type": "prolite",
+                "primary_window": summarize_window(
+                    {
+                        "used_percent": 22,
+                        "limit_window_seconds": 18000,
+                        "reset_at": "2026-07-07T00:00:00+09:00",
+                    }
+                ),
+                "secondary_window": summarize_window(
+                    {
+                        "used_percent": 57,
+                        "limit_window_seconds": 604800,
+                        "reset_at": "2026-07-09T18:00:00+09:00",
+                    }
+                ),
+            }
+        ],
+    }
+    history = [
+        {
+            "checked_at": "2026-07-06T19:30:00+09:00",
+            "accounts": [
+                {
+                    "label": "company-plus-100",
+                    "ok": True,
+                    "primary_window": {
+                        "used_percent": 20,
+                        "reset_at": "2026-07-07T00:00:00+09:00",
+                    },
+                    "secondary_window": {
+                        "used_percent": 56,
+                        "reset_at": "2026-07-09T18:00:00+09:00",
+                    },
+                }
+            ],
+        }
+    ]
+
+    annotate_usage_trends(payload, history=history)
+
+    primary_trend = payload["accounts"][0]["primary_window"]["trend"]
+    assert primary_trend["source"] == "recent"
+    assert primary_trend["burn_percent_per_hour"] == 4.0
+    assert primary_trend["eta"]["95"]["at"] == "2026-07-07T14:15:00+09:00"
+
+
+def test_render_compact_includes_burn_and_eta_when_trend_is_available():
+    payload = {
+        "checked_at": "2026-07-06T20:00:00+09:00",
+        "accounts": [
+            {
+                "label": "company-plus-100",
+                "ok": True,
+                "plan_type": "prolite",
+                "primary_window": summarize_window(
+                    {
+                        "used_percent": 22,
+                        "limit_window_seconds": 18000,
+                        "reset_at": "2026-07-07T00:00:00+09:00",
+                    }
+                ),
+                "secondary_window": summarize_window(
+                    {
+                        "used_percent": 57,
+                        "limit_window_seconds": 604800,
+                        "reset_at": "2026-07-09T18:00:00+09:00",
+                    }
+                ),
+            }
+        ],
+        "recommendation": {"label": "company-plus-100", "reason": "7d 57%, 5h 22%"},
+    }
+    annotate_usage_trends(
+        payload,
+        history=[
+            {
+                "checked_at": "2026-07-06T19:30:00+09:00",
+                "accounts": [
+                    {
+                        "label": "company-plus-100",
+                        "ok": True,
+                        "primary_window": {"used_percent": 20, "reset_at": "2026-07-07T00:00:00+09:00"},
+                        "secondary_window": {"used_percent": 56, "reset_at": "2026-07-09T18:00:00+09:00"},
+                    }
+                ],
+            }
+        ],
+    )
+
+    text = render_compact(payload)
+
+    assert "🔥 Burn:" in text
+    assert "5h +4.0%/h" in text
+    assert "burn +4.0%/h · ETA95 07/07 14:15" in text
 
 
 def test_render_compact_includes_risk_and_recommendation():

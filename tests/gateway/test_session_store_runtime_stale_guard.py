@@ -202,3 +202,20 @@ class TestRuntimeStaleGuard:
 
         assert result.session_id != "sid_old"
         db.get_session.assert_not_called()
+
+    def test_suffix_scoped_source_disables_peer_fallback_recovery(self, tmp_path):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            user_id="123",
+            platform_metadata={"session_key_suffix": "telegram_guest_q1_turn2"},
+        )
+        db = _db_returning({})
+        db.find_latest_gateway_session_for_peer.return_value = None
+        store = _make_store_with_db(tmp_path, db)
+
+        store.get_or_create_session(source)
+
+        db.find_latest_gateway_session_for_peer.assert_called_once()
+        assert db.find_latest_gateway_session_for_peer.call_args.kwargs["exact_only"] is True

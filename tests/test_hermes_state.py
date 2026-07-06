@@ -4997,6 +4997,15 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
     )
     assert recovered["id"] == "gw-session"
 
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:other-key",
+        chat_id="chat-1",
+        chat_type="dm",
+        exact_only=True,
+    ) is None
+
 
 def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
     db.create_session(

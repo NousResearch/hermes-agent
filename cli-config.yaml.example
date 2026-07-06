@@ -818,6 +818,7 @@ platform_toolsets:
 #     # guest_mode lets explicit @mentions from non-allowlisted groups through.
 #     # Default false; ordinary messages, replies, and regex wake words stay blocked.
 #     guest_mode: false
+#     guest_thinking_text: "💭 Thinking..."  # Bot API 10.0 guest reply placeholder
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages

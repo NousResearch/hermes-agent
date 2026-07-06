@@ -1948,6 +1948,7 @@ class SessionDB:
         chat_id: Optional[str] = None,
         chat_type: Optional[str] = None,
         thread_id: Optional[str] = None,
+        exact_only: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Find the latest recoverable gateway session for a routing peer.
 
@@ -1978,6 +1979,8 @@ class SessionDB:
             ).fetchone()
             if row is not None:
                 return dict(row)
+            if exact_only:
+                return None
 
             # Conservative fallback for rows created by current code but with a
             # temporarily-missing exact key: still require the complete peer

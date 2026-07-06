@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -1120,9 +1120,13 @@ def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=
             "guest_mode": guest_mode,
             "require_mention": require_mention,
             "allowed_chats": allowed_chats or ["-100200"],
+            # Keep these unit tests isolated from TELEGRAM_ALLOWED_TOPICS set by
+            # config-bridge tests in the same process.
+            "allowed_topics": [],
         },
     )
     adapter = object.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
     adapter.config = config
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._mention_patterns = adapter._compile_mention_patterns()

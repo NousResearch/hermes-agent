@@ -22,6 +22,11 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 
+def _session_key_component(value: Any) -> str:
+    """Return a safe single component for colon-delimited session keys."""
+    return str(value).replace(":", "_")
+
+
 def _now() -> datetime:
     """Return the current local time."""
     return datetime.now()
@@ -180,6 +185,7 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
+    platform_metadata: Optional[Dict[str, Any]] = None  # Ephemeral platform routing data
 
     # Internal, wire-INVISIBLE trust signal: True when this event was delivered
     # to the gateway over the per-instance-authenticated relay WebSocket (the
@@ -889,6 +895,12 @@ def build_session_key(
     """
     ns = _session_key_namespace(profile)
     platform = source.platform.value
+    platform_metadata = getattr(source, "platform_metadata", None)
+    session_key_suffix = None
+    if isinstance(platform_metadata, dict):
+        raw_suffix = platform_metadata.get("session_key_suffix")
+        if raw_suffix:
+            session_key_suffix = _session_key_component(raw_suffix)
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
@@ -896,8 +908,12 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"{ns}:{platform}:dm:{dm_chat_id}"
+                key = f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            else:
+                key = f"{ns}:{platform}:dm:{dm_chat_id}"
+            if session_key_suffix:
+                key = f"{key}:{session_key_suffix}"
+            return key
         # No chat_id — fall back to the sender's own identifier before the
         # bare per-platform sink.  Without this, every DM from every user that
         # arrives without a chat_id (non-standard adapters / synthetic sources)
@@ -912,11 +928,19 @@ def build_session_key(
             )
         if dm_participant_id:
             if source.thread_id:
-                return f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
-            return f"{ns}:{platform}:dm:{dm_participant_id}"
+                key = f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
+            else:
+                key = f"{ns}:{platform}:dm:{dm_participant_id}"
+            if session_key_suffix:
+                key = f"{key}:{session_key_suffix}"
+            return key
         if source.thread_id:
-            return f"{ns}:{platform}:dm:{source.thread_id}"
-        return f"{ns}:{platform}:dm"
+            key = f"{ns}:{platform}:dm:{source.thread_id}"
+        else:
+            key = f"{ns}:{platform}:dm"
+        if session_key_suffix:
+            key = f"{key}:{session_key_suffix}"
+        return key
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -940,6 +964,8 @@ def build_session_key(
 
     if isolate_user and participant_id:
         key_parts.append(str(participant_id))
+    if session_key_suffix:
+        key_parts.append(str(session_key_suffix))
 
     return ":".join(key_parts)
 
@@ -1306,6 +1332,11 @@ class SessionStore:
         if not callable(finder):
             return None
         try:
+            platform_metadata = getattr(source, "platform_metadata", None)
+            exact_only = bool(
+                isinstance(platform_metadata, dict)
+                and platform_metadata.get("session_key_suffix")
+            )
             recovered = finder(
                 source=source.platform.value,
                 user_id=source.user_id,
@@ -1313,6 +1344,7 @@ class SessionStore:
                 chat_id=source.chat_id,
                 chat_type=source.chat_type,
                 thread_id=source.thread_id,
+                exact_only=exact_only,
             )
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)

@@ -619,5 +619,54 @@ export const sessionCommands: SlashCommand[] = [
         ctx.transcript.panel('Usage', sections)
       })
     }
+  },
+
+  // ── Pager-display session commands ───────────────────────────────
+  // These commands show formatted output in the pager overlay when called
+  // bare, with a proper title. With arguments they fall through to slash.exec.
+
+  {
+    help: 'set or inspect a standing goal',
+    name: 'goal',
+    run: (arg, ctx) => {
+      const trimmed = arg.trim().toLowerCase()
+
+      // Bare or "status" → show goal status in pager
+      if (!arg.trim() || trimmed === 'status') {
+        return ctx.gateway
+          .rpc<SlashExecResponse>('slash.exec', { command: `goal ${trimmed || 'status'}`, session_id: ctx.sid })
+          .then(
+            ctx.guarded<SlashExecResponse>(r => {
+              const output = r?.output || 'no goal set'
+              const long = output.length > 180 || output.split('\n').filter(Boolean).length > 2
+
+              long ? ctx.transcript.page(output, 'Goal') : ctx.transcript.sys(output)
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      // With args (pause/resume/clear/text) → fall through to slash.exec
+    }
+  },
+
+  {
+    help: 'add or manage extra criteria on the active goal',
+    name: 'subgoal',
+    run: (arg, ctx) => {
+      if (arg.trim()) return
+
+      ctx.gateway
+        .rpc<SlashExecResponse>('slash.exec', { command: 'subgoal', session_id: ctx.sid })
+        .then(
+          ctx.guarded<SlashExecResponse>(r => {
+            const output = r?.output || 'no subgoals'
+            const long = output.length > 180 || output.split('\n').filter(Boolean).length > 2
+
+            long ? ctx.transcript.page(output, 'Subgoals') : ctx.transcript.sys(output)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
   }
 ]

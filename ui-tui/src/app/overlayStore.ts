@@ -10,6 +10,7 @@ const buildOverlayState = (): OverlayState => ({
   clarify: null,
   confirm: null,
   journey: false,
+  listPicker: null,
   modelPicker: false,
   pager: null,
   petPicker: false,
@@ -31,6 +32,7 @@ export const $isBlocked = computed(
     clarify,
     confirm,
     journey,
+    listPicker,
     modelPicker,
     pager,
     petPicker,
@@ -42,19 +44,20 @@ export const $isBlocked = computed(
   }) =>
     Boolean(
       agents ||
-      approval ||
-      billing ||
-      clarify ||
-      confirm ||
-      journey ||
-      modelPicker ||
-      pager ||
-      petPicker ||
-      pluginsHub ||
-      secret ||
-      sessions ||
-      skillsHub ||
-      sudo
+        approval ||
+        billing ||
+        clarify ||
+        confirm ||
+        journey ||
+        listPicker ||
+        modelPicker ||
+        pager ||
+        petPicker ||
+        pluginsHub ||
+        secret ||
+        sessions ||
+        skillsHub ||
+        sudo
     )
 )
 
@@ -68,11 +71,12 @@ export const resetOverlayState = () => $overlayState.set(buildOverlayState())
 
 /**
  * Soft reset: drop FLOW-scoped overlays (approval / clarify / confirm / sudo
- * / secret / pager) but PRESERVE user-toggled ones — agents dashboard, model
- * picker, skills hub, sessions overlay.  Those are opened deliberately and
- * shouldn't vanish when a turn ends.  Called from turnController.idle() on
- * every turn completion / interrupt; the old "reset everything" behaviour
- * silently closed /agents the moment delegation finished.
+ * / secret / pager / listPicker) but PRESERVE user-toggled ones — agents
+ * dashboard, model picker, skills hub, sessions overlay.  Those are opened
+ * deliberately and shouldn't vanish when a turn ends.  Called from
+ * turnController.idle() on every turn completion / interrupt; the old "reset
+ * everything" behaviour silently closed /agents the moment delegation
+ * finished.
  */
 export const resetFlowOverlays = () =>
   $overlayState.set({

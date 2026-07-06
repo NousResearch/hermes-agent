@@ -127,6 +127,40 @@ export interface BillingOverlayState {
   state: BillingStateResponse
 }
 
+export interface ListPickerItem {
+  id: string
+  label: string
+  description?: string
+  meta?: string
+}
+
+/**
+ * Configuration for the generic ListPicker overlay.  Stored in
+ * ``OverlayState.listPicker`` when active; the ListPicker component reads
+ * this config and manages its own internal runtime state (items, loading,
+ * selection, etc.) — same pattern as ActiveSessionSwitcher / ModelPicker.
+ */
+export interface ListPickerConfig {
+  /** RPC method to fetch items, e.g. 'cron.manage'. */
+  fetchMethod: string
+  /** Params sent with the fetch RPC call. */
+  fetchParams?: Record<string, unknown>
+  /** Extract the list of items from the RPC response. */
+  mapResponse: (r: Record<string, unknown>) => ListPickerItem[]
+  /** Overlay title shown at the top. */
+  title: string
+  /** Optional RPC method invoked when the user presses Enter on an item. */
+  actionMethod?: string
+  /** Params builder for the action RPC — { id: item.id } is merged in. */
+  actionParams?: (item: ListPickerItem) => Record<string, unknown>
+  /** Message shown after a successful action. */
+  actionLabel?: (item: ListPickerItem) => string
+  /** Hint text shown at the bottom. */
+  hint?: string
+  /** If true, Enter does nothing — picker is view-only. */
+  viewOnly?: boolean
+}
+
 export interface OverlayState {
   agents: boolean
   agentsInitialHistoryIndex: number
@@ -135,6 +169,7 @@ export interface OverlayState {
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
   journey: boolean
+  listPicker: null | ListPickerConfig
   modelPicker: boolean
   pager: null | PagerState
   petPicker: boolean

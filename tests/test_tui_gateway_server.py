@@ -150,6 +150,93 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
         server._clear_session_context(tokens)
 
 
+def test_make_agent_uses_runtime_max_output_tokens(monkeypatch):
+    """Desktop/TUI agents must honor custom-provider output caps.
+
+    Regression guard for local Qwen-family endpoints: without this handoff the
+    agent defaulted to the model-family ceiling (65,536) and could overflow a
+    131K server once the prompt crossed ~65K tokens.
+    """
+    captured = {}
+
+    class DummyAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import run_agent
+
+    monkeypatch.setattr(run_agent, "AIAgent", DummyAgent)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
+    monkeypatch.setattr(server, "_parse_tui_skills_env", lambda: [])
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("qwen-local", "spark-qwen"))
+    monkeypatch.setattr(
+        server,
+        "_resolve_runtime_with_fallback",
+        lambda _kwargs: {
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:8002/v1",
+            "api_key": "x",
+            "api_mode": "chat_completions",
+            "max_output_tokens": 8192,
+        },
+    )
+    monkeypatch.setattr(server, "_load_provider_routing", lambda: {})
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda: None)
+    monkeypatch.setattr(server, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
+    monkeypatch.setattr(server, "_load_fallback_model", lambda: [])
+
+    server._make_agent("sid", "key", session_db=object())
+
+    assert captured["max_tokens"] == 8192
+
+
+def test_resolve_agent_max_tokens_precedence(monkeypatch):
+    runtime = {"max_output_tokens": 8192, "max_tokens": 4096}
+    assert server._resolve_agent_max_tokens({"model": {"max_tokens": 12000}}, runtime) == 12000
+
+    monkeypatch.setenv("HERMES_MAX_TOKENS", "6000")
+    assert server._resolve_agent_max_tokens({"model": {"max_tokens": 12000}}, runtime) == 6000
+
+    monkeypatch.setenv("HERMES_MAX_TOKENS", "not-an-int")
+    assert server._resolve_agent_max_tokens({}, runtime) == 8192
+
+
+def test_background_agent_kwargs_inherits_parent_max_tokens(monkeypatch):
+    class ParentAgent:
+        base_url = "http://127.0.0.1:8002/v1"
+        api_key = "x"
+        provider = "custom"
+        api_mode = "chat_completions"
+        acp_command = None
+        acp_args = None
+        model = "qwen-local"
+        max_tokens = 8192
+        enabled_toolsets = None
+        quiet_mode = True
+        verbose_logging = False
+        ephemeral_system_prompt = None
+        providers_allowed = None
+        providers_ignored = None
+        providers_order = None
+        provider_sort = None
+        provider_require_parameters = False
+        provider_data_collection = None
+        openrouter_min_coding_score = None
+        reasoning_config = None
+        service_tier = None
+        request_overrides = {}
+        _fallback_chain = []
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda: None)
+    monkeypatch.setattr(server, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: object())
+
+    assert server._background_agent_kwargs(ParentAgent(), "bg-task")["max_tokens"] == 8192
+
+
 def _write_profile_cfg(home: Path, cwd: str | None) -> Path:
     import yaml
 

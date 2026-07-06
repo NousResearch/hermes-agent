@@ -368,6 +368,24 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "tencent-tokenhub": [
         "hy3-preview",
+        "hy3",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-202605",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro-202606",
+        "deepseek-v3.2",
+        "glm-5.2",
+        "glm-5.1",
+        "glm-5",
+        "glm-5-turbo",
+        "glm-5v-turbo",
+        "kimi-k2.7-code-highspeed",
+        "kimi-k2.6",
+        "kimi-k2.5",
+        "minimax-m3",
+        "minimax-m2.7",
+        "minimax-m2.5",
+        "hy-mt2-plus",
     ],
     "arcee": [
         "trinity-large-thinking",
@@ -2403,6 +2421,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
             creds = resolve_api_key_provider_credentials("gmi")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
+    if normalized == "tencent-tokenhub":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("tencent-tokenhub")
             api_key = str(creds.get("api_key") or "").strip()
             base_url = str(creds.get("base_url") or "").strip()
             if api_key and base_url:

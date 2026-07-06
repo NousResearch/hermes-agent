@@ -15,6 +15,30 @@ NO_LIVE_PROVIDER_BOUNDARY = (
 )
 _GREEN_CI = {"success", "passed", "green", "ok"}
 _BAD_OR_UNKNOWN_CI = {"", "unknown", "not_checked", "pending", "queued", "failed", "cancelled"}
+_CONTRACT_STATUS_VALUES = {"done", "partial", "blocked", "not_started", "not_applicable"}
+_INCOMPLETE_CONTRACT_STATUS_VALUES = {"partial", "blocked", "not_started"}
+_NO_EVIDENCE_VALUES = {"", "none", "n/a", "na", "unknown", "not checked", "not run", "missing"}
+_REQUIREMENT_HEADING_RE = re.compile(
+    r"\b(requirements?|wymagania|acceptance\s+criteria|requested\s+items?)\b",
+    re.IGNORECASE,
+)
+_ENUMERATED_REQUIREMENT_RE = re.compile(
+    r"^\s*(?:[-*]|\d+[.)]|\[[ xX-]\])\s+(?P<text>.+?)\s*$"
+)
+_CHECKLIST_FIELD_ALIASES = {
+    "requirement": "requirement",
+    "req": "requirement",
+    "item": "requirement",
+    "status": "status",
+    "evidence": "evidence",
+    "source": "evidence",
+    "residual risk": "residual_risk",
+    "residual_risk": "residual_risk",
+    "risk": "residual_risk",
+    "next action": "next_action",
+    "next_action": "next_action",
+    "next": "next_action",
+}
 
 
 def _clean_text(value: Any, *, max_chars: int = 2_000) -> str:
@@ -29,9 +53,149 @@ def _clean_list(values: Any, *, max_items: int = 30, max_chars: int = 500) -> li
     return _closure_clean_list(values, max_items=max_items, max_chars=max_chars)
 
 
+def _clean_requirement_text(value: Any) -> str:
+    text = _clean_text(value, max_chars=300)
+    text = re.sub(r"^\[[ xX-]\]\s*", "", text).strip()
+    text = re.sub(r"^(?:requirement|req|item)\s*:\s*", "", text, flags=re.IGNORECASE).strip()
+    return text
+
+
+def _split_inline_requirements(text: str) -> list[str]:
+    value = str(text or "").strip()
+    if not value:
+        return []
+    if not re.search(r"(?:^|\s)\d+[.)]\s+", value):
+        cleaned = _clean_requirement_text(value)
+        return [cleaned] if cleaned else []
+    parts = re.split(r"(?:^|\s)\d+[.)]\s+", value)
+    return [_clean_requirement_text(part) for part in parts if _clean_requirement_text(part)]
+
+
+def extract_contract_requirements(task_contract: Any) -> list[str]:
+    """Return explicit multi-item user requirements from a task contract.
+
+    Deliberately conservative: a one-sentence task or a single bullet remains a
+    simple closeout and does not trigger contract-checklist enforcement.
+    """
+
+    requirements: list[str] = []
+    in_requirement_section = False
+    for raw_line in str(task_contract or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _REQUIREMENT_HEADING_RE.search(line):
+            in_requirement_section = True
+            after_colon = line.split(":", 1)[1].strip() if ":" in line else ""
+            requirements.extend(_split_inline_requirements(after_colon))
+            continue
+        match = _ENUMERATED_REQUIREMENT_RE.match(line)
+        if not match:
+            continue
+        if in_requirement_section or re.match(r"^\s*\d+[.)]", line):
+            requirement = _clean_requirement_text(match.group("text"))
+            if requirement:
+                requirements.append(requirement)
+
+    deduped = list(dict.fromkeys(requirements))
+    return deduped if len(deduped) >= 2 else []
+
+
+def _normalize_checklist_key(key: Any) -> str:
+    text = _clean_text(key, max_chars=80).lower().replace("-", "_")
+    text = re.sub(r"\s+", " ", text.replace("_", " ")).strip()
+    return _CHECKLIST_FIELD_ALIASES.get(text, _CHECKLIST_FIELD_ALIASES.get(text.replace(" ", "_"), ""))
+
+
+def _normalize_contract_status(value: Any) -> str:
+    status = _clean_text(value, max_chars=80).lower()
+    status = re.sub(r"[\s-]+", "_", status)
+    return re.sub(r"[^a-z_]", "", status)
+
+
+def _normalize_contract_checklist_item(item: Mapping[str, Any]) -> dict[str, str] | None:
+    normalized: dict[str, str] = {
+        "requirement": "",
+        "status": "",
+        "evidence": "",
+        "residual_risk": "",
+        "next_action": "",
+    }
+    for raw_key, raw_value in item.items():
+        key = _normalize_checklist_key(raw_key)
+        if not key:
+            continue
+        max_chars = 80 if key == "status" else 500
+        normalized[key] = _clean_text(raw_value, max_chars=max_chars)
+    normalized["status"] = _normalize_contract_status(normalized.get("status"))
+    if not any(normalized.values()):
+        return None
+    return normalized
+
+
+def _parse_contract_checklist_line(line: str) -> dict[str, str] | None:
+    if not re.search(r"\bstatus\s*:", line, flags=re.IGNORECASE):
+        return None
+    if not re.search(r"\bevidence\s*:", line, flags=re.IGNORECASE):
+        return None
+    fields: dict[str, str] = {}
+    for raw_part in re.split(r"\s*[;|]\s*", line):
+        part = re.sub(r"^\s*(?:[-*]|\d+[.)]|\[[ xX-]\])\s*", "", raw_part.strip())
+        if ":" not in part:
+            continue
+        raw_key, raw_value = part.split(":", 1)
+        key = _normalize_checklist_key(raw_key)
+        if key:
+            fields[key] = raw_value.strip()
+    if not fields:
+        return None
+    return _normalize_contract_checklist_item(fields)
+
+
+def parse_contract_checklist(final_response: Any) -> list[dict[str, str]]:
+    """Parse compact markdown/prose checklist rows from a final response."""
+
+    items: list[dict[str, str]] = []
+    for line in str(final_response or "").splitlines():
+        item = _parse_contract_checklist_line(line)
+        if item:
+            items.append(item)
+        if len(items) >= 30:
+            break
+    return items
+
+
+def normalize_contract_checklist(checklist: Any) -> list[dict[str, str]]:
+    """Normalize a structured or text contract checklist for closeout storage."""
+
+    if checklist is None:
+        return []
+    if isinstance(checklist, str):
+        return parse_contract_checklist(checklist)
+    if not isinstance(checklist, list):
+        checklist = [checklist]
+    normalized: list[dict[str, str]] = []
+    for item in checklist[:30]:
+        if isinstance(item, Mapping):
+            clean_item = _normalize_contract_checklist_item(item)
+        else:
+            clean_item = _parse_contract_checklist_line(str(item))
+        if clean_item:
+            normalized.append(clean_item)
+    return normalized
+
+
+def _has_meaningful_evidence(value: Any) -> bool:
+    text = _clean_text(value, max_chars=300).lower()
+    return text not in _NO_EVIDENCE_VALUES
+
+
 def classify_closeout_response(
     final_response: Any,
     *,
+    task_contract: str | None = None,
+    contract_checklist: list[dict[str, Any]] | str | None = None,
+    incomplete_contract_accepted: bool = False,
     pr_url: str | None = None,
     merge_status: str | None = None,
     ci_status: str | None = None,
@@ -61,10 +225,47 @@ def classify_closeout_response(
     elif ci in _BAD_OR_UNKNOWN_CI - {"", "unknown", "not_checked"}:
         reasons.append("ci_not_green")
 
+    contract_requirements = extract_contract_requirements(task_contract)
+    clean_contract_checklist = normalize_contract_checklist(contract_checklist)
+    if not clean_contract_checklist:
+        clean_contract_checklist = parse_contract_checklist(final_response)
+    if contract_requirements:
+        if not clean_contract_checklist:
+            reasons.append("contract_checklist_missing")
+        else:
+            if len(clean_contract_checklist) < len(contract_requirements):
+                reasons.append("contract_checklist_missing_requirements")
+            has_invalid_status = False
+            has_missing_evidence = False
+            has_incomplete_status = False
+            has_missing_next_action = False
+            for item in clean_contract_checklist:
+                status = item.get("status") or ""
+                if status not in _CONTRACT_STATUS_VALUES:
+                    has_invalid_status = True
+                    continue
+                if not _has_meaningful_evidence(item.get("evidence")):
+                    has_missing_evidence = True
+                if status in _INCOMPLETE_CONTRACT_STATUS_VALUES:
+                    if not incomplete_contract_accepted:
+                        has_incomplete_status = True
+                    if not item.get("next_action") and not incomplete_contract_accepted:
+                        has_missing_next_action = True
+            if has_invalid_status:
+                reasons.append("contract_checklist_status_invalid")
+            if has_missing_evidence:
+                reasons.append("contract_checklist_evidence_missing")
+            if has_incomplete_status:
+                reasons.append("contract_checklist_incomplete")
+            if has_missing_next_action:
+                reasons.append("contract_checklist_next_action_missing")
+
     deduped = list(dict.fromkeys(reasons))
     return {
         "status": "recoverable_incomplete" if deduped else "complete_candidate",
         "reasons": deduped,
+        "contract_requirements": contract_requirements,
+        "contract_checklist": clean_contract_checklist,
     }
 
 
@@ -126,6 +327,8 @@ def write_closeout_state(
     parent_lineage: list[str] | None = None,
     task_id: str | None = None,
     task_contract: str | None = None,
+    contract_checklist: list[dict[str, Any]] | str | None = None,
+    incomplete_contract_accepted: bool = False,
     final_response: Any = "",
     pr_url: str | None = None,
     head_sha: str | None = None,
@@ -151,6 +354,9 @@ def write_closeout_state(
     invalid_children = _clean_invalid_review_children(invalid_review_children or [])
     verdict = classify_closeout_response(
         final_response,
+        task_contract=task_contract,
+        contract_checklist=contract_checklist,
+        incomplete_contract_accepted=incomplete_contract_accepted,
         pr_url=pr_url,
         merge_status=merge_status,
         ci_status=ci_status,
@@ -222,6 +428,9 @@ def write_closeout_state(
             "safe_bounded_resume_prompt": safe_prompt,
             "closeout_reasons": verdict["reasons"],
             "task_contract": _clean_text(task_contract or task_id or "", max_chars=900),
+            "contract_requirements": verdict.get("contract_requirements") or [],
+            "contract_checklist": verdict.get("contract_checklist") or [],
+            "incomplete_contract_accepted": bool(incomplete_contract_accepted),
             "commits": clean_commits,
             "remaining_gates": clean_remaining_gates,
             "blocked_review_children": clean_blocked_review_children,

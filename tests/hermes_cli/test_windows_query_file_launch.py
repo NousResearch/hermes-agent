@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-
 WINDOWS_PROMPT_PATH = r"C:\Users\Admin\Documents\Hermes monitoring\runs\prompt.txt"
 
 
@@ -33,6 +32,30 @@ def test_resume_query_file_argv_keeps_windows_path_with_spaces_atomic():
     assert not any("\n" in arg or "\r" in arg for arg in argv)
 
 
+def test_query_file_launch_keeps_executable_cwd_and_prompt_path_with_spaces_atomic():
+    from hermes_cli.windows_launch import build_query_file_launch
+
+    python_exe = r"C:\Program Files\Python311\python.exe"
+    cwd = r"C:\Users\Admin\AppData\Local\hermes\hermes-agent"
+    prompt_path = r"C:\Users\Admin\Documents\Hermes monitoring\runs\prompt with spaces.md"
+
+    launch = build_query_file_launch(
+        python_exe=python_exe,
+        session_id="resume-session",
+        prompt_path=prompt_path,
+        model="gpt-5.5",
+        cwd=cwd,
+    )
+
+    assert launch.shell is False
+    assert launch.cwd == cwd
+    assert launch.executable == python_exe
+    assert launch.popen_argv[0] == python_exe
+    assert launch.args[launch.args.index("--query-file") + 1] == prompt_path
+    assert prompt_path in launch.popen_argv
+    assert not any(arg == "Hermes" or arg == "monitoring" for arg in launch.popen_argv)
+
+
 def test_prompt_file_launch_writes_multiline_prompt_instead_of_shell_joining(tmp_path):
     from hermes_cli.windows_launch import build_prompt_file_launch
 
@@ -52,6 +75,27 @@ def test_prompt_file_launch_writes_multiline_prompt_instead_of_shell_joining(tmp
     assert prompt not in launch.popen_argv
     assert not any("\n" in arg or "\r" in arg for arg in launch.popen_argv)
     assert launch.shell is False
+
+
+def test_long_prompt_file_launch_keeps_prompt_text_out_of_argv(tmp_path):
+    from hermes_cli.windows_launch import build_prompt_file_launch
+
+    prompt = "Long Phase 6 recovery prompt. " * 500
+    prompt_path = tmp_path / "Hermes monitoring" / "runs" / "long prompt.md"
+
+    launch = build_prompt_file_launch(
+        python_exe=r"C:\Program Files\Python311\python.exe",
+        session_id="resume-session",
+        prompt_text=prompt,
+        prompt_path=prompt_path,
+        model="gpt-5.5",
+    )
+
+    assert prompt_path.read_text(encoding="utf-8") == prompt
+    assert "--query-file" in launch.args
+    assert "--query" not in launch.args
+    assert prompt not in launch.popen_argv
+    assert launch.args[launch.args.index("--query-file") + 1] == str(prompt_path)
 
 
 def test_launch_smoke_classifies_parser_usage_without_db_message_as_launch_failure():

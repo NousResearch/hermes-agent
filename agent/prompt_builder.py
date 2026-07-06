@@ -332,6 +332,22 @@ TASK_COMPLETION_GUIDANCE = (
     "is always better than inventing a result."
 )
 
+PROPORTIONAL_ORCHESTRATION_GUIDANCE = (
+    "# Proportional orchestration\n"
+    "At the start of each task choose the smallest adequate operating mode; "
+    "this is a decision aid, not a mandatory ritual:\n"
+    "- simple: direct answer, one small read, or one local command; no Kanban, "
+    "no subagents, no broad skill or memory review, no workflow scaffolding "
+    "unless the user asks.\n"
+    "- focused: small code/doc change with targeted inspection and tests.\n"
+    "- workflow: multi-step task needing a checklist, board, or recovery state.\n"
+    "- delegated: independent subtasks that truly benefit from child agents.\n"
+    "- safety_gated: provider/live/deploy/DNS/payment/email/webhook/security "
+    "boundary; keep approval gates, verify before finalizing, and stop or block "
+    "when approval/input is missing.\n"
+    "Escalate only when the task requires it; do not use process as proof of seriousness."
+)
+
 # Universal parallel-tool-call guidance — applied to ALL models.
 #
 # Why this matters for cost: every assistant turn resends the entire
@@ -1649,10 +1665,14 @@ def build_skills_system_prompt(
 
         result = (
             "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
+            "Before replying, scan the skills below. You MUST load a skill with "
+            "skill_view(name) when it is needed to execute the task, when the user "
+            "explicitly asks you to use or load a named skill, or when it defines "
+            "required workflow/quality rules for work you are about to perform. "
+            "Topic mention is not invocation: a prompt that merely mentions a skill, "
+            "workflow, or system for analysis, comparison, critique, audit, or a "
+            "negative instruction does not invoke it; those references do not by "
+            "themselves trigger that workflow. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
             "and proven workflows that outperform general-purpose approaches. Load the skill "
             "even if you think you could handle the task with basic tools like web_search or terminal. "
@@ -1673,7 +1693,8 @@ def build_skills_system_prompt(
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "Only proceed without loading a skill if no skill is needed for execution "
+            "and no explicit named-skill request applies."
             + hidden_note
         )
 

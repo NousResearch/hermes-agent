@@ -174,6 +174,43 @@ class TestConfigureWindowsStdio:
 
 
 # ---------------------------------------------------------------------------
+# subprocess text capture
+# ---------------------------------------------------------------------------
+
+
+class TestSubprocessTextCaptureDecoding:
+    """Subprocess wrappers must survive non-UTF-8 child output.
+
+    A strict TextIOWrapper can raise ``UnicodeDecodeError`` in Python's
+    subprocess reader path when a child emits locale-encoded stderr/stdout.
+    Hermes should replace undecodable bytes while preserving the child exit
+    code so real failures still surface.
+    """
+
+    def test_popen_bash_replaces_bad_output_and_preserves_nonzero_exit(self):
+        from tools.environments.base import _popen_bash
+
+        script = (
+            "import os, sys; "
+            "os.write(sys.stdout.fileno(), b'alpha\\x81omega'); "
+            "sys.exit(7)"
+        )
+        proc = _popen_bash([sys.executable, "-c", script])
+        try:
+            assert proc.stdout is not None
+            output = proc.stdout.read()
+            returncode = proc.wait(timeout=10)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+        assert "alpha" in output
+        assert "\ufffd" in output
+        assert "omega" in output
+        assert returncode == 7
+
+
+# ---------------------------------------------------------------------------
 # terminate_pid — the centralized kill primitive
 # ---------------------------------------------------------------------------
 

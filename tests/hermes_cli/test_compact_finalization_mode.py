@@ -53,6 +53,33 @@ def test_compact_finalization_prompt_uses_packet_fields_without_raw_history():
     assert len(prompt) < 5000
 
 
+def test_compact_finalization_prompt_carries_contract_checklist_guidance():
+    from hermes_cli.finalization_mode import build_compact_finalization_prompt
+
+    prompt = build_compact_finalization_prompt(
+        {
+            "session_id": "root-session",
+            "task_contract": "Requirements:\n1. Update closeout classifier.\n2. Run focused tests.",
+            "contract_checklist": [
+                {
+                    "requirement": "Update closeout classifier",
+                    "status": "done",
+                    "evidence": "hermes_cli/closeout_state.py",
+                    "residual_risk": "none",
+                    "next_action": "",
+                }
+            ],
+        }
+    )
+
+    assert "Requirement checklist" in prompt
+    assert "Update closeout classifier" in prompt
+    assert "status: done" in prompt
+    assert "evidence: hermes_cli/closeout_state.py" in prompt
+    assert "partial, blocked, or not_started" in prompt
+    assert "Simple tasks" in prompt
+
+
 def test_write_closeout_state_extends_existing_packet_with_finalization_fields(hermes_home):
     from hermes_cli.closeout_state import write_closeout_state
     from hermes_cli.closure_artifacts import read_closure_artifact

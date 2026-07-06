@@ -215,7 +215,7 @@ class TestRestorePrimaryRuntime:
         class _Pool:
             provider = "openrouter"
 
-            def has_available(self):
+            def has_available(self, requested_model=None):
                 return True
 
             def select(self, requested_model=None):
@@ -263,7 +263,7 @@ class TestRestorePrimaryRuntime:
         class _DeepseekPool:
             provider = "deepseek"
 
-            def has_available(self):
+            def has_available(self, requested_model=None):
                 return True
 
             def select(self, requested_model=None):
@@ -310,7 +310,7 @@ class TestRestorePrimaryRuntime:
         class _Pool:
             provider = "custom:myllm"
 
-            def has_available(self):
+            def has_available(self, requested_model=None):
                 return True
 
             def select(self, requested_model=None):
@@ -349,7 +349,7 @@ class TestRestorePrimaryRuntime:
         class _Pool:
             provider = "custom:otherllm"
 
-            def has_available(self):
+            def has_available(self, requested_model=None):
                 return True
 
             def select(self, requested_model=None):

@@ -282,6 +282,12 @@ def atomic_yaml_write(
         real_path = atomic_replace(tmp_path, path)
         real_path_obj = Path(real_path)
         _restore_file_owner(real_path_obj, original_owner)
+        # config.yaml may carry quick_commands executed with shell=True —
+        # cap the restored mode to 0600 so any write path that bypasses
+        # save_config()'s explicit _secure_file() call cannot leave it
+        # world-readable.
+        if path.name == "config.yaml" and original_mode is not None:
+            original_mode = min(original_mode, 0o600)
         _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level

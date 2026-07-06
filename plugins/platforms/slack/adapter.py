@@ -36,6 +36,7 @@ from pathlib import Path as _Path
 
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
+from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
@@ -972,13 +973,16 @@ class SlackAdapter(BasePlatformAdapter):
             return False
 
         raw_token = self.config.token
-        # Multiplex: profile secrets live in secret_scope, not process os.environ.
-        # Prefer get_secret; fall back to os.getenv for single-profile / tests.
+        # Multiplex: profile secrets live in the secret scope, not process
+        # os.environ. When a scope is installed (secondary-profile connect),
+        # it is AUTHORITATIVE — do not fall through to os.getenv, or a
+        # secondary profile missing SLACK_APP_TOKEN silently inherits the
+        # default profile's Socket Mode app (#59739). Only an UNSCOPED read
+        # under multiplex (default-profile startup loop, background reconnect
+        # rebuild) falls back to process env, which is that profile's own.
         try:
-            from agent.secret_scope import get_secret
-
-            app_token = get_secret("SLACK_APP_TOKEN") or os.getenv("SLACK_APP_TOKEN")
-        except Exception:
+            app_token = get_secret("SLACK_APP_TOKEN")
+        except UnscopedSecretError:
             app_token = os.getenv("SLACK_APP_TOKEN")
 
         if not raw_token:

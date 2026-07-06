@@ -159,6 +159,34 @@
   min-height: 7rem;
 }
 
+.hermes-workflows .hermes-workflows-prompt-editor {
+  min-height: 220px;
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.45;
+}
+
+.hermes-workflows .hermes-workflows-contract-editor {
+  min-height: 120px;
+  width: 100%;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.hermes-workflows .hermes-workflows-assistant {
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.35));
+  border-radius: 12px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--background, #0f172a) 92%, var(--foreground, #f8fafc) 8%);
+}
+
+.hermes-workflows .hermes-workflows-assistant textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+}
+
 .hermes-workflows button {
   border: 1px solid var(--color-border);
   border-radius: calc(var(--radius, 0.75rem) * 0.75);

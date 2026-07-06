@@ -167,6 +167,8 @@ def test_dashboard_bundle_contains_visual_editor_markers():
     assert "ReactFlowProvider" in bundle
     for marker in ["Background", "Controls", "MiniMap", "Handle", "Position"]:
         assert marker in bundle
+    for marker in ["upsertSpecEdge", "Connection added to workflow draft"]:
+        assert marker in bundle
 
     for node_type in [
         "trigger",
@@ -196,6 +198,24 @@ def test_dashboard_bundle_contains_visual_editor_markers():
         "execution_waiting",
     ]:
         assert marker in bundle
+
+
+def test_dashboard_bundle_contains_text_first_agent_cell_editor_markers():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+
+    for marker in [
+        "Cell editor",
+        "Agent cell prompt",
+        "Prompt assistant",
+        "Advanced JSON",
+        "applyAgentCellForm",
+        "renderAgentCellEditor",
+        "promptText",
+        "resultContractText",
+    ]:
+        assert marker in bundle
+
+    assert "Apply node JSON" in bundle  # still available only as advanced escape hatch
 
 
 def test_dashboard_bundle_contains_workflow_mvp_api_and_ui_markers():
@@ -232,6 +252,12 @@ def test_dashboard_css_is_scoped_to_workflows_plugin():
     css_file = PLUGIN_DIR / "dist" / "style.css"
     css = css_file.read_text(encoding="utf-8")
     assert ".hermes-workflows" in css
+    for marker in [
+        ".hermes-workflows-prompt-editor",
+        ".hermes-workflows-contract-editor",
+        ".hermes-workflows-assistant",
+    ]:
+        assert marker in css
 
 
 def test_validate_deploy_list_show_roundtrip(client):

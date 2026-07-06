@@ -212,6 +212,64 @@
     return cleaned;
   }
 
+  function cloneSpec(spec) {
+    return JSON.parse(JSON.stringify(spec || {}));
+  }
+
+  function specToEditorText(spec) {
+    return JSON.stringify(spec || {}, null, 2);
+  }
+
+  function findSpecNode(spec, nodeId) {
+    if (!spec || !nodeId) return null;
+    if (Array.isArray(spec.nodes)) {
+      return spec.nodes.find(function (node) { return (node.id || node.name) === nodeId; }) || null;
+    }
+    return spec.nodes && spec.nodes[nodeId] ? Object.assign({ id: nodeId }, spec.nodes[nodeId]) : null;
+  }
+
+  function upsertSpecNode(spec, nodeId, nextNode) {
+    const next = cloneSpec(spec);
+    const clean = Object.assign({}, nextNode || {});
+    const nextId = clean.id || nodeId;
+    delete clean.id;
+    if (!nextId) return next;
+    if (Array.isArray(next.nodes)) {
+      const nodeWithId = Object.assign({ id: nextId }, clean);
+      const sourceIndex = next.nodes.findIndex(function (node) {
+        const id = node && (node.id || node.name);
+        return id === nodeId;
+      });
+      const targetIndex = next.nodes.findIndex(function (node) {
+        const id = node && (node.id || node.name);
+        return id === nextId;
+      });
+      const index = sourceIndex >= 0 ? sourceIndex : targetIndex;
+      if (index >= 0) {
+        next.nodes[index] = nodeWithId;
+        next.nodes = next.nodes.filter(function (node, nodeIndex) {
+          const id = node && (node.id || node.name);
+          return nodeIndex === index || id !== nextId;
+        });
+      } else next.nodes.push(nodeWithId);
+      return next;
+    }
+    next.nodes = next.nodes || {};
+    if (nodeId && nodeId !== nextId) delete next.nodes[nodeId];
+    next.nodes[nextId] = clean;
+    return next;
+  }
+
+  function upsertSpecEdge(spec, source, target) {
+    const next = cloneSpec(spec);
+    next.edges = asArray(next.edges);
+    const exists = next.edges.some(function (edge) {
+      return (edge.from || edge.source) === source && (edge.to || edge.target) === target;
+    });
+    if (!exists && source && target) next.edges.push({ from: source, to: target });
+    return next;
+  }
+
   function WorkflowsPage() {
     const useState = React.useState;
     const useEffect = React.useEffect;
@@ -233,6 +291,21 @@
     const stateNodeJson = useState("");
     const nodeJson = stateNodeJson[0];
     const setNodeJson = stateNodeJson[1];
+    const statePromptText = useState("");
+    const promptText = statePromptText[0];
+    const setPromptText = statePromptText[1];
+    const stateResultContractText = useState("{}");
+    const resultContractText = stateResultContractText[0];
+    const setResultContractText = stateResultContractText[1];
+    const stateAgentProfile = useState("");
+    const agentProfile = stateAgentProfile[0];
+    const setAgentProfile = stateAgentProfile[1];
+    const stateAgentTitle = useState("");
+    const agentTitle = stateAgentTitle[0];
+    const setAgentTitle = stateAgentTitle[1];
+    const stateAdvancedJsonOpen = useState(false);
+    const advancedJsonOpen = stateAdvancedJsonOpen[0];
+    const setAdvancedJsonOpen = stateAdvancedJsonOpen[1];
     const stateNodeMessage = useState("");
     const nodeMessage = stateNodeMessage[0];
     const setNodeMessage = stateNodeMessage[1];
@@ -294,6 +367,12 @@
       setSelectedNode(node);
       setNodeJson(jsonBlock(node));
       setNodeMessage("");
+      setAdvancedJsonOpen(false);
+      const rawPrompt = node ? node.prompt : undefined;
+      setAgentProfile(node && node.profile ? String(node.profile) : "");
+      setAgentTitle(node && node.title ? String(node.title) : "");
+      setPromptText(rawPrompt === null || rawPrompt === undefined ? "" : (typeof rawPrompt === "string" ? rawPrompt : jsonBlock(rawPrompt)));
+      setResultContractText(jsonBlock((node && node.result_contract) || {}));
     }
 
     function loadDefinition(workflowId) {
@@ -526,6 +605,39 @@
       setNodeMessage("Applied node JSON to editor draft.");
     }
 
+    function applyAgentCellForm() {
+      if (!selectedNode) return;
+      const spec = activeSpec();
+      if (!spec) {
+        setNodeMessage("Validate the YAML draft before applying cell edits; no stale workflow was used.");
+        return;
+      }
+      const nextNode = Object.assign({}, selectedNode, {
+        type: "agent_task",
+        profile: agentProfile.trim(),
+        title: agentTitle.trim() || selectedNode.id,
+        prompt: promptText,
+      });
+      const contractText = resultContractText.trim();
+      if (contractText) {
+        const contract = parseJsonObject(contractText);
+        if (!contract) {
+          setNodeMessage("Result contract JSON must be a JSON object.");
+          return;
+        }
+        nextNode.result_contract = contract;
+      } else {
+        delete nextNode.result_contract;
+      }
+      const nextSpec = upsertSpecNode(spec, selectedNode.id, cleanedNodeForSpec(nextNode));
+      updateEditorText(specToEditorText(nextSpec));
+      setDraftSpec(nextSpec);
+      setSelectedDefinition(Object.assign({}, selectedDefinition || {}, { spec: nextSpec }));
+      setSelectedNode(nextNode);
+      setNodeJson(jsonBlock(nextNode));
+      setNodeMessage("Applied agent cell prompt to workflow draft.");
+    }
+
     function renderDefinitionList() {
       return h("div", { className: "hermes-workflows-list" },
         definitions.length ? definitions.map(function (definition) {
@@ -626,22 +738,68 @@
       );
     }
 
+    function renderAdvancedNodeJson(spec) {
+      return h("div", { className: "hermes-workflows-stack" },
+        h("h3", null, "Advanced JSON"),
+        h("textarea", {
+          className: "hermes-workflows-node-json",
+          value: nodeJson,
+          onChange: function (event) { setNodeJson(event.target.value); },
+        }),
+        h("div", { className: "hermes-workflows-row" },
+          h("button", { type: "button", onClick: applyNodeJson }, "Apply node JSON"),
+          h("button", { type: "button", onClick: useJsonDraft, disabled: !spec }, "Use JSON draft")
+        )
+      );
+    }
+
+    function renderAgentCellEditor() {
+      return h("div", { className: "hermes-workflows-stack" },
+        h("h3", null, "Cell editor"),
+        h("div", { className: "hermes-workflows-meta" }, "Agent task " + safeString(selectedNode.id)),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Assigned profile"),
+          h("input", { value: agentProfile, onChange: function (event) { setAgentProfile(event.target.value); }, placeholder: "reviewer" })
+        ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Task title"),
+          h("input", { value: agentTitle, onChange: function (event) { setAgentTitle(event.target.value); }, placeholder: "Review change" })
+        ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Agent cell prompt"),
+          h("textarea", { className: "hermes-workflows-prompt-editor", value: promptText, onChange: function (event) { setPromptText(event.target.value); }, placeholder: "Tell the assigned profile exactly what to do. Use ${ input.foo } or ${ node.previous.output.bar } for workflow context." })
+        ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Result contract JSON (optional)"),
+          h("textarea", { className: "hermes-workflows-contract-editor", value: resultContractText, onChange: function (event) { setResultContractText(event.target.value); } })
+        ),
+        h("div", { className: "hermes-workflows-row" },
+          h("button", { type: "button", onClick: applyAgentCellForm, className: "hermes-workflows-primary" }, "Apply cell prompt"),
+          h("button", { type: "button", disabled: true, title: "Prompt assistant is added in a later task." }, "Prompt assistant"),
+          h("button", { type: "button", onClick: function () { setAdvancedJsonOpen(!advancedJsonOpen); } }, advancedJsonOpen ? "Hide Advanced JSON" : "Advanced JSON")
+        )
+      );
+    }
+
+    function renderBasicCellEditor() {
+      return h("div", { className: "hermes-workflows-stack" },
+        h("h3", null, "Cell editor"),
+        h("div", { className: "hermes-workflows-meta" }, "Node " + safeString(selectedNode.id)),
+        h("p", { className: "hermes-workflows-muted" }, "This node type does not have a prompt form yet. Use Advanced JSON for full node settings."),
+        h("div", { className: "hermes-workflows-row" },
+          h("button", { type: "button", onClick: function () { setAdvancedJsonOpen(!advancedJsonOpen); } }, advancedJsonOpen ? "Hide Advanced JSON" : "Advanced JSON")
+        )
+      );
+    }
+
     function renderInspector(spec) {
       return h("aside", { className: "hermes-workflows-inspector" },
         h("h3", null, "Node inspector"),
         selectedNode ? h("div", { className: "hermes-workflows-stack" },
-          h("div", { className: "hermes-workflows-meta" }, "selectedNode " + safeString(selectedNode.id)),
-          h("textarea", {
-            className: "hermes-workflows-node-json",
-            value: nodeJson,
-            onChange: function (event) { setNodeJson(event.target.value); },
-          }),
-          h("div", { className: "hermes-workflows-row" },
-            h("button", { type: "button", onClick: applyNodeJson }, "Apply node JSON"),
-            h("button", { type: "button", onClick: useJsonDraft, disabled: !spec }, "Use JSON draft")
-          ),
+          selectedNode.type === "agent_task" ? renderAgentCellEditor() : renderBasicCellEditor(),
+          advancedJsonOpen ? renderAdvancedNodeJson(spec) : null,
           nodeMessage ? h("p", { className: "hermes-workflows-muted" }, nodeMessage) : null
-        ) : h("p", { className: "hermes-workflows-muted" }, "Select a node to edit its JSON. YAML drafts are preserved until you choose Use JSON draft.")
+        ) : h("p", { className: "hermes-workflows-muted" }, "Select a node to edit its cell settings. Advanced JSON remains available after selecting a node.")
       );
     }
 
@@ -664,7 +822,16 @@
               onEdgesChange: applyEdgeChanges ? function (changes) { setFlowEdges(applyEdgeChanges(changes, flowEdges)); } : undefined,
               onConnect: addEdge ? function (connection) {
                 setFlowEdges(addEdge(Object.assign({ label: "draft", markerEnd: { type: MarkerType.ArrowClosed } }, connection), flowEdges));
-                setStatus("Draft connection added visually; edit YAML/JSON to persist it.");
+                const spec = activeSpec();
+                if (spec && connection.source && connection.target) {
+                  const source = connection.sourceHandle ? connection.source + "." + connection.sourceHandle : connection.source;
+                  const nextSpec = upsertSpecEdge(spec, source, connection.target);
+                  updateEditorText(specToEditorText(nextSpec));
+                  setDraftSpec(nextSpec);
+                  setStatus("Connection added to workflow draft.");
+                } else {
+                  setStatus("Draft connection added visually; validate/select a workflow to persist it.");
+                }
               } : undefined,
             },
               Background ? h(Background, null) : null,

@@ -88,6 +88,7 @@ gateway:
     not_enough:            "Conversazione insufficiente da comprimere (servono almeno 4 messaggi)."
     no_provider:           "Nessun provider configurato — impossibile comprimere."
     nothing_to_do:         "Niente da comprimere per ora (la trascrizione è ancora tutta contesto protetto)."
+    aggressive_unsupported: "--aggressive non è supportato; usa '/compress here [N]' per conservare solo gli scambi recenti, oppure /undo per rimuovere i turni."
     focus_line:            "Focus: \"{topic}\""
     summary_failed:        "⚠️ Generazione del riepilogo non riuscita ({error}). {count} messaggio/i storico/i sono stati rimossi e sostituiti con un segnaposto; il contesto precedente non è più recuperabile. Considera di controllare la configurazione del modello auxiliary.compression."
     aborted:               "⚠️ Compressione interrotta ({error}). Nessun messaggio è stato eliminato — la conversazione è invariata. Esegui /compress per riprovare, /reset per una nuova sessione, o controlla la configurazione del modello auxiliary.compression."
@@ -106,6 +107,8 @@ gateway:
     no_pending:            "Nessun comando in attesa da negare."
     denied_singular:       "❌ Comando negato."
     denied_plural:         "❌ Comandi negati ({count} comandi)."
+    denied_reason_singular: "❌ Comando negato. Motivo inoltrato all'agente: \"{reason}\""
+    denied_reason_plural:  "❌ Comandi negati ({count} comandi). Motivo inoltrato all'agente: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast è disponibile solo per i modelli OpenAI che supportano Priority Processing."
@@ -367,6 +370,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_new:              "⚙️ Progresso strumenti: **NEW** — mostrato quando lo strumento cambia (lunghezza anteprima: `display.tool_preview_length`, predefinito 40)."
     mode_all:              "⚙️ Progresso strumenti: **ALL** — ogni chiamata a uno strumento viene mostrata (lunghezza anteprima: `display.tool_preview_length`, predefinito 40)."
     mode_verbose:          "⚙️ Progresso strumenti: **VERBOSE** — ogni chiamata a uno strumento con argomenti completi."
+    mode_log:              "⚙️ Progresso strumenti: **LOG** — silenzioso in chat; le chiamate agli strumenti vengono scritte in ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(salvato per **{platform}** — verrà applicato al prossimo messaggio)_"
     save_failed:           "_(impossibile salvare nella configurazione: {error})_"
 

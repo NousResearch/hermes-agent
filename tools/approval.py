@@ -370,15 +370,16 @@ HARDLINE_PATTERNS = [
     #
     # The path token matches any root-anchored path whose components collapse
     # back to "/" in the shell: a bare "/", repeated slashes ("//"), and
-    # "."/".." current/parent segments ("/.", "/./", "/..") all resolve to
-    # root, optionally followed by a trailing glob ("/*", "//*"). The earlier
-    # "/|/\*|/ \*" form only caught the literal "/" / "/*" spellings, so
-    # `rm -rf //`, `rm -rf /.`, `rm -rf /./`, `rm -rf /..` and `rm -rf //*`
-    # silently slipped the hardline floor and executed under --yolo /
-    # approvals.mode=off / cron approve-mode. A trailing real segment
-    # (e.g. "/tmp", "/home", "/.ssh") still fails to match here and stays
-    # with the softer DANGEROUS_PATTERNS / system-directory rules.
-    (_RM_FLAG_PREFIX + _hardline_rm_path(r'/[/.]*\**'), "recursive delete of root filesystem"),
+    # "."/".." current/parent segments ("/.", "/./", "/..", "/../..") all
+    # resolve to root, optionally followed by a trailing glob ("/*", "//*").
+    # Each inter-slash segment must be exactly "." or "..", so a longer dot
+    # run or any real name is a literal directory, NOT root — "/tmp", "/home",
+    # "/.ssh", "/.config" and even "/..." (a dir literally named "...") fall
+    # through to the softer DANGEROUS_PATTERNS / system-directory rules
+    # instead of being unconditionally hardline-blocked. The explicit "/ \*"
+    # alt preserves the slash-space-glob spelling (`rm -rf / *`, which the
+    # shell sees as two args: "/" plus the "*" glob).
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Filesystem format
@@ -459,6 +460,53 @@ def detect_hardline_command(command: str) -> tuple:
             if pattern_re.search(normalized):
                 return (True, description)
     return (False, None)
+
+
+def _match_user_deny_rule(command: str) -> str | None:
+    """Return the matching ``approvals.deny`` glob, or None.
+
+    ``approvals.deny`` in config.yaml is a user-defined list of fnmatch
+    globs that block a command unconditionally — like the hardline floor,
+    a deny match fires BEFORE the yolo / mode=off bypass. It is the
+    user-editable counterpart to the code-shipped hardline blocklist:
+    "never let the agent run this, even under yolo".
+
+    Matching is case-insensitive and runs over the same normalized /
+    deobfuscated command variants the dangerous-pattern detector uses, so
+    quoting tricks (``r\\m``, ``git st""atus``) can't sidestep a rule any
+    more easily than they sidestep detection. Empty/absent list = no-op.
+    """
+    try:
+        deny_patterns = _get_approval_config().get("deny") or []
+    except Exception:
+        return None
+    if not deny_patterns:
+        return None
+    globs = [p.strip() for p in deny_patterns
+             if isinstance(p, str) and p.strip()]
+    if not globs:
+        return None
+    for command_variant in _command_detection_variants(command):
+        candidate = command_variant.lower().strip()
+        for pattern in globs:
+            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+                return pattern
+    return None
+
+
+def _user_deny_block_result(pattern: str) -> dict:
+    """Build the standard block result for an ``approvals.deny`` match."""
+    return {
+        "approved": False,
+        "user_deny": True,
+        "message": (
+            f"BLOCKED: this command matches the user-defined deny rule "
+            f"'{pattern}' (approvals.deny in config.yaml). It cannot be "
+            "executed via the agent — not even with --yolo, /yolo, or "
+            "approvals.mode=off. Do NOT retry or rephrase this command; "
+            "the user has explicitly forbidden it."
+        ),
+    }
 
 
 def _hardline_block_result(description: str) -> dict:
@@ -1370,12 +1418,16 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result")
+    __slots__ = ("event", "data", "result", "reason")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+        # Optional free-text reason supplied with an explicit deny
+        # (``/deny <reason>``) so the agent can adapt instead of only
+        # hearing "denied". Ported from qwibitai/nanoclaw#2832.
+        self.reason: Optional[str] = None
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
@@ -1408,13 +1460,18 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
-                             resolve_all: bool = False) -> int:
+                             resolve_all: bool = False,
+                             reason: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
     When *resolve_all* is True every pending approval in the session is
     resolved at once (``/approve all``).  Otherwise only the oldest one
     is resolved (FIFO).
+
+    *reason* is an optional free-text explanation attached to an explicit
+    deny (``/deny <reason>``).  It is relayed back to the agent in the
+    BLOCKED message so it can adapt instead of only hearing "denied".
 
     Returns the number of approvals resolved (0 means nothing was pending).
     """
@@ -1432,6 +1489,8 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
     for entry in targets:
         entry.result = choice
+        if reason:
+            entry.reason = reason
         entry.event.set()
     return len(targets)
 
@@ -1981,6 +2040,15 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    # User-defined deny rules (approvals.deny in config.yaml): like the
+    # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
+    # user saying "never, even under yolo".
+    deny_pattern = _match_user_deny_rule(command)
+    if deny_pattern is not None:
+        logger.warning("User deny rule %r blocked command: %s",
+                       deny_pattern, command[:200])
+        return _user_deny_block_result(deny_pattern)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
@@ -2206,7 +2274,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         surface=surface,
         choice=_outcome,
     )
-    return {"resolved": resolved, "choice": choice}
+    return {"resolved": resolved, "choice": choice, "reason": entry.reason}
 
 
 def check_all_command_guards(command: str, env_type: str,
@@ -2247,6 +2315,15 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # User-defined deny rules (approvals.deny in config.yaml): like the
+    # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny
+    # rule is the user saying "never, even under yolo".
+    deny_pattern = _match_user_deny_rule(command)
+    if deny_pattern is not None:
+        logger.warning("User deny rule %r blocked command: %s",
+                       deny_pattern, command[:200])
+        return _user_deny_block_result(deny_pattern)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
@@ -2480,6 +2557,7 @@ def check_all_command_guards(command: str, env_type: str,
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]
+            deny_reason = decision.get("reason")
 
             if not resolved or choice is None or choice == "deny":
                 # Consent contract: silence is NOT consent, and an explicit
@@ -2495,21 +2573,28 @@ def check_all_command_guards(command: str, env_type: str,
                     reason = "denied by user"
                     timeout_addendum = ""
                     outcome = "denied"
+                # An explicit deny may carry a free-text reason
+                # (``/deny <reason>``) so the agent can adapt rather than only
+                # hearing "denied". Relayed verbatim; generic attribution.
+                reason_addendum = ""
+                if outcome == "denied" and deny_reason:
+                    reason_addendum = f' Reason given by the user: "{deny_reason}".'
                 return {
                     "approved": False,
                     "message": (
-                        f"BLOCKED: Command {reason}. The user has NOT consented "
-                        f"to this action. Do NOT retry this command, do NOT "
-                        f"rephrase it, and do NOT attempt the same outcome via "
-                        f"a different command. Stop the current workflow and "
-                        f"wait for the user to respond before taking any "
-                        f"further destructive or irreversible action."
-                        f"{timeout_addendum}"
+                        f"BLOCKED: Command {reason}.{reason_addendum} The user "
+                        f"has NOT consented to this action. Do NOT retry this "
+                        f"command, do NOT rephrase it, and do NOT attempt the "
+                        f"same outcome via a different command. Stop the "
+                        f"current workflow and wait for the user to respond "
+                        f"before taking any further destructive or "
+                        f"irreversible action.{timeout_addendum}"
                     ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
                     "outcome": outcome,
                     "user_consent": False,
+                    "deny_reason": deny_reason,
                 }
 
             # User approved — persist based on scope (same logic as CLI)
@@ -2773,22 +2858,27 @@ def check_execute_code_guard(code: str, env_type: str,
 
     resolved = decision["resolved"]
     choice = decision["choice"]
+    deny_reason = decision.get("reason")
 
     if not resolved or choice is None or choice == "deny":
         reason = "timed out without user response" if not resolved else "denied by user"
         addendum = " Silence is not consent." if not resolved else ""
+        reason_addendum = ""
+        if resolved and choice == "deny" and deny_reason:
+            reason_addendum = f' Reason given by the user: "{deny_reason}".'
         return {
             "approved": False,
             "message": (
-                f"BLOCKED: execute_code script {reason}. The user has NOT "
-                f"consented to running this code. Do NOT retry, do NOT rephrase "
-                f"the script, and do NOT attempt the same outcome via a "
-                f"different tool.{addendum}"
+                f"BLOCKED: execute_code script {reason}.{reason_addendum} The "
+                f"user has NOT consented to running this code. Do NOT retry, "
+                f"do NOT rephrase the script, and do NOT attempt the same "
+                f"outcome via a different tool.{addendum}"
             ),
             "pattern_key": pattern_key,
             "description": description,
             "outcome": "timeout" if not resolved else "denied",
             "user_consent": False,
+            "deny_reason": deny_reason,
         }
 
     # Approved — persist based on scope (same logic as check_all_command_guards).

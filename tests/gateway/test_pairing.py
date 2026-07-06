@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -651,3 +652,71 @@ class TestListAndClear:
             store.generate_code("discord", "user2")
             count = store.clear_pending()
         assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# Unreadable approved-list file logs a warning instead of failing silently
+# (issue #10270: Docker `docker exec` writes root-owned 0600 files that the
+# post-gosu gateway can't read; the previous OSError swallow turned the bug
+# into a mystery "Unauthorized user" message)
+# ---------------------------------------------------------------------------
+
+
+class TestUnreadablePairingFile:
+    def test_permission_error_logs_warning_and_returns_empty(self, tmp_path, caplog):
+        import logging
+        import builtins
+
+        approved_path = tmp_path / "weixin-approved.json"
+        approved_path.write_text(
+            '{"o9cq80fake@im.wechat": {"user_name": "x", "approved_at": 0}}'
+        )
+
+        real_open = builtins.open
+
+        def fake_read_text(self, *a, **kw):
+            # Path.read_text uses Path.open internally; raise PermissionError
+            # to mimic a 0600 file owned by a different uid.
+            raise PermissionError(13, "Permission denied", str(self))
+
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+             patch.object(Path, "read_text", fake_read_text), \
+             caplog.at_level(logging.WARNING, logger="gateway.pairing"):
+            store = PairingStore()
+            result = store._load_json(approved_path)
+
+        assert result == {}, "should fall back to empty dict, not raise"
+        assert any(
+            "not readable" in rec.getMessage() and "#10270" not in rec.getMessage()
+            or "not readable" in rec.getMessage()
+            for rec in caplog.records
+        ), f"expected a warning about unreadable pairing file, got {caplog.records!r}"
+        # And the warning should include actionable advice
+        msgs = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "docker exec" in msgs
+        assert "-u hermes" in msgs
+
+    def test_is_approved_returns_false_when_file_unreadable(self, tmp_path, caplog):
+        """End-to-end: an unreadable approved.json must not crash the gateway,
+        and the affected user must stay unauthorized (the documented fallback
+        behaviour) rather than triggering a 500."""
+        import logging
+
+        approved_path = tmp_path / "weixin-approved.json"
+        approved_path.write_text(
+            '{"o9cq80fake@im.wechat": {"user_name": "x", "approved_at": 0}}'
+        )
+
+        def fake_read_text(self, *a, **kw):
+            raise PermissionError(13, "Permission denied", str(self))
+
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+             patch.object(Path, "read_text", fake_read_text), \
+             caplog.at_level(logging.WARNING, logger="gateway.pairing"):
+            store = PairingStore()
+            ok = store.is_approved("weixin", "o9cq80fake@im.wechat")
+
+        assert ok is False
+        # The warning must fire — otherwise this is the silent-failure bug.
+        assert any(rec.levelno == logging.WARNING for rec in caplog.records), \
+            "PermissionError on approved.json must produce a WARNING log line"

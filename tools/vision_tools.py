@@ -36,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import uuid
+import tempfile
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
@@ -1568,27 +1569,30 @@ def _ytdlp_available() -> bool:
     return shutil.which("yt-dlp") is not None
 
 
-def _path_without_ffmpeg(path_value: str) -> str:
-    """Return PATH with directories containing ffmpeg/ffprobe/aria2c removed.
+def _make_ffmpeg_block_shim(parent_dir: Path) -> str:
+    """Create a shim bin dir whose ffmpeg/ffprobe/aria2c immediately fail.
 
-    Used to strip external downloaders from the yt-dlp child's PATH when the
-    SSRF proxy is active, so a format that would force an external (proxy-
-    ignoring) fetch fails closed instead of egressing un-proxied. yt-dlp's own
-    native downloader needs none of these for a progressive/single-file format.
+    Prepended to the child PATH when the SSRF proxy is active so a format that
+    would force an EXTERNAL (proxy-ignoring) fetch fails CLOSED — the shim
+    binaries exit non-zero, so yt-dlp cannot use ffmpeg/aria2c to egress
+    un-proxied. Unlike stripping whole PATH directories, this leaves every other
+    executable (deno/node — yt-dlp's JS-challenge solvers, git, etc.) reachable
+    on the real PATH. yt-dlp's own native downloader needs none of the shimmed
+    tools for a progressive/single-file format.
+
+    Returns the shim directory path (to be prepended to PATH).
     """
-    import os as _os
-    externals = ("ffmpeg", "ffprobe", "aria2c")
-    kept = []
-    for d in path_value.split(_os.pathsep):
-        if not d:
-            continue
-        has_external = any(
-            _os.path.exists(_os.path.join(d, x)) or _os.path.exists(_os.path.join(d, x + ".exe"))
-            for x in externals
+    shim = parent_dir / "nofetch-bin"
+    shim.mkdir(parents=True, exist_ok=True)
+    for name in ("ffmpeg", "ffprobe", "aria2c"):
+        p = shim / name
+        p.write_text(
+            "#!/bin/sh\n"
+            "echo 'blocked by SSRF proxy: external downloaders are disabled' >&2\n"
+            "exit 127\n"
         )
-        if not has_external:
-            kept.append(d)
-    return _os.pathsep.join(kept)
+        p.chmod(0o755)
+    return str(shim)
 
 
 def _ssrf_proxy_enabled() -> bool:
@@ -1666,7 +1670,7 @@ async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
     # force an external fetch fails closed instead of egressing un-proxied.
     use_proxy = _ssrf_proxy_enabled()
 
-    def _child_env(proxy_url):
+    def _child_env(proxy_url, shim_dir=None):
         env = dict(os.environ)
         if proxy_url:
             env["HTTP_PROXY"] = proxy_url
@@ -1676,12 +1680,15 @@ async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
             env["ALL_PROXY"] = proxy_url  # belt-only; HTTP(S)_PROXY are load-bearing
             env.pop("NO_PROXY", None)
             env.pop("no_proxy", None)
-            # Strip external downloaders from PATH so a required-external fetch
-            # ERRORS (fails closed) rather than silently egressing un-proxied.
-            env["PATH"] = _path_without_ffmpeg(env.get("PATH", ""))
+            # Prepend a shim dir whose ffmpeg/ffprobe/aria2c fail, so a
+            # required-external fetch ERRORS (fails closed) rather than silently
+            # egressing un-proxied — while leaving deno/node (yt-dlp's JS
+            # challenge solvers) and everything else on the real PATH reachable.
+            if shim_dir:
+                env["PATH"] = shim_dir + os.pathsep + env.get("PATH", "")
         return env
 
-    def _run(extra, proxy_url=None):
+    def _run(extra, proxy_url=None, shim_dir=None):
         import subprocess
         argv = list(base)
         if proxy_url:
@@ -1691,7 +1698,7 @@ async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
             argv,
             stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=180,
-            env=_child_env(proxy_url),
+            env=_child_env(proxy_url, shim_dir),
         )
         return proc
 
@@ -1716,30 +1723,43 @@ async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
 
     import subprocess as _sp
 
-    async def _run_safe(extra, proxy_url=None):
+    async def _run_safe(extra, proxy_url=None, shim_dir=None):
         # yt-dlp timing out raises TimeoutExpired instead of returning a proc.
         # Never let that escape with partials still on disk — always clean.
         try:
-            return await asyncio.to_thread(_run, extra, proxy_url), None
+            return await asyncio.to_thread(_run, extra, proxy_url, shim_dir), None
         except _sp.TimeoutExpired as e:
             _clean_partials()
             return None, e
 
     async def _do_download(proxy_url, proxy):
-        # Section-fallback args: with the proxy on, ffmpeg is stripped from PATH,
-        # so DON'T use --remux-video/--force-keyframes-at-cuts (they need ffmpeg).
-        # Native section download still finalizes an mp4 for a progressive format.
-        if proxy_url:
-            section_args = ["--download-sections", "*0-180"]
-        else:
-            section_args = ["--download-sections", "*0-180",
-                            "--force-keyframes-at-cuts", "--remux-video", "mp4"]
-        proc, err = await _run_safe([], proxy_url)
-        got = _find_output()
-        if got is None:
-            _clean_partials()
-            proc, err = await _run_safe(section_args, proxy_url)
+        # With the proxy on, ffmpeg is shimmed to fail (fail-closed), so DON'T
+        # use --remux-video/--force-keyframes-at-cuts (they need ffmpeg). Native
+        # section download still finalizes an mp4 for a progressive format.
+        shim_parent = Path(tempfile.mkdtemp(prefix="ssrf_shim_")) if proxy_url else None
+        shim_dir = _make_ffmpeg_block_shim(shim_parent) if shim_parent else None
+        try:
+            proc, err = await _run_safe([], proxy_url, shim_dir)
             got = _find_output()
+            if got is None:
+                _clean_partials()
+                if proxy_url:
+                    # Proxied path is ffmpeg-free (shim blocks it), so a
+                    # --download-sections fallback (which needs ffmpeg) can't run.
+                    # Instead retry with a smaller progressive format that fits
+                    # the 35M cap — still a single native download, no ffmpeg.
+                    fallback = ["-f", "b[height<=240][ext=mp4]/w[ext=mp4]/w",
+                                "--max-filesize", "35M"]
+                else:
+                    # Un-proxied path may use ffmpeg for a finalized 3-min section.
+                    fallback = ["--download-sections", "*0-180",
+                                "--force-keyframes-at-cuts", "--remux-video", "mp4"]
+                proc, err = await _run_safe(fallback, proxy_url, shim_dir)
+                got = _find_output()
+        finally:
+            if shim_parent is not None:
+                import shutil as _shutil
+                _shutil.rmtree(shim_parent, ignore_errors=True)
         if got is None:
             _clean_partials()
             stderr = (proc.stderr or "").strip()[:300] if proc is not None else "timed out"

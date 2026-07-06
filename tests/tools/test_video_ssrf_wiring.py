@@ -39,19 +39,20 @@ def test_ssrf_proxy_enabled_when_config_true(monkeypatch):
     assert vt._ssrf_proxy_enabled() is True
 
 
-def test_path_without_ffmpeg_strips_external_downloaders(tmp_path):
-    """A PATH dir containing ffmpeg/aria2c is removed; clean dirs kept."""
-    good = tmp_path / "good"
-    bad = tmp_path / "bad"
-    good.mkdir()
-    bad.mkdir()
-    # Plant an ffmpeg executable in `bad`.
-    (bad / "ffmpeg").write_text("#!/bin/sh\n")
-    (bad / "ffmpeg").chmod(0o755)
-    path_value = os.pathsep.join([str(good), str(bad)])
-    result = vt._path_without_ffmpeg(path_value)
-    assert str(good) in result
-    assert str(bad) not in result
+def test_ffmpeg_block_shim_disables_external_downloaders(tmp_path):
+    """The shim dir provides ffmpeg/ffprobe/aria2c that fail non-zero, while the
+    real PATH (deno/node/etc.) stays reachable when prepended."""
+    import subprocess as _sp
+    shim = vt._make_ffmpeg_block_shim(tmp_path)
+    for name in ("ffmpeg", "ffprobe", "aria2c"):
+        exe = Path(shim) / name
+        assert exe.exists() and os.access(exe, os.X_OK)
+        # Running the shim binary fails (fail-closed), never a real fetch.
+        rc = _sp.run([str(exe), "-version"], capture_output=True).returncode
+        assert rc != 0
+    # The shim is a single dir to PREPEND — it does not remove real PATH entries.
+    child_path = shim + os.pathsep + "/usr/local/bin:/usr/bin"
+    assert "/usr/local/bin" in child_path and "/usr/bin" in child_path
 
 
 @pytest.mark.asyncio

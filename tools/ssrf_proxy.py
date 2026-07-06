@@ -105,11 +105,11 @@ class SsrfFilteringProxy:
         tasks = list(self._tasks)
         for t in tasks:
             t.cancel()
-        for t in tasks:
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):
-                pass
+        if tasks:
+            # Give cancelled handlers a chance to unwind (close sockets) before
+            # the loop tears down, so no "Task was destroyed but pending" warning
+            # and no leaked fds.
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
 
     def _spawn(self, coro) -> None:

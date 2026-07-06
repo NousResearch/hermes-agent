@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from hermes_cli import workflows_db as wfdb
@@ -19,11 +21,50 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
     wfdb.init_db()
     with wfdb.connect() as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        node_run_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(workflow_node_runs)")
+        }
+        node_run_indexes = {
+            row["name"] for row in conn.execute("PRAGMA index_list(workflow_node_runs)")
+        }
     assert "workflow_definitions" in tables
     assert "workflow_executions" in tables
     assert "workflow_node_runs" in tables
     assert "workflow_events" in tables
     assert "workflow_schedules" in tables
+    assert "kanban_task_id" in node_run_columns
+    assert "idx_workflow_node_runs_kanban_task" in node_run_indexes
+
+
+def test_init_db_migrates_old_node_runs_kanban_task_id(tmp_path):
+    db_path = tmp_path / "workflows.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript("""
+        CREATE TABLE workflow_node_runs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            execution_id  TEXT NOT NULL,
+            node_id       TEXT NOT NULL,
+            status        TEXT NOT NULL,
+            input_json    TEXT,
+            output_json   TEXT,
+            error         TEXT,
+            started_at    INTEGER,
+            completed_at  INTEGER,
+            wait_until    INTEGER
+        );
+        """)
+
+    wfdb.init_db(db_path)
+
+    with wfdb.connect(db_path) as conn:
+        node_run_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(workflow_node_runs)")
+        }
+        node_run_indexes = {
+            row["name"] for row in conn.execute("PRAGMA index_list(workflow_node_runs)")
+        }
+    assert "kanban_task_id" in node_run_columns
+    assert "idx_workflow_node_runs_kanban_task" in node_run_indexes
 
 
 def test_deploy_definition_and_get_latest(tmp_path, monkeypatch):

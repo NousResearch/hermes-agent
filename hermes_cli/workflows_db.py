@@ -116,8 +116,6 @@ CREATE INDEX IF NOT EXISTS idx_workflow_executions_status
     ON workflow_executions(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_workflow_executions_definition
     ON workflow_executions(workflow_id, version);
-CREATE INDEX IF NOT EXISTS idx_workflow_node_runs_kanban_task
-    ON workflow_node_runs(kanban_task_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_events_execution
     ON workflow_events(execution_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_workflow_schedules_enabled
@@ -156,6 +154,10 @@ def init_db(db_path: Path | None = None) -> None:
             conn.execute("ALTER TABLE workflow_node_runs ADD COLUMN wait_until INTEGER")
         if "kanban_task_id" not in columns:
             conn.execute("ALTER TABLE workflow_node_runs ADD COLUMN kanban_task_id TEXT")
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_runs_kanban_task
+                ON workflow_node_runs(kanban_task_id)
+        """)
 
 
 @contextlib.contextmanager

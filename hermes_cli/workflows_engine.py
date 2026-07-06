@@ -240,9 +240,12 @@ def run_in_memory_until_waiting(
                 if _can_reach(spec, active_node_id, node_id):
                     expected_labels.add(owner[1])
             if expected_labels - branches.keys():
-                if runnable:
+                has_other_runnable = any(pending_node_id != node_id for pending_node_id, _ in runnable)
+                if has_other_runnable:
                     enqueue(node_id, branch_key)
-                elif not waiting_nodes:
+                elif waiting_nodes:
+                    runnable = deque(item for item in runnable if item[0] != node_id)
+                else:
                     return EngineResult(status="waiting", context=context, waiting_nodes=[node_id])
                 continue
             context["node"][node_id] = {"output": {"branches": branches}}

@@ -982,6 +982,36 @@ class GatewayStreamConsumer:
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
         if not continuation.strip():
+            # Telegram Desktop/macOS can lose a streamed preview after the
+            # cosmetic final edit fails. Opt-in adapters commit the answer with
+            # a fresh final send instead of treating the preview as durable
+            # delivery (#58958); other platforms keep the legacy suppression.
+            if (
+                final_text.strip()
+                and final_text == self._visible_prefix()
+                and getattr(
+                    self.adapter,
+                    "RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK",
+                    False,
+                ) is True
+            ):
+                empty_fallback_result = await self._send_empty_fallback_final(final_text)
+                if empty_fallback_result == "delivered":
+                    return
+                self._already_sent = True
+                self._fallback_prefix = ""
+                self._fallback_preserve_partial_messages = False
+                if empty_fallback_result == "ambiguous":
+                    # Timeout-style failures may already have reached Telegram;
+                    # keep suppressing gateway's full resend to avoid duplicates.
+                    self._final_content_delivered = True
+                else:
+                    # The commit send failed safely. Clear any earlier cosmetic
+                    # delivery flag so gateway/run.py can attempt its normal
+                    # final send instead of suppressing the answer.
+                    self._final_response_sent = False
+                    self._final_content_delivered = False
+                return
             # Nothing new to send — the visible partial already matches final text.
             # BUT: if final_text itself has meaningful content (e.g. a timeout
             # message after a long tool call), the prefix-based continuation
@@ -1111,6 +1141,86 @@ class GatewayStreamConsumer:
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
+
+    async def _send_empty_fallback_final(self, final_text: str) -> str:
+        """Commit a final answer even when the fallback tail is empty.
+
+        Returns ``"delivered"`` on confirmed fresh-send success, ``"failed"``
+        when a gateway-level final resend is safe, and ``"ambiguous"`` when a
+        timeout-like failure may already have reached Telegram.
+        """
+        stale_ids = set(self._preview_message_ids)
+        if self._message_id and self._message_id != "__no_edit__":
+            stale_ids.add(str(self._message_id))
+        result = None
+        for attempt in range(2):
+            try:
+                result = await self.adapter.send(
+                    chat_id=self.chat_id,
+                    content=final_text,
+                    metadata=self._metadata_for_send(final=True),
+                )
+            except Exception as e:
+                logger.debug("Empty fallback final send failed: %s", e)
+                return "ambiguous" if self._send_failure_may_have_delivered(e) else "failed"
+            if getattr(result, "success", False):
+                break
+            if attempt == 0 and self._is_flood_error(result):
+                delay = float(getattr(result, "retry_after", None) or 3.0)
+                logger.debug(
+                    "Flood control on empty fallback final send; retrying in %.1fs",
+                    delay,
+                )
+                await asyncio.sleep(delay)
+            else:
+                return (
+                    "ambiguous"
+                    if self._send_failure_may_have_delivered(result)
+                    else "failed"
+                )
+
+        new_message_id = getattr(result, "message_id", None)
+        if stale_ids:
+            delete_fn = getattr(self.adapter, "delete_message", None)
+            if delete_fn is not None:
+                for stale_id in stale_ids:
+                    if not stale_id or stale_id == new_message_id:
+                        continue
+                    try:
+                        await delete_fn(self.chat_id, stale_id)
+                    except Exception as e:
+                        logger.debug(
+                            "Empty fallback preview cleanup failed (%s): %s",
+                            stale_id,
+                            e,
+                        )
+
+        self._preview_message_ids = set()
+        self._message_id = new_message_id or "__no_edit__"
+        self._already_sent = True
+        self._final_response_sent = True
+        self._final_content_delivered = True
+        self._last_sent_text = final_text
+        self._fallback_prefix = ""
+        self._fallback_preserve_partial_messages = False
+        self._notify_new_message()
+        return "delivered"
+
+    @staticmethod
+    def _send_failure_may_have_delivered(result_or_exc) -> bool:
+        """Return True for timeout-style send failures where retrying may duplicate.
+
+        Telegram's ``TimedOut`` can mean the Bot API request reached Telegram but
+        the client did not receive the response.  Adapter results use
+        ``retryable=False`` for that ambiguous case; avoid treating every
+        non-retryable hard failure (e.g. missing anchor, not connected) as
+        possibly delivered by also checking the error text/class.
+        """
+        if getattr(result_or_exc, "retryable", True) is not False:
+            return False
+        err = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
+        name = result_or_exc.__class__.__name__.lower()
+        return "timeout" in err or "timed out" in err or "timeout" in name
 
     def _is_flood_error(self, result) -> bool:
         """Check if a SendResult failure is due to flood control / rate limiting."""

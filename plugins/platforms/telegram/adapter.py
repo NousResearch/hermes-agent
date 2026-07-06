@@ -451,6 +451,14 @@ class TelegramAdapter(BasePlatformAdapter):
     # edit and the final edit, skipping the plain-text → MarkdownV2 conversion.
     # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
+    # If the final streaming edit fails after a complete preview was already
+    # visible, the generic stream consumer can otherwise treat the empty
+    # continuation as "already delivered" and suppress the gateway's normal
+    # final send. Telegram Desktop/macOS has been observed to briefly show and
+    # then remove that preview in this state (#58958), so Telegram asks the
+    # consumer to commit the answer with a fresh final send instead, followed by
+    # best-effort cleanup of the stale preview.
+    RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True
 
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":

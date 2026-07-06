@@ -1124,6 +1124,216 @@ class TestFinalContentDeliveredGuard:
         assert consumer._final_response_sent is True
 
     @pytest.mark.asyncio
+    async def test_empty_fallback_opt_in_resends_full_final_and_cleans_preview(self):
+        """Telegram/macOS regression #58958: when the finalize edit failed
+        after the complete preview was visible, an empty fallback tail must not
+        be treated as a durable final delivery for adapters that opt in. Commit
+        the answer with a fresh final send, then best-effort delete the preview.
+        """
+        adapter = MagicMock()
+        adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = True
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_2"),
+        )
+        adapter.delete_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "msg_1"
+        consumer._preview_message_ids = {"msg_0", "msg_1"}
+        consumer._already_sent = True
+        consumer._last_sent_text = "Final answer"
+        consumer._fallback_final_send = True
+
+        await consumer._send_fallback_final("Final answer")
+
+        adapter.send.assert_awaited_once()
+        assert adapter.send.await_args.kwargs["content"] == "Final answer"
+        assert adapter.send.await_args.kwargs["metadata"] == {"notify": True}
+        assert adapter.delete_message.await_count == 2
+        assert {call.args for call in adapter.delete_message.await_args_list} == {
+            ("chat_123", "msg_0"),
+            ("chat_123", "msg_1"),
+        }
+        assert consumer._message_id == "msg_2"
+        assert consumer._preview_message_ids == set()
+        assert consumer._final_response_sent is True
+        assert consumer._final_content_delivered is True
+
+    @pytest.mark.asyncio
+    async def test_empty_fallback_opt_in_failure_does_not_mark_final_delivered(self):
+        """If the fresh commit send fails, leave final-delivery flags false so
+        the gateway can attempt its normal final send instead of suppressing the
+        answer based on a non-durable Telegram preview (#58958)."""
+        adapter = MagicMock()
+        adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = True
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="network down"),
+        )
+        adapter.delete_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "msg_1"
+        consumer._already_sent = True
+        consumer._last_sent_text = "Final answer"
+        consumer._fallback_final_send = True
+        consumer._final_content_delivered = True  # set by a failed cosmetic final edit
+
+        await consumer._send_fallback_final("Final answer")
+
+        adapter.send.assert_awaited_once()
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._final_response_sent is False
+        assert consumer._final_content_delivered is False
+        assert consumer._fallback_final_send is False
+
+    @pytest.mark.asyncio
+    async def test_empty_fallback_ambiguous_timeout_preserves_duplicate_suppression(self):
+        """A Telegram timeout may have reached the Bot API; do not invite a
+        gateway-level duplicate full resend for that ambiguous failure."""
+        adapter = MagicMock()
+        adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = True
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(
+                success=False,
+                error="Timed out",
+                retryable=False,
+            ),
+        )
+        adapter.delete_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "msg_1"
+        consumer._already_sent = True
+        consumer._last_sent_text = "Final answer"
+        consumer._fallback_final_send = True
+
+        await consumer._send_fallback_final("Final answer")
+
+        adapter.send.assert_awaited_once()
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._final_response_sent is False
+        assert consumer._final_content_delivered is True
+
+    @pytest.mark.asyncio
+    async def test_empty_fallback_flood_retry_uses_retry_after(self, monkeypatch):
+        """Use Telegram's retry_after when the empty final commit hits flood
+        control, then mark final delivered after the retry succeeds."""
+        sleep = AsyncMock()
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+
+        adapter = MagicMock()
+        adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = True
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, error="retry after", retry_after=7.0),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ])
+        adapter.delete_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "msg_1"
+        consumer._already_sent = True
+        consumer._last_sent_text = "Final answer"
+        consumer._fallback_final_send = True
+
+        await consumer._send_fallback_final("Final answer")
+
+        assert adapter.send.await_count == 2
+        sleep.assert_awaited_once_with(7.0)
+        assert consumer._final_response_sent is True
+        assert consumer._final_content_delivered is True
+
+    @pytest.mark.asyncio
+    async def test_empty_fallback_final_send_preserves_thread_metadata(self):
+        """Fresh final sends must keep Telegram topic/reply metadata while
+        adding notify=True."""
+        adapter = MagicMock()
+        adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = True
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_2"),
+        )
+        adapter.delete_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        metadata = {
+            "thread_id": "topic-77",
+            "telegram_reply_to_message_id": 42,
+            "telegram_dm_topic_reply_fallback": True,
+        }
+        consumer = GatewayStreamConsumer(adapter, "chat_123", metadata=metadata)
+        consumer._message_id = "msg_1"
+        consumer._already_sent = True
+        consumer._last_sent_text = "Final answer"
+        consumer._fallback_final_send = True
+
+        await consumer._send_fallback_final("Final answer")
+
+        assert adapter.send.await_args.kwargs["metadata"] == {
+            **metadata,
+            "notify": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_run_loop_failed_empty_commit_clears_prior_delivery_flag(self):
+        """Full run-loop regression: a failed final edit can set
+        final_content_delivered before empty fallback runs; a safe failure of
+        the fresh commit send must clear that stale flag so the gateway can send
+        the final answer normally (#58958)."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = True
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=False, error="network down"),
+        ])
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="edit failed"),
+        )
+        adapter.delete_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+        consumer.on_delta("Final answer")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert adapter.send.await_count == 2
+        assert adapter.send.await_args_list[-1].kwargs["content"] == "Final answer"
+        assert consumer._final_response_sent is False
+        assert consumer._final_content_delivered is False
+
+    @pytest.mark.asyncio
+    async def test_empty_fallback_non_opt_in_preserves_legacy_suppression(self):
+        """Adapters that do not opt in keep the old empty-tail behavior: a
+        durable visible preview suppresses a duplicate final send."""
+        adapter = MagicMock()
+        adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = False
+        adapter.send = AsyncMock()
+        adapter.delete_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "msg_1"
+        consumer._already_sent = True
+        consumer._last_sent_text = "Final answer"
+        consumer._fallback_final_send = True
+
+        await consumer._send_fallback_final("Final answer")
+
+        adapter.send.assert_not_awaited()
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._final_response_sent is True
+        assert consumer._final_content_delivered is True
+
+    @pytest.mark.asyncio
     async def test_fallback_partial_send_does_not_mark_final_sent(self):
         """When fallback final send delivers only some chunks before failing,
         _final_response_sent must stay False so the gateway can still attempt

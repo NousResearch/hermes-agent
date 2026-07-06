@@ -759,3 +759,127 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# Null-valued structural keywords (NousResearch/hermes-agent#59386).
+#
+# A structural JSON-Schema keyword (``required``/``enum``/``items``/...) whose
+# value is JSON ``null`` makes strict OpenAI-compatible backends reject the
+# whole request with ``Invalid schema for function 'X': null is not of type
+# "array"``. The sanitizer must drop such keywords so the rest of the schema
+# still reaches the model.
+# ---------------------------------------------------------------------------
+
+def _has_null_structural_keyword(node) -> bool:
+    """True if any structural keyword anywhere in ``node`` is JSON ``null``."""
+    structural = {
+        "type", "properties", "required", "enum", "examples", "items",
+        "additionalProperties", "anyOf", "oneOf", "allOf", "$defs", "definitions",
+    }
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k in structural and v is None:
+                return True
+            if _has_null_structural_keyword(v):
+                return True
+    elif isinstance(node, list):
+        return any(_has_null_structural_keyword(item) for item in node)
+    return False
+
+
+def test_null_required_dropped():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": None,  # <-- null; strict backends reject the whole schema
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    assert "required" not in params
+    assert params["properties"]["name"] == {"type": "string"}
+
+
+def test_null_enum_dropped():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"role": {"type": "string", "enum": None}},
+    })]
+    out = sanitize_tool_schemas(tools)
+    role = out[0]["function"]["parameters"]["properties"]["role"]
+    assert "enum" not in role
+    assert role["type"] == "string"
+
+
+def test_null_items_dropped():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"tags": {"type": "array", "items": None}},
+    })]
+    out = sanitize_tool_schemas(tools)
+    tags = out[0]["function"]["parameters"]["properties"]["tags"]
+    assert "items" not in tags
+    assert tags["type"] == "array"
+
+
+def test_null_structural_keywords_dropped_at_every_depth():
+    """The exact #59386 shape: nulls nested under array ``items`` and props."""
+    tools = [_tool("delegate_task", {
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "items": None,               # null items
+            },
+            "role": {"type": "string", "enum": None},  # null enum
+        },
+        "required": None,                    # null required
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert not _has_null_structural_keyword(out[0]), out[0]
+
+
+def test_null_type_falls_back_to_object():
+    """``type: null`` collapses to a default object schema, not a bare null."""
+    tools = [_tool("t", {"type": None})]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+
+
+def test_null_default_and_const_preserved():
+    """``default``/``const`` legitimately allow JSON null — never drop them."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "x": {"type": "string", "default": None, "const": None},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    x = out[0]["function"]["parameters"]["properties"]["x"]
+    assert x["default"] is None
+    assert x["const"] is None
+
+
+def test_valid_structural_keywords_untouched():
+    """Non-null arrays/objects pass through unchanged (no false positives)."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"goal": {"type": "string"}},
+                    "required": ["goal"],
+                },
+            },
+        },
+        "required": ["tasks"],
+    }
+    tools = [_tool("delegate_task", copy.deepcopy(schema))]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    assert params["required"] == ["tasks"]
+    items = params["properties"]["tasks"]["items"]
+    assert items["required"] == ["goal"]
+    assert items["properties"]["goal"] == {"type": "string"}

@@ -807,15 +807,24 @@ def resolve_billing_route(
         canonical = _normalize_gemini_bridge_model(model)
         # Only price models the bridge actually fronts. An id that isn't a known
         # fronted model — even a prefix-valid one like "gemini-2.0-flash" that
-        # _infer_vendor_from_model would map to google — routes "unknown" so a
+        # _infer_vendor_from_model would map to google — routes as unsupported so a
         # misconfigured/unsupported bridge model surfaces in diagnostics/rollups
         # instead of masquerading as a valid priced route.
+        #
+        # Uses the distinct "unsupported_notional" billing_mode (NOT bare
+        # "unknown") so _lookup_official_docs_pricing can suppress its M1 vendor
+        # fallback for THIS case only. A bare "unknown" would be re-priced by M1 —
+        # which infers the vendor from the model id (gemini-2.0-flash → google) and
+        # would resurrect exactly the $0.50-at-Google-rates route we mean to reject.
+        # M1 must keep working for its real job (a vendor-named model on a
+        # mismatched/unknown provider, e.g. a custom localhost endpoint), so we
+        # can't blanket-guard M1 on "unknown"; the sentinel scopes the suppression.
         if canonical not in _GEMINI_BRIDGE_CANONICAL_MODELS:
             return BillingRoute(
                 provider="unknown",
                 model=canonical,
                 base_url=base_url or "",
-                billing_mode="unknown",
+                billing_mode="unsupported_notional",
             )
         vendor = _infer_vendor_from_model(canonical)
         if not vendor:
@@ -823,7 +832,7 @@ def resolve_billing_route(
                 provider="unknown",
                 model=canonical,
                 base_url=base_url or "",
-                billing_mode="unknown",
+                billing_mode="unsupported_notional",
             )
         return BillingRoute(
             provider=vendor,
@@ -988,6 +997,16 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
     # guarded by ``vendor != route.provider`` so the inner call (provider == vendor)
     # cannot re-infer-and-recurse (RC-5 termination). Fixes Class A (openai/claude-*)
     # and every future proxy/bridge lane with a vendor-named model.
+    #
+    # EXCEPTION: a notional subscription bridge that already rejected this model as
+    # unsupported (billing_mode "unsupported_notional") must NOT be re-priced here.
+    # M1 would infer the vendor from the id (e.g. gemini-2.0-flash → google) and
+    # resurrect the exact $0.50-at-Google-rates route resolve_billing_route
+    # deliberately refused — masking a misconfigured/unsupported bridge model as a
+    # valid priced route. The bridge's supported set is known and small, so an
+    # unsupported-but-vendor-named id stays unpriced by design.
+    if route.billing_mode == "unsupported_notional":
+        return None
     vendor = _infer_vendor_from_model(route.model)
     if vendor and vendor != route.provider:
         return _lookup_official_docs_pricing(

@@ -344,7 +344,46 @@ def test_gemini_bridge_unknown_alias_routes_unknown_not_google():
     for model in bogus:
         route = resolve_billing_route(model, provider="gemini-bridge")
         assert route.provider == "unknown", f"{model}: {route.provider}"
-        assert route.billing_mode == "unknown", f"{model}: {route.billing_mode}"
+        assert route.billing_mode == "unsupported_notional", (
+            f"{model}: {route.billing_mode}"
+        )
+
+
+def test_gemini_bridge_unsupported_model_prices_none_not_google_rates():
+    """MONEY-PATH regression: an unsupported-but-prefix-valid bridge model
+    (gemini-2.0-flash — a real Google model the Ultra bridge does NOT front) must
+    price as unknown/$None through the ACTUAL cost entrypoint, NOT get resurrected
+    at Google rates by the M1 vendor fallback in _lookup_official_docs_pricing.
+
+    This is the bug the "unsupported_notional" sentinel exists to close:
+    resolve_billing_route returns provider="unknown", but M1 independently
+    re-infers the vendor from the model id (gemini-2.0-flash → google) and would
+    price it ~$0.50/Mtok unless the sentinel suppresses that one fallback.
+    """
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    for model in ("gemini-2.0-flash", "gemini-2.5-flash", "claude-opus-4-8", "gpt-5.5"):
+        result = estimate_usage_cost(model, usage, provider="gemini-bridge")
+        assert result.status == "unknown", f"{model}: {result.status}"
+        assert result.amount_usd is None, f"{model}: priced {result.amount_usd}, expected None"
+        assert not has_known_pricing(model, provider="gemini-bridge"), model
+
+
+def test_m1_vendor_fallback_still_prices_vendor_named_model_on_mismatched_provider():
+    """GUARD the sentinel didn't break M1's real job: a vendor-named model on a
+    MISMATCHED/unknown provider (not a notional bridge) must STILL price via the
+    M1 vendor fallback. The sentinel suppression must be scoped to
+    'unsupported_notional', never blanket-applied to every 'unknown' route — a
+    custom/localhost endpoint serving 'claude-opus-4-6' relies on M1 to price it.
+    """
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    # A real Anthropic model id arriving on a non-anthropic/unknown provider: M1
+    # infers vendor=anthropic and prices it. This is the exact case M1 was built for.
+    result = estimate_usage_cost("claude-opus-4-6", usage, provider="some-custom-proxy")
+    assert result.status == "estimated", f"status={result.status}"
+    assert result.amount_usd is not None and float(result.amount_usd) > 0, (
+        f"M1 fallback regressed: claude-opus-4-6 on a mismatched provider priced "
+        f"{result.amount_usd} (expected a positive amount via vendor inference)"
+    )
 
 
 _CODEX_STUB_METADATA = {

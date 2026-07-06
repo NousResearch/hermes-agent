@@ -7,6 +7,7 @@ from agent.usage_pricing import (
     get_pricing_entry,
     has_known_pricing,
     is_notional_anthropic_provider,
+    is_notional_subscription_bridge,
     normalize_usage,
     resolve_billing_route,
 )
@@ -273,6 +274,77 @@ def test_notional_anthropic_has_known_pricing():
     members and claude-pool, since it routes through resolve_billing_route."""
     for provider in _REPRESENTATIVE_NOTIONAL:
         assert has_known_pricing("claude-opus-4-8", provider=provider), provider
+
+
+# --- gemini-bridge (Google AI Ultra sub via agy) notional pricing ---------------
+# The bridge is POLY-VENDOR: one endpoint fronts Gemini 3.x + Claude 4.6 + GPT-OSS.
+# Each alias must normalize to a canonical priced model and route to the inferred
+# vendor at official-docs rates (status "estimated", never "unknown"/$0).
+_GEMINI_BRIDGE_CASES = [
+    # (model_arg, expected_vendor, expected_canonical, in$/Mtok, out$/Mtok)
+    ("gemini-flash", "google", "gemini-3.5-flash", 1.50, 9.00),
+    ("gemini-pro", "google", "gemini-3.1-pro", 2.00, 12.00),
+    ("claude-opus", "anthropic", "claude-opus-4-6", None, None),
+    ("claude-sonnet", "anthropic", "claude-sonnet-4-6", None, None),
+    ("gpt-oss", "openai", "gpt-oss-120b", 0.03, 0.15),
+    # the store records the provider-prefixed form too
+    ("gemini-bridge/gemini-flash", "google", "gemini-3.5-flash", 1.50, 9.00),
+]
+
+
+def test_gemini_bridge_is_notional_subscription_bridge():
+    assert is_notional_subscription_bridge("gemini-bridge")
+    assert is_notional_subscription_bridge("GEMINI-BRIDGE")
+    assert not is_notional_subscription_bridge("gemini")
+    assert not is_notional_subscription_bridge("claude-bridge")
+    assert not is_notional_subscription_bridge(None)
+    assert not is_notional_subscription_bridge("")
+
+
+def test_gemini_bridge_routes_alias_to_vendor():
+    """resolve_billing_route must normalize each bridge alias to its canonical
+    priced model and route to the inferred vendor with docs-snapshot billing."""
+    for model, vendor, canonical, _in, _out in _GEMINI_BRIDGE_CASES:
+        route = resolve_billing_route(model, provider="gemini-bridge")
+        assert route.provider == vendor, f"{model}: {route.provider}"
+        assert route.model == canonical, f"{model}: {route.model}"
+        assert route.billing_mode == "official_docs_snapshot", model
+
+
+def test_gemini_bridge_models_price_at_official_rates():
+    """Every gemini-bridge model must price 'estimated' (not 'unknown'/$0). For the
+    ones with explicit expected rates, assert the exact per-Mtok dollar figure."""
+    for model, _vendor, _canonical, in_rate, out_rate in _GEMINI_BRIDGE_CASES:
+        usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+        result = estimate_usage_cost(model, usage, provider="gemini-bridge")
+        assert result.status == "estimated", f"{model}: {result.status}"
+        assert result.amount_usd is not None, f"{model} priced None"
+        assert float(result.amount_usd) > 0, model
+        if in_rate is not None and out_rate is not None:
+            assert float(result.amount_usd) == round(in_rate + out_rate, 6), (
+                f"{model}: {result.amount_usd} != {in_rate + out_rate}"
+            )
+
+
+def test_gemini_bridge_has_known_pricing():
+    for model, *_ in _GEMINI_BRIDGE_CASES:
+        assert has_known_pricing(model, provider="gemini-bridge"), model
+
+
+def test_gemini_bridge_unknown_alias_routes_unknown_not_google():
+    """An unrecognized bridge model must route as 'unknown', NOT masquerade as a
+    priced route — covers BOTH (a) no known vendor prefix, and (b) a prefix-VALID
+    but unsupported id the bridge doesn't actually front (e.g. gemini-2.0-flash,
+    a real Google model but NOT one the Ultra bridge serves). Either way, pricing
+    it would misclassify a typo/misconfig as a valid route in diagnostics."""
+    bogus = (
+        "mistral-large", "totally-made-up", "flash", "opus",  # no vendor prefix
+        "gemini-2.0-flash", "gemini-2.5-flash", "claude-opus-4-8", "gpt-5.5",  # prefix-valid, not fronted
+    )
+    for model in bogus:
+        route = resolve_billing_route(model, provider="gemini-bridge")
+        assert route.provider == "unknown", f"{model}: {route.provider}"
+        assert route.billing_mode == "unknown", f"{model}: {route.billing_mode}"
 
 
 _CODEX_STUB_METADATA = {

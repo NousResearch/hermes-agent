@@ -3336,6 +3336,49 @@ def _reconnect_backoff(attempt: int) -> int:
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+def _resolve_auto_skill_content(
+    skill_names: list, *, platform_name: str, quick_key
+) -> tuple:
+    """Load auto-skill payload(s) for a channel/topic binding, skipping any
+    skill disabled for this platform (or globally).
+
+    Auto-skill bindings (``channel_skill_bindings``, Telegram DM Topics) load
+    via a raw identifier, bypassing ``get_skill_commands()``'s scan-time
+    disabled filter — an operator who disables a skill for this platform
+    still had its full content injected into every new session bound to it.
+    Re-check here, mirroring the stacked/bundle gates (#58888, #59156).
+
+    Returns ``(combined_message_parts, loaded_skill_names)``.
+    """
+    from agent.skill_commands import _load_skill_payload, _build_skill_message
+    from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
+
+    disabled = _get_plat_disabled(platform=platform_name)
+    combined_parts: list = []
+    loaded_names: list = []
+    for sname in skill_names:
+        loaded = _load_skill_payload(sname, task_id=quick_key)
+        if not loaded:
+            logger.warning("[Gateway] Auto-skill '%s' not found", sname)
+            continue
+        loaded_skill, skill_dir, display_name = loaded
+        if display_name in disabled or sname in disabled:
+            logger.warning(
+                "[Gateway] Auto-skill '%s' is disabled for %s, skipping",
+                sname, platform_name,
+            )
+            continue
+        note = (
+            f'[IMPORTANT: The "{display_name}" skill is auto-loaded. '
+            f"Follow its instructions for this session.]"
+        )
+        part = _build_skill_message(loaded_skill, skill_dir, note)
+        if part:
+            combined_parts.append(part)
+            loaded_names.append(sname)
+    return combined_parts, loaded_names
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -13555,23 +13598,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _is_new_session and _auto:
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
-                from agent.skill_commands import _load_skill_payload, _build_skill_message
-                _combined_parts: list[str] = []
-                _loaded_names: list[str] = []
-                for _sname in _skill_names:
-                    _loaded = _load_skill_payload(_sname, task_id=_quick_key)
-                    if _loaded:
-                        _loaded_skill, _skill_dir, _display_name = _loaded
-                        _note = (
-                            f'[IMPORTANT: The "{_display_name}" skill is auto-loaded. '
-                            f"Follow its instructions for this session.]"
-                        )
-                        _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
-                        if _part:
-                            _combined_parts.append(_part)
-                            _loaded_names.append(_sname)
-                    else:
-                        logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
+                _combined_parts, _loaded_names = _resolve_auto_skill_content(
+                    _skill_names, platform_name=_platform_name, quick_key=_quick_key,
+                )
                 if _combined_parts:
                     # Append the user's original text after all skill payloads
                     _combined_parts.append(event.text)

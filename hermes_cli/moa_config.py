@@ -110,6 +110,12 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         raw = {}
 
     raw_refs = raw.get("reference_models")
+    # reference_models may be a JSON string (hand-edited config.yaml) or a list.
+    if isinstance(raw_refs, str):
+        try:
+            raw_refs = json.loads(raw_refs)
+        except (json.JSONDecodeError, ValueError):
+            raw_refs = []
     if not isinstance(raw_refs, list):
         # A hand-edited scalar / single mapping (or a bad type) must degrade to
         # defaults instead of crashing the iteration, mirroring the tolerance

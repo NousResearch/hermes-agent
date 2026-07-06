@@ -2250,6 +2250,24 @@ def _strip_media_directives(text: str) -> str:
     return _strip_media_tag_directives(text)
 
 
+_INTERNAL_TOOL_TRACE_LINE_RE = re.compile(
+    r"(?im)^[ \t]*(?:\u26a0\ufe0f?\s*)?\U0001f6e0\ufe0f?\s*"
+    r"`[^`\r\n]*(?:\(|\b)agent(?:\)|\b)[^`\r\n]*`\s+"
+    r"(?:failed|errored|timed\s+out|cancelled|canceled|blocked)\b[^\r\n]*(?:\r?\n|$)"
+)
+
+
+def strip_internal_tool_trace_lines(text: str) -> str:
+    """Strip internal assistant tool-trace lines from user-visible chat text."""
+    if not text:
+        return text
+    if "\U0001f6e0" not in text and "agent" not in str(text).lower():
+        return text
+    cleaned = _INTERNAL_TOOL_TRACE_LINE_RE.sub("", str(text))
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.rstrip()
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
@@ -3677,20 +3695,24 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def strip_media_directives_for_display(text: str) -> str:
-        """Strip MEDIA: directives from streamed/display text.
+        """Strip internal directives from streamed/display text.
 
         Known-extension tags are removed unconditionally (same as
         ``MEDIA_TAG_CLEANUP_RE``). Extension-less tags are removed only when
         ``validate_media_delivery_path`` accepts the path so undeliverable
-        paths stay visible for debugging.
+        paths stay visible for debugging. Internal assistant tool-trace lines
+        are also removed before content is shown to users.
         """
-        if (
-            "MEDIA:" not in text
-            and "[[audio_as_voice]]" not in text
-            and "[[as_document]]" not in text
-        ):
+        has_media_directive = (
+            "MEDIA:" in text
+            or "[[audio_as_voice]]" in text
+            or "[[as_document]]" in text
+        )
+        has_tool_trace = "\U0001f6e0" in text and "agent" in str(text).lower()
+        if not has_media_directive and not has_tool_trace:
             return text
-        cleaned = _strip_media_tag_directives(text)
+        cleaned = _strip_media_tag_directives(text) if has_media_directive else str(text)
+        cleaned = strip_internal_tool_trace_lines(cleaned)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         return cleaned.rstrip()
 

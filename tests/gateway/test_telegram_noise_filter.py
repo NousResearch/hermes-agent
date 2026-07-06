@@ -144,6 +144,36 @@ def test_chat_gateways_keep_normal_answers(platform):
     assert _sanitize_gateway_final_response(platform, answer) == answer
 
 
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_strip_internal_tool_trace_lines(platform):
+    """Internal tool trace banners must not be delivered as chat content."""
+    raw = (
+        "Done.\n"
+        "\u26a0\ufe0f \U0001f6e0\ufe0f `search repos (agent)` failed"
+    )
+
+    assert _sanitize_gateway_final_response(platform, raw) == "Done."
+
+
+def test_programmatic_surfaces_keep_internal_tool_trace_lines():
+    """Local/API/webhook diagnostics keep raw tool trace text."""
+    raw = (
+        "Done.\n"
+        "\u26a0\ufe0f \U0001f6e0\ufe0f `search repos (agent)` failed"
+    )
+
+    for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
+        assert _sanitize_gateway_final_response(platform, raw) == raw
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_preserve_ordinary_tool_failure_prose(platform):
+    """Only internal trace banners are stripped; normal explanation stays."""
+    answer = "The `pytest` command failed; rerun it after installing pytest."
+
+    assert _sanitize_gateway_final_response(platform, answer) == answer
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (

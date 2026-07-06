@@ -369,6 +369,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "tencent-tokenhub": [
         "hy3-preview",
     ],
+    "volcano-ark": [
+        # Coding Plan models — OpenAI-compatible endpoint at /api/coding/v3
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "kimi-k2.6",
+        "kimi-k2.7-code",
+        "glm-5.2",
+        "glm-5.1",
+        "qwen3.7-max",
+        "qwen3.7-plus",
+        "minimax-m3",
+    ],
     "arcee": [
         "trinity-large-thinking",
         "trinity-large-preview",
@@ -1064,6 +1076,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
+    ProviderEntry("volcano-ark",    "Volcano Ark (火山方舟)",     "Volcano Ark Coding Plan — ByteDance ML platform (DeepSeek, Kimi, GLM, Qwen, MiniMax)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/

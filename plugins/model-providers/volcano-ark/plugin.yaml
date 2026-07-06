@@ -1,0 +1,5 @@
+name: volcano-ark-provider
+kind: model-provider
+version: 1.0.0
+description: Volcano Ark (火山方舟) — ByteDance ML platform
+author: Nous Research

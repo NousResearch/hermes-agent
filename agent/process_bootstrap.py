@@ -23,7 +23,9 @@ unchanged.
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
 import sys
 import urllib.request
 from typing import Any, Optional
@@ -139,7 +141,57 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     except Exception:
         pass
 
+    # urllib.request.proxy_bypass_environment() does NOT support CIDR
+    # notation in no_proxy (e.g., 10.0.0.0/8). Parse no_proxy entries
+    # ourselves for CIDR ranges and bypass the proxy when the target
+    # host resolves to an IP inside an excluded subnet (#59465).
+    if _no_proxy_cidr_match(host):
+        return None
+
     return proxy
+
+
+def _no_proxy_cidr_match(host: str) -> bool:
+    """Return True if *host* resolves to an IP inside a no_proxy CIDR range.
+
+    ``urllib.request.proxy_bypass_environment()`` matches hostnames and
+    domain suffixes but does NOT support CIDR notation (e.g., ``10.0.0.0/8``
+    or ``192.168.1.0/24``). This function parses ``no_proxy`` entries as
+    ``ipaddress.ip_network()`` and checks whether the resolved IP falls
+    inside any excluded subnet (#59465).
+
+    Fail-open: any error (DNS resolution failure, invalid CIDR entry,
+    missing no_proxy) returns False so the proxy is used as fallback.
+    """
+    no_proxy = os.environ.get("no_proxy", "") or os.environ.get("NO_PROXY", "")
+    if not no_proxy:
+        return False
+
+    # Resolve hostname → IP. Use the first AF_INET address.
+    try:
+        addrs = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+        host_ip = addrs[0][4][0] if addrs else None
+    except Exception:
+        return False
+    if not host_ip:
+        return False
+
+    # Check each no_proxy entry for CIDR notation.
+    for entry in no_proxy.replace(" ", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            network = ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            continue  # not a valid network — host/suffix matching handles this
+        try:
+            if ipaddress.ip_address(host_ip) in network:
+                return True
+        except ValueError:
+            continue
+
+    return False
 
 
 def build_keepalive_http_client(

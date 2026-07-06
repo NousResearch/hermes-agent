@@ -602,6 +602,7 @@ class HonchoSessionManager:
         self, session_key: str, query: str,
         reasoning_level: str | None = None,
         peer: str = "user",
+        apply_injection_cap: bool = True,
     ) -> str:
         """
         Query Honcho's dialectic endpoint about a peer.
@@ -617,6 +618,15 @@ class HonchoSessionManager:
                              Only honored when dialecticDynamic is true.
                              If None or dialecticDynamic is false, uses the configured default.
             peer: Which peer to query — "user" (default) or "ai".
+            apply_injection_cap: When True (default), clip the result to
+                             ``dialecticMaxChars`` — the budget for the dialectic
+                             supplement auto-injected into the system prompt every
+                             turn. Set False for explicit ``honcho_reasoning`` tool
+                             calls, where the model deliberately asked for a full
+                             synthesized answer; that result is already bounded
+                             server-side by Honcho's dialectic MAX_OUTPUT_TOKENS,
+                             so clipping it to the injection budget silently
+                             discards content the caller asked for.
 
         Returns:
             Honcho's synthesized answer, or empty string on failure.
@@ -655,8 +665,17 @@ class HonchoSessionManager:
                 target_peer = self._get_or_create_peer(target_peer_id)
                 result = target_peer.chat(query, reasoning_level=level) or ""
 
-            # Apply Hermes-side char cap before caching
-            if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:
+            # Apply the Hermes-side injection char cap before caching. This budget
+            # (dialecticMaxChars) bounds the dialectic supplement auto-injected into
+            # the system prompt every turn; it must NOT clip explicit
+            # honcho_reasoning tool results, which the model asked for in full and
+            # which Honcho already bounds server-side via MAX_OUTPUT_TOKENS.
+            if (
+                apply_injection_cap
+                and result
+                and self._dialectic_max_chars
+                and len(result) > self._dialectic_max_chars
+            ):
                 result = result[:self._dialectic_max_chars].rsplit(" ", 1)[0] + " …"
             return result
         except Exception as e:

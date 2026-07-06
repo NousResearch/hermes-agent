@@ -10453,6 +10453,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
+        _orig_empty_internal = (
+            bool(getattr(event, "internal", False))
+            and not (getattr(event, "text", "") or "").strip()
+            and not getattr(event, "media_urls", None)
+        )
         _reply_id = getattr(event, "reply_to_message_id", None)
         _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
         logger.info(
@@ -11246,7 +11251,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                event_internal=bool(getattr(event, "internal", False)),
+                event_has_media=bool(getattr(event, "media_urls", None)),
+                orig_empty_internal=_orig_empty_internal,
             )
+            if agent_result.get("_dropped_empty_internal_auto_resume"):
+                return None
 
             # Stop persistent typing indicator now that the agent is done
             try:
@@ -16411,6 +16421,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        event_internal: bool = False,
+        event_has_media: bool = False,
+        orig_empty_internal: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -16429,6 +16442,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                event_internal=event_internal,
+                event_has_media=event_has_media,
+                orig_empty_internal=orig_empty_internal,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -16440,6 +16456,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                event_internal=event_internal,
+                event_has_media=event_has_media,
+                orig_empty_internal=orig_empty_internal,
             )
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
@@ -16472,6 +16491,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        event_internal: bool = False,
+        event_has_media: bool = False,
+        orig_empty_internal: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -18141,6 +18163,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # message so stale guidance never replays as user-authored text.
             _persist_user_message_override: Optional[Any] = persist_user_message
             _persist_user_timestamp_override: Optional[float] = persist_user_timestamp
+            _empty_internal_auto_resume = bool(
+                event_internal
+                and not event_has_media
+                and (
+                    orig_empty_internal
+                    or (isinstance(message, str) and not message.strip())
+                )
+            )
+            _empty_internal_auto_resume_message = (
+                message if _empty_internal_auto_resume else None
+            )
 
             # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})
@@ -18222,12 +18255,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _reason == "shutdown_timeout"
                     else "a gateway interruption"
                 )
-                _persist_user_message_override = message
+                _persist_user_message_override = "" if _empty_internal_auto_resume else message
+                _has_resume_user_message = bool(
+                    isinstance(message, str)
+                    and message.strip()
+                    and not _empty_internal_auto_resume
+                )
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is
                 # no NEW user message to address, so tell the model to report
                 # recovery instead of the (nonexistent) "new message".
-                if message:
+                if _has_resume_user_message:
                     _resume_guidance = (
                         "Address the user's NEW message below FIRST and focus "
                         "on what the user is asking now."
@@ -18244,7 +18282,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"run — do NOT re-execute or verify it. {_resume_guidance} "
                     f"Do NOT re-execute old tool calls — skip any unfinished "
                     f"work from the conversation history.]"
-                    + (f"\n\n{message}" if message else "")
+                    + (f"\n\n{message}" if _has_resume_user_message else "")
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
@@ -18278,10 +18316,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # wrapped as native content below) are untouched.
             if (
                 isinstance(message, str)
-                and not message.strip()
+                and (
+                    not message.strip()
+                    or (
+                        _empty_internal_auto_resume
+                        and message == _empty_internal_auto_resume_message
+                    )
+                )
                 and _resume_entry is not None
                 and getattr(_resume_entry, "resume_pending", False)
             ):
+                if _empty_internal_auto_resume:
+                    _persist_user_message_override = ""
                 _sn_reason = (
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 )
@@ -18302,6 +18348,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"calls — skip any unfinished work from the conversation "
                     f"history.]"
                 )
+
+            if (
+                event_internal
+                and isinstance(message, str)
+                and not event_has_media
+                and (
+                    not message.strip()
+                    or (
+                        _empty_internal_auto_resume
+                        and message == _empty_internal_auto_resume_message
+                    )
+                )
+            ):
+                logger.debug(
+                    "Dropping empty internal auto-resume turn for session %s "
+                    "(resume note did not apply)",
+                    session_key or "",
+                )
+                return {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 0,
+                    "completed": False,
+                    "interrupted": True,
+                    "tools": tools_holder[0] or [],
+                    "history_offset": len(agent_history),
+                    "session_id": session_id,
+                    "_dropped_empty_internal_auto_resume": True,
+                }
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)

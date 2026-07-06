@@ -26,13 +26,17 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import sys
 import time
+import types
 from datetime import datetime, timedelta
+from typing import ClassVar, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform
+import gateway.run as gateway_run
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
     _AGENT_PENDING_SENTINEL,
@@ -77,6 +81,88 @@ def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):
 
 def _make_store(tmp_path):
     return SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+
+
+class _CapturingAutoResumeAgent:
+    run_messages: ClassVar[List[str]] = []
+
+    def __init__(self, *args, **kwargs):
+        self.tools = []
+        self.session_id = kwargs.get("session_id", "session-1")
+        self.model = kwargs.get("model", "test-model")
+        self.provider = kwargs.get("provider")
+        self.max_iterations = kwargs.get("max_iterations", 1)
+
+    def run_conversation(self, user_message, **kwargs):
+        type(self).run_messages.append(user_message)
+        return {
+            "final_response": "agent ok",
+            "messages": [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": "agent ok"},
+            ],
+            "api_calls": 1,
+            "completed": True,
+            "history_offset": len(kwargs.get("conversation_history") or []),
+            "session_id": self.session_id,
+        }
+
+
+def _install_capturing_auto_resume_agent(monkeypatch):
+    fake_run_agent = types.ModuleType("run_agent")
+    setattr(fake_run_agent, "AIAgent", _CapturingAutoResumeAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    _CapturingAutoResumeAgent.run_messages = []
+
+
+def _make_auto_resume_handler_runner(monkeypatch, tmp_path):
+    runner = gateway_run.GatewayRunner(
+        GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+            sessions_dir=tmp_path / "sessions",
+            group_sessions_per_user=False,
+        )
+    )
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    adapter.stop_typing = AsyncMock()
+    adapter.get_pending_message.return_value = None
+    adapter.has_pending_interrupt.return_value = False
+    adapter.SUPPORTS_MESSAGE_EDITING = False
+    adapter._pending_messages = {}
+    adapter._active_sessions = {}
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    runner.hooks.loaded_hooks = False
+    runner._session_db = None
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._session_run_generation = {}
+    monkeypatch.setattr(runner, "_is_user_authorized", lambda source: True)
+    monkeypatch.setattr(runner, "_set_session_env", lambda context: [])
+    monkeypatch.setattr(runner, "_recover_telegram_topic_thread_id", lambda source: None)
+    monkeypatch.setattr(runner, "_cache_session_source", lambda session_key, source: None)
+    monkeypatch.setattr(runner, "_is_session_run_current", lambda session_key, generation: True)
+    monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda event: None)
+    monkeypatch.setattr(runner, "_get_guild_id", lambda event: None)
+    runner._should_send_voice_reply = lambda *_args, **_kwargs: False
+    monkeypatch.setattr(
+        runner,
+        "_resolve_session_agent_runtime",
+        lambda **kwargs: ("test-model", {"api_key": "fake", "provider": "test"}),
+    )
+    monkeypatch.setattr(runner, "_resolve_session_reasoning_config", lambda **kwargs: None)
+    monkeypatch.setattr(runner, "_load_service_tier", lambda: None)
+
+    async def _run_inline(func, *args):
+        return func(*args)
+
+    monkeypatch.setattr(runner, "_run_in_executor_with_context", _run_inline)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "phantom-empty-chat")
+    return runner, adapter
 
 
 def _build_agent_history(history: list) -> list:
@@ -651,6 +737,187 @@ class TestResumePendingSystemNote:
             resume_entry=None,
         )
         assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_group_prefixed_empty_internal_turn_is_flagged_and_dropped(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        runner, adapter = _make_auto_resume_handler_runner(monkeypatch, tmp_path)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="phantom-empty-chat",
+            chat_name="Restart Group",
+            chat_type="group",
+            user_id="u1",
+            user_name="민서",
+        )
+        session_entry = runner.session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+        captured = {}
+
+        async def _fake_run_agent(**kwargs):
+            captured.clear()
+            captured.update(kwargs)
+            if kwargs.get("orig_empty_internal"):
+                return {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 0,
+                    "completed": False,
+                    "interrupted": True,
+                    "tools": [],
+                    "history_offset": 0,
+                    "session_id": session_entry.session_id,
+                    "_dropped_empty_internal_auto_resume": True,
+                }
+            return {
+                "final_response": "agent ok",
+                "messages": [
+                    {"role": "user", "content": kwargs["message"]},
+                    {"role": "assistant", "content": "agent ok"},
+                ],
+                "api_calls": 1,
+                "completed": True,
+                "tools": [],
+                "history_offset": 0,
+                "session_id": session_entry.session_id,
+            }
+
+        monkeypatch.setattr(runner, "_run_agent", _fake_run_agent)
+
+        empty_internal = MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+            message_id="auto-resume-empty",
+        )
+        dropped = await runner._handle_message_with_agent(
+            empty_internal,
+            source,
+            session_key,
+            0,
+        )
+
+        assert dropped is None
+        assert captured["message"] == "[민서] "
+        assert captured["event_internal"] is True
+        assert captured["event_has_media"] is False
+        assert captured["orig_empty_internal"] is True
+        adapter.send.assert_not_awaited()
+
+        normal_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=False,
+            message_id="normal-message",
+        )
+        normal = await runner._handle_message_with_agent(
+            normal_event,
+            source,
+            session_key,
+            0,
+        )
+
+        assert normal == "agent ok"
+        assert captured["message"] == "[민서] hello"
+        assert captured["event_internal"] is False
+        assert captured["event_has_media"] is False
+        assert captured["orig_empty_internal"] is False
+
+    @pytest.mark.asyncio
+    async def test_group_prefixed_empty_internal_turn_drops_before_agent_invocation(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        _install_capturing_auto_resume_agent(monkeypatch)
+        runner, _adapter = _make_auto_resume_handler_runner(monkeypatch, tmp_path)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="phantom-empty-chat",
+            chat_name="Restart Group",
+            chat_type="group",
+            user_id="u1",
+            user_name="민서",
+        )
+        session_key = runner._session_key_for_source(source)
+
+        result = await runner._run_agent_inner(
+            message="[민서] ",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sid-cleared-resume",
+            session_key=session_key,
+            run_generation=0,
+            event_internal=True,
+            event_has_media=False,
+            orig_empty_internal=True,
+        )
+
+        assert result["_dropped_empty_internal_auto_resume"] is True
+        assert _CapturingAutoResumeAgent.run_messages == []
+
+    @pytest.mark.asyncio
+    async def test_group_prefixed_empty_internal_resume_pending_reports_recovery(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        _install_capturing_auto_resume_agent(monkeypatch)
+        runner, _adapter = _make_auto_resume_handler_runner(monkeypatch, tmp_path)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="phantom-empty-chat",
+            chat_name="Restart Group",
+            chat_type="group",
+            user_id="u1",
+            user_name="민서",
+        )
+        session_key = runner._session_key_for_source(source)
+        now = datetime.now()
+        runner.session_store._entries[session_key] = SessionEntry(
+            session_key=session_key,
+            session_id="sid-fresh-resume",
+            created_at=now,
+            updated_at=now,
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="group",
+            resume_pending=True,
+            resume_reason="restart_timeout",
+            last_resume_marked_at=now,
+        )
+
+        result = await runner._run_agent_inner(
+            message="[민서] ",
+            context_prompt="",
+            history=[
+                {
+                    "role": "assistant",
+                    "content": "interrupted",
+                    "timestamp": time.time(),
+                },
+            ],
+            source=source,
+            session_id="sid-fresh-resume",
+            session_key=session_key,
+            run_generation=0,
+            event_internal=True,
+            event_has_media=False,
+            orig_empty_internal=True,
+        )
+
+        assert not result.get("_dropped_empty_internal_auto_resume")
+        assert _CapturingAutoResumeAgent.run_messages
+        run_message = _CapturingAutoResumeAgent.run_messages[-1]
+        assert "restored successfully" in run_message
+        assert "NEW message" not in run_message
+        assert "[민서]" not in run_message
 
     def test_fresh_tool_tail_preserves_auto_continue_note(self):
         history = [

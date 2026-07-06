@@ -70,6 +70,16 @@ const STAGE_ROOT = path.join(APP_ROOT, 'build', 'updater-deps')
 // `node_modules` naming to resolve the closure, which this preserves.
 const STAGE_NODE_MODULES = path.join(STAGE_ROOT, 'vendor', 'node_modules')
 
+// Manifest of the staged closure, written NEXT TO vendor/ so it ships via the
+// same `build/updater-deps` -> `updater-deps` extraResources mapping (lands at
+// <Resources>/updater-deps/updater-deps-manifest.json in the packaged app). The
+// post-pack integrity gate (scripts/assert-updater-deps.cjs, run by BOTH the
+// mac and win workflows) reads it to verify every package that was staged
+// actually survived into the packaged tree -- catching a dropped/short-circuited
+// copy on either platform without a hand-maintained package list.
+const MANIFEST_NAME = 'updater-deps-manifest.json'
+const STAGE_MANIFEST = path.join(STAGE_ROOT, MANIFEST_NAME)
+
 // Entry package whose full production-dependency closure we stage.
 const ROOT_PACKAGE = 'electron-updater'
 
@@ -179,6 +189,20 @@ function stagedDestFor(name, srcDir) {
   return path.join(STAGE_NODE_MODULES, rel)
 }
 
+/**
+ * The package's main-entry file, relative to the package dir. Read from its
+ * package.json `main` (default `index.js`), matching what require() loads at
+ * runtime -- the same entry the integrity gate insists must have shipped.
+ */
+function entryRelFor(srcDir) {
+  try {
+    const main = require(path.join(srcDir, 'package.json')).main || 'index.js'
+    return main
+  } catch {
+    return 'index.js'
+  }
+}
+
 function copyPackage(name, srcDir) {
   const destPkgDir = stagedDestFor(name, srcDir)
   const files = walkFiles(srcDir)
@@ -194,14 +218,34 @@ function copyPackage(name, srcDir) {
   return copied
 }
 
+// POSIX-normalized path of the package dir, relative to STAGE_NODE_MODULES, so
+// the manifest is byte-identical whether staged on macOS or Windows and the
+// gate can join it with either separator.
+function stagedRelDir(name, srcDir) {
+  return path
+    .relative(STAGE_NODE_MODULES, stagedDestFor(name, srcDir))
+    .split(path.sep)
+    .join('/')
+}
+
 function main() {
   rmrf(STAGE_ROOT)
   ensureDir(STAGE_NODE_MODULES)
 
   const closure = collectClosure()
   let total = 0
+  const manifestPackages = []
   for (const [name, srcDir] of [...closure].sort((a, b) => a[0].localeCompare(b[0]))) {
     total += copyPackage(name, srcDir)
+    const dir = stagedRelDir(name, srcDir)
+    const entryRel = entryRelFor(srcDir)
+    manifestPackages.push({
+      name,
+      dir,
+      // Package-main relative to vendor/node_modules, POSIX-joined -- the file
+      // the gate re-checks exists in the packaged tree.
+      entry: `${dir}/${entryRel.split(path.sep).join('/')}`,
+    })
   }
 
   // Sanity gate: the packaged app is broken if the entry package or its own
@@ -219,9 +263,17 @@ function main() {
     )
   }
 
+  // Emit the closure manifest for the post-pack integrity gate. `root` names
+  // the entry package so the gate can hard-require its presence explicitly.
+  fs.writeFileSync(
+    STAGE_MANIFEST,
+    `${JSON.stringify({ root: ROOT_PACKAGE, packages: manifestPackages }, null, 2)}\n`
+  )
+
   console.log(
     `[stage-updater-deps] staged ${closure.size} packages, ${total} files ` +
-      `into ${path.relative(APP_ROOT, STAGE_ROOT)}`
+      `into ${path.relative(APP_ROOT, STAGE_ROOT)} ` +
+      `(+ ${MANIFEST_NAME})`
   )
 }
 

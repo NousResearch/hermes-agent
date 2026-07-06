@@ -136,9 +136,11 @@ jobs:
           # beforeBuild:false skip electron-builder's node_modules collector),
           # so it ships staged under extraResources. Its absence silently
           # disabled shell self-update from 0.16.1 (require threw "Cannot find
-          # module 'electron-updater'"). Gate on the entry file so a broken
-          # stage can never ship a no-op updater again.
-          [ -f "$RES/updater-deps/vendor/node_modules/electron-updater/out/main.js" ] || { echo "::error::Resources/updater-deps electron-updater missing — shell self-update would be disabled"; exit 1; }
+          # module 'electron-updater'"). hc-436: the shared cross-platform gate
+          # (also run by desktop-windows.yml) verifies the WHOLE staged closure
+          # against stage-updater-deps.cjs's manifest, not just the entry file —
+          # so a dropped transitive dep can never ship a no-op updater either.
+          node scripts/assert-updater-deps.cjs "$RES"
           echo "package completeness OK ($(wc -l < /tmp/asar-list.txt) asar entries)"
 
       - name: Gatekeeper assessment (fails if not notarized)

@@ -54,6 +54,19 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run dist:win -- --publish never
 
+      # hc-436: symmetric updater-deps integrity gate. The Mac workflow already
+      # verified electron-updater survived into the packaged Resources; Windows
+      # staged the identical 16-package closure with NO gate, so a win-only stage
+      # breakage (the hc-435 failure mode: require('electron-updater') throws ->
+      # self-update silently disabled) would ship undetected. The same Node gate
+      # both platforms call reads the closure manifest stage-updater-deps.cjs
+      # emits and asserts every staged package landed under win-unpacked/resources.
+      # electron-builder unpacks the app next to the installer as win-unpacked/,
+      # whose resources/ dir carries the extraResources updater-deps subtree.
+      - name: Assert packaged updater-deps integrity
+        working-directory: apps/desktop
+        run: node scripts/assert-updater-deps.cjs release/win-unpacked/resources
+
       - name: List build output
         if: always()
         working-directory: apps/desktop

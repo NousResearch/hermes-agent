@@ -141,6 +141,7 @@ VALID_HOOKS: Set[str] = {
     # Plugins return a string to replace the response text, or None/empty to leave unchanged.
     # First non-None string wins. Useful for vocabulary/personality transformation.
     "transform_llm_output",
+    "pre_model_route",
     "pre_llm_call",
     "post_llm_call",
     # Verification-loop gate. Fired once per turn when the agent has edited code

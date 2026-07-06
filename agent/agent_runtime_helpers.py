@@ -1711,7 +1711,16 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    *,
+    prune_fallback_chain=True,
+):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -1724,6 +1733,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     client-swap logic but also updates ``_primary_runtime`` so the
     change persists across turns (unlike fallback which is
     turn-scoped).
+
+    ``prune_fallback_chain`` stays enabled for explicit user switches.
+    Plugin route hooks can disable it so per-turn routing does not
+    permanently remove configured fallback providers.
     """
     from hermes_cli.providers import determine_api_mode
 
@@ -2025,7 +2038,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
-    if old_norm and new_norm and old_norm != new_norm:
+    if prune_fallback_chain and old_norm and new_norm and old_norm != new_norm:
         fallback_chain = [
             entry for entry in fallback_chain
             if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}

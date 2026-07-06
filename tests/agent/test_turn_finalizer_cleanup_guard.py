@@ -164,6 +164,41 @@ def test_single_cleanup_step_raises_does_not_skip_others(step):
     assert len(result["cleanup_errors"]) == 1
 
 
+def test_skill_verification_infrastructure_error_blocks_response(monkeypatch):
+    import agent.skill_verification as skill_verification
+
+    def _raise_verification_error(_session_id):
+        raise RuntimeError("verifier registry unavailable")
+
+    monkeypatch.setattr(
+        skill_verification,
+        "run_before_final_verifications",
+        _raise_verification_error,
+    )
+    agent = _StubAgent(raise_in=())
+
+    result = finalize_turn(
+        agent,
+        final_response="ready to send",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "do a thing"}],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="do a thing",
+        original_user_message="do a thing",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert "Skill verification could not run" in result["final_response"]
+    assert result["skill_verification_error"] == "RuntimeError: verifier registry unavailable"
+
+
 def test_clean_turn_has_no_cleanup_errors_key():
     agent = _StubAgent(raise_in=())
     result = _run(agent)

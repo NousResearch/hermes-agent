@@ -80,6 +80,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "browser_vision",
     "vision_analyze",
     "image_generate",
+    "skill_activate",
     "skill_view",
     "skills_list",
     "text_to_speech",

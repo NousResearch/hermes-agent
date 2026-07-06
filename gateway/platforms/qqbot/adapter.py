@@ -278,8 +278,15 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
-        """Authenticate, obtain gateway URL, and open the WebSocket."""
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Authenticate, obtain gateway URL, and open the WebSocket.
+
+        ``is_reconnect`` is part of the ``BasePlatformAdapter.connect`` contract
+        (the gateway forwards it on retry). QQ does not need to branch on it
+        currently, but the kwarg MUST be accepted or the reconnect loop dies
+        with ``TypeError: got an unexpected keyword argument 'is_reconnect'``.
+        """
+        del is_reconnect  # accepted for contract compliance; unused today
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
             self._set_fatal_error("qq_missing_dependency", message, retryable=True)

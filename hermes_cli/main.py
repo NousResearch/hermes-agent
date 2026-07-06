@@ -13525,8 +13525,9 @@ def main():
     )
     _add_session_filter_args(
         sessions_prune,
-        "Delete sessions older than AGE — days if bare number (default: 90), "
-        "or a duration like '5h'/'2d'/'1w', or an ISO timestamp",
+        "Delete sessions older than AGE — days if bare number, or a duration "
+        "like '5h'/'2d'/'1w', or an ISO timestamp (bare prune with no filters "
+        "defaults to 90 days; any filter matches all ages)",
     )
     sessions_prune.add_argument(
         "--include-archived",
@@ -13741,16 +13742,16 @@ def main():
                 format_epoch,
             )
 
-            # Preserve the historical default: bare `hermes sessions prune`
-            # means "older than 90 days" — and --source keeps that default
-            # too (it predates the extended filters; scripts may rely on
-            # `prune --source X --yes` meaning >90d). Any NEW attribute
-            # filter suppresses the implicit cutoff so e.g.
-            # `prune --model sonnet` matches ALL sessions for that model.
+            # Preserve the historical default ONLY for a truly bare
+            # `hermes sessions prune`: no time window and no filters at all
+            # means "older than 90 days". ANY filter — including --source —
+            # suppresses the implicit cutoff, so `prune --source cron`
+            # matches ALL cron sessions regardless of age. The preview +
+            # confirmation below (count, oldest/newest) is the safety net.
             _non_time_filters = any(
                 getattr(args, a, None) is not None
                 for a in (
-                    "title", "end_reason", "cwd",
+                    "source", "title", "end_reason", "cwd",
                     "min_messages", "max_messages", "model", "provider",
                     "user", "chat_id", "chat_type", "branch",
                     "min_tokens", "max_tokens", "min_cost", "max_cost",
@@ -13797,11 +13798,19 @@ def main():
                 print(f"No sessions match ({describe_filters(filters)}).")
                 return
 
+            # Candidates are ordered oldest-first — surface the age span so
+            # the confirmation makes the blast radius obvious.
+            _oldest = candidates[0].get("started_at")
+            _newest = candidates[-1].get("started_at")
+            _span = (
+                f"oldest {format_epoch(_oldest)}, newest {format_epoch(_newest)}"
+            )
+
             if args.dry_run or not args.yes:
                 shown = candidates if args.dry_run else candidates[:15]
                 print(
                     f"{len(candidates)} session(s) match "
-                    f"({describe_filters(filters)}):"
+                    f"({describe_filters(filters)}; {_span}):"
                 )
                 for s in shown:
                     title = (s.get("title") or "")[:36]
@@ -13819,7 +13828,7 @@ def main():
 
             if not args.yes:
                 if not _confirm_prompt(
-                    f"{verb} these {len(candidates)} session(s)? [y/N] "
+                    f"{verb} these {len(candidates)} session(s) ({_span})? [y/N] "
                 ):
                     print("Cancelled.")
                     return

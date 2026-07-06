@@ -8234,11 +8234,28 @@ async def prune_sessions_endpoint(body: SessionPrune):
     )
     if body.older_than_days is not None and body.older_than_days < 1 and not has_window:
         raise HTTPException(status_code=400, detail="older_than_days must be >= 1")
+    # Mirror the CLI: the implicit 90-day cutoff only applies to a truly bare
+    # prune. Any attribute filter (source, title, model, ...) suppresses it
+    # unless the caller explicitly sent older_than_days.
+    _attr_filters_set = any(
+        getattr(body, f) is not None
+        for f in (
+            "source", "title_like", "end_reason", "cwd_prefix",
+            "min_messages", "max_messages", "model_like", "provider",
+            "user_id", "chat_id", "chat_type", "branch_like",
+            "min_tokens", "max_tokens", "min_cost", "max_cost",
+            "min_tool_calls", "max_tool_calls",
+        )
+    )
+    _older_than_explicit = "older_than_days" in body.model_fields_set
+    _effective_older_than = body.older_than_days
+    if has_window or (_attr_filters_set and not _older_than_explicit):
+        _effective_older_than = None
     profile_home = _cron_profile_home(body.profile)[1] if body.profile else get_hermes_home()
     db = _open_session_db_for_profile(body.profile)
     try:
         filters = dict(
-            older_than_days=None if has_window else body.older_than_days,
+            older_than_days=_effective_older_than,
             source=(body.source or None),
             started_before=body.started_before,
             started_after=body.started_after,
@@ -8267,6 +8284,9 @@ async def prune_sessions_endpoint(body: SessionPrune):
                 "ok": True,
                 "removed": 0,
                 "matched": len(rows),
+                # Rows are ordered oldest-first.
+                "oldest_started_at": rows[0]["started_at"] if rows else None,
+                "newest_started_at": rows[-1]["started_at"] if rows else None,
                 "sessions": [
                     {
                         "id": r["id"],

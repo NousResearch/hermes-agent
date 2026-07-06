@@ -4603,6 +4603,16 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             for k, v in servers.items()
             if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
         }
+        # Cached entries with no live session are parked or mid-reconnect.
+        # Their tools are deregistered, so nothing else can reach
+        # _signal_reconnect — without this nudge a new session silently
+        # waits up to _PARKED_RETRY_INTERVAL for the next self-probe
+        # (#50170). Wake them now so their tools come back promptly.
+        stale_cached = [
+            _servers[k]
+            for k in servers
+            if k in _servers and getattr(_servers[k], "session", None) is None
+        ]
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
             _server_connect_errors.pop(srv_name, None)
@@ -4612,6 +4622,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                 _parallel_safe_servers.add(sanitize_mcp_name_component(srv_name))
             else:
                 _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
+
+    for srv in stale_cached:
+        _signal_reconnect(srv)
 
     if not new_servers:
         return _existing_tool_names()

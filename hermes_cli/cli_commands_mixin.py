@@ -2024,7 +2024,7 @@ class CLICommandsMixin:
         # boundaries / stop_when) and set it as the active goal. Adapted
         # from Codex's "let the agent draft the goal" guidance: the contract
         # makes "done" evidence-based instead of a loose vibe check.
-        if lower.startswith("draft"):
+        if lower == "draft" or lower.startswith("draft "):
             objective = arg[len("draft"):].strip()
             if not objective:
                 _cprint("  Usage: /goal draft <objective in plain language>")

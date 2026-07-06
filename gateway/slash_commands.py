@@ -2236,7 +2236,7 @@ class GatewaySlashCommandsMixin:
         # /goal draft <objective> → draft a structured completion contract,
         # then set it. The aux LLM call is sync; run it off the event loop.
         draft_contract_obj = None
-        if lower.startswith("draft"):
+        if lower == "draft" or lower.startswith("draft "):
             objective = args[len("draft"):].strip()
             if not objective:
                 return "Usage: /goal draft <objective in plain language>"
@@ -2288,7 +2288,7 @@ class GatewaySlashCommandsMixin:
         base = t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
         if state.has_contract():
             return f"{base}\nCompletion contract:\n{state.contract.render_block()}"
-        if lower.startswith("draft"):
+        if lower == "draft" or lower.startswith("draft "):
             # Drafting was requested but the aux model couldn't produce one.
             return f"{base}\n(Couldn't draft a contract — running as a free-form goal.)"
         return base

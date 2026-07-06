@@ -3656,12 +3656,26 @@ def run_conversation(
                     # exists; otherwise "trying fallback..." is a lie and the
                     # session looks like it's recovering when it's about to
                     # abort silently (#35314, #17446).
-                    if agent._has_pending_fallback():
+                    #
+                    # BUT: honor ``classified.should_fallback``. Some client
+                    # errors are deterministic on EVERY provider because the
+                    # defect is the REQUEST we built, not the backend — a
+                    # malformed conversation array (unanswered tool_use, bad
+                    # role alternation), an OpenRouter account-policy block, an
+                    # invalid encrypted-replay blob. For those the classifier
+                    # sets should_fallback=False; walking the chain just re-sends
+                    # the identical broken request to every box, collects the
+                    # identical rejection, and spams the user with a per-hop
+                    # "switching to fallback" line (the 2026-07-04 incident: one
+                    # orphan tool_use produced ~20 status messages across 11
+                    # subs). Skip the walk and abort fast with one honest line.
+                    _may_fallback = classified.should_fallback
+                    if _may_fallback and agent._has_pending_fallback():
                         if classified.reason == FailoverReason.content_policy_blocked:
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if _may_fallback and agent._try_activate_fallback():
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -3686,6 +3700,17 @@ def run_conversation(
                         agent._emit_status(
                             f"❌ Provider safety filter blocked this request: "
                             f"{_nonretryable_summary}"
+                        )
+                    elif classified.reason == FailoverReason.malformed_conversation:
+                        # Be honest: this is a bad message array WE built, not a
+                        # provider outage — say so instead of the generic
+                        # "non-retryable error", which reads like the backend
+                        # failed and invites a pointless "try another model".
+                        agent._emit_status(
+                            f"❌ Conversation state error (HTTP {status_code}): "
+                            f"{_nonretryable_summary} — this is a message-structure "
+                            f"problem, not a provider outage, so retrying other "
+                            f"providers won't help."
                         )
                     else:
                         agent._emit_status(

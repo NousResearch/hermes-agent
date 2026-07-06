@@ -57,6 +57,7 @@ class TestFailoverReason:
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
+            "malformed_conversation",
             "invalid_encrypted_content",
             "multimodal_tool_content_unsupported",
             "provider_policy_blocked",
@@ -468,6 +469,94 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.server_error
         assert result.retryable is True
+
+    # ── Malformed conversation structure (deterministic, no failover) ──
+
+    def test_400_unanswered_tool_use_is_malformed_conversation(self):
+        """Anthropic's "tool_use ids were found without tool_result" — the
+        2026-07-04 incident. A structural defect in the message ARRAY we built,
+        identical on every provider, so it must NOT walk the fallback chain."""
+        e = MockAPIError(
+            "messages.274: `tool_use` ids were found without `tool_result` "
+            "blocks immediately after: toolu_01V73AjAFpYvcDH7Zb78RxBd. Each "
+            "`tool_use` block must have a corresponding `tool_result` block in "
+            "the next message.",
+            status_code=400,
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        "messages.274: `tool_use` ids were found without "
+                        "`tool_result` blocks immediately after: "
+                        "toolu_01V73AjAFpYvcDH7Zb78RxBd."
+                    ),
+                }
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.malformed_conversation
+        assert result.retryable is False
+        # The load-bearing assertion: do NOT fan a deterministic self-inflicted
+        # 400 across every fallback provider.
+        assert result.should_fallback is False
+
+    def test_400_role_alternation_is_malformed_conversation(self):
+        e = MockAPIError(
+            "messages: roles must alternate between user and assistant",
+            status_code=400,
+            body={"error": {"type": "invalid_request_error",
+                            "message": "messages: roles must alternate between "
+                                       "user and assistant"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.malformed_conversation
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_400_assistant_tool_calls_must_be_followed_by_tool_messages(self):
+        """OpenAI/DeepSeek/Kimi strict tool_calls-alternation complaint."""
+        e = MockAPIError(
+            "An assistant message with 'tool_calls' must be followed by tool "
+            "messages responding to each 'tool_call_id'.",
+            status_code=400,
+            body={"error": {"type": "invalid_request_error",
+                            "message": "An assistant message with 'tool_calls' "
+                                       "must be followed by tool messages "
+                                       "responding to each 'tool_call_id'."}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.malformed_conversation
+        assert result.should_fallback is False
+
+    def test_400_unsupported_parameter_still_format_error_and_fallback(self):
+        """REGRESSION: a parameter/schema 400 is NOT a conversation-structure
+        error — a different provider genuinely might accept the param, so it
+        must keep format_error + should_fallback=True (unchanged behavior)."""
+        e = MockAPIError(
+            "Unsupported parameter: 'max_tokens' is not supported with this "
+            "model. Use 'max_completion_tokens' instead.",
+            status_code=400,
+            body={"error": {"type": "invalid_request_error",
+                            "code": "unsupported_parameter",
+                            "message": "Unsupported parameter: 'max_tokens'"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.should_fallback is True
+
+    def test_400_generic_large_session_still_context_overflow(self):
+        """REGRESSION: a bare generic 400 on a large session still routes to
+        context_overflow/compression, not malformed_conversation."""
+        e = MockAPIError(
+            "Error",
+            status_code=400,
+            body={"error": {"type": "invalid_request_error", "message": "Error"}},
+        )
+        result = classify_api_error(
+            e, approx_tokens=150000, context_length=200000, num_messages=400
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
 
     # ── Model not found ──
 

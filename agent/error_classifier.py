@@ -54,6 +54,18 @@ class FailoverReason(enum.Enum):
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    # Malformed CONVERSATION structure (a bad message array WE built) — e.g.
+    # Anthropic "tool_use ids were found without tool_result", "roles must
+    # alternate"; OpenAI/DeepSeek/Kimi "assistant message with tool_calls must
+    # be followed by tool messages". This is deterministic on EVERY provider
+    # (the request shape is ours, not the backend's), so walking the fallback
+    # chain just re-sends the identical broken array and collects the identical
+    # 400 from each box — pure waste plus a wall of user-facing "switching to
+    # fallback" spam. Classify non-retryable AND non-failover so the loop aborts
+    # fast with one honest message; the durable repair is upstream of the send
+    # (repair_message_sequence). Distinct from ``format_error`` (a parameter/
+    # schema complaint, where a different provider genuinely might accept it).
+    malformed_conversation = "malformed_conversation"
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
 
@@ -297,6 +309,46 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unknown_parameter",
     "unsupported_parameter",
 ]
+
+# Malformed-CONVERSATION-structure patterns. These are 400s where the message
+# ARRAY we sent is structurally invalid (a tool_use with no answering
+# tool_result, a tool_result answering nothing, two same-role turns where the
+# provider forbids it, an assistant tool_calls turn not followed by its tool
+# messages). They are deterministic on EVERY provider because the defect is the
+# request WE built, not the backend — so `should_fallback` must be False (walking
+# the chain re-sends the identical broken array to every box). Phrases are
+# verbatim, provider-specific structural complaints; deliberately narrow so a
+# parameter/schema error (which a different provider genuinely might accept, and
+# which keeps `format_error` + `should_fallback=True`) does NOT collide.
+#   • Anthropic native /v1/messages structural validators
+#   • OpenAI / DeepSeek / Moonshot(Kimi) strict tool_calls-alternation validators
+_MALFORMED_CONVERSATION_PATTERNS = [
+    # Anthropic: "messages.N: `tool_use` ids were found without `tool_result`
+    # blocks immediately after: toolu_..."
+    "were found without `tool_result`",
+    "were found without tool_result",
+    "`tool_use` ids were found without",
+    "tool_use ids were found without",
+    # Anthropic: "unexpected `tool_use_id` found in `tool_result` blocks: ..."
+    # / "`tool_result` block(s) provided when previous message does not contain
+    # any `tool_use` blocks"
+    "does not contain any `tool_use`",
+    "does not contain any tool_use",
+    "unexpected `tool_use_id`",
+    "unexpected tool_use_id",
+    # Anthropic / OpenAI strict: role alternation
+    "roles must alternate",
+    "must alternate between",
+    # OpenAI / DeepSeek / Moonshot(Kimi): assistant tool_calls turn must be
+    # immediately followed by its tool results
+    "must be followed by tool messages",
+    "must be followed by tool response",
+    # OpenAI: "an assistant message with 'tool_calls' must be followed by tool
+    # messages responding to each 'tool_call_id'"
+    "responding to each 'tool_call_id'",
+    "did not have response messages",
+]
+
 
 # OpenRouter aggregator policy-block patterns.
 #
@@ -1094,6 +1146,23 @@ def _classify_400(
             FailoverReason.format_error,
             retryable=False,
             should_fallback=True,
+        )
+
+    # Malformed conversation STRUCTURE (an unanswered tool_use, a stray
+    # tool_result, forbidden role adjacency, an assistant tool_calls turn not
+    # followed by its tool messages). Checked BEFORE context_overflow because a
+    # large session can carry a structural orphan while still being well under
+    # its token budget — mis-routing it into the compression loop just re-sends
+    # the same broken array. Deterministic on every provider (the request shape
+    # is ours), so ``should_fallback=False``: walking the chain would re-send the
+    # identical 400 to every box and spam the user with per-hop status lines.
+    # The durable repair is upstream (repair_message_sequence before send); here
+    # we abort fast with one honest message.
+    if any(p in error_msg for p in _MALFORMED_CONVERSATION_PATTERNS):
+        return result_fn(
+            FailoverReason.malformed_conversation,
+            retryable=False,
+            should_fallback=False,
         )
 
     # Context overflow from 400

@@ -143,82 +143,68 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 12
   },
   {
-    prefix: 'OPENCODE_ZEN_',
-    name: 'OpenCode Zen',
-    description: 'Pay-as-you-go access to curated coding models',
-    docsUrl: 'https://opencode.ai/auth',
-    priority: 13
-  },
-  {
-    prefix: 'OPENCODE_GO_',
-    name: 'OpenCode Go',
-    description: '$10/month subscription for open coding models',
-    docsUrl: 'https://opencode.ai/auth',
-    priority: 14
-  },
-  {
     prefix: 'NVIDIA_',
     name: 'NVIDIA NIM',
     description: 'build.nvidia.com or your own local NIM endpoint',
     docsUrl: 'https://build.nvidia.com/',
-    priority: 15
+    priority: 13
   },
   {
     prefix: 'OLLAMA_',
     name: 'Ollama Cloud',
     description: 'Cloud-hosted open models from ollama.com',
     docsUrl: 'https://ollama.com/settings',
-    priority: 16
+    priority: 14
   },
   {
     prefix: 'LM_',
     name: 'LM Studio',
     description: 'Local LM Studio server (OpenAI-compatible)',
     docsUrl: 'https://lmstudio.ai/docs/local-server',
-    priority: 17
+    priority: 15
   },
   {
     prefix: 'STEPFUN_',
     name: 'StepFun',
     description: 'StepFun Step Plan coding models',
     docsUrl: 'https://platform.stepfun.com/',
-    priority: 18
+    priority: 16
   },
   {
     prefix: 'XIAOMI_',
     name: 'Xiaomi MiMo',
     description: 'MiMo-V2.5 and Xiaomi proprietary models',
     docsUrl: 'https://platform.xiaomimimo.com',
-    priority: 19
+    priority: 17
   },
   {
     prefix: 'ARCEEAI_',
     name: 'Arcee AI',
     description: 'Arcee-hosted small + medium models',
     docsUrl: 'https://chat.arcee.ai/',
-    priority: 20
+    priority: 18
   },
-  { prefix: 'ARCEE_', name: 'Arcee AI', priority: 20 },
+  { prefix: 'ARCEE_', name: 'Arcee AI', priority: 18 },
   {
     prefix: 'GMI_',
     name: 'GMI Cloud',
     description: 'GMI Cloud GPU + model serving',
     docsUrl: 'https://www.gmicloud.ai/',
-    priority: 21
+    priority: 19
   },
   {
     prefix: 'AZURE_FOUNDRY_',
     name: 'Azure Foundry',
     description: 'Azure AI Foundry custom endpoints (OpenAI / Anthropic-compatible)',
     docsUrl: 'https://ai.azure.com/',
-    priority: 22
+    priority: 20
   },
   {
     prefix: 'AWS_',
     name: 'AWS Bedrock',
     description: 'Authenticate via AWS profile + region',
     docsUrl: 'https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html',
-    priority: 23
+    priority: 21
   }
 ]
 

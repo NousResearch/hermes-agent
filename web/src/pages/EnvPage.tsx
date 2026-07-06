@@ -61,11 +61,9 @@ const PROVIDER_GROUPS: { prefix: string; name: string; priority: number }[] = [
   { prefix: "KIMI_", name: "Kimi / Moonshot", priority: 7 },
   { prefix: "MINIMAX_CN_", name: "MiniMax (China)", priority: 9 },
   { prefix: "MINIMAX_", name: "MiniMax", priority: 8 },
-  { prefix: "OPENCODE_GO_", name: "OpenCode Go", priority: 10 },
-  { prefix: "OPENCODE_ZEN_", name: "OpenCode Zen", priority: 11 },
-  { prefix: "OPENROUTER_", name: "OpenRouter", priority: 12 },
-  { prefix: "XIAOMI_", name: "Xiaomi MiMo", priority: 13 },
-  { prefix: "UPSTAGE_", name: "Upstage Solar", priority: 14 },
+  { prefix: "OPENROUTER_", name: "OpenRouter", priority: 10 },
+  { prefix: "XIAOMI_", name: "Xiaomi MiMo", priority: 11 },
+  { prefix: "UPSTAGE_", name: "Upstage Solar", priority: 12 },
 ];
 
 function getProviderGroup(key: string): string {

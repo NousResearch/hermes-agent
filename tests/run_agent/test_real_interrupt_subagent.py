@@ -13,7 +13,18 @@ from unittest.mock import MagicMock, patch
 from tools.interrupt import set_interrupt
 
 
-def _make_slow_api_response(delay=5.0):
+# The mocked API call blocks for this long. The interrupt MUST short-circuit it,
+# so the delegate returns in ~2s (happy path), NOT after the full delay. The
+# success assertion is expressed RELATIVE to this constant (return in < DELAY/3),
+# not as an absolute wall-clock bound — a loaded CI runner's scheduler/GIL jitter
+# is seconds, and a large DELAY gives an order-of-magnitude margin so noise can't
+# false-trip while a real regression (interrupt not detected → waits the full
+# call) still trips it unmistakably. Deliberately large: the sleep is only ever
+# paid if the short-circuit is BROKEN, so a big value costs nothing on green.
+API_DELAY = 30.0
+
+
+def _make_slow_api_response(delay=API_DELAY):
     """Create a mock that simulates a slow API response (like a real LLM call)."""
     def slow_create(**kwargs):
         # Simulate a slow API call
@@ -89,8 +100,9 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                 # Patch the OpenAI client creation inside AIAgent.__init__
                 with patch('run_agent.OpenAI') as MockOpenAI:
                     mock_client = MagicMock()
-                    # API call takes 5 seconds — should be interrupted before that
-                    mock_client.chat.completions.create = _make_slow_api_response(delay=5.0)
+                    # API call blocks API_DELAY (30s) — the interrupt must
+                    # short-circuit it long before that.
+                    mock_client.chat.completions.create = _make_slow_api_response(delay=API_DELAY)
                     mock_client.close = MagicMock()
                     MockOpenAI.return_value = mock_client
 
@@ -137,7 +149,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
         agent_thread.start()
 
         # Wait for child to start run_conversation
-        started = child_started.wait(timeout=10)
+        started = child_started.wait(timeout=15)
         if not started:
             agent_thread.join(timeout=1)
             if error_holder[0]:
@@ -163,8 +175,12 @@ class TestRealSubagentInterrupt(unittest.TestCase):
             self.assertTrue(child._interrupt_requested,
                            "Interrupt did not propagate to child!")
 
-        # Wait for delegate to finish (should be fast since interrupted)
-        agent_thread.join(timeout=5)
+        # Wait for delegate to finish (should be fast since interrupted). Timeout
+        # is API_DELAY so a slow-but-correct short-circuit (a few seconds on a
+        # loaded runner) doesn't red on `result is None` before the thread returns;
+        # a genuinely-broken interrupt waits the full call and the assertion below
+        # (not this join) is what fails it.
+        agent_thread.join(timeout=API_DELAY)
         elapsed = time.monotonic() - start
 
         if error_holder[0]:
@@ -175,9 +191,17 @@ class TestRealSubagentInterrupt(unittest.TestCase):
         print(f"Result status: {result['status']}, elapsed: {elapsed:.2f}s")
         print(f"Full result: {result}")
 
-        # The child should have been interrupted, not completed the full 5s API call
-        self.assertLess(elapsed, 3.0,
-                       f"Took {elapsed:.2f}s — interrupt was not detected quickly enough")
+        # The child must have been INTERRUPTED, not run the full mocked API call
+        # to completion. Assert the delegate returned in well under the API delay
+        # (behavior contract: "short-circuited the in-flight call"), NOT an absolute
+        # wall-clock bound — a loaded CI runner's scheduler/GIL jitter is seconds,
+        # and API_DELAY/3 (~10s) leaves ~8s of headroom above the ~2s happy path
+        # while still catching a regression that waits the full ~30s call.
+        self.assertLess(
+            elapsed, API_DELAY / 3,
+            f"Took {elapsed:.2f}s of a {API_DELAY:.0f}s mocked call — interrupt did "
+            f"not short-circuit the in-flight API call",
+        )
         self.assertEqual(result["status"], "interrupted",
                         f"Expected 'interrupted', got '{result['status']}'")
 

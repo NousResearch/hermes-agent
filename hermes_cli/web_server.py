@@ -4305,6 +4305,7 @@ def get_model_options(profile: Optional[str] = None, refresh: bool = False):
                 capabilities=True,
                 refresh=bool(refresh),
                 probe_custom_providers=bool(refresh),
+                probe_current_custom_provider=not bool(refresh),
             )
     except HTTPException:
         raise
@@ -13930,13 +13931,21 @@ def mount_spa(application: FastAPI):
     and the SPA's runtime ``__HERMES_BASE_PATH__`` honour that prefix
     without rebuilding the bundle.
     """
-    if not WEB_DIST.exists():
+    # `hermes serve` is the headless backend: it must NEVER serve the browser
+    # SPA, even if a dist is lying around from a prior `dashboard`/build. Take
+    # the no-frontend path so only the JSON-RPC/WS/API surface is reachable.
+    _headless = os.environ.get("HERMES_SERVE_HEADLESS") == "1"
+    if _headless or not WEB_DIST.exists():
+        _msg = (
+            "Headless backend (hermes serve): web UI disabled — use "
+            "`hermes dashboard` for the browser UI."
+            if _headless
+            else "Frontend not built. Run: cd web && npm run build"
+        )
+
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
-            return JSONResponse(
-                {"error": "Frontend not built. Run: cd web && npm run build"},
-                status_code=404,
-            )
+            return JSONResponse({"error": _msg}, status_code=404)
         return
 
     _index_path = WEB_DIST / "index.html"
@@ -15176,6 +15185,7 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     initial_profile: str = "",
+    headless: bool = False,
 ):
     """Start the web UI server.
 
@@ -15183,6 +15193,10 @@ def start_server(
     URL as ``?profile=<name>`` so the SPA's profile switcher preselects it
     — used when a profile alias (``<profile> dashboard``) routes to the
     machine dashboard.
+
+    ``headless`` is the ``serve`` path: the JSON-RPC/WS backend with no UI
+    build and no SPA mount (mount_spa() honours ``HERMES_SERVE_HEADLESS``), so
+    the banner announces the bind rather than a browser URL.
     """
     import uvicorn
 
@@ -15339,8 +15353,17 @@ def start_server(
             app.state.bound_port = actual_port
 
             _write_dashboard_ready_file(actual_port)
-            print(f"HERMES_DASHBOARD_READY port={actual_port}", flush=True)
-            print(f"  Hermes Web UI → http://{host}:{actual_port}")
+            # Port-discovery sentinel parsed by the desktop spawn. `serve` is a
+            # plain backend, not a dashboard, so it announces a neutral token;
+            # `dashboard` keeps the legacy one. The desktop matches either.
+            ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
+            print(f"{ready_token} port={actual_port}", flush=True)
+            if headless:
+                # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
+                # advertise a paste-and-connect URL, just announce the bind.
+                print(f"  Hermes backend listening on {host}:{actual_port}")
+            else:
+                print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)
 
             # Collapse the peer-hangup teardown flood (#50005). When the Desktop

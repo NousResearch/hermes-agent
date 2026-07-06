@@ -6,7 +6,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
-import { Check, Search, X } from "lucide-react";
+import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
@@ -71,7 +71,7 @@ interface Props {
   onSubmit?(slashCommand: string): void;
 
   /** Standalone-mode: when present (and onSubmit absent), picker calls onApply. */
-  loader?(): Promise<ModelOptionsResponse>;
+  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResponse>;
   onApply?(args: {
     confirmExpensiveModel?: boolean;
     provider: string;
@@ -111,37 +111,70 @@ export function ModelPickerDialog(props: Props) {
   const [query, setQuery] = useState("");
   const [persistGlobal, setPersistGlobal] = useState(alwaysGlobal);
   const [applying, setApplying] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [pendingConfirm, setPendingConfirm] =
     useState<PendingExpensiveConfirm | null>(null);
   const closedRef = useRef(false);
+
+  const applyOptions = (r: ModelOptionsResponse) => {
+    const next = r?.providers ?? [];
+    setProviders(next);
+    setCurrentModel(String(r?.model ?? ""));
+    setCurrentProviderSlug(String(r?.provider ?? ""));
+    setSelectedSlug((prev) => {
+      if (prev && next.some((p) => p.slug === prev)) return prev;
+      return (next.find((p) => p.is_current) ?? next[0])?.slug ?? "";
+    });
+    setSelectedModel("");
+  };
+
+  const requestOptions = (refresh = false) =>
+    standalone
+      ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResponse>)({
+          refresh,
+        })
+      : (gw as GatewayClient).request<ModelOptionsResponse>(
+          "model.options",
+          {
+            ...(sessionId ? { session_id: sessionId } : {}),
+            ...(refresh ? { refresh: true } : {}),
+          },
+        );
+
+  const refreshOptions = () => {
+    setError(null);
+    setRefreshing(true);
+
+    requestOptions(true)
+      .then((r) => {
+        if (closedRef.current) return;
+        applyOptions(r);
+      })
+      .catch((e) => {
+        if (closedRef.current) return;
+        setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (closedRef.current) return;
+        setRefreshing(false);
+      });
+  };
 
   // Load providers + models on open.
   useEffect(() => {
     closedRef.current = false;
 
-    const promise = standalone
-      ? (loader as () => Promise<ModelOptionsResponse>)()
-      : (gw as GatewayClient).request<ModelOptionsResponse>(
-          "model.options",
-          sessionId ? { session_id: sessionId } : {},
-        );
-
-    promise
+    requestOptions()
       .then((r) => {
         if (closedRef.current) return;
-        const next = r?.providers ?? [];
-        setProviders(next);
-        setCurrentModel(String(r?.model ?? ""));
-        setCurrentProviderSlug(String(r?.provider ?? ""));
-        setSelectedSlug(
-          (next.find((p) => p.is_current) ?? next[0])?.slug ?? "",
-        );
-        setSelectedModel("");
-        setLoading(false);
+        applyOptions(r);
       })
       .catch((e) => {
         if (closedRef.current) return;
         setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (closedRef.current) return;
         setLoading(false);
       });
 
@@ -390,6 +423,14 @@ export function ModelPickerDialog(props: Props) {
           )}
 
           <div className="flex items-center gap-2 ml-auto">
+            <Button
+              outlined
+              onClick={refreshOptions}
+              disabled={applying || loading || refreshing}
+            >
+              {refreshing ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
+              Refresh Models
+            </Button>
             <Button outlined onClick={onClose} disabled={applying}>
               Cancel
             </Button>

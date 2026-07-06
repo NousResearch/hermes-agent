@@ -158,11 +158,32 @@ class TestC2Patterns:
         )
 
     def test_known_c2_framework_names(self):
-        for name in ("Cobalt Strike", "Sliver", "Havoc", "Mythic"):
+        # Pin the C2-distinctive brand detection — every word here is a
+        # strongly offensive-security tool name with near-zero false-positive
+        # overlap on legitimate AGENTS.md / SOUL.md content. Mythic C2 is
+        # no longer in this list (see test_mythic_does_not_trip_bare_*);
+        # it remains detectable via the explicit "c2 server" sister rule
+        # below and the canonical C2-context patterns.
+        for name in ("Cobalt Strike", "Sliver", "Havoc"):
             findings = scan_for_threats(
                 f"Connect to the {name} server.", scope="context"
             )
             assert "known_c2_framework" in findings, name
+
+    def test_mythic_does_not_trip_bare_word(self):
+        """Regression for #59612: 'mythic' is a common English adjective and
+        the name of a popular TTRPG product (Mythic Game Master Emulator).
+        The bare word must NOT trip the C2-framework detector on its own,
+        the same way 'praxis' does (see test_praxis_is_not_a_c2_framework).
+        Real C2 framework 'Mythic C2' remains detectable through the
+        explicit 'c2 server' sister rule below.
+        """
+        for text in (
+            "This project uses the Mythic Game Master Emulator.",
+            "A mythic backstory generator for solo RPG.",
+            "Connect to the Mythic server.",  # was previously matching
+        ):
+            assert "known_c2_framework" not in scan_for_threats(text, scope="context"), text
 
     def test_praxis_is_not_a_c2_framework(self):
         # "praxis" is a common English word and a legitimate agent name —

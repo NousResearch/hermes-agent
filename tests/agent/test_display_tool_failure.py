@@ -134,6 +134,80 @@ class TestDetectToolFailureStructured:
         assert is_failure is False
 
 
+class TestDetectToolFailureValueAware:
+    """Regression: a success schema with a zero/null count field (e.g. a
+    fan-out/parallel-dispatch tool reporting {"succeeded": N, "failed": 0})
+    must not be flagged just because the substring '"failed"'/'"error"'
+    appears somewhere in the JSON. See #52074 for the in-tree MCP instance
+    of this same shape ({"structuredContent": {"response": {"error": null}}})."""
+
+    def test_batch_success_with_zero_failed_count_not_flagged(self):
+        result = json.dumps({
+            "status": "complete", "total": 2, "succeeded": 2, "failed": 0,
+            "results": [{"status": "success"}],
+        })
+        assert _detect_tool_failure("some_batch_tool", result) == (False, "")
+
+    def test_batch_real_failure_flagged(self):
+        result = json.dumps({"status": "complete", "total": 2, "succeeded": 1, "failed": 1})
+        is_failure, _ = _detect_tool_failure("some_batch_tool", result)
+        assert is_failure is True
+
+    def test_failed_multi_digit_flagged(self):
+        result = json.dumps({"total": 20, "succeeded": 10, "failed": 10})
+        is_failure, _ = _detect_tool_failure("some_batch_tool", result)
+        assert is_failure is True
+
+    def test_failed_boolean_false_not_flagged(self):
+        assert _detect_tool_failure("some_tool", json.dumps({"failed": False})) == (False, "")
+
+    def test_failed_boolean_true_flagged(self):
+        is_failure, _ = _detect_tool_failure("some_tool", json.dumps({"failed": True}))
+        assert is_failure is True
+
+    def test_error_null_not_flagged(self):
+        result = json.dumps({"result": "ok", "error": None})
+        assert _detect_tool_failure("some_tool", result) == (False, "")
+
+    def test_error_empty_string_not_flagged(self):
+        assert _detect_tool_failure("some_tool", json.dumps({"error": ""})) == (False, "")
+
+    def test_plain_text_mentioning_failed_not_flagged(self):
+        result = "the operation succeeded, 0 failed as expected"
+        assert _detect_tool_failure("some_tool", result) == (False, "")
+
+    def test_failed_empty_list_not_flagged(self):
+        # Failed-items-as-list shape: {"failed": [], "succeeded": [...]}
+        result = json.dumps({"succeeded": ["a", "b"], "failed": []})
+        assert _detect_tool_failure("some_tool", result) == (False, "")
+
+    def test_failed_nonempty_list_flagged(self):
+        result = json.dumps({"succeeded": ["a"], "failed": ["b"]})
+        is_failure, _ = _detect_tool_failure("some_tool", result)
+        assert is_failure is True
+
+    def test_failed_null_not_flagged(self):
+        assert _detect_tool_failure("some_tool", json.dumps({"failed": None})) == (False, "")
+
+    def test_error_empty_object_not_flagged(self):
+        assert _detect_tool_failure("some_tool", json.dumps({"error": {}})) == (False, "")
+
+    def test_error_nonempty_object_flagged(self):
+        result = json.dumps({"error": {"code": 500, "message": "boom"}})
+        is_failure, _ = _detect_tool_failure("some_tool", result)
+        assert is_failure is True
+
+    def test_falsy_first_hit_does_not_mask_nested_real_error(self):
+        # The old any-substring check flagged this; a first-match-only
+        # value check would miss it. Every occurrence must be examined.
+        result = json.dumps({"error": None, "inner": {"error": "connection refused"}})
+        is_failure, _ = _detect_tool_failure("some_tool", result)
+        assert is_failure is True
+
+    def test_failed_zero_float_not_flagged(self):
+        assert _detect_tool_failure("some_tool", '{"failed": 0.0}') == (False, "")
+
+
 class TestGetCuteToolMessageFailureSuffix:
     """End-to-end: failure suffix is appended by get_cute_tool_message."""
 

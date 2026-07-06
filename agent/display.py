@@ -1199,6 +1199,37 @@ def _trim_error(msg: str) -> str:
     return msg
 
 
+# Captures the value token after a "failed"/"error" JSON key: a quoted
+# string, an empty array/object, or a bare token (number, literal, or the
+# start of a non-empty container — anything non-falsy flags either way, so
+# the container's contents don't need to be parsed).
+_FAILURE_KEY_VALUE_RE = re.compile(
+    r'"(?:failed|error)"\s*:\s*('
+    r'"(?:[^"\\]|\\.)*"'   # quoted string (possibly empty)
+    r"|\[\s*\]|\{\s*\}"    # empty array / object
+    r"|[^\s,}\]]+"         # number, literal, or start of non-empty container
+    r")"
+)
+
+_FALSY_JSON_TOKENS = frozenset({"null", "false", '""'})
+
+
+def _is_falsy_json_token(token: str) -> bool:
+    """True when a captured JSON value token reports success: null, false,
+    an empty string/array/object, or a zero count."""
+    token = token.strip()
+    if token in _FALSY_JSON_TOKENS:
+        return True
+    if token[:1] in "[{":
+        # Only the empty-container regex alternates start with [ or { and
+        # end cleanly; anything longer is a non-empty container -> truthy.
+        return token.replace(" ", "") in ("[]", "{}")
+    try:
+        return float(token) == 0.0
+    except ValueError:
+        return False
+
+
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Inspect a tool result string for signs of failure.
 
@@ -1243,7 +1274,18 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     if not isinstance(result, str):
         return False, ""
     lower = result[:500].lower()
-    if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
+    # Value-aware matching: a summary field like `"failed": 0` or `"error": null`
+    # is a *success* report, not a failure signal — a blind substring match on
+    # '"failed"'/'"error"' false-positives on any tool whose success schema
+    # includes a zero/null/empty field (e.g. a dispatch summary
+    # {"succeeded": N, "failed": 0}, a failed-items list {"failed": []}, or
+    # an MCP structuredContent wrapper with "error": null — #52074's shape).
+    # Every occurrence in the window is checked so a falsy first hit can't
+    # mask a real error deeper in the payload.
+    for m in _FAILURE_KEY_VALUE_RE.finditer(lower):
+        if not _is_falsy_json_token(m.group(1)):
+            return True, " [error]"
+    if result.startswith("Error"):
         return True, " [error]"
 
     return False, ""

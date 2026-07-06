@@ -524,3 +524,260 @@ def test_repair_does_NOT_merge_codex_interim_assistants():
     assert len(interim) == 2
     encs = [m["codex_reasoning_items"][0]["encrypted_content"] for m in interim]
     assert "enc_first" in encs and "enc_second" in encs
+
+
+# ── Pass 1.5: mid-history orphan tool_use repair ───────────────────────────
+# An assistant(tool_calls) whose calls get NO answering tool result before the
+# next turn is a guaranteed provider 400 ("tool_use ids were found without
+# tool_result"). The 2026-07-04 incident: a tool-call row double-written during
+# an FTS-write-corruption restart storm left an orphan buried MID-history — the
+# dangling-TAIL stripper and Pass 0 both missed it, so it reached the wire and
+# cascaded across 11 fallback subs.
+
+def test_repair_strips_unanswered_tool_calls_keeps_text():
+    """assistant(tool_calls)+text followed by a user message (calls never
+    answered) → strip the tool_calls, keep the assistant text turn."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do X"},
+        {"role": "assistant", "content": "Working on it.",
+         "tool_calls": [{"id": "orphan1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "user", "content": "actually do Y instead"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    # No message may still carry an unanswered tool_call.
+    assert all("tool_calls" not in m for m in messages)
+    # The assistant text survives.
+    assert any(m.get("role") == "assistant" and m.get("content") == "Working on it."
+               for m in messages)
+    # No tool-role message was invented.
+    assert all(m.get("role") != "tool" for m in messages)
+
+
+def test_repair_drops_orphan_tool_call_turn_with_no_text():
+    """A pure assistant(tool_calls) with empty content and no answers → drop
+    the whole orphan turn (nothing salvageable)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do X"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "orphan1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "user", "content": "never mind"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    assert messages == [
+        {"role": "user", "content": "do X"},
+        {"role": "user", "content": "never mind"},
+    ] or messages == [
+        # Pass 2 may merge the two now-adjacent user turns.
+        {"role": "user", "content": "do X\n\nnever mind"},
+    ]
+
+
+def test_repair_leaves_answered_tool_call_untouched():
+    """Regression: an assistant(tool_calls) that IS answered stays put — even
+    when followed by a user redirect (the valid ongoing-dialog pattern)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "out"},
+        {"role": "user", "content": "Q2"},
+    ]
+    original = [dict(m) for m in messages]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert messages == original
+
+
+def test_repair_partial_orphan_keeps_answered_drops_unanswered():
+    """assistant(tool_calls A,B) where only A is answered → drop B, keep A."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "run two"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [
+             {"id": "A", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+             {"id": "B", "type": "function", "function": {"name": "g", "arguments": "{}"}},
+         ]},
+        {"role": "tool", "tool_call_id": "A", "content": "ra"},
+        {"role": "assistant", "content": "done"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    tc_turn = next(m for m in messages if m.get("role") == "assistant" and m.get("tool_calls"))
+    ids = [tc["id"] for tc in tc_turn["tool_calls"]]
+    assert ids == ["A"]  # B (unanswered) dropped, A (answered) kept
+
+
+def test_repair_exempts_codex_interim_unanswered_tool_state():
+    """A Codex Responses interim assistant turn legitimately carries unanswered
+    interim tool state for the encrypted replay chain — Pass 1.5 must not touch
+    it (same exemption as Pass 0)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "think"},
+        {"role": "assistant", "content": "", "finish_reason": "incomplete",
+         "codex_reasoning_items": [{"encrypted_content": "enc"}],
+         "tool_calls": [{"id": "interim1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "assistant", "content": "final"},
+    ]
+    before = [dict(m) for m in messages]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    interim = [m for m in messages if m.get("finish_reason") == "incomplete"]
+    assert len(interim) == 1
+    assert interim[0].get("tool_calls") == before[1]["tool_calls"]
+
+
+def test_repair_incident_shape_duplicate_first_orphan_second_answered():
+    """The exact 2026-07-04 incident shape: a duplicated assistant(tool_use)
+    where the FIRST copy is never answered (orphan) and a later byte-identical
+    copy IS answered. After repair there must be ZERO unanswered tool_use, and
+    the answered copy + its result survive."""
+    agent = _bare_agent()
+    dup_call = {"id": "toolu_dup", "type": "function",
+                "function": {"name": "cronjob", "arguments": "{}"}}
+    messages = [
+        {"role": "user", "content": "schedule it"},
+        # orphan copy — no tool result follows, then the user jumped in
+        {"role": "assistant", "content": "Scheduling.", "tool_calls": [dict(dup_call)]},
+        {"role": "user", "content": "continue"},
+        # ... later, the answered twin (same id, correctly resolved) ...
+        {"role": "assistant", "content": "Scheduling.", "tool_calls": [dict(dup_call)]},
+        {"role": "tool", "tool_call_id": "toolu_dup", "content": "{\"success\": true}"},
+        {"role": "assistant", "content": "Done."},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    # Reconstruct answered-set validation: every assistant tool_call id must be
+    # answered by the immediately-following tool run.
+    unanswered = []
+    for idx, m in enumerate(messages):
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            answered = set()
+            k = idx + 1
+            while k < len(messages) and messages[k].get("role") == "tool":
+                answered.add(messages[k].get("tool_call_id"))
+                k += 1
+            for tc in m["tool_calls"]:
+                if tc["id"] not in answered:
+                    unanswered.append(tc["id"])
+    assert unanswered == []
+    # The answered twin + its result survive.
+    assert any(m.get("role") == "tool" and m.get("tool_call_id") == "toolu_dup"
+               for m in messages)
+
+
+def test_repair_duplicate_ids_in_one_turn_countmatched_not_setmatched():
+    """Greptile P1 (#196): an assistant turn with DUPLICATE ids in ONE turn
+    ``tool_calls=[X, X]`` answered by only a SINGLE ``tool`` result for X must
+    keep exactly ONE X (count-based), not both (set-based would leave 2 calls /
+    1 result → still a 400)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "run X twice"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [
+             {"id": "X", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+             {"id": "X", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+         ]},
+        {"role": "tool", "tool_call_id": "X", "content": "one result"},
+        {"role": "assistant", "content": "done"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    tc_turn = next(m for m in messages if m.get("role") == "assistant" and m.get("tool_calls"))
+    # exactly ONE X kept — matches the single result; wire-valid.
+    assert [tc["id"] for tc in tc_turn["tool_calls"]] == ["X"]
+    n_results = sum(1 for m in messages if m.get("role") == "tool" and m.get("tool_call_id") == "X")
+    assert len(tc_turn["tool_calls"]) == n_results  # calls == results for id X
+
+
+def test_repair_duplicate_ids_in_one_turn_both_answered_kept():
+    """Counterpart: ``[X, X]`` answered by TWO results for X (a real parallel
+    call reusing an id) → both kept, untouched."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "run X twice"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [
+             {"id": "X", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+             {"id": "X", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+         ]},
+        {"role": "tool", "tool_call_id": "X", "content": "r1"},
+        {"role": "tool", "tool_call_id": "X", "content": "r2"},
+        {"role": "assistant", "content": "done"},
+    ]
+    original = [dict(m) for m in messages]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert messages == original
+
+
+def test_repair_drops_surplus_duplicate_tool_result():
+    """Greptile P1 (#196) inverse: ONE assistant call for X followed by TWO
+    ``tool`` results for X → Anthropic 400s ('each tool_use must have a single
+    result. Found multiple tool_result blocks with id'). Pass 1 must drop the
+    surplus result, keeping one-result-per-call."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "run X"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "X", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "X", "content": "r1"},
+        {"role": "tool", "tool_call_id": "X", "content": "r2 (surplus)"},
+        {"role": "assistant", "content": "done"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    x_results = [m for m in messages if m.get("role") == "tool" and m.get("tool_call_id") == "X"]
+    assert len(x_results) == 1  # surplus dropped
+    assert x_results[0]["content"] == "r1"  # the FIRST result is kept
+
+
+def test_repair_two_calls_two_results_same_id_kept():
+    """Symmetric counterpart: TWO calls for X answered by TWO results for X →
+    both results kept (parallel-call id reuse is valid; budget = 2)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "run X twice"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [
+             {"id": "X", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+             {"id": "X", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+         ]},
+        {"role": "tool", "tool_call_id": "X", "content": "r1"},
+        {"role": "tool", "tool_call_id": "X", "content": "r2"},
+        {"role": "assistant", "content": "done"},
+    ]
+    original = [dict(m) for m in messages]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert messages == original

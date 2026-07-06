@@ -68,7 +68,7 @@ relay_call_bin="$(find_relay_call || true)"
 gate_run_bin="$(find_gate_run || true)"
 
 claude_bin="$(command -v claude 2>/dev/null || true)"
-[ -n "$claude_bin" ] && mark_ok "claude พบที่ ${claude_bin} (ใช้เรียกสมองพิเศษ fable ได้)" || mark_warn "claude ไม่พบบนเครื่องนี้ เรียกสมองพิเศษ fable ไม่ได้"
+[ -n "$claude_bin" ] && mark_ok "claude พบที่ ${claude_bin} (สมองหลัก Opus 4.8)" || mark_warn "claude ไม่พบบนเครื่องนี้ เรียกสมองหลัก (Opus 4.8) ไม่ได้"
 [ -n "$grok_bin" ] && mark_ok "grok พบที่ ${grok_bin}" || mark_fail "grok ไม่พบบนเครื่องนี้"
 [ -n "$codex_bin" ] && mark_ok "codex พบที่ ${codex_bin}" || mark_warn "codex ไม่พบบนเครื่องนี้ ใช้เป็นตัวสำรองไม่ได้"
 [ -n "$gemini_bin" ] && mark_ok "gemini พบที่ ${gemini_bin}" || mark_warn "gemini ไม่พบบนเครื่องนี้ ใช้เป็นตัวสำรองไม่ได้"

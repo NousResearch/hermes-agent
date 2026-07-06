@@ -2378,6 +2378,8 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
     if assignee is None:
         return None
+    if isinstance(assignee, str) and not assignee.strip():
+        return None
     from hermes_cli.profiles import normalize_profile_name
 
     return normalize_profile_name(assignee)
@@ -2740,10 +2742,18 @@ def list_tasks(
         query += " AND assignee = ?"
         params.append(_canonical_assignee(assignee))
     if status is not None:
-        if status not in VALID_STATUSES:
-            raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
-        query += " AND status = ?"
-        params.append(status)
+        if isinstance(status, (list, tuple)):
+            for s in status:
+                if s not in VALID_STATUSES:
+                    raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
+            if status:
+                query += f" AND status IN ({','.join(['?' for _ in status])})"
+                params.extend(status)
+        else:
+            if status not in VALID_STATUSES:
+                raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
+            query += " AND status = ?"
+            params.append(status)
     if tenant is not None:
         query += " AND tenant = ?"
         params.append(tenant)

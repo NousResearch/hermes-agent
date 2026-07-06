@@ -278,8 +278,15 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
-        """Authenticate, obtain gateway URL, and open the WebSocket."""
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Authenticate, obtain gateway URL, and open the WebSocket.
+
+        ``is_reconnect`` is accepted for interface compatibility with
+        ``BasePlatformAdapter.connect()`` (see ``_connect_adapter_with_timeout``).
+        The QQ adapter does not currently differentiate cold boot from
+        reconnect, but the parameter is accepted to prevent a ``TypeError``
+        when the gateway calls ``adapter.connect(is_reconnect=...)``.
+        """
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
             self._set_fatal_error("qq_missing_dependency", message, retryable=True)

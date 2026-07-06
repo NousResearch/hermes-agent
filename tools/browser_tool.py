@@ -78,6 +78,8 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 # straight out of process.env.  Strip by default, then re-add only the
 # browser-backend keys the worker legitimately needs.
 _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
+    "AGENT_BROWSER_EXECUTABLE_PATH",
+    "AGENT_BROWSER_ARGS",
     "BROWSERBASE_API_KEY",
     "BROWSERBASE_PROJECT_ID",
     "BROWSER_USE_API_KEY",

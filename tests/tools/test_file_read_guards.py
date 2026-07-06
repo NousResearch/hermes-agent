@@ -132,6 +132,58 @@ class TestDevicePathBlocking(unittest.TestCase):
         for path in ("/proc/cpuinfo", "/proc/meminfo", "/proc/uptime", "/proc/version"):
             self.assertFalse(_is_blocked_device(path), f"{path} should not be blocked")
 
+    @unittest.skipIf(os.name == "nt", "/proc path blocking is a Linux concept")
+    def test_search_result_read_block_error_blocks_proc(self):
+        """search_files must block /proc-sensitive paths in its output guard.
+
+        read_file already blocks these via _is_blocked_device (#56219), but
+        search_files filters through _search_result_read_block_error which
+        only applied the credential-env guard (get_read_block_error).
+        Sensitive /proc paths (maps, mem, auxv, pagemap, environ, cmdline)
+        must also be blocked in search results so they can't leak through
+        content matches, file listings, or count results (#56918).
+
+        Test _is_blocked_device_path directly — the function
+        _search_result_read_block_error delegates to it, and
+        _is_blocked_device_path is platform-agnostic (pure string match).
+        """
+        from tools.file_tools import _is_blocked_device_path
+
+        for path in (
+            "/proc/self/maps",
+            "/proc/12345/maps",
+            "/proc/self/smaps",
+            "/proc/99/smaps_rollup",
+            "/proc/self/mem",
+            "/proc/1/mem",
+            "/proc/self/auxv",
+            "/proc/12345/auxv",
+            "/proc/self/pagemap",
+            "/proc/99/pagemap",
+            "/proc/self/environ",
+            "/proc/1/environ",
+            "/proc/self/cmdline",
+            "/proc/99/cmdline",
+            "/proc/self/task/1234/maps",
+            "/proc/self/task/1234/auxv",
+        ):
+            self.assertTrue(
+                _is_blocked_device_path(path),
+                f"_is_blocked_device_path should block {path}",
+            )
+
+    @unittest.skipIf(os.name == "nt", "/proc path blocking is a Linux concept")
+    def test_search_result_read_block_error_allows_legitimate_proc(self):
+        """Top-level /proc files must not be blocked."""
+        from tools.file_tools import _is_blocked_device_path
+
+        for path in ("/proc/cpuinfo", "/proc/meminfo", "/proc/uptime",
+                      "/proc/version", "/proc/self/status"):
+            self.assertFalse(
+                _is_blocked_device_path(path),
+                f"_is_blocked_device_path should allow {path}",
+            )
+
     def test_normpath_alias_to_blocked_device_is_blocked(self):
         self.assertTrue(_is_blocked_device("/dev/../dev/zero"))
         self.assertTrue(_is_blocked_device("/dev/./urandom"))

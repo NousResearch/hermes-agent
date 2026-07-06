@@ -559,12 +559,31 @@ def _search_result_read_block_error(path: str, task_id: str = "default") -> str 
     ``get_read_block_error`` expects an already-resolved path when the task cwd
     can differ from the Python process cwd. Mirror ``read_file_tool``'s path
     resolution before applying the shared read guard.
+
+    Also applies ``_is_blocked_device_path`` so that the same /proc-sensitive
+    paths blocked in ``read_file`` (#56219) are also blocked in
+    ``search_files`` — content matches, file listings, and count results
+    across all three output modes (#56918).
     """
     try:
         resolved = _resolve_path_for_task(path, task_id)
     except (OSError, ValueError, RuntimeError):
-        return get_read_block_error(path)
-    return get_read_block_error(str(resolved))
+        resolved = Path(path)
+    resolved_str = str(resolved)
+
+    # Credential-env guard (auth.json, .env, etc.)
+    cred_error = get_read_block_error(resolved_str)
+    if cred_error:
+        return cred_error
+
+    # Sensitive /proc guard — same blocked paths as _is_blocked_device.
+    if _is_blocked_device_path(resolved_str):
+        return (
+            f"Blocked sensitive proc path in search results: {path}\n"
+            "This file can expose ASLR layout, raw memory, or secrets."
+        )
+
+    return None
 
 
 def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:

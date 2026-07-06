@@ -98,6 +98,27 @@ class TestSessionLifecycle:
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
+    def test_append_message_after_close_reopens_connection(self, tmp_path):
+        """Late cron/gateway flushes should not fail with None.execute.
+
+        A teardown path may close the SessionDB object before a final transcript
+        flush/end-session write arrives.  Writable operations should reopen the
+        SQLite connection and preserve the row instead of dropping it.
+        """
+        db_path = tmp_path / "state.db"
+        session_db = SessionDB(db_path=db_path)
+        try:
+            session_db.create_session(session_id="s1", source="cron")
+            session_db.close()
+            assert session_db._conn is None
+
+            msg_id = session_db.append_message("s1", role="assistant", content="late flush")
+
+            assert msg_id > 0
+            assert session_db.get_messages("s1")[-1]["content"] == "late flush"
+        finally:
+            session_db.close()
+
     def test_create_session_enriches_null_metadata_on_conflict(self, db):
         """Gateway creates a bare row first; the agent's later create_session
         must backfill model/model_config/system_prompt without clobbering the

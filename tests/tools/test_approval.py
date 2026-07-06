@@ -2408,7 +2408,7 @@ class TestGuestModeApprovalShortCircuit:
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
-        mod._gateway_guest_sessions.clear()
+        mod._gateway_approval_blocked.clear()
         mod._session_approved.clear()
         mod._permanent_approved.clear()
         mod._pending.clear()
@@ -2429,7 +2429,7 @@ class TestGuestModeApprovalShortCircuit:
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
-        mod._gateway_guest_sessions.clear()
+        mod._gateway_approval_blocked.clear()
         for k, v in self._saved_env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -2519,6 +2519,122 @@ class TestGuestModeApprovalShortCircuit:
         assert result["approved"] is False
         assert result.get("outcome") == "timeout"
         assert len(notified) == 1, "notify_cb should fire normally for a non-guest session"
+
+
+class TestNonAdminApprovalShortCircuit:
+    """Authorized-but-non-admin users (the allow_admin_from slash-access tier)
+    cannot self-approve a dangerous command -- same immediate-deny mechanism as
+    guest chats, distinct 'ask the owner' messaging. The admin decision itself
+    is made in the gateway (slash_access.policy_for_source().is_admin()); the
+    approval layer only transports it via mark_session_approval_blocked().
+    """
+
+    SESSION_KEY = "test-non-admin-session"
+
+    def setup_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._gateway_approval_blocked.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+        mod._pending.clear()
+
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                      "HERMES_YOLO_MODE",
+                      "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+        }
+        os.environ.pop("HERMES_YOLO_MODE", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ.pop("HERMES_CRON_SESSION", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+
+    def teardown_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._gateway_approval_blocked.clear()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_block_reason_roundtrip(self):
+        from tools import approval as mod
+        assert mod.session_approval_block_reason(self.SESSION_KEY) is None
+        mod.mark_session_approval_blocked(self.SESSION_KEY, "non_admin")
+        assert mod.session_approval_block_reason(self.SESSION_KEY) == "non_admin"
+        # Guest wrapper reports False for a non_admin block (distinct reason).
+        assert mod.is_session_guest(self.SESSION_KEY) is False
+        mod.unmark_session_approval_blocked(self.SESSION_KEY)
+        assert mod.session_approval_block_reason(self.SESSION_KEY) is None
+
+    def test_guest_wrapper_still_maps_to_reason_guest(self):
+        from tools import approval as mod
+        mod.mark_session_guest(self.SESSION_KEY)
+        assert mod.session_approval_block_reason(self.SESSION_KEY) == "guest"
+        assert mod.is_session_guest(self.SESSION_KEY) is True
+
+    def test_terminal_guard_denies_non_admin_without_notify(self):
+        from tools import approval as mod
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        mod.mark_session_approval_blocked(self.SESSION_KEY, "non_admin")
+
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "non_admin_unsupported"
+        assert notified == [], "notify_cb must never fire for a non-admin session"
+        assert mod._gateway_queues.get(self.SESSION_KEY) in (None, [])
+
+    def test_non_admin_message_points_at_owner_not_generic_context(self):
+        from tools import approval as mod
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+        mod.mark_session_approval_blocked(self.SESSION_KEY, "non_admin")
+
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        msg = result["message"].lower()
+        assert "blocked" in msg
+        assert "admin" in msg or "owner" in msg
+        assert "do not retry" in msg
+        # It must NOT reuse the guest "not supported in this context" wording.
+        assert "guest chat" not in msg
+
+    def test_non_admin_denial_is_fast_even_with_long_timeout(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {"mode": "manual", "gateway_timeout": 300, "timeout": 300},
+        )
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+        mod.mark_session_approval_blocked(self.SESSION_KEY, "non_admin")
+
+        start = time.monotonic()
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+        elapsed = time.monotonic() - start
+
+        assert result["approved"] is False
+        assert elapsed < 2.0, f"non-admin denial took {elapsed:.2f}s -- should be near-instant"
+
+    def test_execute_code_guard_denies_non_admin(self):
+        from tools import approval as mod
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        mod.mark_session_approval_blocked(self.SESSION_KEY, "non_admin")
+
+        result = mod.check_execute_code_guard("import os; os.system('rm -rf /')", "local")
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "non_admin_unsupported"
+        assert notified == []
 
 
 class TestTirithImportErrorFailOpenPolicy:

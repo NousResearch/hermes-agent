@@ -2043,18 +2043,27 @@ class _ApprovalEntry:
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
-# session_key → guest-mode marker (Telegram Bot API 10.0 @mention from a chat
-# the bot isn't a member of). Guest chats can never present or resolve an
-# interactive approval prompt -- send_exec_approval's sendMessage is rejected
-# ("Forbidden: bot is not a member"), and there is no /approve path reachable
-# from a guest chat (slash commands are hard-blocked there for the same
-# reason). Marking the session lets _await_gateway_decision deny immediately,
-# the same way the adapter already declines slash commands at the front door,
-# instead of registering a queue entry and blocking the agent thread for the
-# full gateway_timeout waiting on an approval that can structurally never
-# arrive. This is independent of send_exec_approval / approval-routing
-# destination (home channel, etc.) -- the notify callback is never invoked.
-_gateway_guest_sessions: set[str] = set()
+# session_key -> reason a session cannot grant an interactive approval, one of:
+#   "guest"     -- Telegram Bot API 10.0 @mention from a chat the bot isn't a
+#                  member of. No sendMessage/answerGuestQuery approval surface,
+#                  and slash commands (incl. /approve) are hard-blocked there.
+#   "non_admin" -- an authorized-but-non-admin user (the allow_admin_from
+#                  slash-access tier). The owner/admin approves dangerous
+#                  actions; a non-admin cannot self-approve, same trust level
+#                  as a group/guest chat.
+# In both cases _await_gateway_decision denies immediately -- no queue entry,
+# no notify_cb call, no wait, no approval hooks -- instead of blocking the
+# agent thread for the full gateway_timeout on an approval that will never
+# (guest) or must never (non_admin) arrive. This is independent of
+# send_exec_approval / approval-routing destination (home channel, etc.) --
+# the notify callback is never invoked.
+#
+# The admin/guest DECISION itself is resolved upstream in the gateway
+# (slash_access.policy_for_source().is_admin() and the adapter's
+# _is_guest_chat) -- this store only TRANSPORTS that decision into the
+# approval layer, which must not import gateway config. One source of truth
+# for "who is admin"; this is not a second place that re-decides it.
+_gateway_approval_blocked: dict[str, str] = {}
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -2082,53 +2091,84 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
-def mark_session_guest(session_key: str) -> None:
-    """Mark *session_key* as a guest-mode chat for the duration of this turn.
+def mark_session_approval_blocked(session_key: str, reason: str) -> None:
+    """Mark *session_key* as unable to grant an interactive approval this turn.
 
+    *reason* is ``"guest"`` or ``"non_admin"`` (see ``_gateway_approval_blocked``).
     Call once per turn dispatch, alongside :func:`register_gateway_notify`.
     """
     with _lock:
-        _gateway_guest_sessions.add(session_key)
+        _gateway_approval_blocked[session_key] = reason
+
+
+def unmark_session_approval_blocked(session_key: str) -> None:
+    """Clear the approval-blocked marker for *session_key* (turn teardown)."""
+    with _lock:
+        _gateway_approval_blocked.pop(session_key, None)
+
+
+def session_approval_block_reason(session_key: str) -> Optional[str]:
+    """Return why *session_key* can't grant approvals (``"guest"`` /
+    ``"non_admin"``), or ``None`` when it can."""
+    with _lock:
+        return _gateway_approval_blocked.get(session_key)
+
+
+# Backward-compatible guest-only surface (the original #59741 API). Guest is
+# just one reason a session is approval-blocked; these keep existing callers
+# and tests working while the general form above also covers the non_admin tier.
+def mark_session_guest(session_key: str) -> None:
+    """Mark *session_key* as a guest-mode chat (``reason="guest"``)."""
+    mark_session_approval_blocked(session_key, "guest")
 
 
 def unmark_session_guest(session_key: str) -> None:
-    """Clear the guest-mode marker for *session_key*.
-
-    Call once per turn teardown, alongside :func:`unregister_gateway_notify`.
-    """
-    with _lock:
-        _gateway_guest_sessions.discard(session_key)
+    """Clear the guest/approval-blocked marker for *session_key*."""
+    unmark_session_approval_blocked(session_key)
 
 
 def is_session_guest(session_key: str) -> bool:
-    """Return whether *session_key* is currently marked as a guest-mode chat."""
-    with _lock:
-        return session_key in _gateway_guest_sessions
+    """Return whether *session_key* is currently marked guest specifically."""
+    return session_approval_block_reason(session_key) == "guest"
 
 
-def _guest_unsupported_block_result(pattern_key: str, description: str) -> dict:
-    """The fixed BLOCKED result for a guest-mode chat that structurally
-    cannot present or resolve an interactive approval prompt.
+_APPROVAL_BLOCKED_MESSAGES = {
+    "guest": (
+        "BLOCKED: this action requires running a command that isn't "
+        "supported in this context (a guest chat the bot isn't a "
+        "member of has no way to grant approval). Do NOT retry this "
+        "command, do NOT rephrase it, and do NOT attempt the same "
+        "outcome via a different command -- there is no approval path "
+        "available here. Tell the user you can't do that in this context."
+    ),
+    "non_admin": (
+        "BLOCKED: this action requires approval to run a dangerous command, "
+        "and only the owner/an admin can grant it -- you are talking to a "
+        "non-admin user who cannot self-approve. Do NOT retry this command, "
+        "do NOT rephrase it, and do NOT attempt the same outcome via a "
+        "different command. Tell the user this action needs the owner to "
+        "run it or to grant them admin access."
+    ),
+}
 
-    Shared by every guest-denial site in both command-guard entry points:
-    the early check (before cached grants/smart approval get a chance to
-    run) and _await_gateway_decision's own ``guest_unsupported`` result
-    (reached for a command that wasn't already caught early, e.g. a fresh
-    pattern with no prior findings gate).
+
+def _approval_blocked_result(reason: str, pattern_key: str, description: str) -> dict:
+    """The fixed BLOCKED result for a session that structurally cannot grant
+    an interactive approval this turn (``reason`` is ``"guest"`` or
+    ``"non_admin"`` -- see :func:`mark_session_approval_blocked`).
+
+    Shared by every approval-blocked denial site in both command-guard entry
+    points: the early check (before cached grants/smart approval get a
+    chance to run) and _await_gateway_decision's own ``guest_unsupported`` /
+    ``non_admin_unsupported`` result (reached for a command that wasn't
+    already caught early, e.g. a fresh pattern with no prior findings gate).
     """
     return {
         "approved": False,
-        "message": (
-            "BLOCKED: this action requires running a command that isn't "
-            "supported in this context (a guest chat the bot isn't a "
-            "member of has no way to grant approval). Do NOT retry this "
-            "command, do NOT rephrase it, and do NOT attempt the same "
-            "outcome via a different command -- there is no approval path "
-            "available here. Tell the user you can't do that in this context."
-        ),
+        "message": _APPROVAL_BLOCKED_MESSAGES[reason],
         "pattern_key": pattern_key,
         "description": description,
-        "outcome": "guest_unsupported",
+        "outcome": f"{reason}_unsupported",
         "user_consent": False,
     }
 
@@ -3131,27 +3171,31 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     Returns ``{"resolved": bool, "choice": str|None}`` on completion, or
     ``{"resolved": False, "choice": None, "notify_failed": True}`` if the
     notify callback raised, or ``{"resolved": True, "choice": None,
-    "guest_unsupported": True}`` immediately if the session is marked guest
-    (see :func:`mark_session_guest`) -- no queue entry, no notify_cb call, no
-    wait, and no approval hooks fire for that case.  Persistence of an
-    approved choice and building the final tool-facing result dict remain the
-    caller's responsibility.
+    "guest_unsupported": True}`` / ``{"resolved": True, "choice": None,
+    "non_admin_unsupported": True}`` immediately if the session is
+    approval-blocked (see :func:`mark_session_approval_blocked`) -- no queue
+    entry, no notify_cb call, no wait, and no approval hooks fire for that
+    case.  Persistence of an approved choice and building the final
+    tool-facing result dict remain the caller's responsibility.
     """
     command = approval_data.get("command", "")
     description = approval_data.get("description", "")
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
-    # Guest-mode chats can never present or resolve an interactive approval
-    # (see _gateway_guest_sessions docstring above) -- deny immediately, the
-    # same way the adapter already declines slash commands at the front door,
-    # instead of registering a queue entry and blocking the agent thread for
-    # the full gateway_timeout on an approval that can structurally never
-    # arrive. Deliberately skips notify_cb and the pre/post approval hooks:
-    # this never becomes a real approval attempt, so nothing should observe
-    # it as one.
-    if is_session_guest(session_key):
+    # Approval-blocked sessions (guest chats, or authorized-but-non-admin
+    # users -- see _gateway_approval_blocked docstring above) can never (guest)
+    # or must never (non_admin) resolve an interactive approval -- deny
+    # immediately, the same way the adapter already declines slash commands at
+    # the front door, instead of registering a queue entry and blocking the
+    # agent thread for the full gateway_timeout. Deliberately skips notify_cb
+    # and the pre/post approval hooks: this never becomes a real approval
+    # attempt, so nothing should observe it as one.
+    _block_reason = session_approval_block_reason(session_key)
+    if _block_reason == "guest":
         return {"resolved": True, "choice": None, "guest_unsupported": True}
+    if _block_reason == "non_admin":
+        return {"resolved": True, "choice": None, "non_admin_unsupported": True}
 
     entry = _ApprovalEntry(approval_data)
     with _lock:
@@ -3431,26 +3475,28 @@ def check_all_command_guards(command: str, env_type: str,
 
     session_key = get_current_session_key()
 
-    # Guest-mode Telegram chats can never present or resolve an interactive
-    # approval prompt (see mark_session_guest's docstring). Fail closed for
-    # ANY warning-worthy command HERE — before cached per-session grants
+    # A guest-mode or non-admin-tier session can never/must never present or
+    # resolve an interactive approval prompt (see
+    # mark_session_approval_blocked's docstring). Fail closed for ANY
+    # warning-worthy command HERE — before cached per-session grants
     # (is_approved, below) or smart approval get a chance to run. Both would
     # otherwise short-circuit straight to "approved": True without ever
-    # reaching _await_gateway_decision's own guest check further down in
-    # Phase 3, silently defeating the guest denial for the two paths that
-    # matter most: a pattern already approved earlier in the session, or an
-    # aux-LLM "approve" verdict.
-    if is_session_guest(session_key) and (
+    # reaching _await_gateway_decision's own check further down in Phase 3,
+    # silently defeating the denial for the two paths that matter most: a
+    # pattern already approved earlier in the session, or an aux-LLM
+    # "approve" verdict.
+    _block_reason = session_approval_block_reason(session_key)
+    if _block_reason is not None and (
         tirith_result["action"] in {"block", "warn"} or is_dangerous
     ):
         if tirith_result["action"] in {"block", "warn"}:
-            guest_desc = _format_tirith_description(tirith_result)
+            _blocked_desc = _format_tirith_description(tirith_result)
             findings = tirith_result.get("findings") or []
-            guest_key = f"tirith:{findings[0].get('rule_id', 'unknown')}" if findings else "tirith:unknown"
+            _blocked_key = f"tirith:{findings[0].get('rule_id', 'unknown')}" if findings else "tirith:unknown"
         else:
-            guest_desc = description
-            guest_key = pattern_key
-        return _guest_unsupported_block_result(guest_key, guest_desc)
+            _blocked_desc = description
+            _blocked_key = pattern_key
+        return _approval_blocked_result(_block_reason, _blocked_key, _blocked_desc)
 
     # Tirith block/warn → approvable warning with rich findings.
     # Previously, tirith "block" was a hard block with no approval prompt.
@@ -3554,7 +3600,9 @@ def check_all_command_guards(command: str, env_type: str,
                 session_key, notify_cb, approval_data, surface="gateway"
             )
             if decision.get("guest_unsupported"):
-                return _guest_unsupported_block_result(primary_key, combined_desc)
+                return _approval_blocked_result("guest", primary_key, combined_desc)
+            if decision.get("non_admin_unsupported"):
+                return _approval_blocked_result("non_admin", primary_key, combined_desc)
             if decision.get("notify_failed"):
                 return {
                     "approved": False,
@@ -3786,12 +3834,14 @@ def check_execute_code_guard(code: str, env_type: str,
 
     session_key = get_current_session_key()
 
-    # Guest-mode Telegram chats can never present or resolve an interactive
-    # approval prompt (see mark_session_guest's docstring). Fail closed here,
-    # before cached per-session grants (is_approved, below) or smart approval
-    # get a chance to auto-approve — same reasoning as check_all_command_guards.
-    if is_session_guest(session_key):
-        return _guest_unsupported_block_result(pattern_key, description)
+    # A guest-mode or non-admin-tier session can never/must never present or
+    # resolve an interactive approval prompt (see
+    # mark_session_approval_blocked's docstring). Fail closed here, before
+    # cached per-session grants (is_approved, below) or smart approval get a
+    # chance to auto-approve — same reasoning as check_all_command_guards.
+    _block_reason = session_approval_block_reason(session_key)
+    if _block_reason is not None:
+        return _approval_blocked_result(_block_reason, pattern_key, description)
 
     # Built only now (past the early-return gates) so the common non-approval
     # paths don't pay to copy a potentially-large script into this string.
@@ -3895,7 +3945,9 @@ def check_execute_code_guard(code: str, env_type: str,
         session_key, notify_cb, approval_data, surface="gateway"
     )
     if decision.get("guest_unsupported"):
-        return _guest_unsupported_block_result(pattern_key, description)
+        return _approval_blocked_result("guest", pattern_key, description)
+    if decision.get("non_admin_unsupported"):
+        return _approval_blocked_result("non_admin", pattern_key, description)
     if decision.get("notify_failed"):
         return {
             "approved": False,

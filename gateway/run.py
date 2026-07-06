@@ -20582,11 +20582,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # The callback bridges sync→async to send the approval request
             # to the user immediately.
             from tools.approval import (
-                mark_session_guest,
+                mark_session_approval_blocked,
                 register_gateway_notify,
                 reset_current_session_key,
                 set_current_session_key,
-                unmark_session_guest,
+                unmark_session_approval_blocked,
                 unregister_gateway_notify,
             )
 
@@ -20835,8 +20835,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _approval_session_is_guest = _resolve_approval_session_is_guest(
                 _status_adapter, _status_chat_id
             )
+            # Non-admin tier: an authorized-but-non-admin user (the
+            # allow_admin_from slash-access tier) approves nothing -- only the
+            # owner/admin can grant a dangerous-command approval, same trust
+            # level as a group/guest chat. Resolved via the SAME
+            # policy_for_source().is_admin() that gates admin-only slash
+            # commands, so "who is admin" has one definition enforced across
+            # both surfaces. Guest takes precedence (a guest is in a group and
+            # has its own carve-out); the policy is a no-op (is_admin -> True)
+            # until an operator actually sets allow_admin_from, so existing
+            # single-tier installs are unaffected.
+            _approval_session_is_non_admin = False
+            if not _approval_session_is_guest:
+                try:
+                    from gateway.slash_access import policy_for_source as _policy_for_source
+                    _tier_policy = _policy_for_source(self.config, source)
+                    _approval_session_is_non_admin = bool(
+                        _tier_policy.enabled
+                        and not _tier_policy.is_admin(getattr(source, "user_id", None))
+                    )
+                except Exception:
+                    _approval_session_is_non_admin = False
             if _approval_session_is_guest:
-                mark_session_guest(_approval_session_key)
+                mark_session_approval_blocked(_approval_session_key, "guest")
+            elif _approval_session_is_non_admin:
+                mark_session_approval_blocked(_approval_session_key, "non_admin")
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -20888,8 +20911,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
-                if _approval_session_is_guest:
-                    unmark_session_guest(_approval_session_key)
+                if _approval_session_is_guest or _approval_session_is_non_admin:
+                    unmark_session_approval_blocked(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,
                 # completion, gateway shutdown).  Idempotent.

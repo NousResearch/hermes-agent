@@ -13442,6 +13442,40 @@ def main():
     sessions_export.add_argument("--source", help="Filter by source")
     sessions_export.add_argument("--session-id", help="Export a specific session")
 
+    sessions_export_md = sessions_subparsers.add_parser(
+        "export-md",
+        help="Export sessions to Markdown/QMD files",
+    )
+    sessions_export_md.add_argument(
+        "--session-id", help="Session ID or unique prefix to export"
+    )
+    sessions_export_md.add_argument(
+        "--older-than", type=int, help="Bulk-export ended sessions older than N days"
+    )
+    sessions_export_md.add_argument("--source", help="Filter bulk export by source")
+    sessions_export_md.add_argument(
+        "--dry-run", action="store_true", help="Preview matching sessions without writing files"
+    )
+    sessions_export_md.add_argument(
+        "--lineage", choices=["single", "logical"], default="single", help="Export one row or compression lineage"
+    )
+    sessions_export_md.add_argument(
+        "--delete-after-verified", action="store_true", help="After verified single-session export, delete that session"
+    )
+    sessions_export_md.add_argument(
+        "--yes", "-y", action="store_true", help="Required with --delete-after-verified"
+    )
+    sessions_export_md.add_argument(
+        "--output",
+        help="Output directory (default: ~/.hermes/session-exports)",
+    )
+    sessions_export_md.add_argument(
+        "--format", choices=["md", "qmd"], default="md", help="Export format"
+    )
+    sessions_export_md.add_argument(
+        "--force", action="store_true", help="Overwrite an existing export file"
+    )
+
     sessions_delete = sessions_subparsers.add_parser(
         "delete", help="Delete a specific session"
     )
@@ -13745,6 +13779,101 @@ def main():
                         for s in sessions:
                             f.write(_json.dumps(s, ensure_ascii=False) + "\n")
                     print(f"Exported {len(sessions)} sessions to {args.output}")
+
+        elif action == "export-md":
+            from hermes_cli.session_export_md import (
+                append_manifest_entry,
+                verify_export_file,
+                write_session_markdown,
+            )
+
+            output_dir = Path(args.output).expanduser() if args.output else get_hermes_home() / "session-exports"
+
+            def _export_one(session_id: str):
+                data = (
+                    db.export_session_lineage(session_id)
+                    if getattr(args, "lineage", "single") == "logical"
+                    else db.export_session(session_id)
+                )
+                if not data:
+                    return None, None
+                path = write_session_markdown(
+                    data,
+                    output_dir,
+                    fmt=args.format,
+                    force=args.force,
+                )
+                append_manifest_entry(output_dir, data, path, fmt=args.format)
+                return data, path
+
+            if args.delete_after_verified and not args.yes:
+                print("--delete-after-verified requires --yes.")
+                db.close()
+                return
+            if args.delete_after_verified and not args.session_id:
+                print("--delete-after-verified is only supported with --session-id.")
+                db.close()
+                return
+
+            if args.session_id:
+                resolved_session_id = db.resolve_session_id(args.session_id)
+                if not resolved_session_id:
+                    print(f"Session '{args.session_id}' not found.")
+                    db.close()
+                    return
+                try:
+                    data, exported_path = _export_one(resolved_session_id)
+                except FileExistsError as e:
+                    print(f"Export already exists: {e}. Pass --force to overwrite.")
+                    db.close()
+                    return
+                if not data or not exported_path:
+                    print(f"Session '{args.session_id}' not found.")
+                    db.close()
+                    return
+                message_count = len(data.get("messages") or [])
+                suffix = "" if message_count == 1 else "s"
+                print(f"Exported 1 session ({message_count} message{suffix}) to {exported_path}")
+                if args.delete_after_verified:
+                    ok, reason = verify_export_file(exported_path, data)
+                    if not ok:
+                        print(f"Export verification failed; not deleting: {reason}")
+                        db.close()
+                        return
+                    sessions_dir = get_hermes_home() / "sessions"
+                    if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
+                        print(f"Deleted exported session '{resolved_session_id}'.")
+                    else:
+                        print(f"Exported, but session '{resolved_session_id}' was not deleted because it was not found.")
+                db.close()
+                return
+
+            if args.older_than is None and not args.source:
+                print("Refusing bulk export without a filter. Pass --session-id, --older-than, or --source.")
+                db.close()
+                return
+            candidates = db.list_export_candidates(
+                older_than_days=args.older_than,
+                source=args.source,
+            )
+            if args.dry_run:
+                print(f"Would export {len(candidates)} session(s).")
+                for row in candidates[:100]:
+                    print(f"  {row.get('id')}  {row.get('source', '')}")
+                if len(candidates) > 100:
+                    print(f"  ... {len(candidates) - 100} more")
+                db.close()
+                return
+            exported = 0
+            for row in candidates:
+                try:
+                    data, exported_path = _export_one(row["id"])
+                except FileExistsError as e:
+                    print(f"Skipping existing export: {e}. Pass --force to overwrite.")
+                    continue
+                if data and exported_path:
+                    exported += 1
+            print(f"Exported {exported} session(s) to {output_dir}")
 
         elif action == "delete":
             resolved_session_id = db.resolve_session_id(args.session_id)

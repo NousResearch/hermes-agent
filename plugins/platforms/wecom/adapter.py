@@ -1591,6 +1591,12 @@ def qr_scan_for_bot_info(
     # ── Step 2: Render QR code in terminal ──
     print()
     qr_rendered = False
+    # First try to lazy-install qrcode if missing
+    try:
+        from tools.lazy_deps import ensure
+        ensure("platform.qrcode", prompt=False)
+    except Exception:
+        pass
     try:
         import qrcode as _qrcode
         qr = _qrcode.QRCode()

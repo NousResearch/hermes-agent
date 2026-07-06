@@ -1039,6 +1039,12 @@ async def qr_login(
         print("\n请使用微信扫描以下二维码：")
         if qrcode_url:
             print(qrcode_url)
+        # First try to lazy-install qrcode if missing
+        try:
+            from tools.lazy_deps import ensure
+            ensure("platform.qrcode", prompt=False)
+        except Exception:
+            pass
         try:
             import qrcode
 

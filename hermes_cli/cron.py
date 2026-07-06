@@ -96,7 +96,7 @@ def _warn_if_gateway_not_running() -> None:
     print(color("     Check status:  hermes cron status", Colors.DIM))
 
 
-def cron_list(show_all: bool = False):
+def cron_list(show_all: bool = False, compact: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import list_jobs
 
@@ -105,6 +105,27 @@ def cron_list(show_all: bool = False):
     if not jobs:
         print(color("No scheduled jobs.", Colors.DIM))
         print(color("Create one with 'hermes cron create ...' or the /cron command in chat.", Colors.DIM))
+        return
+
+    if compact:
+        # Compact one-line-per-job format
+        for job in jobs:
+            job_id = job.get("id", "?")[:8]
+            name = job.get("name", "") or ""
+            schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
+            state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
+            next_run = job.get("next_run_at", "?")[:16] if job.get("next_run_at") else "?"
+            if state == "paused":
+                status = color("⏸", Colors.YELLOW)
+            elif state == "completed":
+                status = color("✓", Colors.BLUE)
+            elif job.get("enabled", True):
+                status = color("▶", Colors.GREEN)
+            else:
+                status = color("⛔", Colors.RED)
+            print(f"  {status} {color(job_id, Colors.YELLOW)} {name[:30]:30s} {schedule:15s} next:{next_run}")
+        print()
+        _warn_if_gateway_not_running()
         return
 
     print()

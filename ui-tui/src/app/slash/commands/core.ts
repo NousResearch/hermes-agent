@@ -11,7 +11,8 @@ import type {
   SessionStatusResponse,
   SessionSteerResponse,
   SessionTitleResponse,
-  SessionUndoResponse
+  SessionUndoResponse,
+  SlashExecResponse
 } from '../../../gatewayTypes.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
@@ -676,6 +677,33 @@ export const coreCommands: SlashCommand[] = [
           ctx.transcript.send(last)
         })
       )
+    }
+  },
+
+  // ── Pager-display config commands ────────────────────────────────
+  // These commands show formatted output in the pager overlay when called
+  // bare, with a proper title. With arguments they fall through to slash.exec.
+
+  {
+    help: 'toggle gateway runtime-metadata footer on final replies',
+    name: 'footer',
+    run: (arg, ctx) => {
+      const trimmed = arg.trim().toLowerCase()
+
+      // Bare or "status" → show footer status in pager
+      if (!arg.trim() || trimmed === 'status') {
+        return ctx.gateway
+          .rpc<SlashExecResponse>('slash.exec', { command: `footer ${trimmed || 'status'}`, session_id: ctx.sid })
+          .then(
+            ctx.guarded<SlashExecResponse>(r => {
+              const output = r?.output || 'footer: off'
+              ctx.transcript.sys(output)
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      // With args (on/off) → fall through to slash.exec
     }
   }
 ]

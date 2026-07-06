@@ -82,7 +82,10 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
 
       if (d.type === 'exec' || d.type === 'plugin') {
-        return sys(d.output || '(no output)')
+        const output = d.output || '(no output)'
+        const long = output.length > 180 || output.split('\n').filter(Boolean).length > 2
+
+        return long ? page(output, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(output)
       }
 
       if (d.type === 'alias') {

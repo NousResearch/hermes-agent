@@ -467,6 +467,38 @@ export interface ToolsConfigureResponse {
   unknown?: string[]
 }
 
+export interface ToolsetItem {
+  description?: string
+  enabled: boolean
+  name: string
+  tool_count?: number
+}
+
+export interface ToolsetsListResponse {
+  toolsets?: ToolsetItem[]
+}
+
+export interface CronJobItem {
+  id?: string
+  job_id?: string
+  name?: string
+  prompt?: string
+  schedule?: string
+  skill?: string
+  status?: string
+}
+
+export interface CronManageResponse {
+  jobs?: CronJobItem[]
+  ok?: boolean
+}
+
+export interface InsightsGetResponse {
+  days?: number
+  messages?: number
+  sessions?: number
+}
+
 // ── Model picker ─────────────────────────────────────────────────────
 
 export interface ModelOptionProvider {

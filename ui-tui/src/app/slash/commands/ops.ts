@@ -1,7 +1,10 @@
 import type {
   BrowserManageResponse,
   CommandsCatalogResponse,
+  CronJobItem,
+  CronManageResponse,
   DelegationPauseResponse,
+  InsightsGetResponse,
   ProcessStopResponse,
   ReloadEnvResponse,
   ReloadMcpResponse,
@@ -11,8 +14,11 @@ import type {
   SlashExecResponse,
   SpawnTreeListResponse,
   SpawnTreeLoadResponse,
+  ToolsetItem,
+  ToolsetsListResponse,
   ToolsConfigureResponse
 } from '../../../gatewayTypes.js'
+import type { ListPickerConfig, ListPickerItem } from '../../interfaces.js'
 import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -754,6 +760,181 @@ export const opsCommands: SlashCommand[] = [
             if (r.reset) {
               ctx.transcript.sys('session reset. new tool configuration is active.')
             }
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  // ── Interactive-picker commands ──────────────────────────────────
+  // When called bare (no args), these commands open a ListPicker overlay so
+  // the user can navigate and act on items with the keyboard — the same UX
+  // pattern as /resume (ActiveSessionSwitcher) and /model (ModelPicker).
+  // With arguments they fall through to slash.exec as before.
+
+  {
+    help: 'list or toggle toolsets',
+    name: 'toolsets',
+    run: (arg, ctx) => {
+      if (arg.trim()) {
+        // Delegated to slash.exec for non-bare usage (list/disable/enable)
+        return
+      }
+
+      const config: ListPickerConfig = {
+        fetchMethod: 'toolsets.list',
+        fetchParams: ctx.sid ? { session_id: ctx.sid } : {},
+        mapResponse: (r): ListPickerItem[] => {
+          const toolsets = (r.toolsets ?? []) as ToolsetItem[]
+
+          return toolsets.map(ts => ({
+            description: ts.description,
+            id: ts.name,
+            label: ts.name,
+            meta: ts.enabled ? 'enabled' : 'disabled'
+          }))
+        },
+        title: 'Toolsets',
+        hint: '↑/↓ select · Esc/q close'
+      }
+
+      patchOverlayState({ listPicker: config })
+    }
+  },
+
+  {
+    help: 'list or manage scheduled tasks',
+    name: 'cron',
+    run: (arg, ctx) => {
+      if (arg.trim()) {
+        return
+      }
+
+      const config: ListPickerConfig = {
+        fetchMethod: 'cron.manage',
+        fetchParams: { action: 'list' },
+        mapResponse: (r): ListPickerItem[] => {
+          const jobs = (r.jobs ?? []) as CronJobItem[]
+
+          return jobs.map(job => ({
+            description: job.prompt || '',
+            id: job.job_id || job.id || '',
+            label: job.name || job.job_id || job.id || '(unnamed)',
+            meta: job.status || ''
+          }))
+        },
+        title: 'Cron Jobs',
+        hint: '↑/↓ select · Esc/q close'
+      }
+
+      patchOverlayState({ listPicker: config })
+    }
+  },
+
+  // ── Pager-display commands ────────────────────────────────────────
+  // These commands show formatted output in the pager overlay when called
+  // bare, with a proper title. With arguments they fall through to slash.exec.
+
+  {
+    help: 'show usage insights and analytics',
+    name: 'insights',
+    run: (arg, ctx) => {
+      const days = parseInt(arg.trim(), 10) || 30
+
+      ctx.gateway
+        .rpc<InsightsGetResponse>('insights.get', { days })
+        .then(
+          ctx.guarded<InsightsGetResponse>(r => {
+            if (!r) return
+
+            const lines = [
+              `Period: last ${r.days ?? days} days`,
+              `Sessions: ${r.sessions ?? 0}`,
+              `Messages: ${r.messages ?? 0}`
+            ]
+
+            ctx.transcript.page(lines.join('\n'), 'Insights')
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'review suggested automations (accept/dismiss)',
+    name: 'suggestions',
+    run: (arg, ctx) => {
+      if (arg.trim()) return
+
+      // Fetch via slash.exec so we get the same formatted output the CLI produces
+      ctx.gateway
+        .rpc<SlashExecResponse>('slash.exec', { command: 'suggestions', session_id: ctx.sid })
+        .then(
+          ctx.guarded<SlashExecResponse>(r => {
+            const output = r?.output || 'no suggestions'
+            const long = output.length > 180 || output.split('\n').filter(Boolean).length > 2
+
+            long ? ctx.transcript.page(output, 'Suggestions') : ctx.transcript.sys(output)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'review pending memory writes / toggle approval gate',
+    name: 'memory',
+    run: (arg, ctx) => {
+      if (arg.trim()) return
+
+      ctx.gateway
+        .rpc<SlashExecResponse>('slash.exec', { command: 'memory pending', session_id: ctx.sid })
+        .then(
+          ctx.guarded<SlashExecResponse>(r => {
+            const output = r?.output || 'no pending memory writes'
+            const long = output.length > 180 || output.split('\n').filter(Boolean).length > 2
+
+            long ? ctx.transcript.page(output, 'Memory') : ctx.transcript.sys(output)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'list skill bundles',
+    name: 'bundles',
+    run: (arg, ctx) => {
+      if (arg.trim()) return
+
+      ctx.gateway
+        .rpc<SlashExecResponse>('slash.exec', { command: 'bundles', session_id: ctx.sid })
+        .then(
+          ctx.guarded<SlashExecResponse>(r => {
+            const output = r?.output || 'no bundles'
+            const long = output.length > 180 || output.split('\n').filter(Boolean).length > 2
+
+            long ? ctx.transcript.page(output, 'Bundles') : ctx.transcript.sys(output)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'background skill maintenance (status, run, pin, archive)',
+    name: 'curator',
+    run: (arg, ctx) => {
+      if (arg.trim()) return
+
+      ctx.gateway
+        .rpc<SlashExecResponse>('slash.exec', { command: 'curator status', session_id: ctx.sid })
+        .then(
+          ctx.guarded<SlashExecResponse>(r => {
+            const output = r?.output || 'curator idle'
+            const long = output.length > 180 || output.split('\n').filter(Boolean).length > 2
+
+            long ? ctx.transcript.page(output, 'Curator') : ctx.transcript.sys(output)
           })
         )
         .catch(ctx.guardedErr)

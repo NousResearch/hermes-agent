@@ -295,6 +295,26 @@ class TestCuteToolMessagePreviewLength:
 
         assert text in line
 
+    def test_browser_navigate_cute_message_omits_url_userinfo(self):
+        line = get_cute_tool_message(
+            "browser_navigate",
+            {"url": "https://user:secret@example.com/path"},
+            0.1,
+        )
+
+        assert "user:secret" not in line
+        assert "example.com" in line
+
+    def test_web_extract_cute_message_omits_url_userinfo(self):
+        line = get_cute_tool_message(
+            "web_extract",
+            {"urls": ["https://user:secret@example.com/path"]},
+            0.1,
+        )
+
+        assert "user:secret" not in line
+        assert "example.com" in line
+
 
 class TestEditDiffPreview:
     def test_extract_edit_diff_for_patch(self):

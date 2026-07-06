@@ -179,8 +179,26 @@ def test_get_proxy_for_base_url_returns_none_when_host_bypassed(monkeypatch):
     assert _get_proxy_for_base_url("http://127.0.0.1:11434/v1") is None
     assert _get_proxy_for_base_url("http://localhost:1234/v1") is None
 
+    # CIDR endpoint: must bypass the proxy too.  stdlib
+    # proxy_bypass_environment() does not understand this shape, but users
+    # reasonably expect curl-style NO_PROXY CIDR entries to work for internal
+    # OpenAI-compatible providers (#59465).
+    assert _get_proxy_for_base_url("http://192.168.44.10:4001/v1") is None
+
     # Non-local endpoint — proxy still applies.
     assert _get_proxy_for_base_url("https://api.openai.com/v1") == "http://127.0.0.1:7897"
+
+
+def test_get_proxy_for_base_url_bypasses_ipv6_cidr_no_proxy(monkeypatch):
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy",
+                "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://corp:8080")
+    monkeypatch.setenv("NO_PROXY", "fd00::/8")
+
+    assert _get_proxy_for_base_url("http://[fd00::1234]:4001/v1") is None
+    assert _get_proxy_for_base_url("http://[fe80::1234]:4001/v1") == "http://corp:8080"
 
 
 def test_get_proxy_for_base_url_returns_proxy_when_no_proxy_unset(monkeypatch):
@@ -230,5 +248,36 @@ def test_create_openai_client_bypasses_proxy_for_no_proxy_host(mock_openai, monk
     ]
     assert "HTTPProxy" not in pool_types, (
         "NO_PROXY host must not route through HTTPProxy; pools were %r" % (pool_types,)
+    )
+    http_client.close()
+
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_bypasses_proxy_for_no_proxy_cidr(mock_openai, monkeypatch):
+    """E2E: a private custom provider inside a NO_PROXY CIDR must not be proxied."""
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy",
+                "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://corp-proxy:8080")
+    monkeypatch.setenv("NO_PROXY", "10.10.10.0/24")
+
+    agent = _make_agent()
+    kwargs = {
+        "api_key": "***",
+        "base_url": "http://10.10.10.101:4001/v1",
+    }
+    agent._create_openai_client(kwargs, reason="test", shared=False)
+
+    forwarded = mock_openai.call_args.kwargs
+    http_client = _extract_http_client(forwarded)
+    assert isinstance(http_client, httpx.Client)
+    pool_types = [
+        type(mount._pool).__name__
+        for mount in http_client._mounts.values()
+        if mount is not None and hasattr(mount, "_pool")
+    ]
+    assert "HTTPProxy" not in pool_types, (
+        "NO_PROXY CIDR target must not route through HTTPProxy; pools were %r" % (pool_types,)
     )
     http_client.close()

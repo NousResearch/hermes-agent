@@ -1,6 +1,7 @@
 """Shared utility functions for hermes-agent."""
 
 import errno
+import ipaddress
 import json
 import logging
 import os
@@ -442,6 +443,8 @@ _PROXY_ENV_KEYS = (
     "https_proxy", "http_proxy", "all_proxy",
 )
 
+_NO_PROXY_ENV_KEYS = ("NO_PROXY", "no_proxy")
+
 
 def normalize_proxy_url(proxy_url: str | None) -> str | None:
     """Normalize proxy URLs for httpx/aiohttp compatibility.
@@ -465,6 +468,116 @@ def normalize_proxy_env_vars() -> None:
         normalized = normalize_proxy_url(value)
         if normalized and normalized != value:
             os.environ[key] = normalized
+
+
+def _split_no_proxy_host_port(value: str) -> tuple[str, int | None]:
+    """Return a normalized host/network token and optional port.
+
+    ``NO_PROXY`` accepts a mix of bare hosts, ``host:port`` entries, URLs,
+    bracketed IPv6 literals, domain suffixes, and CIDR networks.  Keep this
+    parser deliberately small and permissive: if a value does not clearly carry
+    a port, return the stripped token as the host side so the CIDR/IP/domain
+    matchers below can decide what it means.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return "", None
+    if "://" in raw:
+        parsed = urlparse(raw)
+        return (parsed.hostname or "").lower().rstrip("."), parsed.port
+    if raw.startswith("[") and "]" in raw:
+        host, _, rest = raw[1:].partition("]")
+        port = None
+        if rest.startswith(":") and rest[1:].isdigit():
+            port = int(rest[1:])
+        return host.lower().rstrip("."), port
+    if raw.count(":") == 1:
+        host, _, maybe_port = raw.rpartition(":")
+        if maybe_port.isdigit():
+            return host.lower().rstrip("."), int(maybe_port)
+    return raw.lower().strip("[]").rstrip("."), None
+
+
+def _no_proxy_entries() -> list[str]:
+    entries: list[str] = []
+    for key in _NO_PROXY_ENV_KEYS:
+        raw = os.environ.get(key, "")
+        entries.extend(part.strip() for part in raw.split(",") if part.strip())
+    return entries
+
+
+def _no_proxy_entry_matches(entry: str, host: str, port: int | None = None) -> bool:
+    """Return True when one ``NO_PROXY`` token excludes ``host``.
+
+    The stdlib's ``urllib.request.proxy_bypass_environment`` handles hosts and
+    suffixes but not CIDR notation.  Operators commonly use curl/browser-style
+    CIDR ranges for private model gateways, so Hermes handles those locally and
+    keeps the same hostname/suffix behavior for non-IP entries.
+    """
+    token = str(entry or "").strip().lower()
+    if not token:
+        return False
+    if token == "*":
+        return True
+
+    token_host, token_port = _split_no_proxy_host_port(token)
+    if token_port is not None and port is not None and token_port != port:
+        return False
+    if token_port is not None and port is None:
+        return False
+    if not token_host:
+        return False
+
+    try:
+        network = ipaddress.ip_network(token_host, strict=False)
+        try:
+            return ipaddress.ip_address(host) in network
+        except ValueError:
+            return False
+    except ValueError:
+        pass
+
+    try:
+        token_ip = ipaddress.ip_address(token_host)
+        try:
+            return ipaddress.ip_address(host) == token_ip
+        except ValueError:
+            return False
+    except ValueError:
+        pass
+
+    if token_host.startswith("*."):
+        suffix = token_host[1:]
+        return host.endswith(suffix)
+    if token_host.startswith("."):
+        return host == token_host[1:] or host.endswith(token_host)
+    return host == token_host or host.endswith(f".{token_host}")
+
+
+def should_bypass_proxy(
+    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None,
+) -> bool:
+    """Return True when ``NO_PROXY``/``no_proxy`` matches a target.
+
+    Supports exact hosts, domain suffixes, wildcard suffixes, IP literals,
+    CIDR ranges, optional host:port entries, URLs, and ``*``.  This is shared by
+    provider HTTP clients and gateway platform adapters so global proxy bypass
+    behavior stays consistent across Hermes.
+    """
+    entries = _no_proxy_entries()
+    if not entries or not target_hosts:
+        return False
+    if isinstance(target_hosts, str):
+        candidates = [target_hosts]
+    else:
+        candidates = list(target_hosts)
+    for candidate in candidates:
+        host, port = _split_no_proxy_host_port(str(candidate))
+        if not host:
+            continue
+        if any(_no_proxy_entry_matches(entry, host, port) for entry in entries):
+            return True
+    return False
 
 
 # ─── URL Parsing Helpers ──────────────────────────────────────────────────────

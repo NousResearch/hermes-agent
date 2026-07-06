@@ -25,10 +25,9 @@ from __future__ import annotations
 
 import os
 import sys
-import urllib.request
 from typing import Any, Optional
 
-from utils import base_url_hostname, normalize_proxy_url
+from utils import base_url_hostname, normalize_proxy_url, should_bypass_proxy
 
 
 # Cached at module level so we only pay the OpenAI SDK import cost once
@@ -134,7 +133,7 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
         return proxy
 
     try:
-        if urllib.request.proxy_bypass_environment(host):
+        if should_bypass_proxy([base_url, host]):
             return None
     except Exception:
         pass

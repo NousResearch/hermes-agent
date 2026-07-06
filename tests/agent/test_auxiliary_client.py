@@ -2246,6 +2246,7 @@ class TestAuxiliaryFallbackLayering:
             "title_generation",
             "nvidia",
             reason="invalid provider response",
+            failed_model="minimaxai/minimax-m3",
         )
         mock_main.assert_not_called()
 
@@ -2279,6 +2280,7 @@ class TestAuxiliaryFallbackLayering:
             "compression",
             "nvidia",
             reason="invalid provider response",
+            failed_model="minimaxai/minimax-m3",
         )
 
     def test_auto_provider_uses_task_then_main_chain_before_builtin_chain(self, monkeypatch):
@@ -2307,7 +2309,8 @@ class TestAuxiliaryFallbackLayering:
 
         assert main_chain_client.chat.completions.create.called
         mock_task_chain.assert_called_once_with(
-            "title_generation", "auto", reason="payment error")
+            "title_generation", "auto", reason="payment error",
+            failed_model="qwen/qwen3.5-122b-a10b")
         mock_main_chain.assert_called_once_with(
             "title_generation", "auto", reason="payment error")
         mock_builtin_chain.assert_not_called()
@@ -5050,6 +5053,106 @@ class TestCompressionFallbackContextFilter:
 
         assert client is large_client
         assert model == "large-512k"
+
+    # ── same-provider, different-model chain entries ────────────────────
+    # A configured fallback_chain may legitimately list several models
+    # under the *same* provider (e.g. two more NVIDIA NIM models after the
+    # primary NIM model). failed_provider alone must not skip those
+    # sibling entries — only failed_model narrows the skip to the exact
+    # (provider, model) pair that just failed.
+
+    def test_same_provider_sibling_model_not_skipped_when_failed_model_given(
+        self, monkeypatch
+    ):
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        sibling_client = MagicMock(name="sibling_nim_client")
+        entries = [
+            self._make_chain_entry("nvidia", "minimaxai/minimax-m3"),
+            self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-flash"),
+        ]
+
+        def fake_resolve(entry):
+            if entry is entries[0]:
+                return sibling_client, "minimaxai/minimax-m3"
+            raise AssertionError("second entry should not be reached")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=fake_resolve), \
+             patch("agent.auxiliary_client.get_model_context_length",
+                   return_value=1_048_576):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression",
+                failed_provider="nvidia",
+                failed_model="deepseek-ai/deepseek-v4-pro",
+            )
+
+        assert client is sibling_client, (
+            "A same-provider entry with a DIFFERENT model must still be "
+            "tried when failed_model narrows the skip — regression for the "
+            "bug where an NVIDIA NIM timeout fell straight through to the "
+            "main Codex model instead of trying the other two configured "
+            "NIM models."
+        )
+        assert model == "minimaxai/minimax-m3"
+        assert "nvidia" in label
+
+    def test_same_provider_same_model_still_skipped(self, monkeypatch):
+        """The exact (provider, model) pair that just failed is still
+        skipped — failed_model narrows the skip, it doesn't disable it."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        entries = [
+            self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-pro"),
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=AssertionError("must not be resolved")):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression",
+                failed_provider="nvidia",
+                failed_model="deepseek-ai/deepseek-v4-pro",
+            )
+
+        assert client is None
+        assert model is None
+        assert label == ""
+
+    def test_same_provider_skipped_wholesale_without_failed_model(self, monkeypatch):
+        """Backward compat: callers that don't know the failed model (e.g.
+        client-build failures where the whole provider is unreachable)
+        still skip every entry sharing that provider, as before."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        entries = [
+            self._make_chain_entry("nvidia", "minimaxai/minimax-m3"),
+            self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-flash"),
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=AssertionError("must not be resolved")):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression", failed_provider="nvidia",
+            )
+
+        assert client is None
+        assert model is None
+        assert label == ""
 
     # ── L3: main fallback chain ────────────────────────────────────────
 

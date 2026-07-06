@@ -3589,12 +3589,27 @@ def _try_configured_fallback_chain(
     task: str,
     failed_provider: str,
     reason: str = "error",
+    failed_model: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try user-configured fallback_chain for a specific auxiliary task.
 
     Reads auxiliary.<task>.fallback_chain from config.yaml and tries each
     entry in order.  Each entry must have at least ``provider``; ``model``,
     ``base_url``, and ``api_key`` are optional.
+
+    ``failed_model`` narrows the skip check to the exact (provider, model)
+    pair that just failed, rather than the whole provider. Without it (the
+    "no client could be built" callers, where credentials/auth are broken
+    for the whole provider regardless of model) every entry sharing that
+    provider is skipped, same as before. With it (the runtime request-error
+    callers), a chain that intentionally lists several models under the
+    same provider — e.g. two more NVIDIA NIM models after the primary NIM
+    model times out — is no longer skipped wholesale; only the entry that
+    is an exact match for what just failed is skipped, so the chain can
+    still serve the request from the same provider instead of jumping
+    straight to the main-agent-model safety net. See issue where an NVIDIA
+    NIM timeout on the primary compression model fell through to the main
+    Codex model instead of trying the two other configured NIM fallbacks.
 
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
@@ -3608,6 +3623,7 @@ def _try_configured_fallback_chain(
         return None, None, ""
 
     skip = failed_provider.lower().strip()
+    skip_model = (failed_model or "").strip().lower() or None
     tried = []
     min_ctx = _task_minimum_context_length(task)
 
@@ -3615,9 +3631,14 @@ def _try_configured_fallback_chain(
         if not isinstance(entry, dict):
             continue
         fb_provider = str(entry.get("provider", "")).strip()
-        if not fb_provider or fb_provider.lower() == skip:
+        if not fb_provider:
             continue
-        fb_model = str(entry.get("model", "")).strip() or None
+        fb_model_raw = str(entry.get("model", "")).strip()
+        if fb_provider.lower() == skip and (
+            skip_model is None or fb_model_raw.lower() == skip_model
+        ):
+            continue
+        fb_model = fb_model_raw or None
 
         label = f"fallback_chain[{i}]({fb_provider})"
 
@@ -6555,7 +6576,8 @@ def call_llm(
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=final_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
                         task, resolved_provider or "auto", reason=reason)
@@ -6564,7 +6586,8 @@ def call_llm(
                         resolved_provider, task, reason=reason)
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=final_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
@@ -7040,7 +7063,8 @@ async def async_call_llm(
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=final_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
                         task, resolved_provider or "auto", reason=reason)
@@ -7049,7 +7073,8 @@ async def async_call_llm(
                         resolved_provider, task, reason=reason)
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=final_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)

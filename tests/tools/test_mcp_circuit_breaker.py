@@ -53,12 +53,24 @@ def _install_stub_server(mcp_tool_module, name: str, call_tool_impl):
             ready_flag.set()
 
     class _ReconnectAdapter:
+        def __init__(self):
+            self.set_calls = 0
+
         def set(self):
+            self.set_calls += 1
             old_session = server.session
             new_session = MagicMock()
-            new_session.call_tool = old_session.call_tool
+            if old_session is not None:
+                new_session.call_tool = old_session.call_tool
+            elif call_tool_impl is not None:
+                new_session.call_tool = call_tool_impl
             server.session = new_session
             ready_flag.set()
+
+        # MagicMock-compat shim: the dead-session half-open test asserts the
+        # reconnect signal was delivered exactly once.
+        def assert_called_once(self):
+            assert self.set_calls == 1, f"set() called {self.set_calls} times"
 
     server._reconnect_event = _ReconnectAdapter()
     server._ready = _ReadyAdapter()
@@ -243,7 +255,7 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
 
         # Clean "reconnecting" error, and a reconnect was actually signalled.
         assert "reconnect" in parsed.get("error", "").lower(), parsed
-        server._reconnect_event.set.assert_called_once()
+        server._reconnect_event.assert_called_once()
     finally:
         _cleanup(mcp_tool, "srv")
 

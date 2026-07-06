@@ -433,11 +433,9 @@ class ChatCompletionsTransport(ProviderTransport):
             if _is_gemini_openai_compat_base_url(base_url):
                 thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
                 if thinking_config:
-                    openai_compat_extra = extra_body.get("extra_body", {})
-                    google_extra = openai_compat_extra.get("google", {})
+                    google_extra = extra_body.get("google", {})
                     google_extra["thinking_config"] = thinking_config
-                    openai_compat_extra["google"] = google_extra
-                    extra_body["extra_body"] = openai_compat_extra
+                    extra_body["google"] = google_extra
             elif raw_thinking_config:
                 extra_body["thinking_config"] = raw_thinking_config
 

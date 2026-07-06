@@ -6,6 +6,8 @@ import pytest
 WORKFLOW_TOOL_NAMES = {
     "workflow_list",
     "workflow_show",
+    "workflow_validate",
+    "workflow_deploy",
     "workflow_run",
     "workflow_execution_show",
     "workflow_cancel",
@@ -113,6 +115,89 @@ def test_workflow_handlers_return_json_strings(_isolated_workflow_home):
         assert isinstance(result, str)
         payload = json.loads(result)
         assert "error" not in payload
+
+
+def test_workflow_validate_tool_accepts_yaml_text(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    yaml_text = """
+id: validate_tool_demo
+name: Validate Tool Demo
+version: 1
+nodes:
+  start:
+    type: pass
+    output:
+      ok: true
+""".lstrip()
+    payload = json.loads(registry.dispatch("workflow_validate", {"definition_text": yaml_text}))
+    assert "error" not in payload
+    assert payload["valid"] is True
+    assert payload["workflow_id"] == "validate_tool_demo"
+
+
+def test_workflow_deploy_tool_accepts_yaml_text(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    yaml_text = """
+id: deploy_tool_demo
+name: Deploy Tool Demo
+version: 1
+nodes:
+  start:
+    type: pass
+""".lstrip()
+    payload = json.loads(registry.dispatch("workflow_deploy", {"definition_text": yaml_text}))
+    assert "error" not in payload
+    assert payload["workflow_id"] == "deploy_tool_demo"
+
+
+def test_workflow_deploy_returns_deployed_version_not_latest(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from hermes_cli import workflows_db as wfdb
+    from tools.registry import registry
+
+    workflow_id = "deploy_version_demo"
+
+    def definition_text(version):
+        return f"""
+id: {workflow_id}
+name: Deploy Version Demo
+version: {version}
+nodes:
+  start:
+    type: pass
+""".lstrip()
+
+    first = json.loads(registry.dispatch(
+        "workflow_deploy",
+        {"definition_text": definition_text(2), "created_by": "v2_creator"},
+    ))
+    assert "error" not in first
+
+    second = json.loads(registry.dispatch(
+        "workflow_deploy",
+        {"definition_text": definition_text(1), "created_by": "v1_creator"},
+    ))
+
+    assert "error" not in second
+    assert second["workflow_id"] == workflow_id
+    assert second["id"] == workflow_id
+    assert second["version"] == 1
+    assert second["created_by"] == "v1_creator"
+
+    with wfdb.connect() as conn:
+        records = [
+            record
+            for record in wfdb.list_definitions(conn)
+            if record.workflow_id == workflow_id
+        ]
+    assert {(record.version, record.created_by) for record in records} == {
+        (1, "v1_creator"),
+        (2, "v2_creator"),
+    }
 
 
 def test_workflow_run_creates_execution_with_provided_input(_isolated_workflow_home):

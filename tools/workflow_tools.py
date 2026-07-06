@@ -7,8 +7,11 @@ import logging
 import os
 from typing import Any
 
+import yaml
+
 from hermes_cli import workflows_db as wfdb
 from hermes_cli.config import load_config
+from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
@@ -52,6 +55,17 @@ def _parse_version(value: Any) -> int | None:
     if version < 1:
         raise ValueError("version must be >= 1")
     return version
+
+
+def _spec_from_definition_text(text: Any) -> WorkflowSpec:
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("definition_text must be a non-empty string")
+    loaded = yaml.safe_load(text)
+    if not isinstance(loaded, dict):
+        raise ValueError("definition_text must decode to a YAML/JSON object")
+    spec = WorkflowSpec.model_validate(loaded)
+    validate_graph(spec)
+    return spec
 
 
 def _definition_record(conn, workflow_id: str, version: int | None = None):
@@ -129,6 +143,34 @@ def _handle_show(args: dict, **_kw) -> str:
         return tool_error(f"workflow_show: {_error_text(exc)}")
 
 
+def _handle_validate(args: dict, **_kw) -> str:
+    try:
+        spec = _spec_from_definition_text(args.get("definition_text"))
+        return tool_result({
+            "valid": True,
+            "workflow_id": spec.id,
+            "definition": spec.model_dump(mode="json", by_alias=True),
+        })
+    except Exception as exc:
+        logger.exception("workflow_validate failed")
+        return tool_error(f"workflow_validate: {_error_text(exc)}")
+
+
+def _handle_deploy(args: dict, **_kw) -> str:
+    try:
+        spec = _spec_from_definition_text(args.get("definition_text"))
+        created_by = (
+            str(args.get("created_by") or "workflow_tool").strip() or "workflow_tool"
+        )
+        with _connect_initialized() as conn:
+            wfdb.deploy_definition(conn, spec, created_by=created_by)
+            record = _definition_record(conn, spec.id, spec.version)
+        return tool_result(_definition_to_dict(record, include_spec=True))
+    except Exception as exc:
+        logger.exception("workflow_deploy failed")
+        return tool_error(f"workflow_deploy: {_error_text(exc)}")
+
+
 def _handle_run(args: dict, **_kw) -> str:
     workflow_id = (args.get("workflow_id") or "").strip()
     if not workflow_id:
@@ -204,6 +246,40 @@ _WORKFLOW_SHOW_SCHEMA = {
     },
 }
 
+_WORKFLOW_VALIDATE_SCHEMA = {
+    "name": "workflow_validate",
+    "description": "Validate workflow YAML/JSON definition text without deploying it.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "definition_text": {
+                "type": "string",
+                "description": "Workflow YAML or JSON definition text.",
+            },
+        },
+        "required": ["definition_text"],
+    },
+}
+
+_WORKFLOW_DEPLOY_SCHEMA = {
+    "name": "workflow_deploy",
+    "description": "Validate and deploy workflow YAML/JSON definition text.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "definition_text": {
+                "type": "string",
+                "description": "Workflow YAML or JSON definition text.",
+            },
+            "created_by": {
+                "type": "string",
+                "description": "Optional deployment source; defaults to workflow_tool.",
+            },
+        },
+        "required": ["definition_text"],
+    },
+}
+
 _WORKFLOW_RUN_SCHEMA = {
     "name": "workflow_run",
     "description": "Start a manual workflow execution with JSON object input.",
@@ -255,6 +331,22 @@ registry.register(
     toolset="workflow",
     schema=_WORKFLOW_SHOW_SCHEMA,
     handler=_handle_show,
+    check_fn=_check_workflow_mode,
+    emoji="🔁",
+)
+registry.register(
+    name="workflow_validate",
+    toolset="workflow",
+    schema=_WORKFLOW_VALIDATE_SCHEMA,
+    handler=_handle_validate,
+    check_fn=_check_workflow_mode,
+    emoji="🔁",
+)
+registry.register(
+    name="workflow_deploy",
+    toolset="workflow",
+    schema=_WORKFLOW_DEPLOY_SCHEMA,
+    handler=_handle_deploy,
     check_fn=_check_workflow_mode,
     emoji="🔁",
 )

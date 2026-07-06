@@ -284,6 +284,8 @@ TOOLSETS = {
         "tools": [
             "workflow_list",
             "workflow_show",
+            "workflow_validate",
+            "workflow_deploy",
             "workflow_run",
             "workflow_execution_show",
             "workflow_cancel",

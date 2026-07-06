@@ -503,6 +503,15 @@ prompt_caching:
 #     model: ""
 #     timeout: 30
 #
+#   # delegate_completion tool: one-shot text-transform offload (summarize /
+#   # classify / reformat) on a cheap or local model instead of the main one.
+#   # provider "main" routes to your OPENAI_BASE_URL endpoint (local Ollama
+#   # etc.); any OpenAI-compatible endpoint works.
+#   delegate_completion:
+#     provider: "auto"
+#     model: ""
+#     timeout: 60
+#
 #   # Session search — summarizes matching past sessions
 #   session_search:
 #     provider: "auto"

@@ -37,6 +37,7 @@ import tempfile
 import time
 import uuid
 import textwrap
+import subprocess
 from collections import deque
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
@@ -15050,7 +15051,50 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
                         if _had_mouse_reports:
                             self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
-                    
+
+                    # Quick shell command escape hatch (`!cmd`). Executed via a
+                    # plain subprocess before any chat/file-drop/paste-ref
+                    # routing so it never feeds the LLM and never gets
+                    # mis-detected as a dragged path. Stdout / stderr are
+                    # printed in distinct colors. Intentionally not part of
+                    # the chat transcript. (PR #2637)
+                    if isinstance(user_input, str) and user_input.startswith("!"):
+                        shell_cmd = user_input[1:].strip()
+                        if not shell_cmd:
+                            _cprint("\nUsage: !<shell command>")
+                            _cprint("Example: !ls -la, !pwd, !git status")
+                            continue
+                        _cprint(f"\n⚡ Executing shell: {shell_cmd}")
+                        # Honour TERMINAL_CWD (the same workspace cwd used by
+                        # the terminal / code-exec tools) so `!git status`
+                        # actually runs in the user's project, not in the
+                        # Hermes launch directory. Fall back to os.getcwd().
+                        _shell_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+                        try:
+                            result = subprocess.run(
+                                shell_cmd,
+                                shell=True,
+                                capture_output=True,
+                                text=True,
+                                timeout=60,
+                                cwd=_shell_cwd,
+                            )
+                            if result.stdout:
+                                ChatConsole().print(
+                                    f"[bold green]stdout:[/]\n{result.stdout}"
+                                )
+                            if result.stderr:
+                                ChatConsole().print(
+                                    f"[bold red]stderr:[/]\n{result.stderr}"
+                                )
+                            if result.returncode != 0 and not result.stdout and not result.stderr:
+                                _cprint(f"  Command exited with code {result.returncode}")
+                        except subprocess.TimeoutExpired:
+                            _cprint("  [bold red]Command timed out (60s)[/]")
+                        except Exception as e:
+                            _cprint(f"  [bold red]Error: {e}[/]")
+                        continue
+
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.
                     _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) else None

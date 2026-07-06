@@ -1913,10 +1913,13 @@ This compaction should PRIORITISE preserving all information related to the focu
                     "no auxiliary LLM provider configured",
                 )
                 self._last_summary_error = "no auxiliary LLM provider configured"
-                logger.warning("Context compression: no provider available for "
-                                "summary. Middle turns will be dropped without summary "
-                                "for %d seconds.",
-                                _SUMMARY_FAILURE_COOLDOWN_SECONDS)
+                logger.warning(
+                    "Context compression failed: no provider configured for "
+                    "summarization model. Check AUXILIARY_MODEL, API_KEY, and "
+                    "provider configuration. Middle turns will be dropped "
+                    "without summary for %d seconds.",
+                    _SUMMARY_FAILURE_COOLDOWN_SECONDS,
+                )
                 return None
             # If the summary model is different from the main model and the
             # error looks permanent (model not found, 503, 404), fall back to

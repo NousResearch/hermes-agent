@@ -305,6 +305,20 @@ class TestJobCRUD:
         job = create_job(prompt="One-shot", schedule="1h")
         assert job["repeat"]["times"] == 1
 
+    def test_repeat_once_string_on_one_shot_uses_auto_repeat(self, tmp_cron_dir):
+        """LLMs may pass repeat='once'; one-shot schedules should still run once."""
+        job = create_job(prompt="One-shot", schedule="1h", repeat="once")
+        assert job["repeat"]["times"] == 1
+
+    def test_repeat_once_string_on_recurring_is_infinite(self, tmp_cron_dir):
+        """Non-numeric repeat strings are treated as unset/infinite."""
+        job = create_job(prompt="Recurring", schedule="every 1h", repeat="once")
+        assert job["repeat"]["times"] is None
+
+    def test_repeat_numeric_string_is_coerced_to_int(self, tmp_cron_dir):
+        job = create_job(prompt="Twice", schedule="every 1h", repeat="2")
+        assert job["repeat"]["times"] == 2
+
     def test_interval_no_auto_repeat(self, tmp_cron_dir):
         job = create_job(prompt="Recurring", schedule="every 1h")
         assert job["repeat"]["times"] is None

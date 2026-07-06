@@ -309,6 +309,24 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["name"] == "New Name"
         assert updated["job"]["schedule"] == "every 120m"
 
+    def test_update_repeat_once_string_is_normalized_to_infinite(self):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+
+        updated = json.loads(cronjob(action="update", job_id=job_id, repeat="once"))
+
+        assert updated["success"] is True
+        assert updated["job"]["repeat"] == "forever"
+
+    def test_update_repeat_numeric_string_is_coerced_to_int(self):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+
+        updated = json.loads(cronjob(action="update", job_id=job_id, repeat="2"))
+
+        assert updated["success"] is True
+        assert updated["job"]["repeat"] == "2 times"
+
     def test_update_runtime_overrides_can_set_and_clear(self):
         created = json.loads(
             cronjob(

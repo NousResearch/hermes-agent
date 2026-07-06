@@ -86,23 +86,6 @@ _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", defaul
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
-# Backend-assigned PRODUCT run id for this turn — the value of the
-# ``X-KarinAI-Run-Id`` HTTP header the KarinAI backend sends to the api_server
-# on POST /v1/runs. This is NOT the agent's own internally-minted run id
-# (``run_<uuid>``); it is the backend's run id, and its post-run sweep collects
-# durable artifacts from ``<workspace>/outputs/<product_run_id>/``. The
-# ``register_artifact`` tool reads this to stage deliverables under that exact
-# directory. Default ``_UNSET`` => empty for CLI/cron/dev, which the tool
-# treats as "no managed run" and degrades gracefully.
-_SESSION_PRODUCT_RUN_ID: ContextVar = ContextVar("HERMES_PRODUCT_RUN_ID", default=_UNSET)
-
-# Backend-owned app/tool gateway credentials for a single KarinAI managed run.
-# These are deliberately request-scoped and are never read from product metadata
-# or model-visible messages.
-_APP_TOOL_GATEWAY_URL: ContextVar = ContextVar("KARINAI_APP_TOOL_GATEWAY_URL", default=_UNSET)
-_APP_TOOL_GATEWAY_TOKEN: ContextVar = ContextVar("KARINAI_APP_TOOL_GATEWAY_TOKEN", default=_UNSET)
-_APP_TOOL_GATEWAY_EXPIRES_AT: ContextVar = ContextVar("KARINAI_APP_TOOL_GATEWAY_EXPIRES_AT", default=_UNSET)
-
 # Whether the current session's delivery channel can route an ASYNC completion
 # back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
 #
@@ -142,14 +125,21 @@ _VAR_MAP = {
     "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
-    "HERMES_PRODUCT_RUN_ID": _SESSION_PRODUCT_RUN_ID,
-    "KARINAI_APP_TOOL_GATEWAY_URL": _APP_TOOL_GATEWAY_URL,
-    "KARINAI_APP_TOOL_GATEWAY_TOKEN": _APP_TOOL_GATEWAY_TOKEN,
-    "KARINAI_APP_TOOL_GATEWAY_EXPIRES_AT": _APP_TOOL_GATEWAY_EXPIRES_AT,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
 }
+
+# KarinAI request-scoped vars (see karinai/runtime/session_bridge.py); kept out
+# of this file so upstream merges stay clean. Registration here makes
+# get_session_env()/reset_session_vars() cover them.
+from karinai.runtime.session_bridge import (  # noqa: E402
+    KARINAI_SESSION_VARS,
+    mask_karinai_run_context,
+    register_karinai_session_vars,
+)
+
+_VAR_MAP.update(register_karinai_session_vars(_UNSET))
 
 
 def set_current_session_id(session_id: str) -> None:
@@ -179,10 +169,6 @@ def set_session_vars(
     session_id: str = "",
     message_id: str = "",
     profile: str = "",
-    product_run_id: str = "",
-    app_tool_gateway_url: str = "",
-    app_tool_gateway_token: str = "",
-    app_tool_gateway_expires_at: str = "",
     cwd: str = "",
     async_delivery: bool = True,
 ) -> list:
@@ -218,11 +204,10 @@ def set_session_vars(
         _SESSION_ID.set(session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
-        _SESSION_PRODUCT_RUN_ID.set(product_run_id),
-        _APP_TOOL_GATEWAY_URL.set(app_tool_gateway_url),
-        _APP_TOOL_GATEWAY_TOKEN.set(app_tool_gateway_token),
-        _APP_TOOL_GATEWAY_EXPIRES_AT.set(app_tool_gateway_expires_at),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
+        # KarinAI vars are masked to "" for every host (no os.environ fallback
+        # during a bound turn); the api_server rebinds real values afterwards.
+        *mask_karinai_run_context(),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd
@@ -256,10 +241,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PROFILE,
-        _SESSION_PRODUCT_RUN_ID,
-        _APP_TOOL_GATEWAY_URL,
-        _APP_TOOL_GATEWAY_TOKEN,
-        _APP_TOOL_GATEWAY_EXPIRES_AT,
+        *KARINAI_SESSION_VARS.values(),
     ):
         var.set("")
     # Reset async-delivery capability to the "never set" sentinel rather than a

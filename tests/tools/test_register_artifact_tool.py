@@ -14,7 +14,18 @@ from pathlib import Path
 import pytest
 
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+from karinai.runtime.session_bridge import bind_karinai_run_context
 from tools.register_artifact_tool import _handle_register_artifact
+
+
+def _bind_run(product_run_id: str) -> list:
+    """Bind an api_server session with a KarinAI product run id, as the
+    api_server's _bind_api_server_session does: base session vars via
+    set_session_vars, the run-scoped KarinAI vars via bind_karinai_run_context,
+    one concatenated token list."""
+    tokens = set_session_vars(platform="api_server", async_delivery=False)
+    tokens += bind_karinai_run_context(product_run_id=product_run_id)
+    return tokens
 
 
 @pytest.fixture
@@ -47,7 +58,7 @@ def _call(path=None, name=None, description=None):
 
 
 def test_managed_run_stages_into_outputs_run_id(workspace: Path) -> None:
-    set_session_vars(platform="api_server", product_run_id="run_abc123", async_delivery=False)
+    _bind_run("run_abc123")
     (workspace / "report.txt").write_text("hello", encoding="utf-8")
 
     res = _call(path="report.txt", name="Q3 Report.txt")
@@ -63,7 +74,7 @@ def test_managed_run_stages_into_outputs_run_id(workspace: Path) -> None:
 
 def test_no_run_id_degrades_to_outputs_undelivered(workspace: Path) -> None:
     # Explicitly bind an empty product run id (the dev/non-managed case).
-    set_session_vars(platform="api_server", product_run_id="", async_delivery=False)
+    _bind_run("")
     (workspace / "data.csv").write_text("a,b", encoding="utf-8")
 
     res = _call(path="data.csv")
@@ -74,7 +85,7 @@ def test_no_run_id_degrades_to_outputs_undelivered(workspace: Path) -> None:
 
 
 def test_default_name_is_source_filename(workspace: Path) -> None:
-    set_session_vars(platform="api_server", product_run_id="run_x", async_delivery=False)
+    _bind_run("run_x")
     (workspace / "chart.png").write_bytes(b"\x89PNG")
 
     res = _call(path="chart.png")
@@ -84,7 +95,7 @@ def test_default_name_is_source_filename(workspace: Path) -> None:
 
 
 def test_name_reduced_to_safe_basename(workspace: Path) -> None:
-    set_session_vars(platform="api_server", product_run_id="run_x", async_delivery=False)
+    _bind_run("run_x")
     (workspace / "f.txt").write_text("x", encoding="utf-8")
 
     res = _call(path="f.txt", name="../../etc/evil.txt")
@@ -102,13 +113,13 @@ def test_missing_path_errors(workspace: Path) -> None:
 
 
 def test_missing_file_errors(workspace: Path) -> None:
-    set_session_vars(platform="api_server", product_run_id="run_x", async_delivery=False)
+    _bind_run("run_x")
     res = _call(path="nope.txt")
     assert "error" in res and "no file found" in res["error"]
 
 
 def test_relative_traversal_rejected(workspace: Path) -> None:
-    set_session_vars(platform="api_server", product_run_id="run_x", async_delivery=False)
+    _bind_run("run_x")
     # A file outside the workspace must not be reachable via '..'.
     (workspace.parent / "secret.txt").write_text("top secret", encoding="utf-8")
     res = _call(path="../secret.txt")
@@ -116,7 +127,7 @@ def test_relative_traversal_rejected(workspace: Path) -> None:
 
 
 def test_absolute_path_outside_workspace_rejected(workspace: Path, tmp_path: Path) -> None:
-    set_session_vars(platform="api_server", product_run_id="run_x", async_delivery=False)
+    _bind_run("run_x")
     outside = tmp_path / "outside.txt"
     outside.write_text("nope", encoding="utf-8")
     res = _call(path=str(outside))
@@ -128,7 +139,7 @@ def test_symlinked_output_dir_rejected(workspace: Path, tmp_path: Path) -> None:
     # external dir, hoping copy2 follows it out of the workspace.
     import os as _os
 
-    set_session_vars(platform="api_server", product_run_id="run_x", async_delivery=False)
+    _bind_run("run_x")
     (workspace / "f.txt").write_text("payload", encoding="utf-8")
     external = tmp_path / "external"
     external.mkdir()
@@ -146,7 +157,7 @@ def test_leaf_symlink_not_followed(workspace: Path, tmp_path: Path) -> None:
     # through; the tool sidesteps it to a fresh, contained file.
     import os as _os
 
-    set_session_vars(platform="api_server", product_run_id="run_x", async_delivery=False)
+    _bind_run("run_x")
     (workspace / "f.txt").write_text("payload", encoding="utf-8")
     out_dir = workspace / "outputs" / "run_x"
     out_dir.mkdir(parents=True)
@@ -163,7 +174,7 @@ def test_leaf_symlink_not_followed(workspace: Path, tmp_path: Path) -> None:
 
 
 def test_filename_collision_preserves_both(workspace: Path) -> None:
-    set_session_vars(platform="api_server", product_run_id="run_x", async_delivery=False)
+    _bind_run("run_x")
     (workspace / "a.txt").write_text("first", encoding="utf-8")
     (workspace / "b.txt").write_text("second", encoding="utf-8")
 
@@ -181,7 +192,7 @@ def test_oversize_file_warns(workspace: Path, monkeypatch: pytest.MonkeyPatch) -
     import tools.register_artifact_tool as mod
 
     monkeypatch.setattr(mod, "_BACKEND_MAX_FILE_BYTES", 4)
-    set_session_vars(platform="api_server", product_run_id="run_x", async_delivery=False)
+    _bind_run("run_x")
     (workspace / "big.bin").write_bytes(b"0123456789")  # 10 bytes > 4
 
     res = _call(path="big.bin", name="big.bin")
@@ -198,7 +209,7 @@ def test_run_id_visible_in_worker_thread(workspace: Path) -> None:
 
     from tools.thread_context import propagate_context_to_thread
 
-    set_session_vars(platform="api_server", product_run_id="run_thread", async_delivery=False)
+    _bind_run("run_thread")
     (workspace / "f.txt").write_text("x", encoding="utf-8")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
@@ -215,7 +226,7 @@ def test_session_context_product_run_id_roundtrip(monkeypatch: pytest.MonkeyPatc
     from gateway.session_context import get_session_env
 
     monkeypatch.delenv("HERMES_PRODUCT_RUN_ID", raising=False)
-    tokens = set_session_vars(platform="api_server", product_run_id="run_zzz", async_delivery=False)
+    tokens = _bind_run("run_zzz")
     try:
         assert get_session_env("HERMES_PRODUCT_RUN_ID") == "run_zzz"
     finally:

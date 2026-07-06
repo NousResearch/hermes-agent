@@ -15,15 +15,17 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import gateway.platforms.api_server as api_server_mod
+import karinai.runtime.api_server_bridge as bridge_mod
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
-    _prepare_run_attachment_blocks,
-    _read_inline_attachment_text,
-    _validate_run_attachments,
     cors_middleware,
     security_headers_middleware,
+)
+from karinai.runtime.api_server_bridge import (
+    _read_inline_attachment_text,
+    prepare_run_attachment_blocks,
+    validate_run_attachments,
 )
 
 
@@ -54,7 +56,7 @@ def _manifest_entry(path, name=None, mime="text/csv", file_id="file_1"):
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     """A tmp 'workspace' accepted as the inline root."""
-    monkeypatch.setattr(api_server_mod, "ATTACHMENT_INLINE_ROOT", str(tmp_path))
+    monkeypatch.setattr(bridge_mod, "ATTACHMENT_INLINE_ROOT", str(tmp_path))
     return tmp_path
 
 
@@ -65,17 +67,17 @@ def workspace(tmp_path, monkeypatch):
 
 class TestValidateRunAttachments:
     def test_accepts_well_formed_manifest(self, tmp_path):
-        assert _validate_run_attachments([_manifest_entry(tmp_path / "a.csv")]) is None
+        assert validate_run_attachments([_manifest_entry(tmp_path / "a.csv")]) is None
 
     def test_rejects_non_list(self):
-        assert "must be an array" in _validate_run_attachments({"safe_name": "x"})
+        assert "must be an array" in validate_run_attachments({"safe_name": "x"})
 
     def test_rejects_entry_missing_required_fields(self):
-        err = _validate_run_attachments([{"safe_name": "a.csv"}])
+        err = validate_run_attachments([{"safe_name": "a.csv"}])
         assert err == "attachments[0] must have non-empty 'local_path'"
-        err = _validate_run_attachments([{"local_path": "/workspace/x"}])
+        err = validate_run_attachments([{"local_path": "/workspace/x"}])
         assert err == "attachments[0] must have non-empty 'safe_name'"
-        assert "must be an object" in _validate_run_attachments(["nope"])
+        assert "must be an object" in validate_run_attachments(["nope"])
 
 
 class TestInlineRead:
@@ -91,7 +93,7 @@ class TestInlineRead:
         assert _read_inline_attachment_text(str(outside)) is None
 
     def test_over_cap_is_all_or_nothing(self, workspace, monkeypatch):
-        monkeypatch.setattr(api_server_mod, "MAX_ATTACHMENT_INLINE_BYTES", 10)
+        monkeypatch.setattr(bridge_mod, "MAX_ATTACHMENT_INLINE_BYTES", 10)
         f = workspace / "big.csv"
         f.write_text("x" * 11, encoding="utf-8")
         assert _read_inline_attachment_text(str(f)) is None
@@ -109,7 +111,7 @@ class TestPrepareBlocks:
     def test_text_file_gets_note_plus_inlined_content(self, workspace):
         f = workspace / "a.csv"
         f.write_text("k,v\n1,2\n", encoding="utf-8")
-        blocks, noted, _imgs = _prepare_run_attachment_blocks([_manifest_entry(f)], set())
+        blocks, noted, _imgs = prepare_run_attachment_blocks([_manifest_entry(f)], set())
 
         assert len(blocks) == 2
         assert "text document: 'a.csv'" in blocks[0]
@@ -124,7 +126,7 @@ class TestPrepareBlocks:
     def test_binary_file_gets_self_extraction_note_only(self, workspace):
         f = workspace / "report.pdf"
         f.write_bytes(b"%PDF-1.4 ...")
-        blocks, _, _imgs = _prepare_run_attachment_blocks(
+        blocks, _, _imgs = prepare_run_attachment_blocks(
             [_manifest_entry(f, name="report.pdf", mime="application/pdf")], set()
         )
 
@@ -134,10 +136,10 @@ class TestPrepareBlocks:
         assert str(f) not in blocks[0]  # relative, not absolute
 
     def test_oversized_text_degrades_to_self_extraction_note(self, workspace, monkeypatch):
-        monkeypatch.setattr(api_server_mod, "MAX_ATTACHMENT_INLINE_BYTES", 4)
+        monkeypatch.setattr(bridge_mod, "MAX_ATTACHMENT_INLINE_BYTES", 4)
         f = workspace / "big.csv"
         f.write_text("too big to inline", encoding="utf-8")
-        blocks, _, _imgs = _prepare_run_attachment_blocks([_manifest_entry(f)], set())
+        blocks, _, _imgs = prepare_run_attachment_blocks([_manifest_entry(f)], set())
 
         # Never claim content was included when it wasn't.
         assert len(blocks) == 1
@@ -150,7 +152,7 @@ class TestPrepareBlocks:
         # content inlining is deduped.
         f = workspace / "a.csv"
         f.write_text("k,v\n", encoding="utf-8")
-        blocks, inlined, _imgs = _prepare_run_attachment_blocks([_manifest_entry(f)], {"file_1"})
+        blocks, inlined, _imgs = prepare_run_attachment_blocks([_manifest_entry(f)], {"file_1"})
 
         assert len(blocks) == 1
         assert "a.csv" in blocks[0]
@@ -162,18 +164,18 @@ class TestPrepareBlocks:
         f = workspace / "a.csv"
         f.write_text("k,v\n", encoding="utf-8")
         entry = _manifest_entry(f)
-        blocks, inlined, _imgs = _prepare_run_attachment_blocks([entry, dict(entry)], set())
+        blocks, inlined, _imgs = prepare_run_attachment_blocks([entry, dict(entry)], set())
         assert len(blocks) == 2  # one note + one content block
         assert inlined == {"file_1"}
 
     def test_aggregate_inline_budget_bounds_many_file_manifests(self, workspace, monkeypatch):
-        monkeypatch.setattr(api_server_mod, "MAX_ATTACHMENT_INLINE_TOTAL_BYTES", 10)
+        monkeypatch.setattr(bridge_mod, "MAX_ATTACHMENT_INLINE_TOTAL_BYTES", 10)
         f1 = workspace / "a.csv"
         f1.write_text("12345678", encoding="utf-8")  # 8 bytes: fits
         f2 = workspace / "b.csv"
         f2.write_text("123456", encoding="utf-8")  # 6 bytes: would exceed 10 total
 
-        blocks, inlined, _imgs = _prepare_run_attachment_blocks(
+        blocks, inlined, _imgs = prepare_run_attachment_blocks(
             [_manifest_entry(f1), _manifest_entry(f2, file_id="file_2")], set()
         )
 
@@ -186,7 +188,7 @@ class TestPrepareBlocks:
     def test_display_name_is_sanitized(self, workspace):
         f = workspace / "a.csv"
         f.write_text("k,v\n", encoding="utf-8")
-        blocks, _, _imgs = _prepare_run_attachment_blocks(
+        blocks, _, _imgs = prepare_run_attachment_blocks(
             [_manifest_entry(f, name="we`ird$na;me.csv")], set()
         )
         assert "we_ird_na_me.csv" in blocks[0]
@@ -200,7 +202,7 @@ class TestPrepareBlocks:
         f = workspace / "inputs" / "cnv_1" / "file_1" / "sales.csv"
         f.parent.mkdir(parents=True)
         f.write_text("k,v\n", encoding="utf-8")
-        blocks, _, _imgs = _prepare_run_attachment_blocks([_manifest_entry(f, name="sales.csv")], set())
+        blocks, _, _imgs = prepare_run_attachment_blocks([_manifest_entry(f, name="sales.csv")], set())
 
         assert "saved at: inputs/cnv_1/file_1/sales.csv" in blocks[0]
         assert str(workspace) not in blocks[0]  # absolute sandbox path never appears
@@ -208,7 +210,7 @@ class TestPrepareBlocks:
     def test_note_path_outside_root_stays_as_sent(self, workspace, tmp_path_factory):
         outside = tmp_path_factory.mktemp("elsewhere") / "doc.pdf"
         outside.write_bytes(b"%PDF")
-        blocks, _, _imgs = _prepare_run_attachment_blocks(
+        blocks, _, _imgs = prepare_run_attachment_blocks(
             [_manifest_entry(outside, name="doc.pdf", mime="application/pdf")], set()
         )
         assert str(outside) in blocks[0]  # non-managed caller: path passed through
@@ -434,15 +436,16 @@ class TestRunsWithAttachments:
 
 class TestDedupSessionCap:
     def test_oldest_sessions_pruned_at_cap(self, monkeypatch):
-        monkeypatch.setattr(api_server_mod, "MAX_ATTACHMENT_DEDUP_SESSIONS", 3)
+        monkeypatch.setattr(bridge_mod, "MAX_ATTACHMENT_DEDUP_SESSIONS", 3)
         adapter = _make_adapter()
+        dedup = adapter._karinai_attachments
         for i in range(3):
-            adapter._inlined_attachments_for_session(f"s{i}").add("f")
-        assert list(adapter._inlined_run_attachments) == ["s0", "s1", "s2"]
+            dedup.for_session(f"s{i}").add("f")
+        assert list(dedup._inlined_run_attachments) == ["s0", "s1", "s2"]
 
-        adapter._inlined_attachments_for_session("s3")
-        assert "s0" not in adapter._inlined_run_attachments
-        assert "s3" in adapter._inlined_run_attachments
+        dedup.for_session("s3")
+        assert "s0" not in dedup._inlined_run_attachments
+        assert "s3" in dedup._inlined_run_attachments
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +477,7 @@ def _png_entry(workspace, name="chart.png", file_id="img_1"):
 class TestImageAttachments:
     def test_native_mode_selects_pixels_and_no_note(self, workspace):
         _, entry = _png_entry(workspace)
-        blocks, inlined, native = _prepare_run_attachment_blocks([entry], set(), image_mode="native")
+        blocks, inlined, native = prepare_run_attachment_blocks([entry], set(), image_mode="native")
 
         assert blocks == []  # the build_native hint replaces the note
         assert inlined == {"img_1"}
@@ -482,7 +485,7 @@ class TestImageAttachments:
 
     def test_text_mode_gets_a_viewing_note_and_no_pixels(self, workspace):
         _, entry = _png_entry(workspace)
-        blocks, inlined, native = _prepare_run_attachment_blocks([entry], set(), image_mode="text")
+        blocks, inlined, native = prepare_run_attachment_blocks([entry], set(), image_mode="text")
 
         assert native == [] and inlined == set()
         assert len(blocks) == 1
@@ -492,16 +495,16 @@ class TestImageAttachments:
 
     def test_already_attached_image_degrades_to_note(self, workspace):
         _, entry = _png_entry(workspace)
-        blocks, inlined, native = _prepare_run_attachment_blocks([entry], {"img_1"}, image_mode="native")
+        blocks, inlined, native = prepare_run_attachment_blocks([entry], {"img_1"}, image_mode="native")
 
         assert native == [] and inlined == set()
         assert len(blocks) == 1 and "view or analyze it yourself" in blocks[0]
 
     def test_per_run_image_cap(self, workspace, monkeypatch):
-        monkeypatch.setattr(api_server_mod, "MAX_ATTACHMENT_NATIVE_IMAGES_PER_RUN", 1)
+        monkeypatch.setattr(bridge_mod, "MAX_ATTACHMENT_NATIVE_IMAGES_PER_RUN", 1)
         _, e1 = _png_entry(workspace, name="a.png", file_id="img_a")
         _, e2 = _png_entry(workspace, name="b.png", file_id="img_b")
-        blocks, inlined, native = _prepare_run_attachment_blocks([e1, e2], set(), image_mode="native")
+        blocks, inlined, native = prepare_run_attachment_blocks([e1, e2], set(), image_mode="native")
 
         assert [k for k, _ in native] == ["img_a"]
         assert inlined == {"img_a"}  # b stays eligible for a later run
@@ -511,14 +514,14 @@ class TestImageAttachments:
         outside = tmp_path_factory.mktemp("elsewhere") / "x.png"
         outside.write_bytes(_PNG_1PX)
         entry = {"file_id": "img_x", "safe_name": "x.png", "mime": "image/png", "size": 1, "local_path": str(outside)}
-        blocks, inlined, native = _prepare_run_attachment_blocks([entry], set(), image_mode="native")
+        blocks, inlined, native = prepare_run_attachment_blocks([entry], set(), image_mode="native")
 
         assert native == [] and inlined == set()
         assert len(blocks) == 1  # pixels are never read outside the root
 
     @pytest.mark.asyncio
     async def test_http_native_image_becomes_content_parts(self, workspace, monkeypatch):
-        monkeypatch.setattr(api_server_mod, "_decide_run_image_mode", lambda: "native")
+        monkeypatch.setattr(bridge_mod, "decide_run_image_mode", lambda: "native")
         _, entry = _png_entry(workspace)
 
         adapter = _make_adapter()
@@ -558,7 +561,7 @@ class TestImageAttachments:
 
     @pytest.mark.asyncio
     async def test_http_text_mode_image_gets_note_only(self, workspace, monkeypatch):
-        monkeypatch.setattr(api_server_mod, "_decide_run_image_mode", lambda: "text")
+        monkeypatch.setattr(bridge_mod, "decide_run_image_mode", lambda: "text")
         _, entry = _png_entry(workspace)
 
         adapter = _make_adapter()
@@ -580,7 +583,7 @@ class TestImageAttachments:
 
     @pytest.mark.asyncio
     async def test_http_mixed_csv_and_image_native(self, workspace, monkeypatch):
-        monkeypatch.setattr(api_server_mod, "_decide_run_image_mode", lambda: "native")
+        monkeypatch.setattr(bridge_mod, "decide_run_image_mode", lambda: "native")
         csv = workspace / "data.csv"
         csv.write_text("k,v\n1,2\n", encoding="utf-8")
         _, img = _png_entry(workspace)
@@ -613,7 +616,7 @@ class TestImageAttachments:
         # Regression (review): building parts via build_native_content_parts("")
         # fabricated a default "What do you see in this image?" caption that was
         # appended to content-parts turns, hijacking the user's actual request.
-        monkeypatch.setattr(api_server_mod, "_decide_run_image_mode", lambda: "native")
+        monkeypatch.setattr(bridge_mod, "decide_run_image_mode", lambda: "native")
         _, entry = _png_entry(workspace)
 
         adapter = _make_adapter()
@@ -645,9 +648,9 @@ class TestImageAttachments:
     def test_oversized_image_degrades_to_note_and_stays_unmarked(self, workspace, monkeypatch):
         # Regression (review): no byte gate meant the handler could read+base64
         # hundreds of MB on the event loop. Oversized images note-degrade.
-        monkeypatch.setattr(api_server_mod, "MAX_ATTACHMENT_NATIVE_IMAGE_BYTES", 10)
+        monkeypatch.setattr(bridge_mod, "MAX_ATTACHMENT_NATIVE_IMAGE_BYTES", 10)
         _, entry = _png_entry(workspace)  # 168 bytes > 10
-        blocks, inlined, native = _prepare_run_attachment_blocks([entry], set(), image_mode="native")
+        blocks, inlined, native = prepare_run_attachment_blocks([entry], set(), image_mode="native")
 
         assert native == [] and inlined == set()
         assert len(blocks) == 1 and "view or analyze it yourself" in blocks[0]
@@ -661,6 +664,6 @@ class TestImageAttachments:
         link = workspace / "inputs" / "cnv_1" / "img_r" / "link.png"
         link.symlink_to(real)
         entry = {"file_id": "img_r", "safe_name": "link.png", "mime": "image/png", "size": 1, "local_path": str(link)}
-        _, _, native = _prepare_run_attachment_blocks([entry], set(), image_mode="native")
+        _, _, native = prepare_run_attachment_blocks([entry], set(), image_mode="native")
 
         assert native == [("img_r", str(real.resolve()))]

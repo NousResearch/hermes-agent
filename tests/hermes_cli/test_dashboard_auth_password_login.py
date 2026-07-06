@@ -333,6 +333,40 @@ class TestPasswordLoginRoute:
         )
         assert resp.status_code == 200
 
+    def test_direct_auth_login_for_password_provider_redirects_to_login_page(
+        self, gated_app
+    ):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=%2Fsessions",
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2Fsessions"
+
+    def test_direct_auth_login_for_password_provider_drops_unsafe_next(
+        self, gated_app
+    ):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=https%3A%2F%2Fevil.example%2Fphish",
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login"
+
+    def test_direct_auth_login_for_password_provider_respects_forwarded_prefix(
+        self, gated_app
+    ):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=%2Fsessions",
+            headers={"x-forwarded-prefix": "/hermes"},
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/hermes/login?next=%2Fsessions"
+
 
 # ---------------------------------------------------------------------------
 # Transparent refresh — expired access token, live refresh token

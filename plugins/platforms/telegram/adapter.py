@@ -519,6 +519,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        # Current Telegram Desktop/macOS builds can garble CJK text in Bot API
+        # 10.1 rich rendering. Keep the safe default, but let users who prefer
+        # native rich tables for Chinese/Japanese/Korean opt in explicitly.
+        self._allow_cjk_rich_messages: bool = self._coerce_bool_extra(
+            "allow_cjk_rich_messages", False
+        )
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -1331,6 +1337,8 @@ class TelegramAdapter(BasePlatformAdapter):
         The legacy MarkdownV2 path renders the same text cleanly, so skip rich
         delivery up front until affected clients age out.
         """
+        if getattr(self, "_allow_cjk_rich_messages", False):
+            return False
         return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:

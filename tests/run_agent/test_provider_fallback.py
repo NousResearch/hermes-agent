@@ -211,6 +211,89 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert agent.api_mode == "anthropic_messages"
 
+    def test_explicit_api_mode_from_config_wins(self):
+        """An explicit ``api_mode`` on the fallback config entry must be
+        honored even when no URL/provider heuristic would detect it. The
+        config is the user's declaration of the endpoint's wire protocol."""
+        fbs = [
+            {
+                "provider": "my-proxy",
+                "model": "some-model",
+                "base_url": "https://proxy.example.com/v1",
+                "api_mode": "anthropic_messages",
+                "key_env": "MY_FALLBACK_KEY",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://proxy.example.com/v1"),
+                    "some-model",
+                ),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "anthropic_messages"
+
+    def test_kimi_coding_endpoint_uses_anthropic_messages(self):
+        """The Kimi /coding endpoint only speaks anthropic_messages —
+        chat_completions POSTs /chat/completions and 404s. Even without an
+        explicit ``api_mode`` in the entry, the fallback path must resolve
+        it via determine_api_mode() like the primary path does."""
+        fbs = [
+            {
+                "provider": "kimi-coding",
+                "model": "kimi-k2.7-code",
+                "base_url": "https://api.kimi.com/coding",
+                "key_env": "MY_FALLBACK_KEY",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://api.kimi.com/coding"),
+                    "kimi-k2.7-code",
+                ),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "anthropic_messages"
+
+    def test_invalid_api_mode_falls_back_to_heuristics(self):
+        """An unknown ``api_mode`` string in config is ignored (with a
+        warning) and heuristic resolution still applies."""
+        fbs = [
+            {
+                "provider": "kimi-coding",
+                "model": "kimi-k2.7-code",
+                "base_url": "https://api.kimi.com/coding",
+                "api_mode": "not-a-real-mode",
+                "key_env": "MY_FALLBACK_KEY",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://api.kimi.com/coding"),
+                    "kimi-k2.7-code",
+                ),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "anthropic_messages"
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

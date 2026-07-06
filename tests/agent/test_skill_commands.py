@@ -451,6 +451,43 @@ class TestBuildPreloadedSkillsPrompt:
         assert loaded == ["present-skill"]
         assert missing == ["missing-skill"]
 
+    def test_skips_disabled_skill(self, tmp_path, monkeypatch):
+        """A globally-disabled skill must not be force-loaded via -s /
+        HERMES_TUI_SKILLS preloading (mirrors the bundle gate, #59156)."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "enabled-skill", body="Enabled content.")
+            _make_skill(tmp_path, "disabled-skill", body="SECRET DISABLED CONTENT.")
+
+            import agent.skill_utils as su_module
+            monkeypatch.setattr(
+                su_module, "get_disabled_skill_names", lambda platform=None: {"disabled-skill"}
+            )
+
+            prompt, loaded, missing = build_preloaded_skills_prompt(
+                ["enabled-skill", "disabled-skill"]
+            )
+
+        assert loaded == ["enabled-skill"]
+        assert missing == ["disabled-skill"]
+        assert "SECRET DISABLED CONTENT." not in prompt
+        assert "enabled-skill" in prompt
+
+    def test_loads_normally_when_nothing_disabled(self, tmp_path, monkeypatch):
+        """Positive control: without a disabled-skills config, both load."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "first-skill")
+            _make_skill(tmp_path, "second-skill")
+
+            import agent.skill_utils as su_module
+            monkeypatch.setattr(su_module, "get_disabled_skill_names", lambda platform=None: set())
+
+            prompt, loaded, missing = build_preloaded_skills_prompt(
+                ["first-skill", "second-skill"]
+            )
+
+        assert missing == []
+        assert loaded == ["first-skill", "second-skill"]
+
 
 class TestBuildSkillInvocationMessage:
     def test_loads_skill_by_stored_path_when_frontmatter_name_differs(self, tmp_path):

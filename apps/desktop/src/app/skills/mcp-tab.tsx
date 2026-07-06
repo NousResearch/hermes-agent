@@ -37,6 +37,7 @@ import {
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { connectorDisplayName, connectorPrimaryActionKind } from '@/lib/mcp-catalog'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -1374,6 +1375,7 @@ function McpCatalog({
     <div className="flex flex-col">
       {entries.map(entry => {
         const draft = envDrafts[entry.name] ?? {}
+        const actionKind = connectorPrimaryActionKind(entry)
 
         return (
           <div className="rounded-md px-2 py-2" key={entry.name}>
@@ -1388,8 +1390,9 @@ function McpCatalog({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="truncate text-[0.78rem] font-medium text-foreground/85">
-                    {prettyName(entry.name)}
+                    {connectorDisplayName(entry)}
                   </span>
+                  {entry.category && <CatalogTag>{entry.category}</CatalogTag>}
                   <CatalogTag>{entry.transport}</CatalogTag>
                   {entry.auth_type === 'oauth' && <CatalogTag>OAuth</CatalogTag>}
                   {entry.auth_type === 'api_key' && <CatalogTag>API key</CatalogTag>}
@@ -1401,6 +1404,21 @@ function McpCatalog({
                   )}
                 </div>
                 <p className="mt-0.5 line-clamp-2 text-[0.68rem] text-muted-foreground/70">{entry.description}</p>
+                {entry.capabilities.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {entry.capabilities.slice(0, 3).map(capability => (
+                      <span
+                        className="rounded bg-(--ui-bg-quinary) px-1.5 py-0.5 text-[0.6rem] text-(--ui-text-tertiary)"
+                        key={capability}
+                      >
+                        {capability}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {entry.danger_notes.length > 0 && (
+                  <p className="mt-1 text-[0.62rem] text-amber-400/90">{entry.danger_notes[0]}</p>
+                )}
                 {envOpenFor === entry.name && entry.required_env.length > 0 && (
                   <div className="mt-2 grid gap-2">
                     {entry.required_env.map(env => (
@@ -1434,9 +1452,11 @@ function McpCatalog({
               >
                 {installing === entry.name
                   ? m.catalogInstalling
-                  : entry.installed
+                  : actionKind === 'installed'
                     ? m.catalogInstalled
-                    : m.catalogInstall}
+                    : actionKind === 'connect'
+                      ? m.catalogConnect
+                      : m.catalogInstall}
               </Button>
             </div>
           </div>

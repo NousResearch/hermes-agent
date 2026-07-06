@@ -538,6 +538,7 @@ export interface Translations {
       catalogEnabled: string
       catalogNeedsInstall: string
       catalogInstall: string
+      catalogConnect: string
       catalogInstalling: string
       catalogInstallStarted: (name: string) => string
       catalogInstallFailed: (name: string) => string

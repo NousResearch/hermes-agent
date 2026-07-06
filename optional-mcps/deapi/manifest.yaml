@@ -1,0 +1,65 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: deapi
+description: AI media generation via deAPI - images (FLUX.2 Klein), TTS, transcription (YouTube/X/Twitch), OCR, video, music, embeddings. Pay-per-use, ~20x cheaper than major providers.
+source: https://github.com/deapi-ai/mcp-server-deapi
+
+# deAPI ships a hosted remote MCP server (Streamable HTTP) at mcp.deapi.ai.
+# It authenticates with a static API key sent as a Bearer token. The server
+# also advertises OAuth, but its authorization server does not support
+# Dynamic Client Registration yet, so api_key is the reliable path for
+# Hermes today.
+transport:
+  type: http
+  url: https://mcp.deapi.ai/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: DEAPI_API_KEY
+      prompt: "deAPI API key (dpn-sk-..., free $5 credit at https://app.deapi.ai)"
+      required: true
+      secret: true
+
+# Tool selection at install time:
+# The server exposes 39 tools; roughly half are *_price cost estimators.
+# Default to the actual capabilities + account utilities so a casual install
+# gets a clean surface - users can opt into the price calculators (and
+# anything else) in the install-time checklist.
+tools:
+  default_enabled:
+    - text_to_image
+    - image_to_image
+    - image_to_text
+    - image_remove_background
+    - image_upscale
+    - text_to_audio
+    - text_to_music
+    - audio_transcription
+    - audio_url_transcription
+    - video_file_transcription
+    - video_url_transcription
+    - text_to_video
+    - image_to_video
+    - audio_to_video
+    - video_replace
+    - video_remove_background
+    - video_upscale
+    - text_to_embedding
+    - prompt_booster
+    - get_balance
+    - get_available_models
+    - check_job_status
+
+post_install: |
+  deAPI is pay-per-use: every generation costs credits from your account
+  (images from ~$0.002, transcription ~$0.021/h). New accounts get $5 free
+  credit at https://app.deapi.ai - no card required. Check your balance any
+  time with the get_balance tool.
+
+  Generation jobs are asynchronous; tools poll automatically and may take
+  from seconds (images) to minutes (video/music).
+
+  Start a new Hermes session to load the deapi tools.

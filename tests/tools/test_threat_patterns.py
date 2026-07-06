@@ -311,6 +311,53 @@ class TestInvisibleUnicode:
         # shared set.
         assert isinstance(INVISIBLE_CHARS, frozenset)
 
+    # ── ZWJ emoji sequence false-positive fix (issue #59492) ─────────
+
+    def test_zwj_between_emoji_is_not_flagged(self):
+        # 🐈‍⬛ = cat + ZWJ + black large square — legitimate emoji sequence
+        cat = "\U0001F408"
+        zwj = "\u200d"
+        black_square = "\u2B1B"
+        text = f"{cat}{zwj}{black_square}"
+        findings = scan_for_threats(text, scope="all")
+        assert not any(f.startswith("invisible_unicode") for f in findings)
+
+    def test_zwj_between_emoji_man_and_laptop(self):
+        # 👨‍💻 = man + ZWJ + laptop — real-world ZWJ emoji sequence
+        man = "\U0001F468"
+        zwj = "\u200d"
+        laptop = "\U0001F4BB"
+        text = f"{man}{zwj}{laptop}"
+        findings = scan_for_threats(text, scope="strict")
+        assert not any(f.startswith("invisible_unicode") for f in findings)
+
+    def test_zwj_between_non_emoji_is_still_flagged(self):
+        # ZWJ between non-emoji characters is suspicious
+        text = "normal\u200dtext"
+        findings = scan_for_threats(text, scope="all")
+        assert any(f == "invisible_unicode_U+200D" for f in findings)
+
+    def test_zwj_at_start_of_content_is_flagged(self):
+        text = "\u200d leading"
+        findings = scan_for_threats(text, scope="all")
+        assert any(f == "invisible_unicode_U+200D" for f in findings)
+
+    def test_zwj_at_end_of_content_is_flagged(self):
+        text = "trailing\u200d"
+        findings = scan_for_threats(text, scope="all")
+        assert any(f == "invisible_unicode_U+200D" for f in findings)
+
+    def test_multiple_zwj_only_emoji_ones_skipped(self):
+        # Mix of legitimate emoji ZWJ and suspicious ZWJ
+        cat = "\U0001F408"
+        zwj = "\u200d"
+        black_square = "\u2B1B"
+        text = f"{cat}{zwj}{black_square} normal{zwj}text"
+        findings = scan_for_threats(text, scope="all")
+        # Only the lone ZWJ should be flagged
+        zwj_hits = [f for f in findings if f == "invisible_unicode_U+200D"]
+        assert len(zwj_hits) == 1
+
 
 # =========================================================================
 # ReDoS hardening

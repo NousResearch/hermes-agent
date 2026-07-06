@@ -52,8 +52,31 @@ from typing import List, Optional, Tuple
 # detections near the beginning of injected content.
 MAX_SCAN_CHARS = 65_536
 
+
+def _is_extended_pictographic(ch: str) -> bool:
+    """Return True if *ch* is Extended_Pictographic (emoji) per the Unicode standard.
+
+    Used to distinguish legitimate ZWJ emoji sequences (🐈‍⬛, 👨‍💻) from
+    ZWJ-based injection tactics.  The check uses a combination of codepoint
+    ranges and ``unicodedata.category()`` — this is a fast heuristic that
+    covers all major emoji blocks including flags, keycaps, and dingbats.
+    """
+    cp = ord(ch)
+    # Variation Selectors (U+FE00–U+FE0F) — used in emoji presentation
+    # sequences after a base emoji to request colour rendering.
+    if 0xFE00 <= cp <= 0xFE0F:
+        return True
+    # Regional Indicator symbols (U+1F1E6–U+1F1FF) — paired to form
+    # national flag sequences like 🇺🇸, 🇬🇧.
+    if 0x1F1E6 <= cp <= 0x1F1FF:
+        return True
+    # Symbol, Other — covers the vast majority of emoji characters
+    # (Miscellaneous Symbols, Emoticons, Transport, Objects, etc.)
+    return unicodedata.category(ch) == "So"
+
+
 # Bounded filler used between key attack words.  Earlier patterns used
-# ``(?:\w+\s+)*`` which is ambiguous and can backtrack heavily on adversarial
+# ``(?:\\w+\\s+)*`` which is ambiguous and can backtrack heavily on adversarial
 # near-misses.  Eight filler words is enough for the intended obfuscation
 # bypasses without introducing unbounded repetition.
 _FILLER = r"(?:\w+\s+){0,8}"
@@ -125,8 +148,8 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 
     # ── Persistence / SSH backdoor (strict scope — memory + skills) ──
     (r'authorized_keys', "ssh_backdoor", "strict"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access", "strict"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env", "strict"),
+    (r'\$HOME/\.ssh|\~/.ssh', "ssh_access", "strict"),
+    (r'\$HOME/\.hermes/\.env|\~/.hermes/\.env', "hermes_env", "strict"),
     (r'(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod", "strict"),
     (r'(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod", "strict"),
 
@@ -234,7 +257,26 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     char_set = set(content)
     invisible_hits = char_set & INVISIBLE_CHARS
     for ch in invisible_hits:
+        # ZWJ (U+200D) is used legitimately in emoji sequences like 🐈‍⬛.
+        # Only flag it when it does NOT join two Extended_Pictographic chars.
+        if ch == '\u200d':
+            continue  # handled below with position context
         findings.append(f"invisible_unicode_U+{ord(ch):04X}")
+
+    # Separate pass for ZWJ so we can examine surrounding characters.
+    # The set-based approach above loses position information, but ZWJ
+    # needs context: between two emoji it's a legitimate ZWJ sequence,
+    # anywhere else it's an injection tactic.
+    if '\u200d' in char_set:
+        for i, ch in enumerate(content):
+            if ch != '\u200d':
+                continue
+            # Valid ZWJ emoji sequence: emoji + ZWJ + emoji
+            if (i > 0 and i < len(content) - 1
+                    and _is_extended_pictographic(content[i - 1])
+                    and _is_extended_pictographic(content[i + 1])):
+                continue  # legitimate ZWJ emoji sequence, not a threat
+            findings.append("invisible_unicode_U+200D")
 
     # Normalise to NFKC so full-width / compatibility Unicode variants
     # (e.g. ｃａｔ → cat, Ａ → A) are folded to their ASCII counterparts before

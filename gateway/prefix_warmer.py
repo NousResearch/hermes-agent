@@ -119,6 +119,69 @@ def warm_once(config: Any) -> int:
     return warmed
 
 
+def warm_compacted_prefix(
+    old_system: str,
+    new_system: str,
+    compacted_messages: list,
+    config: Any,
+) -> int:
+    """Re-warm a session's local endpoints right after context compaction.
+
+    Compaction rewrites the transcript (summary + surviving tail) and appends
+    a compaction note to the system prompt, so the next turn's rendered
+    prompt shares no usable prefix with any cached state — the session pays
+    the full re-prefill at TTFT (seconds on a 20k+ prefix). This replays the
+    *post-compaction* prefix once, so the re-prefill happens now, in the
+    background, instead of in front of the user's next message.
+
+    Endpoint selection reuses the warm registry: a snapshot whose recorded
+    system content equals the *pre-compaction* system prompt belongs to this
+    session's request path (the direct provider, or the MoA acting/aggregator
+    call — both record). Only local endpoints are ever recorded, so cloud
+    providers are excluded by construction. Returns count warmed.
+    """
+    from agent.prefix_warm_registry import get_snapshots
+
+    warmed = 0
+    messages = [{"role": "system", "content": new_system}]
+    messages.extend(compacted_messages)
+    for snap in get_snapshots():
+        if snap.get("system_content") != old_system:
+            continue
+        try:
+            kwargs: Dict[str, Any] = {
+                "model": snap["model"],
+                "messages": messages,
+                "max_tokens": 1,
+                "temperature": 0,
+            }
+            if snap.get("tools"):
+                kwargs["tools"] = snap["tools"]
+            if snap.get("extra_body"):
+                kwargs["extra_body"] = snap["extra_body"]
+            t0 = time.time()
+            _send_warm_request(snap["base_url"], snap["api_key"], config, kwargs)
+            warmed += 1
+            logger.debug(
+                "prefix_warmer: post-compaction warm %s @ %s in %.2fs",
+                snap["model"], snap["base_url"], time.time() - t0,
+            )
+        except Exception as exc:
+            logger.debug(
+                "prefix_warmer: post-compaction warm failed for %s @ %s: %s",
+                snap.get("model"), snap.get("base_url"), exc,
+            )
+    if not warmed:
+        # Either no local endpoint is recorded yet, or the recorded system
+        # content didn't byte-match the pre-compaction prompt (a divergence
+        # in the request path worth knowing about when debugging TTFT).
+        logger.debug(
+            "prefix_warmer: post-compaction warm matched no snapshots (%d recorded)",
+            len(get_snapshots()),
+        )
+    return warmed
+
+
 def _send_warm_request(base_url: str, api_key: str, config: Any, kwargs: Dict[str, Any]) -> None:
     """One blocking chat-completions call to the local server."""
     from openai import OpenAI

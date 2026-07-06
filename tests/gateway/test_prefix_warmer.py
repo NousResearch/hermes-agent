@@ -332,6 +332,85 @@ def test_watcher_enforces_minimum_interval(monkeypatch):
     assert delays[1:] == [30]  # clamped to the 30s floor
 
 
+# ------------------------------------------------- warm_compacted_prefix --
+
+def test_compacted_warm_replays_new_prefix_to_matching_endpoint(monkeypatch):
+    tools = [{"function": {"name": "t"}}]
+    registry.record_local_prefix(_agent(), _kwargs(system="OLD SYSTEM", tools=tools))
+    sent = []
+    monkeypatch.setattr(
+        prefix_warmer, "_send_warm_request",
+        lambda base_url, api_key, config, kwargs: sent.append((base_url, kwargs)),
+    )
+
+    compacted = [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        {"role": "assistant", "content": "tail answer"},
+        {"role": "user", "content": "tail question"},
+    ]
+    warmed = prefix_warmer.warm_compacted_prefix(
+        "OLD SYSTEM", "NEW SYSTEM + note", compacted, PrefixWarmerConfig()
+    )
+    assert warmed == 1
+
+    base_url, kwargs = sent[0]
+    assert base_url == "http://127.0.0.1:8001/v1"
+    assert kwargs["max_tokens"] == 1
+    # The warm carries the POST-compaction prefix: new system + full
+    # compacted transcript (not the registry's stale system + "." tail).
+    assert kwargs["messages"][0] == {"role": "system", "content": "NEW SYSTEM + note"}
+    assert kwargs["messages"][1:] == compacted
+    assert kwargs["tools"] == tools
+
+
+def test_compacted_warm_skips_non_matching_system(monkeypatch):
+    registry.record_local_prefix(_agent(), _kwargs(system="SOME OTHER SESSION"))
+    sent = []
+    monkeypatch.setattr(
+        prefix_warmer, "_send_warm_request",
+        lambda *a: sent.append(a),
+    )
+    warmed = prefix_warmer.warm_compacted_prefix(
+        "OLD SYSTEM", "NEW SYSTEM", [{"role": "user", "content": "x"}], PrefixWarmerConfig()
+    )
+    assert warmed == 0
+    assert sent == []
+
+
+def test_compacted_warm_hits_every_matching_endpoint(monkeypatch):
+    # A MoA session records the same system prompt against two endpoints
+    # (direct provider + acting/aggregator); both must re-warm.
+    tools = [{"function": {"name": "t"}}]
+    registry.record_call_prefix("http://127.0.0.1:8011/v1", "local", _kwargs(system="OLD", tools=tools))
+    registry.record_call_prefix("http://127.0.0.1:8020/v1", "local", _kwargs(system="OLD", tools=tools))
+    sent = []
+    monkeypatch.setattr(
+        prefix_warmer, "_send_warm_request",
+        lambda base_url, api_key, config, kwargs: sent.append(base_url),
+    )
+    warmed = prefix_warmer.warm_compacted_prefix(
+        "OLD", "NEW", [{"role": "user", "content": "x"}], PrefixWarmerConfig()
+    )
+    assert warmed == 2
+    assert set(sent) == {"http://127.0.0.1:8011/v1", "http://127.0.0.1:8020/v1"}
+
+
+def test_compacted_warm_survives_endpoint_failure(monkeypatch):
+    tools = [{"function": {"name": "t"}}]
+    registry.record_call_prefix("http://127.0.0.1:8011/v1", "local", _kwargs(system="OLD", tools=tools))
+    registry.record_call_prefix("http://127.0.0.1:8020/v1", "local", _kwargs(system="OLD", tools=tools))
+
+    def flaky(base_url, api_key, config, kwargs):
+        if "8011" in base_url:
+            raise ConnectionError("server restarting")
+
+    monkeypatch.setattr(prefix_warmer, "_send_warm_request", flaky)
+    warmed = prefix_warmer.warm_compacted_prefix(
+        "OLD", "NEW", [{"role": "user", "content": "x"}], PrefixWarmerConfig()
+    )
+    assert warmed == 1  # one failed, one warmed, no exception escaped
+
+
 # ------------------------------------------------------------------ config --
 
 def test_config_defaults_off():

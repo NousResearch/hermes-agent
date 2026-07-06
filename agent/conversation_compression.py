@@ -886,6 +886,41 @@ def compress_context(
             except Exception as e:
                 logger.debug("event_callback error on session:compress: %s", e)
 
+        # Re-warm this session's local-endpoint prompt prefix in the
+        # background. Compaction just rewrote the transcript and system
+        # prompt, so the next turn's rendered prompt matches no cached state
+        # and would pay the full re-prefill at TTFT (seconds on a 20k+ prefix
+        # against a local backend). Replaying the new prefix now moves that
+        # cost off the user's next message. Gated on ``prefix_warmer.enabled``
+        # (same opt-in as the periodic warmer); fire-and-forget daemon thread
+        # so the compression return path never blocks on a prefill.
+        try:
+            from hermes_cli.config import load_config_readonly as _load_cfg_ro
+
+            _pw_raw = _load_cfg_ro().get("prefix_warmer") or {}
+            if _pw_raw.get("enabled"):
+                from gateway.config import PrefixWarmerConfig as _PWConfig
+                from gateway.prefix_warmer import warm_compacted_prefix as _warm_compacted
+
+                # Wire-clean copies taken synchronously: the warm thread must
+                # not race the caller's ownership of ``compressed``, and
+                # private bookkeeping keys must not reach the API server.
+                _wire_keys = ("role", "content", "name", "tool_calls", "tool_call_id")
+                _warm_msgs = [
+                    {k: m[k] for k in _wire_keys if k in m}
+                    for m in compressed
+                    if isinstance(m, dict)
+                ]
+                threading.Thread(
+                    target=_warm_compacted,
+                    args=(system_message, new_system_prompt, _warm_msgs,
+                          _PWConfig.from_dict(dict(_pw_raw))),
+                    name="post-compaction-prefix-warm",
+                    daemon=True,
+                ).start()
+        except Exception as _pw_err:
+            logger.debug("post-compaction prefix warm skipped: %s", _pw_err)
+
         # Surface the compaction mode to the caller (run_conversation / gateway)
         # via a rotation-independent flag. The gateway uses this — NOT an
         # id-change diff — to re-baseline transcript handling (history_offset=0 +

@@ -49,13 +49,24 @@ def _process_group_snapshot(pgid: int) -> str:
     ).stdout.strip()
 
 
-def _wait_for_pgid_exit(pgid: int, timeout: float = 30.0) -> bool:
-    """Wait for a process group to disappear under loaded xdist hosts.
+def _wait_for_pgid_exit(pgid: int, timeout: float = 8.0) -> bool:
+    """Wait (bounded) for a process group to disappear after cleanup.
 
-    The cleanup chain is: SIGTERM → 3s TimeoutStopSec → SIGKILL → reap.
-    Under heavy xdist load (40 parallel workers, 6-shard CI), the full
-    sequence can exceed 10s. Default timeout is generous to avoid CI
-    flakes; in practice the wait returns in <1s on quiet hosts.
+    Once _wait_for_process's except-block runs _kill_process, the reap chain
+    (SIGTERM → ≤1s → SIGKILL → ≤2s → wait) empties the group in ≤~3.2s
+    regardless of host load — those waits are wall-clock deadlines, not
+    work-bound (see LocalEnvironment._kill_process). On quiet hosts this
+    returns in <1s.
+
+    The timeout is deliberately SMALL. This helper is one of three sequential
+    waits in test_wait_for_process_kills_subprocess_on_keyboardinterrupt; their
+    sum must stay well under the 30s global pytest-timeout. That cap uses the
+    ``thread`` method (pyproject.toml addopts), which on expiry hard-``os._exit``s
+    the per-file interpreter — crashing the ENTIRE file ("1 file where no tests
+    ran") instead of failing one assertion. A generous timeout here is exactly
+    what used to trip that cap under xdist load and spuriously fail unrelated
+    PRs. If the group genuinely hasn't died within this budget, the caller
+    fails one assertion cleanly, with a process-table snapshot.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -184,6 +195,16 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         pgid = os.getpgid(target_pid)
         assert _pgid_still_alive(pgid), "sanity: subprocess should be alive"
 
+        # Settle briefly so the worker is reliably parked in _wait_for_process's
+        # interruptible poll-loop sleep before we inject. The poll loop is
+        # entered within microseconds of the spawn, but the 'sleep 30' becomes
+        # visible to our scan a hair before the worker reaches the try-guarded
+        # sleep; injecting in that sliver would deliver the async exception
+        # outside the poll loop, where _kill_process never runs — a test-harness
+        # race, not a product regression. A short settle closes it.
+        time.sleep(0.3)
+        assert _pgid_still_alive(pgid), "subprocess exited during settle"
+
         # Now inject a KeyboardInterrupt into the worker thread the same
         # way CPython's signal machinery would.  We use ctypes.PyThreadState_SetAsyncExc
         # which is how signal delivery to non-main threads is simulated.
@@ -197,12 +218,21 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         )
         assert ret == 1, f"SetAsyncExc returned {ret}, expected 1"
 
-        # Give the worker a moment to: hit the exception at the next poll,
-        # run the except-block cleanup (_kill_process), and exit.  Under
-        # xdist load the SIGTERM → 3s wait → SIGKILL chain can take longer
-        # than 5s before the worker's join() returns; bumped to 15s.
-        t.join(timeout=15.0)
-        assert not t.is_alive(), "worker didn't exit within 15 s of the interrupt"
+        # Give the worker time to: hit the exception at the next poll, run the
+        # except-block cleanup (_kill_process → reap ≤~3.2s, then a ≤2s drain
+        # join), and re-raise. Those waits are wall-clock-bounded, so ~5.5s is
+        # the real worst case; 8s absorbs scheduling jitter under xdist load.
+        #
+        # This ceiling is deliberately part of a budget: setup (≤5s) + settle
+        # (0.3s) + join (≤8s) + _wait_for_pgid_exit (≤8s) ≈ 21s stays clear of
+        # the 30s global pytest-timeout, whose `thread` method hard-kills the
+        # whole test file on expiry (see _wait_for_pgid_exit's docstring and
+        # pyproject addopts). The old 15s+30s pair could reach ~50s under load
+        # and trip that cap — crashing the shard instead of failing one test.
+        # If the worker really hasn't exited in 8s, the assert below fails this
+        # one test cleanly.
+        t.join(timeout=8.0)
+        assert not t.is_alive(), "worker didn't exit within 8 s of the interrupt"
 
         # The critical assertion: the subprocess GROUP must be dead.  Not
         # just the bash wrapper — the 'sleep 30' child too. Under xdist load,

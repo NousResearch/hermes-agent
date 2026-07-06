@@ -162,7 +162,12 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
+        # OpenAI/Codex Responses accepts Hermes's xhigh fast path but rejects
+        # the global Anthropic-style "max" effort with HTTP 400. Clamp here at
+        # the Responses transport boundary so a user/global config typo cannot
+        # brick Codex turns; Anthropic/DeepSeek-specific "max" handling lives on
+        # their own adapters.
+        _effort_clamp = {"minimal": "low", "max": "xhigh"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)

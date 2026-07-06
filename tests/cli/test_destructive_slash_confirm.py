@@ -211,6 +211,25 @@ def test_slash_confirm_display_fragments_include_choice_mapping():
     assert "Type 1/2/3" in rendered
 
 
+def test_slash_confirm_numeric_choice_uses_actual_choice_order():
+    """Numeric input maps to the displayed row, even for non-3-choice menus."""
+    from cli import HermesCLI
+
+    self_ = SimpleNamespace()
+    normalize = _bound(HermesCLI._normalize_slash_confirm_choice, self_)
+
+    two_choices = [
+        ("once", "Switch anyway", "proceed once"),
+        ("cancel", "Cancel", "abort"),
+    ]
+    assert normalize("2", two_choices) == "cancel"
+
+    many_choices = [(f"preset-{idx}", f"Preset {idx}", "") for idx in range(1, 12)]
+    assert normalize("11", many_choices) == "preset-11"
+
+    assert normalize("reviewpreset", [("ReviewPreset", "Review", "")]) == "ReviewPreset"
+
+
 # ---------------------------------------------------------------------------
 # Inline-skip escape hatch (issue #30768)
 #

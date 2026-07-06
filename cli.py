@@ -7452,10 +7452,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not choices:
             return None
 
+        choice_numbers = "1/2/3" if len(choices) == 3 else f"1-{len(choices)}"
+
         # If prompt_toolkit is not running (unit tests / non-interactive calls),
         # keep the simple stdin fallback.
         if not getattr(self, "_app", None):
-            return self._prompt_text_input("Choice [1/2/3]: ")
+            return self._prompt_text_input(f"Choice [{choice_numbers}]: ")
 
         try:
             app_loop = self._app.loop
@@ -7472,7 +7474,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if sys.platform == "win32" and not in_main_thread:
                 self._invalidate()
                 return None
-            return self._prompt_text_input("Choice [1/2/3]: ")
+            return self._prompt_text_input(f"Choice [{choice_numbers}]: ")
 
         if not in_main_thread and app_loop is None:
             return _stdin_fallback()
@@ -7554,9 +7556,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     ) -> str | None:
         if raw is None:
             return None
-        choice_raw = raw.strip().lower()
-        if not choice_raw:
+        choice_text = raw.strip()
+        if not choice_text:
             return None
+        allowed = {choice[0] for choice in choices}
+        if choice_text in allowed:
+            return choice_text
+        choice_raw = choice_text.lower()
+        if choice_raw.isdigit():
+            idx = int(choice_raw) - 1
+            if 0 <= idx < len(choices):
+                return choices[idx][0]
         aliases = {
             "1": "once",
             "once": "once",
@@ -7573,12 +7583,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "no": "cancel",
             "n": "cancel",
         }
-        allowed = {choice[0] for choice in choices}
         normalized = aliases.get(choice_raw)
         if normalized in allowed:
             return normalized
-        if choice_raw in allowed:
-            return choice_raw
+        lowered_allowed = {choice.lower(): choice for choice in allowed}
+        if choice_raw in lowered_allowed:
+            return lowered_allowed[choice_raw]
         return None
 
     def _get_slash_confirm_display_fragments(self):
@@ -7591,6 +7601,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         detail = state.get("detail") or ""
         choices = state.get("choices") or []
         selected = state.get("selected", 0)
+        choice_numbers = "1/2/3" if len(choices) == 3 else f"1-{len(choices)}"
+        choice_hint = f"Type {choice_numbers} or use ↑/↓ then Enter. ESC/Ctrl+C cancels."
 
         def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 56, max_width: int = 86) -> int:
             term_cols = shutil.get_terminal_size((100, 20)).columns
@@ -7623,7 +7635,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         for idx, (_value, label, desc) in enumerate(choices):
             marker = "❯" if idx == selected else " "
             preview_lines.extend(_wrap_panel_text(f"{marker} [{idx + 1}] {label} — {desc}", 72, subsequent_indent="    "))
-        preview_lines.append("Type 1/2/3 or use ↑/↓ then Enter. ESC/Ctrl+C cancels.")
+        preview_lines.append(choice_hint)
 
         box_width = _panel_box_width(title, preview_lines)
         inner_text_width = max(8, box_width - 2)
@@ -7657,7 +7669,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             style = 'class:approval-selected' if idx == selected else 'class:approval-choice'
             _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
         _append_blank_panel_line(lines, 'class:approval-border', box_width)
-        _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', 'Type 1/2/3 or use ↑/↓ then Enter. ESC/Ctrl+C cancels.', box_width)
+        _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', choice_hint, box_width)
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
@@ -8795,6 +8807,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from hermes_cli.moa_config import (
                 moa_usage,
                 normalize_moa_config,
+                parse_moa_slash_args,
+                summarize_moa_preset,
             )
 
             parts = cmd_original.split(None, 1)
@@ -8804,7 +8818,51 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return True
             moa_cfg = self.config.get("moa") if isinstance(self.config, dict) else {}
             normalized = normalize_moa_config(moa_cfg)
-            preset = normalized["default_preset"]
+            try:
+                preset, prompt = parse_moa_slash_args(moa_cfg, payload)
+            except KeyError as exc:
+                _cprint(f"  Unknown MoA preset: {exc.args[0] or '(empty)'}")
+                _cprint(f"  {moa_usage()}")
+                return True
+
+            if preset is None and normalized.get("prompt_preset"):
+                presets = normalized.get("presets") or {}
+                preferred = str(normalized.get("active_preset") or normalized.get("default_preset") or "")
+                default_name = str(normalized.get("default_preset") or "")
+                active_name = str(normalized.get("active_preset") or "")
+                names = [str(name) for name in presets.keys()]
+                if preferred in presets:
+                    names = [preferred] + [name for name in names if name != preferred]
+                choices: list[tuple[str, str, str]] = [
+                    (
+                        name,
+                        name,
+                        summarize_moa_preset(
+                            name,
+                            presets[name],
+                            default_name=default_name,
+                            active_name=active_name,
+                        ),
+                    )
+                    for name in names
+                ]
+                choices.append(("__cancel__", "Cancel", "Do not run the MoA one-shot."))
+                raw_choice = self._prompt_text_input_modal(
+                    title="Select MoA preset",
+                    detail="Choose the preset for this one /moa turn. Explicit `/moa <preset> <prompt>` skips this picker.",
+                    choices=choices,
+                    timeout=120,
+                )
+                choice = self._normalize_slash_confirm_choice(raw_choice, choices)
+                if not choice or choice == "__cancel__":
+                    _cprint("  MoA one-shot cancelled.")
+                    return True
+                preset = choice
+
+            preset = preset or normalized["default_preset"]
+            if not prompt:
+                _cprint(f"  {moa_usage()}")
+                return True
             self._pending_moa_restore_model = {
                 "requested_provider": getattr(self, "requested_provider", None),
                 "provider": getattr(self, "provider", None),
@@ -8821,7 +8879,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.api_mode = "chat_completions"
             self.agent = None
             self._pending_moa_disable_after_turn = True
-            self._pending_agent_seed = payload
+            self._pending_agent_seed = prompt
             _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)

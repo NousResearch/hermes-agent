@@ -183,6 +183,7 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
     return {
         "default_preset": default_name,
         "active_preset": active_name,
+        "prompt_preset": bool(raw.get("prompt_preset", False)),
         "presets": presets,
         # Compatibility/flattened view for existing dashboard/desktop callers.
         "reference_models": deepcopy(active["reference_models"]),
@@ -199,6 +200,78 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
 def list_moa_presets(config: Any) -> list[str]:
     cfg = normalize_moa_config(config)
     return list(cfg["presets"].keys())
+
+
+def summarize_moa_preset(
+    name: str,
+    preset: dict[str, Any],
+    *,
+    default_name: str = "",
+    active_name: str = "",
+) -> str:
+    """Return a compact human label for a MoA preset picker row."""
+    refs = preset.get("reference_models") or []
+    aggregator = preset.get("aggregator") or {}
+    agg_provider = str(aggregator.get("provider") or "").strip()
+    agg_model = str(aggregator.get("model") or "").strip()
+    agg_label = f"{agg_provider}:{agg_model}" if agg_provider and agg_model else "unset"
+    flags: list[str] = []
+    if name == default_name:
+        flags.append("default")
+    if active_name and name == active_name:
+        flags.append("active")
+    if not preset.get("enabled", True):
+        flags.append("disabled")
+    flag_text = f" [{', '.join(flags)}]" if flags else ""
+    return f"agg {agg_label}, {len(refs)} refs{flag_text}"
+
+
+def _split_first(text: str) -> tuple[str, str]:
+    clean = str(text or "").strip()
+    if not clean:
+        return "", ""
+    parts = clean.split(None, 1)
+    return parts[0], parts[1].strip() if len(parts) > 1 else ""
+
+
+def parse_moa_slash_args(config: Any, payload: str) -> tuple[str | None, str]:
+    """Parse ``/moa`` arguments into ``(explicit_preset, prompt)``.
+
+    Supported explicit preset forms:
+      - ``/moa council compare these options``
+      - ``/moa --preset council compare these options``
+      - ``/moa -p council compare these options``
+      - ``/moa --preset=council compare these options``
+
+    If the first word is not a configured preset, it remains part of the natural
+    prompt. This is the important safety property for prompts like
+    ``/moa compare these options``: ``compare`` must not be consumed as a
+    would-be preset unless such a preset actually exists.
+    """
+    cfg = normalize_moa_config(config)
+    presets = cfg.get("presets") or {}
+    text = str(payload or "").strip()
+    if not text:
+        return None, ""
+
+    first, rest = _split_first(text)
+    preset_name: str | None = None
+    prompt = text
+
+    if first in {"--preset", "-p"}:
+        preset_name, prompt = _split_first(rest)
+    elif first.startswith("--preset="):
+        preset_name = first.split("=", 1)[1].strip()
+        prompt = rest
+    elif first in presets:
+        preset_name = first
+        prompt = rest
+
+    if preset_name is not None:
+        if not preset_name or preset_name not in presets:
+            raise KeyError(preset_name)
+        return preset_name, prompt.strip()
+    return None, text
 
 
 def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
@@ -273,4 +346,4 @@ def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | No
 
 
 def moa_usage() -> str:
-    return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"
+    return "Usage: /moa [--preset <name>|<preset>] <prompt>  (runs one prompt through MoA, then restores your model; set moa.prompt_preset: true to pick a preset per /moa turn)"

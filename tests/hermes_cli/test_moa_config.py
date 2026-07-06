@@ -6,8 +6,10 @@ from hermes_cli.moa_config import (
     decode_moa_turn,
     exact_moa_preset_name,
     normalize_moa_config,
+    parse_moa_slash_args,
     resolve_moa_preset,
     set_active_moa_preset,
+    summarize_moa_preset,
 )
 
 
@@ -281,3 +283,52 @@ def test_reference_max_tokens_in_flattened_view():
     active preset's reference_max_tokens."""
     cfg = normalize_moa_config(_preset(reference_max_tokens=750))
     assert cfg["reference_max_tokens"] == 750
+
+
+def test_normalize_moa_config_exposes_prompt_preset_flag():
+    cfg = normalize_moa_config({"prompt_preset": True, "presets": {"p": {}}})
+
+    assert cfg["prompt_preset"] is True
+
+
+def test_parse_moa_slash_args_explicit_preset_forms():
+    config = {"default_preset": "default", "presets": {"default": {}, "review": {}}}
+
+    assert parse_moa_slash_args(config, "review inspect this") == ("review", "inspect this")
+    assert parse_moa_slash_args(config, "--preset review inspect this") == ("review", "inspect this")
+    assert parse_moa_slash_args(config, "-p review inspect this") == ("review", "inspect this")
+    assert parse_moa_slash_args(config, "--preset=review inspect this") == ("review", "inspect this")
+
+
+def test_parse_moa_slash_args_preserves_natural_first_word():
+    config = {"default_preset": "default", "presets": {"default": {}, "review": {}}}
+
+    assert parse_moa_slash_args(config, "compare these options") == (None, "compare these options")
+
+
+def test_parse_moa_slash_args_unknown_explicit_preset_raises():
+    config = {"default_preset": "default", "presets": {"default": {}}}
+
+    try:
+        parse_moa_slash_args(config, "--preset missing inspect")
+    except KeyError as exc:
+        assert exc.args[0] == "missing"
+    else:  # pragma: no cover - defensive assertion style for old pytest support
+        raise AssertionError("unknown explicit preset must raise KeyError")
+
+
+def test_summarize_moa_preset_marks_default_active_and_disabled():
+    summary = summarize_moa_preset(
+        "review",
+        {
+            "enabled": False,
+            "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        },
+        default_name="review",
+        active_name="review",
+    )
+
+    assert "agg openrouter:anthropic/claude-opus-4.8" in summary
+    assert "1 refs" in summary
+    assert "default" in summary and "active" in summary and "disabled" in summary

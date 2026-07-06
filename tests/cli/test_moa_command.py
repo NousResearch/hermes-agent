@@ -38,6 +38,10 @@ def _make_cli():
     return cli
 
 
+def _fail_modal(**_kwargs):
+    raise AssertionError("MoA preset picker should not open")
+
+
 def test_moa_bare_shows_usage_no_switch():
     # /moa with no prompt is usage-only now; switching to a preset for the
     # session is done via the model picker, not /moa.
@@ -50,16 +54,26 @@ def test_moa_bare_shows_usage_no_switch():
     assert cli._pending_moa_disable_after_turn is False
 
 
-def test_moa_arg_is_always_one_shot_prompt():
-    # Any argument (even a string that matches a preset name) is treated as a
-    # one-shot prompt through the DEFAULT preset, then the model is restored.
+def test_moa_explicit_preset_name_selects_preset_and_prompt():
     cli = _make_cli()
+    cli._prompt_text_input_modal = _fail_modal
     with patch("cli._cprint"):
-        cli.process_command("/moa review")
-    assert cli._pending_agent_seed == "review"
+        cli.process_command("/moa review inspect this project")
+    assert cli._pending_agent_seed == "inspect this project"
     assert cli._pending_moa_disable_after_turn is True
     assert cli.provider == "moa"
-    assert cli.model == "default"
+    assert cli.model == "review"
+
+
+def test_moa_explicit_preset_flag_bypasses_picker():
+    cli = _make_cli()
+    cli.config["moa"]["prompt_preset"] = True
+    cli._prompt_text_input_modal = _fail_modal
+    with patch("cli._cprint"):
+        cli.process_command("/moa --preset review inspect this project")
+    assert cli._pending_agent_seed == "inspect this project"
+    assert cli.provider == "moa"
+    assert cli.model == "review"
 
 
 def test_moa_non_preset_is_one_shot_prompt():
@@ -71,6 +85,26 @@ def test_moa_non_preset_is_one_shot_prompt():
     assert cli.provider == "moa"
     assert cli.model == "default"
     assert cli._pending_moa_restore_model["provider"] != "moa"
+
+
+def test_moa_prompt_preset_picker_preserves_natural_first_word():
+    cli = _make_cli()
+    cli.config["moa"]["prompt_preset"] = True
+    captured = {}
+
+    def _pick_review(**kwargs):
+        captured.update(kwargs)
+        return "review"
+
+    cli._prompt_text_input_modal = _pick_review
+    with patch("cli._cprint"):
+        cli.process_command("/moa inspect the flaky test")
+
+    assert cli._pending_agent_seed == "inspect the flaky test"
+    assert cli.provider == "moa"
+    assert cli.model == "review"
+    assert captured["title"] == "Select MoA preset"
+    assert any(choice[0] == "review" for choice in captured["choices"])
 
 
 def test_decode_legacy_encoded_moa_turn_still_works():

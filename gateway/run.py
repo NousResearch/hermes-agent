@@ -9735,18 +9735,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from hermes_cli.moa_config import (
                 moa_usage,
                 normalize_moa_config,
+                parse_moa_slash_args,
             )
             from hermes_cli.config import load_config
 
-            moa_payload = event.get_command_args().strip()
-            if not moa_payload:
+            raw_moa_payload = event.get_command_args().strip()
+            if not raw_moa_payload:
                 return moa_usage()
             try:
                 cfg = load_config()
                 moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
             except Exception:
                 moa_cfg = normalize_moa_config({})
-            preset = moa_cfg["default_preset"]
+            try:
+                preset, moa_payload = parse_moa_slash_args(moa_cfg, raw_moa_payload)
+            except KeyError as exc:
+                return f"Unknown MoA preset: {exc.args[0] or '(empty)'}\n{moa_usage()}"
+            if not moa_payload:
+                return moa_usage()
+            preset = preset or moa_cfg["default_preset"]
             try:
                 event.text = moa_payload
                 event._moa_restore_override = self._session_model_overrides.get(_quick_key)

@@ -272,6 +272,16 @@ class TestCodexBuildKwargs:
         # "minimal" should be clamped to "low"
         assert kw.get("reasoning", {}).get("effort") == "low"
 
+    def test_max_effort_clamped_to_xhigh_for_codex_responses(self, transport):
+        """OpenAI/Codex Responses rejects global ``max``; xhigh is the safe top tier."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            reasoning_config={"effort": "max"},
+            is_codex_backend=True,
+        )
+        assert kw.get("reasoning", {}).get("effort") == "xhigh"
+
     def test_xai_reasoning_effort_passed(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

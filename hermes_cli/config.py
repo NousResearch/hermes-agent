@@ -2205,6 +2205,9 @@ DEFAULT_CONFIG = {
     "moa": {
         "default_preset": "default",
         "active_preset": "",
+        # When true, bare `/moa <prompt>` in the TUI opens a per-turn preset
+        # picker; explicit `/moa <preset> <prompt>` / `--preset` bypasses it.
+        "prompt_preset": False,
         # When true, every MoA turn that runs the reference fan-out writes the
         # FULL turn (each reference's exact input messages + output + usage/cost,
         # and the aggregator's exact input + output) to a JSONL file at

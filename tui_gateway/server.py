@@ -11531,7 +11531,7 @@ def _(rid, params: dict) -> dict:
         # for the rest of the session, pick it from the model picker (MoA
         # presets surface as a virtual "Mixture of Agents" provider).
         try:
-            from hermes_cli.moa_config import moa_usage, normalize_moa_config
+            from hermes_cli.moa_config import moa_usage, normalize_moa_config, parse_moa_slash_args
 
             if not arg:
                 return _err(rid, 4004, moa_usage())
@@ -11539,7 +11539,13 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4001, "no active session")
             sid = params.get("session_id", "")
             moa_cfg = normalize_moa_config(_load_cfg().get("moa") or {})
-            preset = moa_cfg["default_preset"]
+            try:
+                preset, prompt = parse_moa_slash_args(moa_cfg, arg)
+            except KeyError as exc:
+                return _err(rid, 4004, f"Unknown MoA preset: {exc.args[0] or '(empty)'}\n{moa_usage()}")
+            if not prompt:
+                return _err(rid, 4004, moa_usage())
+            preset = preset or moa_cfg["default_preset"]
             # Record the live model identity so it can be restored after the
             # one-shot turn, then swap the agent's client in place (#53444:
             # setting session["model_override"] alone never switched the
@@ -11579,7 +11585,7 @@ def _(rid, params: dict) -> dict:
                 {
                     "type": "send",
                     "notice": f"MoA one-shot queued with preset {preset}; previous model will be restored after this turn.",
-                    "message": arg,
+                    "message": prompt,
                 },
             )
         except Exception as exc:

@@ -1,20 +1,22 @@
 # Photon iMessage platform plugin
 
-This plugin connects Hermes Agent to iMessage (and other Spectrum
-interfaces) through [Photon][photon] — a managed service that handles
-iMessage line allocation, delivery, and abuse-prevention so users don't
-have to run their own Mac relay.
+This plugin connects Hermes Agent to iMessage through [Photon][photon] —
+either through Photon's managed Spectrum service, or through Spectrum local
+mode on a macOS host that can access Messages.app.
 
 The free tier uses Photon's shared iMessage line pool and is the path we
 recommend for everyone who doesn't already pay for a dedicated number.
+Local mode is for users who explicitly want Hermes to use the signed-in
+iMessage account on their own Mac instead of Photon Cloud.
 
 ## Architecture
 
 Like Discord and Slack, Photon is a **persistent-connection** channel — no
 public URL, no webhook, no signing secret. The `spectrum-ts` SDK holds a
-long-lived **gRPC stream** to Photon for both directions. Because the SDK is
-TypeScript-only, Hermes runs it inside a small supervised Node sidecar and
-talks to it over loopback.
+long-lived stream for both directions. In cloud mode that stream connects to
+Photon Spectrum; in local mode it watches the macOS Messages database and sends
+through Messages.app. Because the SDK is TypeScript-only, Hermes runs it inside
+a small supervised Node sidecar and talks to it over loopback.
 
 ```
                          gRPC (spectrum-ts)
@@ -40,6 +42,8 @@ talks to it over loopback.
   `/unreact`), authenticated with a shared `X-Hermes-Sidecar-Token`.
 
 ## First-time setup
+
+### Photon Cloud
 
 ```bash
 # One-shot setup: device login (opens browser) + project + user + sidecar deps
@@ -70,6 +74,24 @@ There is no separate `login` command; like every other Hermes channel,
 onboarding goes through one setup surface. Re-running `setup` reuses an
 existing token/project, so it's safe to run again to finish a partial setup.
 Run `hermes photon status` to see what's configured.
+
+### Local iMessage on macOS
+
+Local mode skips Photon Cloud project credentials and starts Spectrum with
+`imessage.config({ local: true })`. Configure it with ordinary Hermes config
+or env-backed plugin settings:
+
+```bash
+PHOTON_LOCAL=true
+PHOTON_HOME_CHANNEL=+15551234567
+PHOTON_ALLOWED_USERS=+15551234567
+PHOTON_SIDECAR_AUTOSTART=true
+```
+
+The Node runtime that launches the sidecar must have macOS Full Disk Access for
+`~/Library/Messages/chat.db` and Automation permission to control Messages.app.
+If you want those permissions scoped to a dedicated runtime instead of every
+`node` process, set `PHOTON_NODE_BIN` to that signed/bundled Node executable.
 
 ## Credentials
 
@@ -111,6 +133,7 @@ All env vars are documented in `plugin.yaml`. The most important:
 
 | Env var                   | Default                    | Meaning                              |
 |---------------------------|----------------------------|--------------------------------------|
+| `PHOTON_LOCAL`            | false                      | Use local macOS Messages/iMessage instead of Photon Cloud |
 | `PHOTON_PROJECT_ID`       | from .env / auth.json      | Spectrum project id (SDK `projectId`)|
 | `PHOTON_PROJECT_SECRET`   | from .env / auth.json      | Project secret                       |
 | `PHOTON_SIDECAR_PORT`     | 8789                       | Loopback port for the sidecar        |
@@ -155,6 +178,11 @@ All env vars are documented in `plugin.yaml`. The most important:
   reachable across restarts via spectrum-ts' `space.get(id)`.
 - **Message effects, polls** — supported by `spectrum-ts` but not yet
   exposed; the sidecar is the natural place to add them.
+- **Local-mode limitations** — local mode depends on the host Mac's Messages
+  database and AppleScript/Automation permissions. It cannot create group chats
+  from multiple recipients, and several iMessage features that rely on Photon
+  Cloud or dedicated lines may be unavailable; prefer existing DM/group ids or
+  bare E.164 DM targets.
 
 ## Upgrading spectrum-ts
 

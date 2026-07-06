@@ -41,11 +41,14 @@
 // Requires spectrum-ts 8.x — pinned exactly in package.json because the SDK
 // ships breaking majors; see README "Upgrading spectrum-ts".
 //
-// Env vars (required):
-//   PHOTON_PROJECT_ID      (== the project's spectrumProjectId)
-//   PHOTON_PROJECT_SECRET
+// Env vars:
+//   PHOTON_LOCAL           "1" = use local macOS Messages/iMessage instead of
+//                          Photon Cloud. In cloud mode, PHOTON_PROJECT_ID
+//                          and PHOTON_PROJECT_SECRET are required.
+//   PHOTON_PROJECT_ID      (== the project's spectrumProjectId; cloud mode)
+//   PHOTON_PROJECT_SECRET  (cloud mode)
 //   PHOTON_SIDECAR_PORT
-//   PHOTON_SIDECAR_TOKEN
+//   PHOTON_SIDECAR_TOKEN  (required)
 // Optional:
 //   PHOTON_SIDECAR_BIND    (default 127.0.0.1)
 //   PHOTON_SIDECAR_WATCH_STDIN  "1" = exit when stdin hits EOF (set by the
@@ -61,6 +64,9 @@ import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;
+const localMode = /^(1|true|yes|on)$/i.test(
+  (process.env.PHOTON_LOCAL || "").trim()
+);
 const port = parseInt(process.env.PHOTON_SIDECAR_PORT || "8789", 10);
 const bind = process.env.PHOTON_SIDECAR_BIND || "127.0.0.1";
 const sharedToken = process.env.PHOTON_SIDECAR_TOKEN;
@@ -203,10 +209,11 @@ console.log = (...args) => {
   originalConsoleLog(...args);
 };
 
-if (!projectId || !projectSecret || !sharedToken) {
+if (!sharedToken || (!localMode && (!projectId || !projectSecret))) {
   console.error(
-    "photon-sidecar: PHOTON_PROJECT_ID, PHOTON_PROJECT_SECRET and " +
-      "PHOTON_SIDECAR_TOKEN must all be set."
+    "photon-sidecar: PHOTON_SIDECAR_TOKEN is required, and " +
+      "PHOTON_PROJECT_ID/PHOTON_PROJECT_SECRET are required unless " +
+      "PHOTON_LOCAL=true."
   );
   process.exit(2);
 }
@@ -259,9 +266,8 @@ try {
 }
 
 const app = await Spectrum({
-  projectId,
-  projectSecret,
-  providers: [imessage.config()],
+  ...(localMode ? {} : { projectId, projectSecret }),
+  providers: [imessage.config(localMode ? { local: true } : {})],
   options: { flattenGroups: true },
   telemetry,
 });

@@ -17,6 +17,15 @@ def test_sidecar_applies_spectrum_patch_before_importing_sdk() -> None:
     assert index.index("patchSpectrumTs();") < index.index('await import("spectrum-ts")')
 
 
+def test_sidecar_can_start_spectrum_in_local_imessage_mode() -> None:
+    """PHOTON_LOCAL must select local macOS iMessage without project credentials."""
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    assert "const localMode =" in index
+    assert "PHOTON_LOCAL=true" in index
+    assert "imessage.config(localMode ? { local: true } : {})" in index
+    assert "...(localMode ? {} : { projectId, projectSecret })" in index
+
+
 def test_sidecar_healthz_reports_stream_health() -> None:
     """Local process health must include upstream stream health."""
     index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
@@ -158,6 +167,39 @@ def _write_fixture(tmp_path: Path) -> Path:
     chunk = dist / "index.js"
     chunk.write_text(_tabify(_SPECTRUM_IMESSAGE_FIXTURE), encoding="utf-8")
     return chunk
+
+
+def test_spectrum_patch_noops_when_sdk_already_preserves_parts(tmp_path: Path) -> None:
+    """Newer spectrum-ts builds include ordered mixed-part reconstruction upstream."""
+    dist = tmp_path / "node_modules" / "@spectrum-ts" / "imessage" / "dist"
+    dist.mkdir(parents=True)
+    chunk = dist / "index.js"
+    chunk.write_text(
+        _tabify(
+            """
+            const buildUnwrappedContentMessage = async (client, base, message, messageGuidStr) => {
+              const attachments = messageAttachments(message);
+              const parts = toOrderedParts(message.content.text, attachments);
+              return { ...base, id: messageGuidStr, content: asProviderGroup(parts) };
+            };
+            const rebuildFromAppleMessage = async () => {};
+            const toInboundMessages = async () => {};
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(_PATCHER), str(tmp_path)],
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "patch ok" in result.stderr
+    assert "Hermes patch:" not in chunk.read_text(encoding="utf-8")
 
 
 def test_spectrum_patch_rewrites_the_imessage_mapper(tmp_path: Path) -> None:

@@ -169,3 +169,58 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+    assert kwargs["env"]["PHOTON_LOCAL"] == "0"
+    assert kwargs["env"]["PHOTON_PROJECT_ID"] == "test-project-id"
+    assert kwargs["env"]["PHOTON_PROJECT_SECRET"] == "test-project-secret"
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_local_mode_skips_cloud_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Local iMessage mode must not require or synthesize Photon Cloud creds."""
+    monkeypatch.delenv("PHOTON_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PHOTON_PROJECT_SECRET", raising=False)
+    cfg = PlatformConfig(enabled=True, token="", extra={"local": True})
+    adapter = PhotonAdapter(cfg)
+
+    async def _no_reap() -> None:
+        pass
+
+    monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
+    (tmp_path / "node_modules").mkdir()
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+
+    spawned: Dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999
+        stdout = None
+        stdin = None
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def _fake_popen(cmd: List[str], **kwargs: Any) -> _FakeProc:
+        spawned["cmd"] = cmd
+        spawned["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(photon_adapter.subprocess, "Popen", _fake_popen)
+
+    class _HealthyClient(_ProbeClient):
+        async def post(self, *a: Any, **k: Any) -> Any:
+            class _Resp:
+                status_code = 200
+
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _HealthyClient)
+
+    await adapter._start_sidecar()
+
+    env = spawned["kwargs"]["env"]
+    assert env["PHOTON_LOCAL"] == "1"
+    assert "PHOTON_PROJECT_ID" not in env
+    assert "PHOTON_PROJECT_SECRET" not in env

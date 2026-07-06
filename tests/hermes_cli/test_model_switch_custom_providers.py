@@ -186,6 +186,86 @@ def test_list_authenticated_providers_can_probe_active_bare_custom_endpoint(monk
     assert bare_custom["models"] == ["gpt-4o", "gpt-4o-mini"]
 
 
+def test_list_authenticated_providers_bare_custom_endpoint_survives_provider_switch(monkeypatch):
+    """Regression for #59702: the bare model.provider=custom row must not
+    vanish from the picker when the live session is on a different provider.
+
+    The caller only passes the session's current provider slice, so when the
+    session has switched away from the bare custom endpoint, the row has to be
+    recovered from the static config.yaml ``model:`` block instead. Before the
+    fix, the row silently disappeared and the unconfigured-canonical-provider
+    fallback replaced it with a misleading 0-model setup skeleton.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "custom",
+                "base_url": "https://www.ccsub.net/v1",
+            }
+        },
+    )
+    # The config-sourced fallback live-probes the endpoint; keep the test
+    # hermetic and prove the config default model is used when the probe
+    # returns nothing.
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
+
+    providers = list_authenticated_providers(
+        current_provider="xai-oauth",
+        current_base_url="",
+        current_model="grok-4",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    bare_custom = next((p for p in providers if p["slug"] == "custom"), None)
+    assert bare_custom is not None
+    assert bare_custom["name"] == "Custom endpoint"
+    assert bare_custom["is_current"] is False
+    assert bare_custom["is_user_defined"] is True
+    assert bare_custom["models"] == ["gpt-4o"]
+    assert bare_custom["api_url"] == "https://www.ccsub.net/v1"
+
+
+def test_list_authenticated_providers_bare_custom_endpoint_defers_to_matching_named_entry(monkeypatch):
+    """The config-sourced bare row must not duplicate a named custom_providers
+    entry that already covers the same base_url."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "custom",
+                "base_url": "https://www.ccsub.net/v1",
+            }
+        },
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="xai-oauth",
+        current_base_url="",
+        current_model="grok-4",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "my-endpoint",
+                "base_url": "https://www.ccsub.net/v1",
+                "model": "gpt-4o",
+            }
+        ],
+        max_models=50,
+    )
+
+    assert not any(p["slug"] == "custom" for p in providers)
+    assert any(p["slug"] == "custom:my-endpoint" for p in providers)
+
+
 def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch):
     """Picker selections for bare custom endpoints should route to current base_url."""
     monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)

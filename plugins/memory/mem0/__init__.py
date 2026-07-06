@@ -771,6 +771,177 @@ class Mem0MemoryProvider(MemoryProvider):
         except Exception:
             return False
 
+    # -- Prefetch relevance floor (INV-1..7; spec 2026-07-06 prefetch-relevance-floor v0.6) --
+    #
+    # The mem0 /search score is RRF-fused + reranked → saturates ~1.0 for ANY query, so it
+    # CANNOT gate relevance. A live benchmark (§0) ALSO proved client-side cosine can't
+    # separate vague-ack junk (0.32-0.46) from on-topic memories (0.41-0.51) — they overlap.
+    # So the fix is TWO layers:
+    #   GATE A (primary): query-specificity. A pure-acknowledgment turn ("yes please","ok")
+    #     has ZERO content tokens after stripping a filler wordlist → inject NOTHING (there
+    #     is no recall intent for a memory to be relevant to). This is what kills the bug.
+    #   GATE B (weak secondary): a LOW cosine floor (0.25, below the on-topic band) that only
+    #     trims a truly-orthogonal candidate slipping into a substantive query's top-5.
+    # Both fail OPEN to today's behavior on any error; both stamp a greppable outcome.
+
+    _PREFETCH_FLOOR_DEFAULT_COSINE = 0.10    # Gate B fallback (benchmarked 2026-07-06: 0.10=recall .959/prec .983; operational value in mem0.json, D-6)
+    _PREFETCH_FLOOR_COSINE_CLAMP = 0.95      # D-7: an impossible threshold can never fully starve recall
+    _PREFETCH_FLOOR_DEFAULT_MIN_CONTENT = 1  # Gate A fallback; PINNED at 1 (INV-7 — a 1-content-token command must pass)
+    _PREFETCH_FLOOR_MAX_EMBED_TIMEOUT_S = 3.0
+    _PREFETCH_FLOOR_MIN_EMBED_TIMEOUT_S = 1.0
+
+    # Pure acknowledgment / politeness / filler tokens ONLY (INV-7: never a domain verb/noun,
+    # never a ≤2-char filter — "ac","tv","ip" are real content). A message that reduces to
+    # zero non-wordlist tokens carries no recall intent.
+    _PREFETCH_ACK_WORDLIST = frozenset({
+        "yes", "yeah", "yep", "yup", "ya", "yah", "yes'm", "aye",
+        "no", "nope", "nah",
+        "ok", "okay", "k", "kk", "okey", "okie",
+        "sure", "surely", "fine", "alright", "aight", "right", "correct",
+        "please", "pls", "plz", "thanks", "thank", "thx", "ty", "cheers",
+        "you", "u", "do", "it", "that", "this", "the", "a", "an",
+        "go", "ahead", "proceed", "continue", "carry", "on",
+        "sounds", "sound", "good", "great", "perfect", "nice", "cool", "sweet",
+        "awesome", "excellent", "lovely", "brilliant", "wonderful",
+        "done", "got", "gotcha", "roger", "copy", "noted", "understood",
+        "and", "then", "also", "too", "let", "lets", "let's", "us",
+        "to", "for", "of", "is", "are", "am", "be", "can", "could", "would",
+        "should", "will", "i", "my", "me", "we", "our", "your",
+        "bet", "word", "facts", "true", "indeed", "absolutely",
+        "definitely", "certainly", "totally", "exactly", "yea",
+        "hmm", "hm", "mhm", "mmhm", "uh", "um", "oh", "ah", "ha", "haha", "lol",
+        "so", "well", "just", "now", "here", "there", "yet", "still",
+    })
+
+    def _prefetch_floor_cfg(self) -> dict:
+        """Fresh read of the ``prefetch_relevance_floor`` block from mem0.json each call
+        (canary pattern, like _rerank_killed) so enable/threshold flips take effect on the
+        next turn with no gateway restart. Fail-safe: a missing file / read / PARSE error
+        (incl. a mid-write truncated mem0.json) → {} → floor stays ENABLED at the default
+        threshold (the safer behavior), never crashes recall."""
+        try:
+            from hermes_constants import get_hermes_home
+            cfg_path = get_hermes_home() / "mem0.json"
+            blk = json.loads(cfg_path.read_text(encoding="utf-8")).get("prefetch_relevance_floor")
+            return blk if isinstance(blk, dict) else {}
+        except Exception:
+            return {}
+
+    def _prefetch_floor_enabled(self) -> bool:
+        """Default-ON, fail-safe-ON (INV-3): unset/garbage → enabled."""
+        cfg = self._prefetch_floor_cfg()
+        if "enabled" not in cfg:
+            return True
+        return self._truthy(cfg.get("enabled"))
+
+    def _prefetch_min_content_tokens(self) -> int:
+        """Gate A threshold (default 1). A garbage value falls to the default."""
+        cfg = self._prefetch_floor_cfg()
+        try:
+            v = int(cfg.get("min_content_tokens", self._PREFETCH_FLOOR_DEFAULT_MIN_CONTENT))
+            return v if v >= 1 else self._PREFETCH_FLOOR_DEFAULT_MIN_CONTENT
+        except (TypeError, ValueError):
+            return self._PREFETCH_FLOOR_DEFAULT_MIN_CONTENT
+
+    @classmethod
+    def _content_token_count(cls, text) -> int:
+        """Count tokens NOT in the acknowledgment wordlist (Gate A). No min-length filter
+        (INV-7: 'ac','tv','ip' are real content). A non-string / empty / error input → a high
+        count (fail-open: treat the turn as substantive so we never wrongly blank recall on a
+        parsing hiccup or a missing turn string)."""
+        try:
+            if not isinstance(text, str) or not text.strip():
+                return 999  # fail-open: no usable turn string → treat as substantive
+            toks = re.findall(r"[a-z0-9']+", text.lower())
+            return sum(1 for t in toks if t not in cls._PREFETCH_ACK_WORDLIST)
+        except Exception:
+            return 999  # fail-open: treat as substantive, never gate on an error
+
+    @staticmethod
+    def _prefetch_query_hash(text) -> str:
+        """Short non-reversible hash of the gated query for FIELD AUDIT (INV-6/RC pass-4):
+        lets us tell WHICH query was over-gated without logging its content."""
+        try:
+            import hashlib
+            return hashlib.sha256((text or "").encode("utf-8", "ignore")).hexdigest()[:10]
+        except Exception:
+            return "-"
+
+    def _prefetch_specificity_gated(self, query) -> bool:
+        """GATE A (INV-7): True → this turn is pure acknowledgment/filler, inject nothing.
+        Wrapped fail-open: any error → NOT gated (treat as substantive)."""
+        try:
+            if not self._prefetch_floor_enabled():
+                return False
+            return self._content_token_count(query) < self._prefetch_min_content_tokens()
+        except Exception:
+            return False
+
+    def _prefetch_embed_timeout(self, budget_s: float) -> float:
+        """INV-5/RC-2: give the floor embed at most min(3s, real time left before the join
+        ceiling), floored at 1s. Below the floor, the caller skips the embed and fails open."""
+        try:
+            b = float(budget_s)
+        except (TypeError, ValueError):
+            b = self._PREFETCH_FLOOR_MAX_EMBED_TIMEOUT_S
+        return max(self._PREFETCH_FLOOR_MIN_EMBED_TIMEOUT_S,
+                   min(self._PREFETCH_FLOOR_MAX_EMBED_TIMEOUT_S, b))
+
+    def _prefetch_floor_cosine(self) -> float:
+        """Gate B threshold, clamped to [0, 0.95] with warn-on-out-of-range (D-7). A garbage
+        or out-of-range value never fully starves recall."""
+        cfg = self._prefetch_floor_cfg()
+        raw = cfg.get("min_cosine", self._PREFETCH_FLOOR_DEFAULT_COSINE)
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            logger.warning("mem0.prefetch_floor min_cosine=%r not a number; using default %.2f",
+                           raw, self._PREFETCH_FLOOR_DEFAULT_COSINE)
+            return self._PREFETCH_FLOOR_DEFAULT_COSINE
+        clamped = max(0.0, min(self._PREFETCH_FLOOR_COSINE_CLAMP, val))
+        if clamped != val:
+            logger.warning("mem0.prefetch_floor min_cosine=%s out of range; clamped to %.2f",
+                           val, clamped)
+        return clamped
+
+    def _apply_gate_b_cosine(self, query, results, *, budget_s: float):
+        """GATE B (weak secondary): drop candidates whose real cosine-to-query is below the
+        low floor (default 0.25). Returns (kept_results, outcome) where outcome ∈ {disabled,
+        ran_kept_N_of_M, failed_open}. ALWAYS fails OPEN (returns the full ``results``) on any
+        path that can't produce a trustworthy cosine — only ever REMOVES a proven-low-cosine
+        candidate, never loses one to its own infra failure (INV-2)."""
+        try:
+            if not self._prefetch_floor_enabled():
+                return results, "disabled"
+            # Exact-token queries (IP/port/email) BYPASS Gate B (D-5): cosine is
+            # known-unreliable for that class, so flooring risks a false-drop.
+            if self._is_exact_token_query(query):
+                return results, "disabled"
+            texts = [r.get("memory", "") for r in results]
+            if not any(texts):
+                return results, "disabled"
+            # Below the min timeout there is no time to embed before the join ceiling —
+            # fail open fast rather than issue a doomed call (INV-5).
+            if budget_s is not None and float(budget_s) < self._PREFETCH_FLOOR_MIN_EMBED_TIMEOUT_S:
+                logger.info("mem0.prefetch_floor outcome=failed_open reason=no_budget of=%d", len(results))
+                return results, "failed_open"
+            budget = self._prefetch_embed_timeout(budget_s)
+            vecs = self._dedup_embed([query] + texts, timeout=budget)
+            if not vecs or len(vecs) != len(texts) + 1:
+                logger.info("mem0.prefetch_floor outcome=failed_open reason=embed of=%d", len(results))
+                return results, "failed_open"
+            floor = self._prefetch_floor_cosine()
+            qv = vecs[0]
+            kept = [r for r, cv in zip(results, vecs[1:]) if self._dedup_cos(qv, cv) >= floor]
+            logger.info("mem0.prefetch_floor outcome=ran_kept_%d_of_%d floor=%.2f",
+                        len(kept), len(results), floor)
+            return kept, f"ran_kept_{len(kept)}_of_{len(results)}"
+        except Exception as e:
+            # Any unforeseen error → fail open (INV-2), never break recall.
+            logger.info("mem0.prefetch_floor outcome=failed_open reason=exc:%s of=%d",
+                        type(e).__name__, len(results) if results else 0)
+            return results, "failed_open"
+
 
 
     @staticmethod
@@ -1000,12 +1171,17 @@ class Mem0MemoryProvider(MemoryProvider):
         except (TypeError, ValueError, AttributeError):
             return 5
 
-    def _dedup_embed(self, texts):
+    def _dedup_embed(self, texts, *, timeout: float = 15):
         """Embed texts with the SAME model the store uses (text-embedding-3-small, 1536d).
 
         Returns a list of vectors aligned to ``texts``, or None on any failure (the
         caller fails-open to WRITE). Uses the OpenAI embeddings REST API directly with
         the key already in the runtime env — no new dependency, no SDK.
+
+        ``timeout`` (keyword-only, default 15s = legacy dedup behavior) bounds the socket
+        read. The per-turn prefetch relevance floor passes a SMALLER budget-derived value
+        so a slow embed can never blow the prefetch join ceiling (INV-5). Dedup callers
+        keep the 15s default → byte-identical to before this widening.
         """
         import urllib.request as _u
         key = os.environ.get("OPENAI_API_KEY", "") or (self._config.get("openai_api_key", "") if self._config else "")
@@ -1016,7 +1192,7 @@ class Mem0MemoryProvider(MemoryProvider):
         req = _u.Request("https://api.openai.com/v1/embeddings", data=body, method="POST",
                          headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
         try:
-            with _u.urlopen(req, timeout=15) as resp:
+            with _u.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             return [d["embedding"] for d in data.get("data", [])]
         except Exception:
@@ -1149,36 +1325,67 @@ class Mem0MemoryProvider(MemoryProvider):
         def _run_once(run_query: str, epoch: int):
             t_start = time.monotonic()
             try:
-                client = self._get_client()
-                # INV-8(ii) PREFETCH profile (the every-turn hot path). Ace's call
-                # (2026-06-24): rerank RIDES prefetch too (the cross-encoder's +40
-                # semantic / +11 temporal win is worth it), bounded by the prefetch
-                # join ceiling (now 10s, config prefetch_join_timeout_s). Two gates keep
-                # it honest: (1) exact-token queries skip rerank — the cross-encoder
-                # REGRESSES IP/email/port that RRF already nails; (2) a runtime kill-flag
-                # (mem0.json retrieval_kill.rerank) the correctness canary can flip to
-                # auto-revert without a redeploy (INV-8 control surface). An EXPLICIT flag
-                # — one of exactly two enumerated call-sites that send retrieval flags.
-                _pf_rerank = (
-                    self._truthy(self._rerank)
-                    and not self._is_exact_token_query(run_query)
-                    and not self._rerank_killed()
-                )
-                results = self._drop_forgotten(self._unwrap_results(client.search(
-                    query=run_query,
-                    filters=self._read_filters(),
-                    rerank=_pf_rerank,
-                    keyword_search=self._keyword_search,
-                    top_k=5,
-                )))
-                # INV-3a: commit the mem0 block FIRST — it is never dropped because the
-                # QMD leg is slow. QMD is strictly additive and runs after.
-                if results:
-                    lines = [r.get("memory", "") for r in results if r.get("memory")]
+                # GATE A (specificity, PRIMARY — spec v0.6): a pure-acknowledgment turn
+                # ("yes please","ok do it") carries no recall intent, so inject NOTHING and
+                # SKIP the /search round-trip entirely. This is the actual fix for the
+                # "yes please → random memory" bug (a live benchmark proved cosine alone
+                # can't separate the junk from on-topic; query specificity can). Fail-open:
+                # _prefetch_specificity_gated swallows any error → not gated.
+                if self._prefetch_specificity_gated(run_query):
+                    logger.info("mem0.prefetch_floor outcome=gated_specificity n_content=0 q=%s",
+                                self._prefetch_query_hash(run_query))
                     with self._prefetch_lock:
                         if epoch == self._prefetch_epoch:
-                            self._prefetch_result = "\n".join(f"- {l}" for l in lines)
-                self._record_success()
+                            self._prefetch_result = ""   # inject nothing (D-4)
+                    self._record_success()
+                else:
+                    client = self._get_client()
+                    # INV-8(ii) PREFETCH profile (the every-turn hot path). Ace's call
+                    # (2026-06-24): rerank RIDES prefetch too (the cross-encoder's +40
+                    # semantic / +11 temporal win is worth it), bounded by the prefetch
+                    # join ceiling (now 10s, config prefetch_join_timeout_s). Two gates keep
+                    # it honest: (1) exact-token queries skip rerank — the cross-encoder
+                    # REGRESSES IP/email/port that RRF already nails; (2) a runtime kill-flag
+                    # (mem0.json retrieval_kill.rerank) the correctness canary can flip to
+                    # auto-revert without a redeploy (INV-8 control surface). An EXPLICIT flag
+                    # — one of exactly two enumerated call-sites that send retrieval flags.
+                    _pf_rerank = (
+                        self._truthy(self._rerank)
+                        and not self._is_exact_token_query(run_query)
+                        and not self._rerank_killed()
+                    )
+                    results = self._drop_forgotten(self._unwrap_results(client.search(
+                        query=run_query,
+                        filters=self._read_filters(),
+                        rerank=_pf_rerank,
+                        keyword_search=self._keyword_search,
+                        top_k=5,
+                    )))
+                    # GATE B (cosine, weak SECONDARY): a substantive query passed Gate A, so
+                    # trim any truly-orthogonal candidate (cos < low floor) that slipped into
+                    # the top-5. Budget = time left before the 10s join ceiling (−0.5s margin);
+                    # a slow/failed embed fails OPEN to the un-floored results. Empty→inject
+                    # nothing (D-4).
+                    if results:
+                        _join_to = (self._config.get("prefetch_join_timeout_s", 10) if self._config else 10) or 10
+                        _floor_budget = float(_join_to) - (time.monotonic() - t_start) - 0.5
+                        results, _floor_outcome = self._apply_gate_b_cosine(
+                            run_query, results, budget_s=_floor_budget
+                        )
+                    # INV-3a: commit the mem0 block FIRST — it is never dropped because the
+                    # QMD leg is slow. QMD is strictly additive and runs after.
+                    # Gate B may drain ALL candidates (empty results); make "inject nothing"
+                    # EXPLICIT like Gate A does — never rely on _prefetch_result being pre-cleared
+                    # by a preceding prefetch() (a double queue_prefetch could otherwise leave a
+                    # prior query's stale block; Greptile #212 P2).
+                    with self._prefetch_lock:
+                        if epoch == self._prefetch_epoch:
+                            if results:
+                                lines = [r.get("memory", "") for r in results if r.get("memory")]
+                                self._prefetch_result = "\n".join(f"- {l}" for l in lines)
+                            else:
+                                self._prefetch_result = ""
+                    self._record_success()
             except Exception as e:
                 self._record_failure()
                 logger.debug("Mem0 prefetch failed: %s", e)

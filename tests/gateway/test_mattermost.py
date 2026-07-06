@@ -1300,3 +1300,113 @@ class TestLiveThinkingBubbleConcurrency:
         assert post_ids[0] in fake.sent
         # No edit ever targeted a None / orphan id.
         assert all(mid is not None for mid, _ in fake.edited)
+
+
+class TestLiveThinkingFooterEditAppend:
+    """Runtime footer must edit-append onto a replaced live-thinking bubble
+    instead of firing as its own standalone trailing post — mirrors the
+    already_sent trailing-footer branch in gateway/run.py."""
+
+    @staticmethod
+    async def _deliver_trailing_footer(footer_line, agent_result, adapter, chat_id="chan_1"):
+        """Mirrors the already_sent trailing-footer branch in gateway/run.py:
+        edit-append the footer onto the bubble post that was just replaced
+        with the final answer when known; otherwise (or if that edit fails)
+        fall back to the standalone trailing send so the footer is never lost.
+        """
+        lt_final_post_id = agent_result.get("live_thinking_final_post_id")
+        footer_edited = False
+        if lt_final_post_id:
+            try:
+                lt_final_content = agent_result.get("live_thinking_final_content") or ""
+                res = await adapter.edit_message(
+                    chat_id, lt_final_post_id, f"{lt_final_content}\n\n{footer_line}", finalize=True,
+                )
+                footer_edited = bool(getattr(res, "success", False))
+            except Exception:
+                footer_edited = False
+        if not footer_edited:
+            await adapter.send(chat_id, footer_line)
+        return footer_edited
+
+    class _FakeAdapter:
+        """edit_message()/send() outcomes are configurable per test."""
+        def __init__(self, edit_succeeds=True, raise_on_edit=False):
+            self.sent = []
+            self.edited = []
+            self._edit_succeeds = edit_succeeds
+            self._raise_on_edit = raise_on_edit
+
+        async def edit_message(self, chat_id, message_id, content, **kwargs):
+            if self._raise_on_edit:
+                raise RuntimeError("simulated edit failure")
+            self.edited.append((message_id, content))
+            return SimpleNamespace(success=self._edit_succeeds, message_id=message_id)
+
+        async def send(self, chat_id, text, **kwargs):
+            self.sent.append(text)
+            return SimpleNamespace(success=True, message_id="footer_post")
+
+    @pytest.mark.asyncio
+    async def test_footer_edit_appended_to_bubble_no_trailing_send(self):
+        """Bubble replace + footer enabled: footer is edit-appended onto the
+        bubble post, with zero separate footer send."""
+        adapter = self._FakeAdapter(edit_succeeds=True)
+        agent_result = {
+            "already_sent": True,
+            "live_thinking_final_post_id": "bubble_1",
+            "live_thinking_final_content": "the final answer",
+        }
+
+        edited = await self._deliver_trailing_footer("model: x | 123 tok", agent_result, adapter)
+
+        assert edited is True
+        assert adapter.edited == [("bubble_1", "the final answer\n\nmodel: x | 123 tok")]
+        assert adapter.sent == []
+
+    @pytest.mark.asyncio
+    async def test_footer_edit_fails_falls_back_to_trailing_send(self):
+        """Edit-append failing (success=False) must not swallow the footer:
+        the trailing-send fallback fires and the footer is still delivered."""
+        adapter = self._FakeAdapter(edit_succeeds=False)
+        agent_result = {
+            "already_sent": True,
+            "live_thinking_final_post_id": "bubble_1",
+            "live_thinking_final_content": "the final answer",
+        }
+
+        edited = await self._deliver_trailing_footer("model: x | 123 tok", agent_result, adapter)
+
+        assert edited is False
+        assert adapter.edited == [("bubble_1", "the final answer\n\nmodel: x | 123 tok")]
+        assert adapter.sent == ["model: x | 123 tok"]
+
+    @pytest.mark.asyncio
+    async def test_footer_edit_exception_falls_back_to_trailing_send(self):
+        """edit_message raising (e.g. transient network error) must also fall
+        back to the trailing send rather than losing the footer entirely."""
+        adapter = self._FakeAdapter(raise_on_edit=True)
+        agent_result = {
+            "already_sent": True,
+            "live_thinking_final_post_id": "bubble_1",
+            "live_thinking_final_content": "the final answer",
+        }
+
+        edited = await self._deliver_trailing_footer("model: x | 123 tok", agent_result, adapter)
+
+        assert edited is False
+        assert adapter.edited == []
+        assert adapter.sent == ["model: x | 123 tok"]
+
+    @pytest.mark.asyncio
+    async def test_no_bubble_pending_footer_sent_inline(self):
+        """No live-thinking bubble tracked (true streaming, already_sent via
+        the stream path) — unchanged trailing-send behavior, regression guard."""
+        adapter = self._FakeAdapter()
+        agent_result = {"already_sent": True}  # no live_thinking_final_post_id
+
+        edited = await self._deliver_trailing_footer("model: x | 123 tok", agent_result, adapter)
+
+        assert edited is False
+        assert adapter.edited == []
+        assert adapter.sent == ["model: x | 123 tok"]

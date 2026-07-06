@@ -11804,19 +11804,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
-                # Send it now as a small trailing message so Telegram/Discord/etc.
-                # still surface the runtime metadata on the final reply.
+                # If a live-thinking bubble was just replaced with the final
+                # answer, edit-append the footer onto that same post instead of
+                # sending a separate trailing message — a standalone footer post
+                # right after the bubble reads as a stray, disconnected message.
+                # Fall back to the trailing send when there's no bubble post to
+                # edit, or when the edit itself fails, so the footer is never lost.
                 if _footer_line:
-                    try:
-                        _foot_adapter = self._adapter_for_source(source)
-                        if _foot_adapter:
-                            await _foot_adapter.send(
-                                source.chat_id,
-                                _footer_line,
-                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
-                            )
-                    except Exception as _e:
-                        logger.debug("trailing footer send failed: %s", _e)
+                    _lt_final_post_id = agent_result.get("live_thinking_final_post_id")
+                    _footer_edited = False
+                    if _lt_final_post_id:
+                        try:
+                            _foot_adapter = self._adapter_for_source(source)
+                            if _foot_adapter:
+                                _lt_final_content = agent_result.get("live_thinking_final_content") or ""
+                                _lt_footer_res = await _foot_adapter.edit_message(
+                                    source.chat_id,
+                                    _lt_final_post_id,
+                                    f"{_lt_final_content}\n\n{_footer_line}",
+                                    finalize=True,
+                                )
+                                _footer_edited = bool(getattr(_lt_footer_res, "success", False))
+                        except Exception as _lt_foot_err:
+                            logger.debug("live_thinking footer edit-append failed: %s", _lt_foot_err)
+                    if not _footer_edited:
+                        try:
+                            _foot_adapter = self._adapter_for_source(source)
+                            if _foot_adapter:
+                                await _foot_adapter.send(
+                                    source.chat_id,
+                                    _footer_line,
+                                    metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                )
+                        except Exception as _e:
+                            logger.debug("trailing footer send failed: %s", _e)
                 return None
 
             return response
@@ -19726,6 +19747,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await asyncio.sleep(0.5 * (2 ** _lt_attempt))  # 0.5s, 1s
                 if _lt_replaced:
                     response["already_sent"] = True
+                    response["live_thinking_final_post_id"] = _lt_bubble_id
+                    response["live_thinking_final_content"] = _final
                     # Clear so the post-delivery delete callback is a no-op.
                     _live_thinking_post_ids.clear()
                     logger.info(

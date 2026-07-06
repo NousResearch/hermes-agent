@@ -2554,7 +2554,51 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     return normalized
 
 
-def _get_provider_chain() -> List[tuple]:
+def _config_bool(value: Any, default: bool = False) -> bool:
+    """Parse a config boolean without treating arbitrary strings as true."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
+def _allow_api_key_auto_fallback(task: Optional[str] = None) -> bool:
+    """Whether implicit ``auto`` auxiliary discovery may use API-key providers.
+
+    API-key providers can incur direct provider billing.  ``auto`` should use
+    the main model plus explicit fallback policy by default; falling through to
+    every configured direct API-key provider is opt-in via either:
+
+    * ``auxiliary.allow_api_key_fallback: true``
+    * ``auxiliary.<task>.allow_api_key_fallback: true``
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    aux = cfg.get("auxiliary", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(aux, dict):
+        return False
+
+    if task:
+        task_config = aux.get(task, {})
+        if isinstance(task_config, dict) and "allow_api_key_fallback" in task_config:
+            return _config_bool(task_config.get("allow_api_key_fallback"), False)
+
+    return _config_bool(aux.get("allow_api_key_fallback"), False)
+
+
+def _get_provider_chain(allow_api_key_fallback: bool = True) -> List[tuple]:
     """Return the ordered provider detection chain.
 
     Built at call time (not module level) so that test patches
@@ -2566,13 +2610,20 @@ def _get_provider_chain() -> List[tuple]:
     fails more often than not.  Codex is used only when the user's main
     provider *is* openai-codex (see Step 1 of ``_resolve_auto``) or when
     a caller explicitly requests it with a model.
+
+    ``api-key`` is also omitted from implicit auto fallback unless explicitly
+    enabled.  Direct API-key providers can incur provider billing, so merely
+    having e.g. GEMINI_API_KEY in the environment must not silently route
+    compression or other auxiliary jobs to that paid backend.
     """
-    return [
+    chain = [
         ("openrouter", _try_openrouter),
         ("nous", _try_nous),
         ("local/custom", _try_custom_endpoint),
-        ("api-key", _resolve_api_key_provider),
     ]
+    if allow_api_key_fallback:
+        chain.append(("api-key", _resolve_api_key_provider))
+    return chain
 
 
 # ── Auxiliary "recently 402'd" unhealthy-provider cache ────────────────────
@@ -3430,8 +3481,9 @@ def _try_payment_fallback(
                        "custom": "local/custom", "local/custom": "local/custom"}
     skip_chain_labels = {_alias_to_label.get(s, s) for s in skip_labels}
 
+    allow_api_key_fallback = _allow_api_key_auto_fallback(task)
     tried = []
-    for label, try_fn in _get_provider_chain():
+    for label, try_fn in _get_provider_chain(allow_api_key_fallback=allow_api_key_fallback):
         if label in skip_chain_labels:
             continue
         if _is_provider_unhealthy(label):
@@ -3823,8 +3875,11 @@ def _resolve_auto(
          on DeepSeek/ZAI/Alibaba get theirs; etc.  Running aux tasks on the
          user's picked model keeps behavior predictable — no surprise
          switches to a cheap fallback model for side tasks.
-      2. OpenRouter → Nous → custom → Codex → API-key providers (fallback
-         chain, only used when the main provider has no working client).
+      2. Explicit fallback policy (task fallback_chain, then top-level
+         fallback_providers/fallback_model) when configured.
+      3. Built-in OpenRouter → Nous → custom chain.
+      4. Direct API-key providers only when allow_api_key_fallback is enabled
+         globally or for the task.
     """
     global auxiliary_is_nous, _stale_base_url_warned
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
@@ -3957,8 +4012,9 @@ def _resolve_auto(
         return fb_client, fb_model
 
     # ── Step 3: aggregator / fallback chain ──────────────────────────────
+    allow_api_key_fallback = _allow_api_key_auto_fallback(task)
     tried = []
-    for label, try_fn in _get_provider_chain():
+    for label, try_fn in _get_provider_chain(allow_api_key_fallback=allow_api_key_fallback):
         if _is_provider_unhealthy(label):
             _log_skip_unhealthy(label)
             tried.append(f"{label} (unhealthy)")

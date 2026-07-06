@@ -137,7 +137,19 @@ auxiliary:
     # ... other fields unchanged
 ```
 
-`provider: auto` with `model: ''` tells Hermes to use the main model for that task, while still honoring fallback policy if the main route cannot serve the auxiliary call.
+`provider: auto` with `model: ''` tells Hermes to use the main model for that task, while still honoring explicit fallback policy if the main route cannot serve the auxiliary call. The implicit built-in chain tries OpenRouter/Nous/custom endpoints; it does **not** fall through to direct API-key providers such as Gemini just because a key exists.
+
+If you intentionally want `auto` to use paid direct provider keys as a last resort, opt in explicitly:
+
+```yaml
+auxiliary:
+  compression:
+    provider: auto
+    model: ''
+    allow_api_key_fallback: true
+```
+
+You can also set `auxiliary.allow_api_key_fallback: true` globally, but task-scoped opt-in is safer for high-volume jobs like compression.
 
 Optional task-specific fallback chains live under the same auxiliary task:
 

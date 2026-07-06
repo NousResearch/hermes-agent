@@ -1458,10 +1458,13 @@ DEFAULT_CONFIG = {
 
     # Auxiliary model config — provider:model for each side task.
     # Format: provider is the provider name, model is the model slug.
-    # "auto" for provider = auto-detect best available provider.
+    # "auto" for provider = use the main model first, then explicit fallback
+    # policy (task fallback_chain / top-level fallback_providers) and the
+    # built-in OpenRouter/Nous/custom discovery chain.
     # Empty model = use provider's default auxiliary model.
-    # All tasks fall back to openrouter:google/gemini-3-flash-preview if
-    # the configured provider is unavailable.
+    # Direct API-key providers (Gemini, DeepSeek, MiniMax, etc.) are NOT used
+    # by implicit auto fallback unless auxiliary.allow_api_key_fallback or the
+    # task-specific auxiliary.<task>.allow_api_key_fallback is set true.
     #
     # extra_body: forwarded verbatim as request body fields on every aux call
     # for that task. Use this to set provider-specific knobs (independent of
@@ -1490,6 +1493,13 @@ DEFAULT_CONFIG = {
         # not a meaningful recovery, so an unretried blip silently loses the
         # call.
         "transient_retries": 2,
+        # Safety gate for implicit ``provider: auto`` fallback.  When false,
+        # the built-in auto chain does not fall through to direct API-key
+        # providers just because a key exists in the environment/auth pool.
+        # Explicit auxiliary.<task>.provider and fallback_chain entries still
+        # work normally.  Set this true globally or per task only if you want
+        # auto side-jobs to use paid direct provider keys as a last resort.
+        "allow_api_key_fallback": False,
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"

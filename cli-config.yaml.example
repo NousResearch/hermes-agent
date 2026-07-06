@@ -468,22 +468,27 @@ prompt_caching:
 # local endpoint for compression (just needs text).
 #
 # Provider options:
-#   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
+#   "auto"       - Main model first, then explicit fallback policy, then the
+#                  built-in OpenRouter → Nous Portal → custom endpoint chain.
+#                  Direct API-key providers (Gemini, DeepSeek, MiniMax, etc.)
+#                  are skipped unless allow_api_key_fallback is explicitly true.
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
 #   "nous"       - Force Nous Portal (requires: hermes auth add nous)
-#   "gemini"      - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
+#   "gemini"     - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
 #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY)
-#   "codex"       - Force Codex OAuth (requires: hermes model → Codex).
+#   "codex"      - Force Codex OAuth (requires: hermes model → Codex).
 #                  Uses gpt-5.3-codex which supports vision.
-#   "main"       - Use your custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY).
-#                  Works with OpenAI API, local models, or any OpenAI-compatible
-#                  endpoint.  Also falls back to Codex OAuth and API-key providers.
+#   "main"       - Use your main configured model/provider for auxiliary work.
 #
-# Model: leave empty to use the provider's default.  When empty, OpenRouter
-# uses "google/gemini-3-flash-preview" and Nous uses "gemini-3-flash".
-# Other providers pick a sensible default automatically.
+# Model: leave empty to use the provider's default. Other providers pick a
+# sensible default automatically.
 #
 # auxiliary:
+#   # Safety gate for implicit provider:"auto" fallback. Leave false unless
+#   # you intentionally want auto side-jobs to spend direct API-key provider
+#   # credentials as a last resort. Explicit provider/fallback_chain entries
+#   # still work normally.
+#   allow_api_key_fallback: false
 #   # Image analysis: vision_analyze tool + browser screenshots
 #   vision:
 #     provider: "auto"

@@ -748,6 +748,7 @@ auxiliary:
   compression:
     model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-3-flash-preview" for cheaper/faster compression.
     provider: "auto"                                # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
+    allow_api_key_fallback: false                   # Opt in before auto uses paid direct API-key providers such as Gemini.
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
 ```
 
@@ -771,7 +772,7 @@ compression:
   enabled: true
   threshold: 0.50
 ```
-Uses your main provider and main model. Override per-task (e.g. `auxiliary.compression.provider: openrouter` + `model: google/gemini-2.5-flash`) if you want compression on a cheaper model than your main chat model.
+Uses your main provider and main model. Override per-task (e.g. `auxiliary.compression.provider: openrouter` + `model: google/gemini-2.5-flash`) if you want compression on a cheaper model than your main chat model. `auto` does not silently fall through to direct API-key providers such as Gemini unless you set `allow_api_key_fallback: true` globally or on the task.
 
 **Force a specific provider** (OAuth or API-key based):
 ```yaml
@@ -795,7 +796,7 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 
 | `auxiliary.compression.provider` | `auxiliary.compression.base_url` | Result |
 |---------------------|---------------------|--------|
-| `auto` (default) | not set | Auto-detect best available provider |
+| `auto` (default) | not set | Use main provider/model, then explicit fallback policy, then built-in OpenRouter/Nous/custom chain |
 | `nous` / `openrouter` / etc. | not set | Force that provider, use its auth |
 | any | set | Use the custom endpoint directly (provider ignored) |
 

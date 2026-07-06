@@ -963,6 +963,131 @@ class HonchoMemoryProvider(MemoryProvider):
         cap_idx = self._LEVEL_ORDER.index(self._reasoning_level_cap)
         return self._LEVEL_ORDER[min(base_idx + bump, cap_idx)]
 
+    # ----- Issue #59470: complexity-aware tier selection for honcho_reasoning tool -----
+
+    # Stopwords stripped before counting distinct noun-phrase tokens. Kept
+    # intentionally small so this stays a deterministic heuristic and never
+    # tries to parse linguistic structure.
+    _COMPLEXITY_STOPWORDS = frozenset({
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "do", "for",
+        "from", "has", "have", "he", "her", "his", "i", "if", "in", "is",
+        "it", "its", "me", "my", "no", "not", "of", "on", "or", "our", "she",
+        "so", "than", "that", "the", "their", "them", "they", "this", "to",
+        "us", "was", "we", "were", "what", "when", "where", "which", "who",
+        "why", "will", "with", "you", "your",
+    })
+
+    # Tier thresholds for complexity-driven selection.
+    # simple   -> minimal (single factual lookup)
+    # moderate -> medium (multi-aspect synthesis)
+    # complex  -> high (multi-topic, multi-faceted)
+    _TIER_SIMPLE = "minimal"
+    _TIER_MODERATE = "medium"
+    _TIER_COMPLEX = "high"
+
+    @classmethod
+    def _count_distinct_topics(cls, text: str) -> int:
+        """Count distinct content tokens (rough noun-phrase proxy).
+
+        Returns the number of unique non-stopword tokens of length >=4.
+        Used as a cheap stand-in for "distinct topics/entities" without
+        needing an NLP parser.
+        """
+        if not text:
+            return 0
+        seen: set[str] = set()
+        for tok in re.findall(r"[A-Za-z][A-Za-z0-9'-]{3,}", text.lower()):
+            if tok in cls._COMPLEXITY_STOPWORDS:
+                continue
+            seen.add(tok)
+        return len(seen)
+
+    @classmethod
+    def _classify_query_complexity(cls, query: str) -> str:
+        """Classify a query's complexity into one of: simple / moderate / complex.
+
+        Heuristic (deterministic, no LLM):
+          - simple:   single sentence AND <=5 distinct content tokens.
+          - complex:  >=4 sentences OR >=10 distinct tokens OR
+                      multi-clause AND >=7 distinct tokens.
+          - moderate: any other multi-sentence / multi-clause prompt that
+                      still falls below the complex bar.
+        """
+        if not query or not query.strip():
+            return "simple"
+
+        text = query.strip()
+
+        # Sentence count via terminal punctuation. Requires whitespace or end
+        # after the punctuation so "v2.5" doesn't get split as a sentence.
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        sentence_count = len(sentences)
+
+        # Clause-ish separator count. Treats ; and , as soft clause markers
+        # inside a single sentence; stacked clauses aren't double counted
+        # because we only count the separator chars.
+        separator_count = text.count(";") + text.count(",")
+
+        # Numbered-list style multi-question prompts ("1.", "2)", "1)") etc.
+        numbered_list = len(re.findall(r"(?:^|\s)\d+[.)]\s", text))
+
+        distinct_topics = cls._count_distinct_topics(text)
+
+        multi_clause = sentence_count >= 2 or separator_count >= 2 or numbered_list >= 2
+
+        if distinct_topics >= 10 or sentence_count >= 4 or (multi_clause and distinct_topics >= 7):
+            return "complex"
+        if multi_clause or distinct_topics >= 6:
+            return "moderate"
+        return "simple"
+
+    @classmethod
+    def _select_reasoning_level(
+        cls,
+        query: str,
+        explicit: str | None,
+        *,
+        default: str = "low",
+        cap: str = "high",
+    ) -> str:
+        """Pick the reasoning tier to send to Honcho.
+
+        Honors an explicit user-provided tier when it's in ``_LEVEL_ORDER``,
+        but applies a complexity floor so a caller that picks ``minimal`` for
+        a multi-faceted prompt is nudged upward to ``medium`` or ``high``
+        (fixes #59470: a "minimal" pick on a multi-fact query used to be
+        forwarded unchanged and exhausted Honcho's 250-token budget mid
+        chain-of-thought). The bump respects ``cap`` (default ``high``).
+        """
+        if cap not in cls._LEVEL_ORDER:
+            cap = "high"
+        cap_idx = cls._LEVEL_ORDER.index(cap)
+        if default not in cls._LEVEL_ORDER:
+            default = "low"
+
+        complexity = cls._classify_query_complexity(query)
+        if complexity == "complex":
+            target = cls._TIER_COMPLEX
+        elif complexity == "moderate":
+            target = cls._TIER_MODERATE
+        else:
+            target = cls._TIER_SIMPLE
+
+        target_idx = cls._LEVEL_ORDER.index(target)
+        target_idx = min(target_idx, cap_idx)
+
+        # Explicit user override: honor unless it would fall below the
+        # complexity floor. Still clamped to the cap.
+        if explicit and explicit in cls._LEVEL_ORDER:
+            explicit_idx = cls._LEVEL_ORDER.index(explicit)
+            chosen_idx = max(explicit_idx, target_idx)
+            chosen_idx = min(chosen_idx, cap_idx)
+            return cls._LEVEL_ORDER[chosen_idx]
+
+        # No explicit override — complexity heuristic picks the floor.
+        chosen_idx = min(target_idx, cap_idx)
+        return cls._LEVEL_ORDER[chosen_idx]
+
     def _resolve_pass_level(self, pass_idx: int, query: str = "") -> str:
         """Resolve reasoning level for a given pass index.
 
@@ -1354,7 +1479,17 @@ class HonchoMemoryProvider(MemoryProvider):
                 if not query:
                     return tool_error("Missing required parameter: query")
                 peer = args.get("peer", "user")
-                reasoning_level = args.get("reasoning_level")
+                explicit_level = args.get("reasoning_level")
+                # Issue #59470: complexity-aware tier selection. A caller that
+                # passes "minimal" for a multi-faceted prompt gets nudged up
+                # to medium/high so Honcho's 250-token cap can't truncate the
+                # answer mid chain-of-thought.
+                reasoning_level = self._select_reasoning_level(
+                    query,
+                    explicit_level,
+                    default=(self._config.dialectic_reasoning_level if self._config else "low"),
+                    cap=(self._config.reasoning_level_cap if self._config else "high"),
+                )
                 result = self._manager.dialectic_query(
                     self._session_key, query,
                     reasoning_level=reasoning_level,

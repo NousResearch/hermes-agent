@@ -1250,12 +1250,25 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // Only an explicit false (tirith warning) drops the permanent-allow option.
         const allowPermanent = ev.payload.allow_permanent !== false
 
+        const allowlistKey =
+          typeof ev.payload.allowlist_key === 'string' && ev.payload.allowlist_key
+            ? ev.payload.allowlist_key
+            : undefined
+
+        const patternKey =
+          typeof ev.payload.pattern_key === 'string' && ev.payload.pattern_key ? ev.payload.pattern_key : undefined
+
+        const ruleKey = typeof ev.payload.rule_key === 'string' && ev.payload.rule_key ? ev.payload.rule_key : undefined
+
         patchOverlayState({
           approval: {
             allowPermanent,
+            allowlistKey,
             choices: ev.payload.choices,
             command: String(ev.payload.command ?? ''),
             description,
+            patternKey,
+            ruleKey,
             smartDenied: ev.payload.smart_denied === true
           }
         })

@@ -73,10 +73,13 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
 export interface ApprovalRequest extends KeyedPrompt {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
+  allowlistKey?: string
   choices?: string[]
   command: string
   description: string
   requestId?: string
+  patternKey?: string
+  ruleKey?: string
   smartDenied?: boolean
 }
 
@@ -86,10 +89,13 @@ interface ApprovalGateway {
 
 interface PendingApprovalPayload {
   allow_permanent?: boolean
+  allowlist_key?: unknown
   choices?: unknown
   command?: unknown
   description?: unknown
+  pattern_key?: unknown
   request_id?: unknown
+  rule_key?: unknown
   smart_denied?: boolean
 }
 
@@ -146,10 +152,14 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
 
   await receiveApprovalRequest(gateway, {
     allowPermanent: pending.allow_permanent !== false,
+    allowlistKey:
+      typeof pending.allowlist_key === 'string' && pending.allowlist_key ? pending.allowlist_key : undefined,
     choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : undefined,
     command: typeof pending.command === 'string' ? pending.command : '',
     description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
+    patternKey: typeof pending.pattern_key === 'string' && pending.pattern_key ? pending.pattern_key : undefined,
     requestId: pending.request_id,
+    ruleKey: typeof pending.rule_key === 'string' && pending.rule_key ? pending.rule_key : undefined,
     sessionId,
     smartDenied: pending.smart_denied === true
   })

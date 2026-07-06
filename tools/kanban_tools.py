@@ -602,7 +602,12 @@ def _handle_complete(args: dict, **kw) -> str:
                 verdict = "done"
                 reason = ""
                 try:
-                    verdict, reason, _ = judge_goal(
+                    # judge_goal returns a 4-tuple (verdict, reason,
+                    # parse_failed, wait_directive); unpacking into three
+                    # names raised ValueError on every call, which the
+                    # defensive except below swallowed — silently allowing
+                    # every goal_mode completion through the gate (#38367).
+                    verdict, reason, _parse_failed, _wait = judge_goal(
                         goal=f"{task.title}\n\n{task.body or ''}".strip(),
                         last_response=(summary or result or "").strip(),
                     )

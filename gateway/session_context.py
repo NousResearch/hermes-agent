@@ -113,6 +113,17 @@ _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_P
 _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
+# Cron-session marker — moved from os.environ["HERMES_CRON_SESSION"] (process-
+# global) to a ContextVar so concurrent gateway messages on the same process
+# are not misclassified as cron jobs after the first in-process tick fires.
+# See tools.approval._is_gateway_approval_context and cron.scheduler.run_job
+# for the leak history (issue #58662).
+#
+# ``None`` means "not bound in this context"; tools also fall back to
+# os.environ["HERMES_CRON_SESSION"] for legacy single-process callers
+# (standalone ``hermes cron``, tests) that never call set_cron_session.
+_CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION_CTX", default=None)
+
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_SOURCE": _SESSION_SOURCE,
@@ -333,3 +344,57 @@ def async_delivery_supported() -> bool:
     if value is _UNSET:
         return True
     return bool(value)
+
+
+def set_cron_session(job_id: str = "") -> object:
+    """Bind ``HERMES_CRON_SESSION`` for the current cron job's execution context.
+
+    Returns the ContextVar Token; pass it to :func:`reset_cron_session` in a
+    ``finally`` block so the marker is cleared exactly when the cron job returns.
+    ``job_id`` is stored alongside the marker so downstream readers can
+    distinguish ``cron-<id>`` (this job) from the legacy process-global
+    ``HERMES_CRON_SESSION=1`` fallback for standalone ``hermes cron`` runs.
+
+    Why a contextvar instead of ``os.environ["HERMES_CRON_SESSION"]``:
+    the in-process cron ticker (``InProcessCronScheduler``) shares a process
+    with the gateway. Setting ``os.environ`` was process-global and never
+    cleared, so after the first tick every concurrent interactive gateway
+    user was misclassified as a cron session and their dangerous commands
+    routed to ``approvals.cron_mode`` — auto-approved under ``approve`` or
+    hard-blocked with "no user present" under ``deny`` (issue #58662).
+    ``contextvars.copy_context()`` (already used by run_job when it spawns
+    its inactivity-monitor worker) snapshots the bound value into the worker
+    thread and out of any concurrent gateway task, so the marker stays
+    scoped to this job's own run.
+    """
+    return _CRON_SESSION.set(job_id or "1")
+
+
+def reset_cron_session(token: object) -> None:
+    """Restore the prior cron-session marker from :func:`set_cron_session`.
+
+    Called in the ``finally`` of ``run_job`` so the marker never leaks into
+    concurrent gateway sessions on the same process.
+    """
+    _CRON_SESSION.reset(token)  # type: ignore[arg-type]
+
+
+def is_cron_session_active() -> bool:
+    """True when the current context is bound as a cron session.
+
+    Resolution order:
+      1. Context-local :data:`_CRON_SESSION` (set by ``run_job`` via
+         ``set_cron_session``; cleared in ``finally``). Used by the
+         in-process ticker on a shared-process deployment where the
+         gateway must NOT inherit the marker.
+      2. ``os.environ["HERMES_CRON_SESSION"]`` fallback for legacy
+         single-process callers — standalone ``hermes cron`` invocations
+         and tests that bind the env var directly without using
+         ``set_cron_session``.
+    """
+    import os
+
+    value = _CRON_SESSION.get()
+    if value is not None:
+        return True
+    return bool(os.getenv("HERMES_CRON_SESSION"))

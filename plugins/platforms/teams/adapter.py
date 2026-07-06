@@ -96,11 +96,15 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     cache_image_from_url,
+    cache_media_bytes,
 )
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 3978
+# Bot Framework activities are JSON payloads well under 1 MiB; an explicit
+# aiohttp client_max_size keeps oversized/chunked request bodies bounded.
+_MAX_BODY_BYTES = 1_048_576
 _WEBHOOK_PATH = "/api/messages"
 
 
@@ -616,13 +620,81 @@ async def _standalone_send(
 
 
 # Keep the old name as an alias so existing test imports don't break.
-check_teams_requirements = check_requirements
+# NOTE: ``check_requirements`` is the PASSIVE probe (used as the registry
+# ``check_fn`` and by ``gateway status``) — it must never trigger a pip
+# install. ``check_teams_requirements`` is the ACTIVE lazy-installer called
+# from ``connect()``; it installs ``platform.teams`` on demand and rebinds the
+# SDK globals, mirroring ``check_slack_requirements`` in gateway/platforms/slack.py.
+def check_teams_requirements() -> bool:
+    """Ensure the Teams SDK is importable, lazy-installing it on first use.
+
+    Lazy-installs ``microsoft-teams-apps`` via
+    ``tools.lazy_deps.ensure("platform.teams")`` if not present, then rebinds
+    all module-level SDK globals on success. Returns True once the SDK (and
+    aiohttp) are importable, False if they couldn't be installed/imported.
+    """
+    if TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE:
+        return True
+
+    def _import() -> dict:
+        from aiohttp import web as _web
+        from microsoft_teams.apps import App, ActivityContext
+        from microsoft_teams.common.http.client import ClientOptions
+        from microsoft_teams.api import MessageActivity, ConversationReference
+        from microsoft_teams.api.activities.typing import TypingActivityInput
+        from microsoft_teams.api.activities.invoke.adaptive_card import (
+            AdaptiveCardInvokeActivity,
+        )
+        from microsoft_teams.api.models.adaptive_card import (
+            AdaptiveCardActionCardResponse,
+            AdaptiveCardActionMessageResponse,
+        )
+        from microsoft_teams.api.models.invoke_response import (
+            InvokeResponse,
+            AdaptiveCardInvokeResponse,
+        )
+        from microsoft_teams.apps.http.adapter import (
+            HttpMethod,
+            HttpRequest,
+            HttpResponse,
+            HttpRouteHandler,
+        )
+        from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+
+        return {
+            "web": _web,
+            "AIOHTTP_AVAILABLE": True,
+            "App": App,
+            "ActivityContext": ActivityContext,
+            "ClientOptions": ClientOptions,
+            "MessageActivity": MessageActivity,
+            "ConversationReference": ConversationReference,
+            "TypingActivityInput": TypingActivityInput,
+            "AdaptiveCardInvokeActivity": AdaptiveCardInvokeActivity,
+            "AdaptiveCardActionCardResponse": AdaptiveCardActionCardResponse,
+            "AdaptiveCardActionMessageResponse": AdaptiveCardActionMessageResponse,
+            "InvokeResponse": InvokeResponse,
+            "AdaptiveCardInvokeResponse": AdaptiveCardInvokeResponse,
+            "HttpMethod": HttpMethod,
+            "HttpRequest": HttpRequest,
+            "HttpResponse": HttpResponse,
+            "HttpRouteHandler": HttpRouteHandler,
+            "AdaptiveCard": AdaptiveCard,
+            "ExecuteAction": ExecuteAction,
+            "TextBlock": TextBlock,
+            "TEAMS_SDK_AVAILABLE": True,
+        }
+
+    from tools.lazy_deps import ensure_and_bind
+
+    return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
 
 
 class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
+    splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
@@ -640,11 +712,14 @@ class TeamsAdapter(BasePlatformAdapter):
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
+        # then re-check the module globals it rebinds.
+        check_teams_requirements()
         if not TEAMS_SDK_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_SDK",
-                "microsoft-teams-apps not installed. Run: pip install microsoft-teams-apps",
+                "microsoft-teams-apps could not be installed. Run: pip install microsoft-teams-apps",
                 retryable=False,
             )
             return False
@@ -666,8 +741,12 @@ class TeamsAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Set up aiohttp app first — the bridge adapter wires SDK routes into it
-            aiohttp_app = web.Application()
+            # Set up aiohttp app first — the bridge adapter wires SDK routes into it.
+            # client_max_size: Bot Framework activities are JSON (caps out well
+            # under 1 MiB); an explicit cap keeps oversized/chunked bodies from
+            # being buffered unbounded on a 0.0.0.0 bind (same pattern as
+            # webhook.py / raft, #58536/#58902).
+            aiohttp_app = web.Application(client_max_size=_MAX_BODY_BYTES)
             aiohttp_app.router.add_get("/health", lambda _: web.Response(text="ok"))
 
             self._app = App(
@@ -725,6 +804,34 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
+    async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
+        """Download attachment bytes with SSRF protection.
+
+        Teams file attachments carry pre-authenticated SharePoint download
+        URLs (no extra auth header needed). Validates the URL against the
+        SSRF guard and follows redirects through the shared redirect guard,
+        matching the cache_*_from_url helpers in gateway.platforms.base.
+        """
+        from tools.url_safety import is_safe_url
+        from gateway.platforms.base import _ssrf_redirect_guard
+
+        if not is_safe_url(url):
+            raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
+
+        import httpx
+
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
+            response = await client.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
+            )
+            response.raise_for_status()
+            return response.content
+
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""
         activity = ctx.activity
@@ -779,22 +886,93 @@ class TeamsAdapter(BasePlatformAdapter):
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
         )
 
-        # Handle image attachments
+        # Handle attachments (images, documents, video, audio)
         media_urls = []
         media_types = []
+        media_kinds = []
         for att in getattr(activity, "attachments", None) or []:
             content_url = getattr(att, "content_url", None)
-            content_type = getattr(att, "content_type", None) or ""
+            content_type = (getattr(att, "content_type", None) or "").lower()
+            att_name = getattr(att, "name", None) or ""
+
+            # Skip non-file payloads: Teams mirrors the message body as a
+            # text/html attachment on every message, and adaptive/hero cards
+            # arrive as application/vnd.microsoft.card.* attachments.
+            if content_type in ("text/html", "text/plain") and not content_url:
+                continue
+            if content_type.startswith("application/vnd.microsoft.card"):
+                continue
+
+            if content_type == "application/vnd.microsoft.teams.file.download.info":
+                # File consent-free download: content carries a pre-authed
+                # SharePoint downloadUrl plus the real file type.
+                content = getattr(att, "content", None)
+                if not isinstance(content, dict):
+                    content = getattr(content, "__dict__", None) or {}
+                download_url = content.get("downloadUrl") or content.get("download_url")
+                file_type = (content.get("fileType") or content.get("file_type") or "").lstrip(".")
+                if not download_url:
+                    continue
+                filename = att_name or (f"document.{file_type}" if file_type else "document")
+                try:
+                    data = await self._fetch_attachment_bytes(download_url)
+                    cached = cache_media_bytes(data, filename=filename, mime_type="")
+                    if cached:
+                        media_urls.append(cached.path)
+                        media_types.append(cached.media_type)
+                        media_kinds.append(cached.kind)
+                    else:
+                        logger.warning(
+                            "[teams] Unsupported document type for attachment '%s', skipping",
+                            filename,
+                        )
+                except Exception as e:
+                    logger.warning("[teams] Failed to cache file attachment '%s': %s", filename, e)
+                continue
+
             if content_url and content_type.startswith("image/"):
                 try:
                     cached = await cache_image_from_url(content_url)
                     if cached:
                         media_urls.append(cached)
                         media_types.append(content_type)
+                        media_kinds.append("image")
                 except Exception as e:
                     logger.warning("[teams] Failed to cache image attachment: %s", e)
+                continue
 
-        msg_type = MessageType.PHOTO if media_urls else MessageType.TEXT
+            if content_url:
+                # Direct-URL non-image attachment (video/audio/document).
+                try:
+                    data = await self._fetch_attachment_bytes(content_url)
+                    cached = cache_media_bytes(
+                        data, filename=att_name, mime_type=content_type
+                    )
+                    if cached:
+                        media_urls.append(cached.path)
+                        media_types.append(cached.media_type)
+                        media_kinds.append(cached.kind)
+                except Exception as e:
+                    logger.warning(
+                        "[teams] Failed to cache attachment '%s' (%s): %s",
+                        att_name or content_url, content_type, e,
+                    )
+
+        # Classification: DOCUMENT wins over PHOTO/VIDEO/AUDIO for mixed
+        # attachments — run.py's image handling keys off the per-path image/*
+        # mime types regardless of message_type, but document-context
+        # injection gates strictly on MessageType.DOCUMENT (same precedence
+        # as Email/Signal, PR #44695).
+        if "document" in media_kinds:
+            msg_type = MessageType.DOCUMENT
+        elif "image" in media_kinds:
+            msg_type = MessageType.PHOTO
+        elif "video" in media_kinds:
+            msg_type = MessageType.VIDEO
+        elif "audio" in media_kinds:
+            msg_type = MessageType.AUDIO
+        else:
+            msg_type = MessageType.TEXT
 
         event = MessageEvent(
             text=text,
@@ -1019,14 +1197,22 @@ class TeamsAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
-    async def send_image(
+    async def _send_media_attachment(
         self,
         chat_id: str,
-        image_url: str,
+        source: str,
+        default_mime: str,
         caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        media_label: str = "media",
     ) -> SendResult:
+        """Send any media file/URL as a Teams attachment.
+
+        Remote ``http(s)://`` URLs are attached by reference; local paths
+        (with optional ``file://`` prefix) are base64-encoded into a data
+        URI. MIME type is guessed from the path/extension, falling back to
+        ``default_mime``. Shared by send_image / send_video / send_voice /
+        send_document so every media kind uses the same Attachment path.
+        """
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
 
@@ -1035,13 +1221,13 @@ class TeamsAdapter(BasePlatformAdapter):
             import mimetypes
             from microsoft_teams.api import Attachment, MessageActivityInput
 
-            if image_url.startswith("http://") or image_url.startswith("https://"):
-                content_url = image_url
-                mime_type = "image/png"
+            if source.startswith("http://") or source.startswith("https://"):
+                content_url = source
+                mime_type = mimetypes.guess_type(source.split("?")[0])[0] or default_mime
             else:
                 # Local path — encode as base64 data URI
-                path = image_url.removeprefix("file://")
-                mime_type = mimetypes.guess_type(path)[0] or "image/png"
+                path = source.removeprefix("file://")
+                mime_type = mimetypes.guess_type(path)[0] or default_mime
                 with open(path, "rb") as f:
                     content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
 
@@ -1058,8 +1244,24 @@ class TeamsAdapter(BasePlatformAdapter):
 
             return SendResult(success=True, message_id=getattr(result, "id", None))
         except Exception as e:
-            logger.error("[teams] send_image failed: %s", e, exc_info=True)
+            logger.error("[teams] send_%s failed: %s", media_label, e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=image_url,
+            default_mime="image/png",
+            caption=caption,
+            media_label="image",
+        )
 
     async def send_image_file(
         self,
@@ -1074,6 +1276,58 @@ class TeamsAdapter(BasePlatformAdapter):
             image_url=image_path,
             caption=caption,
             reply_to=reply_to,
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=video_path,
+            default_mime="video/mp4",
+            caption=caption,
+            media_label="video",
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=audio_path,
+            default_mime="audio/mpeg",
+            caption=caption,
+            media_label="voice",
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=file_path,
+            default_mime="application/octet-stream",
+            caption=caption,
+            media_label="document",
         )
 
     async def get_chat_info(self, chat_id: str) -> dict:

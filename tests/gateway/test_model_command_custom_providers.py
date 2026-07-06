@@ -22,7 +22,9 @@ def _make_event(text="/model", chat_id="12345"):
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
-        source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        source=SessionSource(
+            platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        ),
     )
 
 
@@ -69,89 +71,46 @@ async def test_handle_model_command_lists_saved_custom_provider(tmp_path, monkey
     assert "Local (127.0.0.1:4141)" in result
     # Model preview must appear alongside the provider name.
     assert "rotator-openrouter-coding" in result
-    # The response must present a numbered menu, not a raw text dump.
-    assert "Select a provider:" in result
 
 
 @pytest.mark.asyncio
-async def test_model_menu_state_saved_after_step1(tmp_path, monkeypatch):
-    """After /model, the runner must store picker state for the session."""
-    _patch_gateway(monkeypatch, tmp_path, _CONFIG_WITH_CUSTOM)
+async def test_direct_model_switch_offloads_to_thread(tmp_path, monkeypatch):
+    """A direct `/model <name>` switch must route switch_model() through
+    asyncio.to_thread so the blocking models.dev HTTP fetch can't freeze the
+    gateway event loop (#20525)."""
+    import asyncio
 
-    runner = _make_runner()
-    event = _make_event()
-    await runner._handle_model_command(event)
+    from hermes_cli.model_switch import ModelSwitchResult
 
-    session_key = runner._session_key_for_source(event.source)
-    assert session_key in runner._model_menu_state
-    state = runner._model_menu_state[session_key]
-    assert state["step"] == "provider"
-    assert len(state["providers"]) >= 1
-    provider_names = [p["name"] for p in state["providers"]]
-    assert "Local (127.0.0.1:4141)" in provider_names
-
-
-@pytest.mark.asyncio
-async def test_model_menu_cancel(tmp_path, monkeypatch):
-    """Replying 'cancel' clears the menu state and returns a cancellation message."""
-    _patch_gateway(monkeypatch, tmp_path, _CONFIG_WITH_CUSTOM)
-
-    runner = _make_runner()
-    step1_event = _make_event()
-    await runner._handle_model_command(step1_event)
-
-    session_key = runner._session_key_for_source(step1_event.source)
-    assert session_key in runner._model_menu_state
-
-    cancel_reply = await runner._handle_model_menu_reply(
-        step1_event, session_key, "cancel"
-    )
-    assert "cancel" in cancel_reply.lower()
-    assert session_key not in runner._model_menu_state
-
-
-@pytest.mark.asyncio
-async def test_model_menu_invalid_number(tmp_path, monkeypatch):
-    """Replying with an out-of-range number returns a hint without clearing state."""
-    _patch_gateway(monkeypatch, tmp_path, _CONFIG_WITH_CUSTOM)
-
-    runner = _make_runner()
-    step1_event = _make_event()
-    await runner._handle_model_command(step1_event)
-
-    session_key = runner._session_key_for_source(step1_event.source)
-    n = len(runner._model_menu_state[session_key]["providers"])
-
-    reply = await runner._handle_model_menu_reply(
-        step1_event, session_key, str(n + 10)
-    )
-    assert str(n) in reply
-    # State must still be active so the user can retry.
-    assert session_key in runner._model_menu_state
-
-
-@pytest.mark.asyncio
-async def test_model_menu_step2_shows_models(tmp_path, monkeypatch):
-    """Selecting a valid provider number advances to step 2 (model list)."""
-    _patch_gateway(monkeypatch, tmp_path, _CONFIG_WITH_CUSTOM)
-
-    runner = _make_runner()
-    step1_event = _make_event()
-    await runner._handle_model_command(step1_event)
-
-    session_key = runner._session_key_for_source(step1_event.source)
-    providers = runner._model_menu_state[session_key]["providers"]
-    # Find the index of the custom provider.
-    idx = next(
-        (i + 1 for i, p in enumerate(providers) if p["name"] == "Local (127.0.0.1:4141)"),
-        1,
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({"model": {"default": "gpt-5.4", "provider": "openrouter"}}),
+        encoding="utf-8",
     )
 
-    step2_reply = await runner._handle_model_menu_reply(
-        step1_event, session_key, str(idx)
-    )
-    # Should show a model list.
-    assert "rotator-openrouter-coding" in step2_reply
-    assert "Reply with a number" in step2_reply
-    # State must advance to step "model".
-    assert runner._model_menu_state[session_key]["step"] == "model"
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+    # Fail the switch so the handler returns before _finish_switch (which needs
+    # full runner state) — we only care that the offload happened.
+    def _fake_switch(**kwargs):
+        return ModelSwitchResult(success=False, error_message="nope")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _fake_switch)
+
+    offloaded = []
+    real_to_thread = asyncio.to_thread
+
+    async def _spy_to_thread(func, /, *args, **kwargs):
+        offloaded.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _spy_to_thread)
+
+    result = await _make_runner()._handle_model_command(_make_event("/model gpt-5.4"))
+
+    # switch_model was offloaded to a worker thread, not run on the event loop.
+    assert "_fake_switch" in offloaded
+    assert result is not None and "nope" in result

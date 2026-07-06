@@ -158,6 +158,7 @@ export const ja: Translations = {
     selectedSessionsDeleted: "{count}件のセッションを削除しました",
     failedToDeleteSelected: "選択したセッションの削除に失敗しました",
     resumeInChat: "チャットで再開",
+    newChat: "新しいチャット",
     previousPage: "前のページ",
     nextPage: "次のページ",
     roles: {
@@ -285,8 +286,8 @@ export const ja: Translations = {
     nameRequired: "名前は必須です",
     nameRule:
       "小文字、数字、_ および - のみ使用可能。最初は文字または数字で始める必要があります。最大 64 文字。",
-    invalidName: "無効なプロファイル名",
-    cloneFromDefault: "デフォルトプロファイルから設定を複製",
+    invalidName: "無効なプロファイル名",    cloneFrom: "プロファイルから複製",
+    cloneFromNone: "なし（空）",
     allProfiles: "プロファイル",
     noProfiles: "プロファイルが見つかりません。",
     defaultBadge: "デフォルト",
@@ -431,6 +432,14 @@ export const ja: Translations = {
     replaceCurrentValue: "現在の値を置き換える ({preview})",
     showValue: "実際の値を表示",
     hideValue: "値を非表示",
+    customTitle: "カスタムキー",
+    customHint: "Hermes が認識しない、.env に保存された任意の環境変数。スキル、MCP サーバー、または独自のツール用に環境変数を注入するために使用します。",
+    customConfigured: "カスタムキーを {count} 個設定済み",
+    addCustomKey: "カスタムキーを追加",
+    customKeyName: "変数名",
+    customKeyNamePlaceholder: "例: MY_SERVICE_API_KEY",
+    add: "追加",
+    invalidKeyName: "英字・数字・アンダースコアのみ使用できます（英字またはアンダースコアで始める必要があります）。",
   },
 
   oauth: {

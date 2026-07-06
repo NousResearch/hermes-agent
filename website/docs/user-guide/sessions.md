@@ -335,19 +335,87 @@ If the title is already in use by another session, an error is shown.
 # Delete ended sessions older than 90 days (default)
 hermes sessions prune
 
-# Custom age threshold
+# Custom age threshold — bare numbers are days
 hermes sessions prune --older-than 30
 
-# Only prune sessions from a specific platform
-hermes sessions prune --source telegram --older-than 60
+# Durations work too: 5h, 30m, 2d, 1w
+hermes sessions prune --older-than 12h
+
+# Delete only a specific time window (e.g. a batch of test sessions
+# created in the last 5 hours)
+hermes sessions prune --newer-than 5h
+
+# Explicit window with absolute timestamps
+hermes sessions prune --after "2026-07-05 09:00" --before "2026-07-05 14:30"
+
+# Only prune sessions from a specific platform (all ages — any filter
+# disables the implicit 90-day default)
+hermes sessions prune --source telegram
+hermes sessions prune --source cron --older-than 60   # add a time flag to narrow
+
+# More filters — all AND together
+hermes sessions prune --newer-than 5h --title "smoke test"   # title substring
+hermes sessions prune --older-than 30 --max-messages 3        # tiny sessions
+hermes sessions prune --cwd ~/scratch --end-reason done       # by cwd / end reason
+hermes sessions prune --model gpt-5 --older-than 1w           # by model (substring)
+hermes sessions prune --provider openrouter --older-than 60   # by billing provider
+hermes sessions prune --branch feature/old-experiment         # by git branch
+hermes sessions prune --user 12345678 --chat-type group       # by messaging origin
+hermes sessions prune --max-tokens 500 --older-than 7         # by token usage
+hermes sessions prune --max-cost 0.01 --max-tool-calls 0      # cheap, tool-less runs
+
+# Preview what would be deleted, without deleting anything
+hermes sessions prune --newer-than 5h --dry-run
 
 # Skip confirmation
 hermes sessions prune --older-than 30 --yes
 ```
 
+Time values (`--older-than`, `--newer-than`, `--before`, `--after`) accept a
+duration (`5h`, `30m`, `2d`, `1w`), a bare number of days, or an ISO
+timestamp (`2026-07-05`, `2026-07-05 14:30`). `--older-than`/`--before` set
+the upper bound; `--newer-than`/`--after` set the lower bound. Combine both
+for a window.
+
+Attribute filters: `--source` (platform, exact), `--title` / `--model` /
+`--branch` (case-insensitive substring), `--provider` (billing provider,
+exact), `--end-reason`, `--user`, `--chat-id`, `--chat-type` (exact),
+`--cwd` (path prefix), plus numeric bounds `--min/--max-messages`,
+`--min/--max-tokens` (input+output), `--min/--max-cost` (USD, actual falling
+back to estimated), and `--min/--max-tool-calls`. Using any filter disables
+the implicit 90-day default, so `hermes sessions prune --source cron` or
+`--model gpt-4o` matches all ages — add a time flag to narrow it. Only a
+completely bare `hermes sessions prune` keeps the 90-day cutoff. Every
+non-`--yes` run shows the match count plus the oldest and newest matching
+session before asking for confirmation.
+
+Archived sessions are skipped by default; pass `--include-archived` to
+delete them too.
+
 :::info
 Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
 :::
+
+### Bulk-Archive Sessions
+
+If you want sessions out of your listings without deleting anything,
+`hermes sessions archive` takes the same filters as `prune` but soft-hides
+matching sessions instead (sets the same archived flag as archiving a single
+session from the Desktop/Dashboard UI — messages and search stay intact):
+
+```bash
+# Archive everything from the last 5 hours (e.g. 75 CI smoke-test sessions)
+hermes sessions archive --newer-than 5h
+
+# Archive by title substring, preview first
+hermes sessions archive --title "dry run" --dry-run
+hermes sessions archive --title "dry run" --yes
+```
+
+At least one filter is required — a bare `hermes sessions archive` refuses to
+archive your entire history. Archived sessions are hidden from
+`hermes sessions list` and `/resume` but remain in the database and can be
+unarchived from the Desktop/Dashboard session list.
 
 ### Session Statistics
 
@@ -493,6 +561,23 @@ Sessions with **active background processes** are never auto-reset, regardless o
 | Gateway routing index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs (origin metadata, expiry flags) |
 
 The SQLite database uses WAL mode for concurrent readers and a single writer, which suits the gateway's multi-platform architecture well.
+
+:::warning `sessions.json` is not the session list
+`~/.hermes/sessions/sessions.json` is the **gateway routing index** — it maps
+messaging session keys (`agent:main:<platform>:...`) to active session IDs.
+It only ever contains gateway/messaging entries, so if you run a messaging
+platform you'll see only those (e.g. `agent:main:whatsapp:dm:...`).
+
+This is **expected** and does **not** mean your CLI sessions are missing.
+`hermes sessions list`, `/sessions`, and the dashboard all read `state.db`,
+which holds **every** session (CLI, TUI, and gateway). The `/save` snapshots
+under `~/.hermes/sessions/saved/*.json` are convenience exports, not the index.
+
+If CLI sessions genuinely don't appear in `hermes sessions list`, the cause is
+`state.db` not receiving them — run `hermes sessions repair` and watch for a
+`⚠ Session store unavailable` warning at CLI startup, which means SQLite
+persistence failed for that run.
+:::
 
 :::note Legacy JSONL transcripts
 Sessions created before state.db became canonical may have leftover

@@ -9,8 +9,11 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
 FROM debian:13.4
 
-# Disable Python stdout buffering to ensure logs are printed immediately
+# Disable Python stdout buffering to ensure logs are printed immediately.
+# Do not write .pyc files at runtime: /opt/hermes is immutable in the
+# published container and writable state belongs under /opt/data.
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
 # Store Playwright browsers outside the volume mount so the build-time
 # install survives the /opt/data volume overlay at runtime.
@@ -116,6 +119,9 @@ COPY package.json package-lock.json ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
+# apps/shared/ is copied IN FULL because web/package.json references it as a
+# `file:` workspace dependency (same pattern as hermes-ink above).
+COPY apps/shared/ apps/shared/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
 # symlinks instead of copies.  This is the default since npm 10+, which is
@@ -181,40 +187,45 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra 
 # invalidate the (relatively slow) web + ui-tui build layer.
 COPY web/ web/
 COPY ui-tui/ ui-tui/
+COPY apps/shared/ apps/shared/
 RUN cd web && npm run build && \
     cd ../ui-tui && npm run build
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
-COPY --chown=hermes:hermes . .
+# --link decouples this layer from parents for cache purposes; --chmod bakes
+# the final read-only permissions at copy time so we skip the separate
+# `chmod -R` pass that previously walked ~30k files across the venv +
+# node_modules + source (21s amd64 / 222s arm64 — #49113).  `a+rX,go-w`
+# gives the non-root hermes user read + traverse but no write; root retains
+# write so the build steps below don't need chmod u+w dances.
+COPY --link --chmod=a+rX,go-w . .
 
 # ---------- Permissions ----------
-# Make install dir world-readable so any HERMES_UID can read it at runtime.
-# The venv needs to be traversable too.
-# node_modules trees additionally need to be writable by the hermes user
-# so the runtime `npm install` triggered by _tui_need_npm_install() in
-# hermes_cli/main.py succeeds (see #18800). /opt/hermes/web is build-time
-# only (HERMES_WEB_DIST points at hermes_cli/web_dist) and is intentionally
-# not chowned here.
-# /opt/hermes/gateway is runtime-writable: Python may create __pycache__ and
-# gateway state artifacts beneath the package after services drop privileges,
-# especially when the hermes UID is remapped at boot (#27221).
-# The .venv MUST remain hermes-writable so lazy_deps.py can install
-# remaining optional platform packages and future pin bumps at first use.
-# Without this, `uv pip install` fails with EACCES and adapters silently
-# fail to load.  See tools/lazy_deps.py.
+# Link hermes-agent itself (editable). Deps are already installed in the
+# cached layer above; `--no-deps` makes this a fast egg-link creation with no
+# resolution or downloads.
+RUN uv pip install --no-cache-dir --no-deps -e "."
+
+# Wire the exec shim and install-method stamp.  Files under /opt/hermes are
+# already root-owned (COPY, uv sync, npm install all run as root) and
+# read-only for the hermes user (go-w from the --chmod above).
+
 USER root
-RUN chmod -R a+rX /opt/hermes && \
-    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/gateway /opt/hermes/node_modules
+RUN mkdir -p /opt/hermes/bin && \
+    cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
+    chmod 0755 /opt/hermes/bin/hermes && \
+    printf 'docker\n' > /opt/hermes/.install_method
+# The ``.install_method`` stamp is baked next to the running code (the install
+# tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data
+# volume that is commonly bind-mounted from the host and even shared with a
+# host-side Desktop/CLI install; stamping it at boot used to clobber that
+# host install's marker and wrongly block its ``hermes update``. A code-scoped
+# stamp is read first by detect_install_method() and is immune to the share.
 # Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown
 # the data volume. Each supervised service then drops to the hermes user via
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
 # run as the default hermes user (UID 10000).
-
-# ---------- Link hermes-agent itself (editable) ----------
-# Deps are already installed in the cached layer above; `--no-deps` makes
-# this a fast (~1s) egg-link creation with no resolution or downloads.
-RUN uv pip install --no-cache-dir --no-deps -e "."
 
 # ---------- Bake build-time git revision ----------
 # .dockerignore excludes .git, so `git rev-parse HEAD` from inside the
@@ -231,12 +242,11 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 #
 # The arg is optional — local `docker build` without --build-arg simply
 # omits the file, and the runtime falls back to live-git lookup.  CI
-# (.github/workflows/docker-publish.yml) passes ${{ github.sha }} so
+# (.github/workflows/docker.yml) passes ${{ github.sha }} so
 # every published image has it.
 ARG HERMES_GIT_SHA=
 RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
-        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha && \
-        chown hermes:hermes /opt/hermes/.hermes_build_sha; \
+        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha; \
     fi
 
 # ---------- s6-overlay service wiring ----------
@@ -282,6 +292,21 @@ ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 # check. (A separate launcher hardening is tracked independently.)
 ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
+ENV HERMES_WRITE_SAFE_ROOT=/opt/data
+ENV HERMES_DISABLE_LAZY_INSTALLS=1
+# The published image seals /opt/hermes (root-owned, read-only) so a runtime
+# lazy install can't mutate the agent's own venv and brick it. But opt-in
+# backends (Firecrawl web search, Exa, Feishu, …) keep their SDKs in
+# tools/lazy_deps.py — deliberately NOT baked into [all] (see pyproject.toml
+# policy 2026-05-12: one quarantined release must not break every install).
+# Redirect those lazy installs to a writable dir on the durable data volume.
+# lazy_deps appends this dir to the END of sys.path, so a package installed
+# here can only ADD modules — it can never shadow or downgrade a core module,
+# so the sealed-venv guarantee holds even with installs re-enabled. The dir
+# is seeded + chowned to the hermes user by docker/stage2-hook.sh and lives
+# on the /opt/data volume, so it persists across container recreates / image
+# updates (an ABI stamp invalidates it if a rebuild bumps the interpreter).
+ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
 
 # `docker exec` privilege-drop shim. When operators run
 # `docker exec <c> hermes ...` they default to root, and any file the
@@ -294,7 +319,6 @@ ENV HERMES_HOME=/opt/data
 # Recursion is impossible because the shim exec's the venv binary by
 # absolute path (/opt/hermes/.venv/bin/hermes). See the shim source for
 # the opt-out env var (HERMES_DOCKER_EXEC_AS_ROOT=1).
-COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
 
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
 # the venv bin onto PATH; Architecture B's main-wrapper.sh does the

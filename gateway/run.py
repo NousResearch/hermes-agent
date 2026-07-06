@@ -1763,7 +1763,7 @@ def _resolve_workflow_dispatch_settings(load_config_callable: Callable[[], Any])
         interval = float(raw_interval)
         if not math.isfinite(interval):
             raise ValueError("non-finite interval")
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         logger.warning(
             "workflow dispatcher: invalid tick_interval_seconds=%r, using default %.0f",
             raw_interval,

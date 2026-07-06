@@ -106,6 +106,24 @@ def test_workflow_dispatch_settings_reject_non_finite_intervals(raw_interval, ca
     assert "invalid tick_interval_seconds" in caplog.text
 
 
+def test_workflow_dispatch_settings_reject_oversized_integer_interval(caplog):
+    def load_config():
+        return {
+            "workflow": {
+                "dispatch_in_gateway": True,
+                "tick_interval_seconds": 10**400,
+            }
+        }
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        enabled, interval, limit = gateway_run._resolve_workflow_dispatch_settings(load_config)
+
+    assert enabled is True
+    assert interval == 30.0
+    assert limit == 50
+    assert "invalid tick_interval_seconds" in caplog.text
+
+
 def test_workflow_dispatcher_enabled_ticks_on_cadence(monkeypatch):
     runner = _runner()
     calls = []

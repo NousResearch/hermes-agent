@@ -294,13 +294,76 @@ class TestV1Parts:
         msg = {"role": "user", "parts": [{"type": "text", "text": "pre-0.3"}]}
         assert protocol.extract_text(msg) == "pre-0.3"
 
-    def test_extract_text_skips_non_text_parts(self):
+    def test_extract_text_renders_file_and_data_parts(self):
+        """Non-text Parts are rendered into the text stream so the agent sees them."""
         msg = {"parts": [
             {"url": "https://x/doc.pdf", "mediaType": "application/pdf", "filename": "doc.pdf"},
             {"data": {"k": "v"}, "mediaType": "application/json"},
             {"text": "the words", "mediaType": "text/plain"},
         ]}
-        assert protocol.extract_text(msg) == "the words"
+        result = protocol.extract_text(msg)
+        # File part: URL + filename included
+        assert "https://x/doc.pdf" in result
+        assert "doc.pdf" in result
+        # Data part: JSON content included
+        assert '"k": "v"' in result
+        # Text part: included
+        assert "the words" in result
+
+    def test_extract_text_handles_v03_file_part(self):
+        """v0.3 nested file.fileWithUri shape is accepted."""
+        msg = {"parts": [
+            {"kind": "file", "file": {"fileWithUri": "https://x/img.png",
+             "name": "img.png", "mimeType": "image/png"}},
+        ]}
+        result = protocol.extract_text(msg)
+        assert "https://x/img.png" in result
+        assert "img.png" in result
+
+    def test_extract_text_handles_raw_file_part(self):
+        """v1.0 raw (base64) file part is noted but not decoded."""
+        msg = {"parts": [
+            {"raw": "aGVsbG8=", "filename": "hello.txt", "mediaType": "text/plain"},
+        ]}
+        result = protocol.extract_text(msg)
+        assert "hello.txt" in result
+        assert "base64" in result
+
+    def test_file_part_builder(self):
+        """file_part() builds a v1.0 file Part with URL or raw."""
+        fp = protocol.file_part(url="https://x/f.pdf", filename="f.pdf",
+                                media_type="application/pdf")
+        assert fp["url"] == "https://x/f.pdf"
+        assert fp["filename"] == "f.pdf"
+        assert fp["mediaType"] == "application/pdf"
+        assert "kind" not in fp
+
+        # Raw variant
+        rp = protocol.file_part(raw="aGVsbG8=", filename="hello.txt",
+                                media_type="text/plain")
+        assert rp["raw"] == "aGVsbG8="
+        assert rp["filename"] == "hello.txt"
+        assert "url" not in rp
+
+    def test_data_part_builder(self):
+        """data_part() builds a v1.0 data Part."""
+        dp = protocol.data_part({"key": "value"})
+        assert dp["data"] == {"key": "value"}
+        assert dp["mediaType"] == "application/json"
+        assert "kind" not in dp
+
+    def test_message_with_parts(self):
+        """message_with_parts() builds a Message with mixed Part types."""
+        msg = protocol.message_with_parts(
+            protocol.ROLE_USER,
+            [protocol.text_part("hello"), protocol.data_part({"x": 1})],
+            context_id="ctx-1",
+        )
+        assert msg["role"] == "ROLE_USER"
+        assert len(msg["parts"]) == 2
+        assert msg["parts"][0]["text"] == "hello"
+        assert msg["parts"][1]["data"] == {"x": 1}
+        assert msg["contextId"] == "ctx-1"
 
     def test_context_id_extracted_from_message(self):
         params = {"message": protocol.text_message(protocol.ROLE_USER, "x", context_id="ctx-in-msg")}
@@ -715,6 +778,118 @@ class TestTaskRpcHandlers:
         resp = adapter._rpc_push_config_create(1, {"taskId": "t"})
         assert resp["error"]["code"] == protocol.ERR_INVALID_PARAMS
 
+    def test_push_config_get_returns_stored_config(self):
+        """GetTaskPushNotificationConfig retrieves a config after create."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-g", "ctx-g", "peer")
+        adapter._rpc_push_config_create(1, {
+            "taskId": "task-g",
+            "pushNotificationConfig": {"url": "https://example.com/hook"},
+        })
+        resp = adapter._rpc_push_config_get(1, {"taskId": "task-g"})
+        cfg = resp["result"]
+        assert cfg["pushNotificationConfig"]["url"] == "https://example.com/hook"
+        assert cfg["configId"].startswith("cfg-")
+
+    def test_push_config_get_by_config_id(self):
+        """Get with a specific configId returns the matching config."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-g2", "ctx-g2", "peer")
+        create_resp = adapter._rpc_push_config_create(1, {
+            "taskId": "task-g2",
+            "pushNotificationConfig": {"url": "https://example.com/hook"},
+        })
+        config_id = create_resp["result"]["configId"]
+        resp = adapter._rpc_push_config_get(1, {"taskId": "task-g2", "id": config_id})
+        assert resp["result"]["configId"] == config_id
+
+    def test_push_config_get_wrong_config_id_returns_error(self):
+        """Get with wrong configId returns not-found error."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-g3", "ctx-g3", "peer")
+        adapter._rpc_push_config_create(1, {
+            "taskId": "task-g3",
+            "pushNotificationConfig": {"url": "https://example.com/hook"},
+        })
+        resp = adapter._rpc_push_config_get(1, {"taskId": "task-g3", "id": "cfg-wrong"})
+        assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+
+    def test_push_config_get_unknown_task(self):
+        """Get for non-existent task returns not-found."""
+        adapter = _bare_adapter()
+        resp = adapter._rpc_push_config_get(1, {"taskId": "ghost"})
+        assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+
+    def test_push_config_get_requires_task_id(self):
+        """Get without taskId returns invalid-params."""
+        adapter = _bare_adapter()
+        resp = adapter._rpc_push_config_get(1, {})
+        assert resp["error"]["code"] == protocol.ERR_INVALID_PARAMS
+
+    def test_push_config_list_returns_configs(self):
+        """ListTaskPushNotificationConfigs returns all configs for a task."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-l", "ctx-l", "peer")
+        adapter._rpc_push_config_create(1, {
+            "taskId": "task-l",
+            "pushNotificationConfig": {"url": "https://example.com/hook"},
+        })
+        resp = adapter._rpc_push_config_list(1, {"taskId": "task-l"})
+        configs = resp["result"]["configs"]
+        assert len(configs) == 1
+        assert configs[0]["pushNotificationConfig"]["url"] == "https://example.com/hook"
+
+    def test_push_config_list_empty_for_task_without_config(self):
+        """List returns empty array for a task with no push config."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-l2", "ctx-l2", "peer")
+        resp = adapter._rpc_push_config_list(1, {"taskId": "task-l2"})
+        assert resp["result"]["configs"] == []
+
+    def test_push_config_delete_removes_config(self):
+        """DeleteTaskPushNotificationConfig removes the push config."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-d", "ctx-d", "peer")
+        adapter._rpc_push_config_create(1, {
+            "taskId": "task-d",
+            "pushNotificationConfig": {"url": "https://example.com/hook"},
+        })
+        # Delete
+        resp = adapter._rpc_push_config_delete(1, {"taskId": "task-d"})
+        assert resp["result"]["deleted"] is True
+        # Get now fails
+        resp2 = adapter._rpc_push_config_get(1, {"taskId": "task-d"})
+        assert resp2["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+
+    def test_push_config_delete_unknown_task(self):
+        """Delete for non-existent task returns not-found."""
+        adapter = _bare_adapter()
+        resp = adapter._rpc_push_config_delete(1, {"taskId": "ghost"})
+        assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+
+    def test_push_config_delete_by_config_id(self):
+        """Delete with a specific configId only deletes the matching config."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-d2", "ctx-d2", "peer")
+        create_resp = adapter._rpc_push_config_create(1, {
+            "taskId": "task-d2",
+            "pushNotificationConfig": {"url": "https://example.com/hook"},
+        })
+        config_id = create_resp["result"]["configId"]
+        resp = adapter._rpc_push_config_delete(1, {"taskId": "task-d2", "id": config_id})
+        assert resp["result"]["deleted"] is True
+
+    def test_push_config_delete_wrong_config_id(self):
+        """Delete with wrong configId returns not-found."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-d3", "ctx-d3", "peer")
+        adapter._rpc_push_config_create(1, {
+            "taskId": "task-d3",
+            "pushNotificationConfig": {"url": "https://example.com/hook"},
+        })
+        resp = adapter._rpc_push_config_delete(1, {"taskId": "task-d3", "id": "cfg-wrong"})
+        assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+
 
 # --------------------------------------------------------------------------
 # End-to-end inbound round-trip (real http.server + mocked agent)
@@ -809,6 +984,102 @@ class TestInboundRoundTrip:
                 "params": {"contextId": task["contextId"]},
             })
             assert any(t["id"] == task["id"] for t in list_resp["result"]["tasks"])
+
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_mixed_parts_delivered_to_agent(self, monkeypatch):
+        """A message with text + file + data Parts delivers all content to the
+        agent — file URLs and data JSON are rendered into the text stream."""
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+
+        received = {}
+
+        def reply_fn(event):
+            received["text"] = event.text
+            return "got it"
+
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=reply_fn)
+
+        async def run():
+            assert await adapter.connect() is True
+            msg = protocol.message_with_parts(
+                protocol.ROLE_USER,
+                [
+                    protocol.text_part("Please process these:"),
+                    protocol.file_part(url="https://example.com/report.pdf",
+                                       filename="report.pdf", media_type="application/pdf"),
+                    protocol.data_part({"title": "Q3", "pages": 42}, "application/json"),
+                ],
+                context_id="ctx-mixed",
+            )
+            resp = await asyncio.to_thread(_post_json, base + "/", {
+                "jsonrpc": "2.0", "id": "1", "method": "message/send",
+                "params": {"message": msg},
+            })
+            assert resp["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            # The agent received all three parts rendered into text
+            assert "Please process these:" in received["text"]
+            assert "https://example.com/report.pdf" in received["text"]
+            assert "report.pdf" in received["text"]
+            assert "Q3" in received["text"]
+            assert "42" in received["text"]
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_push_config_crud_over_http(self, monkeypatch):
+        """Full push notification config CRUD over real HTTP."""
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            assert await adapter.connect() is True
+            # Create a task first by sending a message (will get a task id back)
+            resp = await asyncio.to_thread(_post_json, base + "/",
+                                            _send_body("hello", ctx="ctx-crud"))
+            task_id = resp["result"]["id"]
+
+            # CREATE
+            r = await asyncio.to_thread(_post_json, base + "/", {
+                "jsonrpc": "2.0", "id": "2", "method": "tasks/pushNotificationConfig/create",
+                "params": {"taskId": task_id,
+                           "pushNotificationConfig": {"url": "https://example.com/hook"}},
+            })
+            assert r["result"]["configId"].startswith("cfg-")
+            assert r["result"]["pushNotificationConfig"]["url"] == "https://example.com/hook"
+            config_id = r["result"]["configId"]
+
+            # GET
+            r = await asyncio.to_thread(_post_json, base + "/", {
+                "jsonrpc": "2.0", "id": "3", "method": "tasks/pushNotificationConfig/get",
+                "params": {"taskId": task_id},
+            })
+            assert r["result"]["configId"] == config_id
+
+            # LIST
+            r = await asyncio.to_thread(_post_json, base + "/", {
+                "jsonrpc": "2.0", "id": "4", "method": "tasks/pushNotificationConfig/list",
+                "params": {"taskId": task_id},
+            })
+            assert len(r["result"]["configs"]) == 1
+
+            # DELETE
+            r = await asyncio.to_thread(_post_json, base + "/", {
+                "jsonrpc": "2.0", "id": "5", "method": "tasks/pushNotificationConfig/delete",
+                "params": {"taskId": task_id},
+            })
+            assert r["result"]["deleted"] is True
+
+            # GET after delete → not found
+            r = await asyncio.to_thread(_post_json, base + "/", {
+                "jsonrpc": "2.0", "id": "6", "method": "tasks/pushNotificationConfig/get",
+                "params": {"taskId": task_id},
+            })
+            assert r["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
             await adapter.disconnect()
 

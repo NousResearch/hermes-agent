@@ -7,7 +7,9 @@ Design (the #11025 insight, done as a plugin with zero core edits):
     loop" bug class).
   - Serves the A2A v1.0 Agent Card at GET /.well-known/agent.json.
   - JSON-RPC at POST /: message/send, message/stream (SSE), tasks/get,
-    tasks/list, tasks/cancel, tasks/subscribe, tasks/pushNotificationConfig/create.
+    tasks/list, tasks/cancel, tasks/subscribe, tasks/pushNotificationConfig/create,
+    tasks/pushNotificationConfig/get, tasks/pushNotificationConfig/list,
+    tasks/pushNotificationConfig/delete.
   - Push notifications: config accepted inline in message/send
     (configuration.taskPushNotificationConfig) or via the create method;
     payloads are v1.0 StreamResponse objects, HMAC-signed.
@@ -203,6 +205,15 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             "tasks/pushNotification/set",        # pre-0.3 name
         ):
             self._json(200, adapter._rpc_push_config_create(req_id, params))
+            return
+        if method == "tasks/pushNotificationConfig/get":
+            self._json(200, adapter._rpc_push_config_get(req_id, params))
+            return
+        if method == "tasks/pushNotificationConfig/list":
+            self._json(200, adapter._rpc_push_config_list(req_id, params))
+            return
+        if method == "tasks/pushNotificationConfig/delete":
+            self._json(200, adapter._rpc_push_config_delete(req_id, params))
             return
 
         self._json(200, protocol.jsonrpc_error(
@@ -723,6 +734,43 @@ class A2AAdapter(BasePlatformAdapter):
             return protocol.jsonrpc_error(
                 req_id, protocol.ERR_TASK_NOT_FOUND, f"task not found: {task_id}")
         return protocol.jsonrpc_result(req_id, stored)
+
+    def _rpc_push_config_get(self, req_id: Any, params: dict) -> dict:
+        """GetTaskPushNotificationConfig — retrieve a push config by task id."""
+        task_id = str(params.get("taskId") or "")
+        config_id = str(params.get("id") or params.get("configId") or "")
+        if not task_id:
+            return protocol.jsonrpc_error(
+                req_id, protocol.ERR_INVALID_PARAMS, "taskId required")
+        cfg = self.tasks.get_push_config(task_id, config_id)
+        if cfg is None:
+            return protocol.jsonrpc_error(
+                req_id, protocol.ERR_TASK_NOT_FOUND,
+                f"push config not found for task: {task_id}")
+        return protocol.jsonrpc_result(req_id, cfg)
+
+    def _rpc_push_config_list(self, req_id: Any, params: dict) -> dict:
+        """ListTaskPushNotificationConfigs — list push configs for a task."""
+        task_id = str(params.get("taskId") or "")
+        if not task_id:
+            return protocol.jsonrpc_error(
+                req_id, protocol.ERR_INVALID_PARAMS, "taskId required")
+        configs = self.tasks.list_push_configs(task_id)
+        return protocol.jsonrpc_result(req_id, {"configs": configs})
+
+    def _rpc_push_config_delete(self, req_id: Any, params: dict) -> dict:
+        """DeleteTaskPushNotificationConfig — remove a push config."""
+        task_id = str(params.get("taskId") or "")
+        config_id = str(params.get("id") or params.get("configId") or "")
+        if not task_id:
+            return protocol.jsonrpc_error(
+                req_id, protocol.ERR_INVALID_PARAMS, "taskId required")
+        deleted = self.tasks.delete_push_config(task_id, config_id)
+        if not deleted:
+            return protocol.jsonrpc_error(
+                req_id, protocol.ERR_TASK_NOT_FOUND,
+                f"push config not found for task: {task_id}")
+        return protocol.jsonrpc_result(req_id, {"deleted": True})
 
     def _send_push_notification(self, task_id: str, context_id: str, reply: str, state: str) -> None:
         """POST a v1.0 StreamResponse payload to the task's registered callback.

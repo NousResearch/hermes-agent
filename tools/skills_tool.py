@@ -203,6 +203,11 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     return _impl(frontmatter)
 
 
+def _display_relpath(path: Path) -> str:
+    """Return a stable slash-separated relative path for tool JSON output."""
+    return path.as_posix()
+
+
 def _normalize_prerequisite_values(value: Any) -> List[str]:
     if not value:
         return []
@@ -1082,7 +1087,7 @@ def skill_view(
                     _record(None, found_md)
 
         if len(candidates) > 1:
-            paths = [str(smd) for _, smd in candidates]
+            paths = [str(smd).replace("\\", "/") for _, smd in candidates]
             logging.getLogger(__name__).warning(
                 "Skill name collision for '%s': %d candidates — %s",
                 name, len(candidates), "; ".join(paths),
@@ -1232,7 +1237,7 @@ def skill_view(
                 # Scan for all readable files
                 for f in skill_dir.rglob("*"):
                     if f.is_file() and f.name != "SKILL.md":
-                        rel = str(f.relative_to(skill_dir))
+                        rel = _display_relpath(f.relative_to(skill_dir))
                         if rel.startswith("references/"):
                             available_files["references"].append(rel)
                         elif rel.startswith("templates/"):
@@ -1316,7 +1321,7 @@ def skill_view(
             references_dir = skill_dir / "references"
             if references_dir.exists():
                 reference_files = [
-                    str(f.relative_to(skill_dir)) for f in references_dir.glob("*.md")
+                    _display_relpath(f.relative_to(skill_dir)) for f in references_dir.glob("*.md")
                 ]
 
             templates_dir = skill_dir / "templates"
@@ -1332,7 +1337,7 @@ def skill_view(
                 ]:
                     template_files.extend(
                         [
-                            str(f.relative_to(skill_dir))
+                            _display_relpath(f.relative_to(skill_dir))
                             for f in templates_dir.rglob(ext)
                         ]
                     )
@@ -1342,13 +1347,13 @@ def skill_view(
             if assets_dir.exists():
                 for f in assets_dir.rglob("*"):
                     if f.is_file():
-                        asset_files.append(str(f.relative_to(skill_dir)))
+                        asset_files.append(_display_relpath(f.relative_to(skill_dir)))
 
             scripts_dir = skill_dir / "scripts"
             if scripts_dir.exists():
                 for ext in ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"]:
                     script_files.extend(
-                        [str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)]
+                        [_display_relpath(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)]
                     )
 
         # Read tags/related_skills with backward compat:
@@ -1375,10 +1380,10 @@ def skill_view(
             linked_files["scripts"] = script_files
 
         try:
-            rel_path = str(skill_md.relative_to(SKILLS_DIR))
+            rel_path = _display_relpath(skill_md.relative_to(SKILLS_DIR))
         except ValueError:
             # External skill — use path relative to the skill's own parent dir
-            rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
+            rel_path = _display_relpath(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
         skill_name = frontmatter.get(
             "name", skill_md.stem if not skill_dir else skill_dir.name
         )

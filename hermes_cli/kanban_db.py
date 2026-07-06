@@ -151,12 +151,18 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
     it through.
     """
     try:
-        from hermes_cli.plugins import invoke_hook
+        from hermes_cli.plugins import discover_plugins, invoke_hook
         from hermes_cli.profiles import get_active_profile_name
         try:
             profile_name = get_active_profile_name()
         except Exception:
             profile_name = "default"
+        # Ensure user plugins (e.g. kanban-model-tracking) are discovered.
+        # The gateway process never calls PluginManager.discover_and_load() on
+        # its own (it uses a separate HookRegistry for gateway events), so the
+        # PluginManager singleton may be uninitialized when this fires.  This
+        # call is idempotent — it's a no-op after the first invocation.
+        discover_plugins()
         invoke_hook(event, task_id=task_id, profile_name=profile_name, **fields)
     except Exception as exc:  # pragma: no cover - defensive
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)

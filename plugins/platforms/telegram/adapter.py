@@ -7441,7 +7441,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
-        if str(chat_id) in self._guest_only_chats:
+        if self._is_guest_chat(chat_id):
             return await self._guest_media_send(str(chat_id), "audio", audio_path, caption)
 
         try:
@@ -7607,7 +7607,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Guest mode: stage each image via _guest_media_send (uploads to home channel
         # to mint a file_id; first image goes to native delivery, rest become notes).
-        if str(chat_id) in self._guest_only_chats:
+        if self._is_guest_chat(chat_id):
             from urllib.parse import unquote as _unquote
             for _img_url, _img_alt in images:
                 _img_path = _unquote(_img_url[7:]) if _img_url.startswith("file://") else _img_url
@@ -7740,7 +7740,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
-        if str(chat_id) in self._guest_only_chats:
+        if self._is_guest_chat(chat_id):
             return await self._guest_media_send(str(chat_id), "photo", image_path, caption)
 
         try:
@@ -7838,7 +7838,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
-        if str(chat_id) in self._guest_only_chats:
+        if self._is_guest_chat(chat_id):
             return await self._guest_media_send(str(chat_id), "document", file_path, caption or file_name)
 
         try:
@@ -7895,7 +7895,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
-        if str(chat_id) in self._guest_only_chats:
+        if self._is_guest_chat(chat_id):
             return await self._guest_media_send(str(chat_id), "video", video_path, caption)
 
         try:
@@ -7957,7 +7957,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
-        if str(chat_id) in self._guest_only_chats:
+        if self._is_guest_chat(chat_id):
             # URL-based: try sending from URL to staging directly (Telegram downloads it).
             # Falls back to a local download + _guest_media_send if the URL is a local address.
             _staging = os.environ.get("TELEGRAM_HOME_CHANNEL")

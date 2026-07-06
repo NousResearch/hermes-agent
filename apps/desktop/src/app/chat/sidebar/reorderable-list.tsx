@@ -1,4 +1,4 @@
-import type { useSensors } from '@dnd-kit/core';
+import type { useSensors } from '@dnd-kit/core'
 import { closestCenter, DndContext, type DragEndEvent } from '@dnd-kit/core'
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import type * as React from 'react'

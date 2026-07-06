@@ -88,6 +88,30 @@ def test_memory_is_cards_split_on_separator(tmp_path):
     assert any(n["kind"] == "memory" for n in graph["nodes"])
 
 
+def test_malformed_frontmatter_metadata_does_not_crash(tmp_path):
+    """``parse_frontmatter``'s malformed-YAML fallback stores every value as a
+    string, so ``metadata`` can be a str. The graph must tolerate that instead
+    of crashing on chained ``.get()`` (the /journey base-CLI crash)."""
+    skill_dir = tmp_path / "skills" / "misc" / "bad-skill"
+    skill_dir.mkdir(parents=True)
+    # The unterminated quote makes yaml_load raise → fallback → metadata is a str.
+    skill_dir.joinpath("SKILL.md").write_text(
+        '---\nname: bad-skill\nmetadata: not-a-dict\ndescription: "oops\n---\n# Bad\n',
+        encoding="utf-8",
+    )
+
+    node = learning_graph.build_skill_nodes([("profile", tmp_path / "skills")])["bad-skill"]
+
+    assert node.category == "misc"  # directory fallback, not a crash
+    assert node.related == []
+
+
+def test_hermes_meta_tolerates_non_dict():
+    assert learning_graph._hermes_meta({"metadata": "junk"}) == {}
+    assert learning_graph._hermes_meta({"metadata": {"hermes": "junk"}}) == {}
+    assert learning_graph._hermes_meta({"metadata": {"hermes": {"category": "x"}}}) == {"category": "x"}
+
+
 def test_full_payload_shape_and_edge_integrity(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

@@ -9,12 +9,7 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import {
-  $activeGatewayProfile,
-  $newChatProfile,
-  ensureGatewayProfile,
-  normalizeProfileKey
-} from '@/store/profile'
+import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
 import {
   $currentCwd,
@@ -48,11 +43,7 @@ import {
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type {
-  SessionCreateResponse,
-  SessionResumeResponse,
-  UsageStats
-} from '@/types/hermes'
+import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'

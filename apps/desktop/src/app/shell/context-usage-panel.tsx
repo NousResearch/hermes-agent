@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { formatK } from '@/lib/statusbar'
+import { compactNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types/hermes'
 
@@ -21,6 +21,7 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
     if (!sessionId) {
       setBreakdown(null)
       setLoading(false)
+
       return
     }
 
@@ -51,6 +52,7 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
 
   const contextMax = breakdown?.context_max ?? currentUsage.context_max ?? 0
   const contextUsed = breakdown?.context_used ?? currentUsage.context_used ?? 0
+
   const contextPercent = Math.max(
     0,
     Math.min(100, Math.round(breakdown?.context_percent ?? currentUsage.context_percent ?? 0))
@@ -62,7 +64,7 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
         ...category,
         label: copy.categories[category.id as keyof typeof copy.categories] ?? category.label
       })),
-    [breakdown?.categories, copy.categories]
+    [breakdown?.categories, copy]
   )
 
   const segmentTotal = categories.reduce((sum, category) => sum + category.tokens, 0) || contextUsed || 1
@@ -73,7 +75,7 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
         <p className="font-medium text-foreground">{copy.title}</p>
 
         <span className="text-[0.6875rem] text-muted-foreground">
-          {copy.tokenSummary(`~${formatK(contextUsed)}`, formatK(contextMax))}
+          {copy.tokenSummary(`~${compactNumber(contextUsed)}`, compactNumber(contextMax))}
         </span>
       </div>
 
@@ -85,15 +87,12 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
         {categories.map(category => (
           <li className="flex items-center justify-between gap-2" key={category.id}>
             <span className="flex min-w-0 items-center gap-2">
-              <span
-                className="size-2 shrink-0 rounded-[2px]"
-                style={{ background: category.color }}
-              />
+              <span className="size-2 shrink-0 rounded-[2px]" style={{ background: category.color }} />
 
               <span className="truncate text-muted-foreground">{category.label}</span>
             </span>
 
-            <span className="shrink-0 tabular-nums text-foreground">{formatCategoryTokens(category.tokens)}</span>
+            <span className="shrink-0 tabular-nums text-foreground">{compactNumber(category.tokens)}</span>
           </li>
         ))}
       </ul>
@@ -132,16 +131,4 @@ function ContextUsageBar({
       ))}
     </div>
   )
-}
-
-function formatCategoryTokens(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) {
-    return '0'
-  }
-
-  if (value >= 1_000) {
-    return `${formatK(value)}`
-  }
-
-  return value.toLocaleString()
 }

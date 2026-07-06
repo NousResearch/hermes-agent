@@ -42,6 +42,7 @@ import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type {
@@ -186,6 +187,7 @@ export default function SystemPage() {
   const [loading, setLoading] = useState(true);
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
+  const [consoleOpen, setConsoleOpen] = useState(false);
 
   // Add-credential form.
   const [credProvider, setCredProvider] = useState("openrouter");
@@ -680,6 +682,10 @@ export default function SystemPage() {
         description="Remove this hook from config and revoke its consent? It stops firing on the next restart."
         loading={hookDelete.isDeleting}
       />
+      <HermesConsoleModal
+        open={consoleOpen}
+        onClose={() => setConsoleOpen(false)}
+      />
 
       {/* Create-hook modal */}
       {hookModalOpen && (
@@ -1162,6 +1168,9 @@ export default function SystemPage() {
         </H2>
         <Card>
           <CardContent className="flex flex-wrap gap-2 py-4">
+            <Button size="sm" ghost prefix={<Terminal className="h-3.5 w-3.5" />} onClick={() => setConsoleOpen(true)}>
+              Open console
+            </Button>
             <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, "Doctor")}>
               Run doctor
             </Button>

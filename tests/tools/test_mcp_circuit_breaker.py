@@ -31,14 +31,49 @@ def _install_stub_server(mcp_tool_module, name: str, call_tool_impl):
     ``call_tool_impl`` is an async function stored at ``session.call_tool``
     (it's what the tool handler invokes).
     """
+    import threading
+
     server = MagicMock()
     server.name = name
     session = MagicMock()
     session.call_tool = call_tool_impl
     server.session = session
-    server._reconnect_event = MagicMock()
-    server._ready = MagicMock()
-    server._ready.is_set.return_value = True
+
+    ready_flag = threading.Event()
+    ready_flag.set()
+
+    class _ReadyAdapter:
+        def is_set(self):
+            return ready_flag.is_set()
+
+        def clear(self):
+            ready_flag.clear()
+
+        def set(self):
+            ready_flag.set()
+
+    class _ReconnectAdapter:
+        def __init__(self):
+            self.set_calls = 0
+
+        def set(self):
+            self.set_calls += 1
+            old_session = server.session
+            new_session = MagicMock()
+            if old_session is not None:
+                new_session.call_tool = old_session.call_tool
+            elif call_tool_impl is not None:
+                new_session.call_tool = call_tool_impl
+            server.session = new_session
+            ready_flag.set()
+
+        # MagicMock-compat shim: the dead-session half-open test asserts the
+        # reconnect signal was delivered exactly once.
+        def assert_called_once(self):
+            assert self.set_calls == 1, f"set() called {self.set_calls} times"
+
+    server._reconnect_event = _ReconnectAdapter()
+    server._ready = _ReadyAdapter()
 
     mcp_tool_module._servers[name] = server
     mcp_tool_module._server_error_counts.pop(name, None)
@@ -220,7 +255,7 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
 
         # Clean "reconnecting" error, and a reconnect was actually signalled.
         assert "reconnect" in parsed.get("error", "").lower(), parsed
-        server._reconnect_event.set.assert_called_once()
+        server._reconnect_event.assert_called_once()
     finally:
         _cleanup(mcp_tool, "srv")
 
@@ -438,6 +473,87 @@ def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
         )
 
         # Clean shutdown.
+        task._shutdown_event.set()
+        task._reconnect_event.set()
+        try:
+            await asyncio.wait_for(run_task, timeout=2)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            run_task.cancel()
+
+    asyncio.run(_scenario())
+
+
+def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
+    """Initial connection failures must park, not permanently exit the task.
+
+    Regression for #57129's remaining live case: a slow HTTP/SSE server or
+    late-starting stdio server could exhaust the initial-connect budget before
+    it ever registered tools. The run loop returned, leaving no task alive to
+    hear a later manual /mcp refresh.
+    """
+    import asyncio
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import MCPServerTask
+
+    monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 2)
+
+    _real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_delay, *a, **kw):
+        await _real_sleep(0)
+
+    monkeypatch.setattr(mcp_tool.asyncio, "sleep", _fast_sleep)
+
+    state = {"transport_calls": 0, "deregistered": 0, "revived": False}
+
+    async def _scenario():
+        class _Task(MCPServerTask):
+            def _is_http(self):
+                return False
+
+            def _deregister_tools(self):
+                state["deregistered"] += 1
+                self._registered_tool_names = []
+
+            async def _run_stdio(self, config):
+                state["transport_calls"] += 1
+                if not state["revived"]:
+                    raise RuntimeError("server still booting")
+                self.session = object()
+                self._ready.set()
+                await self._wait_for_lifecycle_event()
+                return
+
+        task = _Task("srv")
+        run_task = asyncio.ensure_future(task.run({"command": "x"}))
+
+        for _ in range(500):
+            await _real_sleep(0)
+            if state["deregistered"] >= 1:
+                break
+
+        await _real_sleep(0)
+        assert state["transport_calls"] == 3
+        assert state["deregistered"] >= 1
+        assert task._ready.is_set()
+        assert task._error is not None
+        assert not run_task.done(), "initial failure exited instead of parking"
+
+        state["revived"] = True
+        before = state["transport_calls"]
+        task._reconnect_event.set()
+        for _ in range(500):
+            await _real_sleep(0)
+            if state["transport_calls"] > before and task.session is not None:
+                break
+
+        assert state["transport_calls"] > before
+        assert task.session is not None
+        assert task._error is None
+
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:

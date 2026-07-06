@@ -145,6 +145,83 @@ class TestMidStreamOverflowTruncates:
 
 
 # --------------------------------------------------------------------------- #
+# Saturated-preview dedup — stop flood-control edit storms (mirrors the
+# Telegram #58563 fix)
+# --------------------------------------------------------------------------- #
+
+
+class TestSaturatedPreviewDedup:
+    @pytest.mark.asyncio
+    async def test_saturated_preview_dedups_repeat_oversized_edits(self):
+        """Once a mid-stream preview saturates at the truncation cap, further
+        oversized edits truncate to the SAME text — re-sending them is a
+        visual no-op that still counts against Discord's edit rate limit
+        (the exact "Telegram #48648 lesson" this file's own docstring
+        already references). The adapter must skip identical saturated
+        previews without an API call."""
+        adapter = _make_adapter()
+        edits = []
+        msg = SimpleNamespace(
+            id=42,
+            edit=AsyncMock(side_effect=lambda *, content: edits.append(content)),
+        )
+        channel, sends = _wire_channel(adapter, original_msg=msg)
+
+        # First oversized edit: delivers the truncated preview (1 API call).
+        r1 = await adapter.edit_message("555", "42", "x" * 2500, finalize=False)
+        assert r1.success is True
+        assert len(edits) == 1
+
+        # Stream keeps growing within the same chunk count (2500-3500 chars
+        # all truncate to the same "...(1/2)" chunk-1 preview) — no API calls.
+        for grow in (3000, 3500):
+            r = await adapter.edit_message("555", "42", "x" * grow, finalize=False)
+            assert r.success is True
+            assert r.message_id == "42"
+        assert len(edits) == 1, "identical saturated previews must not be re-sent"
+
+        # Chunk-count boundary: 4000+ chars cross into "(1/3)" — a real
+        # change that SHOULD be delivered.
+        await adapter.edit_message("555", "42", "x" * 4000, finalize=False)
+        assert len(edits) == 2
+        # ...and saturates again at the new marker.
+        await adapter.edit_message("555", "42", "x" * 4500, finalize=False)
+        assert len(edits) == 2
+
+        # Finalize always delivers real content, even if identical to the
+        # last saturated preview (full split-and-deliver, not a dedup skip).
+        result = await adapter.edit_message("555", "42", "x" * 4500, finalize=True)
+        assert result.success is True
+        assert len(edits) == 3
+
+    @pytest.mark.asyncio
+    async def test_content_shrinking_back_under_cap_clears_dedup_state(self):
+        """If mid-stream content shrinks back under the cap (e.g. a fresh
+        segment), stale saturation state must not mask the next real
+        oversized edit on this message id."""
+        adapter = _make_adapter()
+        edits = []
+        msg = SimpleNamespace(
+            id=42,
+            edit=AsyncMock(side_effect=lambda *, content: edits.append(content)),
+        )
+        channel, sends = _wire_channel(adapter, original_msg=msg)
+
+        await adapter.edit_message("555", "42", "x" * 2500, finalize=False)
+        assert len(edits) == 1
+
+        # Shrinks back under the cap — delivered in full, clears saturation.
+        await adapter.edit_message("555", "42", "short", finalize=False)
+        assert len(edits) == 2
+        assert edits[-1] == "short"
+
+        # Grows past the cap again with the SAME truncated text as before —
+        # must be delivered again since the dedup state was cleared.
+        await adapter.edit_message("555", "42", "x" * 2500, finalize=False)
+        assert len(edits) == 3
+
+
+# --------------------------------------------------------------------------- #
 # Final overflow — SPLIT and deliver every chunk
 # --------------------------------------------------------------------------- #
 

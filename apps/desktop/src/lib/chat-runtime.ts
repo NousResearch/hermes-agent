@@ -4,6 +4,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
@@ -217,13 +218,18 @@ export function personalityNamesFromConfig(config: unknown): string[] {
 }
 
 export function normalizePersonalityValue(value: string): string {
-  const trimmed = value.trim().toLowerCase()
+  const trimmed = normalize(value)
 
   return !trimmed || trimmed === 'default' || trimmed === 'none' ? '' : trimmed
 }
 
 export function parseSlashCommand(command: string) {
-  const match = command.replace(/^\/+/, '').match(/^(\S+)\s*(.*)$/)
+  // `[\s\S]*` (not `.*`): the arg may span newlines — `/goal <multi-line text>`
+  // or a skill command with a long pasted context. The old `.*$` regex failed
+  // the whole match on any newline, so every multiline slash command parsed as
+  // an empty name and got swallowed (#41323, #55510). The backend and CLI both
+  // split on any whitespace (`split(maxsplit=1)`), so this is the parity fix.
+  const match = command.replace(/^\/+/, '').match(/^(\S+)([\s\S]*)$/)
 
   return match ? { name: match[1], arg: match[2].trim() } : { name: '', arg: '' }
 }

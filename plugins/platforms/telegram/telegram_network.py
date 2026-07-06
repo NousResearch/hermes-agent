@@ -40,7 +40,7 @@ _DOH_PROVIDERS: list[dict] = [
 
 # Last-resort IPs when DoH is also blocked.  These are stable Telegram Bot API
 # endpoints in the 149.154.160.0/20 block (same seed used by OpenClaw).
-_SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
+_SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:

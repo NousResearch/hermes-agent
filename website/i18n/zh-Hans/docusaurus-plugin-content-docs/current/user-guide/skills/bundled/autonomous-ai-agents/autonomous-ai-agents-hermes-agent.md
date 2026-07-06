@@ -633,7 +633,7 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 
 同步子 agent 生成——父 agent 等待子 agent 的摘要后再继续自身循环。隔离的上下文和终端会话。
 
-- **单个：** `delegate_task(goal, context, toolsets)`。
+- **单个：** `delegate_task(goal, context)`。
 - **批量：** `delegate_task(tasks=[{goal, ...}, ...])` 并行运行子任务，上限由 `delegation.max_concurrent_children`（默认 3）控制。
 - **角色：** `leaf`（默认；不能再委派）vs `orchestrator`（可以生成自己的 worker，受 `delegation.max_spawn_depth` 限制）。
 - **非持久化。** 如果父 agent 被中断，子 agent 会被取消。对于必须在当前轮次之后继续的工作，使用 `cronjob` 或 `terminal(background=True, notify_on_complete=True)`。

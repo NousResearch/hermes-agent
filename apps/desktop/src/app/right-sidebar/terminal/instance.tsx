@@ -44,7 +44,12 @@ export function TerminalInstance({ id, active, cwd, onAddSelectionToChat, revive
     >
       {status === 'starting' && (
         <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center">
-          <Loader className="size-8 text-(--ui-text-tertiary)" pathSteps={180} strokeScale={0.68} type="spiral-search" />
+          <Loader
+            className="size-8 text-(--ui-text-tertiary)"
+            pathSteps={180}
+            strokeScale={0.68}
+            type="spiral-search"
+          />
         </div>
       )}
       {selection.trim() && (

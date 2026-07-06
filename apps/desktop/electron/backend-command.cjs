@@ -47,5 +47,5 @@ function sourceDeclaresServe(dashboardPySource) {
 module.exports = {
   serveBackendArgs,
   dashboardFallbackArgs,
-  sourceDeclaresServe,
+  sourceDeclaresServe
 }

@@ -604,6 +604,19 @@ class CodexAppServerSession:
                                 f"turn ended status={turn_status}", err_msg
                             )
 
+        if (
+            not turn_complete
+            and not result.interrupted
+            and result.final_text
+            and result.error is None
+        ):
+            logger.warning(
+                "codex app-server turn reached deadline after a completed "
+                "assistant message but before turn/completed; accepting "
+                "the assistant text as the terminal response"
+            )
+            turn_complete = True
+
         if not turn_complete and not result.interrupted:
             # Hit the deadline. Issue interrupt to stop wasted compute, and
             # tell the caller to retire the session — a turn that never

@@ -188,7 +188,7 @@ class TestProfileScopedMcp:
         )
         seen = {}
 
-        def fake_probe(name, config, connect_timeout=30):
+        def fake_probe(name, config, connect_timeout=30, details=None):
             seen["home"] = str(get_hermes_home())
             return [("tool-a", "desc")]
 
@@ -199,6 +199,39 @@ class TestProfileScopedMcp:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
         assert seen["home"] == str(isolated_profiles["worker_beta"])
+
+    def test_mcp_test_oauth_server_without_token_is_not_ok(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """An `auth: oauth` server that serves tools/list anonymously must not
+        false-green: a successful probe with no token on disk reports needs-auth."""
+        import hermes_cli.mcp_config as mcp_config
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  oauth-srv:\n    url: http://x/sse\n    auth: oauth\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            mcp_config,
+            "_probe_single_server",
+            lambda name, config, connect_timeout=30, details=None: [("tool-a", "desc")],
+        )
+        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: False)
+
+        resp = client.post(
+            "/api/mcp/servers/oauth-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is False
+        assert "oauth" in body["error"].lower()
+
+        # With a token present, the same probe is genuinely authenticated.
+        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: True)
+        resp = client.post(
+            "/api/mcp/servers/oauth-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.json()["ok"] is True
 
     def test_mcp_remove_scoped(self, client, isolated_profiles):
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(

@@ -8,7 +8,6 @@ export type SettingsView =
   | 'about'
   | 'gateway'
   | 'keys'
-  | 'mcp'
   | 'notifications'
   | 'providers'
   | 'sessions'

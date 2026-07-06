@@ -1,5 +1,6 @@
 import { type MutableRefObject, useCallback } from 'react'
 
+import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
@@ -252,7 +253,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         let submitErr: unknown = null
 
         try {
-          await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: sessionId, text }))
+          await withSessionBusyRetry(() =>
+            requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+          )
         } catch (firstErr) {
           if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
             // Re-register the session in the gateway and get a fresh live ID.
@@ -264,7 +267,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
             if (recoveredId) {
               activeSessionIdRef.current = recoveredId
-              await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
+              await withSessionBusyRetry(() =>
+                requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+              )
             } else {
               submitErr = firstErr
             }

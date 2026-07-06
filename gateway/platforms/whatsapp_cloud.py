@@ -90,6 +90,7 @@ DEFAULT_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 GRAPH_API_BASE = "https://graph.facebook.com"
+WEBHOOK_MAX_BODY_BYTES = 3 * 1024 * 1024
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
 # every wamid for the full retry window — the practical risk is duplicate
 # delivery within minutes, not days. 5000 entries with FIFO eviction is
@@ -142,6 +143,17 @@ _WHATSAPP_MIME_EXTENSION_OVERRIDES: Dict[str, str] = {
     # of .jpg, which trips up tools that switch on extension.
     "image/jpeg": ".jpg",
 }
+
+
+async def _read_limited_request_body(request: Any, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` from an aiohttp request body."""
+    try:
+        body = await request.content.readexactly(max_bytes + 1)
+    except asyncio.IncompleteReadError as exc:
+        body = exc.partial
+    if len(body) > max_bytes:
+        raise ValueError("payload too large")
+    return body
 
 
 def _ext_for_mime(mime: str) -> Optional[str]:
@@ -225,18 +237,35 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         import os
 
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
-        self._dm_policy: str = str(
-            extra.get("dm_policy")
-            or os.getenv("WHATSAPP_CLOUD_DM_POLICY")
-            or os.getenv("WHATSAPP_DM_POLICY", "open")
-        ).strip().lower()
+        # Allowlist: honor the *documented* WHATSAPP_CLOUD_ALLOWED_USERS (the
+        # var the setup wizard writes) in addition to WHATSAPP_CLOUD_ALLOW_FROM.
+        # The adapter historically read only ALLOW_FROM, so an allowlist
+        # configured via the documented var silently dropped every inbound.
         self._allow_from: set[str] = self._normalize_allow_ids(
             self._coerce_allow_list(
                 extra.get("allow_from")
                 or extra.get("allowFrom")
                 or os.getenv("WHATSAPP_CLOUD_ALLOW_FROM")
+                or os.getenv("WHATSAPP_CLOUD_ALLOWED_USERS")
             )
         )
+        # DM policy: explicit config wins; otherwise choose a safe, working
+        # default -- "open" if the operator opted into allow-all, else
+        # "allowlist" when an allowlist is configured (so it is actually
+        # enforced instead of silently dropping), else "open".
+        _allow_all_optin = str(
+            os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")
+        ).strip().lower() in {"true", "1", "yes"}
+        _default_dm_policy = (
+            "open" if _allow_all_optin
+            else ("allowlist" if self._allow_from else "open")
+        )
+        self._dm_policy: str = str(
+            extra.get("dm_policy")
+            or os.getenv("WHATSAPP_CLOUD_DM_POLICY")
+            or os.getenv("WHATSAPP_DM_POLICY")
+            or _default_dm_policy
+        ).strip().lower()
         self._group_policy: str = str(
             extra.get("group_policy")
             or os.getenv("WHATSAPP_CLOUD_GROUP_POLICY")
@@ -347,6 +376,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return (bare or sender_id) in self._allow_from
         return super()._is_dm_allowed(sender_id)
 
+    def _open_dm_opted_in(self) -> bool:
+        """Also honor the documented WHATSAPP_CLOUD_ALLOW_ALL_USERS opt-in.
+
+        The shared mixin only checks GATEWAY_ALLOW_ALL_USERS /
+        WHATSAPP_ALLOW_ALL_USERS; the Cloud adapter's documented open-access
+        opt-in is WHATSAPP_CLOUD_ALLOW_ALL_USERS, so honor it here too.
+        """
+        if str(os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")).strip().lower() in {"true", "1", "yes"}:
+            return True
+        return super()._open_dm_opted_in()
+
     # ------------------------------------------------------------------ lifecycle
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_whatsapp_cloud_requirements():
@@ -375,7 +415,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
 
         # Inbound webhook server.
-        app = web.Application()
+        # client_max_size backstops the bounded reader in _handle_webhook —
+        # aiohttp enforces the cap on request.read()/post() paths too
+        # (#58536/#58902/#59180 pattern).
+        app = web.Application(client_max_size=WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_verify)
         app.router.add_post(self._webhook_path, self._handle_webhook)
@@ -1377,15 +1420,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
              multiply downstream agent work because of a transient bug
              during dispatch.
         """
+        # Meta's documented max payload is 3MB. Read one byte past the limit
+        # so oversized chunked bodies are rejected before buffering the rest.
         try:
-            raw = await request.read()
+            raw = await _read_limited_request_body(
+                request,
+                WEBHOOK_MAX_BODY_BYTES,
+            )
+        except ValueError:
+            return web.Response(status=413)
         except Exception:
             return web.Response(status=400)
-
-        # Meta's documented max payload is 3MB. Reject earlier than aiohttp
-        # would so we don't even compute HMAC over giant junk.
-        if len(raw) > 3 * 1024 * 1024:
-            return web.Response(status=413)
 
         # Refuse to accept anything if app_secret isn't configured. Without
         # it we can't authenticate the sender, and the handler would be a

@@ -32,6 +32,90 @@ def config_home(tmp_path, monkeypatch):
 class TestCustomProviderModelSwitch:
     """Ensure _model_flow_named_custom always probes and shows menu."""
 
+    def test_custom_endpoint_switch_prunes_stale_model_config_pool_entry(
+        self,
+        config_home,
+    ):
+        """Switching custom endpoints must not leave the old model.api_key
+        credential selectable from the previous endpoint's pool."""
+        import yaml
+        from agent.credential_pool import load_pool
+        from hermes_cli.auth import read_credential_pool, write_credential_pool
+        from hermes_cli.main import _model_flow_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: custom\n"
+            "  base_url: https://old.example.test/v1\n"
+            "  api_key: sk-old-model-config\n"
+            "custom_providers:\n"
+            "- name: Old Endpoint\n"
+            "  base_url: https://old.example.test/v1\n"
+            "  api_key: sk-old-config\n"
+            "  model: old-model\n"
+        )
+        write_credential_pool(
+            "custom:old-endpoint",
+            [
+                {
+                    "id": "old-model-config",
+                    "source": "model_config",
+                    "auth_type": "api_key",
+                    "access_token": "sk-old-model-config",
+                    "base_url": "https://old.example.test/v1",
+                    "label": "model_config",
+                },
+                {
+                    "id": "old-manual",
+                    "source": "manual",
+                    "auth_type": "api_key",
+                    "access_token": "sk-old-manual",
+                    "base_url": "https://old.example.test/v1",
+                    "label": "manual",
+                },
+            ],
+        )
+
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["new-model"],
+                "used_fallback": False,
+                "probed_url": "https://new.example.test/v1/models",
+            },
+        ), \
+             patch("hermes_cli.secret_prompt.masked_secret_prompt", return_value="sk-new"), \
+             patch("hermes_cli.main._prompt_custom_api_mode_selection", return_value=""), \
+             patch(
+                 "builtins.input",
+                 side_effect=[
+                     "https://new.example.test/v1",
+                     "",
+                     "",
+                     "New Endpoint",
+                 ],
+             ), \
+             patch("builtins.print"):
+            _model_flow_custom({})
+
+        auth = read_credential_pool(None)
+        old_sources = [
+            entry.get("source")
+            for entry in auth.get("custom:old-endpoint", [])
+            if isinstance(entry, dict)
+        ]
+        assert old_sources == ["manual"]
+
+        new_pool = load_pool("custom:new-endpoint")
+        selected = new_pool.select()
+        assert selected is not None
+        assert selected.access_token == "sk-new"
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        assert config["model"]["base_url"] == "https://new.example.test/v1"
+
     def test_saved_model_still_probes_endpoint(self, config_home):
         """When a model is already saved, the function must still call
         fetch_api_models to probe the endpoint — not skip with early return."""

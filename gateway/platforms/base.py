@@ -546,13 +546,12 @@ async def _ssrf_redirect_guard(response):
 
     Must be async because httpx.AsyncClient awaits response event hooks.
     """
-    if response.is_redirect and response.next_request:
-        redirect_url = str(response.next_request.url)
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(redirect_url):
-            raise ValueError(
-                f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
-            )
+    from tools.url_safety import is_safe_url, redirect_target_from_response
+    redirect_url = redirect_target_from_response(response)
+    if redirect_url and not is_safe_url(redirect_url):
+        raise ValueError(
+            f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1160,12 +1159,18 @@ def _media_delivery_denied_paths() -> List[Path]:
         # Bitwarden Secrets Manager plaintext disk cache.
         os.path.join("cache", "bws_cache.json"),
     )
-    # Directory trees whose every child is credential material. (MCP OAuth
-    # tokens under mcp-tokens/ are handled by the sibling targeted PR #37222;
-    # session/kanban SQLite stores by #41071 — kept out of this diff to avoid
-    # overlap.)
+    # Directory trees whose every child is credential material.
+    #
+    # mcp-tokens/ holds live MCP OAuth access tokens (<server>.json) and
+    # dynamically-registered client credentials (<server>.client.json); see
+    # tools/mcp_oauth.py. Same credential class as auth.json/credentials/.
+    # The write side already denies it (file_tools _check_sensitive_path);
+    # this pairs the media-delivery (exfil) side so a prompt-injection MEDIA
+    # tag can't deliver a live bearer token as a native attachment.
+    # (session/kanban SQLite stores are handled by #41071 — kept out here.)
     _ROOT_CREDENTIAL_DIRS = (
         "pairing",
+        "mcp-tokens",
     )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
         for rel in _ROOT_CREDENTIAL_FILES:
@@ -1909,6 +1914,42 @@ SEND_ERROR_KINDS = frozenset(
     }
 )
 
+# ``not_found`` substrings split by blast radius.  A *chat-level* not_found means
+# the chat/user/group itself is gone, so the whole target is dead.  A
+# *thread/topic/message-level* not_found (a deleted forum topic, an edited-away
+# message) leaves the parent chat reachable — it must NOT mark the whole chat
+# dead.  ``classify_send_error`` collapses both into ``"not_found"``;
+# ``is_chat_level_not_found`` recovers the distinction for the dead-target path.
+# See gateway.dead_targets.
+_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS = ("chat not found",)
+_SUBCHAT_NOT_FOUND_SUBSTRINGS = (
+    "message to edit not found",
+    "message to reply not found",
+    "thread not found",
+    "topic_deleted",
+    "message_id_invalid",
+)
+
+
+def _error_blob(exc: Optional[BaseException] = None, error_text: str = "") -> str:
+    """Build the lowercased text blob both send-error classifiers match against.
+
+    Single source of truth so ``classify_send_error`` and
+    ``is_chat_level_not_found`` can never drift (e.g. one including the
+    exception class name and the other not) and silently disagree on the same
+    failure.  Includes ``str(exc)`` (when non-empty) and the exception's class
+    name, plus any explicit ``error_text``.
+    """
+    parts = []
+    if error_text:
+        parts.append(error_text)
+    if exc is not None:
+        exc_str = str(exc)
+        if exc_str:
+            parts.append(exc_str)
+        parts.append(exc.__class__.__name__)
+    return " ".join(parts).lower()
+
 
 def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> str:
     """Map a send exception / error string to a :data:`SEND_ERROR_KINDS` value.
@@ -1918,13 +1959,7 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
     use.  Conservative — anything unrecognized returns ``"unknown"`` so callers
     never mistake an unclassified failure for a benign one.
     """
-    parts = []
-    if error_text:
-        parts.append(error_text)
-    if exc is not None:
-        parts.append(str(exc))
-        parts.append(exc.__class__.__name__)
-    blob = " ".join(parts).lower()
+    blob = _error_blob(exc, error_text)
     if not blob.strip():
         return "unknown"
     if "message_too_long" in blob or "too long" in blob or "message is too long" in blob:
@@ -1948,13 +1983,8 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
         or "not a member" in blob
     ):
         return "forbidden"
-    if (
-        "chat not found" in blob
-        or "message to edit not found" in blob
-        or "message to reply not found" in blob
-        or "thread not found" in blob
-        or "topic_deleted" in blob
-        or "message_id_invalid" in blob
+    if any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS) or any(
+        s in blob for s in _SUBCHAT_NOT_FOUND_SUBSTRINGS
     ):
         return "not_found"
     if (
@@ -1970,6 +2000,26 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
     if "connecttimeout" in blob:
         return "transient"
     return "unknown"
+
+
+def is_chat_level_not_found(exc: Optional[BaseException] = None, error_text: str = "") -> bool:
+    """Whether a ``not_found`` failure means the *whole chat* is gone.
+
+    :func:`classify_send_error` collapses chat-level and thread/topic/message-level
+    not_found into the single ``"not_found"`` kind.  Only the chat-level case (the
+    chat/user/group no longer exists) should mark a delivery target dead; a deleted
+    forum topic or an edited-away message leaves the parent chat reachable.  When
+    both a chat-level and a sub-chat marker are present, the sub-chat reading wins
+    (conservative: never kill a chat that may still be reachable).
+
+    Argument order mirrors :func:`classify_send_error` (``exc`` first) and both
+    share :func:`_error_blob`, so the two classifiers cannot disagree on the same
+    failure.
+    """
+    blob = _error_blob(exc, error_text)
+    if any(s in blob for s in _SUBCHAT_NOT_FOUND_SUBSTRINGS):
+        return False
+    return any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS)
 
 
 class EphemeralReply(str):
@@ -2257,6 +2307,21 @@ class BasePlatformAdapter(ABC):
     # "typed_command_prefix", "/"); no per-platform branching at call sites.
     typed_command_prefix: str = "/"
 
+    # Whether this adapter supports the ``in_channel`` continuable-cron surface
+    # (``platforms.<p>.extra.cron_continuable_surface: in_channel``): a
+    # continuable cron job delivered FLAT into a channel (no dedicated thread),
+    # with the user's plain channel reply continuing the job in-context via the
+    # shared-channel session.  Only coherent on a platform that has BOTH a
+    # flat-reply outbound gate AND a whole-channel inbound session bucket keyed
+    # ``(platform, chat_id, None)`` — today that is Slack (``reply_in_thread:
+    # false``).  Default False: an unsupported platform fails SAFE, treating
+    # ``in_channel`` as ``thread`` (a threaded continuation ≈ today's
+    # behaviour), never a dropped continuation.  Read generically by the cron
+    # scheduler via ``getattr(adapter, "supports_inchannel_continuable",
+    # False)`` — no per-platform branching at the call site (the key stays a
+    # generic seam; Slack is merely the first consumer).
+    supports_inchannel_continuable: bool = False
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -2309,6 +2374,12 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        # Optional authorization check, registered by GatewayRunner. Used by
+        # adapters that fetch external context (e.g. Slack thread history) to
+        # mark senders not on the allowlist as unverified in LLM context,
+        # mitigating indirect prompt injection from third parties in a shared
+        # thread/channel.
+        self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -2740,6 +2811,44 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_authorization_check(
+        self,
+        callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]],
+    ) -> None:
+        """Register a platform-bound authorization check.
+
+        The callback signature is ``(user_id, chat_type, chat_id) -> bool``.
+        It is used by adapters that pull external context (e.g. Slack thread
+        replies via ``conversations.replies``) to flag messages from senders
+        that are not on the configured allowlist, so the LLM can treat them
+        as unverified background reference rather than authoritative input.
+        """
+        self._authorization_check = callback
+
+    def _is_sender_authorized(
+        self,
+        user_id: Optional[str],
+        chat_type: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> Optional[bool]:
+        """Return whether ``user_id`` is on the allowlist, if a check is configured.
+
+        Returns ``True``/``False`` when an authorization check has been
+        registered via :meth:`set_authorization_check`. Returns ``None``
+        when no check is registered (caller should treat as "trust unknown"
+        and preserve legacy behaviour).
+        """
+        if not user_id or self._authorization_check is None:
+            return None
+        try:
+            return bool(self._authorization_check(user_id, chat_type, chat_id))
+        except Exception:
+            logger.warning(
+                "[%s] Authorization check raised for user %s; treating as unknown",
+                self.name, user_id, exc_info=True,
+            )
+            return None
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -3852,15 +3961,22 @@ class BasePlatformAdapter(ABC):
                 _prev = existing_cb
                 _new = callback
 
-                def _chained() -> None:
-                    try:
-                        _prev()
-                    except Exception:
-                        logger.debug("Post-delivery callback failed", exc_info=True)
-                    try:
-                        _new()
-                    except Exception:
-                        logger.debug("Post-delivery callback failed", exc_info=True)
+                async def _chained() -> None:
+                    # Both _prev and _new may be sync or async. The chained
+                    # wrapper itself must be async because the outer invoker
+                    # (``_handle_message`` etc.) awaits awaitable callbacks; a
+                    # sync wrapper here would call ``_prev()`` / ``_new()`` and
+                    # silently drop any returned coroutine, breaking chained
+                    # async post-delivery hooks (e.g. ``/goal`` continuations).
+                    for _cb in (_prev, _new):
+                        try:
+                            _result = _cb()
+                            if inspect.isawaitable(_result):
+                                await _result
+                        except Exception:
+                            logger.debug(
+                                "Post-delivery callback failed", exc_info=True
+                            )
 
                 callback = _chained
 

@@ -6,7 +6,8 @@ import {
   attachmentDisplayText,
   coerceThinkingText,
   optimisticAttachmentRef,
-  parseCommandDispatch
+  parseCommandDispatch,
+  parseSlashCommand
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
@@ -109,5 +110,43 @@ describe('parseCommandDispatch', () => {
 
   it('rejects a prefill directive missing its message', () => {
     expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
+  })
+})
+
+describe('parseSlashCommand', () => {
+  it('parses a single-line command', () => {
+    expect(parseSlashCommand('/some-skill do something')).toEqual({
+      arg: 'do something',
+      name: 'some-skill'
+    })
+  })
+
+  it('keeps a multiline arg intact instead of failing the whole parse (#41323)', () => {
+    expect(parseSlashCommand('/goal Write a Python script\nthat prints Hello World')).toEqual({
+      arg: 'Write a Python script\nthat prints Hello World',
+      name: 'goal'
+    })
+  })
+
+  it('parses a skill command with a long pasted multi-paragraph context (#55510)', () => {
+    const context = 'summarize this:\n\nparagraph one\nparagraph two\n\nparagraph three'
+
+    expect(parseSlashCommand(`/some-skill ${context}`)).toEqual({
+      arg: context,
+      name: 'some-skill'
+    })
+  })
+
+  it('takes the name across a newline boundary like the CLI and gateway (split on any whitespace)', () => {
+    expect(parseSlashCommand('/goal\npasted block')).toEqual({ arg: 'pasted block', name: 'goal' })
+  })
+
+  it('keeps truly empty slash input empty', () => {
+    expect(parseSlashCommand('/')).toEqual({ arg: '', name: '' })
+    expect(parseSlashCommand('/   ')).toEqual({ arg: '', name: '' })
+  })
+
+  it('does not treat text after horizontal whitespace as a command name (CLI parity)', () => {
+    expect(parseSlashCommand('/ some words')).toEqual({ arg: '', name: '' })
   })
 })

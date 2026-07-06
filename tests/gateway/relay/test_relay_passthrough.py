@@ -120,10 +120,10 @@ async def test_discord_interaction_routes_through_handle_message(adapter, monkey
     ev = seen[0]
     assert ev.text == "summarize"
     assert ev.source.chat_id == "chan-9"
-    assert ev.source.guild_id == "guild-7"
+    assert ev.source.scope_id == "guild-7"
     assert ev.source.user_id == "user-3"
     assert ev.source.chat_type == "channel"
-    # Scope captured so the agent's reply re-asserts guild_id for egress.
+    # Scope captured so the agent's reply re-asserts scope_id for egress.
     assert adapter._scope_by_chat.get("chan-9") == "guild-7"
 
 

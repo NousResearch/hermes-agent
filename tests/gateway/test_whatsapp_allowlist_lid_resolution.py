@@ -119,10 +119,17 @@ def test_dm_disabled_policy_blocks_even_allowlisted():
     assert adapter._is_dm_allowed(f"{LID}@lid") is False
 
 
-def test_dm_open_policy_allows_anyone():
+def test_dm_open_policy_allows_anyone_with_opt_in(monkeypatch):
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
     adapter = _make_adapter(dm_policy="open")
 
     assert adapter._is_dm_allowed("anyone@lid") is True
+
+
+def test_dm_open_policy_blocked_without_opt_in():
+    adapter = _make_adapter(dm_policy="open")
+
+    assert adapter._is_dm_allowed("anyone@lid") is False
 
 
 # ------------------------------------------------------------------ group gate

@@ -621,6 +621,62 @@ def test_allowed_topics_treat_missing_thread_as_general_topic():
     assert adapter._should_process_message(_group_message("hello", thread_id=8)) is False
 
 
+def _forum_message(*, chat_id, thread_id, is_topic_message, is_forum, chat_type="supergroup"):
+    """Build a message with independently-controlled topic/forum flags.
+
+    The shared ``_group_message`` fixture couples ``is_topic_message`` and
+    ``is_forum`` to ``thread_id is not None``, which cannot express a plain
+    reply-UI anchor (``message_thread_id`` set, ``is_topic_message=False``,
+    ``is_forum=False``). This helper decouples them for gating regressions.
+    """
+    return SimpleNamespace(
+        message_id=42,
+        text="hello",
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=thread_id,
+        is_topic_message=is_topic_message,
+        chat=SimpleNamespace(id=chat_id, type=chat_type, title="T", is_forum=is_forum),
+        from_user=SimpleNamespace(id=111, full_name="Alice", first_name="Alice"),
+        reply_to_message=None,
+        date=None,
+    )
+
+
+def test_gating_ignores_non_forum_reply_anchor_thread_id():
+    """A plain group reply's ``message_thread_id`` is a UI anchor, not a topic.
+
+    Before the shared ``_effective_message_thread_id`` normalizer, gating read
+    the raw ``message_thread_id`` — so a non-forum group reply whose anchor id
+    happened to match an ``ignored_threads`` entry was wrongly dropped, and its
+    anchor id was treated as a routable topic under ``allowed_topics``. The
+    normalizer drops reply anchors (non-forum, ``is_topic_message=False``), so
+    such a reply gates as the General topic instead.
+    """
+    # ignored_threads: reply anchor 55 must NOT be treated as thread 55.
+    adapter = _make_adapter(require_mention=False, free_response_chats=["-200"], ignored_threads=[55])
+    reply_anchor = _forum_message(
+        chat_id=-200, thread_id=55, is_topic_message=False, is_forum=False, chat_type="group"
+    )
+    assert adapter._should_process_message(reply_anchor) is True
+
+    # allowed_topics: reply anchor 55 normalizes to General ("1"), so a group
+    # that only allows topic "1" still processes the reply.
+    adapter2 = _make_adapter(require_mention=False, allowed_chats=["-200"], allowed_topics=["1"])
+    assert adapter2._should_process_message(reply_anchor) is True
+
+
+def test_gating_forum_general_topic_normalizes_to_one():
+    """Forum General-topic messages (thread_id=None) gate as topic "1"."""
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["1"])
+    general = _forum_message(chat_id=-100, thread_id=None, is_topic_message=False, is_forum=True)
+    assert adapter._should_process_message(general) is True
+
+    adapter2 = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["8"])
+    assert adapter2._should_process_message(general) is False
+
+
 def test_regex_mention_patterns_allow_custom_wake_words():
     adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*chompy\b"])
 

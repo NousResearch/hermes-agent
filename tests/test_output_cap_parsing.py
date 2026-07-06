@@ -120,3 +120,49 @@ class TestIsOutputCapError:
 
     def test_unrelated_error_is_not_output_cap(self):
         assert is_output_cap_error("some unrelated 400 error") is False
+
+
+class TestParseVllmTokenBasedOutputCap:
+    """vLLM reports both the window and the prompt in TOKENS.
+
+    Until this format was parsed, the recovery path misclassified it as
+    prompt-too-long and looped through compression (which frees little) while
+    retrying with the same oversized max_tokens — terminating in "cannot
+    compress further" even though simply lowering the output cap would have
+    succeeded.
+    """
+
+    # Verbatim vLLM 0.22 / OpenAI-compatible server response (max_tokens set).
+    _VLLM_MSG = (
+        "This model's maximum context length is 131072 tokens. However, you "
+        "requested 65536 output tokens and your prompt contains at least "
+        "65537 input tokens, for a total of at least 131073 tokens. Please "
+        "reduce the length of the input prompt or the number of requested "
+        "output tokens."
+    )
+
+    def test_vllm_token_based_format(self):
+        # available output = 131072 - 65537 = 65535
+        assert parse_available_output_tokens_from_error(self._VLLM_MSG) == 65535
+
+    def test_vllm_without_at_least_qualifier(self):
+        # Some versions omit the "at least" hedge.
+        msg = ("This model's maximum context length is 131072 tokens. However, "
+               "you requested 4096 output tokens and your prompt contains "
+               "100000 input tokens, for a total of 104096 tokens.")
+        assert parse_available_output_tokens_from_error(msg) == 31072
+
+    def test_vllm_retry_fits_inside_window(self):
+        # The retried cap plus the reported input must fit in the window.
+        available = parse_available_output_tokens_from_error(self._VLLM_MSG)
+        assert available is not None
+        assert available + 65537 <= 131072
+
+    def test_vllm_input_alone_exceeds_window_returns_none(self):
+        # Input >= window -> lowering the output cap cannot help; the caller
+        # must fall through to the compression path.
+        msg = ("This model's maximum context length is 131072 tokens. However, "
+               "you requested 1024 output tokens and your prompt contains at "
+               "least 140000 input tokens, for a total of at least 141024 "
+               "tokens.")
+        assert parse_available_output_tokens_from_error(msg) is None

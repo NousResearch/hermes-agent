@@ -728,6 +728,33 @@ class TestSessionRetirement:
         r = s.run_turn("hi", turn_timeout=1.0)
         assert r.should_retire is False
 
+    def test_final_agent_message_without_turn_completed_is_recovered(self):
+        """A completed assistant item is still a usable terminal response when
+        codex omits turn/completed and then goes quiet.
+        """
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m1", "text": "done"},
+            threadId="t",
+            turnId="tu1",
+        )
+        s = make_session(client)
+        r = s.run_turn(
+            "hi",
+            turn_timeout=0.05,
+            notification_poll_timeout=0.01,
+        )
+        assert r.final_text == "done"
+        assert r.interrupted is False
+        assert r.error is None
+        assert r.should_retire is False
+        assert any(
+            msg["role"] == "assistant" and msg.get("content") == "done"
+            for msg in r.projected_messages
+        )
+        assert not any(method == "turn/interrupt" for method, _ in client.requests)
+
     def test_post_tool_quiet_watchdog_trips_and_retires(self):
         client = FakeClient()
         # One tool completion, then total silence — no further events,

@@ -24,6 +24,7 @@ from hermes_cli.config import (
     save_env_value,
     save_env_value_secure,
     sanitize_env_file,
+    set_config_value,
     write_platform_config_field,
     _sanitize_env_lines,
 )
@@ -88,6 +89,22 @@ class TestEnsureHermesHome:
             soul_path.write_text(mixed, encoding="utf-8")
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == mixed
+
+    def test_existing_named_profile_still_bootstraps_subdirs(self, tmp_path):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            ensure_hermes_home()
+            assert (profile_home / "cron").is_dir()
+            assert (profile_home / "sessions").is_dir()
+            assert (profile_home / "memories").is_dir()
+
+    def test_missing_named_profile_is_not_recreated(self, tmp_path):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+                ensure_hermes_home()
+        assert not profile_home.exists()
 
 
 class TestLoadConfigDefaults:
@@ -251,6 +268,17 @@ class TestLoadConfigParseFailure:
 
 
 class TestSaveAndLoadRoundtrip:
+    @staticmethod
+    def _deny_config_reads(config_path):
+        real_open = open
+
+        def fake_open(file, mode="r", *args, **kwargs):
+            if Path(file) == config_path and "r" in mode:
+                raise PermissionError("denied")
+            return real_open(file, mode, *args, **kwargs)
+
+        return fake_open
+
     def test_roundtrip(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config = load_config()
@@ -265,6 +293,58 @@ class TestSaveAndLoadRoundtrip:
             saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert saved["agent"]["max_turns"] == 42
             assert "max_turns" not in saved
+
+    def test_save_config_refuses_to_overwrite_unreadable_existing_config(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        original = "model: test/original\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+                with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                    save_config({"model": "test/replacement"})
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_config_set_refuses_to_overwrite_unreadable_existing_config(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  provider: openrouter\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+                with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                    set_config_value("model.provider", "openai")
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_atomic_config_write_refuses_unreadable_existing_config(self, tmp_path):
+        """The shared chokepoint every sibling write site routes through must
+        fail closed on an unreadable existing config.yaml — this locks in the
+        whole bug class (gateway slash commands, doctor --fix, yuanbao/telegram
+        auto-sethome, tui_gateway _save_cfg), not just the three named paths."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  provider: openrouter\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+            with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                atomic_config_write(config_path, {"model": {"provider": "openai"}})
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_atomic_config_write_creates_new_file(self, tmp_path):
+        """A genuinely absent config.yaml must still be created — the guard
+        only refuses to clobber an existing-but-unreadable file."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        assert not config_path.exists()
+        atomic_config_write(config_path, {"model": {"provider": "openrouter"}})
+        assert config_path.exists()
+        assert "openrouter" in config_path.read_text(encoding="utf-8")
 
     def test_save_config_normalizes_legacy_root_level_max_turns(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -612,6 +692,23 @@ class TestSanitizeEnvLines:
         assert len(result) == 2
         assert result[0].startswith("GLM_API_KEY=")
         assert result[1].startswith("LM_API_KEY=")
+
+    def test_value_embedding_known_key_not_split(self):
+        """A single valid line whose value embeds a known KEY= (e.g. a URL with
+        a query parameter) must be preserved verbatim — not truncated into a
+        bogus pair."""
+        lines = [
+            "OPENAI_BASE_URL=https://proxy.example.com/v1?TAVILY_API_KEY=sk-embedded\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == lines, f"embedded key in value corrupted the secret: {result}"
+
+    def test_leading_text_before_first_key_not_dropped(self):
+        """When the first known KEY= is not at the line start, the leading text
+        must not be silently dropped."""
+        lines = ["export OPENAI_API_KEY=sk1ANTHROPIC_API_KEY=sk2\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == lines, f"leading text was dropped: {result}"
 
     def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
         """save_env_value sanitizes corrupted lines when writing a new key."""
@@ -1510,6 +1607,61 @@ class TestVerifyOnStopMigration:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["agent"]["verify_on_stop"] is True
+
+class TestDelegationCapUnificationMigration:
+    """v32 → v33: fold deprecated max_async_children into max_concurrent_children."""
+
+    def _write(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+
+    def test_stale_default_key_removed(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 3\n"
+                "  max_concurrent_children: 15\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        # Default-valued (3) async cap must not shrink a raised children cap.
+        assert raw["delegation"]["max_concurrent_children"] == 15
+
+    def test_raised_async_cap_folded_into_children_cap(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 20\n"
+                "  max_concurrent_children: 5\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        assert raw["delegation"]["max_concurrent_children"] == 20
+
+    def test_higher_children_cap_wins(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 8\n"
+                "  max_concurrent_children: 15\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        assert raw["delegation"]["max_concurrent_children"] == 15
+
+    def test_no_delegation_section_is_noop(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 32\nmodel:\n  provider: openrouter\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        # Migration must not materialize a delegation section it never had.
+        assert "delegation" not in raw
+
+    def test_default_config_has_no_max_async_children(self):
+        assert "max_async_children" not in DEFAULT_CONFIG["delegation"]
+
 
 class TestConfigNormalizationDoesNotOverwriteUserValues:
     """Regression tests for #27354."""

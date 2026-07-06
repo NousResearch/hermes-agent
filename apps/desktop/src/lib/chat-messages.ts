@@ -2,6 +2,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react'
 
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
 
@@ -285,7 +286,7 @@ function firstStringField(record: Record<string, unknown>, keys: readonly string
 }
 
 function normalizeToolMatchValue(value: string): string {
-  return value.trim().toLowerCase()
+  return normalize(value)
 }
 
 function collectToolMatchValues(query: string, context: string, preview: string): string[] {

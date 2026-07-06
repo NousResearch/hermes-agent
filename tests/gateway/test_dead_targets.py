@@ -167,3 +167,98 @@ async def test_shared_registry_is_used_when_injected(isolate):
     # Injected registry's pre-existing flag short-circuits before any send.
     assert res["telegram:500"]["skipped"] == "dead_target"
     assert adapter.calls == []
+
+
+# --------------------------------------------------------------------------
+# not_found blast radius: chat-level kills the chat, thread/message-level must not
+# --------------------------------------------------------------------------
+
+class RaisingAdapter:
+    """Raises a fixed error message on every send."""
+
+    def __init__(self, message):
+        self.message = message
+        self.calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append(chat_id)
+        raise RuntimeError(self.message)
+
+
+_SUBCHAT_NOT_FOUND_MESSAGES = [
+    "Bad Request: message thread not found",
+    "Bad Request: TOPIC_DELETED",
+    "Bad Request: message to edit not found",
+    "Bad Request: message to reply not found",
+    "Bad Request: MESSAGE_ID_INVALID",
+]
+
+
+@pytest.mark.asyncio
+async def test_chat_level_not_found_marks_target_dead(isolate):
+    # "chat not found" -> the whole chat/user/group is gone, so it is dead
+    # (same blast radius as forbidden).
+    adapter = RaisingAdapter("Bad Request: chat not found")
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:100")
+
+    res = await router.deliver("hi", [target])
+    assert res["telegram:100"]["success"] is False
+    assert router.dead_targets.is_dead("telegram", "100") is True
+
+
+@pytest.mark.parametrize("message", _SUBCHAT_NOT_FOUND_MESSAGES)
+@pytest.mark.asyncio
+async def test_thread_or_message_level_not_found_does_not_mark_chat_dead(isolate, message):
+    # A deleted forum topic / edited-away message is NOT a whole-chat death: marking
+    # the parent chat dead would silently short-circuit every future delivery to it.
+    adapter = RaisingAdapter(message)
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:200")
+
+    res = await router.deliver("hi", [target])
+    assert res["telegram:200"]["success"] is False
+    assert router.dead_targets.is_dead("telegram", "200") is False
+
+
+class TestNotFoundBlastRadius:
+    def test_is_chat_level_not_found_chat_level(self):
+        from gateway.platforms.base import is_chat_level_not_found
+
+        assert is_chat_level_not_found(error_text="Bad Request: chat not found") is True
+
+    @pytest.mark.parametrize("message", _SUBCHAT_NOT_FOUND_MESSAGES)
+    def test_is_chat_level_not_found_subchat(self, message):
+        from gateway.platforms.base import is_chat_level_not_found
+
+        assert is_chat_level_not_found(error_text=message) is False
+
+    def test_subchat_marker_wins_when_both_present(self):
+        from gateway.platforms.base import is_chat_level_not_found
+
+        # Conservative: if a sub-chat marker is present, never kill the whole chat.
+        assert is_chat_level_not_found(error_text="chat not found; message thread not found") is False
+
+    def test_classify_dead_from_error_text_gates_not_found(self):
+        from gateway.delivery import _classify_dead_from_error_text
+
+        assert _classify_dead_from_error_text("Forbidden: bot was blocked by the user") == "forbidden"
+        assert _classify_dead_from_error_text("Bad Request: chat not found") == "not_found"
+        assert _classify_dead_from_error_text("Bad Request: message thread not found") is None
+        assert _classify_dead_from_error_text("httpx.ReadTimeout: connection timed out") is None
+
+    def test_error_blob_is_shared_source_of_truth(self):
+        # Regression guard: classify_send_error and is_chat_level_not_found must
+        # both derive their match text from the SAME _error_blob helper (which
+        # includes the exception CLASS NAME), so they can never drift. Before
+        # this consolidation is_chat_level_not_found built its own blob from
+        # str(exc) only, omitting the class name classify_send_error included.
+        from gateway.platforms import base
+
+        class TopicDeleted(Exception):
+            pass
+
+        # Empty message: the only signal is the class name — _error_blob keeps it,
+        # with no stray leading space from an empty str(exc).
+        assert base._error_blob(TopicDeleted()) == "topicdeleted"
+        assert base._error_blob(TopicDeleted("boom")) == "boom topicdeleted"

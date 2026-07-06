@@ -12,6 +12,9 @@ asserting the expected env var outcomes.
 import os
 import json
 
+from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
+from tools.terminal_tool import _is_ssh_remote_tilde_cwd
+
 
 def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
     """Simulate the gateway config bridge logic from gateway/run.py.
@@ -28,6 +31,9 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
     # --- Replicate lines 59-87: terminal config bridge ---
     terminal_cfg = cfg.get("terminal", {})
     if terminal_cfg and isinstance(terminal_cfg, dict):
+        terminal_backend = str(
+            terminal_cfg.get("backend") or env.get("TERMINAL_ENV") or ""
+        ).strip().lower()
         terminal_env_map = {
             "backend": "TERMINAL_ENV",
             "cwd": "TERMINAL_CWD",
@@ -37,6 +43,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             "container_cpu": "TERMINAL_CONTAINER_CPU",
             "container_memory": "TERMINAL_CONTAINER_MEMORY",
             "container_disk": "TERMINAL_CONTAINER_DISK",
+            "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         }
         for cfg_key, env_var in terminal_env_map.items():
             if cfg_key in terminal_cfg:
@@ -45,10 +52,13 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                 # TERMINAL_CWD.  Mirrors the fix in gateway/run.py.
                 if cfg_key == "cwd" and str(val) in {".", "auto", "cwd"}:
                     continue
-                # Expand shell tilde so subprocess.Popen never receives a literal
-                # "~/" which the kernel rejects.
+                # Expand shell tilde for local/container backends so subprocess.Popen
+                # never receives a literal "~/" which the kernel rejects. SSH cwd is
+                # interpreted by the remote shell, so preserve "~" / "~/..." there.
+                # Uses the same production predicate as gateway/run.py.
                 if cfg_key == "cwd" and isinstance(val, str):
-                    val = os.path.expanduser(val)
+                    if not _is_ssh_remote_tilde_cwd(terminal_backend, val.strip()):
+                        val = os.path.expanduser(val)
                 if isinstance(val, list):
                     env[env_var] = json.dumps(val)
                 else:
@@ -67,11 +77,23 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                     alias_val = os.path.expanduser(alias_val)
                 env[alias_env] = alias_val.strip()
 
-    # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
+    # --- Replicate gateway/run.py placeholder TERMINAL_CWD resolution ---
     configured_cwd = env.get("TERMINAL_CWD", "")
-    if not configured_cwd or configured_cwd in {".", "auto", "cwd"}:
-        messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
-        env["TERMINAL_CWD"] = messaging_cwd
+    if not configured_cwd or configured_cwd in CWD_PLACEHOLDERS:
+        resolved = resolve_placeholder_terminal_cwd(
+            configured_cwd=configured_cwd,
+            terminal_backend=env.get("TERMINAL_ENV", ""),
+            messaging_cwd=env.get("MESSAGING_CWD"),
+            docker_mount_cwd_to_workspace=env.get(
+                "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"
+            ).lower()
+            in {"true", "1", "yes"},
+            home_fallback="/root",
+        )
+        if resolved is None:
+            env.pop("TERMINAL_CWD", None)
+        else:
+            env["TERMINAL_CWD"] = resolved
 
     return env
 
@@ -214,7 +236,44 @@ class TestNestedTerminalCwdPlaceholderSkip:
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
         assert result["TERMINAL_ENV"] == "docker"
         assert result["TERMINAL_TIMEOUT"] == "300"
-        assert result["TERMINAL_CWD"] == "/from/env"
+        assert result.get("TERMINAL_CWD") is None
+
+    def test_docker_placeholder_does_not_inherit_host_home(self):
+        """terminal.cwd: '.' + docker + mount off must not resolve to host home."""
+        cfg = {
+            "terminal": {
+                "cwd": ".",
+                "backend": "docker",
+                "docker_mount_cwd_to_workspace": False,
+            },
+        }
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/home/user"})
+        assert "TERMINAL_CWD" not in result
+
+    def test_docker_placeholder_mount_on_preserves_messaging_cwd(self):
+        """Mount-enabled docker still needs the host cwd signal for /workspace."""
+        cfg = {
+            "terminal": {
+                "cwd": ".",
+                "backend": "docker",
+                "docker_mount_cwd_to_workspace": True,
+            },
+        }
+        result = _simulate_config_bridge(
+            cfg, {"MESSAGING_CWD": "/host/project"}
+        )
+        assert result["TERMINAL_CWD"] == "/host/project"
+        assert result["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] == "True"
+
+    def test_ssh_placeholder_does_not_inherit_host_home(self):
+        cfg = {"terminal": {"cwd": "auto", "backend": "ssh"}}
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/home/user"})
+        assert "TERMINAL_CWD" not in result
+
+    def test_local_placeholder_still_falls_back_to_messaging_cwd(self):
+        cfg = {"terminal": {"cwd": ".", "backend": "local"}}
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/home/user"})
+        assert result["TERMINAL_CWD"] == "/home/user"
 
     def test_terminal_home_mode_bridges_to_env(self):
         cfg = {"terminal": {"home_mode": "profile"}}
@@ -249,3 +308,26 @@ class TestTildeExpansion:
         }
         result = _simulate_config_bridge(cfg)
         assert result["TERMINAL_CWD"] == os.path.expanduser("~/nested")
+
+    def test_ssh_terminal_cwd_tilde_preserved_for_remote_shell(self, monkeypatch):
+        """SSH cwd '~' must mean the remote user's home, not the gateway host HOME."""
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "ssh", "cwd": "~"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_ENV"] == "ssh"
+        assert result["TERMINAL_CWD"] == "~"
+
+    def test_ssh_terminal_cwd_tilde_child_preserved_for_remote_shell(self, monkeypatch):
+        """SSH cwd '~/x' must survive until the SSH shell expands remote HOME."""
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "ssh", "cwd": "~/work"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_CWD"] == "~/work"
+
+    def test_ssh_terminal_placeholder_cwd_does_not_fallback_to_host_home(self, monkeypatch):
+        """SSH placeholder cwd should let terminal_tool use its remote-home default."""
+        monkeypatch.setenv("HOME", "/opt/data")
+        cfg = {"terminal": {"backend": "ssh", "cwd": "auto"}}
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/host/project"})
+        assert result["TERMINAL_ENV"] == "ssh"
+        assert "TERMINAL_CWD" not in result

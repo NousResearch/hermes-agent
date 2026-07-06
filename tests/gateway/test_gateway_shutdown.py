@@ -138,7 +138,7 @@ async def test_gateway_stop_interrupts_after_drain_timeout():
 
 
 @pytest.mark.asyncio
-async def test_gateway_stop_systemd_service_restart_exits_cleanly(tmp_path, monkeypatch):
+async def test_gateway_stop_systemd_service_restart_uses_tempfail(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
@@ -149,7 +149,12 @@ async def test_gateway_stop_systemd_service_restart_exits_cleanly(tmp_path, monk
         await runner.stop(restart=True, service_restart=True)
 
     runner._launch_systemd_restart_shortcut.assert_called_once_with()
-    assert runner._exit_code == 0
+    # Exit 75 (EX_TEMPFAIL) so RestartForceExitStatus=75 in the unit
+    # file revives the gateway via Restart=on-failure, even when the
+    # planned-restart helper fails (Polkit denial, missing user bus,
+    # headless box, or operator-managed unit using on-failure instead
+    # of always).  StartLimitBurst still bounds accidental loops.
+    assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert (tmp_path / ".restart_pending.json").exists()
 
 

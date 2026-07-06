@@ -93,6 +93,11 @@ _DEFAULT_PROVIDER_MODELS = {
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",
         "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
     ],
+    "vertex": [
+        "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview", "google/gemini-3.1-flash-lite-preview",
+        "google/gemini-2.5-pro", "google/gemini-2.5-flash",
+    ],
     "zai": ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "kimi-coding-cn": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
@@ -876,7 +881,7 @@ def _xai_oauth_logged_in_for_setup() -> bool:
 
 
 def _run_xai_oauth_login_from_setup() -> bool:
-    """Run the xAI Grok OAuth loopback login from inside the setup wizard.
+    """Run the xAI Grok OAuth device-code login from inside the setup wizard.
 
     Returns True on success, False on any failure (the caller falls back
     to whatever the user picked next, e.g. Edge TTS).
@@ -887,7 +892,7 @@ def _run_xai_oauth_login_from_setup() -> bool:
             _is_remote_session,
             _save_xai_oauth_tokens,
             _update_config_for_provider,
-            _xai_oauth_loopback_login,
+            _xai_oauth_device_code_login,
         )
     except Exception as exc:
         print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
@@ -897,12 +902,13 @@ def _run_xai_oauth_login_from_setup() -> bool:
     print()
     print_info("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
     try:
-        creds = _xai_oauth_loopback_login(open_browser=open_browser)
+        creds = _xai_oauth_device_code_login(open_browser=open_browser)
         _save_xai_oauth_tokens(
             creds["tokens"],
             discovery=creds.get("discovery"),
             redirect_uri=creds.get("redirect_uri", ""),
             last_refresh=creds.get("last_refresh"),
+            auth_mode="oauth_device_code",
         )
         _update_config_for_provider(
             "xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL)
@@ -1531,10 +1537,11 @@ def setup_agent_settings(config: dict):
     print_info("  new     — Show tool name only when it changes (less noise)")
     print_info("  all     — Show every tool call with a short preview")
     print_info("  verbose — Full args, results, and debug logs")
+    print_info("  log     — Silent in chat; write every tool call to ~/.hermes/logs/tool_calls.log (gateway only)")
 
     current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in {"off", "new", "all", "verbose"}:
+    if mode.lower() in {"off", "new", "all", "verbose", "log"}:
         if "display" not in config:
             config["display"] = {}
         config["display"]["tool_progress"] = mode.lower()
@@ -3047,6 +3054,12 @@ def _blank_slate_minimal_toolsets(config: dict):
                 continue  # platform composites — not user-facing toolsets
             if isinstance(tdef, dict) and tdef.get("includes"):
                 continue  # composite groupings, not leaf toolsets
+            if isinstance(tdef, dict) and tdef.get("posture"):
+                continue  # posture toolsets (e.g. coding) are session-level
+                # selections made by agent/coding_context.py — not permanent
+                # user-facing disables. Adding them here causes model_tools
+                # to subtract their tools (terminal, read_file, …) from the
+                # minimal Blank Slate surface (#57315).
             all_keys.add(k)
 
         disabled = sorted(all_keys - keep)

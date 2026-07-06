@@ -244,7 +244,10 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
-    from agent.transports.codex_app_server_session import CodexAppServerSession
+    from agent.transports.codex_app_server_session import (
+        CodexAppServerSession,
+        _ServerRequestRouting,
+    )
 
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
@@ -261,6 +264,27 @@ def run_codex_app_server_turn(
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+
+        # Gateway / cron contexts have no UI to surface codex's approval
+        # requests through, so codex app-server exec / apply_patch requests
+        # fail closed (silently decline) by default. When the user has
+        # explicitly opted out of Hermes approvals — via `approvals.mode: off`
+        # in config, the /yolo session toggle, or --yolo / HERMES_YOLO_MODE —
+        # honor that and let codex's own sandbox permission profile
+        # (~/.codex/config.toml) be the policy gate instead of double-gating
+        # with a missing Hermes UI. Defaults (manual/smart/unset) preserve the
+        # current fail-closed behavior — this is a no-op for those users.
+        auto_approve_requests = False
+        try:
+            from tools.approval import is_approval_bypass_active
+
+            auto_approve_requests = is_approval_bypass_active()
+        except Exception:
+            logger.debug(
+                "codex app-server: approval-bypass lookup failed; "
+                "keeping fail-closed default",
+                exc_info=True,
+            )
 
         def _on_codex_event(note: dict) -> None:
             # Bridge Codex app-server item/started notifications to Hermes
@@ -281,6 +305,10 @@ def run_codex_app_server_turn(
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            request_routing=_ServerRequestRouting(
+                auto_approve_exec=auto_approve_requests,
+                auto_approve_apply_patch=auto_approve_requests,
+            ),
             on_event=_on_codex_event,
         )
 
@@ -332,6 +360,28 @@ def run_codex_app_server_turn(
     # is exactly what curator.py / sessions DB expect.
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
+
+        # Persist the newly-projected assistant/tool messages ourselves.
+        # This path is an early return that bypasses conversation_loop, whose
+        # normal per-step _persist_session() calls would otherwise flush them.
+        # The inbound user turn was already flushed at turn start
+        # (turn_context.py _persist_session), and _flush_messages_to_session_db
+        # is idempotent via the intrinsic _DB_PERSISTED_MARKER — so this writes
+        # ONLY the new codex projected rows and does NOT re-write the user turn.
+        # Keeping the agent as the sole persister lets us return
+        # agent_persisted=True below, so the gateway skips its own DB write and
+        # we avoid the #860/#42039 duplicate user-message write (append_message
+        # is a raw INSERT with no dedup, so a gateway re-write would duplicate
+        # the already-flushed user turn). See gateway/run.py agent_persisted.
+        if getattr(agent, "_session_db", None) is not None:
+            try:
+                agent._flush_messages_to_session_db(messages)
+            except Exception:
+                logger.debug(
+                    "codex app-server projected-message flush failed",
+                    exc_info=True,
+                )
+
 
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
@@ -394,6 +444,18 @@ def run_codex_app_server_turn(
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
+        # The codex app-server runtime IS an early-return path that bypasses
+        # conversation_loop, but we flush the projected assistant/tool messages
+        # ourselves above (see the _flush_messages_to_session_db call after
+        # messages.extend). The inbound user turn was already flushed at turn
+        # start (turn_context._persist_session) and the flush dedups via
+        # _DB_PERSISTED_MARKER, so state.db ends up with each real message
+        # exactly once and session_search / conversation-distill see the full
+        # gateway conversation. Report agent_persisted=True so the gateway
+        # skips its own append_to_transcript DB write — writing again there
+        # would re-INSERT the already-flushed user turn (append_message has no
+        # dedup), reintroducing the #860 / #42039 duplicate-write bug.
+        "agent_persisted": True,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,
         **usage_result,
@@ -435,6 +497,14 @@ def _event_field(event: Any, name: str, default: Any = None) -> Any:
     value = getattr(event, name, None)
     if value is None and isinstance(event, dict):
         value = event.get(name, default)
+    return value if value is not None else default
+
+
+def _item_field(item: Any, name: str, default: Any = None) -> Any:
+    """Field access for nested Response items (attr-style SDK object or dict)."""
+    value = getattr(item, name, None)
+    if value is None and isinstance(item, dict):
+        value = item.get(name, default)
     return value if value is not None else default
 
 
@@ -500,6 +570,7 @@ def _consume_codex_event_stream(
     collected_text_deltas: List[str] = []
     has_tool_calls = False
     first_delta_fired = False
+    active_message_phase: str | None = None
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
@@ -533,9 +604,35 @@ def _consume_codex_event_stream(
         if event_type == "error":
             _raise_stream_error(event)
 
+        # Track the phase of the active streamed message item.  Codex/Harmony
+        # ``commentary``/``analysis`` text is mid-turn preamble/progress
+        # narration, never the final answer.  We still collect completed output
+        # items for replay, but route those deltas to the reasoning callback so
+        # they display like thinking text instead of assistant content.
+        if event_type == "response.output_item.added":
+            item = _event_field(event, "item")
+            item_type = _item_field(item, "type", "")
+            if item_type == "message":
+                phase = _item_field(item, "phase", None)
+                active_message_phase = phase.strip().lower() if isinstance(phase, str) else None
+            else:
+                active_message_phase = None
+            if "function_call" in str(item_type):
+                has_tool_calls = True
+            continue
+
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
             delta_text = _event_field(event, "delta", "")
-            if delta_text:
+            is_commentary_delta = active_message_phase in {"commentary", "analysis"}
+            if delta_text and is_commentary_delta:
+                # Commentary streams through the reasoning channel, not the
+                # visible answer stream (and stays out of output_text).
+                if on_reasoning_delta is not None:
+                    try:
+                        on_reasoning_delta(delta_text)
+                    except Exception:
+                        logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+            elif delta_text:
                 collected_text_deltas.append(delta_text)
                 if not has_tool_calls:
                     if not first_delta_fired:

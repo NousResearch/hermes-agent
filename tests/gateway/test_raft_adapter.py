@@ -1,5 +1,7 @@
 """Tests for the Raft channel adapter."""
 
+import asyncio
+import json
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -32,6 +34,7 @@ from plugins.platforms.raft.adapter import (
     _on_session_end,
     _on_session_finalize,
     check_raft_requirements,
+    interactive_setup,
     register,
 )
 from gateway.session import build_session_key
@@ -55,7 +58,8 @@ def _make_adapter(**extra):
 
 
 def _create_app(adapter: RaftAdapter) -> web.Application:
-    app = web.Application()
+    # Mirror connect(): client_max_size enforces the cap on chunked bodies.
+    app = web.Application(client_max_size=adapter._max_body_bytes)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_post(adapter._path, adapter._handle_wake)
     app.router.add_post("/activity", adapter._handle_activity)
@@ -406,6 +410,68 @@ class TestRaftActivityHttp:
         assert drain["events"][1]["errorClass"] == "interrupted"
 
 
+class TestBodySize:
+    """The wake/activity endpoints enforced max_body_bytes only via the
+    Content-Length header; a Transfer-Encoding: chunked request
+    (content_length=None) bypassed the cap entirely and read the full body,
+    bounded only by aiohttp's implicit 1 MiB default. Mirrors
+    gateway/platforms/webhook.py's TestBodySize."""
+
+    @pytest.mark.asyncio
+    async def test_wake_chunked_oversized_payload_rejected(self):
+        adapter = _make_adapter(max_body_bytes=100)
+        adapter.set_message_handler(AsyncMock())
+        adapter.handle_message = AsyncMock()
+
+        async def _chunked_body():
+            payload = json.dumps({"eventId": "x" * 500}).encode("utf-8")
+            for i in range(0, len(payload), 64):
+                yield payload[i : i + 64]
+                await asyncio.sleep(0)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                DEFAULT_PATH,
+                data=_chunked_body(),
+                headers={
+                    BRIDGE_TOKEN_HEADER: "bridge-secret",
+                    "Content-Type": "application/json",
+                },
+            )
+            assert resp.status == 413
+            body = await resp.json()
+
+        assert body == {"ok": False, "error": "payload_too_large"}
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_activity_chunked_oversized_payload_rejected(self):
+        adapter = _make_adapter(max_body_bytes=100)
+
+        async def _chunked_body():
+            payload = json.dumps(_activity_event("x" * 500)).encode("utf-8")
+            for i in range(0, len(payload), 64):
+                yield payload[i : i + 64]
+                await asyncio.sleep(0)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/activity",
+                data=_chunked_body(),
+                headers={
+                    BRIDGE_TOKEN_HEADER: "bridge-secret",
+                    "Content-Type": "application/json",
+                },
+            )
+            assert resp.status == 413
+            body = await resp.json()
+
+        assert body == {"ok": False, "error": "payload_too_large"}
+        assert adapter._activity_queue.drain()["events"] == []
+
+
 class TestRaftConfig:
     def test_env_enablement_auto_enables_with_raft_profile(self, monkeypatch):
         monkeypatch.setenv("RAFT_PROFILE", "my-agent")
@@ -425,6 +491,34 @@ class TestRaftConfig:
         assert _is_connected(PlatformConfig(enabled=True, extra={"enabled": True})) is True
         assert _is_connected(PlatformConfig(enabled=True, extra={})) is False
 
+    def test_interactive_setup_saves_raft_profile(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("RAFT_PROFILE", raising=False)
+        monkeypatch.setattr("builtins.input", lambda _prompt: "dev-profile")
+
+        interactive_setup()
+
+        assert (tmp_path / ".env").read_text(encoding="utf-8") == "RAFT_PROFILE=dev-profile\n"
+        assert os.environ["RAFT_PROFILE"] == "dev-profile"
+        out = capsys.readouterr().out
+        assert "Raft configuration saved" in out
+        assert "hermes gateway restart" in out
+
+    def test_interactive_setup_keeps_existing_profile_when_not_reconfigured(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        env_path = tmp_path / ".env"
+        env_path.write_text("RAFT_PROFILE=existing\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RAFT_PROFILE", "existing")
+        monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+        interactive_setup()
+
+        assert env_path.read_text(encoding="utf-8") == "RAFT_PROFILE=existing\n"
+        assert os.environ["RAFT_PROFILE"] == "existing"
+        assert "Keeping RAFT_PROFILE=existing" in capsys.readouterr().out
+
     def test_register_calls_register_platform(self):
         registered = {}
         hooks = {}
@@ -441,6 +535,7 @@ class TestRaftConfig:
         assert registered["name"] == "raft"
         assert registered["label"] == "Raft"
         assert registered["emoji"] == "🔔"
+        assert registered["setup_fn"] is interactive_setup
         assert "profile show" in registered["platform_hint"]
         assert "manual get" in registered["platform_hint"]
         assert "--profile" in registered["platform_hint"]

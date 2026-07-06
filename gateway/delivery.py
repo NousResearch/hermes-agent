@@ -59,7 +59,14 @@ from .session import SessionSource
 from .dead_targets import DeadTargetRegistry
 
 
-def _looks_like_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
+def looks_like_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
+    """True when ``chat_id`` is a positive int — Telegram's private-chat shape.
+
+    Telegram private chats use positive chat IDs; groups/channels/supergroups
+    use negative IDs. This is the single source of truth for that heuristic,
+    reused by the handoff seed path in ``gateway/run.py`` so handoff-created
+    DM topics key the same way as inbound DM-topic messages.
+    """
     if chat_id is None:
         return False
     try:
@@ -116,11 +123,19 @@ def _classify_dead_from_error_text(error_text: Optional[str]) -> Optional[str]:
     if not error_text:
         return None
     try:
-        from .platforms.base import classify_send_error
+        from .platforms.base import classify_send_error, is_chat_level_not_found
     except Exception:  # pragma: no cover - import guard
         return None
     kind = classify_send_error(None, error_text=error_text)
-    return kind if DeadTargetRegistry.is_dead_error_kind(kind) else None
+    if not DeadTargetRegistry.is_dead_error_kind(kind):
+        return None
+    # ``not_found`` collapses chat-level and thread/topic/message-level failures.
+    # Only a whole-chat not_found means the target is dead — a deleted forum topic
+    # or an edited-away message must not mark the entire chat (and all of its future
+    # deliveries) dead.  See gateway.dead_targets' documented scope.
+    if kind == "not_found" and not is_chat_level_not_found(error_text=error_text):
+        return None
+    return kind
 
 
 @dataclass
@@ -467,7 +482,7 @@ class DeliveryRouter:
             target_thread_id = target.thread_id
             is_named_telegram_private_topic = (
                 target.platform == Platform.TELEGRAM
-                and _looks_like_telegram_private_chat_id(target.chat_id)
+                and looks_like_telegram_private_chat_id(target.chat_id)
                 and not _looks_like_int(target_thread_id)
                 and "thread_id" not in send_metadata
                 and "message_thread_id" not in send_metadata
@@ -490,7 +505,7 @@ class DeliveryRouter:
                 send_metadata["telegram_dm_topic_created_for_send"] = True
             elif (
                 target.platform == Platform.TELEGRAM
-                and _looks_like_telegram_private_chat_id(target.chat_id)
+                and looks_like_telegram_private_chat_id(target.chat_id)
                 and "thread_id" not in send_metadata
                 and "message_thread_id" not in send_metadata
                 and not has_explicit_direct_topic

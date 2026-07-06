@@ -991,6 +991,38 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(env_file)) is None
 
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "mcp-tokens/github.json",
+            "mcp-tokens/github.client.json",
+            "mcp-tokens/github.meta.json",
+        ],
+    )
+    def test_denylist_blocks_mcp_oauth_tokens(self, tmp_path, monkeypatch, rel):
+        """Live MCP OAuth tokens/client creds under ~/.hermes/mcp-tokens/ must
+        never deliver as native media — same exfil class as auth.json/.env.
+        Sibling to the pairing/ directory denylist entry.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        (hermes_dir / "mcp-tokens").mkdir(parents=True)
+        secret = hermes_dir / rel
+        secret.write_text('{"access_token": "live-bearer-abc123"}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_HOME",
+            hermes_dir,
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_ROOT",
+            hermes_dir,
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
     def test_denylist_blocks_hermes_config_in_active_profile(self, tmp_path, monkeypatch):
         """The active profile config stays blocked in default mode."""
         self._patch_roots(monkeypatch)

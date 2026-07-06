@@ -85,6 +85,7 @@ compression:
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
+  codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -103,6 +104,7 @@ auxiliary:
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+| `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 
 ### Codex gpt-5.5 threshold autoraise
 
@@ -117,6 +119,12 @@ your global `threshold`. To opt back down to the global value:
 
 ```bash
 hermes config set compression.codex_gpt55_autoraise false
+```
+
+To keep the 85% autoraise but hide only the one-time notice:
+
+```bash
+hermes config set compression.codex_gpt55_autoraise_notice false
 ```
 
 ### Computed Values (for a 200K context model at defaults)
@@ -352,6 +360,16 @@ The marker is applied differently based on content type:
 
 4. **TTL selection**: Default is `5m` (5 minutes). Use `1h` for long-running
    sessions where the user takes breaks between turns.
+
+5. **Model identity is part of the cache key**: Provider-side caches are scoped
+   to the model (and account/API key) serving the request. Any mid-conversation
+   model change — an explicit `/model` switch, primary-model fallback, or a
+   credential-pool rotation onto a different account — means the next request
+   gets zero cache hits and re-reads the full conversation at undiscounted
+   input price. This is inherent to how provider caches work, not something
+   Hermes can avoid; user-facing docs for `/model`, fallback providers, and
+   credential pools carry cost warnings for this reason. Don't add features
+   that silently swap the model or credentials mid-session.
 
 ### Enabling Prompt Caching
 

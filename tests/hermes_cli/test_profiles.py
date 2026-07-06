@@ -7,13 +7,18 @@ and shell completion generation.
 
 import json
 import io
+import os
+import shutil
+import sys
 import tarfile
+import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 import yaml
 
+from hermes_cli import profiles
 from hermes_cli.profiles import (
     normalize_profile_name,
     validate_profile_name,
@@ -578,12 +583,91 @@ class TestDeleteProfile:
         set_active_profile("coder")
 
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles.time.sleep"), \
              patch("hermes_cli.profiles.shutil.rmtree", side_effect=PermissionError("locked")):
             with pytest.raises(RuntimeError, match="Could not remove profile directory"):
                 delete_profile("coder", yes=True)
 
         assert profile_dir.is_dir()
         assert get_active_profile() == "default"
+
+    def test_stops_profile_bound_backends_before_removal(self, profile_env):
+        """A Desktop-spawned backend (not in gateway.pid) is stopped first."""
+        profile_dir = create_profile("coder", no_alias=True)
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._profile_bound_backend_pids", return_value=[4242]) as pids, \
+             patch("gateway.status.terminate_pid") as terminate, \
+             patch("gateway.status._pid_exists", return_value=False):
+            delete_profile("coder", yes=True)
+
+        pids.assert_called_once()
+        terminate.assert_any_call(4242)
+        assert not profile_dir.is_dir()
+
+    def test_rmtree_retries_transient_enotempty_then_succeeds(self, profile_env):
+        """A live writer racing rmtree (ENOTEMPTY) is absorbed by a retry."""
+        profile_dir = create_profile("coder", no_alias=True)
+        real_rmtree = shutil.rmtree
+        calls = {"n": 0}
+
+        def flaky_rmtree(path, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError(66, "Directory not empty")
+            return real_rmtree(path)
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._profile_bound_backend_pids", return_value=[]), \
+             patch("hermes_cli.profiles.time.sleep"), \
+             patch("hermes_cli.profiles.shutil.rmtree", side_effect=flaky_rmtree):
+            delete_profile("coder", yes=True)
+
+        assert calls["n"] == 2
+        assert not profile_dir.is_dir()
+
+    def test_backend_scan_only_matches_this_profile(self, profile_env, monkeypatch):
+        """The backend PID scan binds by --profile selector and skips self."""
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+
+        class FakeProc:
+            def __init__(self, pid, cmdline, username="me"):
+                self.pid = pid
+                self.info = {"pid": pid, "name": "python", "username": username, "cmdline": cmdline}
+
+            def parent(self):
+                return None
+
+            def username(self):
+                return "me"
+
+            def environ(self):
+                return {}
+
+        self_pid = os.getpid()
+        procs = [
+            # Backend bound to coder → matched.
+            FakeProc(101, ["python", "-m", "hermes_cli.main", "--profile", "coder", "serve"]),
+            # Interactive chat for coder → NOT a backend subcommand, skipped.
+            FakeProc(102, ["python", "-m", "hermes_cli.main", "--profile", "coder", "chat"]),
+            # Backend for a different profile → skipped.
+            FakeProc(103, ["python", "-m", "hermes_cli.main", "--profile", "other", "serve"]),
+            # This very process → skipped even if it matched.
+            FakeProc(self_pid, ["python", "-m", "hermes_cli.main", "--profile", "coder", "serve"]),
+        ]
+
+        fake_psutil = types.SimpleNamespace(
+            process_iter=lambda attrs=None: iter(procs),
+            Process=lambda pid=None: FakeProc(self_pid, []),
+            NoSuchProcess=Exception,
+            AccessDenied=Exception,
+            ZombieProcess=Exception,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
+        assert pids == [101]
 
 
 # ===================================================================
@@ -1300,6 +1384,84 @@ class TestExportImport:
             names = tf.getnames()
 
         assert not any("__pycache__" in n for n in names)
+
+    def test_export_default_uses_allowlist_for_unrelated_dirs(self, profile_env, tmp_path):
+        """Unrelated directories under HERMES_HOME are excluded by allow-list (#58394).
+
+        Docker/custom deployments often set HERMES_HOME to a working
+        directory that also contains unrelated user projects (``x11-dev/``,
+        etc.).  The root-level allow-list filters those out so only known
+        Hermes artifacts end up in the archive. Replaces the old
+        exhaustive blacklist.
+        """
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("ok")
+        (default_dir / "SOUL.md").write_text("soul")
+        # Allowed subdirectory with content
+        (default_dir / "skills" / "demo").mkdir(parents=True)
+        (default_dir / "skills" / "demo" / "SKILL.md").write_text("hi")
+        # Unrelated directory — should NOT appear in the archive
+        unrelated = default_dir / "x11-dev" / "usr" / "lib"
+        unrelated.mkdir(parents=True)
+        (unrelated / "libXi.so").write_text("data")
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        result = export_profile("default", str(output))
+
+        with tarfile.open(str(result), "r:gz") as tf:
+            names = set(tf.getnames())
+
+        # Allowed artifacts present
+        assert any(n.endswith("config.yaml") for n in names)
+        assert any(n.endswith("SOUL.md") for n in names)
+        assert any(n.endswith("skills/demo/SKILL.md") for n in names)
+        # Unrelated artifact excluded
+        assert not any("x11-dev" in n for n in names)
+        assert not any("libXi.so" in n for n in names)
+
+    def test_export_default_handles_broken_symlinks(self, profile_env, tmp_path):
+        """Broken symlinks inside allowed artifacts are preserved, not crashed (#58394).
+
+        ``shutil.copytree``'s default is ``symlinks=False``, which follows
+        symlinks and crashes on broken ones. Use ``symlinks=True`` so stale
+        symlinks inside *allowed* artifacts (e.g. ``skills/``) survive as
+        symlinks; the link and its target are both retained.
+        """
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("ok")
+        # Place broken symlink *inside* the allowed ``skills/`` tree so the
+        # root-level allow-list passes the directory through; the
+        # symlinks=True flag must then preserve the link instead of
+        # following and crashing.
+        broken_dir = default_dir / "skills" / "with-broken-links"
+        broken_dir.mkdir(parents=True)
+        (broken_dir / "broken_link").symlink_to("/nonexistent/path")
+        # Valid symlink for comparison
+        (broken_dir / "valid_target.txt").write_text("real data")
+        (broken_dir / "valid_link").symlink_to(
+            broken_dir / "valid_target.txt"
+        )
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        result = export_profile("default", str(output))
+
+        assert result.exists()
+        with tarfile.open(str(result), "r:gz") as tf:
+            names = set(tf.getnames())
+        # Allowed artifact survived
+        assert any(n.endswith("config.yaml") for n in names)
+        # Broken symlink inside an allowed dir was preserved as a symlink
+        # (without crashing) — tar entry name recorded as the link path.
+        assert any(
+            "with-broken-links/broken_link" in n for n in names
+        ), (
+            f"broken_link should survive; tarfile names: {sorted(names)[:30]}"
+        )
+        # Valid symlink + target also kept
+        assert any("valid_link" in n for n in names)
+        assert any("valid_target.txt" in n for n in names)
 
     def test_import_default_without_name_raises(self, profile_env, tmp_path):
         """Importing a default export without --name gives clear guidance."""

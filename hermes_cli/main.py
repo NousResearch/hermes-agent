@@ -5835,6 +5835,12 @@ def _find_stale_dashboard_pids(
         "hermes_cli.main serve",
         "hermes_cli/main.py serve",
     ]
+    # Lifecycle flags that are short-lived CLI commands, not long-lived servers.
+    # A wrapper/sandbox shell whose cmdline merely contains e.g.
+    # `hermes dashboard --status` or `hermes_cli.main dashboard --stop` should
+    # not be reaped as a stale dashboard process — only true servers (no
+    # lifecycle flag) are candidates. (#59626)
+    lifecycle_flags = ("--status", "--stop")
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -5872,6 +5878,7 @@ def _find_stale_dashboard_pids(
                     pid_str = line[len("ProcessId=") :]
                     if (
                         any(p in current_cmd for p in patterns)
+                        and not any(f in current_cmd for f in lifecycle_flags)
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -5904,7 +5911,11 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if (
+                        any(p in command for p in patterns)
+                        and not any(f in command for f in lifecycle_flags)
+                        and pid != self_pid
+                    ):
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

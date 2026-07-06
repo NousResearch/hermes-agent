@@ -227,6 +227,59 @@ class TestFindStaleDashboardPids:
             pids = _find_stale_dashboard_pids(exclude_pids={12345})
         assert pids == []
 
+    def test_lifecycle_flags_excluded_from_match(self):
+        """A wrapper shell whose cmdline contains `hermes dashboard --status`
+        or `hermes dashboard --stop` (or the equivalent `hermes_cli.main
+        dashboard ...` form) is a short-lived lifecycle command, not a
+        long-lived server. It must NOT be reaped as a stale dashboard.
+        (#59626)
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119"),
+                    _ps_line(12346, "python3 -m hermes_cli.main dashboard --status"),
+                    _ps_line(12347, "bash -c 'hermes dashboard --status'"),
+                    _ps_line(12348, "bash -c 'hermes dashboard --stop'"),
+                    _ps_line(12349, "python -m hermes_cli.main serve --status"),
+                    _ps_line(12350, "grep hermes dashboard"),
+                ]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        # Only the real server (no lifecycle flag) is matched.
+        assert pids == [12345]
+
+    def test_lifecycle_flags_excluded_windows_wmic(self):
+        """Same exclusion applies to the Windows wmic path — a wrapper
+        spawning `hermes_cli.main dashboard --status` must not match.
+        (#59626)
+        """
+        wmic_output = "\n".join([
+            "CommandLine=python -m hermes_cli.main dashboard --port 9119",
+            "ProcessId=12345",
+            "",
+            "CommandLine=python -m hermes_cli.main dashboard --status",
+            "ProcessId=12346",
+            "",
+            "CommandLine=bash -c hermes dashboard --stop",
+            "ProcessId=12347",
+            "",
+            "CommandLine=hermes dashboard",
+            "ProcessId=12348",
+            "",
+        ])
+        with patch("hermes_cli.main.sys.platform", "win32"), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=wmic_output, stderr=""
+            )
+            pids = _find_stale_dashboard_pids()
+        # 12345 (real server) and 12348 (bare `hermes dashboard`) match;
+        # 12346 / 12347 carry lifecycle flags and are excluded.
+        assert sorted(pids) == [12345, 12348]
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")
 class TestKillStaleDashboardPosix:

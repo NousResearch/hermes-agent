@@ -828,3 +828,54 @@ class TestFirecrawlEnvResolution:
             assert result is not None
             kwargs, _cache_key = result
             assert kwargs["api_url"] == fake_url.rstrip("/")
+
+
+class TestSiblingProvidersEnvResolution:
+    """The same #40190 bug class widened: every keyed web provider must
+    resolve its credential through the config-aware lookup (os.environ OR
+    ~/.hermes/.env), not bare os.getenv. Parametrized over the four
+    providers that previously read only the process environment."""
+
+    _CASES = [
+        ("plugins.web.exa.provider", "ExaWebSearchProvider", "EXA_API_KEY"),
+        ("plugins.web.parallel.provider", "ParallelWebSearchProvider", "PARALLEL_API_KEY"),
+        ("plugins.web.tavily.provider", "TavilyWebSearchProvider", "TAVILY_API_KEY"),
+        ("plugins.web.brave_free.provider", "BraveFreeWebSearchProvider", "BRAVE_SEARCH_API_KEY"),
+    ]
+
+    @pytest.mark.parametrize("module_path,cls_name,env_key", _CASES)
+    def test_is_available_reads_via_get_env_value(
+        self, monkeypatch, module_path, cls_name, env_key
+    ):
+        """is_available() must see a key that lives only in the .env layer."""
+        monkeypatch.delenv(env_key, raising=False)
+
+        import importlib
+        module = importlib.import_module(module_path)
+        provider = getattr(module, cls_name)()
+
+        assert provider.is_available() is False
+
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: "test-key-from-dotenv" if k == env_key else None,
+        ):
+            assert provider.is_available() is True, (
+                f"{cls_name}.is_available() ignored {env_key} from the "
+                "config-aware env layer (get_env_value)"
+            )
+
+    def test_get_provider_env_falls_back_to_os_environ(self, monkeypatch):
+        """When the config layer has no value, process env still wins."""
+        from agent.web_search_provider import get_provider_env
+
+        monkeypatch.setenv("WSP_TEST_FALLBACK_KEY", "  from-process-env  ")
+        with patch("hermes_cli.config.get_env_value", return_value=None):
+            assert get_provider_env("WSP_TEST_FALLBACK_KEY") == "from-process-env"
+
+    def test_get_provider_env_unset_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("WSP_TEST_UNSET_KEY", raising=False)
+        with patch("hermes_cli.config.get_env_value", return_value=None):
+            from agent.web_search_provider import get_provider_env
+
+            assert get_provider_env("WSP_TEST_UNSET_KEY") == ""

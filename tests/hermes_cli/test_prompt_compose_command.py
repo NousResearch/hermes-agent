@@ -74,3 +74,14 @@ def test_empty_buffer_does_not_seed(monkeypatch):
     s = _Stub()
     s._handle_prompt_compose_command("/prompt")
     assert s._pending_agent_seed is None
+
+
+def test_invalid_editor_value_does_not_fall_back_to_shell(monkeypatch):
+    monkeypatch.setenv("EDITOR", "vim 'unterminated")
+
+    def fail_if_called(*_args, **kwargs):
+        assert kwargs.get("shell") is not True
+        raise AssertionError("subprocess.call should not run for an invalid editor value")
+
+    monkeypatch.setattr("subprocess.call", fail_if_called)
+    assert _Stub()._compose_in_editor("") == ""

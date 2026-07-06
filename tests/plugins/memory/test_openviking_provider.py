@@ -1933,12 +1933,16 @@ def test_viking_client_does_not_retry_root_tenant_error_as_trusted_mode(monkeypa
         captured_headers.append(kwargs.get("headers") or {})
         if len(captured_headers) == 1:
             return SimpleNamespace(
-                status_code=400,
+                status_code=403,
                 text="",
                 json=lambda: {
                     "error": {
-                        "code": "INVALID_ARGUMENT",
-                        "message": "ROOT requests to tenant-scoped APIs must include X-OpenViking-Account and X-OpenViking-User headers.",
+                        "code": "PERMISSION_DENIED",
+                        "message": (
+                            "ROOT API keys cannot access tenant-scoped data APIs in api_key mode. "
+                            "Use a user/admin API key for data access, or trusted mode for upstream "
+                            "identity assertion."
+                        ),
                     },
                 },
                 raise_for_status=lambda: None,
@@ -1952,7 +1956,7 @@ def test_viking_client_does_not_retry_root_tenant_error_as_trusted_mode(monkeypa
 
     monkeypatch.setattr(client._httpx, "post", capture_post)
 
-    with pytest.raises(openviking_module._OpenVikingHTTPError, match="ROOT requests"):
+    with pytest.raises(openviking_module._OpenVikingHTTPError, match="ROOT API keys cannot access"):
         client.post("/api/v1/search/search", {"query": "status"})
 
     assert len(captured_headers) == 1

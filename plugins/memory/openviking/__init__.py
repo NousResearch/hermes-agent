@@ -268,12 +268,23 @@ class _VikingClient:
 
     @staticmethod
     def _needs_trusted_identity_retry(exc: Exception) -> bool:
+        """Detect errors that indicate missing tenant-scoped identity headers.
+
+        Trusted mode can ask for ``X-OpenViking-Account`` /
+        ``X-OpenViking-User`` using slightly different wording across
+        OpenViking versions. Match that trusted-mode missing-identity shape
+        instead of enumerating every exact string, while keeping deliberate
+        API-key permission denials non-retriable.
+        """
         message = str(exc)
-        return (
-            "Trusted mode requests must include X-OpenViking-Account" in message
-            or "Trusted mode requests must include X-OpenViking-User" in message
-            or "Trusted mode requests must include X-OpenViking-Account or explicit account_id" in message
-        )
+        if "Trusted mode requests must include" not in message:
+            return False
+        if "X-OpenViking-Account" not in message and "X-OpenViking-User" not in message:
+            return False
+        status_code = getattr(exc, "status_code", None)
+        if status_code is not None and status_code != 400:
+            return False
+        return True
 
     def _send_with_trusted_identity_retry(self, send, *, multipart: bool = False) -> dict:
         try:

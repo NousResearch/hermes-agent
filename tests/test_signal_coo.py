@@ -2683,6 +2683,78 @@ def test_torben_resolve_reply_does_not_infer_promotion(tmp_path, capsys):
     assert not (tmp_path / "torben-autonomy-ladder-events.jsonl").exists()
 
 
+def test_torben_resolve_reply_tracks_explicit_signal_loop(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(torben_cli, "get_hermes_home", lambda: tmp_path)
+
+    exit_code = torben_command(
+        Namespace(
+            torben_action="resolve-reply",
+            reply=["track", "wire", "capture", "smoke", "item"],
+            ledger=str(tmp_path / "actions.json"),
+            sender="+1 (516) 384-3337",
+            ladder_config=None,
+            json=True,
+        )
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "captured"
+    assert payload["loop"]["item"] == "wire capture smoke item"
+    assert payload["loop"]["state"] == "next-action"
+    assert payload["confirmation"] == "Captured loop #1 as next-action: wire capture smoke item"
+
+    tracker = tmp_path / "state" / "torben-open-loops.csv"
+    lines = tracker.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "id,item,state,owner,due,domain,note,created,updated"
+    assert "wire capture smoke item" in lines[1]
+    assert (tmp_path / "state" / "torben-capture-confirmations.jsonl").exists()
+
+
+def test_torben_resolve_reply_track_dedupes_existing_loop(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(torben_cli, "get_hermes_home", lambda: tmp_path)
+    args = Namespace(
+        torben_action="resolve-reply",
+        reply=["track", "wire", "capture", "smoke", "item"],
+        ledger=str(tmp_path / "actions.json"),
+        sender="+15163843337",
+        ladder_config=None,
+        json=True,
+    )
+
+    first = torben_command(args)
+    capsys.readouterr()
+    second = torben_command(args)
+
+    assert first == 0
+    assert second == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "duplicate"
+    assert payload["loop_id"] == 1
+    assert len((tmp_path / "state" / "torben-open-loops.csv").read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_torben_resolve_reply_track_rejects_non_eric_sender(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(torben_cli, "get_hermes_home", lambda: tmp_path)
+
+    exit_code = torben_command(
+        Namespace(
+            torben_action="resolve-reply",
+            reply=["track", "wire", "capture", "smoke", "item"],
+            ledger=str(tmp_path / "actions.json"),
+            sender="+15551234567",
+            ladder_config=None,
+            json=True,
+        )
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "rejected"
+    assert payload["reason"] == "track_requires_eric_signal_sender"
+    assert not (tmp_path / "state" / "torben-open-loops.csv").exists()
+
+
 def test_torben_cli_auth_check_reports_oauth_mcp_native_policy(tmp_path, monkeypatch, capsys):
     hermes_home = tmp_path / "torben"
     hermes_home.mkdir()

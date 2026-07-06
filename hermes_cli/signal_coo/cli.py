@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import hashlib
 import json
 import os
 import re
@@ -56,6 +58,8 @@ LADDER_CATEGORIES = (
 )
 LADDER_RUNGS = ("packet_only", "approve_each", "auto_within_caps")
 PROMOTION_REPLY_RE = re.compile(r"^\s*promote\s+(?:category\s+)?(?P<category>[a-z_]+)\s*$", re.I)
+TRACK_REPLY_RE = re.compile(r"^\s*track\s+(?P<item>.+?)\s*$", re.I)
+OPEN_LOOP_HEADER = ["id", "item", "state", "owner", "due", "domain", "note", "created", "updated"]
 
 
 def _default_ledger_path() -> Path:
@@ -118,6 +122,18 @@ def _default_ladder_config_path() -> Path:
     return get_hermes_home() / "config" / "torben-autonomy-ladder.yaml"
 
 
+def _default_open_loop_tracker_path() -> Path:
+    return get_hermes_home() / "state" / "torben-open-loops.csv"
+
+
+def _default_capture_dedupe_path() -> Path:
+    return get_hermes_home() / "state" / "torben-capture-dedupe.json"
+
+
+def _default_capture_confirmations_path() -> Path:
+    return get_hermes_home() / "state" / "torben-capture-confirmations.jsonl"
+
+
 def _read_json_file(path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -153,6 +169,14 @@ def _parse_promotion_reply(reply_text: str) -> str | None:
     if not match:
         return None
     return match.group("category").lower()
+
+
+def _parse_track_reply(reply_text: str) -> str | None:
+    match = TRACK_REPLY_RE.match(reply_text)
+    if not match:
+        return None
+    item = re.sub(r"\s+", " ", match.group("item").strip())
+    return item or None
 
 
 def _read_yaml_mapping(path: Path) -> dict[str, Any]:
@@ -231,6 +255,106 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _load_open_loops(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames != OPEN_LOOP_HEADER:
+            raise ValueError(f"Open-loop tracker header must be {','.join(OPEN_LOOP_HEADER)}: {path}")
+        return [dict(row) for row in reader]
+
+
+def _write_open_loops(path: Path, rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with tmp.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=OPEN_LOOP_HEADER)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: str(row.get(field) or "") for field in OPEN_LOOP_HEADER})
+    os.replace(tmp, path)
+
+
+def _load_capture_dedupe(path: Path) -> dict[str, int]:
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+    if not isinstance(payload, dict):
+        return {}
+    return {str(key): int(value) for key, value in payload.items()}
+
+
+def _write_capture_dedupe(path: Path, payload: dict[str, int]) -> None:
+    _write_json_atomic(path, payload)
+
+
+def _capture_key(*, text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    material = f"signal-track:{normalized}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _handle_track_reply(args: Namespace, *, reply_text: str, item: str) -> dict[str, Any]:
+    sender = _normalize_signal_sender(getattr(args, "sender", None))
+    if sender != ERIC_SIGNAL_SENDER:
+        return {
+            "schema": "torben.signal-track-resolver.v1",
+            "status": "rejected",
+            "reason": "track_requires_eric_signal_sender",
+            "sender": sender,
+            "reply_text": reply_text,
+        }
+    tracker_path = _default_open_loop_tracker_path()
+    dedupe_path = _default_capture_dedupe_path()
+    confirmations_path = _default_capture_confirmations_path()
+    key = _capture_key(text=item)
+    dedupe = _load_capture_dedupe(dedupe_path)
+    if key in dedupe:
+        return {
+            "schema": "torben.signal-track-resolver.v1",
+            "status": "duplicate",
+            "loop_id": dedupe[key],
+            "confirmation": f"Already tracking loop #{dedupe[key]}: {item}",
+            "wakeAgent": True,
+        }
+
+    rows = _load_open_loops(tracker_path)
+    next_id = max([int(row.get("id") or 0) for row in rows] or [0]) + 1
+    day = datetime.now(timezone.utc).date().isoformat()
+    row = {
+        "id": str(next_id),
+        "item": item,
+        "state": "next-action",
+        "owner": "eric",
+        "due": "",
+        "domain": "admin",
+        "note": f"capture_key={key};source=signal-track-resolver",
+        "created": day,
+        "updated": day,
+    }
+    rows.append(row)
+    _write_open_loops(tracker_path, rows)
+    dedupe[key] = next_id
+    _write_capture_dedupe(dedupe_path, dedupe)
+    confirmation = {
+        "schema": "torben.capture-confirmation.v1",
+        "created_at": _utc_now(),
+        "channel": "signal",
+        "recipient": sender,
+        "loop_id": next_id,
+        "text": f"Captured loop #{next_id} as next-action: {item}",
+    }
+    _append_jsonl(confirmations_path, confirmation)
+    return {
+        "schema": "torben.signal-track-resolver.v1",
+        "status": "captured",
+        "loop": row,
+        "confirmation": confirmation["text"],
+        "wakeAgent": True,
+    }
 
 
 def _promotion_event(
@@ -348,6 +472,20 @@ def _cmd_resolve_reply(args: Namespace) -> int:
                 print(f"promoted: {promotion['category']} {promotion['from_rung']} -> {promotion['to_rung']}")
             else:
                 print(f"rejected: {promotion['category']} - {promotion.get('reason') or payload['status']}")
+        return 0
+
+    track_item = _parse_track_reply(reply_text)
+    if track_item is not None:
+        payload = _handle_track_reply(args, reply_text=reply_text, item=track_item)
+        if args.json:
+            _json_print(payload)
+        else:
+            if payload["status"] == "captured":
+                print(payload["confirmation"])
+            elif payload["status"] == "duplicate":
+                print(payload["confirmation"])
+            else:
+                print(f"rejected: track - {payload.get('reason') or payload['status']}")
         return 0
 
     operator = TorbenOperator(ledger_path=args.ledger or _default_ledger_path())

@@ -8656,3 +8656,46 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+class TestStripInterruptSentinel:
+    """Regression tests: the dashboard/TUI websocket surface must not render
+    Hermes' local "waiting for model response" cancellation sentinel as if
+    it were assistant prose. ACP (#41720) and the gateway's chat platforms
+    (#7921) already suppress it before delivery; this surface never got the
+    same guard.
+    """
+
+    def test_strips_sentinel_prefixed_text(self):
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        text = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}12.3s elapsed)."
+        assert server._strip_interrupt_sentinel(text) == ""
+
+    def test_leaves_normal_text_untouched(self):
+        assert server._strip_interrupt_sentinel("The answer is 42.") == "The answer is 42."
+
+    def test_handles_none_and_empty(self):
+        assert server._strip_interrupt_sentinel("") == ""
+        assert server._strip_interrupt_sentinel(None) == ""
+
+    def test_all_three_final_response_sites_use_the_guard(self):
+        """AST pin: every site that surfaces AIAgent.run_conversation()'s
+        final_response to a websocket client must route it through
+        _strip_interrupt_sentinel — a regression here would silently bring
+        back the raw-sentinel leak this test class is named for."""
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(server))
+        calls = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "_strip_interrupt_sentinel"
+        ]
+        assert len(calls) >= 3, (
+            "expected _strip_interrupt_sentinel to wrap final_response at all "
+            "3 known sites (main chat reply, background.complete, "
+            f"preview.restart.complete); found {len(calls)} call(s)."
+        )

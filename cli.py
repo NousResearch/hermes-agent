@@ -5747,13 +5747,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
 
         # When show_reasoning is on and reasoning is still rendering,
-        # defer content until the reasoning box closes.  This ensures the
-        # reasoning block always appears BEFORE the response in the terminal.
+        # close the reasoning box first so the response appears below it.
+        # Previously this deferred content until _close_reasoning_box() was
+        # called externally, but _close_reasoning_box() is only reachable
+        # through this very method (line below) or _flush_stream (end of
+        # turn) — so the defer created a self-locking deadlock: the
+        # reasoning box never closed because the close call was blocked by
+        # the defer, and the defer was never released because the box never
+        # closed.  Calling _close_reasoning_box() here breaks the cycle:
+        # it sets _reasoning_box_opened=False and recursively emits any
+        # previously-deferred content, then we fall through to render the
+        # current text normally.
         if self.show_reasoning and getattr(self, "_reasoning_box_opened", False):
-            self._deferred_content = getattr(self, "_deferred_content", "") + text
-            return
+            self._close_reasoning_box()
 
         # Close the live reasoning box before opening the response box
+        # (no-op if already closed by the branch above)
         self._close_reasoning_box()
 
         # Open the response box header on the very first visible text

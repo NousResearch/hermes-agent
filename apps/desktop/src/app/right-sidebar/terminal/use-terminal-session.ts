@@ -1,4 +1,5 @@
 import { FitAddon } from '@xterm/addon-fit'
+import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
@@ -20,7 +21,34 @@ import {
   terminalSelectionLabel,
   terminalTheme
 } from './selection'
-import { closeTerminal } from './terminals'
+import { closeTerminal, updateTerminalReviveBuffer } from './terminals'
+
+// How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's
+// terminal.integrated.persistentSessionScrollback default; the store caps the
+// resulting string so a long line-wrapped buffer can't blow the storage budget.
+const PERSISTENT_SESSION_SCROLLBACK = 200
+
+// Leading-edge throttle window for capturing history. The first output after an
+// idle gap persists almost immediately (so `cmd; quit` is on disk before the
+// renderer tears down), then at most once per window while output streams.
+const SNAPSHOT_THROTTLE_MS = 750
+
+// True once the page/app is tearing down (Cmd+Q, Alt+F4, window close, reload).
+// App quit kills the PTYs from the main process, which fires onExit in the
+// renderer — but React skips effect cleanups on teardown, so the per-instance
+// `disposed` flag never flips. Without this guard those teardown exits would call
+// closeTerminal() and wipe the persisted terminal list right before relaunch
+// reads it. A real `exit`/Ctrl-D still closes the tab (flag stays false).
+let appTearingDown = false
+
+if (typeof window !== 'undefined') {
+  const markTearingDown = () => {
+    appTearingDown = true
+  }
+
+  window.addEventListener('pagehide', markTearingDown)
+  window.addEventListener('beforeunload', markTearingDown)
+}
 
 type TerminalStatus = 'closed' | 'open' | 'starting'
 
@@ -140,6 +168,38 @@ function stripInitialPromptGap(data: string) {
   return prefix
 }
 
+// Trim the shell's trailing idle prompt from a serialized snapshot before it's
+// persisted. Without it, the saved buffer ends in the old prompt, so the next
+// launch replays it directly above the fresh shell's prompt ("double bar"). The
+// prompt is the short block after the last blank line (starship's add_newline
+// gap); only a short tail is dropped, so real command output is never trimmed and
+// configs without that blank line simply keep the historical prompt (no loss).
+function cleanReviveSnapshot(serialized: string): string {
+  const visible = (line: string) => stripEscapeSequences(line).replace(/[\s%]/g, '')
+  const lines = serialized.split(/\r?\n/)
+
+  while (lines.length && visible(lines[lines.length - 1]) === '') {
+    lines.pop()
+  }
+
+  let lastBlank = -1
+
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (visible(lines[i]) === '') {
+      lastBlank = i
+
+      break
+    }
+  }
+
+  // A prompt is a short block; a long tail after the blank is real output, leave it.
+  if (lastBlank >= 0 && lines.length - 1 - lastBlank <= 3) {
+    lines.length = lastBlank
+  }
+
+  return lines.join('\r\n')
+}
+
 interface UseTerminalSessionOptions {
   /** Renderer-side terminal id (the tab handle), used to key the agent reader. */
   id: string
@@ -147,6 +207,8 @@ interface UseTerminalSessionOptions {
   /** Only the active tab is visible, owns the agent reader, and runs injections. */
   active: boolean
   onAddSelectionToChat: (text: string, label?: string) => void
+  /** Serialized scrollback from the previous session, replayed once on mount. */
+  reviveBuffer?: string
   /** Reports the resolved shell name once the PTY is live (for the tab label). */
   onShell?: (shell: string) => void
 }
@@ -247,7 +309,14 @@ function quotePathForShell(path: string, shellName: string): string {
   return `'${path.replace(/'/g, "'\\''")}'`
 }
 
-export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onShell }: UseTerminalSessionOptions) {
+export function useTerminalSession({
+  id,
+  cwd,
+  active,
+  onAddSelectionToChat,
+  reviveBuffer,
+  onShell
+}: UseTerminalSessionOptions) {
   // Key off renderedMode (the painted surface type), not resolvedMode (the
   // clicked switch) — a skin can keep a light surface in "dark" mode, and we
   // must match the surface or the ANSI palette inverts against it. themeName
@@ -264,6 +333,9 @@ export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onSh
   const termRef = useRef<Terminal | null>(null)
   const webglRef = useRef<WebglAddon | null>(null)
   const sessionIdRef = useRef<string | null>(null)
+  // Snapshot the revive buffer once: live snapshots feed updateTerminalReviveBuffer
+  // and would otherwise re-arm replay on every store-driven re-render.
+  const initialReviveBufferRef = useRef(reviveBuffer)
   const shellNameRef = useRef('shell')
   const selectionLabelRef = useRef('')
   const selectionRef = useRef('')
@@ -381,12 +453,71 @@ export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onSh
     })
 
     const fit = new FitAddon()
+    const serialize = new SerializeAddon()
 
     termRef.current = term
     term.loadAddon(fit)
+    term.loadAddon(serialize)
     term.loadAddon(new Unicode11Addon())
     term.loadAddon(new WebLinksAddon())
     term.unicode.activeVersion = '11'
+
+    // Replay last session's scrollback before the fresh shell boots. The process
+    // is NOT revived — a new shell starts one line below the restored history.
+    // Stripping the boot gap still applies to the live shell output that follows,
+    // so the fresh prompt lands flush under the restored block.
+    const initialReviveBuffer = initialReviveBufferRef.current
+
+    if (initialReviveBuffer) {
+      term.write(initialReviveBuffer)
+      term.write('\r\n')
+    }
+
+    // Capture the buffer on a leading-edge throttle and persist synchronously via
+    // the store. No unload hook: by the time the user quits, a recent snapshot is
+    // already on disk (the prior beforeunload-based attempt lost the last output).
+    let snapshotTimer = 0
+    let lastSnapshotAt = 0
+
+    const persistSnapshot = () => {
+      if (disposed) {
+        return
+      }
+
+      lastSnapshotAt = Date.now()
+
+      try {
+        const snapshot = serialize.serialize({ scrollback: PERSISTENT_SESSION_SCROLLBACK })
+        updateTerminalReviveBuffer(id, cleanReviveSnapshot(snapshot))
+      } catch {
+        // Best-effort restore: never let serialization break a live terminal.
+      }
+    }
+
+    const scheduleSnapshot = () => {
+      if (snapshotTimer) {
+        return
+      }
+
+      const elapsed = Date.now() - lastSnapshotAt
+
+      if (elapsed >= SNAPSHOT_THROTTLE_MS) {
+        persistSnapshot()
+
+        return
+      }
+
+      snapshotTimer = window.setTimeout(() => {
+        snapshotTimer = 0
+        persistSnapshot()
+      }, SNAPSHOT_THROTTLE_MS - elapsed)
+    }
+
+    cleanup.push(() => {
+      if (snapshotTimer) {
+        window.clearTimeout(snapshotTimer)
+      }
+    })
 
     const onDragOver = (e: DragEvent) => {
       if (!e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
@@ -551,12 +682,19 @@ export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onSh
           setStatus('open')
 
           cleanup.push(
-            terminalApi.onData(session.id, armedWrite),
+            terminalApi.onData(session.id, data => {
+              armedWrite(data)
+              scheduleSnapshot()
+            }),
             terminalApi.onExit(session.id, () => {
               // Shell exited (`exit` / Ctrl-D / crash) — drop the tab like a real
-              // terminal. closeTerminal hides the pane when it's the last one;
-              // skip if we're already tearing down (cleanup disposes the PTY).
-              if (!disposed) {
+              // terminal. closeTerminal hides the pane when it's the last one.
+              // Skip if we're tearing down (cleanup disposes the PTY) OR the app
+              // is quitting/reloading: on quit the main process kills every PTY,
+              // firing this exit, but React skips the cleanup so `disposed` stays
+              // false — running closeTerminal here would wipe the persisted tabs
+              // right before relaunch restores them.
+              if (!disposed && !appTearingDown) {
                 closeTerminal(id)
               }
             })

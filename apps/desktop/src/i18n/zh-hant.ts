@@ -25,7 +25,9 @@ export const zhHant = defineLocale({
     docs: '文件',
     done: '完成',
     error: '錯誤',
+    expand: '展開',
     failed: '失敗',
+    formatJson: '格式化 JSON',
     free: '免費',
     loading: '載入中…',
     notSet: '未設定',
@@ -38,6 +40,7 @@ export const zhHant = defineLocale({
     set: '設定',
     skip: '略過',
     update: '更新',
+    tryHint: term => `試試「${term}」`,
     on: '開啟',
     off: '關閉'
   },
@@ -160,8 +163,7 @@ export const zhHant = defineLocale({
   },
 
   remoteDisplayBanner: {
-    message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`,
-    dismiss: '關閉'
+    message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
   },
 
   titlebar: {
@@ -175,7 +177,8 @@ export const zhHant = defineLocale({
     showRightSidebar: '顯示右側邊欄',
     muteHaptics: '靜音觸感回饋',
     unmuteHaptics: '開啟觸感回饋',
-    openSettings: '開啟設定'
+    openSettings: '開啟設定',
+    openStarmap: '開啟記憶圖譜'
   },
 
   language: {
@@ -308,6 +311,8 @@ export const zhHant = defineLocale({
         restartHint: '寵物功能需要重新啟動——目前執行的應用在此功能加入前啟動。請結束並重新開啟 Hermes，然後回到此處。',
         scaleTitle: '大小',
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
+        roamTitle: '漫遊',
+        roamDesc: '閒置時讓寵物自己在視窗內四處走動。',
         on: '開啟',
         off: '關閉',
         chooseTitle: '選擇寵物',
@@ -593,8 +598,6 @@ export const zhHant = defineLocale({
       enterValueFirst: '請先輸入一個值。',
       couldNotSave: '無法儲存憑證。',
       remove: '移除',
-      or: '或',
-      escToCancel: '按 esc 取消',
       getKey: '取得金鑰',
       saving: '儲存中'
     },
@@ -703,7 +706,22 @@ export const zhHant = defineLocale({
       name: '名稱',
       serverJson: '伺服器 JSON',
       remove: '移除',
-      saveServer: '儲存伺服器'
+      saveServer: '儲存伺服器',
+      capabilitySummary: (tools, prompts, resources) =>
+        `已啟用 ${[`${tools} 個工具`, ...(prompts ? [`${prompts} 個提示`] : []), ...(resources ? [`${resources} 個資源`] : [])].join('、')}`,
+      statusConnecting: '連線中…',
+      statusNeedsAuth: '需要驗證',
+      statusError: '錯誤',
+      statusOff: '關閉',
+      allServers: '所有伺服器',
+      authenticatedTitle: '已驗證',
+      authenticatedMessage: (server, count) => `${server}：${count} 個工具`,
+      waitingForBrowser: '等待瀏覽器…',
+      authenticate: '驗證',
+      unsavedConnect: '未儲存 — 儲存 mcp.json 以連線。',
+      enableTool: tool => `啟用 ${tool}`,
+      disableTool: tool => `停用 ${tool}`,
+      noOutput: '尚無輸出。'
     },
     model: {
       loading: '正在載入模型設定...',
@@ -808,6 +826,7 @@ export const zhHant = defineLocale({
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
+    tabMcp: 'MCP',
     all: '全部',
     searchSkills: '搜尋技能...',
     searchToolsets: '搜尋工具集...',
@@ -831,9 +850,48 @@ export const zhHant = defineLocale({
     toolsetEnabled: '工具集已啟用',
     toolsetDisabled: '工具集已停用',
     appliesToNewSessions: name => `${name} 將套用至新工作階段。`,
-    failedToUpdate: name => `更新 ${name} 失敗`
+    failedToUpdate: name => `更新 ${name} 失敗`,
+    sortMostUsed: '最常用',
+    sortAlpha: 'A–Z',
+    sortMostUsedDesc: '↓ 最常用',
+    sortLeastUsedAsc: '↑ 最少用',
+    enableAll: '全部啟用',
+    disableAll: '全部停用',
+    disableUnused: '停用未使用',
+    bulkUpdated: count => `已為新工作階段更新 ${count} 項。`,
+    bulkNoChange: '沒有需要變更的內容。',
+    usageCount: count => `已使用 ${count} 次`,
+    provenance: {
+      agent: '已學習',
+      bundled: '內建',
+      hub: '技能中心'
+    },
+    emptyNoneFound: noun => `找不到${noun}`,
+    emptyNothingMatches: query => `沒有符合「${query}」的內容。`,
+    emptyNoneAvailable: noun => `尚無可用的${noun}。`,
+    changesApplyNewSessions: '變更將套用至新工作階段。',
+    skillUpdated: '技能已更新',
+    edit: '編輯',
+    archive: '封存',
+    skillArchivedTitle: '技能已封存',
+    skillArchivedMessage: '可透過 hermes curator restore 還原。'
   },
 
+  starmap: {
+    title: '記憶圖譜',
+    subtitle: (nodes, clusters) => `${clusters} 個類別中的 ${nodes} 個技能`,
+    close: '關閉記憶圖譜',
+    refresh: '重新整理',
+    memory: '記憶',
+    filterAll: '全部',
+    filterUsed: '已使用',
+    filterLearned: '已學習',
+    viewGraph: '圖譜',
+    loadFailed: '無法載入記憶圖譜',
+    loading: '載入中…',
+    emptyTitle: '尚無學習內容',
+    emptyDesc: '當 Hermes 為你的工作建立技能與記憶時，會顯示在這裡。'
+  },
   agents: {
     close: '關閉代理',
     title: '派生樹',
@@ -861,7 +919,6 @@ export const zhHant = defineLocale({
     ageHours: hours => `${hours} 小時前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
-    tokensK: k => `${k}k 詞元`,
     tokens: value => `${value} 詞元`
   },
 
@@ -878,7 +935,7 @@ export const zhHant = defineLocale({
     appearance: '外觀',
     settings: '設定',
     changeTheme: '變更主題',
-    changeColorMode: '變更色彩模式...',
+    changeColorMode: '變更色彩模式…',
     pets: {
       title: '寵物',
       placeholder: '搜尋寵物…',
@@ -924,7 +981,8 @@ export const zhHant = defineLocale({
       startOver: '重新開始'
     },
     installTheme: {
-      title: '安裝主題...',
+      title: '安裝主題…',
+      pageTitle: '安裝主題',
       placeholder: '搜尋 VS Code Marketplace...',
       loading: '正在搜尋 Marketplace...',
       error: '無法連接到 Marketplace。',
@@ -1133,9 +1191,9 @@ export const zhHant = defineLocale({
     allProfiles: '全部設定檔',
     showAllProfiles: '顯示全部設定檔',
     switchToProfile: name => `切換至 ${name}`,
-    manageProfiles: '管理設定檔...',
+    manageProfiles: '管理設定檔…',
     actionsFor: name => `${name} 的動作`,
-    color: '顏色...',
+    color: '顏色…',
     colorFor: name => `${name} 的顏色`,
     setColor: color => `設定顏色 ${color}`,
     autoColor: '自動',
@@ -1148,6 +1206,8 @@ export const zhHant = defineLocale({
     env: 'env',
     defaultBadge: '預設',
     rename: '重新命名',
+    renameMenu: '重新命名…',
+    editSoul: '編輯 SOUL.md…',
     copySetup: '複製安裝指令',
     copying: '複製中…',
     modelLabel: '模型',
@@ -1401,6 +1461,7 @@ export const zhHant = defineLocale({
       copyPath: '複製路徑',
       removeFromSidebar: '從側邊欄移除',
       createFailed: '無法建立專案',
+      staleBackend: '請更新 Hermes 後端以建立專案——目前後端比桌面應用舊（設定 → 更新 → 後端）。',
       deleteConfirm: '這會從 Hermes 中移除已儲存的專案。檔案、git 儲存庫和工作樹維持不變。',
       startWork: '新增工作樹',
       newWorktreeTitle: '新增工作樹',
@@ -1500,6 +1561,8 @@ export const zhHant = defineLocale({
     stopDictation: '停止聽寫',
     transcribingDictation: '正在轉寫聽寫',
     voiceDictation: '語音聽寫',
+    speakReplies: '朗讀回覆',
+    stopSpeakingReplies: '停止朗讀回覆',
     lookupLoading: '查詢中…',
     lookupNoMatches: '沒有相符項目。',
     lookupTry: '試試',
@@ -1771,7 +1834,6 @@ export const zhHant = defineLocale({
     flowSubtitles: {
       pkce: '開啟瀏覽器登入，然後回到這裡繼續',
       device_code: '在瀏覽器中開啟驗證頁面 — Hermes 會自動連線',
-      loopback: '開啟瀏覽器登入 — Hermes 會自動連線',
       external: '先在終端機登入一次，然後回來繼續聊天'
     },
     startingSignIn: provider => `正在為 ${provider} 啟動登入...`,
@@ -1900,9 +1962,29 @@ export const zhHant = defineLocale({
       running: count => `${count} 個執行中`,
       cron: '排程',
       openCron: '開啟排程工作',
+      starmap: '記憶圖譜',
+      openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
       currentTurnElapsed: '目前回合已用時間',
       contextUsage: '上下文使用量',
+      contextUsagePanel: {
+        categories: {
+          conversation: '對話',
+          mcp: 'MCP',
+          memory: '記憶',
+          rules: '規則',
+          skills: '技能',
+          subagent_definitions: '子代理定義',
+          system_prompt: '系統提示詞',
+          tool_definitions: '工具定義'
+        },
+        empty: '尚無上下文資料',
+        loading: '正在載入明細…',
+        percentFull: percent => `已用 ${percent}%`,
+        title: '上下文使用量',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: '開啟上下文使用量明細',
       session: '工作階段',
       runtimeSessionElapsed: '執行時工作階段已用時間',
       yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',

@@ -361,10 +361,22 @@ export const api = {
         profile,
       ),
     ),
-  getSessionMessages: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<SessionMessagesResponse>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
-    ),
+  getSessionMessages: (
+    id: string,
+    profile = getManagementProfile(),
+    options?: { includeCompacted?: boolean; includeInactive?: boolean },
+  ) => {
+    const params = new URLSearchParams();
+    if (options?.includeCompacted) params.set("include_compacted", "true");
+    if (options?.includeInactive) params.set("include_inactive", "true");
+    const query = params.toString();
+    return fetchJSON<SessionMessagesResponse>(
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/messages${query ? `?${query}` : ""}`,
+        profile,
+      ),
+    );
+  },
   getSessionDetail: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionInfo>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
@@ -1734,7 +1746,10 @@ export interface TelegramOnboardingApplyResponse {
 
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
-  content: string | null;
+  content: string | null | Array<
+    | string
+    | { type?: string; text?: string; image_url?: { url?: string } | string; [key: string]: unknown }
+  >;
   tool_calls?: Array<{
     id: string;
     function: { name: string; arguments: string };

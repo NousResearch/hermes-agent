@@ -3701,19 +3701,29 @@ class SessionDB:
 
 
     def get_messages(
-        self, session_id: str, include_inactive: bool = False
+        self,
+        session_id: str,
+        include_inactive: bool = False,
+        include_compacted: bool = False,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
         By default only active messages are returned. Pass
-        ``include_inactive=True`` to load soft-deleted rows (e.g. for
-        audit / debug views of rewound history). See
+        ``include_compacted=True`` to include durable compaction-archived rows
+        (``active=0, compacted=1``) while still excluding user-rewound/undone
+        rows (``active=0, compacted=0``). Pass ``include_inactive=True`` to load
+        every soft-deleted row (e.g. for low-level audit / debug views). See
         :meth:`rewind_to_message` for the soft-delete mechanic.
 
         Ordered by AUTOINCREMENT id (true insertion order) rather than
         timestamp — see c03acca50 for the WSL2 clock-regression rationale.
         """
-        active_clause = "" if include_inactive else " AND active = 1"
+        if include_inactive:
+            active_clause = ""
+        elif include_compacted:
+            active_clause = " AND (active = 1 OR compacted = 1)"
+        else:
+            active_clause = " AND active = 1"
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT * FROM messages WHERE session_id = ?"

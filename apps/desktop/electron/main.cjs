@@ -781,6 +781,11 @@ let connectionPromise = null
 // with no named profiles never populates this map, so their experience is
 // byte-for-byte the single-backend behavior.
 const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
+// Track pool backend children that have been sent SIGTERM but haven't exited yet.
+// Without this, stopPoolBackend() deletes the pool entry before the child dies,
+// so the next ensureBackend() call for the same profile spawns a new serve process
+// while the old one is still alive — causing unbounded process accumulation (#58619).
+const dyingPoolChildren = new Map() // profile -> { child, killTimer }
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
@@ -5297,6 +5302,19 @@ function startPoolIdleReaper() {
 // local-spawn portion of startHermes() but without the boot-progress UI,
 // bootstrap, or remote handling (those belong to the primary backend only).
 async function spawnPoolBackend(profile, entry) {
+  // Wait for any dying child for this profile to fully exit before spawning
+  // a replacement.  stopPoolBackend() sends SIGTERM and schedules SIGKILL,
+  // but the child may still be alive when ensureBackend() calls us (#58619).
+  const dying = dyingPoolChildren.get(profile)
+  if (dying) {
+    clearTimeout(dying.killTimer)
+    try {
+      if (dying.child.exitCode === null) dying.child.kill('SIGKILL')
+    } catch {}
+    await waitForBackendExit(dying.child)
+    dyingPoolChildren.delete(profile)
+  }
+
   // A profile may point at its OWN remote backend (connection.json
   // `profiles[name]`), or inherit the app-wide remote (env / global settings).
   // In either case there is no local child to spawn — we just verify the
@@ -5412,7 +5430,24 @@ function stopPoolBackend(profile) {
   const entry = backendPool.get(profile)
   if (!entry) return
   backendPool.delete(profile)
-  stopBackendChild(entry.process)
+  const child = entry.process
+  stopBackendChild(child)
+  // Track the dying child so spawnPoolBackend() waits for it before creating
+  // a replacement.  Without this, the pool entry is gone but the child is
+  // still alive (SIGTERM pending), and the next ensureBackend() for the same
+  // profile spawns a duplicate serve process (#58619).
+  if (child && !child.killed && child.exitCode === null) {
+    const killTimer = setTimeout(() => {
+      try {
+        if (child.exitCode === null) child.kill('SIGKILL')
+      } catch {}
+    }, 5000)
+    dyingPoolChildren.set(profile, { child, killTimer })
+    child.once('exit', () => {
+      clearTimeout(killTimer)
+      dyingPoolChildren.delete(profile)
+    })
+  }
 }
 
 async function teardownPoolBackendAndWait(profile) {

@@ -107,6 +107,8 @@ gateway:
     no_pending:            "Aucune commande en attente de refus."
     denied_singular:       "❌ Commande refusée."
     denied_plural:         "❌ Commandes refusées ({count} commandes)."
+    denied_reason_singular: "❌ Commande refusée. Raison transmise à l'agent: \"{reason}\""
+    denied_reason_plural:  "❌ Commandes refusées ({count} commandes). Raison transmise à l'agent: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast n'est disponible que pour les modèles OpenAI qui prennent en charge Priority Processing."

@@ -4,16 +4,17 @@ title: "Sessions"
 description: "Session persistence, resume, search, management, and per-platform session tracking"
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # Sessions
 
 Hermes Agent automatically saves every conversation as a session. Sessions enable conversation resume, cross-session search, and full conversation history management.
 
 ## How Sessions Work
 
-Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in two complementary systems:
+Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in:
 
-1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search
-2. **JSONL transcripts** (`~/.hermes/sessions/`) — raw conversation transcripts including tool calls (gateway)
+1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search, plus full message history
 
 The SQLite database stores:
 - Session ID, source platform, user ID
@@ -24,6 +25,46 @@ The SQLite database stores:
 - Token counts (input/output)
 - Timestamps (started_at, ended_at)
 - Parent session ID (for compression-triggered session splitting)
+
+### What Counts Toward Context
+
+Hermes stores session history so it can resume conversations, but it does not
+keep re-sending every byte it has ever handled. On each turn, the model sees
+the selected system prompt, the current conversation window, and any content
+Hermes explicitly injects for that turn.
+
+Media attachments are handled as turn-scoped inputs:
+
+- Images may be attached natively to the next model call, or pre-analyzed into
+  a text description when the active model does not support native vision.
+- Audio is transcribed into text when speech-to-text is configured.
+- Text documents can have their extracted text included; other document types
+  are usually represented by a saved local path and a short note.
+- Attachment paths and extracted/derived text can appear in the transcript, but
+  the raw image, audio, or binary file bytes are not repeatedly copied into
+  future prompts.
+
+For example, if a user sends an image and asks Hermes to make a meme from it,
+Hermes may inspect that image once with vision and run an image-processing
+script. Future turns do not automatically carry the original JPEG in context.
+They carry only whatever was written into the conversation, such as the user's
+request, a short image description, a local cache path, or the final assistant
+response.
+
+The most common cause of context growth is not the media file itself. It is
+verbose text: pasted transcripts, full logs, large tool outputs, long diffs,
+repeated status reports, and detailed proof dumps. Prefer summaries, file
+paths, focused excerpts, and tool-backed lookups over copying large artifacts
+into chat.
+
+:::tip
+Use `/compress` when a session gets long, `/new` for a fresh thread, and
+`hermes sessions prune` only when you want to delete old ended sessions from
+storage. Compression reduces the active context; it is not a privacy delete.
+Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
+initial title up front — useful for finding it later with `/resume <name>` or
+in the `/sessions` picker.
+:::
 
 ### Session Sources
 
@@ -105,7 +146,7 @@ Session IDs are shown when you exit a CLI session, and can be found with `hermes
 
 When you resume a session, Hermes displays a compact recap of the previous conversation in a styled panel before the input prompt:
 
-<img className="docs-terminal-figure" src="/img/docs/session-recap.svg" alt="Stylized preview of the Previous Conversation recap panel shown when resuming a Hermes session." />
+<img className="docs-terminal-figure" src={useBaseUrl('/img/docs/session-recap.svg')} alt="Stylized preview of the Previous Conversation recap panel shown when resuming a Hermes session." />
 <p className="docs-figure-caption">Resume mode shows a compact recap panel with recent user and assistant turns before returning you to the live prompt.</p>
 
 The recap:
@@ -294,19 +335,87 @@ If the title is already in use by another session, an error is shown.
 # Delete ended sessions older than 90 days (default)
 hermes sessions prune
 
-# Custom age threshold
+# Custom age threshold — bare numbers are days
 hermes sessions prune --older-than 30
 
-# Only prune sessions from a specific platform
-hermes sessions prune --source telegram --older-than 60
+# Durations work too: 5h, 30m, 2d, 1w
+hermes sessions prune --older-than 12h
+
+# Delete only a specific time window (e.g. a batch of test sessions
+# created in the last 5 hours)
+hermes sessions prune --newer-than 5h
+
+# Explicit window with absolute timestamps
+hermes sessions prune --after "2026-07-05 09:00" --before "2026-07-05 14:30"
+
+# Only prune sessions from a specific platform (all ages — any filter
+# disables the implicit 90-day default)
+hermes sessions prune --source telegram
+hermes sessions prune --source cron --older-than 60   # add a time flag to narrow
+
+# More filters — all AND together
+hermes sessions prune --newer-than 5h --title "smoke test"   # title substring
+hermes sessions prune --older-than 30 --max-messages 3        # tiny sessions
+hermes sessions prune --cwd ~/scratch --end-reason done       # by cwd / end reason
+hermes sessions prune --model gpt-5 --older-than 1w           # by model (substring)
+hermes sessions prune --provider openrouter --older-than 60   # by billing provider
+hermes sessions prune --branch feature/old-experiment         # by git branch
+hermes sessions prune --user 12345678 --chat-type group       # by messaging origin
+hermes sessions prune --max-tokens 500 --older-than 7         # by token usage
+hermes sessions prune --max-cost 0.01 --max-tool-calls 0      # cheap, tool-less runs
+
+# Preview what would be deleted, without deleting anything
+hermes sessions prune --newer-than 5h --dry-run
 
 # Skip confirmation
 hermes sessions prune --older-than 30 --yes
 ```
 
+Time values (`--older-than`, `--newer-than`, `--before`, `--after`) accept a
+duration (`5h`, `30m`, `2d`, `1w`), a bare number of days, or an ISO
+timestamp (`2026-07-05`, `2026-07-05 14:30`). `--older-than`/`--before` set
+the upper bound; `--newer-than`/`--after` set the lower bound. Combine both
+for a window.
+
+Attribute filters: `--source` (platform, exact), `--title` / `--model` /
+`--branch` (case-insensitive substring), `--provider` (billing provider,
+exact), `--end-reason`, `--user`, `--chat-id`, `--chat-type` (exact),
+`--cwd` (path prefix), plus numeric bounds `--min/--max-messages`,
+`--min/--max-tokens` (input+output), `--min/--max-cost` (USD, actual falling
+back to estimated), and `--min/--max-tool-calls`. Using any filter disables
+the implicit 90-day default, so `hermes sessions prune --source cron` or
+`--model gpt-4o` matches all ages — add a time flag to narrow it. Only a
+completely bare `hermes sessions prune` keeps the 90-day cutoff. Every
+non-`--yes` run shows the match count plus the oldest and newest matching
+session before asking for confirmation.
+
+Archived sessions are skipped by default; pass `--include-archived` to
+delete them too.
+
 :::info
 Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
 :::
+
+### Bulk-Archive Sessions
+
+If you want sessions out of your listings without deleting anything,
+`hermes sessions archive` takes the same filters as `prune` but soft-hides
+matching sessions instead (sets the same archived flag as archiving a single
+session from the Desktop/Dashboard UI — messages and search stay intact):
+
+```bash
+# Archive everything from the last 5 hours (e.g. 75 CI smoke-test sessions)
+hermes sessions archive --newer-than 5h
+
+# Archive by title substring, preview first
+hermes sessions archive --title "dry run" --dry-run
+hermes sessions archive --title "dry run" --yes
+```
+
+At least one filter is required — a bare `hermes sessions archive` refuses to
+archive your entire history. Archived sessions are hidden from
+`hermes sessions list` and `/resume` but remain in the database and can be
+unarchived from the Desktop/Dashboard session list.
 
 ### Session Statistics
 
@@ -325,34 +434,77 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/docs/reference/cli-commands#hermes-insights).
+For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/reference/cli-commands#hermes-insights).
 
 ## Session Search Tool
 
-The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine.
+The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
 
-### How It Works
+### Three calling shapes
 
-1. FTS5 searches matching messages ranked by relevance
-2. Groups results by session, takes the top N unique sessions (default 3)
-3. Loads each session's conversation, truncates to ~100K chars centered on matches
-4. Sends to a fast summarization model for focused summaries
-5. Returns per-session summaries with metadata and surrounding context
+The tool infers what you want from which arguments you set. There's no `mode` parameter.
 
-### FTS5 Query Syntax
+**1. Discovery — pass `query`:**
 
-The search supports standard FTS5 query syntax:
+```python
+session_search(query="auth refactor", limit=3)
+```
 
-- Simple keywords: `docker deployment`
+Runs FTS5, dedupes hits by session lineage, returns the top N sessions. Each result carries:
+
+- `session_id`, `title`, `when`, `source`
+- `snippet` — FTS5-highlighted match excerpt
+- `bookend_start` — first 3 user+assistant messages of the session (the goal/kickoff)
+- `messages` — ±5 messages around the FTS5 match, with the anchor message flagged (the hit in context)
+- `bookend_end` — last 3 user+assistant messages of the session (the resolution/decisions)
+- `match_message_id`, `messages_before`, `messages_after`
+
+Bookends + window together reconstruct goal → match → resolution without paying for the whole transcript. Typical wall time: 15–50ms on a real session DB.
+
+**2. Scroll — pass `session_id` + `around_message_id`:**
+
+```python
+session_search(session_id="20260510_174648_805cc2", around_message_id=590803, window=10)
+```
+
+Returns a window of ±`window` messages centered on the anchor. No FTS5, no bookends — just the slice. Use after a discovery call when you need more context than the ±5 default window.
+
+- To scroll **forward**: pass `messages[-1].id` back as `around_message_id`
+- To scroll **backward**: pass `messages[0].id` back as `around_message_id`
+- The boundary message appears in both windows as an orientation marker
+- When `messages_before` or `messages_after` is less than `window`, you're at the start or end of the session
+
+Typical wall time: 1–2ms per scroll call.
+
+**3. Browse — no args:**
+
+```python
+session_search()
+```
+
+Returns recent sessions chronologically (titles, previews, timestamps). Useful when the user asks "what was I working on" without naming a topic.
+
+### FTS5 query syntax
+
+The keyword mode supports standard FTS5 query syntax:
+
+- Simple keywords: `docker deployment` (FTS5 defaults to AND)
 - Phrases: `"exact phrase"`
 - Boolean: `docker OR kubernetes`, `python NOT java`
 - Prefix: `deploy*`
+
+### Optional parameters
+
+- `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
+- `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
 
 ### When It's Used
 
 The agent is prompted to use session search automatically:
 
 > *"When the user references something from a past conversation or you suspect relevant prior context exists, use session_search to recall it before asking them to repeat themselves."*
+
+Typical triggers: "we did this before", "remember when", "last time", "as I mentioned", or any reference to a project/person/concept that isn't in the current window.
 
 ## Per-Platform Session Tracking
 
@@ -405,10 +557,34 @@ Sessions with **active background processes** are never auto-reset, regardless o
 | What | Path | Description |
 |------|------|-------------|
 | SQLite database | `~/.hermes/state.db` | All session metadata + messages with FTS5 |
-| Gateway transcripts | `~/.hermes/sessions/` | JSONL transcripts per session + sessions.json index |
-| Gateway index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs |
+| Gateway messages    | `~/.hermes/state.db`   | SQLite — canonical store for all session messages |
+| Gateway routing index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs (origin metadata, expiry flags) |
 
 The SQLite database uses WAL mode for concurrent readers and a single writer, which suits the gateway's multi-platform architecture well.
+
+:::warning `sessions.json` is not the session list
+`~/.hermes/sessions/sessions.json` is the **gateway routing index** — it maps
+messaging session keys (`agent:main:<platform>:...`) to active session IDs.
+It only ever contains gateway/messaging entries, so if you run a messaging
+platform you'll see only those (e.g. `agent:main:whatsapp:dm:...`).
+
+This is **expected** and does **not** mean your CLI sessions are missing.
+`hermes sessions list`, `/sessions`, and the dashboard all read `state.db`,
+which holds **every** session (CLI, TUI, and gateway). The `/save` snapshots
+under `~/.hermes/sessions/saved/*.json` are convenience exports, not the index.
+
+If CLI sessions genuinely don't appear in `hermes sessions list`, the cause is
+`state.db` not receiving them — run `hermes sessions repair` and watch for a
+`⚠ Session store unavailable` warning at CLI startup, which means SQLite
+persistence failed for that run.
+:::
+
+:::note Legacy JSONL transcripts
+Sessions created before state.db became canonical may have leftover
+`*.jsonl` files in `~/.hermes/sessions/`. They are no longer written or
+read by Hermes. Safe to delete after verifying the corresponding session
+exists in state.db.
+:::
 
 ### Database Schema
 

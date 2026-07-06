@@ -540,8 +540,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # they don't sit in the chat forever as "Hermes is thinking…".
         self._orphan_typing_messages: Dict[str, List[str]] = {}
         # FlowControl knobs (env-configurable).
-        self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
-        self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
+        try:
+            self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
+        except (ValueError, TypeError):
+            self._max_messages = 1
+        try:
+            self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
+        except (ValueError, TypeError):
+            self._max_bytes = 16 * 1024 * 1024
 
     # ------------------------------------------------------------------
     # Configuration loading and validation
@@ -577,7 +583,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 )
             if not os.path.exists(sa_path):
                 raise FileNotFoundError(
-                    f"Service Account JSON file not found at configured path."
+                    "Service Account JSON file not found at configured path."
                 )
             # Validate file parses before handing to google-auth for nicer error.
             try:
@@ -670,9 +676,17 @@ class GoogleChatAdapter(BasePlatformAdapter):
             logger.warning("[GoogleChat] Loop not accepting callbacks; dropping event")
             return
         try:
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            from agent.async_utils import safe_schedule_threadsafe
+            future = safe_schedule_threadsafe(
+                coro, loop,
+                logger=logger,
+                log_message="[GoogleChat] Failed to schedule background callback",
+                log_level=logging.WARNING,
+            )
         except RuntimeError:
             logger.warning("[GoogleChat] Loop closed between check and submit")
+            return
+        if future is None:
             return
         future.add_done_callback(self._log_background_failure)
 
@@ -747,7 +761,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Validate config, authenticate, start Pub/Sub pull, resolve bot id."""
         # First call into the heavy google-cloud stack — trigger the lazy
         # import. ``_load_google_modules()`` is idempotent and rebinds the
@@ -1382,7 +1396,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if arg == "start":
             if not oauth_helper._client_secret_path().exists():
                 await _reply(
-                    "⚠️ No client credentials stored on the host. Send "
+                    "⚠️ No client credentials stored for this profile. Send "
                     "`/setup-files` (no args) for setup instructions."
                 )
                 return True
@@ -1531,7 +1545,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if sender_email and space_name:
             self._last_sender_by_chat[space_name] = sender_email.strip().lower()
 
-        chat_type = "dm" if space_type in ("DIRECT_MESSAGE", "DM") else "group"
+        chat_type = "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group"
         text = msg.get("argumentText") or msg.get("text") or ""
         text = text.strip()
 
@@ -1927,7 +1941,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return True
         except HttpError as exc:
             status = getattr(getattr(exc, "resp", None), "status", None)
-            if status in (403, 404):
+            if status in {403, 404}:
                 return False
             logger.debug(
                 "[GoogleChat] delete_message failed: %s",
@@ -1950,7 +1964,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         update_mask = ",".join(update_mask_fields) or "text"
 
         # Patch body cannot carry thread (immutable).
-        patch_body = {k: v for k, v in body.items() if k not in ("thread",)}
+        patch_body = {k: v for k, v in body.items() if k not in {"thread",}}
 
         def _do_patch() -> Dict[str, Any]:
             return (
@@ -2783,7 +2797,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             upload_resp = await asyncio.to_thread(_upload)
         except HttpError as exc:
             status = getattr(getattr(exc, "resp", None), "status", None)
-            if status in (401, 403):
+            if status in {401, 403}:
                 logger.warning(
                     "[GoogleChat] media.upload auth failure for identity=%s "
                     "(token revoked or scope missing) — falling back to "
@@ -2919,7 +2933,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         display = info.get("displayName") or chat_id
         return {
             "name": display,
-            "type": "dm" if space_type in ("DIRECT_MESSAGE", "DM") else "group",
+            "type": "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group",
             "chat_id": chat_id,
         }
 
@@ -3238,7 +3252,7 @@ async def _standalone_send(
         return {"error": "Google Chat standalone send: aiohttp not installed"}
 
     try:
-        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=30.0)) as session:
+        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=30.0), trust_env=True) as session:
             async with session.post(
                 url,
                 json=body,

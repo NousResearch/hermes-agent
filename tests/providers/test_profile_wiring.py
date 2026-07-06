@@ -59,6 +59,7 @@ class TestKimiProfileParity:
         assert profile["max_completion_tokens"] == legacy["max_completion_tokens"] == 32000
 
     def test_thinking_enabled(self, transport):
+        # xor contract: explicit effort → reasoning_effort only, no thinking.
         rc = {"enabled": True, "effort": "high"}
         legacy = transport.build_kwargs(
             model="kimi-k2", messages=_msgs(), tools=None,
@@ -69,8 +70,9 @@ class TestKimiProfileParity:
             provider_profile=get_provider_profile("kimi"),
             reasoning_config=rc,
         )
-        assert profile["extra_body"]["thinking"] == legacy["extra_body"]["thinking"]
         assert profile["reasoning_effort"] == legacy["reasoning_effort"] == "high"
+        assert "thinking" not in profile.get("extra_body", {})
+        assert "thinking" not in legacy.get("extra_body", {})
 
     def test_thinking_disabled(self, transport):
         rc = {"enabled": False}
@@ -89,6 +91,7 @@ class TestKimiProfileParity:
         assert "reasoning_effort" not in legacy
 
     def test_reasoning_effort_default(self, transport):
+        # xor contract: enabled w/o effort → thinking-enabled only, no effort.
         rc = {"enabled": True}
         legacy = transport.build_kwargs(
             model="kimi-k2", messages=_msgs(), tools=None,
@@ -99,7 +102,9 @@ class TestKimiProfileParity:
             provider_profile=get_provider_profile("kimi"),
             reasoning_config=rc,
         )
-        assert profile["reasoning_effort"] == legacy["reasoning_effort"] == "medium"
+        assert profile["extra_body"]["thinking"] == legacy["extra_body"]["thinking"] == {"type": "enabled"}
+        assert "reasoning_effort" not in profile
+        assert "reasoning_effort" not in legacy
 
 
 class TestOpenRouterProfileParity:
@@ -119,11 +124,11 @@ class TestOpenRouterProfileParity:
     def test_reasoning_full_config(self, transport):
         rc = {"enabled": True, "effort": "high"}
         legacy = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
+            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("openrouter"), supports_reasoning=True, reasoning_config=rc,
         )
         profile = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
+            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("openrouter"),
             supports_reasoning=True, reasoning_config=rc,
         )
@@ -131,11 +136,11 @@ class TestOpenRouterProfileParity:
 
     def test_default_reasoning(self, transport):
         legacy = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
+            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("openrouter"), supports_reasoning=True,
         )
         profile = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
+            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("openrouter"),
             supports_reasoning=True,
         )
@@ -273,12 +278,13 @@ class TestRequestOverridesParity:
 
     def test_extra_body_override_merges_with_provider_body(self, transport):
         """Override extra_body merges WITH provider extra_body, not replaces."""
+        from agent.portal_tags import nous_portal_tags
         kw = transport.build_kwargs(
             model="hermes-3", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("nous"),
             request_overrides={"extra_body": {"custom": True}},
         )
-        assert kw["extra_body"]["tags"] == ["product=hermes-agent"]  # from profile
+        assert kw["extra_body"]["tags"] == nous_portal_tags()  # from profile
         assert kw["extra_body"]["custom"] is True  # from override
 
     def test_top_level_override(self, transport):

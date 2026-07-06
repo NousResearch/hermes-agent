@@ -6,8 +6,6 @@ Rules:
 - Non-local with explicit path: keep as-is.
 """
 
-import os
-import pytest
 
 _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 

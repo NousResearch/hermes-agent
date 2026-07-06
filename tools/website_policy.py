@@ -29,7 +29,7 @@ _DEFAULT_WEBSITE_BLOCKLIST = {
 }
 
 # Cache: parsed policy + timestamp.  Avoids re-reading config.yaml on every
-# URL check (a web_crawl with 50 pages would otherwise mean 51 YAML parses).
+# URL check (a multi-URL extract with 50 pages would otherwise mean 51 YAML parses).
 _CACHE_TTL_SECONDS = 30.0
 _cache_lock = threading.Lock()
 _cached_policy: Optional[Dict[str, Any]] = None
@@ -137,7 +137,8 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
     """
     global _cached_policy, _cached_policy_path, _cached_policy_time
 
-    resolved_path = str(config_path) if config_path else "__default__"
+    default_path = str(_get_default_config_path())
+    resolved_path = str(config_path) if config_path else default_path
     now = time.monotonic()
 
     # Return cached policy if still fresh and same path
@@ -193,7 +194,7 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
     if config_path == _get_default_config_path():
         with _cache_lock:
             _cached_policy = result
-            _cached_policy_path = "__default__"
+            _cached_policy_path = resolved_path
             _cached_policy_time = now
 
     return result

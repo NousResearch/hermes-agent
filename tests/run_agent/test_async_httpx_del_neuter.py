@@ -13,8 +13,6 @@ The three-layer defence:
 """
 
 import asyncio
-import threading
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -178,11 +176,16 @@ class TestClientCacheBoundedGrowth:
         """When the loop changes, the old entry should be replaced, not duplicated."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             _get_cached_client,
         )
 
-        key = ("test_replace", True, "", "", "", (), False)
+        key = _client_cache_key(
+            "test_replace",
+            async_mode=True,
+            task="",
+        )
 
         # Simulate a stale entry from a closed loop
         old_loop = asyncio.new_event_loop()

@@ -4,7 +4,7 @@ name: uv.lock check
 # that modify pyproject.toml without regenerating uv.lock (or vice versa)
 # must not merge, because the Docker build's `uv sync --frozen` step will
 # fail on a stale lockfile and we'd rather catch it here than in the
-# docker-publish workflow on main.
+# docker workflow on main.
 #
 # ─────────────────────────────────────────────────────────────────────────
 # IMPORTANT: this check runs against the MERGED state, not just your branch
@@ -44,25 +44,14 @@ name: uv.lock check
 # the same way.  Better to catch it here than after merge.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/workflows/uv-lockfile-check.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/workflows/uv-lockfile-check.yml'
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
   group: uv-lockfile-check-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -71,10 +60,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
 
       # `uv lock --check` re-resolves the project from pyproject.toml and
       # compares the result to uv.lock, exiting non-zero if they disagree.
@@ -111,7 +100,7 @@ jobs:
 
           This check is blocking because the Docker image build uses
           `uv sync --frozen --extra all`, which rejects stale lockfiles
-          — catching it here avoids a ~15 min failed docker-publish run
+          — catching it here avoids a ~15 min failed docker run
           on `main` post-merge.
           EOF
             echo "::error title=uv.lock out of sync::Run \`uv lock\` locally and commit the result. If on a PR, sync with main first."

@@ -121,6 +121,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.BLUEBUBBLES)
+        self._sent_texts: set = set()
         extra = config.extra or {}
         self.server_url = _normalize_server_url(
             extra.get("server_url") or os.getenv("BLUEBUBBLES_SERVER_URL", "")
@@ -313,7 +314,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         """Compute the external webhook URL for BlueBubbles registration."""
         host = self.webhook_host
         if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
-            host = "localhost"
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property
@@ -488,6 +489,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
         }
         try:
+            self._sent_texts.add(message)
             res = await self._api_post("/api/v1/chat/new", payload)
             data = res.get("data") or {}
             msg_id = data.get("guid") or data.get("messageGuid") or "ok"
@@ -549,6 +551,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 payload["selectedMessageGuid"] = reply_to
                 payload["partIndex"] = 0
             try:
+                self._sent_texts.add(chunk)
                 res = await self._api_post("/api/v1/message/text", payload)
                 data = res.get("data") or {}
                 msg_id = data.get("guid") or data.get("messageGuid") or "ok"
@@ -908,13 +911,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.Response(text="ok")
 
         record = self._extract_payload_record(payload) or {}
-        is_from_me = bool(
-            record.get("isFromMe")
-            or record.get("fromMe")
-            or record.get("is_from_me")
-        )
-        if is_from_me:
-            return web.Response(text="ok")
 
         # Skip tapback reactions delivered as messages
         assoc_type = record.get("associatedMessageType")
@@ -1005,6 +1001,26 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+
+        is_from_me = bool(
+            record.get("isFromMe")
+            or record.get("fromMe")
+            or record.get("is_from_me")
+        )
+        if is_from_me:
+            if text in self._sent_texts:
+                try:
+                    self._sent_texts.remove(text)
+                except KeyError:
+                    pass
+                return web.Response(text="ok")
+
+            is_self_chat = not is_group and (
+                sender == chat_identifier or (chat_guid and sender in chat_guid)
+            )
+            if not is_self_chat:
+                return web.Response(text="ok")
+
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug(

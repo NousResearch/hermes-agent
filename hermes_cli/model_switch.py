@@ -2120,17 +2120,55 @@ def list_authenticated_providers(
             if _pair[0] and _pair[1]:
                 _section3_emitted_pairs.add(_pair)
 
-    # --- 3b. Active bare custom endpoint from model config ---
+    # --- 3b. Bare custom endpoint declared in model config ---
     # A config can still use the direct one-off form:
     #   model.provider: custom
     #   model.base_url: https://some-openai-compatible/v1
     # In that shape there is no named providers:/custom_providers row for the
-    # picker to render, but the gateway only passes this current model slice to
-    # list_authenticated_providers(). Surface the active endpoint explicitly so
-    # /model does not look like it ignored config.yaml.
+    # picker to render.
+    #
+    # Two sources can identify this endpoint:
+    #   1. The caller-supplied current_provider/current_base_url/current_model
+    #      (what existing callers pass to describe "the active endpoint" for
+    #      the current request).
+    #   2. The static config.yaml `model:` block, read directly here, for when
+    #      the caller's current_provider reflects a *different*, currently
+    #      active provider (e.g. the live session switched to another model).
+    #      Without this fallback, the row only appeared while it happened to
+    #      be the session's active provider. Switching to any other model made
+    #      it vanish from the picker entirely, and since it never re-populated
+    #      `seen_slugs`, the unconfigured-canonical-provider fallback then
+    #      inserted a misleading 0-model "run `hermes model` to configure"
+    #      skeleton in its place (#59702).
+    _base_url = ""
+    _default_model = ""
+    _api_key = ""
+    _is_current = False
+
+    if _current_provider_norm == "custom" and current_base_url:
+        _base_url = str(current_base_url).strip()
+        _default_model = current_model or ""
+        _is_current = True
+    else:
+        try:
+            from hermes_cli.config import load_config as _load_config_3b
+            _model_cfg = _load_config_3b().get("model") or {}
+        except Exception:
+            _model_cfg = {}
+
+        _configured_provider = str(_model_cfg.get("provider", "") or "").strip().lower()
+        _configured_base_url = str(_model_cfg.get("base_url", "") or "").strip()
+
+        if _configured_provider == "custom" and _configured_base_url:
+            _base_url = _configured_base_url
+            _default_model = str(_model_cfg.get("default", "") or "").strip()
+            _api_key = str(_model_cfg.get("api_key", "") or "").strip()
+            _is_current = bool(current_base_url) and str(current_base_url).strip().rstrip("/").lower() == (
+                _base_url.rstrip("/").lower()
+            )
+
     if (
-        _current_provider_norm == "custom"
-        and current_base_url
+        _base_url
         and "custom" not in seen_slugs
         and not any(
             isinstance(_cp, dict)
@@ -2139,29 +2177,40 @@ def list_authenticated_providers(
                 or _cp.get("url", "")
                 or _cp.get("api", "")
             ).strip().rstrip("/").lower()
-            == str(current_base_url).strip().rstrip("/").lower()
+            == _base_url.strip().rstrip("/").lower()
             for _cp in (custom_providers or [])
         )
     ):
-        _models = [current_model] if current_model else []
-        if refresh or probe_current_custom_provider:
+        _models = [_default_model] if _default_model else []
+
+        # Caller-supplied branch keeps the existing refresh/probe-current
+        # timing (an explicit refresh, or probe_current_custom_provider's
+        # "probe only the active endpoint" middle ground). The config-sourced
+        # fallback branch has no caller-supplied current_model to fall back
+        # to, so it always defers to the shared probing policy instead.
+        _should_probe_3b = (
+            (refresh or probe_current_custom_provider)
+            if _is_current and _current_provider_norm == "custom"
+            else _can_probe_custom_provider(row_is_current=_is_current)
+        )
+        if _should_probe_3b:
             try:
                 from hermes_cli.models import fetch_api_models
-
-                _live_models = fetch_api_models("", str(current_base_url).strip().rstrip("/"))
-                if _live_models:
-                    _models = _live_models
+                live_models = fetch_api_models(_api_key, _base_url, headers=None)
+                if live_models:
+                    _models = live_models
             except Exception:
                 pass
+
         results.append({
             "slug": "custom",
             "name": "Custom endpoint",
-            "is_current": True,
+            "is_current": _is_current,
             "is_user_defined": True,
             "models": _models[:max_models] if max_models is not None else _models,
             "total_models": len(_models),
             "source": "model-config",
-            "api_url": str(current_base_url).strip().rstrip("/"),
+            "api_url": _base_url.strip().rstrip("/"),
         })
         seen_slugs.add("custom")
 

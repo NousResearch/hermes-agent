@@ -1426,7 +1426,7 @@ export const zhHant = defineLocale({
     groupTitleGrouped: '取消分組',
     groupTitleUngrouped: '依工作區分組',
     allPinned: '這裡的全部已釘選。取消釘選某個聊天即可在最近中顯示。',
-    shiftClickHint: 'Shift + 點擊聊天以釘選 · 拖曳以重新排序',
+    shiftClickHint: '將聊天拖曳到此處，或 Shift + 點擊以釘選',
     noWorkspace: '無工作區',
     noProject: '無專案',
     projectEmpty: '尚無工作階段',

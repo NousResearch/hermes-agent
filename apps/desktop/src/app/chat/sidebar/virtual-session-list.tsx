@@ -3,6 +3,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { type FC, useCallback, useRef } from 'react'
 
+import type { SessionDragPayload } from '@/app/chat/composer/inline-refs'
 import type { SessionInfo } from '@/hermes'
 import { type SidebarSessionEntry } from '@/lib/session-branch-tree'
 import { cn } from '@/lib/utils'
@@ -20,6 +21,8 @@ interface SessionRowCommonProps {
   onDelete: () => void
   onPin: () => void
   onResume: () => void
+  onSessionDragEnd?: () => void
+  onSessionDragStart?: (payload: SessionDragPayload) => void
   reorderable?: boolean
 }
 
@@ -31,6 +34,8 @@ interface VirtualSessionListProps {
   onBranchSession?: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string) => void
+  onSessionDragEnd?: () => void
+  onSessionDragStart?: (payload: SessionDragPayload) => void
   onTogglePin: (sessionId: string) => void
   pinned: boolean
   sortable: boolean
@@ -48,6 +53,8 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onBranchSession,
   onDeleteSession,
   onResumeSession,
+  onSessionDragEnd,
+  onSessionDragStart,
   onTogglePin,
   pinned,
   sortable,
@@ -90,6 +97,8 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
+      onSessionDragEnd,
+      onSessionDragStart,
       reorderable
     }
 

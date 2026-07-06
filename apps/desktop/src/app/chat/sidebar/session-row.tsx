@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
+import { motion } from 'motion/react'
 import type * as React from 'react'
 
-import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
+import { type SessionDragPayload, writeSessionDrag } from '@/app/chat/composer/inline-refs'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -13,7 +14,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, sessionPinId } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -34,6 +35,12 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  /** Native session-drag ended (drag-to-pin/unpin/reorder) — clears the owner's
+   * live drag state so drop-zone highlights and previews reset. */
+  onSessionDragEnd?: () => void
+  /** Native session-drag started on the row body — hands the owner the payload
+   * so it can drive drop-zone previews while the drag is in flight. */
+  onSessionDragStart?: (payload: SessionDragPayload) => void
 }
 
 const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
@@ -59,6 +66,8 @@ export function SidebarSessionRow({
   reorderable = false,
   dragging = false,
   dragHandleProps,
+  onSessionDragEnd,
+  onSessionDragStart,
   className,
   style,
   ref,
@@ -90,128 +99,148 @@ export function SidebarSessionRow({
       sessionId={session.id}
       title={title}
     >
-      <SidebarRowShell
-        actions={
-          <div className="relative z-2 grid w-[1.375rem] place-items-center">
-            {!isWorking && (
-              <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
-                {age}
-              </span>
-            )}
-            <SessionActionsMenu
-              onArchive={onArchive}
-              onBranch={onBranch}
-              onDelete={onDelete}
-              onPin={onPin}
-              pinned={isPinned}
-              profile={session.profile}
-              sessionId={session.id}
-              title={title}
-            >
-              <Button
-                aria-label={r.actionsFor(title)}
-                className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
-                size="icon"
-                title={r.sessionActions}
-                variant="ghost"
-              >
-                <Codicon name="kebab-vertical" size="0.875rem" />
-              </Button>
-            </SessionActionsMenu>
-          </div>
-        }
-        className={cn(
-          'group row-hover relative',
-          isSelected && 'bg-(--ui-row-active-background)',
-          isWorking && 'text-foreground',
-          // Opaque surface while lifted so the dragged row erases what's under
-          // it (translucency let the rows below bleed through).
-          dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
-          className
-        )}
-        data-working={isWorking ? 'true' : undefined}
+      <div
+        // The stable (never-animated) drag source + hit-test anchor. Pin/unpin
+        // drop zones read every row's rect off `[data-session-id]`; keeping that
+        // on the outer node (the animated visual lives one level in) means the
+        // rects stay put while the preview shuffle animates, so hover anchoring
+        // never chases a moving target. This is also the dnd-kit sortable node
+        // (`ref`/`style`) and the virtualizer's measured element (`...rest`).
+        className={cn(dragging && 'relative z-10')}
+        data-session-id={session.id}
         draggable
+        onDragEnd={() => onSessionDragEnd?.()}
         onDragStart={event => {
           // Reorder drags belong to dnd-kit (the grab handle) — cancel the
-          // native drag so the two DnD systems don't fight.
+          // native drag so the two DnD systems don't fight. Everything else is a
+          // pin/unpin/reorder drag the Pinned and Sessions sections accept.
           if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
             event.preventDefault()
 
             return
           }
 
-          writeSessionDrag(event.dataTransfer, {
+          const payload: SessionDragPayload = {
             id: session.id,
+            pinId: sessionPinId(session),
+            pinned: isPinned,
             profile: session.profile || 'default',
             title
-          })
+          }
+
+          writeSessionDrag(event.dataTransfer, payload)
+          onSessionDragStart?.(payload)
         }}
         ref={ref}
         style={style}
         {...rest}
       >
-        {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
-        <SidebarRowBody
-          className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
-          onClick={event => {
-            if (event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              onPin()
-
-              return
+        <motion.div layout="position" transition={{ layout: { duration: 0.16, ease: [0.2, 0, 0, 1] } }}>
+          <SidebarRowShell
+            actions={
+              <div className="relative z-2 grid w-[1.375rem] place-items-center">
+                {!isWorking && (
+                  <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
+                    {age}
+                  </span>
+                )}
+                <SessionActionsMenu
+                  onArchive={onArchive}
+                  onBranch={onBranch}
+                  onDelete={onDelete}
+                  onPin={onPin}
+                  pinned={isPinned}
+                  profile={session.profile}
+                  sessionId={session.id}
+                  title={title}
+                >
+                  <Button
+                    aria-label={r.actionsFor(title)}
+                    className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
+                    size="icon"
+                    title={r.sessionActions}
+                    variant="ghost"
+                  >
+                    <Codicon name="kebab-vertical" size="0.875rem" />
+                  </Button>
+                </SessionActionsMenu>
+              </div>
             }
+            className={cn(
+              'group row-hover relative',
+              isSelected && 'bg-(--ui-row-active-background)',
+              isWorking && 'text-foreground',
+              // Opaque surface while lifted so the dragged row erases what's under
+              // it (translucency let the rows below bleed through).
+              dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)',
+              className
+            )}
+            data-working={isWorking ? 'true' : undefined}
+          >
+            {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
+            <SidebarRowBody
+              className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
+              onClick={event => {
+                if (event.shiftKey) {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  triggerHaptic('selection')
+                  onPin()
 
-            // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
-            // window — the universal "open in a new window" gesture. Archive
-            // lives in the row's ⋯ and right-click menus. Falls through to a
-            // normal resume when standalone windows aren't available (web embed).
-            if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
+                  return
+                }
 
-              return
-            }
+                // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
+                // window — the universal "open in a new window" gesture. Archive
+                // lives in the row's ⋯ and right-click menus. Falls through to a
+                // normal resume when standalone windows aren't available (web embed).
+                if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  triggerHaptic('selection')
+                  void openSessionInNewWindow(session.id)
 
-            onResume()
-          }}
-        >
-          {reorderable ? (
-            <SidebarRowGrab
-              ariaLabel={handleLabel}
-              dragging={dragging}
-              dragHandleProps={dragHandleProps}
-              leadClassName={needsInput ? 'overflow-visible' : undefined}
+                  return
+                }
+
+                onResume()
+              }}
             >
-              <SessionRowLeadDot
-                branchStem={branchStem}
-                className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                isWorking={isWorking}
-                needsInput={needsInput}
-              />
-            </SidebarRowGrab>
-          ) : (
-            <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} isWorking={isWorking} needsInput={needsInput} />
-            </SidebarRowLead>
-          )}
-          {handoffSource && handoffLabel ? (
-            <Tip label={r.handoffOrigin(handoffLabel)}>
-              <PlatformAvatar
-                className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
-                platformId={handoffSource}
-                platformName={handoffLabel}
-              />
-            </Tip>
-          ) : null}
-          <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
-          </SidebarRowLabel>
-        </SidebarRowBody>
-      </SidebarRowShell>
+              {reorderable ? (
+                <SidebarRowGrab
+                  ariaLabel={handleLabel}
+                  dragging={dragging}
+                  dragHandleProps={dragHandleProps}
+                  leadClassName={needsInput ? 'overflow-visible' : undefined}
+                >
+                  <SessionRowLeadDot
+                    branchStem={branchStem}
+                    className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                    isWorking={isWorking}
+                    needsInput={needsInput}
+                  />
+                </SidebarRowGrab>
+              ) : (
+                <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
+                  <SessionRowLeadDot branchStem={branchStem} isWorking={isWorking} needsInput={needsInput} />
+                </SidebarRowLead>
+              )}
+              {handoffSource && handoffLabel ? (
+                <Tip label={r.handoffOrigin(handoffLabel)}>
+                  <PlatformAvatar
+                    className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
+                    platformId={handoffSource}
+                    platformName={handoffLabel}
+                  />
+                </Tip>
+              ) : null}
+              <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+                {title}
+              </SidebarRowLabel>
+            </SidebarRowBody>
+          </SidebarRowShell>
+        </motion.div>
+      </div>
     </SessionContextMenu>
   )
 }

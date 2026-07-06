@@ -107,6 +107,8 @@ gateway:
     no_pending:            "No hay ningún comando pendiente que denegar."
     denied_singular:       "❌ Comando denegado."
     denied_plural:         "❌ Comandos denegados ({count} comandos)."
+    denied_reason_singular: "❌ Comando denegado. Motivo transmitido al agente: \"{reason}\""
+    denied_reason_plural:  "❌ Comandos denegados ({count} comandos). Motivo transmitido al agente: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast solo está disponible para modelos de OpenAI que admiten Priority Processing."

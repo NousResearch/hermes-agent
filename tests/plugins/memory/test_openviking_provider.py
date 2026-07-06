@@ -1298,6 +1298,26 @@ def test_tool_add_resource_uploads_file_uri(tmp_path):
     assert result["root_uri"] == "viking://resources/sample"
 
 
+def test_tool_add_resource_rejects_hermes_credential_file_upload(tmp_path, monkeypatch):
+    import agent.file_safety as fs
+
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.mkdir()
+    auth_json = hermes_home / "auth.json"
+    auth_json.write_text('{"OPENROUTER_API_KEY":"sk-test-secret"}', encoding="utf-8")
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: hermes_home)
+
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+
+    result = json.loads(provider._tool_add_resource({"url": str(auth_json)}))
+
+    assert "error" in result
+    assert "credential store" in result["error"]
+    provider._client.upload_temp_file.assert_not_called()
+    provider._client.post.assert_not_called()
+
+
 def test_tool_add_resource_uploads_existing_local_directory_and_cleans_zip(tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -1370,6 +1390,44 @@ def test_tool_add_resource_directory_zip_skips_symlink_escape(tmp_path):
 
     assert archive_entries["names"] == ["guide.md"]
     assert b"do not upload" not in b"".join(archive_entries["payloads"].values())
+
+
+def test_tool_add_resource_directory_zip_skips_hermes_credential_files(tmp_path, monkeypatch):
+    import agent.file_safety as fs
+
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.mkdir()
+    (hermes_home / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    (hermes_home / "auth.json").write_text(
+        '{"OPENROUTER_API_KEY":"sk-test-secret"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: hermes_home)
+
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    archive_entries = {}
+
+    def inspect_upload(path):
+        with zipfile.ZipFile(path) as archive:
+            archive_entries["names"] = archive.namelist()
+            archive_entries["payloads"] = {
+                name: archive.read(name)
+                for name in archive.namelist()
+            }
+        return "upload_hermes_home.zip"
+
+    provider._client.upload_temp_file.side_effect = inspect_upload
+    provider._client.post.return_value = {
+        "status": "ok",
+        "result": {"root_uri": "viking://resources/hermes_home"},
+    }
+
+    result = json.loads(provider._tool_add_resource({"url": str(hermes_home)}))
+
+    assert result["status"] == "added"
+    assert archive_entries["names"] == ["guide.md"]
+    assert b"sk-test-secret" not in b"".join(archive_entries["payloads"].values())
 
 
 def test_tool_add_resource_cleans_local_directory_zip_when_add_fails(tmp_path):

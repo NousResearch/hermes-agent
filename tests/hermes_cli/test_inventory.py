@@ -62,6 +62,32 @@ def test_load_picker_context_full_dict():
     assert isinstance(ctx.custom_providers, list)
 
 
+def test_load_picker_context_normalizes_list_of_dict_models():
+    cfg = _cfg(
+        providers={
+            "static-gateway": {
+                "name": "Static Gateway",
+                "api": "https://router.example.com/v1",
+                "default_model": "claude-3-7-sonnet",
+                "models": [
+                    {"id": "claude-3-7-sonnet"},
+                    {"id": "claude-sonnet-4", "context_length": 200000},
+                ],
+                "discover_models": False,
+            }
+        },
+    )
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        ctx = load_picker_context()
+
+    assert len(ctx.custom_providers) == 1
+    assert ctx.custom_providers[0]["models"] == {
+        "claude-3-7-sonnet": {},
+        "claude-sonnet-4": {"context_length": 200000},
+    }
+    assert ctx.custom_providers[0]["discover_models"] is False
+
+
 def test_load_picker_context_falls_back_to_name_when_default_missing():
     cfg = _cfg(model={"name": "gpt-5.4", "provider": "openai"})
     with patch("hermes_cli.config.load_config", return_value=cfg):
@@ -217,6 +243,37 @@ def test_build_models_payload_can_force_fresh_nous_tier():
 
     mock_list.assert_called_once()
     assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is True
+
+
+def test_build_models_payload_can_skip_custom_provider_probes():
+    ctx = _empty_ctx()
+    rows = []
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=rows,
+    ) as mock_list:
+        build_models_payload(ctx, probe_custom_providers=False)
+
+    mock_list.assert_called_once()
+    assert mock_list.call_args.kwargs["probe_custom_providers"] is False
+
+
+def test_build_models_payload_can_probe_only_current_custom_provider():
+    ctx = _empty_ctx()
+    rows = []
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=rows,
+    ) as mock_list:
+        build_models_payload(
+            ctx,
+            probe_custom_providers=False,
+            probe_current_custom_provider=True,
+        )
+
+    mock_list.assert_called_once()
+    assert mock_list.call_args.kwargs["probe_custom_providers"] is False
+    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is True
 
 
 def test_list_authenticated_providers_force_fresh_is_keyword_only():
@@ -703,6 +760,52 @@ def test_two_custom_providers_with_overlap_both_survive():
     assert b_row["total_models"] == 2
 
 
+def test_build_models_payload_keeps_static_provider_models_from_providers_dict():
+    """The inventory payload must keep configured static models from a
+    ``providers:`` entry even when the same endpoint also appears via the
+    compatibility ``custom_providers`` view and live discovery would fail."""
+    cfg = _cfg(
+        model={
+            "provider": "static-gateway",
+            "default": "claude-3-7-sonnet",
+        },
+        providers={
+            "static-gateway": {
+                "name": "Static Gateway",
+                "api": "https://router.example.com/v1",
+                "api_key": "sk-test",
+                "default_model": "claude-3-7-sonnet",
+                "models": [
+                    {"id": "claude-3-7-sonnet"},
+                    {"id": "claude-sonnet-4"},
+                ],
+                "discover_models": False,
+            }
+        },
+    )
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("agent.models_dev.fetch_models_dev", return_value={}),
+        patch("hermes_cli.providers.HERMES_OVERLAYS", {}),
+        patch(
+            "hermes_cli.models.fetch_api_models",
+            side_effect=AssertionError("fetch_api_models must not be called"),
+        ),
+    ):
+        ctx = load_picker_context()
+        payload = build_models_payload(ctx)
+
+    rows = [
+        row
+        for row in payload["providers"]
+        if row.get("api_url") == "https://router.example.com/v1"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["slug"] == "static-gateway"
+    assert rows[0]["models"] == ["claude-3-7-sonnet", "claude-sonnet-4"]
+    assert rows[0]["total_models"] == 2
+
+
 def test_build_models_payload_no_max_models_returns_full_list():
     """When max_models is not passed (None), build_models_payload must
     return the full model list — not truncate to the old default of 50.
@@ -766,4 +869,3 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
-

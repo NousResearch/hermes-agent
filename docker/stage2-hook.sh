@@ -287,6 +287,23 @@ if [ -d "$HERMES_HOME/cron" ]; then
     chown_hermes_tree "$HERMES_HOME/cron"
 fi
 
+# Always reset ownership of pairing data on every boot, same docker-exec/
+# root-write reason as profiles/ and cron/. `docker exec <container>
+# hermes pairing approve …` defaults to uid=0 and writes 0600 root-owned
+# approval files that the unprivileged hermes gateway cannot read,
+# silently leaving the approved user unauthorized (#10270). The targeted
+# data-volume chown above only runs when the top-level $HERMES_HOME is
+# mis-owned, so warm boots skip it — this block makes a container restart
+# self-heal. Tiny directory (a handful of small JSON files), so the cost
+# is negligible.
+if [ -d "$HERMES_HOME/platforms/pairing" ]; then
+    chown_hermes_tree "$HERMES_HOME/platforms/pairing"
+fi
+# Legacy location (pre-consolidated layout).
+if [ -d "$HERMES_HOME/pairing" ]; then
+    chown_hermes_tree "$HERMES_HOME/pairing"
+fi
+
 # Reset ownership of hermes-owned top-level state files on every boot.
 # The targeted data-volume chown above only covers hermes-owned
 # *subdirectories*; loose state files living directly under $HERMES_HOME

@@ -500,6 +500,14 @@ def _event_field(event: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _item_field(item: Any, name: str, default: Any = None) -> Any:
+    """Field access for nested Response items (attr-style SDK object or dict)."""
+    value = getattr(item, name, None)
+    if value is None and isinstance(item, dict):
+        value = item.get(name, default)
+    return value if value is not None else default
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -562,6 +570,7 @@ def _consume_codex_event_stream(
     collected_text_deltas: List[str] = []
     has_tool_calls = False
     first_delta_fired = False
+    active_message_phase: str | None = None
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
@@ -595,9 +604,35 @@ def _consume_codex_event_stream(
         if event_type == "error":
             _raise_stream_error(event)
 
+        # Track the phase of the active streamed message item.  Codex/Harmony
+        # ``commentary``/``analysis`` text is mid-turn preamble/progress
+        # narration, never the final answer.  We still collect completed output
+        # items for replay, but route those deltas to the reasoning callback so
+        # they display like thinking text instead of assistant content.
+        if event_type == "response.output_item.added":
+            item = _event_field(event, "item")
+            item_type = _item_field(item, "type", "")
+            if item_type == "message":
+                phase = _item_field(item, "phase", None)
+                active_message_phase = phase.strip().lower() if isinstance(phase, str) else None
+            else:
+                active_message_phase = None
+            if "function_call" in str(item_type):
+                has_tool_calls = True
+            continue
+
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
             delta_text = _event_field(event, "delta", "")
-            if delta_text:
+            is_commentary_delta = active_message_phase in {"commentary", "analysis"}
+            if delta_text and is_commentary_delta:
+                # Commentary streams through the reasoning channel, not the
+                # visible answer stream (and stays out of output_text).
+                if on_reasoning_delta is not None:
+                    try:
+                        on_reasoning_delta(delta_text)
+                    except Exception:
+                        logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+            elif delta_text:
                 collected_text_deltas.append(delta_text)
                 if not has_tool_calls:
                     if not first_delta_fired:

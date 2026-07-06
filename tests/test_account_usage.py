@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 from agent.account_usage import (
@@ -9,13 +10,29 @@ from agent.account_usage import (
 
 
 class _Response:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload=None, status_code=200, chunks=None):
         self._payload = payload
         self.status_code = status_code
+        self._chunks = chunks
+        self.yielded_chunks = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
     def raise_for_status(self):
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
+
+    def iter_bytes(self):
+        chunks = self._chunks
+        if chunks is None:
+            chunks = [json.dumps(self._payload or {}).encode("utf-8")]
+        for chunk in chunks:
+            self.yielded_chunks += 1
+            yield chunk
 
     def json(self):
         return self._payload
@@ -32,7 +49,14 @@ class _Client:
         return False
 
     def get(self, url, headers=None):
-        return _Response(self._payload)
+        return (
+            self._payload
+            if isinstance(self._payload, _Response)
+            else _Response(self._payload)
+        )
+
+    def stream(self, method, url, headers=None):
+        return self.get(url, headers=headers)
 
 
 class _RoutingClient:
@@ -46,7 +70,11 @@ class _RoutingClient:
         return False
 
     def get(self, url, headers=None):
-        return _Response(self._payloads[url])
+        payload = self._payloads[url]
+        return payload if isinstance(payload, _Response) else _Response(payload)
+
+    def stream(self, method, url, headers=None):
+        return self.get(url, headers=headers)
 
 
 def test_fetch_account_usage_codex(monkeypatch):
@@ -93,6 +121,32 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_bounds_json_response_while_reading(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    monkeypatch.setattr("agent.account_usage.USAGE_RESPONSE_MAX_BYTES", 10)
+    response = _Response(chunks=[b"12345", b"67890", b"X", b"unread"])
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(response),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is None
+    assert response.yielded_chunks == 3
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

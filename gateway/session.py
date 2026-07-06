@@ -741,12 +741,15 @@ class SessionEntry:
         session_key = data["session_key"]
         session_id = data["session_id"]
 
-        # Validate path-sensitive fields to prevent directory traversal (CWE-22)
-        for _field, _val in (("session_key", session_key), ("session_id", session_id)):
-            if _is_path_unsafe(_val):
-                raise ValueError(
-                    f"Invalid {_field}: potential directory traversal detected"
-                )
+        # Validate path-sensitive fields to prevent directory traversal (CWE-22).
+        # Only session_id is used as a filesystem filename (sessions_dir / f"{session_id}.json"),
+        # so only it needs the strict path-un safety guard.  session_key is a logical
+        # routing key that may legitimately contain "/" (e.g. Google Chat
+        # "spaces/<id>/threads/<id>") and is never touched on-disk.
+        if _is_path_unsafe(session_id):
+            raise ValueError(
+                "Invalid session_id: potential directory traversal detected"
+            )
 
         return cls(
             session_key=session_key,

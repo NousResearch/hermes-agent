@@ -1160,10 +1160,13 @@ class TestSessionEntryFromDictTraversalValidation:
         with pytest.raises(ValueError, match="session_id"):
             SessionEntry.from_dict(self._entry(session_id="../../etc/passwd"))
 
-    def test_session_key_dotdot_raises(self):
+    def test_session_key_dotdot_allowed(self):
+        """session_key is a logical routing key, never a filesystem path —
+        traversal sequences in session_key are harmless and must not cause
+        load failures (see #59322)."""
         from gateway.session import SessionEntry
-        with pytest.raises(ValueError, match="session_key"):
-            SessionEntry.from_dict(self._entry(session_key="agent:main:../../secret"))
+        entry = SessionEntry.from_dict(self._entry(session_key="agent:main:../../secret"))
+        assert entry.session_key == "agent:main:../../secret"
 
     def test_session_id_absolute_unix_raises(self):
         from gateway.session import SessionEntry
@@ -1191,8 +1194,9 @@ class TestSessionEntryFromDictTraversalValidation:
         from gateway.session import SessionEntry
         with pytest.raises(ValueError, match="session_id"):
             SessionEntry.from_dict(self._entry(session_id="good\\..\\bad"))
-        with pytest.raises(ValueError, match="session_key"):
-            SessionEntry.from_dict(self._entry(session_key="agent:main:good/sub"))
+        # session_key with "/" is legitimate (e.g. Google Chat spaces/X/threads/Y)
+        entry = SessionEntry.from_dict(self._entry(session_key="agent:main:good/sub"))
+        assert entry.session_key == "agent:main:good/sub"
 
 
 class TestEnsureLoadedSkipsInvalidEntries:

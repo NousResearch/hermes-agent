@@ -202,9 +202,13 @@ def run_in_memory_until_waiting(
             if branch_key is not None:
                 parallel_id, label = branch_key
                 expected_labels.add(label)
-                branches[label] = context.get("branches", {}).get(parallel_id, {}).get(label)
+                branch_outputs = context.setdefault("branches", {}).setdefault(parallel_id, {})
+                branches[label] = branch_outputs.setdefault(label, None)
             for edge in incoming:
                 source_base, _, port = edge.from_.partition(".")
+                source_node = spec.nodes.get(source_base)
+                if port and source_node and source_node.type == "parallel":
+                    continue
                 if source_base not in active_branch_by_node and source_base not in context["node"]:
                     continue
                 owner = completed_branch_by_node.get(source_base)

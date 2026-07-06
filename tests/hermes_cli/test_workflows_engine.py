@@ -286,6 +286,29 @@ def test_direct_switch_branch_to_join_preserves_parallel_branch_label():
     assert result.context["node"]["done"]["output"] == {"review": "review"}
 
 
+def test_direct_parallel_branch_to_join_records_none_branch_output():
+    spec = WorkflowSpec.model_validate({
+        "id": "demo", "name": "Demo", "version": 1,
+        "nodes": {
+            "fork": {"type": "parallel"},
+            "merge": {"type": "join"},
+            "done": {"type": "pass", "output": {"finished": True}},
+        },
+        "edges": [
+            {"from": "fork.work", "to": "merge"},
+            {"from": "merge", "to": "done"},
+        ],
+    })
+
+    result = run_in_memory_until_waiting(spec, input_data={})
+
+    assert result.status == "succeeded"
+    assert result.waiting_nodes == []
+    assert result.context["node"]["merge"]["output"]["branches"] == {"work": None}
+    assert result.context["branches"]["fork"] == {"work": None}
+    assert result.context["node"]["done"]["output"] == {"finished": True}
+
+
 def test_join_waits_until_all_branch_upstreams_succeed():
     spec = WorkflowSpec.model_validate({
         "id": "demo", "name": "Demo", "version": 1,

@@ -1753,6 +1753,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
+from gateway.adapter_lifecycle_mixin import GatewayAdapterLifecycleMixin
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -2771,7 +2772,7 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
+class GatewayRunner(GatewayAdapterLifecycleMixin, GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
 
@@ -3328,142 +3329,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
 
-    async def _safe_adapter_disconnect(self, adapter, platform) -> None:
-        """Call adapter.disconnect() defensively, swallowing any error.
-
-        Used when adapter.connect() failed or raised — the adapter may
-        have allocated partial resources (aiohttp.ClientSession, poll
-        tasks, child subprocesses) that would otherwise leak and surface
-        as "Unclosed client session" warnings at process exit.
-
-        Must tolerate partial-init state and never raise, since callers
-        use it inside error-handling blocks.
-        """
-        timeout = self._adapter_disconnect_timeout_secs()
-        try:
-            if timeout <= 0:
-                await adapter.disconnect()
-            else:
-                await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Timed out after %.1fs while disconnecting %s adapter; continuing shutdown",
-                timeout,
-                platform.value if platform is not None else "adapter",
-            )
-        except Exception as e:
-            logger.debug(
-                "Defensive %s disconnect after failed connect raised: %s",
-                platform.value if platform is not None else "adapter",
-                e,
-            )
-
-    async def _bounded_adapter_teardown(
-        self, adapter, platform, *, profile: Optional[str] = None
-    ) -> None:
-        """Tear down one adapter on the shutdown path with bounded awaits.
-
-        Both ``cancel_background_tasks()`` and ``disconnect()`` can block
-        indefinitely when a platform's network state is half-dead (e.g. a
-        wedged Feishu/Lark WebSocket thread waiting on I/O). An unbounded
-        await here stalls the entire shutdown sequence past systemd's
-        ``TimeoutStopSec``; the resulting SIGKILL skips ``atexit`` PID-file
-        cleanup, so the next start dies with "PID file race lost" (#14128).
-
-        Each await is wrapped in the existing per-adapter timeout budget
-        (``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``). On timeout we log
-        and force forward progress; the loop never hangs regardless of any
-        adapter's internal behavior. Never raises.
-        """
-        timeout = self._adapter_disconnect_timeout_secs()
-        suffix = f" (profile: {profile})" if profile else ""
-        started_at = time.monotonic()
-        try:
-            if timeout <= 0:
-                await adapter.cancel_background_tasks()
-            else:
-                await asyncio.wait_for(
-                    adapter.cancel_background_tasks(), timeout=timeout
-                )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "✗ %s background-task cancel timed out after %.1fs - forcing continue%s",
-                platform.value, timeout, suffix,
-            )
-        except Exception as e:
-            logger.debug("✗ %s background-task cancel error%s: %s", platform.value, suffix, e)
-        try:
-            if timeout <= 0:
-                await adapter.disconnect()
-            else:
-                await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
-            logger.info(
-                "✓ %s disconnected (%.2fs)%s",
-                platform.value, time.monotonic() - started_at, suffix,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "✗ %s disconnect timed out after %.1fs - forcing continue%s",
-                platform.value, timeout, suffix,
-            )
-        except Exception as e:
-            logger.error(
-                "✗ %s disconnect error after %.2fs%s: %s",
-                platform.value, time.monotonic() - started_at, suffix, e,
-            )
-
-    def _adapter_disconnect_timeout_secs(self) -> float:
-        """Return the per-adapter disconnect timeout used during shutdown."""
-        raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
-        if raw:
-            try:
-                timeout = float(raw)
-            except ValueError:
-                logger.warning(
-                    "Ignoring invalid HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT=%r",
-                    raw,
-                )
-            else:
-                return max(0.0, timeout)
-        return _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
-
-    def _platform_connect_timeout_secs(self) -> float:
-        """Return the per-platform connect timeout used during startup/retry."""
-        raw = os.getenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
-        if raw:
-            try:
-                timeout = float(raw)
-            except ValueError:
-                logger.warning(
-                    "Ignoring invalid HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT=%r",
-                    raw,
-                )
-            else:
-                return max(0.0, timeout)
-        return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
-
-    async def _connect_adapter_with_timeout(
-        self, adapter, platform, *, is_reconnect: bool = False
-    ) -> bool:
-        """Connect an adapter without allowing one platform to block others.
-
-        ``is_reconnect`` is forwarded to ``adapter.connect()`` so platform
-        adapters can distinguish a cold first boot (drop any stale
-        server-side queue) from a watcher reconnect after a prolonged outage
-        (preserve the queue so messages sent during the outage are delivered
-        rather than silently dropped — #46621).
-        """
-        timeout = self._platform_connect_timeout_secs()
-        if timeout <= 0:
-            return await adapter.connect(is_reconnect=is_reconnect)
-        try:
-            return await asyncio.wait_for(
-                adapter.connect(is_reconnect=is_reconnect), timeout=timeout
-            )
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(
-                f"{platform.value} connect timed out after {timeout:g}s"
-            ) from exc
+    # ──────────────────────────────────────────────────────────────────
+    # Adapter lifecycle helpers (connect/disconnect/teardown timeouts) —
+    # lifted to ``GatewayAdapterLifecycleMixin`` (god-file decomposition
+    # Phase 4). The five methods (``_safe_adapter_disconnect``,
+    # ``_bounded_adapter_teardown``, ``_adapter_disconnect_timeout_secs``,
+    # ``_platform_connect_timeout_secs``, ``_connect_adapter_with_timeout``)
+    # are resolved through the MRO; see tests/gateway/
+    # test_adapter_lifecycle_mixin.py for the contract.
+    # ──────────────────────────────────────────────────────────────────
 
     @property
     def should_exit_cleanly(self) -> bool:

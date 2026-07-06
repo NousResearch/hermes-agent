@@ -1420,7 +1420,9 @@ class DiscordAdapter(BasePlatformAdapter):
         gateway's outer ``asyncio.wait_for`` (which wraps this whole method) does
         not cancel an in-progress flush before we get a chance to cancel our own
         stragglers gracefully. Mirrors the env var the gateway reads in
-        ``GatewayRunner._adapter_disconnect_timeout_secs``.
+        ``GatewayRunner._adapter_disconnect_timeout_secs`` (lifted to
+        ``gateway.adapter_lifecycle_mixin`` per PR #fixme; reachable on a
+        ``GatewayRunner`` instance through the MRO — runtime contract unchanged).
         """
         budget = 5.0  # mirrors gateway _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
         raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()

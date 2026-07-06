@@ -367,16 +367,29 @@ class _SupermemoryClient:
         self._client.memories.forget(container_tag=tag, id=memory_id)
 
     def forget_by_query(self, query: str, *, container_tag: Optional[str] = None) -> dict:
-        results = self.search_memories(query, limit=5, container_tag=container_tag)
-        if not results:
+        # Force "memories" mode: hybrid results can be chunk hits whose id is a
+        # chunk id, which memories.forget rejects with 404. Memory-entry results
+        # carry a populated "memory" field and a valid memory-entry id.
+        results = self.search_memories(
+            query, limit=5, container_tag=container_tag, search_mode="memories"
+        )
+        target = next((r for r in results if (r.get("memory") or "").strip()), None)
+        if target is None:
             return {"success": False, "message": "No matching memory found to forget."}
-        target = results[0]
         memory_id = target.get("id", "")
-        if not memory_id:
-            return {"success": False, "message": "Best matching memory has no id."}
-        self.forget_memory(memory_id, container_tag=container_tag)
-        preview = (target.get("memory") or "")[:100]
-        return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
+        content = (target.get("memory") or "").strip()
+        tag = container_tag or self._container_tag
+        try:
+            if memory_id:
+                self._client.memories.forget(container_tag=tag, id=memory_id)
+            else:
+                self._client.memories.forget(container_tag=tag, content=content)
+        except Exception:
+            # Fall back to exact-content match when the id path fails.
+            if not content:
+                raise
+            self._client.memories.forget(container_tag=tag, content=content)
+        return {"success": True, "message": f'Forgot: "{content[:100]}"', "id": memory_id}
 
     def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
         payload: dict = {

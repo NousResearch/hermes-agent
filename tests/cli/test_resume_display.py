@@ -290,6 +290,37 @@ class TestDisplayResumedHistory:
 
         assert output.strip() == ""
 
+    def test_empty_message_content_does_not_crash(self):
+        """Regression: _display_resumed_history IndexError when a message has empty text.
+
+        An assistant turn that produced no text (or a blank user message)
+        makes ``text.splitlines()`` return ``[]``, crashing on ``msg_lines[0]``.
+        The fix guards with ``or [""]`` so the message renders as a blank line.
+        """
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": "Follow-up question"},
+            {"role": "assistant", "content": "Real answer"},
+        ]
+        # Must not raise IndexError
+        output = self._capture_display(cli)
+
+        assert "Follow-up question" in output
+        assert "Real answer" in output
+
+    def test_whitespace_only_message_does_not_crash(self):
+        """Whitespace-only messages should also not crash the resume display."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "   "},
+            {"role": "assistant", "content": "\n\n"},
+        ]
+        output = self._capture_display(cli)
+        # Should render without error
+        assert "You:" in output
+
     def test_minimal_config_suppresses_display(self):
         cli = _make_cli(config_overrides={"display": {"resume_display": "minimal"}})
         # resume_display is captured as an instance variable during __init__

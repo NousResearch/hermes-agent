@@ -853,7 +853,7 @@ def process_pubsub_pull(
             current_keys = {_message_key(record) for record in all_records if _message_key(record)}
             candidates = realtime_candidates(audit_payload, processed_keys)
             stage_realtime_candidates(
-                ledger=ActionLedger(Path(state_file).parent / "torben-action-ledger.json"),
+                ledger=ActionLedger(Path(state_file).parent / "torben-action-ledger.jsonl"),
                 candidates=candidates,
                 preview=preview,
             )
@@ -1065,7 +1065,7 @@ def process_pubsub_pull(
     current_keys = {_message_key(record) for record in all_records if _message_key(record)}
     candidates = realtime_candidates(audit_payload, processed_keys)
     stage_realtime_candidates(
-        ledger=ActionLedger(Path(state_file).parent / "torben-action-ledger.json"),
+        ledger=ActionLedger(Path(state_file).parent / "torben-action-ledger.jsonl"),
         candidates=candidates,
         preview=preview,
     )

@@ -21,7 +21,7 @@ def build_torben_parser(subparsers, *, cmd_torben: Callable) -> None:
     ea_brief.add_argument(
         "--ledger",
         default=None,
-        help="Action ledger path (default: $HERMES_HOME/state/torben-action-ledger.json)",
+        help="Action ledger path (default: $HERMES_HOME/state/torben-action-ledger.jsonl)",
     )
     ea_brief.add_argument("--json", action="store_true", help="Print JSON output")
     ea_brief.add_argument(
@@ -38,7 +38,7 @@ def build_torben_parser(subparsers, *, cmd_torben: Callable) -> None:
     operating_brief.add_argument(
         "--ledger",
         default=None,
-        help="Action ledger path (default: $HERMES_HOME/state/torben-action-ledger.json)",
+        help="Action ledger path (default: $HERMES_HOME/state/torben-action-ledger.jsonl)",
     )
     operating_brief.add_argument("--json", action="store_true", help="Print JSON output")
     operating_brief.add_argument(
@@ -55,7 +55,7 @@ def build_torben_parser(subparsers, *, cmd_torben: Callable) -> None:
     resolve_reply.add_argument(
         "--ledger",
         default=None,
-        help="Action ledger path (default: $HERMES_HOME/state/torben-action-ledger.json)",
+        help="Action ledger path (default: $HERMES_HOME/state/torben-action-ledger.jsonl)",
     )
     resolve_reply.add_argument("--json", action="store_true", help="Print JSON output")
 
@@ -68,7 +68,7 @@ def build_torben_parser(subparsers, *, cmd_torben: Callable) -> None:
     learn_contact.add_argument(
         "--ledger",
         default=None,
-        help="Action ledger path (default: $HERMES_HOME/state/torben-action-ledger.json)",
+        help="Action ledger path (default: $HERMES_HOME/state/torben-action-ledger.jsonl)",
     )
     learn_contact.add_argument(
         "--relationship-context",
@@ -261,7 +261,7 @@ def build_torben_parser(subparsers, *, cmd_torben: Callable) -> None:
     gtm_radar.add_argument(
         "--ledger",
         default=None,
-        help="Torben action ledger path (default: $HERMES_HOME/state/torben-action-ledger.json)",
+        help="Torben action ledger path (default: $HERMES_HOME/state/torben-action-ledger.jsonl)",
     )
     gtm_radar.add_argument(
         "--output",
@@ -290,7 +290,7 @@ def build_torben_parser(subparsers, *, cmd_torben: Callable) -> None:
     gtm_reply.add_argument(
         "--ledger",
         default=None,
-        help="Torben action ledger path (default: $HERMES_HOME/state/torben-action-ledger.json)",
+        help="Torben action ledger path (default: $HERMES_HOME/state/torben-action-ledger.jsonl)",
     )
     gtm_reply.add_argument(
         "--output-dir",

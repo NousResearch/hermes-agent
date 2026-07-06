@@ -44,7 +44,7 @@ from .relationship_learning import apply_relationship_learning_answer
 
 
 def _default_ledger_path() -> Path:
-    return get_hermes_home() / "state" / "torben-action-ledger.json"
+    return get_hermes_home() / "state" / "torben-action-ledger.jsonl"
 
 
 def _default_runtime_env_path() -> Path:

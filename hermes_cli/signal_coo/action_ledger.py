@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import fcntl
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 HANDLE_RE = re.compile(r"\b(?P<handle>[A-Z]{2,8}-\d{8}-\d{3,5})\b")
 ACTION_ALIAS_RE = re.compile(
@@ -16,6 +18,10 @@ ACTION_ALIAS_RE = re.compile(
     re.IGNORECASE,
 )
 OPEN_STATUSES = {"drafted", "staged", "approval_required", "approved", "executing"}
+TORBEN_LEDGER_STEM = "torben-action-ledger"
+TORBEN_LEDGER_JSON = f"{TORBEN_LEDGER_STEM}.json"
+TORBEN_LEDGER_JOURNAL = f"{TORBEN_LEDGER_STEM}.jsonl"
+TORBEN_LEDGER_SNAPSHOT = f"{TORBEN_LEDGER_STEM}.snapshot.json"
 
 
 def utc_now() -> datetime:
@@ -36,6 +42,14 @@ def format_time(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+class LedgerMigrationHoldError(RuntimeError):
+    """Raised when a journal write is attempted during a migration hold."""
+
+
+def default_torben_ledger_path(state_dir: str | os.PathLike[str]) -> Path:
+    return Path(state_dir) / TORBEN_LEDGER_JOURNAL
 
 
 @dataclass
@@ -119,20 +133,78 @@ class ReplyResolution:
 
 
 class ActionLedger:
-    """JSON-backed action ledger with stable handle resolution."""
+    """Durable action ledger with stable handle resolution.
+
+    Generic ``.json`` paths keep the historical array rewrite behavior for
+    tests and non-Torben callers. ``.jsonl`` paths use an append-only journal
+    plus a compacted snapshot; the journal is always the source of truth.
+    """
 
     def __init__(self, path: str | os.PathLike[str]):
-        self.path = Path(path)
+        requested = Path(path)
+        if requested.name == TORBEN_LEDGER_JSON:
+            sibling_journal = requested.with_name(TORBEN_LEDGER_JOURNAL)
+            if sibling_journal.exists():
+                requested = sibling_journal
+        self.path = requested
+        self._journal_mode = self.path.suffix == ".jsonl"
+
+    @property
+    def snapshot_path(self) -> Path:
+        if self._journal_mode:
+            return self.path.with_name(TORBEN_LEDGER_SNAPSHOT)
+        return self.path
+
+    @property
+    def lock_path(self) -> Path:
+        return self.path.with_name(f".{self.path.name}.lock")
+
+    @property
+    def hold_path(self) -> Path:
+        return self.path.with_name("torben-action-ledger.migration-hold")
+
+    @contextmanager
+    def _file_lock(self) -> Iterator[None]:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_handle = self.lock_path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+
+    def _assert_writable(self) -> None:
+        if self._journal_mode and self.hold_path.exists():
+            raise LedgerMigrationHoldError(
+                f"Action ledger writes are held during migration: {self.hold_path}"
+            )
 
     def load(self) -> list[ActionRecord]:
         if not self.path.exists():
             return []
+        if self._journal_mode:
+            return self._load_journal()
         payload = json.loads(self.path.read_text(encoding="utf-8") or "[]")
         if not isinstance(payload, list):
             raise ValueError(f"Action ledger must contain a JSON list: {self.path}")
         return [ActionRecord.from_dict(item) for item in payload]
 
     def save(self, records: Iterable[ActionRecord]) -> None:
+        if self._journal_mode:
+            with self._file_lock():
+                self._assert_writable()
+                current = {record.handle: record.to_dict() for record in self._load_journal()}
+                changed: list[ActionRecord] = []
+                for record in records:
+                    payload = record.to_dict()
+                    if current.get(record.handle) != payload:
+                        changed.append(record)
+                if changed:
+                    self._append_journal_records(changed)
+                    self._write_snapshot(self._load_journal())
+            return
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = [record.to_dict() for record in records]
         tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
@@ -140,6 +212,12 @@ class ActionLedger:
         os.replace(tmp, self.path)
 
     def next_handle(self, scope: str, now: datetime | None = None) -> str:
+        if self._journal_mode:
+            with self._file_lock():
+                return self._next_handle(scope, now=now)
+        return self._next_handle(scope, now=now)
+
+    def _next_handle(self, scope: str, now: datetime | None = None) -> str:
         now = (now or utc_now()).astimezone(timezone.utc)
         prefix = f"{scope.upper()}-{now:%Y%m%d}-"
         highest = 0
@@ -167,9 +245,29 @@ class ActionLedger:
         executor_state: dict[str, Any] | None = None,
     ) -> ActionRecord:
         now = (now or utc_now()).astimezone(timezone.utc)
-        records = self.load()
+        if self._journal_mode:
+            with self._file_lock():
+                self._assert_writable()
+                record = ActionRecord(
+                    handle=self._next_handle(scope, now),
+                    scope=scope.lower(),
+                    summary=summary,
+                    evidence_ids=list(evidence_ids),
+                    allowed_next_actions=list(allowed_next_actions),
+                    status=status,
+                    risk_class=risk_class,
+                    outbound_message_id=outbound_message_id,
+                    created_at=now,
+                    expires_at=now + timedelta(hours=ttl_hours) if ttl_hours else None,
+                    user_visible_summary=user_visible_summary or summary,
+                    executor_state=dict(executor_state or {}),
+                )
+                self._append_journal_records([record])
+                self._write_snapshot(self._load_journal())
+                return record
+
         record = ActionRecord(
-            handle=self.next_handle(scope, now),
+            handle=self._next_handle(scope, now),
             scope=scope.lower(),
             summary=summary,
             evidence_ids=list(evidence_ids),
@@ -182,9 +280,43 @@ class ActionLedger:
             user_visible_summary=user_visible_summary or summary,
             executor_state=dict(executor_state or {}),
         )
+        records = self.load()
         records.append(record)
         self.save(records)
         return record
+
+    def _load_journal(self) -> list[ActionRecord]:
+        if not self.path.exists():
+            return []
+        by_handle: dict[str, ActionRecord] = {}
+        order: list[str] = []
+        for line_number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                raise ValueError(f"Journal line {line_number} must be a JSON object: {self.path}")
+            record = ActionRecord.from_dict(payload)
+            if record.handle not in by_handle:
+                order.append(record.handle)
+            by_handle[record.handle] = record
+        return [by_handle[handle] for handle in order if handle in by_handle]
+
+    def _append_journal_records(self, records: Iterable[ActionRecord]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record.to_dict(), sort_keys=True, separators=(",", ":")) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def _write_snapshot(self, records: Iterable[ActionRecord] | None = None) -> None:
+        if not self._journal_mode:
+            return
+        payload = [record.to_dict() for record in (records if records is not None else self._load_journal())]
+        tmp = self.snapshot_path.with_name(f".{self.snapshot_path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, self.snapshot_path)
 
     def get(self, handle: str) -> ActionRecord | None:
         normalized = handle.upper()

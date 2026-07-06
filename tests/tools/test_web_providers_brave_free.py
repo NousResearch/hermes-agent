@@ -74,7 +74,10 @@ class TestBraveFreeProviderSearch:
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
-        with patch("httpx.get", return_value=self._mock_resp(self._SAMPLE_RESPONSE)):
+        with patch(
+            "plugins.web.brave_free.provider._httpx_json_request",
+            return_value=self._SAMPLE_RESPONSE,
+        ):
             result = BraveFreeWebSearchProvider().search("test query", limit=5)
 
         assert result["success"] is True
@@ -90,15 +93,20 @@ class TestBraveFreeProviderSearch:
 
         captured = {}
 
-        def fake_get(url, **kwargs):
+        def fake_request(method, url, **kwargs):
+            captured["method"] = method
             captured["url"] = url
             captured["headers"] = kwargs.get("headers", {})
             captured["params"] = kwargs.get("params", {})
-            return self._mock_resp({"web": {"results": []}})
+            return {"web": {"results": []}}
 
-        with patch("httpx.get", side_effect=fake_get):
+        with patch(
+            "plugins.web.brave_free.provider._httpx_json_request",
+            side_effect=fake_request,
+        ):
             BraveFreeWebSearchProvider().search("q", limit=5)
 
+        assert captured["method"] == "GET"
         assert captured["url"] == "https://api.search.brave.com/res/v1/web/search"
         assert captured["headers"].get("X-Subscription-Token") == "BSAkey123"
         assert captured["params"].get("q") == "q"
@@ -111,11 +119,14 @@ class TestBraveFreeProviderSearch:
 
         captured = {}
 
-        def fake_get(url, **kwargs):
+        def fake_request(method, url, **kwargs):
             captured["params"] = kwargs.get("params", {})
-            return self._mock_resp({"web": {"results": []}})
+            return {"web": {"results": []}}
 
-        with patch("httpx.get", side_effect=fake_get):
+        with patch(
+            "plugins.web.brave_free.provider._httpx_json_request",
+            side_effect=fake_request,
+        ):
             BraveFreeWebSearchProvider().search("q", limit=100)
 
         assert captured["params"].get("count") == 20
@@ -124,7 +135,10 @@ class TestBraveFreeProviderSearch:
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
-        with patch("httpx.get", return_value=self._mock_resp(self._SAMPLE_RESPONSE)):
+        with patch(
+            "plugins.web.brave_free.provider._httpx_json_request",
+            return_value=self._SAMPLE_RESPONSE,
+        ):
             result = BraveFreeWebSearchProvider().search("q", limit=2)
 
         assert result["success"] is True
@@ -134,7 +148,10 @@ class TestBraveFreeProviderSearch:
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
-        with patch("httpx.get", return_value=self._mock_resp({"web": {"results": []}})):
+        with patch(
+            "plugins.web.brave_free.provider._httpx_json_request",
+            return_value={"web": {"results": []}},
+        ):
             result = BraveFreeWebSearchProvider().search("nothing", limit=5)
 
         assert result["success"] is True
@@ -145,7 +162,10 @@ class TestBraveFreeProviderSearch:
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
-        with patch("httpx.get", return_value=self._mock_resp({})):
+        with patch(
+            "plugins.web.brave_free.provider._httpx_json_request",
+            return_value={},
+        ):
             result = BraveFreeWebSearchProvider().search("q", limit=5)
 
         assert result["success"] is True
@@ -160,7 +180,7 @@ class TestBraveFreeProviderSearch:
         bad.status_code = 429
         err = httpx.HTTPStatusError("429", request=MagicMock(), response=bad)
 
-        with patch("httpx.get", side_effect=err):
+        with patch("plugins.web.brave_free.provider._httpx_json_request", side_effect=err):
             result = BraveFreeWebSearchProvider().search("q", limit=5)
 
         assert result["success"] is False
@@ -171,11 +191,28 @@ class TestBraveFreeProviderSearch:
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
-        with patch("httpx.get", side_effect=httpx.RequestError("boom")):
+        with patch(
+            "plugins.web.brave_free.provider._httpx_json_request",
+            side_effect=httpx.RequestError("boom"),
+        ):
             result = BraveFreeWebSearchProvider().search("q", limit=5)
 
         assert result["success"] is False
         assert "boom" in result["error"] or "Brave" in result["error"]
+
+    def test_oversized_response_returns_failure(self, monkeypatch):
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from plugins.web._bounded_json import WebProviderResponseTooLarge
+        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+
+        with patch(
+            "plugins.web.brave_free.provider._httpx_json_request",
+            side_effect=WebProviderResponseTooLarge("web provider JSON response exceeded 16 bytes"),
+        ):
+            result = BraveFreeWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is False
+        assert "exceeded" in result["error"]
 
     def test_missing_key_returns_failure(self, monkeypatch):
         monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)

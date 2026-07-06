@@ -28,6 +28,10 @@ import os
 from typing import Any, Dict, List
 
 from agent.web_search_provider import WebSearchProvider
+from plugins.web._bounded_json import (
+    WebProviderResponseTooLarge,
+    httpx_json_request as _httpx_json_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +43,6 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     when ``TAVILY_API_KEY`` is unset; the caller catches and surfaces as
     a typed error response.
     """
-    import httpx
-
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:
         raise ValueError(
@@ -54,9 +56,7 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{base_url}/{endpoint.lstrip('/')}"
     logger.info("Tavily %s request to %s", endpoint, url)
 
-    response = httpx.post(url, json=payload, timeout=60)
-    response.raise_for_status()
-    return response.json()
+    return _httpx_json_request("POST", url, json=payload, timeout=60)
 
 
 def _normalize_tavily_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
@@ -167,6 +167,8 @@ class TavilyWebSearchProvider(WebSearchProvider):
             return _normalize_tavily_search_results(raw)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
+        except WebProviderResponseTooLarge as exc:
+            return {"success": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001 — including httpx errors
             logger.warning("Tavily search error: %s", exc)
             return {"success": False, "error": f"Tavily search failed: {exc}"}
@@ -198,6 +200,11 @@ class TavilyWebSearchProvider(WebSearchProvider):
             )
         except ValueError as exc:
             return [{"url": u, "title": "", "content": "", "error": str(exc)} for u in urls]
+        except WebProviderResponseTooLarge as exc:
+            return [
+                {"url": u, "title": "", "content": "", "error": str(exc)}
+                for u in urls
+            ]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Tavily extract error: %s", exc)
             return [

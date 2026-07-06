@@ -24,6 +24,10 @@ import os
 from typing import Any, Dict
 
 from agent.web_search_provider import WebSearchProvider
+from plugins.web._bounded_json import (
+    WebProviderResponseTooLarge,
+    httpx_json_request as _httpx_json_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +77,8 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
         count = max(1, min(int(limit), 20))
 
         try:
-            resp = httpx.get(
+            data = _httpx_json_request(
+                "GET",
                 _BRAVE_ENDPOINT,
                 params={"q": query, "count": count},
                 headers={
@@ -82,20 +87,19 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
                 },
                 timeout=15,
             )
-            resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             logger.warning("Brave Search HTTP error: %s", exc)
             return {
                 "success": False,
                 "error": f"Brave Search returned HTTP {exc.response.status_code}",
             }
+        except WebProviderResponseTooLarge as exc:
+            logger.warning("Brave Search response too large: %s", exc)
+            return {"success": False, "error": str(exc)}
         except httpx.RequestError as exc:
             logger.warning("Brave Search request error: %s", exc)
             return {"success": False, "error": f"Could not reach Brave Search: {exc}"}
-
-        try:
-            data = resp.json()
-        except Exception as exc:  # noqa: BLE001
+        except ValueError as exc:
             logger.warning("Brave Search response parse error: %s", exc)
             return {"success": False, "error": "Could not parse Brave Search response as JSON"}
 

@@ -27,6 +27,10 @@ import os
 from typing import Any, Dict
 
 from agent.web_search_provider import WebSearchProvider
+from plugins.web._bounded_json import (
+    WebProviderResponseTooLarge,
+    httpx_json_request as _httpx_json_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,29 +84,29 @@ class SearXNGWebSearchProvider(WebSearchProvider):
         }
 
         try:
-            resp = httpx.get(
+            data = _httpx_json_request(
+                "GET",
                 f"{base_url}/search",
                 params=params,
                 timeout=15,
                 headers={"Accept": "application/json"},
             )
-            resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             logger.warning("SearXNG HTTP error: %s", exc)
             return {
                 "success": False,
                 "error": f"SearXNG returned HTTP {exc.response.status_code}",
             }
+        except WebProviderResponseTooLarge as exc:
+            logger.warning("SearXNG response too large: %s", exc)
+            return {"success": False, "error": str(exc)}
         except httpx.RequestError as exc:
             logger.warning("SearXNG request error: %s", exc)
             return {
                 "success": False,
                 "error": f"Could not reach SearXNG at {base_url}: {exc}",
             }
-
-        try:
-            data = resp.json()
-        except Exception as exc:  # noqa: BLE001
+        except ValueError as exc:
             logger.warning("SearXNG response parse error: %s", exc)
             return {
                 "success": False,

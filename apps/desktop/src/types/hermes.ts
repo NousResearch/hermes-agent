@@ -363,6 +363,14 @@ export interface SessionInfo {
   is_default_profile?: boolean
 }
 
+export interface SessionFolder {
+  id: string
+  name: string
+  sort_order: number
+  created_at: number
+  session_count: number
+}
+
 export interface SessionMessage {
   codex_reasoning_items?: unknown
   content: unknown

@@ -745,6 +745,20 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
+CREATE TABLE IF NOT EXISTS session_folders (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_folder_members (
+    folder_id   TEXT NOT NULL REFERENCES session_folders(id) ON DELETE CASCADE,
+    session_id  TEXT NOT NULL,
+    added_at    REAL NOT NULL,
+    PRIMARY KEY (folder_id, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -1252,6 +1266,116 @@ class SessionDB:
                     pass
                 self._conn.close()
                 self._conn = None
+
+    # ── Session Folders ──────────────────────────────────────────────
+
+    def list_folders(self) -> list[dict]:
+        """Return all folders with per-folder session count."""
+        rows = self._execute_write(
+            lambda conn: conn.execute(
+                """SELECT f.*, COUNT(m.session_id) AS session_count
+                   FROM session_folders f
+                   LEFT JOIN session_folder_members m ON m.folder_id = f.id
+                   GROUP BY f.id
+                   ORDER BY f.sort_order ASC, f.created_at ASC"""
+            ).fetchall()
+        )
+        return [dict(r) for r in rows]
+
+    def create_folder(self, *, name: str) -> dict:
+        """Create a folder and return its row."""
+        import secrets
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("folder name must not be empty")
+        fid = "sf_" + secrets.token_hex(4)
+        now = time.time()
+
+        def _do(conn):
+            max_order = conn.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM session_folders"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO session_folders (id, name, sort_order, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (fid, name, max_order, now),
+            )
+            row = conn.execute(
+                "SELECT f.*, 0 AS session_count FROM session_folders f WHERE f.id = ?",
+                (fid,),
+            ).fetchone()
+            return dict(row) if row else {}
+
+        return self._execute_write(_do)
+
+    def update_folder(self, folder_id: str, *, name: str) -> bool:
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("folder name must not be empty")
+        return bool(
+            self._execute_write(
+                lambda conn: conn.execute(
+                    "UPDATE session_folders SET name = ? WHERE id = ?", (name, folder_id)
+                ).rowcount
+            )
+        )
+
+    def delete_folder(self, folder_id: str) -> bool:
+        """Delete the folder (CASCADE removes memberships). Sessions survive."""
+        return bool(
+            self._execute_write(
+                lambda conn: conn.execute(
+                    "DELETE FROM session_folders WHERE id = ?", (folder_id,)
+                ).rowcount
+            )
+        )
+
+    def add_sessions_to_folder(self, folder_id: str, session_ids: list[str]) -> int:
+        """Add sessions to a folder. Returns count of newly added."""
+        now = time.time()
+        return self._execute_write(
+            lambda conn: sum(
+                1
+                for sid in session_ids
+                if sid
+                and conn.execute(
+                    "INSERT OR IGNORE INTO session_folder_members "
+                    "(folder_id, session_id, added_at) VALUES (?, ?, ?)",
+                    (folder_id, sid, now),
+                ).rowcount
+            )
+        )
+
+    def remove_sessions_from_folder(
+        self, folder_id: str, session_ids: list[str]
+    ) -> int:
+        if not session_ids:
+            return 0
+        ph = ",".join("?" * len(session_ids))
+        return self._execute_write(
+            lambda conn: conn.execute(
+                f"DELETE FROM session_folder_members "
+                f"WHERE folder_id = ? AND session_id IN ({ph})",
+                [folder_id] + list(session_ids),
+            ).rowcount
+        )
+
+    def get_session_folder_map(self, session_ids: list[str]) -> dict[str, list[str]]:
+        """Returns {session_id: [folder_id, ...]} for batch lookups."""
+        if not session_ids:
+            return {}
+        ph = ",".join("?" * len(session_ids))
+        rows = self._execute_write(
+            lambda conn: conn.execute(
+                f"SELECT session_id, folder_id FROM session_folder_members "
+                f"WHERE session_id IN ({ph})",
+                list(session_ids),
+            ).fetchall()
+        )
+        result: dict[str, list[str]] = {}
+        for r in rows:
+            result.setdefault(r["session_id"], []).append(r["folder_id"])
+        return result
 
     @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
@@ -5039,6 +5163,7 @@ class SessionDB:
                 (session_id,),
             )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM session_folder_members WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
 
@@ -5158,6 +5283,10 @@ class SessionDB:
             )
             conn.execute(
                 f"DELETE FROM messages WHERE session_id IN ({existing_placeholders})",
+                existing,
+            )
+            conn.execute(
+                f"DELETE FROM session_folder_members WHERE session_id IN ({existing_placeholders})",
                 existing,
             )
             conn.execute(
@@ -6008,7 +6137,7 @@ class SessionDB:
             except sqlite3.OperationalError:
                 # telegram_dm_topic_bindings doesn't exist yet — no bindings
                 # means every telegram session for this user is "unlinked".
-                rows = self._conn.execute(
+                rows = self._execute_write(
                     """
                     SELECT s.*,
                         COALESCE(

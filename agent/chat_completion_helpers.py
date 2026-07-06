@@ -1445,6 +1445,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             timeout=agent._resolved_api_call_timeout(),
             request_overrides=agent.request_overrides,
             provider=getattr(agent, "provider", None),
+            text_verbosity=getattr(agent, "text_verbosity", ""),
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,

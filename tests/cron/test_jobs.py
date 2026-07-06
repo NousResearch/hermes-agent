@@ -305,6 +305,26 @@ class TestJobCRUD:
         job = create_job(prompt="One-shot", schedule="1h")
         assert job["repeat"]["times"] == 1
 
+    def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        stale = (now - timedelta(minutes=5)).isoformat()
+
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            create_job(prompt="Too late", schedule=stale)
+
+        assert load_jobs() == []
+
+    def test_recent_past_one_shot_within_grace_still_creates(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        recent = (now - timedelta(seconds=30)).isoformat()
+
+        job = create_job(prompt="Still valid", schedule=recent)
+
+        assert job["next_run_at"] == recent
+        assert load_jobs()[0]["id"] == job["id"]
+
     def test_interval_no_auto_repeat(self, tmp_cron_dir):
         job = create_job(prompt="Recurring", schedule="every 1h")
         assert job["repeat"]["times"] is None

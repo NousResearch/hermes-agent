@@ -978,6 +978,19 @@ def create_job(
         no_agent=normalized_no_agent,
     )
 
+    next_run_at = compute_next_run(parsed_schedule)
+    if parsed_schedule.get("kind") == "once" and next_run_at is None:
+        run_at = parsed_schedule.get("run_at") or schedule
+        logger.warning(
+            "Rejecting one-shot cron job '%s': run_at %s is outside the %ss grace window",
+            name or label_source[:50].strip(),
+            run_at,
+            ONESHOT_GRACE_SECONDS,
+        )
+        raise ValueError(
+            f"Requested one-shot time {run_at} is in the past and cannot be scheduled."
+        )
+
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -1006,7 +1019,7 @@ def create_job(
         "paused_at": None,
         "paused_reason": None,
         "created_at": now,
-        "next_run_at": compute_next_run(parsed_schedule),
+        "next_run_at": next_run_at,
         "last_run_at": None,
         "last_status": None,
         "last_error": None,

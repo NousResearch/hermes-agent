@@ -5744,6 +5744,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     e,
                 )
 
+        # Heuristic: write .restart_pending.json when a home channel is configured.
+        # The new gateway instance sends a "♻️ Gateway online" notification on
+        # startup.  This catches SIGTERM (kill PID) paths where INVOCATION_ID is
+        # not set and _restart_requested is False.  Not gated on active sessions —
+        # a quiet gateway that happens to have a home_channel should also notify
+        # on restart so the operator knows it came back.
+        _cfg = getattr(self, "config", None)
+        if _cfg is not None:
+            _has_active_home = False
+            for _platform in list(self.adapters.keys()):
+                _home = _cfg.get_home_channel(_platform)
+                if _home and _home.chat_id:
+                    _has_active_home = True
+                    break
+            if _has_active_home:
+                _marker = _planned_restart_notification_path()
+                try:
+                    import json as _json
+                    _data = {"reason": "shutdown", "pid": os.getpid(), "timestamp": time.time()}
+                    _marker.write_text(_json.dumps(_data, indent=None), encoding="utf-8")
+                    logger.debug("Wrote restart pending marker: %s", _marker)
+                except Exception as _me:
+                    logger.debug("Failed to write restart pending marker: %s", _me)
+
     async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
             # Persist any in-flight transcript to the SQLite session store

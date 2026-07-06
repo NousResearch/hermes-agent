@@ -2007,7 +2007,23 @@ class MCPServerTask:
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
-                    self.initialize_result = await session.initialize()
+                    # Bound the MCP handshake. A stdio server that never
+                    # completes ``initialize`` (e.g. emits a non-JSON-RPC frame
+                    # and then blocks on stdin) otherwise hangs this coroutine
+                    # forever on the background loop: ``connect_timeout`` only
+                    # bounds the caller's ``.result()`` wait, not the coroutine
+                    # itself. Because the connect never unwinds, the cleanup
+                    # ``finally`` below never runs, so the spawned child and its
+                    # stdio pipes/pidfd leak on every discovery retry — unbounded
+                    # until the gateway hits EMFILE. Timing out here converts the
+                    # hang into a normal failure, letting the ``finally`` reap the
+                    # child. See #59349.
+                    connect_timeout = float(
+                        config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+                    )
+                    self.initialize_result = await asyncio.wait_for(
+                        session.initialize(), timeout=connect_timeout
+                    )
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()

@@ -2278,6 +2278,7 @@ class CLICommandsMixin:
             print(f"  Available: {', '.join(sorted(available))}")
             return
 
+        old_skin = get_active_skin_name()
         set_active_skin(new_skin)
         _ACCENT.reset()  # Re-resolve ANSI color for the new skin
         # _DIM is now a fixed dim+italic ANSI escape (terminal-default fg)
@@ -2286,9 +2287,28 @@ class CLICommandsMixin:
             print(f"  Skin set to: {new_skin} (saved)")
         else:
             print(f"  Skin set to: {new_skin}")
-        print("  Note: banner colors will update on next session start.")
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")
+        # Reprint the banner with the new skin's colors so the user sees
+        # the full theme change immediately — not just on next session start.
+        self._refresh_banner_after_skin_switch()
+
+    def _refresh_banner_after_skin_switch(self):
+        """Reprint the compact banner with the new skin's colors.
+
+        Inside the TUI, Rich output must go through ChatConsole (prompt_toolkit's
+        native ANSI renderer) instead of self.console (raw stdout, mangled by
+        patch_stdout).  Outside the TUI, self.console works fine.
+        """
+        try:
+            from cli import ChatConsole, _build_compact_banner
+            if self._app:
+                cc = ChatConsole()
+                cc.print(_build_compact_banner())
+            else:
+                self.console.print(_build_compact_banner())
+        except Exception:
+            pass  # banner refresh is cosmetic — never break /skin
 
     def _compose_in_editor(self, initial_text: str = "") -> str:
         """Open ``$VISUAL``/``$EDITOR`` on a temp markdown file and return the

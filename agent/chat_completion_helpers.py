@@ -234,6 +234,81 @@ def _check_stale_giveup(agent) -> None:
             "avoid an indefinite stall. Switch models or start a new "
             "session, then retry."
         )
+def _is_dflash_like_model(model: Any) -> bool:
+    return "dflash" in str(model or "").lower()
+
+
+def _dflash_local_stale_timeout(api_payload: Any, model: Any) -> float | None:
+    """Return a bounded local-provider stale timeout for dflash models.
+
+    Generic local endpoints still need generous prefill behavior for large
+    self-hosted models, but dflash's failure mode is different: a request can
+    park on an open local socket forever without producing a first chunk. Keep
+    dflash bounded so the normal retry/fallback path gets a chance to run.
+    """
+    if not _is_dflash_like_model(model):
+        return None
+
+    timeout = _env_float(
+        "HERMES_DFLASH_STALE_TIMEOUT",
+        _env_float("HERMES_DFLASH_STREAM_STALE_TIMEOUT", 75.0),
+    )
+    if timeout <= 0:
+        return float("inf")
+
+    est_tokens = estimate_request_context_tokens(api_payload)
+    if est_tokens > 100_000:
+        return max(timeout, 300.0)
+    if est_tokens > 50_000:
+        return max(timeout, 240.0)
+    if est_tokens > 25_000:
+        return max(timeout, 150.0)
+    if est_tokens > 10_000:
+        return max(timeout, 90.0)
+    return timeout
+
+
+def resolve_stream_stale_timeout(agent, api_kwargs: dict) -> float:
+    """Resolve the no-chunk timeout for streaming chat completions."""
+    _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
+    if _cfg_stale is not None:
+        _stream_stale_timeout_base = _cfg_stale
+        _uses_implicit_default = False
+    else:
+        _env_stale = os.getenv("HERMES_STREAM_STALE_TIMEOUT")
+        if _env_stale is not None:
+            _stream_stale_timeout_base = _env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
+            _uses_implicit_default = False
+        else:
+            _stream_stale_timeout_base = 180.0
+            _uses_implicit_default = True
+
+    _est_tokens = estimate_request_context_tokens(api_kwargs)
+    if (
+        _uses_implicit_default
+        and agent.base_url
+        and is_local_endpoint(agent.base_url)
+    ):
+        _model = api_kwargs.get("model") or agent.model
+        _dflash_timeout = _dflash_local_stale_timeout(api_kwargs, _model)
+        if _dflash_timeout is not None:
+            logger.debug(
+                "Local dflash provider detected (%s) — stream stale timeout set to %.0fs",
+                agent.base_url,
+                _dflash_timeout,
+            )
+            return _dflash_timeout
+        logger.debug(
+            "Local provider detected (%s) — stale stream timeout disabled",
+            agent.base_url,
+        )
+        return float("inf")
+
+    if _est_tokens > 100_000:
+        return max(_stream_stale_timeout_base, 300.0)
+    if _est_tokens > 50_000:
+        return max(_stream_stale_timeout_base, 240.0)
+    return _stream_stale_timeout_base
 
 
 def interruptible_api_call(agent, api_kwargs: dict):
@@ -2889,42 +2964,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         finally:
             _close_request_client_once("stream_request_complete")
 
-    # Provider-configured stale timeout takes priority over env default.
-    _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
-    if _cfg_stale is not None:
-        _stream_stale_timeout_base = _cfg_stale
-    else:
-        _stream_stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
-    # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-    # for prefill on large contexts.  Disable the stale detector unless
-    # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-    if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        _stream_stale_timeout = float("inf")
-        logger.debug("Local provider detected (%s) — stale stream timeout disabled", agent.base_url)
-    else:
-        # Scale the stale timeout for large contexts: slow models (like Opus)
-        # can legitimately think for minutes before producing the first token
-        # when the context is large.  Without this, the stale detector kills
-        # healthy connections during the model's thinking phase, producing
-        # spurious RemoteProtocolError ("peer closed connection").
-        _est_tokens = estimate_request_context_tokens(api_kwargs)
-        if _est_tokens > 100_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-        elif _est_tokens > 50_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
-        else:
-            _stream_stale_timeout = _stream_stale_timeout_base
-        # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
-        # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
-        # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
-        # model threshold during their thinking phase.  The cloud gateway
-        # upstream kills the socket first, surfacing as BrokenPipeError.
-        # Raises the floor only — never overrides explicit user config
-        # (handled by get_provider_stale_timeout above).
-        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-        _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
-        if _reasoning_floor is not None:
-            _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
+    _stream_stale_timeout = resolve_stream_stale_timeout(agent, api_kwargs)
+    # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
+    # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
+    # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
+    # model threshold during their thinking phase.  The cloud gateway
+    # upstream kills the socket first, surfacing as BrokenPipeError.
+    # Raises the floor only — never overrides explicit user config
+    # (handled by get_provider_stale_timeout above).  The extracted
+    # resolve_stream_stale_timeout() omits this floor, so re-apply it here.
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
+    if _reasoning_floor is not None:
+        _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()
@@ -2987,6 +3039,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
                 except Exception:
                     pass
+            t.join(timeout=_env_float("HERMES_STREAM_ABORT_JOIN_TIMEOUT", 2.0))
+            if result["error"] is None and result["response"] is None:
+                result["error"] = TimeoutError(
+                    f"Streaming API call timed out after {int(_stale_elapsed)}s "
+                    f"with no chunks (threshold: {int(_stream_stale_timeout)}s)"
+                )
+                break
             # Reset the timer so we don't kill repeatedly while
             # the inner thread processes the closure.
             last_chunk_time["t"] = time.time()

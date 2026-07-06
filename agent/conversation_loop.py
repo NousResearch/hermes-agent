@@ -640,6 +640,16 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Agentic stall-retry guard: dflash can stall more than once in a long
+    # tool loop, so allow a bounded number of successful rescues per user turn.
+    # If the cap is exhausted, fail partial rather than accept another
+    # planning-only text response as final. See agent/stall_retry.py.
+    from agent.stall_retry import get_stall_retry_max_per_turn
+
+    _stall_retry_count = 0
+    _stall_retry_max_per_turn = get_stall_retry_max_per_turn(agent)
+    agent._stall_retry_events = []
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
@@ -4420,6 +4430,159 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
+
+            # ── Agentic stall-retry (opt-in via HERMES_STALL_RETRY_MODEL) ──
+            # dflash Q4 can stop right after an action preamble ("Let me
+            # check X") without producing the promised tool_call. Retry the
+            # configured higher-quality lane before the final-response branch
+            # sees it. The retry request carries a tiny recovery nudge, but
+            # the synthetic nudge is not persisted to the real session. If
+            # the retry returns tool calls, fall through to the normal
+            # executor below in this same loop iteration. If it still returns
+            # no tool call, fail this turn as partial instead of persisting
+            # the planning-only text as a completed assistant message that
+            # poisons future "continue" turns.
+            from agent.stall_retry import (
+                get_stall_retry_max_chars,
+                get_stall_retry_model,
+                looks_like_stall,
+                record_stall_retry_event,
+                retry_on_stall,
+                stall_retry_summary,
+            )
+
+            retry_model = get_stall_retry_model(agent)
+            if (
+                retry_model
+                and getattr(agent, "tools", None)
+                and not getattr(assistant_message, "tool_calls", None)
+            ):
+                max_chars = get_stall_retry_max_chars(agent)
+                try:
+                    stalled_content = assistant_message.content or ""
+                    if looks_like_stall(
+                        stalled_content,
+                        finish_reason,
+                        False,
+                        max_chars,
+                    ):
+                        record_stall_retry_event(
+                            agent,
+                            "detected",
+                            finish_reason=finish_reason,
+                            api_call=api_call_count,
+                            retry_count=_stall_retry_count,
+                            max_per_turn=_stall_retry_max_per_turn,
+                            content=stalled_content,
+                        )
+                        if _stall_retry_count >= _stall_retry_max_per_turn:
+                            _turn_exit_reason = "stall_retry_limit_exhausted"
+                            record_stall_retry_event(
+                                agent,
+                                "limit_exhausted",
+                                finish_reason=finish_reason,
+                                api_call=api_call_count,
+                                retry_count=_stall_retry_count,
+                                max_per_turn=_stall_retry_max_per_turn,
+                                content=stalled_content,
+                            )
+                            agent._mute_post_response = False
+                            agent._vprint(
+                                (
+                                    f"{agent.log_prefix}❌ Stall retry limit "
+                                    f"({_stall_retry_max_per_turn}/turn) exhausted; "
+                                    "saving as partial without storing the "
+                                    "planning-only assistant turn."
+                                ),
+                                force=True,
+                            )
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
+                            _stall_error = (
+                                "Model repeatedly stopped after an agentic "
+                                "preamble with no tool call; configured stall "
+                                "retry limit was exhausted."
+                            )
+                            return {
+                                "final_response": _stall_error,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "failed": True,
+                                "error": _stall_error,
+                                "failure_subclass": "stall_retry_limit_exhausted",
+                                "stall_retry": stall_retry_summary(agent),
+                            }
+                        _stall_retry_count += 1
+                        retried = retry_on_stall(
+                            agent,
+                            api_messages,
+                            finish_reason,
+                            stalled_content=stalled_content,
+                            retry_index=_stall_retry_count,
+                        )
+                        if retried is not None and getattr(retried, "tool_calls", None):
+                            assistant_message = retried
+                            finish_reason = getattr(retried, "finish_reason", None) or "tool_calls"
+                            if finish_reason != "tool_calls":
+                                finish_reason = "tool_calls"
+                        else:
+                            _turn_exit_reason = "stall_retry_failed_no_tool_call"
+                            agent._mute_post_response = False
+                            agent._vprint(
+                                (
+                                    f"{agent.log_prefix}❌ Stall retry did not produce "
+                                    "tool calls; saving as partial without storing the "
+                                    "planning-only assistant turn."
+                                ),
+                                force=True,
+                            )
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
+                            _stall_error = (
+                                "Model stopped after an action preamble with no "
+                                "tool call; configured stall retry also produced "
+                                "no tool call."
+                            )
+                            return {
+                                "final_response": _stall_error,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "failed": True,
+                                "error": _stall_error,
+                                "failure_subclass": "stall_retry_failed_no_tool_call",
+                                "stall_retry": stall_retry_summary(agent),
+                            }
+                except Exception as exc:
+                    _turn_exit_reason = "stall_retry_exception"
+                    record_stall_retry_event(
+                        agent,
+                        "exception",
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:300],
+                    )
+                    agent._mute_post_response = False
+                    agent._vprint(
+                        f"{agent.log_prefix}❌ Stall retry failed before recovery: {exc}",
+                        force=True,
+                    )
+                    agent._cleanup_task_resources(effective_task_id)
+                    agent._persist_session(messages, conversation_history)
+                    _stall_error = f"Stall retry failed before recovery: {exc}"
+                    return {
+                        "final_response": _stall_error,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "partial": True,
+                        "failed": True,
+                        "error": _stall_error,
+                        "failure_subclass": "stall_retry_exception",
+                        "stall_retry": stall_retry_summary(agent),
+                    }
             
             # Check for tool calls
             if assistant_message.tool_calls:
@@ -4690,6 +4853,7 @@ def run_conversation(
                     except Exception:
                         pass
 
+                _tool_results_start = len(messages)
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
                 if agent._tool_guardrail_halt_decision is not None:
@@ -4714,6 +4878,18 @@ def run_conversation(
                             except Exception:
                                 pass
                     break
+
+                _progress_decision = agent._observe_progress_outcome(
+                    assistant_message.tool_calls,
+                    messages[_tool_results_start:],
+                )
+                if _progress_decision is not None:
+                    agent._emit_status("Progress canary nudged the model to pick a concrete outcome")
+                    messages.append({
+                        "role": "user",
+                        "content": _progress_decision.message,
+                        "_progress_outcome_canary": True,
+                    })
 
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
@@ -4791,7 +4967,7 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
-                
+
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
                 # status messages.  _mute_post_response was set during a

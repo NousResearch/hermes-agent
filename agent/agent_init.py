@@ -40,6 +40,10 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.process_bootstrap import _install_safe_stdio
+from agent.progress_outcome import (
+    ProgressOutcomeConfig,
+    ProgressOutcomeTracker,
+)
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
@@ -1320,6 +1324,18 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+    try:
+        agent._progress_outcome_canary = ProgressOutcomeTracker(
+            ProgressOutcomeConfig.from_mapping(
+                _agent_cfg.get("progress_outcome_canary", {})
+            )
+        )
+    except Exception as _poc_err:
+        _ra().logger.warning("Progress outcome canary config ignored: %s", _poc_err)
+        agent._progress_outcome_canary = ProgressOutcomeTracker()
+    agent._progress_outcome_events = []
+    _stall_retry_cfg = _agent_cfg.get("stall_retry", {})
+    agent._stall_retry_config = _stall_retry_cfg if isinstance(_stall_retry_cfg, dict) else {}
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

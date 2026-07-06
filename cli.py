@@ -12414,7 +12414,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # by the Enter key binding (routed to the clarify response queue),
             # so we skip interrupt processing to avoid stealing that input.
             interrupt_msg = None
+            interrupt_requested_without_message = False
             while agent_thread.is_alive():
+                if (
+                    self.agent
+                    and getattr(self.agent, "_interrupt_requested", False)
+                    and interrupt_msg is None
+                ):
+                    interrupt_requested_without_message = True
+                    if stop_event is not None:
+                        stop_event.set()
+                    break
                 if hasattr(self, '_interrupt_queue'):
                     try:
                         interrupt_msg = self._interrupt_queue.get(timeout=0.1)
@@ -12470,7 +12480,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # session).  Poll instead of a blocking join so the process_loop
             # stays responsive — if the user sent another interrupt or the
             # agent gets stuck, we can break out instead of freezing forever.
-            if interrupt_msg is not None:
+            interrupt_requested = interrupt_msg is not None or interrupt_requested_without_message
+            if interrupt_requested:
                 # Interrupt path: poll briefly, then move on.  The agent
                 # thread is daemon — it dies on process exit regardless.
                 for _wait_tick in range(50):  # 50 * 0.2s = 10s max
@@ -12492,6 +12503,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # Normal completion: agent thread should be done already,
                 # but guard against edge cases.
                 agent_thread.join(timeout=30)
+
+            if interrupt_requested and result is None:
+                result = {
+                    "final_response": "Operation interrupted.",
+                    "messages": self.conversation_history,
+                    "api_calls": 0,
+                    "completed": False,
+                    "interrupted": True,
+                    "interrupt_message": interrupt_msg,
+                }
 
             # Freeze per-prompt elapsed timer once the agent thread has
             # exited (or been abandoned as a daemon after interrupt).

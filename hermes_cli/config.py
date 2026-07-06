@@ -1409,6 +1409,18 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Agentic stall retry is default-off until a retry model is configured.
+    # It is useful for local models that sometimes stop after an action
+    # preamble with no tool call. When enabled, local bounded telemetry is
+    # appended under ~/.hermes/logs/ so operators can measure recoveries.
+    "stall_retry": {
+        "model": "",
+        "max_per_turn": 5,
+        "max_chars": 400,
+        "nudge": True,
+        "telemetry": True,
+    },
+
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio.

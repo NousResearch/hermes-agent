@@ -3,6 +3,7 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -850,6 +851,58 @@ class TestStreamingFallback:
 
         # Should NOT retry — propagates immediately
         assert mock_client.chat.completions.create.call_count == 1
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_local_dflash_no_chunk_stream_times_out(
+        self, mock_close, mock_create, monkeypatch, tmp_path
+    ):
+        """A local dflash socket that never yields chunks must not hang the turn."""
+        from run_agent import AIAgent
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        monkeypatch.setenv("HERMES_DFLASH_STALE_TIMEOUT", "0.01")
+        monkeypatch.setenv("HERMES_STREAM_ABORT_JOIN_TIMEOUT", "0.01")
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+
+        aborted = threading.Event()
+
+        class BlockingStream:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                while not aborted.wait(0.005):
+                    pass
+                raise TimeoutError("socket aborted")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = BlockingStream()
+        mock_create.return_value = mock_client
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=131_072):
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="http://10.10.20.211:8080/v1",
+                provider="taro",
+                model="dflash",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._abort_request_openai_client = lambda client, reason: aborted.set()
+        agent._replace_primary_openai_client = lambda reason: True
+
+        with pytest.raises(TimeoutError, match="socket aborted|Streaming API call timed out"):
+            agent._interruptible_streaming_api_call(
+                {"model": "dflash", "messages": [{"role": "user", "content": "hi"}]}
+            )
+
+        assert aborted.is_set()
 
 
 # ── Test: Reasoning Streaming ────────────────────────────────────────────

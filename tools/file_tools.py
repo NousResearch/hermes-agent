@@ -2002,6 +2002,21 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content, file_read=True)
         result_dict = result.to_dict(densify=True)
+        if _is_empty_search_result(result_dict):
+            searched_path = str(_resolve_path_for_task(path, task_id))
+            result_dict.update({
+                "pattern": pattern,
+                "target": target,
+                "path": path,
+                "searched_path": searched_path,
+            })
+            result_dict["_hint"] = (
+                "No matches were found under searched_path. If this is surprising, "
+                "verify the search root before changing the regex again: pass an "
+                "absolute path, switch target between 'content' and 'files' as "
+                "appropriate, or use terminal (`pwd`, `rg --files`, `rg -n`) to "
+                "confirm the repository layout."
+            )
 
         if omitted:
             result_dict["_omitted"] = (
@@ -2024,6 +2039,17 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         return result_json
     except Exception as e:
         return tool_error(str(e))
+
+
+def _is_empty_search_result(result_dict: dict) -> bool:
+    return (
+        isinstance(result_dict, dict)
+        and result_dict.get("total_count") == 0
+        and not result_dict.get("matches")
+        and not result_dict.get("files")
+        and not result_dict.get("counts")
+        and not result_dict.get("error")
+    )
 
 
 
@@ -2130,7 +2156,7 @@ SEARCH_FILES_SCHEMA = {
         "properties": {
             "pattern": {"type": "string", "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search"},
             "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside file contents, 'files' searches for files by name", "default": "content"},
-            "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)", "default": "."},
+            "path": {"type": "string", "description": "Directory or file to search in (default: current working directory). Prefer an absolute path after a zero-result search so the search root is unambiguous.", "default": "."},
             "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},
             "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},

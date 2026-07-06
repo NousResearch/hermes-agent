@@ -241,6 +241,32 @@ class TestApplyProfileOverrideHermesHomeGuard:
         assert result.endswith("coder")
         assert sys.argv == ["hermes", "--continue"]
 
+    def test_hermes_skip_profile_override_env_var(self, tmp_path, monkeypatch):
+        """HERMES_SKIP_PROFILE_OVERRIDE must skip all profile resolution.
+
+        When HERMES_SKIP_PROFILE_OVERRIDE is set, _apply_profile_override
+        returns immediately without reading active_profile or modifying
+        HERMES_HOME.  This is used by MeshBoard stream-tap launcher to
+        force a specific HERMES_HOME without profile redirection.
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("coder")
+        profile_dir = hermes_root / "profiles" / "coder"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
+        monkeypatch.setenv("HERMES_SKIP_PROFILE_OVERRIDE", "1")
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        # HERMES_HOME must remain at the root, NOT redirected to profile
+        assert os.environ.get("HERMES_HOME") == str(hermes_root)
+        assert "profiles" not in os.environ.get("HERMES_HOME", "")
+
 
 class TestSupervisedChildIgnoresStickyProfile:
     """The reserved default gateway s6 slot must not follow active_profile.
@@ -322,4 +348,3 @@ class TestSupervisedChildIgnoresStickyProfile:
         result = os.environ.get("HERMES_HOME")
         assert result is not None
         assert result.endswith("coder")
-

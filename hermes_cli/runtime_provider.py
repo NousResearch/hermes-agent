@@ -407,6 +407,18 @@ def _resolve_runtime_from_pool_entry(
     # config.default was still a Claude model.
     effective_model = (target_model or model_cfg.get("default") or "")
     base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
+    # MeshBoard stream-tap launcher sets HERMES_LLM_BASE_URL to a local
+    # loopback proxy URL when the stream-tap is active.  This env var
+    # must override the pool's default base_url so inference traffic
+    # is routed through the proxy and captured as JSONL for the
+    # dashboard.  Without this, Hermes bypasses the tap entirely and
+    # the dashboard shows "model silent" during active dispatches.
+    # However, OAuth providers (qwen-oauth, xai-oauth, etc.) carry
+    # tokens scoped to their own endpoints — do not redirect those.
+    _tap_url = os.getenv("HERMES_LLM_BASE_URL", "").strip().rstrip("/")
+    _oauth_providers = {"qwen-oauth", "xai-oauth", "google-gemini-cli", "minimax-oauth"}
+    if _tap_url and provider not in _oauth_providers:
+        base_url = _tap_url
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     api_mode = "chat_completions"
     if provider == "openai-codex":
@@ -1073,6 +1085,11 @@ def _resolve_openrouter_runtime(
 
     env_openrouter_base_url = _getenv("OPENROUTER_BASE_URL", "").strip()
     env_custom_base_url = _getenv("CUSTOM_BASE_URL", "").strip()
+    # MeshBoard stream-tap launcher sets HERMES_LLM_BASE_URL to a local
+    # proxy URL.  Honour it when the provider-specific env var is absent
+    # so the tap proxy actually receives inference traffic instead of
+    # being silently bypassed in favour of the default upstream URL.
+    env_hermes_llm_base_url = _getenv("HERMES_LLM_BASE_URL", "").strip().rstrip("/")
 
     # Use config base_url when available and the provider context matches.
     # OPENAI_BASE_URL env var is no longer consulted — config.yaml is
@@ -1092,6 +1109,7 @@ def _resolve_openrouter_runtime(
         or env_custom_base_url
         or (cfg_base_url.strip() if use_config_base_url else "")
         or env_openrouter_base_url
+        or env_hermes_llm_base_url
         or OPENROUTER_BASE_URL
     ).rstrip("/")
 
@@ -1462,6 +1480,12 @@ def _resolve_explicit_runtime(
         env_url = ""
         if pconfig.base_url_env_var:
             env_url = _getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+        # MeshBoard stream-tap launcher sets HERMES_LLM_BASE_URL to a local
+        # proxy URL.  Honour it when the provider-specific env var is absent
+        # so the tap proxy actually receives inference traffic instead of
+        # being silently bypassed in favour of the default upstream URL.
+        if not env_url:
+            env_url = _getenv("HERMES_LLM_BASE_URL", "").strip().rstrip("/")
 
         base_url = explicit_base_url
         if not base_url:

@@ -108,6 +108,7 @@ model:
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
 # and per-model exceptions.
+# The same keys are honored under custom_providers entries by provider name.
 # Applies to the primary turn client on every api_mode (OpenAI-wire, native
 # Anthropic, and Anthropic-compatible providers), the fallback chain, and
 # client rebuilds during credential rotation.  For OpenAI-wire chat
@@ -119,7 +120,9 @@ model:
 # unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
 # HERMES_API_CALL_STALE_TIMEOUT=90s, native Anthropic 900s). The
 # implicit non-stream stale detector is auto-disabled for local endpoints
-# and can scale upward for very large contexts.
+# and can scale upward for very large contexts. Local dflash streams also
+# get a bounded no-chunk watchdog by default; tune with
+# HERMES_DFLASH_STALE_TIMEOUT when needed.
 #
 # Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
 # SDK paths) — those use boto3 with its own timeout configuration.
@@ -383,6 +386,19 @@ tool_loop_guardrails:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+
+# =============================================================================
+# Agentic Stall Retry
+# =============================================================================
+# Default-off: set model to a higher-quality lane served by the same endpoint to
+# rescue local models that stop after an action preamble with no tool call. When
+# enabled, Hermes records bounded local telemetry in ~/.hermes/logs/stall-retry.ndjson.
+stall_retry:
+  model: ""                  # Example: qwen3.6-27b-256k
+  max_per_turn: 5
+  max_chars: 400
+  nudge: true                # Retry-only "make the tool call now" continuation
+  telemetry: true            # Local NDJSON only; never logs raw request messages
 
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)

@@ -3375,3 +3375,114 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+class TestHermesLlmBaseUrl:
+    """Tests for HERMES_LLM_BASE_URL env var override (MeshBoard stream-tap).
+
+    HERMES_LLM_BASE_URL is set by the MeshBoard stream-tap launcher to a local
+    loopback proxy URL.  It must override the resolved base_url so inference
+    traffic is routed through the proxy and captured as JSONL for the dashboard.
+    """
+
+    def test_pool_entry_honors_hermes_llm_base_url(self, monkeypatch):
+        """HERMES_LLM_BASE_URL overrides pool entry base_url."""
+        class _Entry:
+            access_token = "pool-token"
+            source = "manual"
+            base_url = "https://pool.example.com/v1"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+        monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+        monkeypatch.setenv("HERMES_LLM_BASE_URL", "http://127.0.0.1:9999/v1")
+
+        resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+        assert resolved["base_url"] == "http://127.0.0.1:9999/v1"
+        assert resolved["api_key"] == "pool-token"
+
+    def test_explicit_path_honors_hermes_llm_base_url(self, monkeypatch):
+        """HERMES_LLM_BASE_URL overrides explicit path when provider env var absent."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("HERMES_LLM_BASE_URL", "http://127.0.0.1:9999/v1")
+
+        resolved = rp.resolve_runtime_provider(
+            requested="openrouter",
+            explicit_api_key="test-key",
+        )
+
+        assert resolved["base_url"] == "http://127.0.0.1:9999/v1"
+        assert resolved["api_key"] == "test-key"
+
+    def test_provider_specific_env_var_wins_over_hermes_llm_base_url(self, monkeypatch):
+        """Provider-specific base_url_env_var takes precedence over HERMES_LLM_BASE_URL."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+        monkeypatch.setenv("OPENROUTER_BASE_URL", "http://provider-specific.example/v1")
+        monkeypatch.setenv("HERMES_LLM_BASE_URL", "http://127.0.0.1:9999/v1")
+
+        resolved = rp.resolve_runtime_provider(
+            requested="openrouter",
+            explicit_api_key="test-key",
+        )
+
+        # Provider-specific env var (OPENROUTER_BASE_URL) takes priority
+        assert resolved["base_url"] == "http://provider-specific.example/v1"
+
+    def test_hermes_llm_base_url_trailing_slash_stripped(self, monkeypatch):
+        """Trailing slashes on HERMES_LLM_BASE_URL are stripped."""
+        class _Entry:
+            access_token = "pool-token"
+            source = "manual"
+            base_url = "https://pool.example.com/v1"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+        monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+        monkeypatch.setenv("HERMES_LLM_BASE_URL", "http://127.0.0.1:9999/v1/")
+
+        resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+        assert resolved["base_url"] == "http://127.0.0.1:9999/v1"
+
+    def test_no_hermes_llm_base_url_uses_default(self, monkeypatch):
+        """Without HERMES_LLM_BASE_URL, normal resolution still works."""
+        class _Entry:
+            access_token = "pool-token"
+            source = "manual"
+            base_url = "https://pool.example.com/v1"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+        monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+        monkeypatch.delenv("HERMES_LLM_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+        assert resolved["base_url"] == "https://pool.example.com/v1"
+

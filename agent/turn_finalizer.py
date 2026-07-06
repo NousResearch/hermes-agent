@@ -458,6 +458,17 @@ def finalize_turn(
     # (the response is still returned either way — #8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
+    _progress_events = getattr(agent, "_progress_outcome_events", None) or []
+    if _progress_events:
+        result["progress_outcome_canary"] = list(_progress_events)
+    try:
+        from agent.stall_retry import stall_retry_summary
+
+        _stall_retry = stall_retry_summary(agent)
+        if _stall_retry:
+            result["stall_retry"] = _stall_retry
+    except Exception:
+        pass
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

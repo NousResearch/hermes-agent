@@ -1556,6 +1556,9 @@ class TestToolUseEnforcementGuidance:
     def test_enforcement_models_includes_qwen(self):
         assert "qwen" in TOOL_USE_ENFORCEMENT_MODELS
 
+    def test_enforcement_models_includes_dflash(self):
+        assert "dflash" in TOOL_USE_ENFORCEMENT_MODELS
+
     def test_enforcement_models_includes_deepseek(self):
         assert "deepseek" in TOOL_USE_ENFORCEMENT_MODELS
 

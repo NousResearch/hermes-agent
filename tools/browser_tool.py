@@ -1413,7 +1413,7 @@ _cleanup_done = False
 # config.yaml is authoritative; BROWSER_INACTIVITY_TIMEOUT remains a legacy
 # fallback so old deployments keep working if they have not migrated yet.
 DEFAULT_SESSION_INACTIVITY_TIMEOUT = int(
-    DEFAULT_CONFIG.get("browser", {}).get("inactivity_timeout", 120)
+    DEFAULT_CONFIG.get("browser", {}).get("inactivity_timeout", 30)
 )
 
 
@@ -4353,6 +4353,19 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                     except (ProcessLookupError, ValueError, PermissionError, OSError):
                         logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
                 shutil.rmtree(socket_dir, ignore_errors=True)
+
+        # Windows-specifiek: killed Chrome child processen die de
+        # agent-browser daemon heeft achtergelaten. Op Windows worden
+        # child processen niet automatisch meegekilled met de parent.
+        if sys.platform == "win32":
+            try:
+                import subprocess
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "chrome.exe"],
+                    capture_output=True, timeout=5,
+                )
+            except Exception:
+                pass
 
         logger.debug("Removed task %s from active sessions", task_id)
     else:

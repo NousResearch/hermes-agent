@@ -429,9 +429,21 @@ class MemoryStore:
             idx = matches[0][0]
             limit = self._char_limit(target)
 
+            # Substring replacement: replace only the matched portion within
+            # the entry, preserving content before and after the match.
+            # When old_text appears multiple times in the same entry, replace
+            # all occurrences (consistent with str.replace semantics).
+            original_entry = entries[idx]
+            replaced_entry = original_entry.replace(old_text, new_content)
+            if replaced_entry == original_entry:
+                # Edge case: old_text == new_content — treat as no-op but
+                # still succeed so the caller sees "Entry replaced." rather
+                # than a confusing "nothing changed" error.
+                pass
+
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
-            test_entries[idx] = new_content
+            test_entries[idx] = replaced_entry
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
@@ -448,7 +460,7 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
+            entries[idx] = replaced_entry
             self._set_entries(target, entries)
             self.save_to_disk(target)
 

@@ -323,8 +323,9 @@ class TestMemoryStoreReplace:
         store.add("memory", "Python 3.11 project")
         result = store.replace("memory", "3.11", "Python 3.12 project")
         assert result["success"] is True
-        assert "Python 3.12 project" in store.memory_entries
-        assert "Python 3.11 project" not in store.memory_entries
+        # Substring replacement: only "3.11" is replaced within the entry
+        assert store.memory_entries == ["Python Python 3.12 project project"]
+        assert "3.11" not in store.memory_entries[0]
 
     def test_replace_no_match(self, store):
         store.add("memory", "fact A")
@@ -345,6 +346,30 @@ class TestMemoryStoreReplace:
     def test_replace_empty_old_text_rejected(self, store):
         result = store.replace("memory", "", "new")
         assert result["success"] is False
+
+    def test_replace_preserves_surrounding_content(self, store):
+        """Regression test for #59184: partial replace on a composite entry
+        must only replace the matched substring, not the entire entry."""
+        entry = (
+            "Section A\ncontent A\n\n"
+            "Section B\ncontent B\n\n"
+            "Section C\ncontent C"
+        )
+        store.add("memory", entry)
+        result = store.replace(
+            "memory",
+            "Section B\ncontent B",
+            "Section B\nupdated content B",
+        )
+        assert result["success"] is True
+        assert len(store.memory_entries) == 1
+        final = store.memory_entries[0]
+        # All three sections preserved
+        assert "Section A" in final
+        assert "Section C" in final
+        # Only Section B replaced
+        assert "updated content B" in final
+        assert "content B" not in final.replace("updated content B", "")
 
     def test_replace_empty_new_content_rejected(self, store):
         store.add("memory", "old entry")

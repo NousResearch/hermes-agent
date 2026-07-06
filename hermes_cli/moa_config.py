@@ -21,6 +21,10 @@ DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
 }
 
 
+def _default_reference_models() -> list[dict[str, Any]]:
+    return [{**slot, "enabled": True} for slot in deepcopy(DEFAULT_MOA_REFERENCE_MODELS)]
+
+
 def _coerce_float_or_none(value: Any) -> float | None:
     """Coerce to a float, or None when unset/blank/invalid.
 
@@ -137,7 +141,22 @@ def _clean_reasoning_effort(value: Any) -> str | None:
     return parsed.get("effort")
 
 
-def _clean_slot(slot: Any) -> dict[str, Any] | None:
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"0", "false", "no", "off"}:
+            return False
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        return default
+    return bool(value)
+
+
+def _clean_slot(slot: Any, *, include_enabled: bool = False) -> dict[str, Any] | None:
     if not isinstance(slot, dict):
         return None
     provider = str(slot.get("provider") or "").strip()
@@ -163,6 +182,8 @@ def _clean_slot(slot: Any) -> dict[str, Any] | None:
     slot_mt = _coerce_int_or_none(slot.get("max_tokens"))
     if slot_mt is not None:
         clean["max_tokens"] = slot_mt
+    if include_enabled:
+        clean["enabled"] = _coerce_bool(slot.get("enabled"), True)
     return clean
 
 
@@ -239,7 +260,7 @@ def validate_moa_payload(raw: Any) -> list[str]:
 
 def _default_preset() -> dict[str, Any]:
     return {
-        "reference_models": deepcopy(DEFAULT_MOA_REFERENCE_MODELS),
+        "reference_models": _default_reference_models(),
         "aggregator": deepcopy(DEFAULT_MOA_AGGREGATOR),
         # None = temperature omitted from API calls (provider default),
         # matching single-model agent behavior.
@@ -268,15 +289,15 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # defaults instead of crashing the iteration, mirroring the tolerance
         # for the scalar fields below (reference_temperature / max_tokens).
         raw_refs = [raw_refs] if isinstance(raw_refs, dict) else []
-    refs = [_clean_slot(item) for item in raw_refs]
+    refs = [_clean_slot(item, include_enabled=True) for item in raw_refs]
     refs = [item for item in refs if item is not None]
     if not refs:
-        refs = deepcopy(DEFAULT_MOA_REFERENCE_MODELS)
+        refs = _default_reference_models()
 
     aggregator = _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR)
 
     return {
-        "enabled": bool(raw.get("enabled", True)),
+        "enabled": _coerce_bool(raw.get("enabled"), True),
         "reference_models": refs,
         "aggregator": aggregator,
         "reference_temperature": _coerce_float_or_none(raw.get("reference_temperature")),

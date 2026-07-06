@@ -1360,6 +1360,7 @@ class MoaModelSlot(BaseModel):
     # Optional per-slot reasoning effort. Declared so a client round-tripping
     # the GET payload doesn't have it stripped at parse time and wiped on save.
     reasoning_effort: Optional[str] = None
+    enabled: bool = True
 
 
 class MoaPresetPayload(BaseModel):

@@ -79,7 +79,9 @@ def test_decode_legacy_encoded_moa_turn_still_works():
     encoded = build_moa_turn_prompt("hello", _make_cli().config["moa"], preset="review")
     prompt, cfg = decode_moa_turn(encoded)
     assert prompt == "hello"
-    assert cfg["reference_models"] == [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
+    assert cfg["reference_models"] == [
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}
+    ]
 
 
 class TestNormalizeMoaModel:
@@ -129,3 +131,4 @@ class TestNormalizeMoaModel:
         requested_provider = override or "deepseek" or "auto"
         assert requested_provider == "moa"
         assert model == "strategy"
+

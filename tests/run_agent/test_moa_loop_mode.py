@@ -1006,6 +1006,51 @@ moa:
     assert agg_call["messages"][-1]["content"] == "question"
 
 
+def test_moa_disabled_reference_is_not_called(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+          enabled: false
+        - provider: openrouter
+          model: deepseek/deepseek-v4-pro
+          enabled: true
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if kwargs["task"] == "moa_reference":
+            return _response(f"reference from {kwargs['provider']}:{kwargs['model']}")
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "question"}], tools=[{"type": "function"}])
+
+    reference_calls = [c for c in calls if c["task"] == "moa_reference"]
+    assert [(c["provider"], c["model"]) for c in reference_calls] == [
+        ("openrouter", "deepseek/deepseek-v4-pro")
+    ]
+    assert calls[-1]["task"] == "moa_aggregator"
+
+
 def test_references_run_in_parallel(monkeypatch):
     """References fan out concurrently (delegate-batch semantics), not serially.
 

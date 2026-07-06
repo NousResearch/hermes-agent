@@ -35,12 +35,16 @@ def test_moa_slot_picker_excludes_unconfigured_providers(monkeypatch):
     assert captured["include_unconfigured"] is False
 
 
+def _enabled_refs(refs):
+    return [{**slot, "enabled": True} for slot in refs]
+
+
 def test_normalize_moa_config_uses_default_named_preset():
     cfg = normalize_moa_config({})
 
     assert cfg["default_preset"] == DEFAULT_MOA_PRESET_NAME
     assert list(cfg["presets"]) == [DEFAULT_MOA_PRESET_NAME]
-    assert cfg["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+    assert cfg["reference_models"] == _enabled_refs(DEFAULT_MOA_REFERENCE_MODELS)
     assert cfg["aggregator"] == DEFAULT_MOA_AGGREGATOR
 
 
@@ -63,7 +67,45 @@ def test_normalize_moa_config_preserves_named_presets():
 
     assert cfg["default_preset"] == "coding"
     assert set(cfg["presets"]) == {"coding", "review"}
-    assert cfg["reference_models"] == [{"provider": "openai-codex", "model": "gpt-5.5"}]
+    assert cfg["reference_models"] == [{"provider": "openai-codex", "model": "gpt-5.5", "enabled": True}]
+
+
+def test_normalize_moa_config_defaults_reference_enabled_true():
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "review": {
+                    "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                }
+            }
+        }
+    )
+
+    assert cfg["presets"]["review"]["reference_models"] == [
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}
+    ]
+
+
+def test_normalize_moa_config_preserves_disabled_reference():
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "review": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5", "enabled": False},
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": "false"},
+                    ],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                }
+            }
+        }
+    )
+
+    assert cfg["presets"]["review"]["reference_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.5", "enabled": False},
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": False},
+    ]
 
 
 def test_legacy_flat_config_becomes_default_preset():
@@ -75,7 +117,7 @@ def test_legacy_flat_config_becomes_default_preset():
     )
 
     assert cfg["presets"][DEFAULT_MOA_PRESET_NAME]["reference_models"] == [
-        {"provider": "openai-codex", "model": "gpt-5.5"}
+        {"provider": "openai-codex", "model": "gpt-5.5", "enabled": True}
     ]
 
 
@@ -110,7 +152,7 @@ def test_normalize_moa_config_tolerates_non_list_reference_models():
     cfg = normalize_moa_config(
         {"presets": {"broken": {"reference_models": 2}}}
     )
-    assert cfg["presets"]["broken"]["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+    assert cfg["presets"]["broken"]["reference_models"] == _enabled_refs(DEFAULT_MOA_REFERENCE_MODELS)
 
 
 def test_normalize_moa_config_wraps_bare_dict_reference_models():
@@ -118,7 +160,7 @@ def test_normalize_moa_config_wraps_bare_dict_reference_models():
     cfg = normalize_moa_config(
         {"presets": {"p": {"reference_models": {"provider": "openai", "model": "gpt-4o"}}}}
     )
-    assert cfg["presets"]["p"]["reference_models"] == [{"provider": "openai", "model": "gpt-4o"}]
+    assert cfg["presets"]["p"]["reference_models"] == [{"provider": "openai", "model": "gpt-4o", "enabled": True}]
 
 
 def test_normalize_moa_config_parses_json_string_reference_models():
@@ -250,7 +292,7 @@ def test_resolve_moa_preset_returns_requested_model_set():
     )
 
     assert resolve_moa_preset(cfg, "review")["reference_models"] == [
-        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}
     ]
 
 
@@ -300,7 +342,7 @@ def test_build_moa_turn_prompt_encodes_one_shot_default_preset():
     decoded_prompt, cfg = decode_moa_turn(prompt)
     assert decoded_prompt == "write a file then inspect it"
     assert cfg is not None
-    assert cfg["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+    assert cfg["reference_models"] == _enabled_refs(DEFAULT_MOA_REFERENCE_MODELS)
 
 
 def test_moa_provider_rejected_as_reference_slot():
@@ -322,7 +364,7 @@ def test_moa_provider_rejected_as_reference_slot():
 
     refs = cfg["presets"]["p"]["reference_models"]
     assert {"provider": "moa", "model": "default"} not in refs
-    assert refs == [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
+    assert refs == [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}]
 
 
 def test_moa_provider_rejected_as_aggregator_slot():

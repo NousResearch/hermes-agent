@@ -10677,12 +10677,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
+                from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
+                _auto_disabled = _get_plat_disabled(platform=_platform_name)
                 _combined_parts: list[str] = []
                 _loaded_names: list[str] = []
                 for _sname in _skill_names:
                     _loaded = _load_skill_payload(_sname, task_id=_quick_key)
                     if _loaded:
                         _loaded_skill, _skill_dir, _display_name = _loaded
+                        # Auto-skill bindings (channel_skill_bindings, DM Topics)
+                        # load via a raw identifier, bypassing get_skill_commands()'
+                        # scan-time disabled filter — an operator who disables a
+                        # skill for this platform still had its full content
+                        # injected into every new session bound to it. Re-check
+                        # here, mirroring the stacked/bundle gates (#58888, #59156).
+                        if _display_name in _auto_disabled or _sname in _auto_disabled:
+                            logger.warning(
+                                "[Gateway] Auto-skill '%s' is disabled for %s, skipping",
+                                _sname, _platform_name,
+                            )
+                            continue
                         _note = (
                             f'[IMPORTANT: The "{_display_name}" skill is auto-loaded. '
                             f"Follow its instructions for this session.]"

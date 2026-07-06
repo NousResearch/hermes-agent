@@ -990,6 +990,30 @@ gateway:
 
 When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
 
+**Copy-to-clipboard buttons.** Telegram supports inline keyboard buttons that copy a short string to the user's clipboard. To attach copy buttons to a Telegram reply, include one marker line per button in the assistant's final text:
+
+```text
+COPY_BUTTON: Button label | text copied to clipboard
+```
+
+Hermes removes valid marker lines from the visible message and renders them as [`CopyTextButton`](https://core.telegram.org/bots/api#copytextbutton) inline buttons. This is useful for IP addresses, one-line commands, invite codes, URLs, and other mobile handoff values that are awkward to select from a Telegram message.
+
+```text
+Server address: 100.96.33.123
+
+COPY_BUTTON: Copy IP | 100.96.33.123
+COPY_BUTTON: Copy VNC address | 100.96.33.123:5900
+```
+
+Marker constraints follow Telegram's copy button limits:
+
+- the label must be 1-64 characters and cannot contain `|`
+- the copied text must be 1-256 characters
+- Hermes renders at most 20 buttons per message
+- invalid marker lines are left as ordinary text instead of being silently dropped
+
+Copy buttons are attached on both normal sends and streaming final edits. When copy buttons are requested, Hermes uses the MarkdownV2 send/edit path instead of the rich-message path because the rich raw endpoint used here does not carry `reply_markup`.
+
 ## Group Allowlisting
 
 Telegram groups and forum chats have two orthogonal gates you can configure:

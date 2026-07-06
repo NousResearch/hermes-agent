@@ -191,12 +191,13 @@ def main():
     print("├─────────────────┬──────────────┬──────────────┬────────────────────┤")
     print("│ Memories stored │ Builtin FTS5 │  kv-memory   │ Reduction          │")
     print("├─────────────────┼──────────────┼──────────────┼────────────────────┤")
-    builtin_10 = 10 * 50
-    builtin_50 = 50 * 50
-    builtin_100 = 100 * 50
-    print(f"│ {10:>5}          │ {builtin_10:>8} tok │ {bloat[10]:>8.0f} tok │ {((builtin_10-bloat[10])/builtin_10*100):>8.0f}%             │")
-    print(f"│ {50:>5}          │ {builtin_50:>8} tok │ {bloat[50]:>8.0f} tok │ {((builtin_50-bloat[50])/builtin_50*100):>8.0f}%             │")
-    print(f"│ {100:>5}          │ {builtin_100:>8} tok │ {bloat[100]:>8.0f} tok │ {((builtin_100-bloat[100])/builtin_100*100):>8.0f}%             │")
+    # Builtin: measured from real Hermes CLI — 157 tokens at 10 entries, linear growth
+    builtin_per_entry = 15.7  # real measurement: 157 tokens / 10 entries
+    for n in [10, 50, 100]:
+        builtin_tok = int(n * builtin_per_entry)
+        kv_tok = int(bloat[n])
+        reduction = (builtin_tok - kv_tok) / builtin_tok * 100
+        print(f"│ {n:>5}          │ {builtin_tok:>8} tok │ {kv_tok:>8} tok │ {reduction:>8.0f}%             │")
     print("├─────────────────┴──────────────┴──────────────┴────────────────────┤")
     print("│ Builtin: ALL memories dumped into prompt (linear growth)           │")
     print("│ kv-memory: top-5 by relevance (flat, ~100 tokens always)           │")
@@ -218,7 +219,8 @@ def main():
     print("=" * 70)
     print(f"  • Semantic recall: {sem['kv_recall5']/max(sem['fts5_recall5'],0.001):.1f}x better")
     print(f"  • Finds by meaning: {sem['fts5_semgap']:.0%} → {sem['kv_semgap']:.0%} (FTS5 literally cannot)")
-    print(f"  • Prompt bloat: {((builtin_100-bloat[100])/builtin_100*100):.0f}% fewer tokens at 100 memories")
+    reduction_100 = (int(100 * builtin_per_entry) - int(bloat[100])) / (100 * builtin_per_entry) * 100
+    print(f"  • Prompt bloat: {reduction_100:.0f}% fewer tokens at 100 memories")
     print(f"  • Storage: {fts5_bytes_per_turn/kv_bytes_per_turn:.1f}x smaller")
     print(f"  • Zero core changes. One pip install.")
     print()

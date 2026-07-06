@@ -106,6 +106,50 @@ class TestEnsureHermesHome:
                 ensure_hermes_home()
         assert not profile_home.exists()
 
+    def test_warns_once_for_readable_hermes_home_mode(self, tmp_path, caplog, capsys):
+        import logging
+        from hermes_cli import config as cfg_mod
+
+        cfg_mod._HERMES_HOME_MODE_WARNED.clear()
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "HERMES_HOME_MODE": "0755"},
+        ):
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+                ensure_hermes_home()
+                ensure_hermes_home()
+
+        messages = [
+            rec.message
+            for rec in caplog.records
+            if "HERMES_HOME_MODE=0755" in rec.message
+        ]
+        assert len(messages) == 1
+        assert "group/other read or write access" in messages[0]
+        assert "0711/0701" in messages[0]
+
+        captured = capsys.readouterr()
+        assert captured.err.count("HERMES_HOME_MODE=0755") == 1
+
+    def test_execute_only_hermes_home_mode_does_not_warn(
+        self, tmp_path, caplog, capsys
+    ):
+        import logging
+        from hermes_cli import config as cfg_mod
+
+        cfg_mod._HERMES_HOME_MODE_WARNED.clear()
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "HERMES_HOME_MODE": "0711"},
+        ):
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+                ensure_hermes_home()
+
+        assert not any("HERMES_HOME_MODE=0711" in rec.message for rec in caplog.records)
+        assert "HERMES_HOME_MODE=0711" not in capsys.readouterr().err
+
 
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):

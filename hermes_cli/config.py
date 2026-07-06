@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
 # every time. Cleared automatically when the file changes (different mtime).
 _CONFIG_PARSE_WARNED: set = set()
+_HERMES_HOME_MODE_WARNED: set = set()
 
 
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
@@ -745,6 +746,29 @@ def _chown_to_hermes_uid(path) -> None:
         pass
 
 
+def _warn_unsafe_hermes_home_mode(mode: int, mode_str: str) -> None:
+    """Warn once when HERMES_HOME_MODE exposes directory contents to others."""
+    if mode & 0o066 == 0:
+        return
+    if mode in _HERMES_HOME_MODE_WARNED:
+        return
+    _HERMES_HOME_MODE_WARNED.add(mode)
+
+    rendered_mode = f"{mode:04o}"
+    msg = (
+        f"HERMES_HOME_MODE={mode_str or rendered_mode} grants group/other read "
+        f"or write access ({rendered_mode}). HERMES_HOME may contain secrets; "
+        "use execute-only traversal bits such as 0711/0701 when a web server "
+        "only needs to traverse the directory."
+    )
+    logger.warning(msg)
+    try:
+        sys.stderr.write(f"⚠️  hermes config: {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
 def _secure_dir(path):
     """Set directory to owner-only access (0700 by default). No-op on Windows.
 
@@ -770,6 +794,9 @@ def _secure_dir(path):
         mode = int(mode_str, 8) if mode_str else 0o700
     except ValueError:
         mode = 0o700
+        mode_str = ""
+    if mode_str:
+        _warn_unsafe_hermes_home_mode(mode, mode_str)
     try:
         os.chmod(path, mode)
     except (OSError, NotImplementedError):

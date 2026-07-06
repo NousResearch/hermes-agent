@@ -99,6 +99,12 @@ TOOLSETS = {
         "includes": []  # No other toolsets included
     },
     
+    "api": {
+        "description": "Direct structured HTTP API access",
+        "tools": ["http_request"],
+        "includes": []
+    },
+    
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],

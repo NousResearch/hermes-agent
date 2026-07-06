@@ -38,6 +38,36 @@ log = logging.getLogger(__name__)
 # durable start/stop intent across pod/container recreation.
 _AUTOSTART_STATES = frozenset({"running"})
 
+# Transient runtime sub-states of a RUNNING gateway. A gateway only ever
+# reaches these while it is up and serving, so they are NOT an operator stop
+# and NOT a failed boot:
+#   - `draining`  — written by the drain watcher / scale-to-zero go-dormant
+#                   path when an in-flight quiesce begins (gateway/run.py).
+#   - `degraded`  — written when the gateway comes up with some platforms
+#                   queued for retry, then "falls through to the normal
+#                   running state" (gateway/run.py #5196): the process is up,
+#                   serving cron + whatever platforms connected, and the
+#                   reconnect watcher takes the rest from there.
+#
+# When a gateway is hard-killed *while in one of these states* (a container/VM
+# recreate SIGTERMs it before `_stop_impl` reaches its terminal-state persist),
+# the last value left in gateway_state.json is the transient sub-state. With no
+# explicit `desired_state` to fall back to, treating that literal value as the
+# autostart intent would leave the gateway DOWN on every subsequent boot — the
+# gateway never comes back, the dashboard is up but messaging stays dark
+# (observed on a relay-opted-in staging instance stranded at `draining`,
+# 2026-06; `degraded` is the same wedge class). Map these transient sub-states
+# to `running` so a stranded marker reads as the run-intent it actually
+# represents. This mirrors gateway/run.py's #42675 handling, which persists
+# `running` (not the mid-shutdown `draining`) when an unexpected signal tears
+# the gateway down — extended here to the case where the gateway died before it
+# could persist anything at all.
+#
+# `starting` / `startup_failed` are deliberately NOT included: those mean the
+# gateway died mid-boot or failed to come up, so auto-restarting them would
+# reintroduce the crash-loop the down-marker guard exists to prevent.
+_TRANSIENT_RUNNING_STATES = frozenset({"draining", "degraded"})
+
 # Stale runtime files we sweep before recreating service slots. These
 # all hold container-namespaced state (PIDs, process tables) that's
 # garbage post-restart — a numerically-equal PID in the new container
@@ -324,6 +354,15 @@ def _read_desired_state(profile_dir: Path) -> str | None:
     that as a compatibility fallback so existing running/stopped profiles
     preserve their behavior until the next explicit start/stop.
 
+    When falling back to ``gateway_state`` (no explicit ``desired_state``),
+    a transient running sub-state (``draining``) is normalised to ``running``
+    — see ``_TRANSIENT_RUNNING_STATES``. A gateway hard-killed mid-drain
+    leaves ``draining`` as its last persisted value; without this it would be
+    treated as a non-autostart state and the gateway would stay DOWN forever.
+    An explicit ``desired_state`` is always honoured verbatim (it is the
+    operator's durable intent), so this normalisation only affects the
+    legacy/transient fallback path.
+
     Missing or unparseable files count as "no desired state" so we don't
     bork the whole reconciliation on a corrupt file.
     """
@@ -335,7 +374,10 @@ def _read_desired_state(profile_dir: Path) -> str | None:
         desired_state = data.get("desired_state")
         if desired_state is not None:
             return desired_state
-        return data.get("gateway_state")
+        gateway_state = data.get("gateway_state")
+        if gateway_state in _TRANSIENT_RUNNING_STATES:
+            return "running"
+        return gateway_state
     except (OSError, json.JSONDecodeError):
         log.warning(
             "could not read %s; treating as no prior state", state_file,
@@ -379,7 +421,16 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
 
     validate_profile_name(profile)
     service_dir = scandir / f"gateway-{profile}"
-    tmp_dir = service_dir.with_name(service_dir.name + ".tmp")
+    # Dot-prefix the staging dir so s6-svscan skips it while half-built
+    # (s6-svscan ignores scandir entries whose name starts with ".").
+    # A non-dotted ``.tmp`` staging name is supervised AS ROOT by any
+    # concurrent ``s6-svscanctl -a`` rescan the moment it has a valid
+    # ``type``/``run``, creating a root-owned ``supervise/`` that makes
+    # ``_seed_supervise_skeleton`` EACCES — see the matching comment in
+    # ``S6ServiceManager.register_profile_gateway``. The atomic
+    # ``tmp_dir.replace(service_dir)`` below renames to the dotless live
+    # name, so the published slot is unchanged.
+    tmp_dir = service_dir.with_name("." + service_dir.name + ".tmp")
 
     # Wipe any leftover tmp from a previous interrupted run.
     if tmp_dir.exists():
@@ -397,6 +448,10 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
         run = tmp_dir / "run"
         run.write_text(S6ServiceManager._render_run_script(profile, extra_env={}))
         run.chmod(0o755)
+
+        finish = tmp_dir / "finish"
+        finish.write_text(S6ServiceManager._render_finish_script())
+        finish.chmod(0o755)
 
         # Persistent log rotation (OQ8-C).
         log_subdir = tmp_dir / "log"

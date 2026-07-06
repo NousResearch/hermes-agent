@@ -1,24 +1,9 @@
-import type { ButtonHTMLAttributes, ComponentProps, ReactNode } from 'react'
+import type { ButtonHTMLAttributes, ReactNode } from 'react'
 
 import { cn } from '@/lib/utils'
 
-export const overlayCardClass =
-  'rounded-lg border border-[color-mix(in_srgb,var(--dt-border)_52%,transparent)] bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)] shadow-[inset_0_0.0625rem_0_color-mix(in_srgb,white_34%,transparent)]'
-
-interface OverlayCardProps extends ComponentProps<'div'> {
-  children: ReactNode
-}
-
 interface OverlayActionButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   tone?: 'default' | 'danger' | 'subtle'
-}
-
-export function OverlayCard({ children, className, ...props }: OverlayCardProps) {
-  return (
-    <div className={cn(overlayCardClass, className)} {...props}>
-      {children}
-    </div>
-  )
 }
 
 export function OverlayActionButton({

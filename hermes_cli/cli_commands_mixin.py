@@ -712,6 +712,14 @@ class CLICommandsMixin:
             return
 
         old_session_id = self.session_id
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history
+                )
+            except Exception:
+                pass
         # End current session
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
@@ -850,6 +858,15 @@ class CLICommandsMixin:
 
         # Save the current session's state before branching
         parent_session_id = self.session_id
+
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history
+                )
+            except Exception:
+                pass
 
         # End the old session
         try:
@@ -992,6 +1009,132 @@ class CLICommandsMixin:
             print()
             print("  Usage: /personality <name>")
             print()
+
+    def _handle_pet_command(self, cmd: str):
+        """Toggle, browse, or adopt a petdex mascot.
+
+        ``/pet`` / ``/pet toggle`` → flip ``display.pet.enabled`` on/off
+        ``/pet list``            → browse the petdex gallery
+        ``/pet scale <n>``       → resize the pet everywhere (e.g. 0.5)
+        ``/pet <slug>``          → adopt (install if needed) + make active
+        ``/pet off``             → disable (alias for toggle-off)
+
+        Writes ``display.pet.*`` to config; the CLI/TUI/desktop pet surfaces
+        pick the change up on their next poll, so the pet appears shortly.
+        """
+        from agent.pet import store
+        from agent.pet.manifest import ManifestError
+        from hermes_cli.pets import _set_active, _set_enabled, print_pet_gallery, set_pet_scale, toggle_pet_display
+
+        parts = cmd.split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        low = arg.lower()
+
+        if not arg or low == "toggle":
+            enabled, name, err = toggle_pet_display()
+            if err:
+                print(f"(x_x) {err}")
+                return
+            if enabled:
+                print(f"(^_^)b {name} is out — it'll pop in shortly.")
+            else:
+                print(f"(-_-)zzZ {name} put away." if name else "(-_-)zzZ Pet put away.")
+            return
+
+        if low in ("list", "gallery", "browse", "all"):
+            print_pet_gallery()
+            return
+
+        if low == "scale" or low.startswith("scale "):
+            value = arg[len("scale"):].strip()
+            if not value:
+                print("(o_o) Usage: /pet scale <factor>  (e.g. /pet scale 0.5)")
+                return
+            scale, err = set_pet_scale(value)
+            print(f"(x_x) {err}" if err else f"(^_^) Pet scale → {scale:g}.")
+            return
+
+        if low == "off":
+            _set_enabled(False)
+            print("(-_-)zzZ Pet put away.")
+            return
+
+        print(f"(o_o) Fetching '{arg}' from petdex…")
+        try:
+            pet = store.install_pet(arg)
+        except (store.PetStoreError, ManifestError) as exc:
+            print(f"(x_x) Couldn't adopt '{arg}': {exc}")
+            return
+        _set_active(arg)
+        print(f"(^_^)b {pet.display_name} is out — it'll pop in shortly.")
+
+    def _handle_hatch_command(self, cmd: str):
+        """Generate ("hatch") a brand-new petdex pet from a description.
+
+        ``/hatch <description>`` runs the full pet pipeline in-process: a base
+        look, then one grounded animation row per state, sliced + normalized into
+        a spritesheet, then adopted as the active mascot. Progress streams inline
+        (it's ~a minute of image-model calls). In the desktop app this command
+        opens the richer generate overlay instead; here we run it directly.
+        """
+        from agent.pet import store
+        from agent.pet.generate import orchestrate
+        from agent.pet.generate.imagegen import GenerationError
+        from hermes_cli.pets import _set_active
+
+        parts = cmd.split(maxsplit=1)
+        concept = parts[1].strip() if len(parts) > 1 else ""
+
+        if not concept:
+            try:
+                concept = input("(o_o) Describe your pet: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+
+        if not concept:
+            print("(o_o) Usage: /hatch <description>  (e.g. /hatch a tiny cyber fox)")
+            return
+
+        # A short, friendly display name from the first few words of the concept.
+        display_name = " ".join(w.capitalize() for w in concept.split()[:3])[:28].strip() or "Pet"
+        slug = store.slugify(display_name) or store.slugify(concept) or "pet"
+
+        print(f"(o_o) Designing '{concept}'… (a minute of image-model calls)")
+        try:
+            drafts = orchestrate.generate_base_drafts(concept, n=1)
+        except GenerationError as exc:
+            print(f"(x_x) Couldn't generate a base look: {exc}")
+            return
+
+        if not drafts:
+            print("(x_x) No base draft came back — try again.")
+            return
+
+        def _progress(event: str, detail: str) -> None:
+            if event == "row":
+                # detail is "<state>:<done>:<total>"; show the state name.
+                state = detail.split(":", 1)[0]
+                print(f"  ┊ drawing {state}…")
+            elif event == "compose":
+                print("  ┊ composing spritesheet…")
+            elif event == "save":
+                print("  ┊ saving…")
+
+        try:
+            result = orchestrate.hatch_pet(
+                base_image=drafts[0],
+                slug=slug,
+                display_name=display_name,
+                concept=concept,
+                on_progress=_progress,
+            )
+        except GenerationError as exc:
+            print(f"(x_x) Hatch failed: {exc}")
+            return
+
+        _set_active(result.slug)
+        print(f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!")
 
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
@@ -1353,6 +1496,32 @@ class CLICommandsMixin:
                 return
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
+
+    def _handle_learn_command(self, cmd: str):
+        """Handle /learn — distill a reusable skill from anything the user describes.
+
+        Open-ended: the argument is free text describing the source(s) — a
+        directory, a URL, "what we just did", pasted notes. We build a
+        standards-guided prompt and inject it onto the agent's input queue; the
+        live agent gathers the material with the tools it already has and
+        authors the skill via ``skill_manage``. No engine, no model-tool
+        footprint, works on any terminal backend.
+        """
+        from agent.learn_prompt import build_learn_prompt
+
+        # Everything after the command word is the open-ended request.
+        parts = cmd.strip().split(None, 1)
+        user_request = parts[1].strip() if len(parts) > 1 else ""
+
+        msg = build_learn_prompt(user_request)
+        if user_request:
+            print("\n⚡ Learning a skill from what you described...")
+        else:
+            print("\n⚡ Learning a skill from this conversation...")
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print("  /learn needs an active chat session to run.")
 
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""
@@ -2423,12 +2592,30 @@ class CLICommandsMixin:
         else:
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
 
-    def _handle_debug_command(self):
-        """Handle /debug — upload debug report + logs and print paste URLs."""
+    def _handle_debug_command(self, cmd_original: str = ""):
+        """Handle /debug — upload debug report + logs and print share URLs.
+
+        Accepts optional destination words after the command:
+
+        - ``/debug``        → upload to the public paste service (default)
+        - ``/debug nous``   → upload to Nous-internal storage (private, staff-only)
+        - ``/debug local``  → render the report to stdout, no upload
+
+        ``nous`` and ``local`` are mutually exclusive; if both are given,
+        ``local`` wins (it never touches the network).
+        """
         from hermes_cli.debug import run_debug_share
         from types import SimpleNamespace
 
-        args = SimpleNamespace(lines=200, expire=7, local=False)
+        words = {w.lower() for w in cmd_original.split()[1:]}
+        local = "local" in words
+        nous = "nous" in words and not local
+        # Typing the /debug slash command is itself the explicit consent to
+        # upload, so we pass yes=True to skip run_debug_share's [y/N] prompt.
+        # input() would hang inside prompt_toolkit's event loop anyway.
+        args = SimpleNamespace(
+            lines=200, expire=7, local=local, nous=nous, yes=True
+        )
         run_debug_share(args)
 
     def _handle_update_command(self) -> bool:

@@ -424,6 +424,31 @@ class TestQueryLocalContextLengthLmStudio:
             "max_context_length (1048576) must not win over loaded_instances."
         )
 
+    def test_lmstudio_native_api_base_url_is_not_doubled(self):
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {
+                    "key": "publisher/model-a",
+                    "id": "publisher/model-a",
+                    "loaded_instances": [{"config": {"context_length": 32768}}],
+                },
+            ]
+        })
+        client_mock = self._make_client(
+            native_resp,
+            self._make_resp(404, {}),
+            self._make_resp(404, {}),
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("publisher/model-a", "http://localhost:1234/api/v1")
+
+        assert result == 32768
+        assert client_mock.get.call_args_list[0].args[0] == "http://localhost:1234/api/v1/models"
+
 
 class TestDetectLocalServerTypeAuth:
     def test_passes_bearer_token_to_probe_requests(self):
@@ -444,6 +469,24 @@ class TestDetectLocalServerTypeAuth:
         assert mock_client.call_args.kwargs["headers"] == {
             "Authorization": "Bearer lm-token"
         }
+
+    def test_native_api_base_url_is_not_doubled(self):
+        from agent.model_metadata import detect_local_server_type
+
+        resp = MagicMock()
+        resp.status_code = 200
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.return_value = resp
+
+        result = None
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://localhost:1234/api/v1")
+
+        assert result == "lm-studio"
+        assert client_mock.get.call_args_list[0].args[0] == "http://localhost:1234/api/v1/models"
 
 
 class TestFetchEndpointModelMetadataLmStudio:
@@ -488,6 +531,33 @@ class TestFetchEndpointModelMetadataLmStudio:
         }
         assert result["lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
         assert result["Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
+
+    def test_native_api_base_url_is_not_doubled(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        native_resp = self._make_resp(
+            {
+                "models": [
+                    {
+                        "key": "publisher/model-a",
+                        "id": "publisher/model-a",
+                        "loaded_instances": [
+                            {"config": {"context_length": 65536}}
+                        ],
+                    }
+                ]
+            }
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("agent.model_metadata.requests.get", return_value=native_resp) as mock_get:
+            result = fetch_endpoint_model_metadata(
+                "http://localhost:1234/api/v1",
+                force_refresh=True,
+            )
+
+        assert mock_get.call_args[0][0] == "http://localhost:1234/api/v1/models"
+        assert result["publisher/model-a"]["context_length"] == 65536
 
 
 class TestQueryLocalContextLengthNetworkError:

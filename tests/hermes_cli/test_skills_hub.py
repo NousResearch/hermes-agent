@@ -317,16 +317,11 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
     assert scanned["source"] == canonical_identifier
 
 
-def test_do_install_ask_verdict_falls_through_to_install_instead_of_blocking(
-    monkeypatch, tmp_path, hub_env
-):
-    """should_allow_install() returning None ("ask") must not be treated the
-    same as a hard block. Before this fix, `if not allowed:` in do_install
-    truthy-checked the result, and None is falsy in Python, so an "ask"
-    verdict (e.g. a trusted-source skill with medium-risk findings) got
-    hard-blocked with a "Requires confirmation" reason printed under an
-    "Installation blocked" header, and never reached the actual y/N
-    confirmation flow it was supposed to."""
+def _ask_verdict_mocks(monkeypatch, tmp_path):
+    """Shared setup for the ask-verdict tests below: a trusted-source skill
+    with a caution-level finding, so should_allow_install() returns
+    (None, ...), and install_from_quarantine is mocked to record whether it
+    was actually called (not just whether "Installed:" appears in output)."""
     import tools.skills_guard as guard
     import tools.skills_hub as hub
 
@@ -365,25 +360,85 @@ def test_do_install_ask_verdict_falls_through_to_install_instead_of_blocking(
         guard, "should_allow_install",
         lambda result, force=False: (None, "Requires confirmation (trusted source + caution verdict, 1 findings)"),
     )
-    monkeypatch.setattr(
-        hub, "install_from_quarantine",
-        lambda q_path, name, category, bundle, result: tmp_path / "skills" / "frontend-design",
-    )
+
+    install_calls = []
+
+    def _fake_install(q_path, name, category, bundle, result):
+        install_calls.append(name)
+        return tmp_path / "skills" / "frontend-design"
+
+    monkeypatch.setattr(hub, "install_from_quarantine", _fake_install)
+
+    return canonical_identifier, install_calls
+
+
+def test_do_install_ask_verdict_with_skip_confirm_fails_closed(
+    monkeypatch, tmp_path, hub_env
+):
+    """Regression test for a downgrade found in review: should_allow_install()
+    returning None ("ask") means a human needs to review findings before
+    install. If skip_confirm=True, the confirmation prompt never runs at
+    all — there is no interactive session to make that call (e.g. the
+    TUI/Desktop skill browser's JSON-RPC install action, which discards all
+    console output and never shows a y/N prompt). Silently falling through
+    to install in that case defeats the entire point of "ask" — this must
+    fail closed instead, exactly like the allowed is False path."""
+    canonical_identifier, install_calls = _ask_verdict_mocks(monkeypatch, tmp_path)
 
     sink = StringIO()
     console = Console(file=sink, force_terminal=False, color_system=None)
 
-    # skip_confirm=True bypasses the y/N prompt itself (needed for
-    # non-interactive test execution) but must NOT bypass the ask-verdict
-    # handling — the fixed code should still fall through past the "ask"
-    # branch to the actual install step, unlike the "blocked" (False) case
-    # which returns before ever reaching it.
-    do_install(canonical_identifier, console=console, skip_confirm=True)
+    result = do_install(canonical_identifier, console=console, skip_confirm=True)
 
     output = sink.getvalue()
-    assert "Installation blocked" not in output
+    assert "Installation blocked" in output
+    assert "Installed:" not in output
+    assert install_calls == []
+    assert result is False
+
+
+def test_do_install_ask_verdict_interactive_still_falls_through_to_confirmation(
+    monkeypatch, tmp_path, hub_env
+):
+    """The fix for the skip_confirm=True downgrade must not regress the
+    original bug this whole flow exists to fix: a genuinely interactive
+    caller (skip_confirm=False) with an "ask" verdict must still reach the
+    real y/N prompt, not be hard-blocked outright."""
+    canonical_identifier, install_calls = _ask_verdict_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    result = do_install(canonical_identifier, console=console, skip_confirm=False)
+
+    output = sink.getvalue()
     assert "Review required" in output
     assert "Installed:" in output
+    assert install_calls == ["frontend-design"]
+    assert result is True
+
+
+def test_do_install_ask_verdict_interactive_reject_cancels(
+    monkeypatch, tmp_path, hub_env
+):
+    """An interactive caller answering "n" to the ask-verdict confirmation
+    must cancel, not install — the confirmation must be a real, respected
+    decision point, not a rubber stamp."""
+    canonical_identifier, install_calls = _ask_verdict_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    result = do_install(canonical_identifier, console=console, skip_confirm=False)
+
+    output = sink.getvalue()
+    assert "cancelled" in output.lower()
+    assert "Installed:" not in output
+    assert install_calls == []
+    assert result is False
+
 
 
 def test_do_install_scans_official_bundles_with_source_provenance(

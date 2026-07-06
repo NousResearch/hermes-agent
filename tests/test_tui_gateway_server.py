@@ -8588,3 +8588,39 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_skills_manage_install_reports_actual_result_not_always_true(monkeypatch):
+    """Regression test: the "skills.manage" install action used to report
+    installed: True unconditionally, regardless of what do_install() (which
+    always returned None) actually did. Combined with the ask-verdict fix
+    in hermes_cli/skills_hub.py (which now correctly blocks an "ask"
+    verdict when no interactive confirmation is available, as is always
+    the case for this JSON-RPC action's skip_confirm=True call), a blocked
+    install must be reported as installed: False, not silently reported as
+    a success."""
+    import hermes_cli.skills_hub as skills_hub
+
+    monkeypatch.setattr(skills_hub, "do_install", lambda *a, **k: False)
+
+    resp = server.handle_request({
+        "id": "1",
+        "method": "skills.manage",
+        "params": {"action": "install", "query": "some-risky-skill"},
+    })
+
+    assert resp["result"]["installed"] is False
+
+
+def test_skills_manage_install_reports_true_on_actual_success(monkeypatch):
+    import hermes_cli.skills_hub as skills_hub
+
+    monkeypatch.setattr(skills_hub, "do_install", lambda *a, **k: True)
+
+    resp = server.handle_request({
+        "id": "1",
+        "method": "skills.manage",
+        "params": {"action": "install", "query": "a-clean-skill"},
+    })
+
+    assert resp["result"]["installed"] is True

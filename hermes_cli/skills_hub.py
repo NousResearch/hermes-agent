@@ -502,8 +502,16 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
-               name_override: str = "") -> None:
+               name_override: str = "") -> bool:
     """Fetch, quarantine, scan, confirm, and install a skill.
+
+    Returns True if the skill was actually installed, False for any
+    failure/block/cancellation. Callers that report install status back to
+    a UI (e.g. the TUI/Desktop skill browser's JSON-RPC install action)
+    must check this return value rather than assuming success — a
+    non-interactive caller (skip_confirm=True) can hit an "ask" verdict
+    that requires a human decision no prompt is available to collect, and
+    must fail closed instead of silently installing.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
     scripts) supply a skill name when the upstream SKILL.md lacks a valid
@@ -529,7 +537,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if "/" not in identifier:
         identifier = _resolve_short_name(identifier, sources, c)
         if not identifier:
-            return
+            return False
 
     c.print(f"\n[bold]Fetching:[/] {identifier}")
 
@@ -553,7 +561,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             )
         else:
             c.print()
-        return
+        return False
 
     # URL-sourced skills may arrive with an empty name when SKILL.md has no
     # ``name:`` in frontmatter AND the URL path doesn't yield a valid
@@ -570,7 +578,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 "Must be a lowercase identifier (letters, digits, hyphens, "
                 "underscores; starts with a letter).\n"
             )
-            return
+            return False
         elif skip_confirm:
             # Non-interactive surface (slash command / TUI / gateway). Can't
             # prompt — emit an actionable error.
@@ -585,14 +593,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 "[dim]Or ask the SKILL.md's author to add a `name:` field to "
                 "its YAML frontmatter.[/]\n"
             )
-            return
+            return False
         else:
             # Interactive TTY — prompt.
             url = bundle_meta.get("url") or identifier
             chosen = _prompt_for_skill_name(c, url)
             if not chosen:
                 c.print("[dim]Installation cancelled.[/]\n")
-                return
+                return False
             bundle.name = chosen
             bundle_meta["awaiting_name"] = False
         # Keep SkillMeta in sync so downstream "already installed" checks,
@@ -622,7 +630,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
         if not force:
             c.print("Use --force to reinstall.\n")
-            return
+            return False
 
     extra_metadata = dict(getattr(meta, "extra", {}) or {})
     extra_metadata.update(getattr(bundle, "metadata", {}) or {})
@@ -635,7 +643,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         from tools.skills_hub import append_audit_log
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, "invalid_path", str(exc))
-        return
+        return False
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
     # Scan
@@ -661,9 +669,28 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, result.verdict,
                          f"{len(result.findings)}_findings")
-        return
+        return False
 
     if allowed is None:
+        if skip_confirm:
+            # "ask" means this skill needs a human decision, but
+            # skip_confirm=True means the confirmation prompt below will
+            # never run — there is no interactive session available to
+            # actually make that call (e.g. the TUI/Desktop skill browser's
+            # JSON-RPC install action, which discards all console output
+            # and never shows a y/N prompt). An ask-verdict skill must not
+            # install silently just because no prompt could run — fail
+            # closed here, matching the allowed is False path above.
+            c.print(
+                f"\n[bold red]Installation blocked:[/] {reason} "
+                f"(requires interactive confirmation, unavailable in this context)"
+            )
+            shutil.rmtree(q_path, ignore_errors=True)
+            from tools.skills_hub import append_audit_log
+            append_audit_log("BLOCKED", bundle.name, bundle.source,
+                             bundle.trust_level, result.verdict,
+                             f"{len(result.findings)}_findings_no_interactive_confirmation")
+            return False
         # "ask" verdict — findings were already printed above via
         # format_scan_report(); fall through to the confirmation prompt
         # below instead of treating this the same as a hard block.
@@ -705,7 +732,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if answer not in {"y", "yes"}:
             c.print("[dim]Installation cancelled.[/]\n")
             shutil.rmtree(q_path, ignore_errors=True)
-            return
+            return False
 
     # Install
     try:
@@ -716,7 +743,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         from tools.skills_hub import append_audit_log
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, "invalid_path", str(exc))
-        return
+        return False
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
@@ -772,6 +799,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     else:
         c.print("[dim]Skill will be available in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
+
+    return True
 
 
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:

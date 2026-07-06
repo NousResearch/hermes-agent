@@ -85,6 +85,7 @@ class WorkflowSpec(BaseModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     name: str
     version: int = Field(ge=1)
+    max_node_runs: int = Field(default=500, ge=1)
     enabled: bool = True
     triggers: list[TriggerSpec] = Field(default_factory=list)
     nodes: dict[str, NodeSpec] = Field(default_factory=dict)
@@ -122,8 +123,8 @@ def validate_graph(spec: WorkflowSpec) -> None:
         if branch is not None:
             if not branch:
                 raise ValueError(f"edge source {edge.from_} requires branch suffix")
-            if spec.nodes[source_base].type != "switch":
-                raise ValueError(f"dotted edge source {edge.from_} requires switch source")
+            if spec.nodes[source_base].type not in {"switch", "parallel"}:
+                raise ValueError(f"dotted edge source {edge.from_} requires switch or parallel source")
         if edge.to not in node_ids:
             raise ValueError(f"unknown edge target: {edge.to}")
         outgoing_sources.add(source_base)

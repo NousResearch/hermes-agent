@@ -134,6 +134,108 @@ def test_completed_node_outputs_are_literal_not_template_rendered():
     assert result.context["node"]["done"]["output"] == {"answer": "${ input.secret }"}
 
 
+def test_parallel_fan_out_joins_branch_outputs():
+    spec = WorkflowSpec.model_validate({
+        "id": "demo", "name": "Demo", "version": 1,
+        "nodes": {
+            "fork": {"type": "parallel"},
+            "research": {"type": "pass", "output": {"summary": "r"}},
+            "implement": {"type": "pass", "output": {"summary": "i"}},
+            "merge": {"type": "join"},
+            "done": {"type": "pass", "output": {
+                "research": "${ node.merge.output.branches.research.summary }",
+                "implement": "${ node.merge.output.branches.implement.summary }",
+            }},
+        },
+        "edges": [
+            {"from": "fork.research", "to": "research"},
+            {"from": "fork.implement", "to": "implement"},
+            {"from": "research", "to": "merge"},
+            {"from": "implement", "to": "merge"},
+            {"from": "merge", "to": "done"},
+        ],
+    })
+
+    result = run_in_memory_until_waiting(spec, input_data={})
+
+    assert result.status == "succeeded"
+    assert result.context["branches"]["fork"] == {
+        "research": {"summary": "r"},
+        "implement": {"summary": "i"},
+    }
+    assert result.context["node"]["merge"]["output"]["branches"] == {
+        "research": {"summary": "r"},
+        "implement": {"summary": "i"},
+    }
+    assert result.context["node"]["done"]["output"] == {"research": "r", "implement": "i"}
+
+
+def test_join_waits_until_all_branch_upstreams_succeed():
+    spec = WorkflowSpec.model_validate({
+        "id": "demo", "name": "Demo", "version": 1,
+        "nodes": {
+            "fork": {"type": "parallel"},
+            "ready": {"type": "pass", "output": {"summary": "r"}},
+            "blocked": {"type": "agent_task", "profile": "worker", "prompt": "finish"},
+            "merge": {"type": "join"},
+            "done": {"type": "pass", "output": {
+                "ready": "${ node.merge.output.branches.ready.summary }",
+                "blocked": "${ node.merge.output.branches.blocked.summary }",
+            }},
+        },
+        "edges": [
+            {"from": "fork.ready", "to": "ready"},
+            {"from": "fork.blocked", "to": "blocked"},
+            {"from": "ready", "to": "merge"},
+            {"from": "blocked", "to": "merge"},
+            {"from": "merge", "to": "done"},
+        ],
+    })
+
+    waiting = run_in_memory_until_waiting(spec, input_data={})
+
+    assert waiting.status == "waiting"
+    assert waiting.waiting_nodes == ["blocked"]
+    assert "merge" not in waiting.context["node"]
+
+    done = run_in_memory_until_waiting(
+        spec,
+        input_data={},
+        completed_node_outputs={"blocked": {"summary": "b"}},
+    )
+
+    assert done.status == "succeeded"
+    assert done.context["node"]["merge"]["output"]["branches"] == {
+        "ready": {"summary": "r"},
+        "blocked": {"summary": "b"},
+    }
+    assert done.context["node"]["done"]["output"] == {"ready": "r", "blocked": "b"}
+
+
+def test_parallel_branch_failure_without_catch_fails_execution():
+    spec = WorkflowSpec.model_validate({
+        "id": "demo", "name": "Demo", "version": 1,
+        "nodes": {
+            "fork": {"type": "parallel"},
+            "ok": {"type": "pass", "output": {"ok": True}},
+            "bad": {"type": "fail", "output": {"reason": "boom"}},
+            "merge": {"type": "join"},
+        },
+        "edges": [
+            {"from": "fork.ok", "to": "ok"},
+            {"from": "fork.bad", "to": "bad"},
+            {"from": "ok", "to": "merge"},
+            {"from": "bad", "to": "merge"},
+        ],
+    })
+
+    result = run_in_memory_until_waiting(spec, input_data={})
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error["node"] == "bad"
+
+
 def test_next_edges_matches_node_and_node_port_exactly():
     spec = WorkflowSpec.model_validate({
         "id": "demo", "name": "Demo", "version": 1,
@@ -182,7 +284,7 @@ def test_fail_node_returns_failed():
 
 def test_reachable_cycle_trips_max_step_guard():
     spec = WorkflowSpec.model_validate({
-        "id": "demo", "name": "Demo", "version": 1,
+        "id": "demo", "name": "Demo", "version": 1, "max_node_runs": 2,
         "nodes": {
             "start": {"type": "pass"},
             "loop": {"type": "pass"},
@@ -197,4 +299,4 @@ def test_reachable_cycle_trips_max_step_guard():
 
     assert result.status == "failed"
     assert result.error is not None
-    assert "max in-memory steps" in result.error["message"]
+    assert "max node runs" in result.error["message"]

@@ -44,6 +44,25 @@ def _wait_spec() -> WorkflowSpec:
     })
 
 
+def _parallel_spec() -> WorkflowSpec:
+    return WorkflowSpec.model_validate({
+        "id": "parallel_demo", "name": "Parallel Demo", "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "fork": {"type": "parallel"},
+            "research": {"type": "pass", "output": {"summary": "r"}},
+            "implement": {"type": "pass", "output": {"summary": "i"}},
+            "merge": {"type": "join"},
+        },
+        "edges": [
+            {"from": "fork.research", "to": "research"},
+            {"from": "fork.implement", "to": "implement"},
+            {"from": "research", "to": "merge"},
+            {"from": "implement", "to": "merge"},
+        ],
+    })
+
+
 def _agent_spec(done_output=None) -> WorkflowSpec:
     return WorkflowSpec.model_validate({
         "id": "agent_demo", "name": "Agent Demo", "version": 1,
@@ -172,6 +191,30 @@ def test_tick_runs_queued_pass_switch_execution(tmp_path, monkeypatch):
     assert "execution_started" in events
     assert "node_succeeded" in events
     assert "execution_succeeded" in events
+
+
+def test_tick_runs_parallel_join_execution(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        spec = _parallel_spec()
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        exec_id = wfdb.start_execution(conn, spec.id, input_data={}, trigger_type="manual")
+
+    assert workflows_dispatcher.tick(limit=1) == 1
+
+    with wfdb.connect() as conn:
+        execution = wfdb.get_execution(conn, exec_id)
+
+    assert execution.status == "succeeded"
+    assert execution.context["branches"]["fork"] == {
+        "research": {"summary": "r"},
+        "implement": {"summary": "i"},
+    }
+    assert execution.context["node"]["merge"]["output"]["branches"] == {
+        "research": {"summary": "r"},
+        "implement": {"summary": "i"},
+    }
 
 
 def test_tick_respects_limit(tmp_path, monkeypatch):

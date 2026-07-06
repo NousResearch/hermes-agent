@@ -4521,6 +4521,39 @@ This compaction should PRIORITISE preserving all information related to the focu
         )
         telemetry["chunk_count"] = 1 if turns_to_summarize else 0
 
+        if not turns_to_summarize:
+            # The newest handoff summary consumed the entire compressible
+            # window (every window row was a standalone handoff that strips
+            # to None, and nothing follows it before compress_end) — there
+            # is nothing new to summarize.  Skip the summary call entirely:
+            # without this guard the empty window still reached
+            # _generate_summary, wasting an aux LLM call that aborts
+            # noisily on empty input (#59496).  Mirrors the sibling
+            # "no compressable window" guard above (#40803): record an
+            # ineffective strike through the durable write-through helper
+            # so the anti-thrash breaker in should_compress() can stop the
+            # loop — this shape cannot shrink, so every subsequent turn
+            # would otherwise re-fire the same no-op.  The rehydrated
+            # _previous_summary is deliberately KEPT (not rolled back as
+            # the summary-abort path does for #57835): it came from a
+            # handoff genuinely present in this transcript, which is
+            # returned unchanged.
+            telemetry["failure_class"] = "empty_post_handoff_window"
+            self._record_ineffective_compression_verdict(
+                self._ineffective_compression_count + 1,
+            )
+            self._last_compression_savings_pct = 0.0
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression skipped: latest context summary leaves no "
+                    "new turns to summarize in window %d-%d. "
+                    "ineffective_compression_count=%d",
+                    compress_start,
+                    compress_end,
+                    self._ineffective_compression_count,
+                )
+            return messages
+
         if not self.quiet_mode:
             logger.info(
                 "Context compression triggered (%d tokens >= %d threshold)",

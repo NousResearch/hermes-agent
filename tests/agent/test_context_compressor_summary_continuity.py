@@ -725,3 +725,48 @@ def test_metadata_summary_decay_also_rehydrates_previous_summary():
     assert "metadata-only prior summary" in prompt
     # Grounding may prepend a task-snapshot section; pin the fresh body.
     assert (compressor._previous_summary or "").endswith("fresh summary")
+
+
+def test_empty_post_handoff_window_noops_without_summary_call():
+    """A latest handoff that consumes the window must not trigger an empty summary.
+
+    Regression test from PR #59526 (#59496), fixture adapted to current main:
+    the standalone handoff sits alone in the compressible window, strips to
+    None via _strip_context_summary_handoff_message, and leaves
+    turns_to_summarize empty — the guard must skip _generate_summary
+    entirely instead of wasting an aux LLM call on empty input.
+    """
+    compressor = _compressor()
+    old_summary = "WINDOW-END-SUMMARY durable facts already captured"
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
+        {"role": "assistant", "content": "recent tail response"},
+        {"role": "user", "content": "tail request"},
+        {"role": "assistant", "content": "tail answer"},
+        {"role": "user", "content": "latest tail request"},
+        {"role": "assistant", "content": "latest tail answer"},
+    ]
+
+    with (
+        patch.object(compressor, "_find_tail_cut_by_tokens", return_value=2),
+        patch.object(compressor, "_generate_summary") as mock_generate_summary,
+    ):
+        result = compressor.compress(messages, current_tokens=90_000)
+
+    mock_generate_summary.assert_not_called()
+    assert result == messages
+    # The rehydrated summary state is deliberately kept: the handoff is
+    # genuinely present in the returned (unchanged) transcript.
+    assert compressor._previous_summary == old_summary
+    assert compressor.compression_count == 0
+    # Mirrors the sibling no-compressible-window guard (#40803): the shape
+    # cannot shrink, so it counts as an ineffective strike (routed through
+    # the durable write-through helper) to arm the anti-thrash breaker.
+    assert compressor._ineffective_compression_count == 1
+    assert compressor._last_compression_savings_pct == 0.0
+    assert compressor._last_summary_dropped_count == 0
+    assert compressor._last_summary_fallback_used is False
+    assert compressor._last_compress_aborted is False
+    telemetry = compressor._last_compression_telemetry or {}
+    assert telemetry.get("failure_class") == "empty_post_handoff_window"

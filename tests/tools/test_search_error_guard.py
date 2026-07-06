@@ -28,7 +28,6 @@ import pytest
 
 from tools.file_operations import (
     ShellFileOperations,
-    _pattern_has_regex_newline,
     _split_tool_diagnostics,
 )
 from tools.environments.local import LocalEnvironment
@@ -123,63 +122,6 @@ class TestSearchErrorGuard:
                       partial_error_tree, output_mode="count")
         assert res.error is None
         assert res.total_count >= 4
-
-
-class TestSearchContentNewlineWarning:
-    def test_odd_backslash_n_is_detected_as_regex_newline(self):
-        assert _pattern_has_regex_newline(r"needle\n")
-        assert _pattern_has_regex_newline(r"needle\\\n")
-
-    def test_even_backslash_n_is_literal_and_not_detected(self):
-        assert not _pattern_has_regex_newline(r"needle\\n")
-        assert not _pattern_has_regex_newline(r"needle\\\\n")
-
-    def test_zero_matches_with_regex_newline_adds_warning_not_error(self, match_tree):
-        res = _ops(match_tree).search(
-            r"absent\npattern",
-            path=str(match_tree),
-            target="content",
-            context=2,
-        )
-
-        assert res.error is None
-        assert res.total_count == 0
-        assert res.warning is not None
-        assert "0 results found" in res.warning
-        assert "-U/--multiline" in res.warning
-
-    def test_actual_newline_pattern_adds_warning_not_error(self, match_tree):
-        res = _ops(match_tree).search(
-            "absent\npattern",
-            path=str(match_tree),
-            target="content",
-        )
-
-        assert res.error is None
-        assert res.total_count == 0
-        assert res.warning is not None
-
-    def test_search_with_matching_alternative_and_regex_newline_warns(self, match_tree):
-        res = _ops(match_tree).search(
-            r"needle|absent\npattern",
-            path=str(match_tree),
-            target="content",
-        )
-
-        assert res.error is None
-        assert res.total_count == 0
-        assert res.warning is not None
-
-    def test_literal_backslash_n_pattern_does_not_warn(self, match_tree):
-        res = _ops(match_tree).search(
-            r"absent\\npattern",
-            path=str(match_tree),
-            target="content",
-        )
-
-        assert res.error is None
-        assert res.total_count == 0
-        assert res.warning is None
 
 
 class TestSplitToolDiagnostics:

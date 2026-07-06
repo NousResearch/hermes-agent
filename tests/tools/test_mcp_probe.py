@@ -162,14 +162,14 @@ class TestProbeMcpServerTools:
         assert result["github"][0] == ("my_tool", "")
 
     def test_cleanup_called_even_on_failure(self):
-        """Probe cleanup is attempted even when probe fails."""
+        """_stop_mcp_loop is called even when probe fails."""
         config = {"github": {"command": "npx", "connect_timeout": 5}}
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop", side_effect=RuntimeError("boom")), \
-             patch("tools.mcp_tool._stop_mcp_loop_if_idle") as mock_stop:
+             patch("tools.mcp_tool._stop_mcp_loop") as mock_stop:
 
             from tools.mcp_tool import probe_mcp_server_tools
             result = probe_mcp_server_tools()

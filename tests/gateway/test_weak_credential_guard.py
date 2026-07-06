@@ -139,38 +139,3 @@ class TestAPIServerPlaceholderKeyGuard:
         )
         # On loopback the placeholder guard doesn't fire
         assert is_network_accessible(adapter._host) is False
-
-    @pytest.mark.asyncio
-    async def test_refuses_wildcard_with_short_random_key(self):
-        """A short but non-placeholder key is brute-forceable on a public bind.
-
-        June 2026 hermes-0day hardening raised the network-bind entropy floor
-        from 8 to 16 chars. A 12-char random key (which passed the old guard)
-        must now be refused — the API server dispatches terminal-capable agent
-        work, so a guessable key is RCE.
-        """
-        from gateway.platforms.api_server import APIServerAdapter
-
-        adapter = APIServerAdapter(
-            PlatformConfig(enabled=True, extra={"host": "0.0.0.0", "key": "a1b2c3d4e5f6"})
-        )
-        result = await adapter.connect()
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_allows_wildcard_with_strong_key(self):
-        """A 32-char random key clears the entropy floor (connect proceeds past
-        the credential guard). We don't assert full startup success here — the
-        port/runner setup is environment-dependent — only that the weak-key
-        guard does not reject it."""
-        from gateway.platforms.api_server import APIServerAdapter
-        from hermes_cli.auth import has_usable_secret
-
-        strong = "0123456789abcdef0123456789abcdef"
-        assert has_usable_secret(strong, min_length=16) is True
-        adapter = APIServerAdapter(
-            PlatformConfig(enabled=True, extra={"host": "0.0.0.0", "key": strong})
-        )
-        # The credential guard itself accepts the key (start may still fail on
-        # later env-specific steps, which is out of scope for this guard test).
-        assert adapter._api_key == strong

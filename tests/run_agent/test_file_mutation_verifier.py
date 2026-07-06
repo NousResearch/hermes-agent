@@ -28,7 +28,6 @@ from run_agent import (
     _FILE_MUTATING_TOOLS,
     _extract_error_preview,
     _extract_file_mutation_targets,
-    _extract_landed_file_mutation_paths,
 )
 
 
@@ -129,7 +128,6 @@ def _bare_agent() -> AIAgent:
     """
     agent = object.__new__(AIAgent)
     agent._turn_failed_file_mutations = {}
-    agent._turn_file_mutation_paths = set()
     return agent
 
 
@@ -167,31 +165,6 @@ class TestRecordFileMutationResult:
             json.dumps({"success": True, "diff": "..."}), is_error=False,
         )
         assert agent._turn_failed_file_mutations == {}
-        assert agent._turn_file_mutation_paths == {"/tmp/a.md"}
-
-    def test_success_records_landed_paths_for_verify_on_stop(self):
-        agent = _bare_agent()
-
-        agent._record_file_mutation_result(
-            "write_file",
-            {"path": "a.py", "content": "print('ok')\n"},
-            json.dumps({"bytes_written": 12, "files_modified": ["/tmp/project/a.py"]}),
-            is_error=False,
-        )
-
-        assert agent._turn_file_mutation_paths == {"/tmp/project/a.py"}
-
-    def test_landed_paths_prefer_resolved_tool_result(self):
-        paths = _extract_landed_file_mutation_paths(
-            "patch",
-            {"mode": "replace", "path": "src/app.py"},
-            json.dumps({
-                "success": True,
-                "files_modified": ["/tmp/project/src/app.py"],
-            }),
-        )
-
-        assert paths == ["/tmp/project/src/app.py"]
 
     def test_write_file_with_lint_error_counts_as_landed(self):
         agent = _bare_agent()

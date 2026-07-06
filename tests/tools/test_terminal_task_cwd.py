@@ -34,7 +34,7 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
+        lambda command, env_type: {"approved": True},
     )
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
@@ -61,7 +61,7 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
+        lambda command, env_type: {"approved": True},
     )
 
     result = json.loads(
@@ -98,7 +98,7 @@ def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
+        lambda command, env_type: {"approved": True},
     )
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
@@ -136,7 +136,7 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
+        lambda command, env_type: {"approved": True},
     )
     monkeypatch.setattr(process_registry_mod, "process_registry", registry)
 
@@ -149,14 +149,11 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     )
 
     assert result["exit_code"] == 0
-    # session_key falls back to the raw task_id when no gateway contextvar is set
-    # (it doesn't propagate to tool-worker threads), so process.kill / stop can
-    # still find and terminate this background process.
     assert registry.calls == [{
         "command": "sleep 1",
         "cwd": "/workspace/live",
         "task_id": task_id,
-        "session_key": task_id,
+        "session_key": "",
         "env_vars": {},
         "use_pty": False,
     }]

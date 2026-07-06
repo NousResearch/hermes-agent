@@ -220,7 +220,7 @@ class TestTickWorkdirPartition:
         calls: list[tuple[str, str]] = []
         order_lock = threading.Lock()
 
-        def fake_run_job(job, *, defer_agent_teardown=None):
+        def fake_run_job(job):
             # Return a minimal tuple matching run_job's signature.
             with order_lock:
                 calls.append((job["id"], threading.current_thread().name))

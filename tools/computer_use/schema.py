@@ -16,15 +16,14 @@ from typing import Any, Dict
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop in the background via cua-driver — screenshots, "
-        "mouse, keyboard, scroll, drag — without stealing the user's cursor "
-        "or keyboard focus. Supported on macOS, Windows, and Linux. "
-        "Preferred workflow: call with "
+        "Drive the macOS desktop in the background — screenshots, mouse, "
+        "keyboard, scroll, drag — without stealing the user's cursor, "
+        "keyboard focus, or Space. Preferred workflow: call with "
         "action='capture' (mode='som' gives numbered element overlays), "
         "then click by `element` index for reliability. Pixel coordinates "
         "are supported for models trained on them. Works on any window — "
-        "hidden, minimized, or behind another app. Requires cua-driver to "
-        "be installed."
+        "hidden, minimized, on another Space, or behind another app. "
+        "macOS only; requires cua-driver to be installed."
     ),
     "parameters": {
         "type": "object",
@@ -73,12 +72,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "Optional. Limit capture/action to a specific app "
                     "(by name, e.g. 'Safari', or bundle ID, "
                     "'com.apple.Safari'). If omitted, operates on the "
-                    "frontmost app's window. Pass app='screen' (or "
-                    "'desktop') to capture the OS desktop/shell surface — "
-                    "e.g. to see the wallpaper or click the taskbar. Note: "
-                    "capture is per-window; a single image cannot span "
-                    "multiple monitors, so on a multi-screen setup capture "
-                    "one window or display at a time."
+                    "frontmost app's window or the whole screen."
                 ),
             },
             "max_elements": {
@@ -132,10 +126,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "enum": [
-                        "cmd", "shift", "option", "alt", "ctrl", "fn",
-                        "win", "windows", "super", "meta",
-                    ],
+                    "enum": ["cmd", "shift", "option", "alt", "ctrl", "fn"],
                 },
                 "description": "Modifier keys held during the action.",
             },

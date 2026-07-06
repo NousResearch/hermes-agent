@@ -6,7 +6,6 @@ import {
   KeyRound,
   MessageSquare,
   Pencil,
-  Plus,
   Save,
   Settings,
   Trash2,
@@ -484,124 +483,6 @@ function ProviderGroupCard({
 }
 
 /* ------------------------------------------------------------------ */
-/*  CustomKeysCard — user-added arbitrary env vars + add-key form      */
-/* ------------------------------------------------------------------ */
-
-// Mirror of the backend env-name guard (hermes_cli/config.py _ENV_VAR_NAME_RE).
-const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-function CustomKeysCard({
-  entries,
-  edits,
-  setEdits,
-  revealed,
-  saving,
-  onSave,
-  onClear,
-  onReveal,
-  onCancelEdit,
-  onAddKey,
-  clearDialogOpen = false,
-}: {
-  entries: [string, EnvVarInfo][];
-  edits: Record<string, string>;
-  setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  revealed: Record<string, string>;
-  saving: string | null;
-  onSave: (key: string) => void;
-  onClear: (key: string) => void;
-  onReveal: (key: string) => void;
-  onCancelEdit: (key: string) => void;
-  onAddKey: (key: string) => void;
-  clearDialogOpen?: boolean;
-}) {
-  const { t } = useI18n();
-  const [newKey, setNewKey] = useState("");
-  const trimmed = newKey.trim().toUpperCase();
-  const alreadyEditing = edits[trimmed] !== undefined;
-  const nameValid = ENV_VAR_NAME_RE.test(trimmed);
-  const showInvalid = trimmed.length > 0 && !nameValid;
-
-  const rowProps = {
-    edits,
-    setEdits,
-    revealed,
-    saving,
-    onSave,
-    onClear,
-    onReveal,
-    onCancelEdit,
-    clearDialogOpen,
-  };
-
-  const handleAdd = () => {
-    if (!nameValid || alreadyEditing) return;
-    onAddKey(trimmed);
-    setNewKey("");
-  };
-
-  return (
-    <Card id="section-custom">
-      <CardHeader className="border-b border-border bg-card">
-        <div className="flex items-center gap-2">
-          <KeyRound className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">{t.env.customTitle}</CardTitle>
-        </div>
-        <CardDescription>
-          {t.env.customConfigured
-            .replace("{count}", String(entries.length))
-            .replace("{s}", entries.length !== 1 ? "s" : "")}
-        </CardDescription>
-        <CardDescription className="text-text-tertiary">
-          {t.env.customHint}
-        </CardDescription>
-      </CardHeader>
-
-      <CardContent className="grid gap-3 overflow-hidden pt-4">
-        {entries.map(([key, info]) => (
-          <EnvVarRow key={key} varKey={key} info={info} {...rowProps} />
-        ))}
-
-        {/* Add-key form */}
-        <div className="grid gap-2 border border-dashed border-border p-4">
-          <Label className="text-xs font-semibold tracking-wide">
-            {t.env.addCustomKey}
-          </Label>
-          <div className="flex items-start gap-2">
-            <div className="flex-1">
-              <Input
-                type="text"
-                value={newKey}
-                onChange={(e) => setNewKey(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAdd();
-                }}
-                placeholder={t.env.customKeyNamePlaceholder}
-                aria-label={t.env.customKeyName}
-                className="w-full font-mono-ui text-xs"
-              />
-              {showInvalid && (
-                <p className="mt-1 text-xs text-destructive">
-                  {t.env.invalidKeyName}
-                </p>
-              )}
-            </div>
-            <Button
-              size="sm"
-              prefix={<Plus />}
-              onClick={handleAdd}
-              disabled={!nameValid || alreadyEditing}
-            >
-              {t.env.add}
-            </Button>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /*  Main page                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -643,8 +524,6 @@ export default function EnvPage() {
           items.push({ id: `section-${cat}`, label: CATEGORY_LABELS[cat] ?? cat });
         }
       }
-      // Custom keys section is always present (it carries the add-key form).
-      items.push({ id: "section-custom", label: t.env.customTitle });
     }
     return items;
   }, [vars, t]);
@@ -776,40 +655,9 @@ export default function EnvPage() {
     });
   };
 
-  // Add a custom key: register an unset row in local state and open it for
-  // editing. The value isn't persisted until the user types one and saves
-  // (reusing the normal handleSave → PUT /api/env path); on save the backend
-  // surfaces it back as a custom row, so the new entry is durable.
-  const handleAddKey = (key: string) => {
-    setVars((prev) =>
-      prev && prev[key]
-        ? prev
-        : {
-            ...(prev ?? {}),
-            [key]: {
-              is_set: false,
-              redacted_value: null,
-              description: "",
-              url: null,
-              category: "custom",
-              is_password: true,
-              tools: [],
-              advanced: false,
-              custom: true,
-            },
-          },
-    );
-    setEdits((prev) => ({ ...prev, [key]: "" }));
-  };
-
   /* ---- Build provider groups ---- */
-  const { providerGroups, nonProviderGrouped, customEntries } = useMemo(() => {
-    if (!vars)
-      return {
-        providerGroups: [],
-        nonProviderGrouped: [],
-        customEntries: [] as [string, EnvVarInfo][],
-      };
+  const { providerGroups, nonProviderGrouped } = useMemo(() => {
+    if (!vars) return { providerGroups: [], nonProviderGrouped: [] };
 
     const providerEntries = Object.entries(vars).filter(
       ([, info]) =>
@@ -868,18 +716,7 @@ export default function EnvPage() {
       };
     });
 
-    // Custom keys: user-added vars the backend flagged as not in any catalog.
-    // Sorted alphabetically; an in-flight (just-added, unsaved) row carries the
-    // custom category locally so it shows here immediately.
-    const customEntries = Object.entries(vars)
-      .filter(([, info]) => info.category === "custom" && !info.channel_managed)
-      .sort(([a], [b]) => a.localeCompare(b));
-
-    return {
-      providerGroups: groups,
-      nonProviderGrouped: nonProvider,
-      customEntries,
-    };
+    return { providerGroups: groups, nonProviderGrouped: nonProvider };
   }, [vars, showAdvanced, t]);
 
   if (!vars) {
@@ -991,19 +828,6 @@ export default function EnvPage() {
           />
         );
       })}
-      <CustomKeysCard
-        entries={customEntries}
-        edits={edits}
-        setEdits={setEdits}
-        revealed={revealed}
-        saving={saving}
-        onSave={handleSave}
-        onClear={keyClear.requestDelete}
-        onReveal={handleReveal}
-        onCancelEdit={cancelEdit}
-        onAddKey={handleAddKey}
-        clearDialogOpen={keyClear.isOpen}
-      />
       <PluginSlot name="env:bottom" />
     </div>
   );

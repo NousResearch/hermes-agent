@@ -132,6 +132,8 @@ def test_spawn_sets_goal_env_only_when_enabled(kanban_home, monkeypatch):
         return _FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", _fake_popen)
+    # Avoid the kanban-worker skill probe touching the real skills dir.
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda home: False)
 
     with kb.connect() as conn:
         tid = kb.create_task(
@@ -160,6 +162,7 @@ def test_spawn_no_goal_env_for_plain_task(kanban_home, monkeypatch):
         return _FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", _fake_popen)
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda home: False)
 
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="plain", assignee="default")
@@ -179,10 +182,9 @@ def _patch_judge(monkeypatch, verdicts):
     """Make judge_goal return a scripted sequence of verdicts."""
     seq = list(verdicts)
 
-    def _fake_judge(goal, response, subgoals=None, background_processes=None, **_kw):
+    def _fake_judge(goal, response, subgoals=None):
         v = seq.pop(0) if seq else "done"
-        # 4-tuple contract: (verdict, reason, parse_failed, wait_directive)
-        return v, f"scripted:{v}", False, None
+        return v, f"scripted:{v}", False
 
     monkeypatch.setattr(goals, "judge_goal", _fake_judge)
 

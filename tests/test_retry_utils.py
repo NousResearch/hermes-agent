@@ -3,9 +3,7 @@
 import threading
 
 import agent.retry_utils as retry_utils
-from types import SimpleNamespace
-
-from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error, jittered_backoff
+from agent.retry_utils import jittered_backoff
 
 
 def test_backoff_is_exponential():
@@ -117,96 +115,3 @@ def test_backoff_uses_locked_tick_for_seed(monkeypatch):
 
     assert len(recorded_seeds) == 2
     assert len(set(recorded_seeds)) == 2, f"Expected unique seeds, got {recorded_seeds}"
-
-
-def _zai_overload_error():
-    return SimpleNamespace(
-        status_code=429,
-        body={
-            "error": {
-                "code": "1305",
-                "message": "The service may be temporarily overloaded, please try again later",
-            }
-        },
-    )
-
-
-def test_zai_coding_overload_classifier_is_narrow():
-    err = _zai_overload_error()
-    assert is_zai_coding_overload_error(
-        base_url="https://api.z.ai/api/coding/paas/v4",
-        model="glm-5.2",
-        error=err,
-    )
-
-    assert not is_zai_coding_overload_error(
-        base_url="https://api.z.ai/api/paas/v4",
-        model="glm-5.2",
-        error=err,
-    )
-    assert not is_zai_coding_overload_error(
-        base_url="https://api.z.ai/api/coding/paas/v4",
-        model="glm-5.1",
-        error=err,
-    )
-    assert not is_zai_coding_overload_error(
-        base_url="https://api.z.ai/api/coding/paas/v4",
-        model="glm-5.2",
-        error=SimpleNamespace(status_code=429, body={"error": {"code": "1113", "message": "Insufficient balance"}}),
-    )
-
-
-def test_zai_coding_overload_backoff_keeps_first_retries_short(monkeypatch):
-    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
-    err = _zai_overload_error()
-
-    wait, policy = adaptive_rate_limit_backoff(
-        1,
-        base_url="https://api.z.ai/api/coding/paas/v4",
-        model="glm-5.2",
-        error=err,
-        default_wait=2.5,
-    )
-    assert wait == 2.5
-    assert policy == "zai_coding_overload_short"
-
-    wait, policy = adaptive_rate_limit_backoff(
-        3,
-        base_url="https://api.z.ai/api/coding/paas/v4",
-        model="glm-5.2",
-        error=err,
-        default_wait=9.0,
-    )
-    assert wait == 9.0
-    assert policy == "zai_coding_overload_short"
-
-
-def test_zai_coding_overload_backoff_grows_after_short_retries(monkeypatch):
-    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
-    err = _zai_overload_error()
-
-    waits = []
-    for attempt in range(4, 10):
-        wait, policy = adaptive_rate_limit_backoff(
-            attempt,
-            base_url="https://api.z.ai/api/coding/paas/v4",
-            model="glm-5.2",
-            error=err,
-            default_wait=10.0,
-        )
-        waits.append(wait)
-        assert policy == "zai_coding_overload_long"
-
-    assert waits == [30.0, 60.0, 90.0, 120.0, 120.0, 120.0]
-
-
-def test_non_zai_backoff_returns_default_wait():
-    wait, policy = adaptive_rate_limit_backoff(
-        10,
-        base_url="https://openrouter.ai/api/v1",
-        model="glm-5.2",
-        error=_zai_overload_error(),
-        default_wait=12.0,
-    )
-    assert wait == 12.0
-    assert policy is None

@@ -11,14 +11,7 @@ function renderPopover(kind: '@' | '/', loading = false) {
 
   const rendered = render(
     <I18nProvider configClient={null} initialLocale="zh">
-      <ComposerTriggerPopover
-        activeIndex={0}
-        items={[]}
-        kind={kind}
-        loading={loading}
-        onHover={onHover}
-        onPick={onPick}
-      />
+      <ComposerTriggerPopover activeIndex={0} items={[]} kind={kind} loading={loading} onHover={onHover} onPick={onPick} />
     </I18nProvider>
   )
 
@@ -41,17 +34,9 @@ describe('ComposerTriggerPopover i18n', () => {
   })
 
   it('renders localized loading copy for slash commands', () => {
-    renderPopover('/', true)
+    const { container } = renderPopover('/', true)
 
-    // While loading the popover shows only the spinner + loading copy — the
-    // `/help` empty-state hint is reserved for the resolved (not-loading) state.
     expect(screen.getByText('查找中…')).toBeTruthy()
-  })
-
-  it('renders the slash empty-state hint when not loading', () => {
-    const { container } = renderPopover('/')
-
-    expect(screen.getByText('没有匹配项。')).toBeTruthy()
     expect(container.textContent).toContain('/help')
   })
 })

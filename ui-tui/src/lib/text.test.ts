@@ -22,13 +22,9 @@ describe('formatAbandonedClarify', () => {
     const out = formatAbandonedClarify('How do you want to scope?', ['Option A', 'Option B', 'Option C'], 'timed out')
 
     expect(out).toBe(
-      [
-        'ask How do you want to scope?',
-        '  1. Option A',
-        '  2. Option B',
-        '  3. Option C',
-        '  (timed out — no selection)'
-      ].join('\n')
+      ['ask How do you want to scope?', '  1. Option A', '  2. Option B', '  3. Option C', '  (timed out — no selection)'].join(
+        '\n'
+      )
     )
   })
 

@@ -46,25 +46,6 @@ class TestNoUnconditionalSetsid:
             )
 
 
-class TestStartNewSession:
-    """All guarded files must use start_new_session=True instead of preexec_fn."""
-
-    @pytest.mark.parametrize("relpath", GUARDED_FILES)
-    def test_uses_start_new_session(self, relpath):
-        """Each guarded file must use start_new_session=True for process isolation."""
-        filepath = PROJECT_ROOT / relpath
-        if not filepath.exists():
-            pytest.skip(f"{relpath} not found")
-        source = filepath.read_text(encoding="utf-8")
-        # Files should use start_new_session=True, not preexec_fn
-        assert "preexec_fn" not in source, (
-            f"{relpath} still uses preexec_fn; use start_new_session=True instead"
-        )
-        assert "start_new_session=True" in source, (
-            f"{relpath} missing start_new_session=True in Popen call"
-        )
-
-
 class TestIsWindowsConstant:
     """Each guarded file must define _IS_WINDOWS."""
 

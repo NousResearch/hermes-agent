@@ -110,32 +110,6 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
 
-### User-Defined Deny Rules (`approvals.deny`)
-
-The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally — **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use it to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
-
-```yaml
-approvals:
-  deny:
-    - "git push --force*"
-    - "*curl*|*sh*"
-    - "dd if=* of=/dev/*"
-```
-
-Details:
-
-- Patterns are [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs (`*`, `?`, `[...]`) matched **case-insensitively** against the whole command text. `git push --force*` matches `git push --force origin main` but not `git push origin main`.
-- Matching runs over the same normalized/deobfuscated command variants the dangerous-pattern detector uses, so simple quoting tricks (`git pu""sh --force`) don't slip past a rule.
-- **YAML quoting:** always quote patterns. A bare leading `*` is a YAML alias and fails to parse; `{`, `!`, and `: ` have their own YAML meanings. Single quotes are safest for shell-ish content.
-- Deny rules apply to host-reaching backends (local, SSH, host-mounted Docker). Isolated container backends skip the guard stack entirely, as they always have — nothing they run can touch the host.
-- A denied command returns a BLOCKED error to the agent telling it not to retry or rephrase. Nothing runs.
-
-Like the rest of the approval config, changes take effect immediately (the config cache is mtime-keyed) — no session restart needed.
-
-:::note Threat model
-Deny rules are a guardrail against an honest-but-wrong agent, the same threat model as the dangerous-pattern detector. They are not a sandbox against a deliberately adversarial process — for that, use an isolated backend (Docker, Modal) or an egress-restricted environment.
-:::
-
 ### Approval Timeout
 
 When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
@@ -298,9 +272,8 @@ whatsapp:
   unauthorized_dm_behavior: ignore
 ```
 
-- `pair` is the default for chat-style DM platforms. Unauthorized DMs get a pairing code reply.
+- `pair` is the default. Unauthorized DMs get a pairing code reply.
 - `ignore` silently drops unauthorized DMs.
-- Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing on Telegram while keeping WhatsApp silent.
 
 **Security features** (based on OWASP + NIST SP 800-63-4 guidance):
@@ -331,24 +304,6 @@ hermes pairing revoke telegram 123456789
 # Clear all pending codes
 hermes pairing clear-pending
 ```
-
-:::tip Docker users: run pairing commands as the `hermes` user
-The official Docker image runs the gateway as the unprivileged `hermes` user
-(uid 10000) via `gosu`, but `docker exec` defaults to root. Approval files
-created by root are written with mode `0600 root:root` and the gateway
-cannot read them — the approval is silently ignored ([#10270][i10270]).
-
-Always pass `-u hermes`:
-
-```bash
-docker exec -u hermes hermes-agent hermes pairing approve telegram ABC12DEF
-```
-
-If you already ran the command as root and the user is still unauthorized,
-restart the container — the entrypoint will fix ownership on the next start.
-
-[i10270]: https://github.com/NousResearch/hermes-agent/issues/10270
-:::
 
 **Storage:** Pairing data is stored in `~/.hermes/pairing/` with per-platform JSON files:
 - `{platform}-pending.json` — pending pairing requests

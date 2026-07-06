@@ -70,6 +70,7 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `kanban` | `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_list`, `kanban_show`, `kanban_unblock` | 多 agent 协调工具。为调度器生成的任务工作者（`HERMES_KANBAN_TASK`）以及显式启用 `kanban` 工具集的 profile 注册。工作者可标记任务完成、阻塞、心跳、评论以及创建/关联后续任务；编排器 profile 还额外获得看板路由工具，如 list/unblock。 |
 | `memory` | `memory` | 持久化跨会话记忆管理。 |
 | `messaging` | `send_message` | 在会话中向其他平台（Telegram、Discord 等）发送消息。 |
+| `moa` | `mixture_of_agents` | 通过 Mixture of Agents 实现多模型共识。 |
 | `safe` | `image_generate`, `vision_analyze`, `web_extract`, `web_search`（通过 `includes`） | 只读研究 + 媒体生成。无文件写入、无终端、无代码执行。 |
 | `search` | `web_search` | 仅网页搜索（不含提取）。 |
 | `session_search` | `session_search` | 搜索历史会话记录。 |

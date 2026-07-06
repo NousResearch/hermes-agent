@@ -1,6 +1,11 @@
 import { atom, computed } from 'nanostores'
 
-import { defaultBindings, KEYBIND_ACTION_IDS, keybindAction, type KeybindBindings } from '@/lib/keybinds/actions'
+import {
+  defaultBindings,
+  KEYBIND_ACTION_IDS,
+  keybindAction,
+  type KeybindBindings
+} from '@/lib/keybinds/actions'
 import { canonicalizeCombo } from '@/lib/keybinds/combo'
 import { arraysEqual, persistString, storedString } from '@/lib/storage'
 

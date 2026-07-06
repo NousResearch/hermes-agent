@@ -12,7 +12,6 @@ Adapters without ``delete_message`` silently no-op.
 
 import asyncio
 import importlib
-import inspect as _inspect
 import sys
 import time
 import types
@@ -21,17 +20,6 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-
-
-async def _fire_post_delivery_cb(cb):
-    """Invoke a popped post-delivery callback, awaiting if it's async.
-
-    Chained registrations return an async wrapper; single registrations
-    return the raw sync callable. Either way, await any awaitable result.
-    """
-    result = cb()
-    if _inspect.isawaitable(result):
-        await result
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
 
@@ -53,7 +41,7 @@ class CleanupCaptureAdapter(BasePlatformAdapter):
         self.edits = []
         self.deleted = []
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -227,7 +215,7 @@ async def test_cleanup_off_by_default_leaves_bubbles(monkeypatch, tmp_path):
     # delete_message calls when cleanup is off.
     cb = adapter.pop_post_delivery_callback(session_key)
     if cb is not None:
-        await _fire_post_delivery_cb(cb)
+        cb()
         for _ in range(10):
             await asyncio.sleep(0.01)
     assert adapter.deleted == []
@@ -260,7 +248,7 @@ async def test_cleanup_registers_callback_and_deletes_on_success(monkeypatch, tm
 
     # Fire it (base.py does this in _process_message_background's finally)
     # and let the scheduled coroutine run to completion.
-    await _fire_post_delivery_cb(cb)
+    cb()
     # delete_message is scheduled via run_coroutine_threadsafe → give the
     # loop a couple of ticks to drain.
     for _ in range(20):
@@ -299,7 +287,7 @@ async def test_cleanup_skipped_on_failed_run(monkeypatch, tmp_path):
     # the cleanup callback is skipped on failed runs.
     cb = adapter.pop_post_delivery_callback(session_key)
     if cb is not None:
-        await _fire_post_delivery_cb(cb)
+        cb()
         for _ in range(10):
             await asyncio.sleep(0.01)
     assert adapter.deleted == []
@@ -367,7 +355,7 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     cb = adapter.pop_post_delivery_callback(session_key)
     assert callable(cb)
-    await _fire_post_delivery_cb(cb)
+    cb()
     for _ in range(20):
         await asyncio.sleep(0.01)
         if adapter.deleted:

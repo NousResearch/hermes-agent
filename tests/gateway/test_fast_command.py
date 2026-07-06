@@ -23,20 +23,12 @@ class _CapturingAgent:
         type(self).last_init = dict(kwargs)
         self.tools = []
 
-    def run_conversation(
-        self,
-        user_message,
-        conversation_history=None,
-        task_id=None,
-        persist_user_message=None,
-        persist_user_timestamp=None,
-    ):
+    def run_conversation(self, user_message, conversation_history=None, task_id=None, persist_user_message=None):
         type(self).last_run = {
             "user_message": user_message,
             "conversation_history": conversation_history,
             "task_id": task_id,
             "persist_user_message": persist_user_message,
-            "persist_user_timestamp": persist_user_timestamp,
         }
         return {
             "final_response": "ok",

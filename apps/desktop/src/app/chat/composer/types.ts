@@ -1,5 +1,3 @@
-import type { ReactNode } from 'react'
-
 import type { HermesGateway } from '@/hermes'
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -24,8 +22,6 @@ export interface ChatBarState {
     canSwitch: boolean
     loading?: boolean
     quickModels?: QuickModelOption[]
-    /** Reused status-bar dropdown (built with gateway + selectModel upstream). */
-    modelMenuContent?: ReactNode
   }
   tools: { enabled: boolean; label: string; suggestions?: ContextSuggestion[] }
   voice: { enabled: boolean; active: boolean }
@@ -46,7 +42,7 @@ export interface ChatBarProps {
   onAddUrl?: (url: string) => void
   onAttachImageBlob?: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems?: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
-  onPasteClipboardImage?: (opts?: { silent?: boolean }) => Promise<boolean> | void
+  onPasteClipboardImage?: () => void
   onPickFiles?: () => void
   onPickFolders?: () => void
   onPickImages?: () => void

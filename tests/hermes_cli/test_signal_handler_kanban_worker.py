@@ -160,8 +160,8 @@ def test_sigterm_with_kanban_task_env_terminates_quickly():
                 return
             time.sleep(0.02)
         pytest.fail(
-            "process still alive 2s after SIGTERM with HERMES_KANBAN_TASK set "
-            "(dispatcher would keep extending claim) — fix regressed"
+            f"process still alive 2s after SIGTERM with HERMES_KANBAN_TASK set "
+            f"(dispatcher would keep extending claim) — fix regressed"
         )
     finally:
         _cleanup(proc)

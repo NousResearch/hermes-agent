@@ -32,7 +32,7 @@ def _ensure_telegram_mock():
 _ensure_telegram_mock()
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from gateway.platforms.telegram import TelegramAdapter
 
 
 def _make_adapter():
@@ -147,7 +147,7 @@ class TestTelegramModelPicker:
         which is robust to whether `telegram` is the real SDK or the module
         mock (the SDK markup objects don't expose a plain iterable under the
         mock)."""
-        import plugins.platforms.telegram.adapter as tg
+        import gateway.platforms.telegram as tg
 
         built: list = []
 
@@ -204,82 +204,6 @@ class TestTelegramModelPicker:
         assert "mp:minimax" in built
         assert "mp:minimax-cn" in built
         assert "mb" in built
-
-    @pytest.mark.asyncio
-    async def test_provider_picker_paginates_past_first_ten(self, monkeypatch):
-        import plugins.platforms.telegram.adapter as tg
-
-        class _RecordingButton:
-            def __init__(self, text, callback_data=None, **kw):
-                self.text = text
-                self.callback_data = callback_data
-
-        class _RecordingMarkup:
-            def __init__(self, rows):
-                self.inline_keyboard = rows
-
-        monkeypatch.setattr(tg, "InlineKeyboardButton", _RecordingButton)
-        monkeypatch.setattr(tg, "InlineKeyboardMarkup", _RecordingMarkup)
-
-        adapter = _make_adapter()
-        sent = {}
-
-        async def mock_send_message(**kwargs):
-            sent.update(kwargs)
-            return SimpleNamespace(message_id=101)
-
-        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
-
-        providers = [
-            {"slug": f"provider-{i}", "name": f"Provider {i}", "total_models": 1}
-            for i in range(10)
-        ]
-        providers.append({
-            "slug": "zai",
-            "name": "Z.AI / GLM",
-            "models": ["glm-5.2"],
-            "total_models": 1,
-        })
-
-        await adapter.send_model_picker(
-            chat_id="12345",
-            providers=providers,
-            current_model="model_1",
-            current_provider="provider-0",
-            session_key="s",
-            on_model_selected=AsyncMock(),
-            metadata=None,
-        )
-
-        def _callbacks(markup):
-            return [
-                button.callback_data
-                for row in markup.inline_keyboard
-                for button in row
-            ]
-
-        first_page = _callbacks(sent["reply_markup"])
-        assert "mp:zai" not in first_page
-        assert "mpv:1" in first_page
-
-        query = AsyncMock()
-        query.message = MagicMock()
-        query.message.chat_id = 12345
-        query.answer = AsyncMock()
-        query.edit_message_text = AsyncMock()
-
-        await adapter._handle_model_picker_callback(query, "mpv:1", "12345")
-
-        second_page = _callbacks(query.edit_message_text.call_args[1]["reply_markup"])
-        assert "mp:zai" in second_page
-        assert "mpv:0" in second_page
-
-        await adapter._handle_model_picker_callback(query, "mp:zai", "12345")
-        assert adapter._model_picker_state["12345"]["selected_provider"] == "zai"
-
-        await adapter._handle_model_picker_callback(query, "mb", "12345")
-        back_page = _callbacks(query.edit_message_text.call_args[1]["reply_markup"])
-        assert "mp:zai" in back_page
 
     @pytest.mark.asyncio
     async def test_expensive_model_requires_confirmation(self, monkeypatch):

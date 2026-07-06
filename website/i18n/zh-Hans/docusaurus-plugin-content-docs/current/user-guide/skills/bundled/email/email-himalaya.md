@@ -217,13 +217,13 @@ himalaya message write -H "To:recipient@example.com" -H "Subject:Test" "Message 
 移动到文件夹：
 
 ```bash
-himalaya message move "Archive" 42
+himalaya message move 42 "Archive"
 ```
 
 复制到文件夹：
 
 ```bash
-himalaya message copy "Important" 42
+himalaya message copy 42 "Important"
 ```
 
 ### 删除邮件
@@ -271,7 +271,7 @@ himalaya attachment download 42
 保存到指定目录：
 
 ```bash
-himalaya attachment download 42 --downloads-dir ~/Downloads
+himalaya attachment download 42 --dir ~/Downloads
 ```
 
 ## 输出格式

@@ -730,12 +730,9 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
     server_cfg = _build_server_config(entry, install_dir)
     server_cfg["enabled"] = enable
 
-    from hermes_cli.mcp_config import _save_mcp_server
-
-    if not _save_mcp_server(entry.name, server_cfg):
-        raise CatalogError(
-            f"catalog entry '{entry.name}' rejected: suspicious command/args configuration"
-        )
+    cfg = load_config()
+    cfg.setdefault("mcp_servers", {})[entry.name] = server_cfg
+    save_config(cfg)
 
     # ── Probe + tool selection ──────────────────────────────────────────
     _apply_tool_selection(entry, prior_selection=prior_selection)

@@ -190,39 +190,6 @@ class TestIsLocalBackend:
 
         assert browser_tool._is_local_backend() is False
 
-    @pytest.mark.parametrize("backend", ["docker", "modal", "daytona", "ssh", "singularity"])
-    def test_container_terminal_backend_is_not_local(self, monkeypatch, backend):
-        """Terminal running in a container → NOT local (browser on host can access internal networks)."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
-        monkeypatch.setenv("TERMINAL_ENV", backend)
-
-        assert browser_tool._is_local_backend() is False
-
-    def test_empty_terminal_env_is_local(self, monkeypatch):
-        """Empty TERMINAL_ENV → local backend."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
-        monkeypatch.setenv("TERMINAL_ENV", "")
-
-        assert browser_tool._is_local_backend() is True
-
-    def test_local_terminal_env_is_local(self, monkeypatch):
-        """Explicit 'local' TERMINAL_ENV → local backend."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
-        monkeypatch.setenv("TERMINAL_ENV", "local")
-
-        assert browser_tool._is_local_backend() is True
-
-    def test_camofox_overrides_container_backend(self, monkeypatch):
-        """Camofox mode always counts as local, even with container terminal."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-
-        assert browser_tool._is_local_backend() is True
-
 
 # ---------------------------------------------------------------------------
 # Post-redirect SSRF check

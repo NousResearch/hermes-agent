@@ -3,6 +3,7 @@ import typescriptEslint from '@typescript-eslint/eslint-plugin'
 import typescriptParser from '@typescript-eslint/parser'
 import perfectionist from 'eslint-plugin-perfectionist'
 import reactPlugin from 'eslint-plugin-react'
+import reactCompiler from 'eslint-plugin-react-compiler'
 import hooksPlugin from 'eslint-plugin-react-hooks'
 import unusedImports from 'eslint-plugin-unused-imports'
 import globals from 'globals'
@@ -46,6 +47,7 @@ export default [
       'custom-rules': customRules,
       perfectionist,
       react: reactPlugin,
+      'react-compiler': reactCompiler,
       'react-hooks': hooksPlugin,
       'unused-imports': unusedImports
     },
@@ -96,6 +98,7 @@ export default [
       'perfectionist/sort-jsx-props': ['error', { order: 'asc', type: 'natural' }],
       'perfectionist/sort-named-exports': ['error', { order: 'asc', type: 'natural' }],
       'perfectionist/sort-named-imports': ['error', { order: 'asc', type: 'natural' }],
+      'react-compiler/react-compiler': 'warn',
       'react-hooks/exhaustive-deps': 'warn',
       'react-hooks/rules-of-hooks': 'error',
       'unused-imports/no-unused-imports': 'error'

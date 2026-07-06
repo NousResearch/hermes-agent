@@ -158,7 +158,6 @@ export const ru: Translations = {
     selectedSessionsDeleted: "Удалено сессий: {count}",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
-    newChat: "Новый чат",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
     roles: {
@@ -287,8 +286,8 @@ export const ru: Translations = {
     nameRequired: "Имя обязательно",
     nameRule:
       "Только строчные буквы, цифры, _ и -; должно начинаться с буквы или цифры; до 64 символов.",
-    invalidName: "Недопустимое имя профиля",    cloneFrom: "Клонировать конфигурацию из профиля",
-    cloneFromNone: "Нет (пусто)",
+    invalidName: "Недопустимое имя профиля",
+    cloneFromDefault: "Клонировать конфигурацию из профиля по умолчанию",
     allProfiles: "Профили",
     noProfiles: "Профили не найдены.",
     defaultBadge: "по умолчанию",
@@ -433,14 +432,6 @@ export const ru: Translations = {
     replaceCurrentValue: "Заменить текущее значение ({preview})",
     showValue: "Показать реальное значение",
     hideValue: "Скрыть значение",
-    customTitle: "Пользовательские ключи",
-    customHint: "Произвольные переменные окружения, сохранённые в вашем .env, которые Hermes не распознаёт. Используйте их для внедрения переменных окружения для навыков, серверов MCP или собственных инструментов.",
-    customConfigured: "Задано пользовательских ключей: {count}",
-    addCustomKey: "Добавить пользовательский ключ",
-    customKeyName: "Имя переменной",
-    customKeyNamePlaceholder: "напр. MY_SERVICE_API_KEY",
-    add: "Добавить",
-    invalidKeyName: "Используйте только буквы, цифры и подчёркивания (должно начинаться с буквы или подчёркивания).",
   },
 
   oauth: {

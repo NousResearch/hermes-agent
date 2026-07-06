@@ -30,10 +30,10 @@ class TestRegisterServerTools:
 
         with patch("tools.registry.registry", mock_registry):
             registered = _register_server_tools("my_srv", server, {})
-            assert "mcp__my_srv__my_tool" in registered
-            assert "mcp__my_srv__my_tool" in mock_registry.get_all_tool_names()
+            assert "mcp_my_srv_my_tool" in registered
+            assert "mcp_my_srv_my_tool" in mock_registry.get_all_tool_names()
             assert validate_toolset("my_srv") is True
-            assert "mcp__my_srv__my_tool" in resolve_toolset("my_srv")
+            assert "mcp_my_srv_my_tool" in resolve_toolset("my_srv")
 
 
 class TestRefreshTools:
@@ -53,11 +53,11 @@ class TestRefreshTools:
 
         # Seed initial state: one old tool registered
         mock_registry.register(
-            name="mcp__live_srv__old_tool", toolset="mcp-live_srv", schema={},
+            name="mcp_live_srv_old_tool", toolset="mcp-live_srv", schema={},
             handler=lambda x: x, check_fn=lambda: True, is_async=False,
             description="", emoji="",
         )
-        server._registered_tool_names = ["mcp__live_srv__old_tool"]
+        server._registered_tool_names = ["mcp_live_srv_old_tool"]
 
         # New tool list from server
         new_tool = _make_mcp_tool("new_tool", "new behavior")
@@ -69,11 +69,11 @@ class TestRefreshTools:
 
         with patch("tools.registry.registry", mock_registry):
             await server._refresh_tools()
-            assert "mcp__live_srv__old_tool" not in mock_registry.get_all_tool_names()
-            assert "mcp__live_srv__old_tool" not in resolve_toolset("live_srv")
-            assert "mcp__live_srv__new_tool" in mock_registry.get_all_tool_names()
-            assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
-            assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
+            assert "mcp_live_srv_old_tool" not in mock_registry.get_all_tool_names()
+            assert "mcp_live_srv_old_tool" not in resolve_toolset("live_srv")
+            assert "mcp_live_srv_new_tool" in mock_registry.get_all_tool_names()
+            assert "mcp_live_srv_new_tool" in resolve_toolset("live_srv")
+            assert server._registered_tool_names == ["mcp_live_srv_new_tool"]
 
 
 class TestMessageHandler:

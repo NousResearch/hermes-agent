@@ -158,7 +158,6 @@ export const ga: Translations = {
     selectedSessionsDeleted: "Scriosadh {count} seisiún",
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
-    newChat: "Comhrá nua",
     previousPage: "Leathanach roimhe seo",
     nextPage: "An chéad leathanach eile",
     roles: {
@@ -295,8 +294,8 @@ export const ga: Translations = {
     nameRequired: "Tá ainm riachtanach",
     nameRule:
       "Litreacha cás íochtair, digití, _ agus - amháin; caithfidh tús a chur le litir nó digit; suas le 64 carachtar.",
-    invalidName: "Ainm próifíle neamhbhailí",    cloneFrom: "Clónáil cumraíocht ón bpróifíl",
-    cloneFromNone: "Dada (folamh)",
+    invalidName: "Ainm próifíle neamhbhailí",
+    cloneFromDefault: "Clónáil cumraíocht ón bpróifíl réamhshocraithe",
     allProfiles: "Próifílí",
     noProfiles: "Níor aimsíodh próifílí.",
     defaultBadge: "réamhshocraithe",
@@ -441,14 +440,6 @@ export const ga: Translations = {
     replaceCurrentValue: "Athchuir an luach reatha ({preview})",
     showValue: "Taispeáin an fíorluach",
     hideValue: "Folaigh an luach",
-    customTitle: "Eochracha Saincheaptha",
-    customHint: "Athróga timpeallachta treallach atá stóráilte i do .env nach n-aithníonn Hermes. Úsáid iad chun athróga timpeallachta a instealladh do scileanna, freastalaithe MCP, nó d'uirlisí féin.",
-    customConfigured: "{count} eochair shaincheaptha socraithe",
-    addCustomKey: "Cuir eochair shaincheaptha leis",
-    customKeyName: "Ainm na hathróige",
-    customKeyNamePlaceholder: "m.sh. MY_SERVICE_API_KEY",
-    add: "Cuir leis",
-    invalidKeyName: "Úsáid litreacha, uimhreacha agus fostríoca amháin (caithfidh sé tosú le litir nó fostríoc).",
   },
 
   oauth: {

@@ -38,7 +38,6 @@ const MB = 1024 ** 2
 // thresholds below the warn watermark. Callers may still override explicitly.
 function resolveThresholds(criticalBytes?: number, highBytes?: number) {
   let limit = 0
-
   try {
     limit = getHeapStatistics().heap_size_limit || 0
   } catch {
@@ -133,14 +132,12 @@ export function startMemoryMonitor({
         warned = false
       }
     }
-
     lastHeap = heapUsed
 
     const level: MemoryLevel = heapUsed >= critical ? 'critical' : heapUsed >= high ? 'high' : 'normal'
 
     if (level === 'normal') {
       dumped.clear()
-
       return
     }
 
@@ -171,7 +168,6 @@ export function startMemoryMonitor({
 
       dumped.add(level)
       const dump = await performHeapDump(level === 'critical' ? 'auto-critical' : 'auto-high').catch(() => null)
-
       const snap: MemorySnapshot = { heapUsed, level, rss }
 
       ;(level === 'critical' ? onCritical : onHigh)?.(snap, dump)

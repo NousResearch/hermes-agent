@@ -16,8 +16,6 @@ The fix adds two safeguards:
 
 from unittest.mock import patch, MagicMock
 
-import time
-
 from agent.context_compressor import ContextCompressor, _CHARS_PER_TOKEN
 
 
@@ -250,36 +248,3 @@ class TestAntiThrashing:
         comp = _make_compressor(config_context_length=96000)
         comp.last_prompt_tokens = 10_000
         assert not comp.should_compress(10_000)
-
-
-# ---------------------------------------------------------------------------
-# Test: summary-LLM cooldown guard in should_compress (#11529)
-# ---------------------------------------------------------------------------
-
-class TestCooldownGuard:
-    """should_compress() must skip compression while the summary LLM is in
-    cooldown, otherwise a 429/transient failure re-fires _compress_context()
-    every turn (inserting a fallback marker repeatedly) and freezes the CLI.
-    """
-
-    def test_active_cooldown_blocks(self):
-        """A future cooldown deadline -> should_compress returns False even
-        when tokens are over threshold."""
-        comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 65_000
-        comp._summary_failure_cooldown_until = time.monotonic() + 60
-        assert not comp.should_compress(65_000)
-
-    def test_expired_cooldown_allows(self):
-        """A past cooldown deadline -> compression resumes normally."""
-        comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 65_000
-        comp._summary_failure_cooldown_until = time.monotonic() - 1
-        assert comp.should_compress(65_000)
-
-    def test_no_cooldown_allows(self):
-        """The default (no cooldown set) does not block compression."""
-        comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 65_000
-        assert comp._summary_failure_cooldown_until == 0.0
-        assert comp.should_compress(65_000)

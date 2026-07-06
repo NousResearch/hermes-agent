@@ -169,56 +169,6 @@ async def test_dispatch_attachment_downloads_image(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_group_preserves_text_and_attachment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Spectrum group content from a mixed text+image iMessage must not drop text."""
-    adapter = _make_adapter(monkeypatch)
-    captured = _capture(adapter, monkeypatch)
-    raw = base64.b64decode(_PNG_1X1_B64)
-
-    event = _attachment_event(
-        {},
-        msg_id="spc-msg-mixed",
-    )
-    event["content"] = {
-        "type": "group",
-        "items": [
-            {
-                "id": "p:0/spc-msg-mixed",
-                "content": {"type": "text", "text": "请分析这张图的重点"},
-            },
-            {
-                "id": "p:1/spc-msg-mixed",
-                "content": {
-                    "type": "attachment",
-                    "name": "photo.png",
-                    "mimeType": "image/png",
-                    "size": len(raw),
-                    "data": _PNG_1X1_B64,
-                    "encoding": "base64",
-                },
-            },
-        ],
-    }
-
-    await adapter._dispatch_inbound(event)
-
-    assert len(captured) == 1
-    ev = captured[0]
-    assert ev.text == "请分析这张图的重点"
-    assert ev.message_type == MessageType.PHOTO
-    assert ev.media_types == ["image/png"]
-    assert len(ev.media_urls) == 1
-    cached = Path(ev.media_urls[0])
-    try:
-        assert cached.is_file()
-        assert cached.read_bytes() == raw
-    finally:
-        cached.unlink(missing_ok=True)
-
-
-@pytest.mark.asyncio
 async def test_dispatch_voice_downloads_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

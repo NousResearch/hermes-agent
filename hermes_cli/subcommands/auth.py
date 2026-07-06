@@ -41,6 +41,17 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         help="Do not auto-open a browser for OAuth login",
     )
     auth_add.add_argument(
+        "--manual-paste",
+        action="store_true",
+        help=(
+            "Skip the loopback callback listener and paste the failed "
+            "callback URL from your browser instead. Use this on "
+            "browser-only remotes (GCP Cloud Shell, GitHub Codespaces, "
+            "EC2 Instance Connect, ...) where 127.0.0.1 on the remote "
+            "isn't reachable from your laptop. See #26923."
+        ),
+    )
+    auth_add.add_argument(
         "--timeout", type=float, help="OAuth/network timeout in seconds"
     )
     auth_add.add_argument(

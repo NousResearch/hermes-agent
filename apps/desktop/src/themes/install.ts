@@ -17,7 +17,10 @@ import { convertVscodeColorTheme, parseVscodeTheme, vscodeThemeSlug } from './vs
 export const MARKETPLACE_ID_RE = /^[\w-]+\.[\w-]+$/
 
 /** Parse + convert + persist a pasted VS Code theme JSON. */
-export function installVscodeThemeFromText(text: string, opts?: { label?: string; source?: string }): DesktopTheme {
+export function installVscodeThemeFromText(
+  text: string,
+  opts?: { label?: string; source?: string }
+): DesktopTheme {
   const raw = parseVscodeTheme(text)
   const { theme } = convertVscodeColorTheme(raw, opts)
 

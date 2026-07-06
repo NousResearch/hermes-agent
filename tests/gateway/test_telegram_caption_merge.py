@@ -1,7 +1,7 @@
 """Tests for TelegramPlatform._merge_caption caption deduplication logic."""
 
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from gateway.platforms.telegram import TelegramAdapter
 
 merge = TelegramAdapter._merge_caption
 

@@ -55,7 +55,7 @@ export function PageHeaderProvider({
           className={cn(
             "z-1 w-full shrink-0",
             "box-border border-b border-current/20",
-            "bg-background-base",
+            "bg-background-base/40 backdrop-blur-sm",
             // Mobile stacks title + toolbar — fixed h-14 clips content; desktop stays one row.
             "min-h-0 overflow-x-hidden overflow-y-visible py-3 sm:h-14 sm:min-h-[3.5rem] sm:overflow-hidden sm:py-0",
           )}
@@ -88,6 +88,7 @@ export function PageHeaderProvider({
                       ? "shrink truncate"
                       : "truncate",
                 )}
+                style={{ mixBlendMode: "plus-lighter" }}
               >
                 {displayTitle}
               </h1>

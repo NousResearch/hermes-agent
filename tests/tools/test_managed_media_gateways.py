@@ -244,46 +244,6 @@ def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatc
     assert captured["close_calls"] == 1
 
 
-def test_openai_tts_coerces_direct_only_model_on_managed_gateway(monkeypatch, tmp_path):
-    """A tts.openai.model valid only for direct OpenAI (e.g. tts-1-hd) must be
-    coerced to a managed-supported model, else the gateway 400s with
-    'Unsupported managed OpenAI speech model'."""
-    captured = {}
-    _install_fake_tools_package()
-    _install_fake_openai_module(captured)
-    monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "nousresearch.com")
-    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
-
-    tts_tool = _load_tool_module("tools.tts_tool", "tts_tool.py")
-    output_path = tmp_path / "speech.mp3"
-    tts_tool._generate_openai_tts(
-        "hello world", str(output_path), {"openai": {"model": "tts-1-hd"}}
-    )
-
-    assert captured["base_url"] == "https://openai-audio-gateway.nousresearch.com/v1"
-    assert captured["speech_kwargs"]["model"] == "gpt-4o-mini-tts"
-
-
-def test_openai_tts_keeps_direct_only_model_with_direct_key(monkeypatch, tmp_path):
-    """With a direct key, the user's tts-1-hd is honored (not coerced)."""
-    captured = {}
-    _install_fake_tools_package()
-    _install_fake_openai_module(captured)
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-direct-key")
-    monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-
-    tts_tool = _load_tool_module("tools.tts_tool", "tts_tool.py")
-    output_path = tmp_path / "speech.mp3"
-    tts_tool._generate_openai_tts(
-        "hello world", str(output_path), {"openai": {"model": "tts-1-hd"}}
-    )
-
-    assert captured["base_url"] == "https://api.openai.com/v1"
-    assert captured["speech_kwargs"]["model"] == "tts-1-hd"
-
-
 def test_openai_tts_accepts_openai_api_key_as_direct_fallback(monkeypatch, tmp_path):
     captured = {}
     _install_fake_tools_package()

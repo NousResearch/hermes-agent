@@ -242,9 +242,6 @@ def apply_migration(
         )
         shutil.copy2(config_path, backup_path)
 
-    from hermes_cli.config import require_readable_config_before_write
-
-    require_readable_config_before_write(config_path)
     with config_path.open("w", encoding="utf-8") as fh:
         yaml.dump(doc, fh)
 

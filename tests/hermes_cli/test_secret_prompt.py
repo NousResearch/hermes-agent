@@ -25,7 +25,7 @@ def test_collect_masked_input_shows_feedback_without_echoing_secret():
     value, output = _run_collect("secret\n")
 
     assert value == "secret"
-    assert output == "API key: ******\r\n"
+    assert output == "API key: ******\n"
     assert "secret" not in output
 
 
@@ -33,7 +33,7 @@ def test_collect_masked_input_handles_backspace():
     value, output = _run_collect("sec\x7fret\r")
 
     assert value == "seret"
-    assert output == "API key: ***\b \b***\r\n"
+    assert output == "API key: ***\b \b***\n"
     assert "secret" not in output
 
 
@@ -47,7 +47,7 @@ def test_collect_masked_input_raises_keyboard_interrupt():
             "API key: ",
         )
 
-    assert "".join(output) == "API key: \r\n"
+    assert "".join(output) == "API key: \n"
 
 
 def test_masked_secret_prompt_falls_back_to_getpass_for_non_tty(monkeypatch):

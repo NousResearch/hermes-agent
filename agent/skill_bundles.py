@@ -254,7 +254,6 @@ def build_bundle_invocation_message(
     cmd_key: str,
     user_instruction: str = "",
     task_id: str | None = None,
-    platform: str | None = None,
 ) -> Optional[Tuple[str, List[str], List[str]]]:
     """Build the user message content for a bundle slash command invocation.
 
@@ -265,16 +264,6 @@ def build_bundle_invocation_message(
     loads — the agent gets a note about which ones were skipped. This is
     the same forgiving stance ``build_preloaded_skills_prompt`` uses for
     ``-s`` CLI preloading.
-
-    Disabled skills are also skipped: bundles load members via
-    ``_load_skill_payload`` directly, bypassing the scan-time disabled
-    filter in ``get_skill_commands()``, so the disabled list must be
-    re-applied here.  ``platform`` scopes the check to a specific
-    platform's ``skills.platform_disabled`` config (gateway dispatch
-    passes it explicitly because the gateway handles multiple platforms
-    in one process); when *None*, the platform resolves from session env
-    vars and the global disabled list still applies.  Mirrors the
-    stacked-skill gate in gateway dispatch (#58888).
     """
     bundles = get_skill_bundles()
     info = bundles.get(cmd_key)
@@ -285,15 +274,8 @@ def build_bundle_invocation_message(
     # keep skill_bundles cheap to import in test environments.
     from agent.skill_commands import _load_skill_payload, _build_skill_message
 
-    try:
-        from agent.skill_utils import get_disabled_skill_names
-        disabled_names = get_disabled_skill_names(platform=platform)
-    except Exception:
-        disabled_names = set()
-
     loaded_names: List[str] = []
     missing: List[str] = []
-    disabled: List[str] = []
     skill_blocks: List[str] = []
     seen: set[str] = set()
 
@@ -312,12 +294,6 @@ def build_bundle_invocation_message(
             missing.append(identifier)
             continue
         loaded_skill, skill_dir, skill_name = loaded
-
-        # Per-platform / global disabled gate. Checked against the loaded
-        # skill's canonical name (identifiers may be paths or aliases).
-        if skill_name in disabled_names or identifier in disabled_names:
-            disabled.append(skill_name or identifier)
-            continue
 
         try:
             from tools.skill_usage import bump_use
@@ -353,10 +329,6 @@ def build_bundle_invocation_message(
     ]
     if missing:
         header_lines.append(f"Skills missing (skipped): {', '.join(missing)}")
-    if disabled:
-        header_lines.append(
-            f"Skills disabled for this platform (skipped): {', '.join(disabled)}"
-        )
     if extra_instruction:
         header_lines.extend(["", f"Bundle instruction: {extra_instruction}"])
     if user_instruction:

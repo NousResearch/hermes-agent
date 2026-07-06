@@ -410,8 +410,8 @@ class TestSendUpdate:
 
         assert created["coro"] is not None
         assert created["coro"].cr_frame is None
-        # Only count warnings about THIS test's coroutine; other tests
-        #  may emit unrelated
+        # Only count warnings about THIS test's coroutine; other tests in the
+        # same xdist worker (or stdlib mock internals) may emit unrelated
         # "coroutine was never awaited" warnings that bleed through.
         runtime_warnings = [
             w for w in caught

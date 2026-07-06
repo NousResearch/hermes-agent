@@ -185,7 +185,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
 | `hermes config` UI entries | `requires_env` / `optional_env` in `plugin.yaml` auto-populate |
-| send engine (`tools/send_message_tool.py`) | Routes through live gateway adapter |
+| send_message tool | Routes through live gateway adapter |
 | Webhook cross-platform delivery | Registry checked for known platforms |
 | `/update` command access | `allow_update_command` flag |
 | Channel directory | Plugin platforms included in enumeration |
@@ -476,7 +476,7 @@ class Platform(str, Enum):
 
 ### 2. Adapter File
 
-Create `plugins/platforms/newplat/adapter.py`:
+Create `gateway/platforms/newplat.py`:
 
 ```python
 from gateway.config import Platform, PlatformConfig
@@ -689,4 +689,4 @@ async def disconnect(self):
 | `bluebubbles.py` | REST + webhook | Medium | Simple REST API integration |
 | `weixin.py` | Long-poll + CDN | High | Media handling, encryption |
 | `wecom_callback.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
-| `plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |
+| `telegram.py` | Long-poll + Bot API | High | Full-featured adapter with groups, threads |

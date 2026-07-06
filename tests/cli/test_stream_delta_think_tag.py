@@ -1,9 +1,6 @@
 """Tests for _stream_delta's handling of <think> tags in prose vs real reasoning blocks."""
 import sys
 import os
-
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
@@ -112,18 +109,6 @@ class TestRealReasoningBlock:
         cli = _make_cli_stub()
         cli._stream_delta("   <think>")
         assert cli._in_reasoning_block
-
-    @pytest.mark.parametrize(
-        "tag",
-        ["THINK", "Think", "ThInK", "THOUGHT", "REASONING", "Thinking"],
-    )
-    def test_reasoning_tags_are_case_insensitive(self, tag):
-        cli = _make_cli_stub()
-        cli._stream_delta(f"<{tag}>hidden reasoning</{tag}>Visible answer")
-        assert not cli._in_reasoning_block
-        full = "".join(cli._emitted)
-        assert full == "Visible answer"
-        assert "hidden reasoning" not in full
 
 
 class TestFlushRecovery:

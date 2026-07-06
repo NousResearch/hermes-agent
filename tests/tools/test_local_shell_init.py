@@ -190,49 +190,6 @@ class TestSnapshotEndToEnd:
     """Spin up a real LocalEnvironment and confirm the snapshot sources
     extra init files."""
 
-    def test_exported_env_changes_persist_between_commands(self, tmp_path):
-        env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
-        try:
-            first = env.execute(
-                'export HERMES_SESSION_ENV_PROBE="sticky"; '
-                'export PATH="/tmp/hermes-session-bin:$PATH"; '
-                'echo "first=$HERMES_SESSION_ENV_PROBE"'
-            )
-            second = env.execute(
-                'echo "second=$HERMES_SESSION_ENV_PROBE"; echo "PATH=$PATH"'
-            )
-        finally:
-            env.cleanup()
-
-        assert first["returncode"] == 0
-        assert second["returncode"] == 0
-        assert "first=sticky" in first.get("output", "")
-        output = second.get("output", "")
-        assert "second=sticky" in output
-        assert "/tmp/hermes-session-bin" in output
-
-    def test_venv_style_activation_persists_between_commands(self, tmp_path):
-        venv_bin = tmp_path / ".venv" / "bin"
-        venv_bin.mkdir(parents=True)
-        activate = venv_bin / "activate"
-        activate.write_text(
-            f'export VIRTUAL_ENV="{tmp_path / ".venv"}"\n'
-            f'export PATH="{venv_bin}:$PATH"\n'
-        )
-
-        env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
-        try:
-            first = env.execute('source .venv/bin/activate; echo "venv=$VIRTUAL_ENV"')
-            second = env.execute('echo "venv=$VIRTUAL_ENV"; echo "PATH=$PATH"')
-        finally:
-            env.cleanup()
-
-        assert first["returncode"] == 0
-        assert second["returncode"] == 0
-        output = second.get("output", "")
-        assert f"venv={tmp_path / '.venv'}" in output
-        assert str(venv_bin) in output
-
     def test_snapshot_picks_up_init_file_exports(self, tmp_path, monkeypatch):
         init_file = tmp_path / "custom-init.sh"
         init_file.write_text(

@@ -194,6 +194,12 @@ class MiniSWERunner:
         self.image = image
         self.cwd = cwd
         
+        # Setup logging
+        logging.basicConfig(
+            level=logging.DEBUG if verbose else logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
         self.logger = logging.getLogger(__name__)
         
         # Initialize LLM client via centralized provider router.
@@ -670,13 +676,6 @@ def main(
     """
     print("🚀 Mini-SWE Runner with Hermes Trajectory Format")
     print("=" * 60)
-    
-    # Configure root logging at the entry point (not in library __init__).
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%H:%M:%S'
-    )
     
     # Initialize runner
     runner = MiniSWERunner(

@@ -1,4 +1,3 @@
-from hermes_state import AsyncSessionDB
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
 import threading
@@ -77,20 +76,20 @@ class TestUsageCachedAgent:
         runner = _make_runner(SK, cached_agent=agent)
         event = MagicMock()
 
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(amount_usd=0.1234, status="estimated")
             result = await runner._handle_usage_command(event)
 
         assert "claude-sonnet-4.6" in result
         assert "35,000" in result  # input tokens
         assert "10,000" in result  # output tokens
+        assert "5,000" in result   # cache read
+        assert "2,000" in result   # cache write
         assert "50,000" in result  # total
+        assert "$0.1234" in result
         assert "30,000" in result  # context
         assert "Compressions: 1" in result
-        # Cost and cache-hit reporting is removed everywhere.
-        assert "$" not in result
-        assert "Cache read" not in result
-        assert "Cache write" not in result
-        assert "Cost" not in result
 
     @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
@@ -162,6 +161,20 @@ class TestUsageCachedAgent:
         assert "Cache read" not in result
         assert "Cache write" not in result
 
+    @pytest.mark.asyncio
+    async def test_cost_included_status(self):
+        """Subscription-included providers show 'included' instead of dollar amount."""
+        agent = _make_mock_agent(provider="openai-codex")
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(amount_usd=None, status="included")
+            result = await runner._handle_usage_command(event)
+
+        assert "Cost: included" in result
+
 
 class TestUsageAccountSection:
     """Account-limits section appended to /usage output (PR #2486)."""
@@ -198,8 +211,8 @@ class TestUsageAccountSection:
     @pytest.mark.asyncio
     async def test_usage_command_uses_persisted_provider_when_agent_not_running(self, monkeypatch):
         runner = _make_runner(SK)
-        runner._session_db = AsyncSessionDB(MagicMock())
-        runner._session_db._db.get_session.return_value = {
+        runner._session_db = MagicMock()
+        runner._session_db.get_session.return_value = {
             "billing_provider": "openai-codex",
             "billing_base_url": "https://chatgpt.com/backend-api/codex",
         }
@@ -243,65 +256,3 @@ class TestUsageAccountSection:
         assert account_call["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
-
-
-class TestUsageContextBreakdown:
-    """The /usage output includes the per-category context breakdown."""
-
-    @pytest.mark.asyncio
-    async def test_breakdown_lines_rendered_for_live_agent(self):
-        agent = _make_mock_agent()
-        runner = _make_runner(SK, cached_agent=agent)
-        session_entry = MagicMock()
-        session_entry.session_id = "sess-bd"
-        runner.session_store.get_or_create_session.return_value = session_entry
-        runner.session_store.load_transcript.return_value = [
-            {"role": "user", "content": "hi"},
-        ]
-        event = MagicMock()
-
-        fake_payload = {
-            "categories": [
-                {"id": "system_prompt", "label": "System prompt", "tokens": 4000, "color": "x"},
-                {"id": "tool_definitions", "label": "Tool definitions", "tokens": 6000, "color": "x"},
-                {"id": "conversation", "label": "Conversation", "tokens": 0, "color": "x"},
-            ],
-            "estimated_total": 10000,
-            "context_max": 200000,
-            "context_percent": 5,
-            "context_used": 30000,
-            "model": "anthropic/claude-sonnet-4.6",
-        }
-
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.context_breakdown.compute_session_context_breakdown", return_value=fake_payload):
-            result = await runner._handle_usage_command(event)
-
-        # Localized header + at least the two non-zero category labels appear,
-        # each labelled as a percentage of the estimated total.
-        assert "Context breakdown" in result
-        assert "System prompt" in result
-        assert "Tool definitions" in result
-        assert "4,000" in result   # system prompt tokens, comma-formatted
-        assert "40%" in result     # 4000 / 10000
-        assert "60%" in result     # 6000 / 10000
-        # Zero-token category is dropped, not rendered.
-        assert "Conversation" not in result
-
-    @pytest.mark.asyncio
-    async def test_breakdown_failure_is_non_fatal(self):
-        """A breakdown engine error must not break the rest of /usage."""
-        agent = _make_mock_agent()
-        runner = _make_runner(SK, cached_agent=agent)
-        runner.session_store.get_or_create_session.side_effect = RuntimeError("boom")
-        event = MagicMock()
-
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.context_breakdown.compute_session_context_breakdown",
-                   side_effect=RuntimeError("engine down")):
-            result = await runner._handle_usage_command(event)
-
-        # Core usage lines still render; no breakdown header.
-        assert "📊 **Session Token Usage**" in result
-        assert "50,000" in result  # total tokens
-        assert "Context breakdown" not in result

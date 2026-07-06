@@ -12,7 +12,6 @@ default. Third parties register their own providers via the plugin hook
 from hermes_cli.dashboard_auth.base import (
     DashboardAuthProvider,
     Session,
-    TokenPrincipal,
     LoginStart,
     InvalidCodeError,
     InvalidCredentialsError,
@@ -24,15 +23,12 @@ from hermes_cli.dashboard_auth.registry import (
     register_provider,
     get_provider,
     list_providers,
-    list_token_providers,
-    list_session_providers,
     clear_providers,
 )
 
 __all__ = [
     "DashboardAuthProvider",
     "Session",
-    "TokenPrincipal",
     "LoginStart",
     "InvalidCodeError",
     "InvalidCredentialsError",
@@ -42,7 +38,5 @@ __all__ = [
     "register_provider",
     "get_provider",
     "list_providers",
-    "list_token_providers",
-    "list_session_providers",
     "clear_providers",
 ]

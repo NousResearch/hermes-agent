@@ -124,6 +124,7 @@ def create_swarm(
         idempotency_key=idempotency_key,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
+        skills=["kanban-orchestrator"],
     )
 
     # If idempotency returned an existing non-archived root, do not duplicate the

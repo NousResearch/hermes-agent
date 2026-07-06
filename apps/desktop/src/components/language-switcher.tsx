@@ -8,7 +8,6 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { type Locale, LOCALE_META, useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, ChevronDown, Globe } from '@/lib/icons'
-import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 
@@ -135,7 +134,7 @@ function LanguageCommand({
   // and do a plain substring filter that preserves array order — matching
   // model-picker.tsx. Match against the endonym, the (hidden) English name,
   // and the locale code so "日本"/"japanese"/"ja" all find Japanese.
-  const q = normalize(search)
+  const q = search.trim().toLowerCase()
 
   const filtered = allLocales.filter(
     ([code, meta]) =>

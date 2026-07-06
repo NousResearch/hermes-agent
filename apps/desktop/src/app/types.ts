@@ -46,12 +46,6 @@ export interface SlashExecResponse {
   warning?: string
 }
 
-export interface BrowserManageResponse {
-  connected?: boolean
-  url?: string
-  messages?: string[]
-}
-
 export interface SessionSteerResponse {
   // 'queued' == accepted into the live turn's steer slot (injected at the next
   // tool-result boundary); 'rejected' == no live tool window, caller queues.
@@ -65,26 +59,6 @@ export interface SessionTitleResponse {
   // to be applied on the first turn (see tui_gateway session.title handler).
   pending?: boolean
   session_key?: string
-}
-
-export interface HandoffRequestResponse {
-  queued?: boolean
-  session_key?: string
-  platform?: string
-  // Human-readable home channel name for the destination platform.
-  home_name?: string
-}
-
-export interface HandoffStateResponse {
-  // '' | 'pending' | 'running' | 'completed' | 'failed'
-  state?: string
-  platform?: string
-  error?: string
-}
-
-export interface HandoffFailResponse {
-  failed?: boolean
-  state?: string
 }
 
 export interface ExecCommandDispatchResponse {
@@ -106,13 +80,6 @@ export interface SkillCommandDispatchResponse {
 export interface SendCommandDispatchResponse {
   type: 'send'
   message: string
-  notice?: string
-}
-
-export interface PrefillCommandDispatchResponse {
-  type: 'prefill'
-  message: string
-  notice?: string
 }
 
 export type CommandDispatchResponse =
@@ -120,7 +87,6 @@ export type CommandDispatchResponse =
   | AliasCommandDispatchResponse
   | SkillCommandDispatchResponse
   | SendCommandDispatchResponse
-  | PrefillCommandDispatchResponse
 
 export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
 
@@ -137,13 +103,6 @@ export interface ClientSessionState {
   messages: ChatMessage[]
   branch: string
   cwd: string
-  model: string
-  provider: string
-  reasoningEffort: string
-  serviceTier: string
-  fast: boolean
-  yolo: boolean
-  personality: string
   busy: boolean
   awaitingResponse: boolean
   streamId: string | null

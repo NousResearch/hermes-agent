@@ -19,8 +19,8 @@ interface FailureProps {
  * Failure screen. Same hero treatment as Welcome/Success — the wordmark
  * carries the brand, so we keep it across every terminal state.
  *
- * The actual error message lives below in muted text. Two affordances on
- * shared Button tokens: Retry (primary) and Open logs (quiet text link).
+ * The actual error message lives below in muted text. Two clear
+ * affordances: Retry (primary) and Open log folder (secondary).
  */
 export default function Failure({ bootstrap }: FailureProps) {
   const logPath = useStore($logPath)
@@ -55,13 +55,22 @@ export default function Failure({ bootstrap }: FailureProps) {
       </div>
 
       <div className="flex items-center gap-3">
-        <Button onClick={() => void (isUpdate ? startUpdate() : startInstall())} className="gap-1.5">
-          <RefreshCw />
+        <Button
+          onClick={() => void (isUpdate ? startUpdate() : startInstall())}
+          size="lg"
+          className="inline-flex items-center gap-2 px-6"
+        >
+          <RefreshCw size={16} />
           {isUpdate ? 'Retry update' : 'Retry install'}
         </Button>
-        <Button variant="text" onClick={() => void openLogDir()} className="gap-1.5">
-          <FileText />
-          Open logs
+        <Button
+          variant="outline"
+          size="lg"
+          onClick={() => void openLogDir()}
+          className="inline-flex items-center gap-2"
+        >
+          <FileText size={16} />
+          Open log folder
         </Button>
       </div>
 

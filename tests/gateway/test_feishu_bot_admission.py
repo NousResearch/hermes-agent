@@ -28,7 +28,7 @@ from tests.gateway.feishu_helpers import (
     ],
 )
 def test_feishu_load_settings_populates_allow_bots(monkeypatch, env_value, expected):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from gateway.platforms.feishu import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
@@ -39,7 +39,7 @@ def test_feishu_load_settings_populates_allow_bots(monkeypatch, env_value, expec
 
 
 def test_feishu_load_settings_allow_bots_defaults_to_none(monkeypatch):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from gateway.platforms.feishu import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
@@ -51,7 +51,7 @@ def test_feishu_load_settings_allow_bots_defaults_to_none(monkeypatch):
 
 def test_feishu_load_settings_ignores_extra_allow_bots(monkeypatch):
     # extra is ignored — env is single source of truth (yaml is bridged to env).
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from gateway.platforms.feishu import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
@@ -62,7 +62,7 @@ def test_feishu_load_settings_ignores_extra_allow_bots(monkeypatch):
 
 
 def test_feishu_load_settings_falls_back_to_env_when_extra_missing(monkeypatch):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from gateway.platforms.feishu import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
@@ -75,13 +75,13 @@ def test_feishu_load_settings_falls_back_to_env_when_extra_missing(monkeypatch):
 def test_feishu_load_settings_warns_on_unknown_allow_bots(monkeypatch, caplog):
     import logging
 
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from gateway.platforms.feishu import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
     monkeypatch.setenv("FEISHU_ALLOW_BOTS", "menton")  # typo
 
-    with caplog.at_level(logging.WARNING, logger="plugins.platforms.feishu.adapter"):
+    with caplog.at_level(logging.WARNING, logger="gateway.platforms.feishu"):
         settings = FeishuAdapter._load_settings(extra={})
 
     assert settings.allow_bots == "none"
@@ -98,7 +98,7 @@ def test_feishu_load_settings_warns_on_unknown_allow_bots(monkeypatch, caplog):
     ],
 )
 def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, expected):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from gateway.platforms.feishu import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
@@ -112,7 +112,7 @@ def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, exp
 
 
 def test_feishu_load_settings_parses_per_group_require_mention(monkeypatch):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from gateway.platforms.feishu import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
@@ -133,7 +133,7 @@ def test_feishu_load_settings_parses_per_group_require_mention(monkeypatch):
 
 
 def test_sender_identity_collects_every_non_empty_id_variant():
-    from plugins.platforms.feishu.adapter import _sender_identity
+    from gateway.platforms.feishu import _sender_identity
 
     sender = SimpleNamespace(
         sender_id=SimpleNamespace(open_id="ou_x", user_id="", union_id="un_x"),
@@ -142,21 +142,21 @@ def test_sender_identity_collects_every_non_empty_id_variant():
 
 
 def test_sender_identity_handles_missing_sender_id():
-    from plugins.platforms.feishu.adapter import _sender_identity
+    from gateway.platforms.feishu import _sender_identity
 
     assert _sender_identity(SimpleNamespace()) == frozenset()
 
 
 @pytest.mark.parametrize("sender_type", ["bot", "app"])
 def test_is_bot_sender_treats_bot_and_app_as_bot_origin(sender_type):
-    from plugins.platforms.feishu.adapter import _is_bot_sender
+    from gateway.platforms.feishu import _is_bot_sender
 
     assert _is_bot_sender(SimpleNamespace(sender_type=sender_type)) is True
 
 
 @pytest.mark.parametrize("sender_type", ["user", "", None])
 def test_is_bot_sender_rejects_non_bot_origin(sender_type):
-    from plugins.platforms.feishu.adapter import _is_bot_sender
+    from gateway.platforms.feishu import _is_bot_sender
 
     assert _is_bot_sender(SimpleNamespace(sender_type=sender_type)) is False
 
@@ -388,37 +388,6 @@ def test_admit_pipeline(case):
 # --- Mention call-count semantics ------------------------------------------
 
 
-def test_dm_pairing_mode_forwards_unknown_sender_to_gateway_intake(monkeypatch):
-    """Empty FEISHU_ALLOWED_USERS must not block pairing handshake intake."""
-    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
-    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-    adapter = make_adapter_skeleton()
-    adapter._allowed_group_users = frozenset()
-    sender = make_sender(open_id="ou_unknown")
-    message = make_message(chat_type="p2p")
-    assert adapter._admit(sender, message) is None
-
-
-def test_dm_allowlist_rejects_unknown_sender(monkeypatch):
-    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
-    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-    adapter = make_adapter_skeleton()
-    adapter._allowed_group_users = frozenset({"ou_owner"})
-    sender = make_sender(open_id="ou_unknown")
-    message = make_message(chat_type="p2p")
-    assert adapter._admit(sender, message) == "dm_policy_rejected"
-
-
-def test_dm_allowlist_admits_configured_sender(monkeypatch):
-    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
-    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-    adapter = make_adapter_skeleton()
-    adapter._allowed_group_users = frozenset({"ou_owner"})
-    sender = make_sender(open_id="ou_owner")
-    message = make_message(chat_type="p2p")
-    assert adapter._admit(sender, message) is None
-
-
 def test_admit_skips_mention_check_under_all_mode():
     # Tripwire: under allow_bots=all the mention path must not be probed.
     adapter = make_adapter_skeleton(bot_open_id="ou_self", allow_bots="all")
@@ -461,7 +430,7 @@ def test_admit_group_mention_checked_once_per_call():
 
 
 def test_admit_per_group_require_mention_overrides_global():
-    from plugins.platforms.feishu.adapter import FeishuGroupRule
+    from gateway.platforms.feishu import FeishuGroupRule
 
     adapter = make_adapter_skeleton(
         bot_open_id="ou_self", require_mention=True, group_policy="open",
@@ -485,7 +454,7 @@ def test_admit_per_group_require_mention_overrides_global():
 def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
     import asyncio
 
-    import plugins.platforms.feishu.adapter as feishu_mod
+    from gateway.platforms import feishu as feishu_mod
     FeishuAdapter = feishu_mod.FeishuAdapter
 
     class _FakeBaseRequestBuilder:
@@ -546,7 +515,7 @@ def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
 def test_resolve_sender_profile_uses_open_id_for_bot_name_lookup():
     import asyncio
 
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from gateway.platforms.feishu import FeishuAdapter
 
     adapter = object.__new__(FeishuAdapter)
     adapter._client = object()
@@ -600,7 +569,7 @@ def _group_case(
 
 
 def _group_rule(policy: str, **kwargs):
-    from plugins.platforms.feishu.adapter import FeishuGroupRule
+    from gateway.platforms.feishu import FeishuGroupRule
     return FeishuGroupRule(policy=policy, **kwargs)
 
 

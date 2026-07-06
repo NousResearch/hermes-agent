@@ -215,7 +215,7 @@ The auth store has no credentials for `minimax-oauth`. You have not logged in ye
 To remove stored MiniMax OAuth credentials:
 
 ```bash
-hermes auth logout minimax-oauth
+hermes auth remove minimax-oauth
 ```
 
 ## See Also

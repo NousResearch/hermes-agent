@@ -17,12 +17,7 @@ function Command({ className, ...props }: React.ComponentProps<typeof CommandPri
   )
 }
 
-interface CommandInputProps extends React.ComponentProps<typeof CommandPrimitive.Input> {
-  /** Inline trailing slot, rendered on the right of the search row. */
-  right?: React.ReactNode
-}
-
-function CommandInput({ className, right, ...props }: CommandInputProps) {
+function CommandInput({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.Input>) {
   return (
     <div className="flex h-11 items-center gap-2 border-b border-border px-3" data-slot="command-input-wrapper">
       <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
@@ -34,7 +29,6 @@ function CommandInput({ className, right, ...props }: CommandInputProps) {
         data-slot="command-input"
         {...props}
       />
-      {right}
     </div>
   )
 }

@@ -93,10 +93,6 @@ export const en: Translations = {
     statusOverview: "Status overview",
     system: "System",
     webUi: "Web UI",
-    managingProfile: "Managing profile",
-    currentProfileOption: "this dashboard ({name})",
-    managingProfileBanner:
-      "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
   },
 
   status: {
@@ -107,7 +103,6 @@ export const en: Translations = {
     activeSessions: "Active Sessions",
     connected: "Connected",
     connectedPlatforms: "Connected Platforms",
-    disabled: "Disabled",
     disconnected: "Disconnected",
     error: "Error",
     failed: "Failed",
@@ -121,9 +116,6 @@ export const en: Translations = {
     platformError: "error",
     recentSessions: "Recent Sessions",
     restartGateway: "Restart Gateway",
-    restartGatewayConfirmMessage:
-      "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.",
-    restartGatewayConfirmTitle: "Restart gateway?",
     restartingGateway: "Restarting gateway…",
     running: "Running",
     runningRemote: "Running (remote)",
@@ -132,10 +124,6 @@ export const en: Translations = {
     startedInBackground: "Started in background — check logs for progress",
     stopped: "Stopped",
     updateHermes: "Update Hermes",
-    updateHermesConfirmMessage:
-      "This runs hermes update and restarts the gateway when it finishes. Active sessions keep their prompt cache until then.",
-    updateHermesConfirmNow: "Update now",
-    updateHermesConfirmTitle: "Update Hermes?",
     updatingHermes: "Updating Hermes…",
     waitingForOutput: "Waiting for output…",
   },
@@ -173,7 +161,6 @@ export const en: Translations = {
     selectedSessionsDeleted: "{count} sessions deleted",
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
-    newChat: "New chat",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {
@@ -306,8 +293,7 @@ export const en: Translations = {
     nameRule:
       "Lowercase letters, digits, _ and - only; must start with a letter or digit; up to 64 characters.",
     invalidName: "Invalid profile name",
-    cloneFrom: "Clone config from",
-    cloneFromNone: "None (blank)",
+    cloneFromDefault: "Clone config from default profile",
     allProfiles: "Profiles",
     noProfiles: "No profiles found.",
     defaultBadge: "default",
@@ -422,10 +408,6 @@ export const en: Translations = {
     setupNeeded: "Setup needed",
     disabledForCli: "Disabled for CLI",
     more: "+{count} more",
-    profileSelector: "Profile",
-    currentProfile: "current ({name})",
-    managingProfile:
-      "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
   },
 
   config: {
@@ -488,14 +470,6 @@ export const en: Translations = {
     replaceCurrentValue: "Replace current value ({preview})",
     showValue: "Show real value",
     hideValue: "Hide value",
-    customTitle: "Custom Keys",
-    customHint: "Arbitrary environment variables stored in your .env that Hermes doesn't recognise. Use these to inject env vars for skills, MCP servers, or your own tooling.",
-    customConfigured: "{count} custom key{s} set",
-    addCustomKey: "Add a custom key",
-    customKeyName: "Variable name",
-    customKeyNamePlaceholder: "e.g. MY_SERVICE_API_KEY",
-    add: "Add",
-    invalidKeyName: "Use letters, numbers and underscores only (must start with a letter or underscore).",
   },
 
   oauth: {

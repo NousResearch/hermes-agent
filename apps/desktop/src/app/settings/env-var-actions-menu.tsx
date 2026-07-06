@@ -10,14 +10,12 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
+import { Eye, EyeOff, ExternalLink, Trash2 } from '@/lib/icons'
 import { triggerHaptic } from '@/lib/haptics'
-import { ExternalLink, Eye, EyeOff, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-interface EnvVarActionsMenuProps extends Pick<
-  React.ComponentProps<typeof DropdownMenuContent>,
-  'align' | 'sideOffset'
-> {
+interface EnvVarActionsMenuProps
+  extends Pick<React.ComponentProps<typeof DropdownMenuContent>, 'align' | 'sideOffset'> {
   children: React.ReactNode
   clearDisabled?: boolean
   docsUrl?: string | null
@@ -53,7 +51,12 @@ export function EnvVarActionsMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-      <DropdownMenuContent align={align} aria-label={copy.actionsFor(label)} className="w-44" sideOffset={sideOffset}>
+      <DropdownMenuContent
+        align={align}
+        aria-label={copy.actionsFor(label)}
+        className="w-44"
+        sideOffset={sideOffset}
+      >
         {hasDocs && (
           <DropdownMenuItem
             onSelect={event => {

@@ -127,7 +127,7 @@ See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a tem
 
 Use the full checklist below when your provider needs any of the following:
 
-- OAuth or token refresh (Nous Portal, Codex, Qwen Portal, Copilot)
+- OAuth or token refresh (Nous Portal, Codex, Google Gemini, Qwen Portal, Copilot)
 - A non-OpenAI API shape that requires a new adapter (Anthropic Messages, Codex Responses)
 - Custom endpoint detection or multi-region probing (z.ai, Kimi)
 - A curated static model catalog or live `/models` fetch

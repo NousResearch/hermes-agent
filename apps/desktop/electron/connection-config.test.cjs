@@ -24,7 +24,6 @@ const {
   cookiesHaveLiveSession,
   normAuthMode,
   normalizeRemoteBaseUrl,
-  pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
@@ -89,72 +88,6 @@ test('profileRemoteOverride tolerates a missing/!object profiles map', () => {
   assert.equal(profileRemoteOverride({}, 'coder'), null)
   assert.equal(profileRemoteOverride({ profiles: null }, 'coder'), null)
   assert.equal(profileRemoteOverride(null, 'coder'), null)
-})
-
-// --- pathWithGlobalRemoteProfile ---
-
-test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {
-  assert.equal(
-    pathWithGlobalRemoteProfile('/api/model/info', 'iris', {
-      globalRemote: true,
-      profileRemoteOverride: false
-    }),
-    '/api/model/info?profile=iris'
-  )
-})
-
-test('pathWithGlobalRemoteProfile preserves existing query params', () => {
-  assert.equal(
-    pathWithGlobalRemoteProfile('/api/model/options?force=1', 'iris', {
-      globalRemote: true,
-      profileRemoteOverride: false
-    }),
-    '/api/model/options?force=1&profile=iris'
-  )
-})
-
-test('pathWithGlobalRemoteProfile does not replace an explicit profile query', () => {
-  assert.equal(
-    pathWithGlobalRemoteProfile('/api/model/info?profile=default', 'iris', {
-      globalRemote: true,
-      profileRemoteOverride: false
-    }),
-    '/api/model/info?profile=default'
-  )
-})
-
-test('pathWithGlobalRemoteProfile skips local and per-profile remote override paths', () => {
-  assert.equal(
-    pathWithGlobalRemoteProfile('/api/model/info', 'iris', {
-      globalRemote: false,
-      profileRemoteOverride: false
-    }),
-    '/api/model/info'
-  )
-  assert.equal(
-    pathWithGlobalRemoteProfile('/api/model/info', 'iris', {
-      globalRemote: true,
-      profileRemoteOverride: true
-    }),
-    '/api/model/info'
-  )
-})
-
-test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
-  assert.equal(
-    pathWithGlobalRemoteProfile('/api/model/info', '', {
-      globalRemote: true,
-      profileRemoteOverride: false
-    }),
-    '/api/model/info'
-  )
-  assert.equal(
-    pathWithGlobalRemoteProfile('', 'iris', {
-      globalRemote: true,
-      profileRemoteOverride: false
-    }),
-    ''
-  )
 })
 
 // --- normalizeRemoteBaseUrl ---

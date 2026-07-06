@@ -55,7 +55,7 @@ def _inject_fake_telegram(monkeypatch):
 
 
 def _make_adapter():
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from gateway.platforms.telegram import TelegramAdapter
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = object.__new__(TelegramAdapter)

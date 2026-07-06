@@ -60,7 +60,7 @@ docker run -d \
 
 ## 运行 dashboard
 
-内置 Web dashboard 在同一容器内作为受 s6-rc 监管的服务与 gateway 并行运行。设置 `HERMES_DASHBOARD=1` 即可拉起它：
+内置 Web dashboard 作为可选的子进程在与 gateway 相同的容器内运行。设置 `HERMES_DASHBOARD=1` 可在容器回环地址（`127.0.0.1`）上默认运行 dashboard：
 
 ```sh
 docker run -d \
@@ -68,47 +68,48 @@ docker run -d \
   --restart unless-stopped \
   -v ~/.hermes:/opt/data \
   -p 8642:8642 \
-  -p 9119:9119 \
   -e HERMES_DASHBOARD=1 \
   nousresearch/hermes-agent gateway run
 ```
 
-Dashboard 由 s6 监管：若进程崩溃，`s6-supervise` 会在短暂退避后自动重启。Dashboard 的 stdout/stderr 会直接转发到 `docker logs <container>`；gateway 的主输出现在写入每个 profile 的 s6 日志文件，见下方的 per-profile 日志说明。
+入口点在 `exec` 主命令之前，以非 root 用户 `hermes` 在后台启动 `hermes dashboard`。Dashboard 输出在 `docker logs` 中以 `[dashboard]` 为前缀，便于与 gateway 日志区分。
 
 | 环境变量 | 描述 | 默认值 |
 |---------------------|-------------|---------|
-| `HERMES_DASHBOARD` | 设为 `1`（或 `true` / `yes`）以启用受监管的 dashboard 服务 | *（未设置——服务已注册但保持关闭）* |
-| `HERMES_DASHBOARD_HOST` | dashboard HTTP 服务器的绑定地址 | `0.0.0.0` |
+| `HERMES_DASHBOARD` | 设为 `1`（或 `true` / `yes`）以在主命令旁启动 dashboard | *（未设置——不启动 dashboard）* |
+| `HERMES_DASHBOARD_HOST` | dashboard HTTP 服务器的绑定地址 | `127.0.0.1` |
 | `HERMES_DASHBOARD_PORT` | dashboard HTTP 服务器的端口 | `9119` |
-| `HERMES_DASHBOARD_INSECURE` | **已弃用 / 空操作。** 以前用于绕过鉴权门控；自 2026 年 6 月的安全加固起，它不再禁用鉴权。任何非回环绑定都必须配置鉴权提供方 | *（被忽略——请改为配置提供方）* |
+| `HERMES_DASHBOARD_INSECURE` | 设为 `1`（或 `true` / `yes`）以在不启用 OAuth 鉴权门控的情况下绑定。仅在可信网络（且通过没有 OAuth 契约的反向代理时）使用——dashboard 会暴露 API 密钥与会话数据 | *（未设置——当注册了 `DashboardAuthProvider` 时启用门控）* |
 
-容器内的 dashboard 默认绑定 `0.0.0.0`，否则发布的 `-p 9119:9119` 端口将无法从宿主机访问。若你要把它限制在容器回环地址（例如 sidecar / 反向代理拓扑），请显式设置 `HERMES_DASHBOARD_HOST=127.0.0.1`。
-
-当以下两项同时满足时，dashboard 的鉴权门控会自动启用：
+默认情况下，dashboard 保持在回环地址（`127.0.0.1`），以避免将
+Web 界面暴露到网络。若要有意发布，请设置
+`HERMES_DASHBOARD_HOST=0.0.0.0`。当以下两项同时满足时，
+dashboard 的 OAuth 鉴权门控会自动启用：
 
 1. 绑定地址为非回环地址，**且**
 2. 注册了一个 `DashboardAuthProvider` 插件。
 
-有三种内置方式可满足第二个条件：
-
-- **用户名/密码** —— 最简单的自托管 / 局域网 / VPN 内部署方式：设置 `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`（以及用于跨重启稳定 session 的 `HERMES_DASHBOARD_BASIC_AUTH_SECRET`）。不适合直接暴露到公网上。
-- **OAuth（Nous Portal）** —— 适合托管/公网部署：设置 `HERMES_DASHBOARD_OAUTH_CLIENT_ID` 后，`dashboard_auth/nous` 提供者会自动激活。
-- **自托管 OIDC** —— 通过标准 OpenID Connect 接入你自己的身份提供商：设置 `HERMES_DASHBOARD_OIDC_ISSUER` + `HERMES_DASHBOARD_OIDC_CLIENT_ID` 后，`dashboard_auth/self_hosted` 提供者会激活。
-
-无论选择哪种，调用方在访问受保护路由前都会先被重定向到登录页。完整说明见 [Web Dashboard → 鉴权](features/web-dashboard.md)。
+捆绑的 `dashboard_auth/nous` 提供者会在设置
+`HERMES_DASHBOARD_OAUTH_CLIENT_ID` 时自动激活（参见
+[Web Dashboard → 鉴权](features/web-dashboard.md)）。门控启用后，
+浏览器调用方会先被重定向到所配置门户的 OAuth 流，然后才能
+访问任何受保护路由。
 
 如果未注册提供者且绑定为非回环地址，dashboard **会在启动时
-失败关闭**，并给出指向缺失环境变量的具体错误信息。现在已不再
-存在以无鉴权方式在公网绑定上提供 dashboard 的“逃生通道”：
-`HERMES_DASHBOARD_INSECURE=1` 现在是一个已弃用的空操作（它会
-打印告警并被忽略）。请改为配置鉴权提供方，或设置
-`HERMES_DASHBOARD_HOST=127.0.0.1` 并通过 SSH 隧道 / Tailscale 访问。
+失败关闭**，并给出指向缺失环境变量的具体错误信息。要显式
+退出门控——用于不使用 OAuth 契约、通过你自己的反向代理部署
+在可信局域网中的场景——请设置 `HERMES_DASHBOARD_INSECURE=1`。
+这会恢复旧的“无鉴权，但发出告警”模式，也是唯一可以禁用门控的
+路径；绑定地址不再隐式决定 `--insecure`。
 
-:::warning 为什么移除了 `--insecure`
-无鉴权的公网 dashboard 是 2026 年 6 月 MCP 配置持久化攻击活动的入口：互联网扫描器访问到暴露的 dashboard（以及 OpenAI API 服务器），诱导 agent 植入 SSH 密钥后门。现在每个非回环绑定都强制启用鉴权门控。对于可信局域网 / homelab 主机，内置的用户名/密码提供方（`HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `_PASSWORD`）是满足该要求的零基础设施方式。
-:::
+:::note
+dashboard 在容器内作为受监管的 s6 服务运行。如果
+dashboard 进程崩溃，s6-overlay 会在短暂退避后自动
+重启它——你会看到新的 PID，无需重启容器。日志和崩溃输出可通过
+`docker logs <container>` 查看（s6 将服务的 stdout/stderr 转发至此）。
 
 当独立的 dashboard 容器与宿主机共享 PID 与网络命名空间时（例如 `network_mode: host`，正如仓库自带的 `docker-compose.yml` 中的 `dashboard` 服务那样），**是**支持将 dashboard 作为独立容器运行的。其 gateway 存活检测需要与 gateway 进程共享 PID 命名空间，因此该限制仅适用于在隔离的 bridge 网络容器中、且未共享 PID 命名空间的 dashboard。
+:::
 
 ## 交互式运行（CLI 聊天）
 
@@ -138,21 +139,10 @@ docker run -it --rm \
 | `sessions/` | 对话历史 |
 | `memories/` | 持久化记忆存储 |
 | `skills/` | 已安装的技能 |
-| `home/` | Hermes 工具子进程（`git`、`ssh`、`gh`、`npm` 及 skill CLI）的 per-profile HOME |
 | `cron/` | 定时任务定义 |
 | `hooks/` | 事件 hook |
 | `logs/` | 运行时日志 |
 | `skins/` | 自定义 CLI 皮肤 |
-
-### 不可变安装树
-
-在托管/发布的 Docker 镜像中，`/opt/hermes` 是安装好的应用树。它由 root 拥有，并且对运行时的 `hermes` 用户只读，因此 agent 回合、gateway 会话、dashboard 操作以及普通的 `docker exec hermes hermes ...` 命令都不能原地修改核心源码、打包的 `.venv`、`node_modules` 或 TUI bundle。
-
-所有可变的 Hermes 状态都应位于 `/opt/data` 下：配置、`.env`、profiles、skills、memories、sessions、logs、dashboard 上传、plugins 以及其他用户管理的文件。官方镜像还会阻止在运行时向不可变的 `/opt/hermes` 树写入 `.pyc` 或执行 Hermes 的懒安装依赖流程。
-
-如果运维人员确实需要修复或检查 `/opt/data` 之外的文件，请有意识地使用 root shell。`hermes` shim 默认会把 `docker exec hermes hermes ...` 降回运行时用户；只有在你明确需要 root 语义时，才临时设置 `HERMES_DOCKER_EXEC_AS_ROOT=1`。
-
-某些 skill CLI 会把凭据写到 `~` 下，因此在官方 Docker 布局里要针对子进程 HOME 初始化，而不是只针对数据卷根目录。例如 [xurl skill](./skills/bundled/social-media/social-media-xurl.md) 会把 OAuth 状态存到 `~/.xurl`；在容器里这对应 `/opt/data/home/.xurl`，因此手动认证时应使用 `HOME=/opt/data/home xurl auth status` 之类的调用。
 
 :::warning
 切勿同时对同一数据目录运行两个 Hermes **gateway** 容器——会话文件和记忆存储不支持并发写入。
@@ -160,31 +150,60 @@ docker run -it --rm \
 
 ## 多 profile 支持
 
-Hermes 支持[多个 profile](../reference/profile-commands.md)——独立的 `~/.hermes/` 子目录，让你可以从单个安装运行独立的 agent（不同的 SOUL、skills、memory、sessions、credentials）。**在官方 Docker 镜像内，s6 监管树把每个 profile 当作一等受监管服务**，因此推荐部署方式是：**一个容器承载多个 profile**。
+Hermes 支持[多个 profile](../reference/profile-commands.md)——独立的 `~/.hermes/` 目录，让你可以从单个安装运行独立的 agent（不同的 SOUL、技能、记忆、会话、凭据）。**在 Docker 下运行时，不建议使用 Hermes 内置的多 profile 功能。**
 
-每个通过 `hermes profile create <name>` 创建的 profile 都会获得：
-
-- 一个专用的 s6 服务槽位 `/run/service/gateway-<name>/`，运行时动态注册，无需重建镜像。
-- 崩溃后的自动重启，由 `s6-supervise` 管理退避。
-- 每个 profile 独立的轮转日志：`${HERMES_HOME}/logs/gateways/<name>/current`。
-- 跨容器重启的状态持久化：启动协调器会读取该 profile 的 `gateway_state.json`，仅在上次记录状态为 `running` 时自动拉起。
-
-容器内生命周期命令与宿主机上一致：
+推荐的模式是**每个 profile 一个容器**，每个容器将各自的宿主机目录绑定挂载为 `/opt/data`：
 
 ```sh
-# 创建 profile —— 同时注册 gateway-<name> s6 槽位
-docker exec hermes hermes profile create coder
+# 工作 profile
+docker run -d \
+  --name hermes-work \
+  --restart unless-stopped \
+  -v ~/.hermes-work:/opt/data \
+  -p 8642:8642 \
+  nousresearch/hermes-agent gateway run
 
-# 启停/重启 —— 底层分发给 s6-svc
-docker exec hermes hermes -p coder gateway start
-docker exec hermes hermes -p coder gateway stop
-docker exec hermes hermes -p coder gateway restart
-
-# 状态 —— 容器内会显示 `Manager: s6 (container supervisor)`
-docker exec hermes hermes -p coder gateway status
+# 个人 profile
+docker run -d \
+  --name hermes-personal \
+  --restart unless-stopped \
+  -v ~/.hermes-personal:/opt/data \
+  -p 8643:8642 \
+  nousresearch/hermes-agent gateway run
 ```
 
-若第二个 profile 也要暴露 OpenAI 兼容 API server，请在**该 profile 自己的** `.env` 中设置不同的 `API_SERVER_PORT`，然后重启该 profile 的 gateway；不要把端口放进容器级 `environment:`，否则所有 profile 都会争抢同一个端口。更底层的监管细节见后文的 [Per-profile gateway 监管](#per-profile-gateway-监管)。
+在 Docker 中使用独立容器而非 profile 的原因：
+
+- **隔离性** — 每个容器有独立的文件系统、进程表和资源限制。一个 profile 中的崩溃、依赖变更或失控会话不会影响另一个。
+- **独立生命周期** — 可独立升级、重启、暂停或回滚每个 agent（`docker restart hermes-work` 不会影响 `hermes-personal`）。
+- **清晰的端口和网络隔离** — 每个 gateway 绑定各自的宿主机端口；聊天平台或 API 服务器之间不存在串扰风险。
+- **更简单的心智模型** — 容器即 profile。备份、迁移和权限管理都跟随绑定挂载的目录，无需记住额外的 `--profile` 标志。
+- **避免并发写入风险** — 上述关于不得对同一数据目录运行两个 gateway 的警告同样适用于单个容器内的 profile。
+
+在 Docker Compose 中，只需为每个 profile 声明一个服务，使用不同的 `container_name`、`volumes` 和 `ports`：
+
+```yaml
+services:
+  hermes-work:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-work
+    restart: unless-stopped
+    command: gateway run
+    ports:
+      - "8642:8642"
+    volumes:
+      - ~/.hermes-work:/opt/data
+
+  hermes-personal:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-personal
+    restart: unless-stopped
+    command: gateway run
+    ports:
+      - "8643:8642"
+    volumes:
+      - ~/.hermes-personal:/opt/data
+```
 
 ## 环境变量转发
 
@@ -233,7 +252,7 @@ services:
           cpus: "2.0"
 ```
 
-使用 `docker compose up -d` 启动，使用 `docker compose logs -f` 查看日志。Dashboard 的 stdout/stderr 会直接出现在这里；gateway 主日志则写入每个 profile 的 s6 日志文件，见下方的 [Per-profile gateway 监管](#per-profile-gateway-监管)。
+使用 `docker compose up -d` 启动，使用 `docker compose logs -f` 查看日志。Dashboard 输出以 `[dashboard]` 为前缀，便于从 gateway 日志中过滤。
 
 ## 资源限制
 

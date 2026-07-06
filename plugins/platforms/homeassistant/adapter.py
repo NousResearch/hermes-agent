@@ -98,7 +98,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self) -> bool:
         """Connect to HA WebSocket API and subscribe to events."""
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed. Run: pip install aiohttp", self.name)

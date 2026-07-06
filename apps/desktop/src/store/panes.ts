@@ -3,8 +3,6 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 export interface PaneStateSnapshot {
   open: boolean
   widthOverride?: number
-  /** Vertical size override (px) for panes that resize on the Y axis (e.g. the bottom-row terminal). */
-  heightOverride?: number
 }
 
 export interface PaneRegisterDefaults {
@@ -25,13 +23,7 @@ function isSnapshot(value: unknown): value is PaneStateSnapshot {
     return false
   }
 
-  const widthOk =
-    r.widthOverride === undefined || (typeof r.widthOverride === 'number' && Number.isFinite(r.widthOverride))
-
-  const heightOk =
-    r.heightOverride === undefined || (typeof r.heightOverride === 'number' && Number.isFinite(r.heightOverride))
-
-  return widthOk && heightOk
+  return r.widthOverride === undefined || (typeof r.widthOverride === 'number' && Number.isFinite(r.widthOverride))
 }
 
 function load(): Record<string, PaneStateSnapshot> {
@@ -50,7 +42,7 @@ function load(): Record<string, PaneStateSnapshot> {
 
         for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
           if (isSnapshot(value)) {
-            out[id] = { open: value.open, widthOverride: value.widthOverride, heightOverride: value.heightOverride }
+            out[id] = { open: value.open, widthOverride: value.widthOverride }
           }
         }
 
@@ -64,14 +56,20 @@ function load(): Record<string, PaneStateSnapshot> {
   return {}
 }
 
-// Persists both open state and resize width; load() validates each snapshot.
+// widthOverride is in-memory only — phase 2 can add per-pane persistWidth opt-in.
 function persist(states: Record<string, PaneStateSnapshot>) {
   if (typeof window === 'undefined') {
     return
   }
 
+  const minimal: Record<string, { open: boolean }> = {}
+
+  for (const [id, s] of Object.entries(states)) {
+    minimal[id] = { open: s.open }
+  }
+
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(states))
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(minimal))
   } catch {
     // Storage failures are nonfatal.
   }
@@ -100,12 +98,10 @@ function memoized<T>(
 const openCache = new Map<string, ReadableAtom<boolean>>()
 const stateCache = new Map<string, ReadableAtom<PaneStateSnapshot | undefined>>()
 const widthCache = new Map<string, ReadableAtom<number | undefined>>()
-const heightCache = new Map<string, ReadableAtom<number | undefined>>()
 
 export const $paneOpen = (id: string) => memoized(openCache, id, s => s?.open ?? false)
 export const $paneState = (id: string) => memoized(stateCache, id, s => s)
 export const $paneWidthOverride = (id: string) => memoized(widthCache, id, s => s?.widthOverride)
-export const $paneHeightOverride = (id: string) => memoized(heightCache, id, s => s?.heightOverride)
 
 export function ensurePaneRegistered(id: string, defaults: PaneRegisterDefaults) {
   const current = $paneStates.get()
@@ -125,13 +121,13 @@ export function setPaneOpen(id: string, open: boolean) {
     return
   }
 
-  $paneStates.set({ ...current, [id]: { ...existing, open } })
+  $paneStates.set({ ...current, [id]: { open, widthOverride: existing?.widthOverride } })
 }
 
 export function togglePane(id: string) {
   const current = $paneStates.get()
   const existing = current[id]
-  $paneStates.set({ ...current, [id]: { ...existing, open: !(existing?.open ?? false) } })
+  $paneStates.set({ ...current, [id]: { open: !(existing?.open ?? false), widthOverride: existing?.widthOverride } })
 }
 
 export function setPaneWidthOverride(id: string, width: number | undefined) {
@@ -142,20 +138,8 @@ export function setPaneWidthOverride(id: string, width: number | undefined) {
     return
   }
 
-  $paneStates.set({ ...current, [id]: { ...existing, widthOverride: width } })
-}
-
-export function setPaneHeightOverride(id: string, height: number | undefined) {
-  const current = $paneStates.get()
-  const existing = current[id] ?? { open: false }
-
-  if (existing.heightOverride === height) {
-    return
-  }
-
-  $paneStates.set({ ...current, [id]: { ...existing, heightOverride: height } })
+  $paneStates.set({ ...current, [id]: { open: existing.open, widthOverride: width } })
 }
 
 export const clearPaneWidthOverride = (id: string) => setPaneWidthOverride(id, undefined)
-export const clearPaneHeightOverride = (id: string) => setPaneHeightOverride(id, undefined)
 export const getPaneStateSnapshot = (id: string) => $paneStates.get()[id]

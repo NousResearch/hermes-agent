@@ -41,16 +41,14 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     import httpx
 
-    from agent.web_search_provider import get_provider_env
-
-    api_key = get_provider_env("TAVILY_API_KEY")
+    api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:
         raise ValueError(
             "TAVILY_API_KEY environment variable not set. "
             "Get your API key at https://app.tavily.com/home"
         )
 
-    base_url = get_provider_env("TAVILY_BASE_URL") or "https://api.tavily.com"
+    base_url = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
     payload = dict(payload)  # don't mutate caller's dict
     payload["api_key"] = api_key
     url = f"{base_url}/{endpoint.lstrip('/')}"
@@ -140,9 +138,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
 
     def is_available(self) -> bool:
         """Return True when ``TAVILY_API_KEY`` is set to a non-empty value."""
-        from agent.web_search_provider import get_provider_env
-
-        return bool(get_provider_env("TAVILY_API_KEY"))
+        return bool(os.getenv("TAVILY_API_KEY", "").strip())
 
     def supports_search(self) -> bool:
         return True

@@ -17,7 +17,6 @@ class AnthropicProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
-        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Anthropic uses x-api-key header and anthropic-version."""

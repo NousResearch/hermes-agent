@@ -172,12 +172,13 @@ def a2a_call(args: dict, **_: Any) -> str:
         "jsonrpc": "2.0",
         "id": protocol.new_task_id(),
         "method": "message/send",
-        "params": {"message": protocol.text_message("user", safe_message)},
+        "params": {
+            "message": protocol.text_message("user", safe_message),
+            "contextId": ctx,  # Always send contextId so server persists under same id
+        },
     }
-    if context_id:
-        # A2A spec: contextId at top level of params (not just inside message)
-        rpc_body["params"]["contextId"] = context_id
-        rpc_body["params"]["message"]["contextId"] = context_id
+    # Also set contextId inside message for legacy callers
+    rpc_body["params"]["message"]["contextId"] = ctx
 
     security.audit("outbound", agent, rpc_body["id"], safe_message)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
@@ -299,11 +300,13 @@ def _call_peer_sync(agent_name: str, peer_entry: dict, message: str, context_id:
             "jsonrpc": "2.0",
             "id": protocol.new_task_id(),
             "method": "message/send",
-            "params": {"message": protocol.text_message("user", safe_message)},
+            "params": {
+                "message": protocol.text_message("user", safe_message),
+                "contextId": ctx,  # Always send contextId so server persists under same id
+            },
         }
-        if context_id:
-            rpc_body["params"]["contextId"] = context_id
-            rpc_body["params"]["message"]["contextId"] = context_id
+        # Also set contextId inside message for legacy callers
+        rpc_body["params"]["message"]["contextId"] = ctx
 
         security.audit("outbound", agent_name, rpc_body["id"], safe_message)
         protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])

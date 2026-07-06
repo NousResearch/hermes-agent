@@ -282,6 +282,77 @@ def verify_push_signature(payload: dict, signature: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# SSRF protection for push notification callback URLs
+# --------------------------------------------------------------------------
+
+import ipaddress
+import urllib.parse
+
+# Blocked IP ranges for push callback URLs (SSRF prevention).
+# Even in localhost-only mode we block these — a remote peer shouldn't
+# be able to make us probe internal services.
+_BLOCKED_PREFIXES = (
+    "169.254.",    # link-local / AWS metadata
+    "127.",        # loopback
+    "10.",         # RFC1918 private
+    "172.16.", "172.17.", "172.18.", "172.19.", "172.20.",
+    "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+    "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",  # RFC1918 private
+    "192.168.",    # RFC1918 private
+    "0.0.0.0",     # unspecified
+    "::1",         # IPv6 loopback
+    "fe80:",       # IPv6 link-local
+    "fc00:", "fd00:",  # IPv6 unique-local
+)
+
+
+def is_safe_callback_url(url: str) -> bool:
+    """Check if a push notification callback URL is safe from SSRF.
+
+    Blocks internal/private/loopback/metadata addresses.
+    Only allows http:// and https:// schemes.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    # Scheme check
+    if parsed.scheme not in ("http", "https"):
+        return False
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return False
+    # Check for literal "localhost" hostname
+    hostname_lower = hostname.lower()
+    if hostname_lower == "localhost":
+        if localhost_only():
+            return True
+        return False
+    # Check against blocked prefixes
+    for prefix in _BLOCKED_PREFIXES:
+        if hostname_lower.startswith(prefix.lower()):
+            # Allow localhost in localhost-only mode (local testing)
+            if localhost_only() and prefix == "127.":
+                return True
+            if localhost_only() and prefix == "::1":
+                return True
+            return False
+    # Also check via ipaddress for numeric IPs
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
+            # Allow localhost in localhost-only mode
+            if localhost_only() and ip.is_loopback:
+                return True
+            return False
+    except ValueError:
+        pass  # not an IP, it's a hostname — fine
+    return True
+
+
+# --------------------------------------------------------------------------
 # Audit log
 # --------------------------------------------------------------------------
 

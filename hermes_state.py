@@ -5511,7 +5511,140 @@ class SessionDB:
         # Clean up on-disk files outside the DB transaction
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if removed_ids and sessions_dir is not None:
+            self._purge_gateway_routing_for_sessions(set(removed_ids), sessions_dir=sessions_dir)
         return count
+
+    def _purge_gateway_routing_for_sessions(
+        self, session_ids: "set[str]", *, sessions_dir: Path
+    ) -> None:
+        """Drop routing entries — in BOTH persisted representations — that
+        still point at deleted session_ids.
+
+        prune_sessions() hard-deletes sessions/messages rows directly,
+        bypassing gateway/session.py's SessionStore entirely — so a routing
+        entry (session_key -> serialized SessionEntry) written before the
+        prune stays dangling, pointing at a session_id that no longer
+        exists. The gateway's own stale-entry self-heal
+        (``_is_session_ended_in_db``) treats a missing row as "keep" (that
+        check exists for a different case: an entry not yet persisted), so
+        the dangling entry is never dropped on its own — the next message on
+        that session_key would silently rehydrate an empty session instead
+        of starting fresh.
+
+        Purging only the ``gateway_routing`` table is not enough: the legacy
+        ``sessions.json`` mirror (on by default, ``gateway.write_sessions_json``)
+        is re-imported into ``self._entries`` on the NEXT
+        ``SessionStore._ensure_loaded_locked()`` for any key the DB table
+        doesn't have — so a restarted gateway would silently resurrect
+        exactly the entry this just deleted from the DB. Purge both.
+
+        Scoped to the routing index matching *sessions_dir*, mirroring
+        gateway/session.py's ``SessionStore._routing_scope()``.
+        """
+        try:
+            scope = str(Path(sessions_dir).resolve())
+        except Exception:
+            scope = str(sessions_dir)
+
+        entries = self.load_gateway_routing_entries(scope=scope)
+        stale_keys = []
+        for key, entry_json in entries.items():
+            try:
+                entry_data = json.loads(entry_json)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(entry_data, dict) and entry_data.get("session_id") in session_ids:
+                stale_keys.append(key)
+
+        if stale_keys:
+            self.delete_gateway_routing_entries(stale_keys, scope=scope)
+
+        self._purge_sessions_json_for_sessions(session_ids, sessions_dir=sessions_dir)
+
+    def _purge_sessions_json_for_sessions(
+        self, session_ids: "set[str]", *, sessions_dir: Path
+    ) -> None:
+        """Remove entries from the legacy sessions.json mirror that point at
+        deleted session_ids.
+
+        Companion to the ``gateway_routing`` table purge above. Without this,
+        an entry purged from the DB table but still present in sessions.json
+        is re-imported into a (re)started gateway's in-memory routing index
+        (gateway/session.py's ``_ensure_loaded_locked`` "Legacy import" step
+        only fills keys the DB table doesn't have) and then re-persisted back
+        into ``gateway_routing`` on the next save — silently undoing this
+        prune the moment the gateway restarts.
+
+        No-op if the file doesn't exist, isn't valid JSON, or contains
+        nothing that needs pruning (including the common case where
+        ``gateway.write_sessions_json: false`` means the file was never
+        written).
+        """
+        sessions_file = Path(sessions_dir) / "sessions.json"
+        try:
+            raw = sessions_file.read_text(encoding="utf-8")
+        except OSError:
+            return
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(data, dict):
+            return
+
+        changed = False
+        kept: Dict[str, Any] = {}
+        for key, entry_data in data.items():
+            if key.startswith("_"):
+                kept[key] = entry_data
+                continue
+            if isinstance(entry_data, dict) and entry_data.get("session_id") in session_ids:
+                changed = True
+                continue
+            kept[key] = entry_data
+        if not changed:
+            return
+
+        import os
+        import tempfile
+
+        from utils import atomic_replace
+
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(sessions_file.parent), suffix=".tmp", prefix=".sessions_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(kept, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, sessions_file)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def gateway_routing_entry_exists(self, session_key: str, *, scope: str = "") -> bool:
+        """True iff a gateway_routing row still exists for *session_key*.
+
+        Targeted single-key existence check (unlike
+        :meth:`load_gateway_routing_entries`, which loads the whole scope) —
+        used by the live gateway's per-request self-heal to detect an entry
+        that was purged out from under it by a concurrent
+        ``hermes sessions prune`` without paying an O(n) full-table load on
+        every message.
+        """
+        if not session_key:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM gateway_routing WHERE scope = ? AND session_key = ? LIMIT 1",
+                (scope, session_key),
+            ).fetchone()
+        return row is not None
 
     # ── Meta key/value (for scheduler bookkeeping) ──
 

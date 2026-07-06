@@ -202,3 +202,114 @@ class TestRuntimeStaleGuard:
 
         assert result.session_id != "sid_old"
         db.get_session.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _is_routing_entry_purged helper (#59512)
+# ---------------------------------------------------------------------------
+
+class TestIsRoutingEntryPurged:
+    def test_missing_routing_row_is_purged(self, tmp_path):
+        db = _db_returning({})
+        db.gateway_routing_entry_exists.return_value = False
+        store = _make_store_with_db(tmp_path, db)
+        assert store._is_routing_entry_purged("some_key") is True
+
+    def test_present_routing_row_not_purged(self, tmp_path):
+        db = _db_returning({})
+        db.gateway_routing_entry_exists.return_value = True
+        store = _make_store_with_db(tmp_path, db)
+        assert store._is_routing_entry_purged("some_key") is False
+
+    def test_scoped_to_store_routing_scope(self, tmp_path):
+        db = _db_returning({})
+        db.gateway_routing_entry_exists.return_value = True
+        store = _make_store_with_db(tmp_path, db)
+
+        store._is_routing_entry_purged("some_key")
+
+        db.gateway_routing_entry_exists.assert_called_once_with(
+            "some_key", scope=store._routing_scope()
+        )
+
+    def test_no_db_not_purged(self, tmp_path):
+        store = _make_store_with_db(tmp_path, MagicMock())
+        store._db = None
+        assert store._is_routing_entry_purged("some_key") is False
+
+    def test_empty_key_not_purged(self, tmp_path):
+        db = _db_returning({})
+        store = _make_store_with_db(tmp_path, db)
+        assert store._is_routing_entry_purged("") is False
+
+    def test_db_missing_checker_not_purged(self, tmp_path):
+        """A SessionDB without gateway_routing_entry_exists (older schema /
+        partial test double) must not be treated as "everything purged"."""
+        db = MagicMock(spec=["get_session"])
+        store = _make_store_with_db(tmp_path, db)
+        assert store._is_routing_entry_purged("some_key") is False
+
+    def test_db_error_not_purged(self, tmp_path):
+        db = _db_returning({})
+        db.gateway_routing_entry_exists.side_effect = RuntimeError("boom")
+        store = _make_store_with_db(tmp_path, db)
+        assert store._is_routing_entry_purged("some_key") is False
+
+
+# ---------------------------------------------------------------------------
+# Runtime self-heal for a routing entry purged by a concurrent
+# `hermes sessions prune` (#59512) — the "existing [live] store" half of the
+# reviewer-requested coverage; test_prune_sessions_drops_stale_sessions_json_entries
+# in tests/test_hermes_state.py covers the "restarted store" half.
+# ---------------------------------------------------------------------------
+
+class TestRuntimePruneGuard:
+    def test_purged_entry_creates_fresh_session(self, tmp_path):
+        """session_id row is gone entirely (hard-deleted by a concurrent
+        prune) — not merely ended. get_session returns None (not "ended"),
+        so _is_session_ended_in_db alone would say "keep"; the routing-table
+        presence check must catch it instead."""
+        source = _source()
+        db = _db_returning({})  # get_session(...) -> None for any id: hard-deleted
+        db.gateway_routing_entry_exists.return_value = False  # purged from gateway_routing too
+        db.find_latest_gateway_session_for_peer.return_value = None
+        store = _make_store_with_db(tmp_path, db)
+        key = store._generate_session_key(source)
+        store._entries[key] = _make_entry(key, "sid_pruned")
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id != "sid_pruned"
+        db.create_session.assert_called_once()
+
+    def test_live_entry_with_persisted_routing_row_unaffected(self, tmp_path):
+        """A live, still-persisted entry must not be disturbed by the new
+        check — this is the "not yet persisted" ambiguity the check exists
+        to avoid misfiring on."""
+        source = _source()
+        db = _db_returning({"sid_live": {"end_reason": None, "id": "sid_live"}})
+        db.gateway_routing_entry_exists.return_value = True
+        store = _make_store_with_db(tmp_path, db)
+        key = store._generate_session_key(source)
+        store._entries[key] = _make_entry(key, "sid_live")
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id == "sid_live"
+        db.create_session.assert_not_called()
+
+    def test_ended_in_db_takes_priority_and_skips_routing_lookup(self, tmp_path):
+        """When end_reason already answers the question, the extra routing
+        existence check is redundant — cheap short-circuit, not a
+        correctness requirement, but pins the actual call order."""
+        source = _source()
+        db = _db_returning({"sid_stale": {"end_reason": "agent_close", "id": "sid_stale"}})
+        db.find_latest_gateway_session_for_peer.return_value = None
+        store = _make_store_with_db(tmp_path, db)
+        key = store._generate_session_key(source)
+        store._entries[key] = _make_entry(key, "sid_stale")
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id != "sid_stale"
+        db.gateway_routing_entry_exists.assert_not_called()

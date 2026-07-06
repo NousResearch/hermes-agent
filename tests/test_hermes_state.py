@@ -4266,6 +4266,119 @@ class TestAutoMaintenance:
         assert not (sessions_dir / "old.jsonl").exists()
         assert (sessions_dir / "active.jsonl").exists()
 
+    def test_prune_sessions_drops_stale_gateway_routing_entries(self, db, tmp_path):
+        """A gateway_routing entry pointing at a pruned session_id must be
+        dropped, or the next message on that session_key would silently
+        rehydrate an empty session instead of starting fresh.
+
+        Regression test: prune_sessions() hard-deletes sessions/messages
+        rows directly, bypassing gateway/session.py's SessionStore, so a
+        routing entry written before the prune was left dangling.
+        """
+        from pathlib import Path
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        scope = str(Path(sessions_dir).resolve())
+
+        self._make_old_ended(db, "old", days_old=100)
+        db.create_session(session_id="active", source="cli")  # not ended
+
+        db.save_gateway_routing_entry(
+            "telegram:1:chat-old", json.dumps({"session_id": "old"}), scope=scope
+        )
+        db.save_gateway_routing_entry(
+            "telegram:1:chat-active", json.dumps({"session_id": "active"}), scope=scope
+        )
+
+        count = db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
+        assert count == 1
+
+        rows = db.load_gateway_routing_entries(scope=scope)
+        assert "telegram:1:chat-old" not in rows
+        assert "telegram:1:chat-active" in rows
+
+    def test_prune_sessions_drops_stale_sessions_json_entries(self, db, tmp_path):
+        """The legacy sessions.json mirror must be purged too, or a
+        restarted gateway re-imports the entry gateway_routing just lost
+        (sessions.json fills routing keys the DB table doesn't have) and
+        re-persists it — silently resurrecting the pruned mapping (#59512).
+        """
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        self._make_old_ended(db, "old", days_old=100)
+        db.create_session(session_id="active", source="cli")  # not ended
+
+        sessions_json = sessions_dir / "sessions.json"
+        sessions_json.write_text(json.dumps({
+            "_README": "legacy mirror",
+            "telegram:1:chat-old": {"session_id": "old"},
+            "telegram:1:chat-active": {"session_id": "active"},
+        }))
+
+        count = db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
+        assert count == 1
+
+        data = json.loads(sessions_json.read_text())
+        assert "telegram:1:chat-old" not in data
+        assert "telegram:1:chat-active" in data
+        assert "_README" in data  # sentinel survives, never treated as a session entry
+
+    def test_prune_sessions_leaves_sessions_json_untouched_when_nothing_stale(
+        self, db, tmp_path
+    ):
+        """No unnecessary rewrite (and no crash) when sessions.json exists
+        but nothing in it references a pruned session_id."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+        sessions_json = sessions_dir / "sessions.json"
+        original = json.dumps({"telegram:1:chat-other": {"session_id": "other"}})
+        sessions_json.write_text(original)
+
+        db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
+
+        assert sessions_json.read_text() == original
+
+    def test_prune_sessions_missing_sessions_json_is_a_noop(self, db, tmp_path):
+        """No sessions.json on disk at all (e.g. write_sessions_json: false
+        installs) must not raise."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+
+        count = db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
+        assert count == 1
+        assert not (sessions_dir / "sessions.json").exists()
+
+    def test_gateway_routing_entry_exists(self, db, tmp_path):
+        from pathlib import Path
+
+        scope = str(Path(tmp_path).resolve())
+        assert db.gateway_routing_entry_exists("telegram:1:chat-x", scope=scope) is False
+
+        db.save_gateway_routing_entry(
+            "telegram:1:chat-x", json.dumps({"session_id": "s1"}), scope=scope
+        )
+        assert db.gateway_routing_entry_exists("telegram:1:chat-x", scope=scope) is True
+
+        db.delete_gateway_routing_entries(["telegram:1:chat-x"], scope=scope)
+        assert db.gateway_routing_entry_exists("telegram:1:chat-x", scope=scope) is False
+
+    def test_prune_sessions_without_sessions_dir_skips_routing_cleanup(self, db):
+        """No sessions_dir means no scope can be computed — must not crash,
+        and existing routing entries (any scope) are left untouched."""
+        self._make_old_ended(db, "old", days_old=100)
+        db.save_gateway_routing_entry(
+            "telegram:1:chat-old", json.dumps({"session_id": "old"}), scope="somescope"
+        )
+
+        count = db.prune_sessions(older_than_days=90)
+        assert count == 1
+        rows = db.load_gateway_routing_entries(scope="somescope")
+        assert "telegram:1:chat-old" in rows
+
 
 # =========================================================================
 # FTS5 indexing of tool_calls / tool_name (#16751)

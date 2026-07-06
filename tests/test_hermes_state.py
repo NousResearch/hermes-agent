@@ -1690,6 +1690,102 @@ class TestCJKSearchFallback:
 # Session search and listing
 # =========================================================================
 
+class TestPersianSearchFolding:
+    """session_search must match Persian/Arabic text regardless of which
+    codepoint variant (Yeh ي/ی, Kaf ك/ک, joiners) was used — the model emits
+    either variant, so a literal FTS index silently missed recall (observed
+    live: the agent recalled a Persian name but not اویونیک/avionics)."""
+
+    # Turn-1 style message as the fa journey stores it (Persian Yeh/Keheh).
+    _STORED = "سلام، اسم من پیمان است و روی اویونیک موشک کار می‌کنم."
+    _WORK_FA = "اویونیک"  # persian-yeh, as stored
+    _WORK_AR = "اویونیک".replace("ی", "ي")  # arabic-yeh variant the model may emit
+
+    def test_query_variant_matches_stored_variant(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content=self._STORED)
+        # Both spellings of the work term find the message.
+        assert db.search_messages(self._WORK_FA), "persian-yeh query should match"
+        assert db.search_messages(self._WORK_AR), "arabic-yeh query should match folded index"
+
+    def test_stored_variant_matches_query_variant(self, db):
+        # Symmetric: message stored with ARABIC yeh, query with PERSIAN yeh.
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content=self._STORED.replace("ی", "ي"))
+        assert db.search_messages(self._WORK_FA), "persian-yeh query should match arabic-yeh store"
+
+    def test_name_and_kaf_variant(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content=self._STORED)
+        assert db.search_messages("پیمان")
+        assert db.search_messages("پيمان")  # arabic-yeh name variant
+        # کار (kaf) — query with arabic kaf ك must match persian keheh ک store.
+        assert db.search_messages("کار".replace("ک", "ك"))
+
+    def test_english_unaffected(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="my name is Dara, I work on rocket avionics")
+        assert len(db.search_messages("avionics")) == 1
+        assert len(db.search_messages("Dara")) == 1
+
+    def test_tatweel_and_harakat_stripped_in_index(self, db):
+        # Kashida (tatweel) and Arabic diacritics in the stored text must not
+        # block a plain query — the index strips them.
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="کـتـاب مُحَمَّد")  # tatweel + harakat
+        assert db.search_messages("کتاب"), "tatweel in stored text should be folded away"
+        assert db.search_messages("محمد"), "harakat in stored text should be folded away"
+
+    def test_zwnj_variants_canonicalize(self, db):
+        # Joined and ZWNJ-separated forms of the same word match either way.
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="می‌کنم")  # with ZWNJ
+        assert db.search_messages("میکنم"), "joined query should match ZWNJ-stored word"
+
+    def test_cjk_search_unaffected_by_query_fold(self, db):
+        # Guard: the query-path fold runs before CJK routing; it must not break
+        # CJK search (fold only touches Arabic-range codepoints).
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="我在做火箭航空电子设备")
+        assert db.search_messages("火箭"), "CJK substring search must still work after the fold"
+
+    def test_fold_helper_is_variant_agnostic_and_latin_safe(self):
+        from hermes_state import _fold_search_text
+
+        assert _fold_search_text("اويونيك") == _fold_search_text("اویونیک")
+        assert "‌" not in _fold_search_text("می‌کنم")  # ZWNJ removed
+        assert _fold_search_text("rocket avionics") == "rocket avionics"  # no-op for latin
+        assert _fold_search_text("") == ""
+
+    def test_v17_to_v18_migration_refolds_existing_index(self, tmp_path):
+        # A legacy v16 DB indexed content unfolded; reopening must re-index folded
+        # so old messages become recall-able across variants.
+        db_path = tmp_path / "legacy.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content=self._STORED)
+        db.close()
+        # Simulate the pre-fix state: unfolded messages_fts + version 17
+        # (the upstream-sync version that predates the fold).
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("DELETE FROM messages_fts")
+        conn.execute("INSERT INTO messages_fts(rowid, content) SELECT id, COALESCE(content, '') FROM messages")
+        conn.execute("UPDATE schema_version SET version = 17")
+        conn.commit()
+        # Precondition: the legacy index does NOT match the arabic-yeh variant.
+        legacy = conn.execute("SELECT count(*) FROM messages_fts WHERE content MATCH ?", (self._WORK_AR,)).fetchone()[0]
+        conn.close()
+        assert legacy == 0, "legacy index should miss the arabic-yeh variant (the bug)"
+        # Reopen -> v18 migration re-indexes folded.
+        upgraded = SessionDB(db_path=db_path)
+        try:
+            assert upgraded.search_messages(self._WORK_AR), "migration should make old rows recall-able across variants"
+            version = sqlite3.connect(str(db_path)).execute("SELECT version FROM schema_version").fetchone()[0]
+            assert version == SCHEMA_VERSION
+        finally:
+            upgraded.close()
+
+
 class TestSearchSessions:
     def test_list_all_sessions(self, db):
         db.create_session(session_id="s1", source="cli")

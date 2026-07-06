@@ -122,7 +122,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -799,7 +799,73 @@ CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 """
 
-FTS_SQL = """
+# ── Persian/Arabic search folding ──────────────────────────────────────────
+# The same letter has multiple Unicode codepoints in Arabic-script text — most
+# commonly Yeh (ARABIC ي U+064A vs FARSI ی U+06CC) and Kaf (ARABIC ك U+0643 vs
+# KEHEH ک U+06A9) — and LLMs emit either variant nondeterministically. The
+# default unicode61 FTS tokenizer matches codepoints literally, so a query that
+# used a different variant than the stored message silently fails to match
+# (observed live: the agent recalled a Persian name but not "اویونیک"/avionics).
+# Only CJK was previously special-cased; Persian/Arabic fell through.
+#
+# Fix: fold these variants to a single canonical form on BOTH the indexed
+# content and the query, so they match. Expressed as pure replace()/char() in
+# the FTS triggers (NOT a custom SQLite function — that would have to be
+# registered on every connection and a missing registration would break message
+# writes) and mirrored in Python (_fold_search_text) for the query side. Every
+# codepoint touched is in the Arabic block or a zero-width joiner, so this is a
+# no-op for Latin and CJK text.
+_SEARCH_FOLD_REPLACEMENTS: tuple = (
+    ("ي", "ی"),  # ARABIC YEH        -> FARSI YEH
+    ("ى", "ی"),  # ALEF MAKSURA      -> FARSI YEH
+    ("ك", "ک"),  # ARABIC KAF        -> KEHEH
+    ("ـ", ""),        # TATWEEL (kashida) -> remove
+    # ZWNJ/ZWJ -> remove (deliberate): models emit joined and ZWNJ-separated
+    # forms of the same word interchangeably (میکنم vs می‌کنم). Removing the
+    # joiner canonicalizes both to one token so they match — the common case for
+    # LLM-emitted text. Tradeoff: a ZWNJ compound (کتاب‌ها) indexes as one token,
+    # so the bare base noun (کتاب) no longer sub-matches it; that is the rarer
+    # case and mapping ZWNJ->space would instead lose the joined/split match, so
+    # neither dominates and remove is the higher-recall choice for this corpus.
+    ("‌", ""),        # ZWNJ
+    ("‍", ""),        # ZWJ
+    ("ً", ""), ("ٌ", ""), ("ٍ", ""),  # tanwin
+    ("َ", ""), ("ُ", ""), ("ِ", ""),  # harakat (fatha/damma/kasra)
+    ("ّ", ""), ("ْ", ""), ("ٰ", ""),  # shadda/sukun/superscript alef
+)
+
+
+def _fold_search_text(text: str) -> str:
+    """Fold Persian/Arabic codepoint variants to a canonical form (see
+    _SEARCH_FOLD_REPLACEMENTS). Applied to every session_search query so it
+    matches the identically-folded FTS index. Never raises."""
+    if not text:
+        return text
+    try:
+        for src, dst in _SEARCH_FOLD_REPLACEMENTS:
+            text = text.replace(src, dst)
+    except Exception:
+        return text
+    return text
+
+
+def _fts_fold_sql(expr: str) -> str:
+    """Wrap a SQL text expression in the same fold as _fold_search_text using
+    only built-in replace()/char(), so the FTS triggers need no custom function."""
+    sql = expr
+    for src, dst in _SEARCH_FOLD_REPLACEMENTS:
+        dst_sql = f"char({ord(dst)})" if dst else "''"
+        sql = f"replace({sql}, char({ord(src)}), {dst_sql})"
+    return sql
+
+
+# Content indexed into messages_fts (folded): the message text plus tool name +
+# args, so tool-driven turns are searchable. Two spellings of the source expr —
+# `new.*` for triggers, bare columns for the SELECT backfill.
+_FTS_TRIGGER_CONTENT = "COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')"
+_FTS_ROW_CONTENT = "COALESCE(content, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(tool_calls, '')"
+
+FTS_SQL = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content
 );
@@ -807,7 +873,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
     INSERT INTO messages_fts(rowid, content) VALUES (
         new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        {_fts_fold_sql(_FTS_TRIGGER_CONTENT)}
     );
 END;
 
@@ -819,7 +885,7 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
     INSERT INTO messages_fts(rowid, content) VALUES (
         new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        {_fts_fold_sql(_FTS_TRIGGER_CONTENT)}
     );
 END;
 """
@@ -1064,10 +1130,7 @@ class SessionDB:
         cursor.execute("DELETE FROM messages_fts")
         cursor.execute(
             "INSERT INTO messages_fts(rowid, content) "
-            "SELECT id, "
-            "COALESCE(content, '') || ' ' || "
-            "COALESCE(tool_name, '') || ' ' || "
-            "COALESCE(tool_calls, '') "
+            f"SELECT id, {_fts_fold_sql(_FTS_ROW_CONTENT)} "
             "FROM messages"
         )
         if not include_trigram:
@@ -1522,6 +1585,50 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 18:
+                # v18: fold Persian/Arabic Yeh/Kaf/joiner variants into
+                # messages_fts so session_search recalls Persian facts
+                # regardless of which codepoint variant the model emits (fixes
+                # fa within/cross-conversation recall). Existing rows were
+                # indexed unfolded and the old triggers don't fold, so drop both
+                # FTS tables + triggers and rebuild from the new folded FTS_SQL.
+                # (Mirrors the v11 re-index; trigram content is unchanged but is
+                # rebuilt in the same pass.)
+                if fts5_available:
+                    self._drop_fts_triggers(cursor)
+                    for _tbl in ("messages_fts", "messages_fts_trigram"):
+                        try:
+                            cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
+                        except sqlite3.OperationalError as exc:
+                            if not self._is_fts5_unavailable_error(exc):
+                                raise
+                            if self._is_trigram_unavailable_error(exc):
+                                self._warn_trigram_unavailable(exc)
+                            else:
+                                self._warn_fts5_unavailable(exc)
+                                fts5_available = False
+                                fts_migrations_complete = False
+                            break
+
+                    if fts5_available:
+                        base_fts_ok = self._ensure_fts_schema(
+                            cursor, "messages_fts", FTS_SQL
+                        )
+                        trigram_ok = self._ensure_fts_schema(
+                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                        )
+                        if base_fts_ok:
+                            # Folded messages_fts backfill + (unchanged) trigram.
+                            self._rebuild_fts_indexes(
+                                cursor, include_trigram=trigram_ok
+                            )
+                        else:
+                            fts_migrations_complete = False
+                        self._trigram_available = trigram_ok
+                    else:
+                        fts_migrations_complete = False
+                else:
+                    fts_migrations_complete = False
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -4057,6 +4164,11 @@ class SessionDB:
         # queries do not need to be arbitrarily large, and bounding them keeps
         # sanitizer/runtime behavior predictable under adversarial input.
         query = query[:MAX_FTS5_QUERY_CHARS]
+        # Step 0: Fold Persian/Arabic codepoint variants (Yeh/Kaf/joiners) so the
+        # query matches the identically-folded FTS index regardless of which
+        # variant the caller/model used. No-op for Latin/CJK. (After the cap:
+        # folding never lengthens text, and the cap must bound raw input.)
+        query = _fold_search_text(query)
 
         # Step 1: Extract balanced double-quoted phrases and protect them
         # from further processing via numbered placeholders. Do this with a

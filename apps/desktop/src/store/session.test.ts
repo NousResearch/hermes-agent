@@ -82,7 +82,7 @@ describe('setSessionAttention', () => {
     expect($attentionSessionIds.get()).toEqual([])
   })
 
-  it('derives stable waiting counts by profile without exposing full session arrays to the rail', () => {
+  it('derives stable unread counts by profile without exposing full session arrays to the rail', () => {
     $sessions.set([
       session({ id: 's1', profile: 'film-maker', title: 'Waiting one' }),
       session({ id: 's2', profile: 'film-maker', title: 'Waiting two' }),
@@ -107,7 +107,7 @@ describe('setSessionAttention', () => {
     expect($attentionProfileCounts.get()).toBe(first)
   })
 
-  it('ignores persisted reply-ready profile hints until the session is visible', () => {
+  it('counts reply-ready profile hints before that profile is loaded', () => {
     $sessions.set([])
     $cronSessions.set([])
     $messagingSessions.set([])
@@ -115,7 +115,7 @@ describe('setSessionAttention', () => {
     $replyReadySessionIds.set(['fresh-session'])
     $replyReadySessionProfiles.set({ 'fresh-session': 'film-maker' })
 
-    expect($attentionProfileCounts.get()).toEqual({})
+    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
   })
 
   it('counts loaded reply-ready rows under their visible profile', () => {

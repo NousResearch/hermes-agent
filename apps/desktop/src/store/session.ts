@@ -615,11 +615,12 @@ export const $attentionProfileCounts = computed(
   [
     $attentionSessionIds,
     $replyReadySessionIds,
+    $replyReadySessionProfiles,
     $sessions,
     $cronSessions,
     $messagingSessions
   ],
-  (attentionSessionIds, replyReadySessionIds, sessions, cronSessions, messagingSessions) => {
+  (attentionSessionIds, replyReadySessionIds, replyReadySessionProfiles, sessions, cronSessions, messagingSessions) => {
     if (attentionSessionIds.length === 0 && replyReadySessionIds.length === 0) {
       if (Object.keys(lastAttentionProfileCounts).length === 0) {
         return lastAttentionProfileCounts
@@ -631,6 +632,7 @@ export const $attentionProfileCounts = computed(
     }
 
     const next: Record<string, number> = {}
+    const countedReplyReadyIds = new Set<string>()
 
     for (const session of [...sessions, ...cronSessions, ...messagingSessions]) {
       if (!sessionHasVisibleNotification(session, attentionSessionIds, replyReadySessionIds)) {
@@ -638,6 +640,27 @@ export const $attentionProfileCounts = computed(
       }
 
       const key = normalizeSessionProfileKey(session.profile)
+      next[key] = (next[key] ?? 0) + 1
+
+      for (const alias of sessionNotificationAliases(session)) {
+        if (replyReadySessionIds.includes(alias)) {
+          countedReplyReadyIds.add(alias)
+        }
+      }
+    }
+
+    for (const id of replyReadySessionIds) {
+      if (countedReplyReadyIds.has(id)) {
+        continue
+      }
+
+      const profile = replyReadySessionProfiles[id]
+
+      if (!profile) {
+        continue
+      }
+
+      const key = normalizeSessionProfileKey(profile)
       next[key] = (next[key] ?? 0) + 1
     }
 

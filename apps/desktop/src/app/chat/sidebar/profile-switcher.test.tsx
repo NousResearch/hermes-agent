@@ -139,19 +139,19 @@ describe('ProfileRail attention badges', () => {
     $replyReadySessionProfiles.set({})
   })
 
-  it('shows a waiting-reply count on the owning profile square', () => {
+  it('shows an unread count on the owning profile square', () => {
     render(
       <MemoryRouter>
         <ProfileRail />
       </MemoryRouter>
     )
 
-    const profileButton = screen.getByRole('button', { name: /film-maker, 2 waiting for your reply/i })
+    const profileButton = screen.getByRole('button', { name: /film-maker, 2 unread/i })
 
     expect(profileButton.textContent).toContain('2')
   })
 
-  it('does not show stale waiting counts for sessions that are not visible', () => {
+  it('shows unread profile hints before that profile is loaded', () => {
     $sessions.set([sessionInfo({ id: 's3', profile: 'default', title: 'Idle default' })])
     $replyReadySessionIds.set(['missing-1', 'missing-2'])
     $replyReadySessionProfiles.set({ 'missing-1': 'film-maker', 'missing-2': 'film-maker' })
@@ -162,17 +162,17 @@ describe('ProfileRail attention badges', () => {
       </MemoryRouter>
     )
 
-    expect(screen.queryByRole('button', { name: /film-maker, .*waiting for your reply/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /film-maker, 2 unread/i })).toBeTruthy()
   })
 
-  it('keeps waiting-reply counts in the profile rail layout flow', () => {
+  it('keeps unread counts in the profile rail layout flow', () => {
     render(
       <MemoryRouter>
         <ProfileRail />
       </MemoryRouter>
     )
 
-    const profileButton = screen.getByRole('button', { name: /film-maker, 2 waiting for your reply/i })
+    const profileButton = screen.getByRole('button', { name: /film-maker, 2 unread/i })
     const countChip = profileButton.querySelector('[data-profile-count]')
 
     expect(profileButton.className).toContain('h-5')
@@ -238,7 +238,7 @@ describe('ProfileRail attention badges', () => {
     mockRailMetrics(rail, { clientWidth: 52, scrollLeft: 0, scrollWidth: 220 })
     fireEvent.scroll(rail)
 
-    const next = await screen.findByRole('button', { name: /Scroll profiles right, 2 waiting for your reply/i })
+    const next = await screen.findByRole('button', { name: /Scroll profiles right, 2 unread/i })
 
     expect(screen.getByRole('button', { name: 'office-work' })).toBeDefined()
     expect(next.className).toContain('h-5')

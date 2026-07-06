@@ -588,6 +588,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Design approval rejection state: (chat_id, user_id) → run_id. Used when
+        # the user taps Reject and then types the required rejection reason.
+        self._design_reject_state: Dict[tuple[str, str], str] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -3551,6 +3554,47 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_design_approval(
+        self,
+        chat_id: str,
+        approval_message: str,
+        run_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an inline-keyboard approval prompt for a Claude design run."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            preview = approval_message if len(approval_message) <= 3800 else approval_message[:3800] + "..."
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Approve", callback_data=f"da:approve:{run_id}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"da:reject:{run_id}"),
+                ]
+            ])
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": preview,
+                "reply_markup": keyboard,
+                "reply_to_message_id": reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+            }
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_design_approval failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -4249,6 +4293,63 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- Design approval callbacks (da:approve|reject:run_id) ---
+        if data.startswith("da:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid design approval data.")
+                return
+            action, run_id = parts[1], parts[2]
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to answer this approval gate.")
+                return
+
+            approver = self._design_approver_identity(query.from_user)
+            if action == "approve":
+                try:
+                    from hermes.claude_runner import approve_design_run
+                    record = approve_design_run(run_id, approver)
+                except Exception as exc:
+                    await query.answer(text=f"Could not approve: {exc}")
+                    return
+                await query.answer(text="✅ Approved. Build may proceed.")
+                try:
+                    await query.edit_message_text(
+                        text=f"✅ Design run {record.run_id} approved by {_html.escape(approver)}.",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                self._start_design_build_after_approval(record, query.message)
+                return
+
+            if action == "reject":
+                if query_chat_id is not None:
+                    self._design_reject_state[(str(query_chat_id), caller_id)] = run_id
+                await query.answer(text="Reply with rejection reason to stop this run.")
+                try:
+                    await query.edit_message_text(
+                        text=(
+                            f"❌ Rejection requested for design run {run_id}.\n\n"
+                            "Reply with the rejection reason. The run will stop and the build will not start."
+                        ),
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+
+            await query.answer(text="Invalid design approval action.")
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
@@ -6244,6 +6345,119 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    def _design_approver_identity(self, user: Any) -> str:
+        user_id = getattr(user, "id", "") or "unknown"
+        display = (
+            getattr(user, "first_name", None)
+            or getattr(user, "username", None)
+            or getattr(user, "full_name", None)
+            or "unknown"
+        )
+        return f"telegram:{user_id}/{display}"
+
+    def _start_design_build_after_approval(self, record: Any, prompt_message: Any) -> None:
+        """Kick off the approved Claude build run and stream progress to Telegram."""
+        chat_id = getattr(prompt_message, "chat_id", None)
+        if chat_id is None:
+            return
+        thread_id = getattr(prompt_message, "message_thread_id", None)
+        metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
+
+        async def _progress(message: str) -> None:
+            await self.send(str(chat_id), message, metadata=metadata)
+
+        async def _run() -> None:
+            from hermes.claude_runner import ClaudeStageRunner
+            runner = ClaudeStageRunner()
+            try:
+                runner.start_build_stage(record.run_id)
+                build_result = await runner.run_build_stage(record.design_spec, progress_callback=_progress)
+                await runner.run_review_stage(
+                    record.design_spec,
+                    build_result.diff,
+                    progress_callback=_progress,
+                )
+                runner.run_store.mark_done(record.run_id)
+            except Exception as exc:
+                try:
+                    runner.run_store.mark_failed(record.run_id)
+                except Exception:
+                    pass
+                logger.error("[%s] Claude build stage failed for run %s: %s", self.name, record.run_id, exc, exc_info=True)
+                await self.send(
+                    str(chat_id),
+                    f"❌ Claude build stage failed for run {record.run_id}: {exc}",
+                    metadata=metadata,
+                )
+
+        task = asyncio.create_task(_run())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _maybe_handle_design_approval_text(self, msg: Any) -> bool:
+        """Capture approve/reject replies for Claude design approval gates."""
+        text = (getattr(msg, "text", None) or "").strip()
+        if not text:
+            return False
+        chat_id = str(getattr(msg, "chat_id", getattr(getattr(msg, "chat", None), "id", "")))
+        user = getattr(msg, "from_user", None)
+        user_id = str(getattr(user, "id", ""))
+        if not chat_id or not user_id:
+            return False
+
+        approver = self._design_approver_identity(user)
+        awaiting_key = (chat_id, user_id)
+        awaited_run_id = self._design_reject_state.get(awaiting_key)
+        if awaited_run_id:
+            reason = text.strip()
+            try:
+                from hermes.claude_runner import reject_design_run
+                record = reject_design_run(awaited_run_id, approver, reason)
+                self._design_reject_state.pop(awaiting_key, None)
+            except Exception as exc:
+                await self.send(chat_id=chat_id, content=f"Could not reject design run: {exc}")
+                return True
+            await self.send(
+                chat_id=chat_id,
+                content=f"❌ Design run {record.run_id} rejected. Build stopped. Reason: {record.rejection_reason}",
+            )
+            return True
+
+        match = re.match(r"^(approve|reject)\s+(\S+)(?:\s+(.+))?$", text, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            return False
+
+        action = match.group(1).lower()
+        run_id = match.group(2)
+        reason = (match.group(3) or "").strip()
+        try:
+            if action == "approve":
+                from hermes.claude_runner import approve_design_run
+                record = approve_design_run(run_id, approver)
+                await self.send(
+                    chat_id=chat_id,
+                    content=f"✅ Design run {record.run_id} approved. Build may proceed.",
+                )
+                self._start_design_build_after_approval(record, msg)
+                return True
+            if not reason:
+                self._design_reject_state[awaiting_key] = run_id
+                await self.send(
+                    chat_id=chat_id,
+                    content=f"Reply with the rejection reason for design run {run_id}.",
+                )
+                return True
+            from hermes.claude_runner import reject_design_run
+            record = reject_design_run(run_id, approver, reason)
+            await self.send(
+                chat_id=chat_id,
+                content=f"❌ Design run {record.run_id} rejected. Build stopped. Reason: {record.rejection_reason}",
+            )
+            return True
+        except Exception as exc:
+            await self.send(chat_id=chat_id, content=f"Could not resolve design approval: {exc}")
+            return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -6257,6 +6471,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+            return
+        if await self._maybe_handle_design_approval_text(msg):
             return
         await self._ensure_forum_commands(update.message)
 

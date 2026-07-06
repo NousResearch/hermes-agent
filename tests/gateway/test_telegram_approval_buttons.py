@@ -1,5 +1,6 @@
 """Tests for Telegram inline keyboard approval buttons."""
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -48,6 +49,7 @@ _ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
+from hermes.claude_runner import DesignRunStore, DesignSpec, format_design_approval_message
 
 
 def _make_adapter(extra=None):
@@ -588,3 +590,185 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+class TestTelegramDesignApproval:
+    """Test design/build approval gate Telegram wiring."""
+
+    def _record(self, tmp_path):
+        store = DesignRunStore(tmp_path)
+        return store.create_pending_run(
+            "Need gated build",
+            DesignSpec(
+                summary="Build approved thing",
+                files_to_change=["app.py"],
+                steps=["Do design", "Do build"],
+                risks=["Approval delay"],
+                test_plan=["pytest"],
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_design_approval_message_uses_inline_buttons(self, tmp_path):
+        adapter = _make_adapter()
+        record = self._record(tmp_path)
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=99))
+
+        result = await adapter.send_design_approval(
+            chat_id="12345",
+            approval_message=format_design_approval_message(record),
+            run_id=record.run_id,
+            metadata={"thread_id": "777"},
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert kwargs["chat_id"] == 12345
+        assert record.run_id in kwargs["text"]
+        assert "Build approved thing" in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+        assert kwargs.get("message_thread_id") == 777
+
+    @pytest.mark.asyncio
+    async def test_design_approve_callback_persists_approval(self, tmp_path):
+        adapter = _make_adapter()
+        record = self._record(tmp_path)
+        query = AsyncMock()
+        query.data = f"da:approve:{record.run_id}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Mike"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock(callback_query=query)
+
+        with patch("hermes.claude_runner._default_run_store_root", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        loaded = DesignRunStore(tmp_path).get(record.run_id)
+        assert loaded.status.value == "approved"
+        assert loaded.approver_identity == "telegram:111/Mike"
+        query.answer.assert_called_once()
+        assert "Approved" in query.answer.call_args[1]["text"]
+        query.edit_message_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_design_reject_text_reply_persists_reason_and_stops_message_dispatch(self, tmp_path):
+        adapter = _make_adapter()
+        record = self._record(tmp_path)
+        adapter._message_handler = AsyncMock()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=100))
+
+        msg = MagicMock()
+        msg.text = f"reject {record.run_id} Scope too broad"
+        msg.chat_id = 12345
+        msg.message_id = 55
+        msg.chat.type = "private"
+        msg.from_user.id = 111
+        msg.from_user.first_name = "Mike"
+        msg.from_user.username = "mike"
+        update = MagicMock(message=msg, effective_message=msg, edited_message=None, channel_post=None, update_id=1)
+
+        with patch("hermes.claude_runner._default_run_store_root", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+                await adapter._handle_text_message(update, MagicMock())
+
+        loaded = DesignRunStore(tmp_path).get(record.run_id)
+        assert loaded.status.value == "rejected"
+        assert loaded.rejection_reason == "Scope too broad"
+        assert loaded.approver_identity == "telegram:111/Mike"
+        adapter._message_handler.assert_not_called()
+        adapter._bot.send_message.assert_called_once()
+        assert "rejected" in adapter._bot.send_message.call_args[1]["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_design_reject_callback_asks_for_reason_then_next_text_captures_it(self, tmp_path):
+        adapter = _make_adapter()
+        record = self._record(tmp_path)
+        query = AsyncMock()
+        query.data = f"da:reject:{record.run_id}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Mike"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+            await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
+
+        assert query.answer.call_args[1]["text"].startswith("Reply with rejection reason")
+
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=101))
+        msg = MagicMock()
+        msg.text = "Needs smaller scope"
+        msg.chat_id = 12345
+        msg.message_id = 56
+        msg.chat.type = "private"
+        msg.from_user.id = 111
+        msg.from_user.first_name = "Mike"
+        msg.from_user.username = "mike"
+        update = MagicMock(message=msg, effective_message=msg, edited_message=None, channel_post=None, update_id=2)
+
+        with patch("hermes.claude_runner._default_run_store_root", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+                await adapter._handle_text_message(update, MagicMock())
+
+        loaded = DesignRunStore(tmp_path).get(record.run_id)
+        assert loaded.status.value == "rejected"
+        assert loaded.rejection_reason == "Needs smaller scope"
+
+    @pytest.mark.asyncio
+    async def test_design_approve_callback_starts_build_and_streams_progress(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        record = self._record(tmp_path)
+        sent: list[str] = []
+
+        async def fake_send(chat_id, content, **kwargs):
+            sent.append(content)
+            return SimpleNamespace(success=True, message_id="stream")
+
+        async def fake_run_build_stage(self, spec, progress_callback=None):
+            assert spec == record.design_spec
+            await progress_callback("Working on approved spec")
+            return SimpleNamespace(diff="diff --git a/app.py b/app.py\n", transcript="done", cwd=tmp_path)
+
+        async def fake_run_review_stage(self, spec, diff, progress_callback=None):
+            assert spec == record.design_spec
+            assert diff == "diff --git a/app.py b/app.py\n"
+            await progress_callback(
+                "🔎 Review verdict: pass\n\nHuman approval is still required before anything is committed.\n\n"
+                "```diff\ndiff --git a/app.py b/app.py\n```"
+            )
+            return SimpleNamespace(verdict="pass", findings=[])
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        monkeypatch.setattr("hermes.claude_runner.ClaudeStageRunner.run_build_stage", fake_run_build_stage)
+        monkeypatch.setattr("hermes.claude_runner.ClaudeStageRunner.run_review_stage", fake_run_review_stage)
+
+        query = AsyncMock()
+        query.data = f"da:approve:{record.run_id}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Mike"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        with patch("hermes.claude_runner._default_run_store_root", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+                await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
+                await asyncio.gather(*list(adapter._background_tasks))
+
+        loaded = DesignRunStore(tmp_path).get(record.run_id)
+        assert loaded.status.value == "done"
+        assert "Working on approved spec" in sent
+        assert any("diff --git" in message for message in sent)

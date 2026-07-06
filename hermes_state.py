@@ -17,6 +17,7 @@ Key design decisions:
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -932,6 +933,26 @@ class SessionDB:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
             def _connect_and_init():
+
+                # Pre-create state.db with 0o600 before SQLite touches it (TOCTOU-safe)
+                # Mirrors the pattern in hermes_cli/auth.py for auth.json
+                if not self.db_path.exists():
+                    try:
+                        fd = os.open(str(self.db_path), os.O_CREAT | os.O_EXCL, 0o600)
+                        os.close(fd)
+                    except FileExistsError:
+                        # Race: another process created it; chmod to be safe
+                        try:
+                            os.chmod(str(self.db_path), 0o600)
+                        except OSError:
+                            pass  # Best effort; logged if critical
+                else:
+                    # Already exists (e.g., repaired); ensure permissions
+                    try:
+                        os.chmod(str(self.db_path), 0o600)
+                    except OSError:
+                        pass
+
                 self._conn = sqlite3.connect(
                     str(self.db_path),
                     check_same_thread=False,
@@ -946,6 +967,18 @@ class SessionDB:
                 )
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
+
+                # Apply 0o600 to WAL/SHM sidecars created by SQLite (umask does not affect them)
+                # These hold recent uncommitted writes and should not be world-readable
+                wal_path = str(self.db_path) + "-wal"
+                shm_path = str(self.db_path) + "-shm"
+                for sidecar in (wal_path, shm_path):
+                    if os.path.exists(sidecar):
+                        try:
+                            os.chmod(sidecar, 0o600)
+                        except OSError:
+                            pass  # Best effort; logged if critical
+
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
 

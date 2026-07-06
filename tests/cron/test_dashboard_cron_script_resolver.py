@@ -133,14 +133,14 @@ class TestDashboardCronScriptResolver:
         dir are accepted and returned as a clean relative name — this is
         the dashboard's existing contract, preserved by this resolver."""
         profile_home = hermes_root / "profiles" / "personal"
-        # Create the file under the profile's scripts dir; pass the ABSOLUTE
-        # path the same way the desktop dashboard's "Manage" UI does.
-        abs_path = profile_home / "scripts" / "foo.py"
-        assert abs_path.exists()  # set up in hermes_root fixture
+        # Stage 1 wins: write the file under the profile's scripts dir so the
+        # dashboard API's profile-specific root contains it.
+        abs_path = profile_home / "scripts" / "collect.py"
+        abs_path.write_text("print('profile')\n")
 
         result = self._normalise(profile_home, str(abs_path))
 
-        assert result == "foo.py"
+        assert result == "collect.py"
 
     def test_absolute_path_outside_scripts_dir_rejected(self, hermes_root):
         """Absolute paths that escape BOTH the profile's scripts dir AND

@@ -12639,34 +12639,8 @@ def cmd_insights(args):
 
         db = SessionDB()
         engine = InsightsEngine(db)
-        if getattr(args, "by_credential", False):
-            provider = getattr(args, "provider", None)
-            rows = db.get_credential_usage(days=args.days, provider=provider)
-            if rows:
-                title_provider = f" for {provider}" if provider else ""
-                print(f"Credential usage{title_provider} (last {args.days}d)")
-                for row in rows:
-                    label = row.get("credential_label") or "unknown"
-                    model = row.get("model") or "unknown"
-                    total = row.get("total_tokens") or 0
-                    in_tok = row.get("input_tokens") or 0
-                    out_tok = row.get("output_tokens") or 0
-                    calls = row.get("api_calls") or 0
-                    print(
-                        f"  {label} · {model}: {total:,} tokens "
-                        f"({in_tok:,} in, {out_tok:,} out), {calls:,} calls"
-                    )
-            else:
-                suffix = f" for {provider}" if provider else ""
-                print(
-                    f"No credential-level usage rows{suffix} in the last {args.days}d. "
-                    "New rows are recorded only after this Hermes version handles model turns."
-                )
-        else:
-            report = engine.generate(days=args.days, source=args.source)
-            if getattr(args, "provider", None):
-                report["provider_filter_note"] = args.provider
-            print(engine.format_terminal(report))
+        report = engine.generate(days=args.days, source=args.source)
+        print(engine.format_terminal(report))
         db.close()
     except Exception as e:
         print(f"Error generating insights: {e}")
@@ -13961,36 +13935,6 @@ def main():
     # insights command  (parser built in hermes_cli/subcommands/insights.py)
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
-
-    codex_usage_parser = subparsers.add_parser(
-        "codex-usage",
-        help="Show OpenAI Codex quota usage for Hermes OAuth credentials",
-        description="Show current OpenAI Codex quota, reset windows, alerts, and recommended credential.",
-    )
-    codex_usage_parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
-    codex_usage_parser.add_argument("--compact", action="store_true", help="print Telegram-friendly compact output")
-    codex_usage_parser.add_argument("--alert-threshold", type=float, help="legacy: alert when either window is at/above this percent")
-    codex_usage_parser.add_argument("--primary-threshold", type=float, help="5h window alert threshold percent")
-    codex_usage_parser.add_argument("--secondary-threshold", type=float, help="7d window alert threshold percent")
-    codex_usage_parser.add_argument("--quiet-ok", action="store_true", help="with alert thresholds, print nothing when below threshold")
-    codex_usage_parser.add_argument("--watermark", nargs="?", const="__DEFAULT__", help="suppress duplicate alerts for the same reset window")
-    def _cmd_codex_usage(_args):
-        from hermes_cli.codex_usage import main as _codex_usage_main
-        argv = []
-        for _flag in ("json", "compact", "quiet_ok"):
-            if getattr(_args, _flag, False):
-                argv.append("--" + _flag.replace("_", "-"))
-        for _flag in ("alert_threshold", "primary_threshold", "secondary_threshold"):
-            _val = getattr(_args, _flag, None)
-            if _val is not None:
-                argv.extend(["--" + _flag.replace("_", "-"), str(_val)])
-        _wm = getattr(_args, "watermark", None)
-        if _wm is not None:
-            argv.append("--watermark")
-            if _wm != "__DEFAULT__":
-                argv.append(str(_wm))
-        return _codex_usage_main(argv)
-    codex_usage_parser.set_defaults(func=_cmd_codex_usage)
 
     # =========================================================================
     # claw command  (parser built in hermes_cli/subcommands/claw.py)

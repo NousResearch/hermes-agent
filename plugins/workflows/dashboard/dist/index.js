@@ -73,6 +73,11 @@
     }
   }
 
+  function initialExecutionIdFromLocation() {
+    if (typeof URLSearchParams === "undefined" || !window.location) return "";
+    return new URLSearchParams(window.location.search || "").get("execution") || "";
+  }
+
   function nodeList(spec) {
     const nodes = spec && spec.nodes ? spec.nodes : {};
     if (Array.isArray(nodes)) return nodes.map(function (node, index) {
@@ -270,6 +275,7 @@
     const stateRunning = useState(false);
     const running = stateRunning[0];
     const setRunning = stateRunning[1];
+    const initialExecutionId = initialExecutionIdFromLocation();
 
     function fail(err) {
       setError(err && err.message ? err.message : String(err));
@@ -369,7 +375,7 @@
     }
 
     useEffect(function () {
-      refresh();
+      refresh(initialExecutionId);
     }, []);
 
     useEffect(function () {

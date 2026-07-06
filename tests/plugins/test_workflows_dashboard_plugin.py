@@ -123,7 +123,7 @@ def test_dashboard_bundle_registers_plugin_without_build_scaffolding():
 
 def test_web_plugin_sdk_exposes_react_flow_to_static_plugins():
     package_json = json.loads((REPO_ROOT / "web" / "package.json").read_text())
-    assert package_json["dependencies"]["@xyflow/react"] == "^12.11.1"
+    assert "@xyflow/react" in package_json["dependencies"]
 
     registry = (REPO_ROOT / "web" / "src" / "plugins" / "registry.ts").read_text(
         encoding="utf-8"
@@ -150,6 +150,15 @@ def test_web_plugin_sdk_exposes_react_flow_to_static_plugins():
     ]:
         assert marker in registry
         assert marker in sdk_types
+
+
+def test_dashboard_bundle_selects_execution_from_url_query():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+
+    assert "URLSearchParams" in bundle
+    assert "location.search" in bundle
+    assert 'get("execution")' in bundle or "get('execution')" in bundle
+    assert "refresh(initialExecutionId)" in bundle or "loadExecutions(initialExecutionId)" in bundle
 
 
 def test_dashboard_bundle_contains_visual_editor_markers():

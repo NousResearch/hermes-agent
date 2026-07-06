@@ -733,6 +733,7 @@ def tick(
 
     tick_now = int(time.time()) if now is None else now
     processed = 0
+    wfdb.init_db(db_path)
     with wfdb.connect(db_path) as conn:
         _fire_due_schedules(conn, now=tick_now)
         _resume_due_waits(conn, now=tick_now)

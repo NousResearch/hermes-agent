@@ -171,6 +171,29 @@ def _execution_state(exec_id: str):
     return execution, claim, events
 
 
+def test_tick_initializes_empty_db_path(tmp_path):
+    db_path = tmp_path / "workflows.db"
+
+    assert workflows_dispatcher.tick(db_path=db_path, limit=1) == 0
+
+    with wfdb.connect(db_path) as conn:
+        tables = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        schedules_indexes = {
+            row["name"] for row in conn.execute("PRAGMA index_list(workflow_schedules)")
+        }
+    assert {
+        "workflow_definitions",
+        "workflow_executions",
+        "workflow_node_runs",
+        "workflow_events",
+        "workflow_schedules",
+    } <= tables
+    assert "idx_workflow_schedules_enabled" in schedules_indexes
+
+
 def test_tick_runs_queued_pass_switch_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     wfdb.init_db()

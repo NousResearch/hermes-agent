@@ -979,10 +979,13 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.voice_states = True
 
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
-            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
+            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot, safe_url_for_log
             proxy_url = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             if proxy_url:
-                logger.info("[%s] Using proxy for Discord: %s", self.name, proxy_url)
+                # SECURITY: never log the raw proxy URL — userinfo (e.g.
+                # ``http://agent_token:hermes@vault:14322``) embeds a credential
+                # that would leak into ``gateway.log`` on every restart (#58994).
+                logger.debug("[%s] Using proxy for Discord: %s", self.name, safe_url_for_log(proxy_url))
 
             # Create bot — proxy= for HTTP, connector= for SOCKS.
             # allowed_mentions is set with safe defaults (no @everyone/roles)

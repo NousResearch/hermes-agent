@@ -318,6 +318,26 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
 
+        # Text verbosity - GPT-5+ only (OpenAI Responses API parameter).
+        # Injected AFTER request_overrides so it merges into any existing
+        # text dict (e.g. text.format from overrides is preserved).
+        text_verbosity = params.get("text_verbosity", "")
+        if text_verbosity and isinstance(text_verbosity, str):
+            model_stem = model.lower().rsplit("/", 1)[-1]
+            if model_stem.startswith("gpt-"):
+                try:
+                    major = int(model_stem.split("-")[1].split(".")[0])
+                except (IndexError, ValueError):
+                    major = 0
+                if major >= 5:
+                    text_obj = kwargs.get("text", {})
+                    if not isinstance(text_obj, dict):
+                        text_obj = {}
+                    else:
+                        text_obj = dict(text_obj)
+                    text_obj["verbosity"] = text_verbosity
+                    kwargs["text"] = text_obj
+
         if "prompt_cache_key" in kwargs:
             bounded_cache_key = _bounded_prompt_cache_key(kwargs["prompt_cache_key"])
             if bounded_cache_key:

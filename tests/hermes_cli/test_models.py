@@ -9,6 +9,7 @@ from hermes_cli.models import (
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
     union_with_portal_free_recommendations,
     union_with_portal_paid_recommendations,
+    get_default_model_for_provider,
 )
 import hermes_cli.models as _models_mod
 
@@ -740,6 +741,21 @@ class TestCheckNousFreeTierCache:
     def test_cache_ttl_is_short(self):
         """TTL should be short enough to catch upgrades quickly (<=5 min)."""
         assert _FREE_TIER_CACHE_TTL <= 300
+
+
+class TestNousSilentDefault:
+    def test_nous_silent_default_uses_portal_free_recommendation(self):
+        """The non-interactive Nous fallback must track the current free model."""
+        payload = {
+            "freeRecommendedModels": [
+                {"modelName": "stepfun/step-3.7-flash:free"},
+            ],
+        }
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value=payload,
+        ):
+            assert get_default_model_for_provider("nous") == "stepfun/step-3.7-flash:free"
 
 
 class TestNousRecommendedModels:

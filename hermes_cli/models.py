@@ -1011,6 +1011,27 @@ def get_nous_recommended_aux_model(
     return None
 
 
+def _get_nous_recommended_free_default(
+    portal_base_url: str = "",
+    *,
+    force_refresh: bool = False,
+) -> Optional[str]:
+    """Return the Portal's first currently-free default model recommendation."""
+    base = portal_base_url or _resolve_nous_portal_url()
+    try:
+        payload = fetch_nous_recommended_models(base, force_refresh=force_refresh)
+    except Exception:
+        return None
+    free_block = payload.get("freeRecommendedModels") if isinstance(payload, dict) else None
+    if not isinstance(free_block, list):
+        return None
+    for entry in free_block:
+        name = _extract_model_name(entry)
+        if name:
+            return name
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Canonical provider list — single source of truth for provider identity.
 # Every code path that lists, displays, or iterates providers derives from
@@ -1283,14 +1304,14 @@ _PROVIDER_ALIASES = {
 # non-interactive fallback when a profile sets ``provider: nous`` with no model
 # silently bills the most expensive model for traffic the user never opted into
 # (a missing default escalated to Opus and billed 863 requests before the user
-# noticed). Pin the silent default to a low-cost curated model instead so a
-# missing model can never escalate to the flagship.
+# noticed). Prefer the Portal's current free recommendation, falling back to a
+# low-cost curated model only when the recommendation cache is unavailable, so a
+# missing model can never escalate to the flagship or a stale paid default.
 #
-# This is deliberately a fixed, side-effect-free default for the hot resolution
-# path. The *interactive* default (GUI onboarding / ``hermes model``) uses the
+# The Portal helper reuses the recommended-models TTL + disk cache. The
+# *interactive* default (GUI onboarding / ``hermes model``) still uses the
 # richer free/paid-tier-aware resolver — see ``get_recommended_default_model``
-# in hermes_cli/web_server.py and ``partition_nous_models_by_tier`` — which can
-# hit the Portal; this fallback must stay cheap and network-free.
+# in hermes_cli/web_server.py and ``partition_nous_models_by_tier``.
 _PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
     "nous": "deepseek/deepseek-v4-flash",
 }
@@ -1308,10 +1329,15 @@ def get_default_model_for_provider(provider: str) -> str:
     whose curated list is ordered most-capable-first, that entry is also the
     most EXPENSIVE one, so silently defaulting to it is a billing footgun. Such
     providers carry an explicit low-cost override in
-    ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; a missing model must never
+    ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; for Nous, a current Portal free
+    recommendation wins over that static fallback. A missing model must never
     auto-escalate to the flagship.
     """
     models = _PROVIDER_MODELS.get(provider, [])
+    if provider == "nous":
+        recommended = _get_nous_recommended_free_default()
+        if recommended:
+            return recommended
     override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)
     if override and override in models:
         return override

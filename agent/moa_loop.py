@@ -55,6 +55,7 @@ class _RefAccounting:
         "model",
         "provider",
         "temperature",
+        "tool_calls",
     )
 
     def __init__(
@@ -69,6 +70,7 @@ class _RefAccounting:
         model: str | None = None,
         provider: str | None = None,
         temperature: Any = None,
+        tool_calls: Any = None,
     ):
         self.usage = usage
         self.cost_usd = cost_usd
@@ -79,6 +81,13 @@ class _RefAccounting:
         self.model = model
         self.provider = provider
         self.temperature = temperature
+        # Raw tool_calls the reference produced, in the shape the original
+        # transport returned (dicts or SimpleNamespace — both supported by
+        # _render_tool_calls).  ``None`` when the reference emitted text-only.
+        # Preserved alongside the rendered text so a downstream aggregator
+        # can re-dispatch the call instead of fabricating one from prose.
+        # See agent/moa_loop.py issue #58437.
+        self.tool_calls = tool_calls
 
 # Per-tool-result character budget for the advisory reference view. Tool
 # results can be huge (a full diff, a 5000-line file dump); replaying them
@@ -308,7 +317,32 @@ def _run_reference(
             cost_source = cost.source
         except Exception:  # pragma: no cover - defensive
             pass
-        _output_text = _extract_text(response) or "(empty response)"
+        _content_text = _extract_text(response)
+        # Preserve the reference's tool_calls independently of any visible
+        # text.  The aggregator needs to know what each reference tried to do
+        # and may need to re-dispatch these calls — discarding them when the
+        # reference emits a tool_call instead of text leaves the aggregator
+        # blind to its advisors' actions in quiet mode (no display consumer
+        # to render the chatty "I'll use the tool..." fallback).  See #58437.
+        _ref_tool_calls: Any = None
+        try:
+            _msg = getattr(response, "choices", [None])[0]
+            _msg = getattr(_msg, "message", _msg) if _msg is not None else None
+            if _msg is not None:
+                _ref_tool_calls = getattr(_msg, "tool_calls", None) or None
+        except Exception:
+            _ref_tool_calls = None
+        _rendered_calls = _render_tool_calls(_ref_tool_calls) if _ref_tool_calls else ""
+        if _content_text and _rendered_calls:
+            _output_text = f"{_content_text}\n{_rendered_calls}"
+        elif _rendered_calls:
+            # Reference emitted a tool_call with no prose — still surface the
+            # call to the aggregator so it can re-dispatch.
+            _output_text = _rendered_calls or "(empty response)"
+        elif _content_text:
+            _output_text = _content_text
+        else:
+            _output_text = "(empty response)"
         acct = _RefAccounting(
             usage,
             cost_usd,
@@ -319,6 +353,7 @@ def _run_reference(
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
             temperature=temperature,
+            tool_calls=_ref_tool_calls,
         )
         return label, _output_text, acct
     except Exception as exc:
@@ -405,21 +440,37 @@ def _render_tool_calls(tool_calls: Any) -> str:
     The advisory view cannot carry real ``tool_calls`` payloads (strict
     providers reject tool_calls the reference never produced), so the agent's
     actions are flattened to text the reference can read and reason about.
+
+    Tolerates both dict-shaped and ``SimpleNamespace``-shaped entries
+    (with nested ``function`` of either kind), so the helper works
+    uniformly against an OpenAI-style transport and against SDK-style
+    stream-stitched responses.  Without this shape tolerance, a
+    SimpleNamespace-sourced reference would render as ``[called tool:
+    tool]`` and silently lose the function name — exactly the loss the
+    #58437 aggregator-re-dispatch path relies on the fix to avoid.
     """
     lines: list[str] = []
     for tc in tool_calls or []:
-        fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
-        name = fn.get("name") or (tc.get("name") if isinstance(tc, dict) else "") or "tool"
-        args = fn.get("arguments")
-        if isinstance(args, str):
-            args_text = args
-        elif args is not None:
+        if isinstance(tc, dict):
+            fn = tc.get("function") or {}
+            fn_name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+            fn_args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", None)
+            top_name = tc.get("name")
+        else:
+            fn = getattr(tc, "function", None)
+            fn_name = getattr(fn, "name", None) if fn is not None else None
+            fn_args = getattr(fn, "arguments", None) if fn is not None else None
+            top_name = getattr(tc, "name", None)
+        name = fn_name or top_name or "tool"
+        if isinstance(fn_args, str):
+            args_text = fn_args
+        elif fn_args is not None:
             try:
                 import json
 
-                args_text = json.dumps(args, ensure_ascii=False)
+                args_text = json.dumps(fn_args, ensure_ascii=False)
             except Exception:
-                args_text = str(args)
+                args_text = str(fn_args)
         else:
             args_text = ""
         lines.append(f"[called tool: {name}({args_text})]" if args_text else f"[called tool: {name}]")
@@ -943,12 +994,21 @@ class MoAChatCompletions:
             # turn.
             _ref_count = len(reference_outputs)
             for _idx, (_label, _text, _usage) in enumerate(reference_outputs, start=1):
+                # Surface tool_calls alongside the text.  Quiet-mode display
+                # consumers may suppress the chatty ``text`` render, but the
+                # tool_calls carry semantic intent — preserving them lets the
+                # aggregator re-dispatch an advisor's attempted action even
+                # when no display consumer is attached.  See #58437.
+                _ref_calls = (
+                    getattr(_usage, "tool_calls", None) if _usage is not None else None
+                )
                 self._emit(
                     "moa.reference",
                     index=_idx,
                     count=_ref_count,
                     label=_label,
                     text=_text,
+                    tool_calls=_ref_calls,
                 )
             if _ref_count:
                 self._emit(

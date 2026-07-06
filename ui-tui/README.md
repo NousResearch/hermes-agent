@@ -285,7 +285,7 @@ Primary event types the client handles today:
 | `tool.progress`            | `{ name, preview }`                                                         |
 | `tool.complete`            | `{ tool_id, name, error?, summary?, duration_s?, inline_diff?, todos? }`    |
 | `clarify.request`          | `{ question, choices?, request_id }`                                        |
-| `approval.request`         | `{ command, description, allow_permanent? }`                                |
+| `approval.request`         | `{ command, description, pattern_key?, pattern_keys?, allowlist_key?, rule_key?, allow_permanent? }` |
 | `sudo.request`             | `{ request_id }`                                                            |
 | `sudo.expire`              | `{ request_id }` clears a timed-out sudo prompt                             |
 | `secret.request`           | `{ prompt, env_var, request_id }`                                           |

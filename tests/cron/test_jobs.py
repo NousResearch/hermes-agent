@@ -305,6 +305,26 @@ class TestJobCRUD:
         job = create_job(prompt="One-shot", schedule="1h")
         assert job["repeat"]["times"] == 1
 
+    def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        stale = (now - timedelta(minutes=5)).isoformat()
+
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            create_job(prompt="Too late", schedule=stale)
+
+        assert load_jobs() == []
+
+    def test_recent_past_one_shot_within_grace_still_creates(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        recent = (now - timedelta(seconds=30)).isoformat()
+
+        job = create_job(prompt="Still valid", schedule=recent)
+
+        assert job["next_run_at"] == recent
+        assert load_jobs()[0]["id"] == job["id"]
+
     def test_interval_no_auto_repeat(self, tmp_cron_dir):
         job = create_job(prompt="Recurring", schedule="every 1h")
         assert job["repeat"]["times"] is None
@@ -353,6 +373,33 @@ class TestUpdateJob:
         fetched = get_job(job["id"])
         assert fetched["schedule"]["minutes"] == 120
         assert fetched["schedule_display"] == "every 120m"
+
+    def test_update_to_past_oneshot_rejected(self, tmp_cron_dir, monkeypatch):
+        """Updating a job's schedule to a one-shot >ONESHOT_GRACE_SECONDS in the
+        past must raise ValueError — otherwise the ghost-job bug (#59395) re-enters
+        through the update door (next_run_at=None stored with state='scheduled').
+        The original job must be left unchanged on disk."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Recurring", schedule="every 1h", deliver="local")
+        past = parse_schedule((now - timedelta(minutes=10)).isoformat())
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            update_job(job["id"], {"schedule": past})
+        # Original job unchanged — still the recurring interval, still scheduled.
+        fetched = get_job(job["id"])
+        assert fetched["schedule"]["kind"] == "interval"
+        assert fetched["next_run_at"] is not None
+
+    def test_update_to_future_oneshot_accepted(self, tmp_cron_dir, monkeypatch):
+        """Updating to a FUTURE one-shot still works — only past ones are rejected."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Recurring", schedule="every 1h", deliver="local")
+        future = parse_schedule((now + timedelta(hours=2)).isoformat())
+        updated = update_job(job["id"], {"schedule": future})
+        assert updated is not None
+        assert updated["schedule"]["kind"] == "once"
+        assert updated["next_run_at"] is not None
 
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")

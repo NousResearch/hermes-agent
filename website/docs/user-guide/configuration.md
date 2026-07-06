@@ -823,16 +823,11 @@ Plugin engines are **never auto-activated** — you must explicitly set `context
 
 See [Memory Providers](/user-guide/features/memory-providers) for the analogous single-select system for memory plugins.
 
-## Iteration Budget Pressure
+## Iteration Budget
 
-When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 90 turns) without realizing it's running low. Budget pressure automatically warns the model as it approaches the limit:
+When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 90 turns). Hermes does **not** inject mid-task pressure warnings — earlier builds warned the model at 70%/90% budget, which caused models to abandon complex tasks prematurely and was removed in April 2026.
 
-| Threshold | Level | What the model sees |
-|-----------|-------|---------------------|
-| **70%** | Caution | `[BUDGET: 63/90. 27 iterations left. Start consolidating.]` |
-| **90%** | Warning | `[BUDGET WARNING: 81/90. Only 9 left. Respond NOW.]` |
-
-Warnings are injected into the last tool result's JSON (as a `_budget_warning` field) rather than as separate messages — this preserves prompt caching and doesn't disrupt the conversation structure.
+Instead, when the budget is actually exhausted (90/90), Hermes injects one message asking the model to wrap up and allows a single **grace call** so it can deliver a final response. If that grace call still doesn't produce text, the agent is asked to summarise what it accomplished.
 
 ```yaml
 agent:
@@ -840,9 +835,7 @@ agent:
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
 ```
 
-Budget pressure is enabled by default. The agent sees warnings naturally as part of tool results, encouraging it to consolidate its work and deliver a response before running out of iterations.
-
-When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`. If the budget runs out during active work, the agent generates a summary of what was accomplished before stopping.
+When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`.
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 

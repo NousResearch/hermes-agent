@@ -455,7 +455,9 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_max_assistant_chars": 200,
             "resume_max_assistant_lines": 3,
             "resume_skip_tool_only": True,
-            "show_reasoning": False,
+            # Live reasoning display default ON — keep in sync with
+            # hermes_cli/config.py DEFAULT_CONFIG (display.show_reasoning).
+            "show_reasoning": True,
             "reasoning_full": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
@@ -3708,7 +3710,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
-        self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", True)
         # reasoning_full: when reasoning display is on, print the post-response
         # recap box uncollapsed instead of clamping to the first 10 lines.
         self.reasoning_full = CLI_CONFIG["display"].get("reasoning_full", False)
@@ -5835,6 +5837,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if self.final_response_markdown == "strip":
                 line = _strip_markdown_syntax(line)
             _emit_one(line)
+
+        # Force-flush long partial lines so a response that opens with a
+        # long paragraph paints as tokens arrive instead of staying blank
+        # until the first newline (TTFT perception fix — the reasoning box
+        # has done this at 80 chars since day one; the response box never
+        # did). Wrap at the terminal's visible width so we only ever emit
+        # text that would have line-broken at that point anyway; the
+        # remainder stays buffered as the logical line's continuation.
+        # Table-shaped partials are exempt — they need the whole block for
+        # realignment (see the table side-buffer above).
+        if (
+            self._stream_buf
+            and not self._in_stream_table
+            and not self._stream_buf.lstrip().startswith("|")
+        ):
+            wrap_w = max(40, _terminal_width_for_streaming())
+            while len(self._stream_buf) >= wrap_w:
+                cut = self._stream_buf.rfind(" ", 0, wrap_w)
+                if cut <= 0:
+                    cut = wrap_w  # single unbreakable run — hard wrap
+                chunk, self._stream_buf = (
+                    self._stream_buf[:cut],
+                    self._stream_buf[cut:].lstrip(" "),
+                )
+                if self.final_response_markdown == "strip":
+                    chunk = _strip_markdown_syntax(chunk)
+                _emit_one(chunk)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -13054,6 +13083,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             prewarm_picker_cache_async()
         except Exception:
             pass
+
+        # Pre-import the agent runtime off-thread during the same idle window.
+        # The first turn otherwise pays ~1.5s of module imports on the
+        # time-to-first-token critical path: `import run_agent` (~0.9s,
+        # deferred by the lazy AIAgent wrapper above) plus the OpenAI SDK
+        # (~0.6s, deferred until client construction). Python's import lock
+        # makes this safe: if the user submits before the warm finishes, the
+        # main thread simply blocks on the remaining import work instead of
+        # redoing it. Skipped when agent startup is explicitly deferred
+        # (Termux) — that path defers heavy work on purpose.
+        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
+            def _prewarm_agent_runtime() -> None:
+                try:
+                    import run_agent  # noqa: F401  (imports model_tools + tool registry)
+                    import openai  # noqa: F401
+                except Exception:
+                    logger.debug("agent runtime pre-import failed", exc_info=True)
+
+            threading.Thread(
+                target=_prewarm_agent_runtime,
+                name="agent-runtime-prewarm",
+                daemon=True,
+            ).start()
 
         # Redaction opt-out warning (#17691): ON by default, loud when off.
         # The redactor snapshots its state at import time so any toggle now

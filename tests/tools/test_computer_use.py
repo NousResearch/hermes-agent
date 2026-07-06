@@ -1987,6 +1987,103 @@ class TestClickButtonPassthrough:
         assert args["x"] == 10 and args["y"] == 20
 
 
+class TestCuaActionVerificationAndWindowTargeting:
+    def _backend_with_active_target(self, *, data: Any = "ok",
+                                    structured: Dict[str, Any] | None = None):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": data,
+            "images": [],
+            "image_mime_types": [],
+            "structuredContent": structured,
+            "isError": False,
+        }
+        backend._session.supports_capability = lambda cap, tool=None: False
+        backend._active_pid = 123
+        backend._active_window_id = 456
+        backend._session_id = "hermes-test-session"
+        return backend
+
+    def test_action_fails_closed_when_driver_reports_unverified(self):
+        backend = self._backend_with_active_target(
+            data="Sent (unverified) 5 char(s).",
+            structured={
+                "verified": False,
+                "effect": "unverifiable",
+                "path": "key_events",
+            },
+        )
+
+        result = backend._action("type_text", {"pid": 123, "text": "hello"})
+
+        assert result.ok is False
+        assert result.message == "Sent (unverified) 5 char(s)."
+        assert result.meta["verified"] is False
+        assert result.meta["effect"] == "unverifiable"
+        assert result.meta["path"] == "key_events"
+
+    def test_type_text_carries_window_id_and_fails_closed(self):
+        backend = self._backend_with_active_target(
+            data="Sent (unverified) 5 char(s).",
+            structured={
+                "verified": False,
+                "effect": "unverifiable",
+                "path": "key_events",
+            },
+        )
+
+        result = backend.type_text("hello")
+
+        assert result.ok is False
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "type_text"
+        assert args["pid"] == 123
+        assert args["window_id"] == 456
+        assert args["text"] == "hello"
+
+    def test_key_actions_carry_window_id(self):
+        backend = self._backend_with_active_target(
+            data={"message": "ok"},
+            structured={"verified": True},
+        )
+
+        result = backend.key("a")
+        assert result.ok is True
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "press_key"
+        assert args["pid"] == 123
+        assert args["window_id"] == 456
+        assert args["key"] == "a"
+
+        backend.key("cmd+a")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "hotkey"
+        assert args["pid"] == 123
+        assert args["window_id"] == 456
+        assert args["keys"] == ["cmd", "a"]
+
+    def test_key_actions_fail_closed_when_driver_reports_unverified(self):
+        backend = self._backend_with_active_target(
+            data={"message": "sent but unverified"},
+            structured={
+                "verified": False,
+                "effect": "unverifiable",
+                "path": "key_events",
+            },
+        )
+
+        result = backend.key("cmd+a")
+
+        assert result.ok is False
+        assert result.message == "sent but unverified"
+        assert result.meta["verified"] is False
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "hotkey"
+        assert args["window_id"] == 456
+
+
 class TestImageMimeTypePropagation:
     """Surface 7 (NousResearch/hermes-agent#47072): trycua/cua#1961 made
     `mimeType` part of every MCP image-part response, so the wrapper no

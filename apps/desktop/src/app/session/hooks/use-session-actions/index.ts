@@ -42,7 +42,7 @@ import {
   workspaceCwdForNewSession
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
-import { isWatchWindow } from '@/store/windows'
+import { isWatchWindow, sessionWindowProfile } from '@/store/windows'
 import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
@@ -343,8 +343,9 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const storedForProfile = await resolveStoredSession(storedSessionId)
-      const sessionProfile = storedForProfile?.profile
+      const profileHint = sessionWindowProfile()
+      const storedForProfile = await resolveStoredSession(storedSessionId, profileHint)
+      const sessionProfile = storedForProfile?.profile ?? profileHint
 
       if (resumeRequestRef.current !== requestId) {
         return

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { canOpenSessionWindow, openNewSessionInNewWindow, openSessionInNewWindow } from './windows'
+import { canOpenSessionWindow, openNewSessionInNewWindow, openSessionInNewWindow, sessionWindowProfile } from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -89,6 +89,16 @@ describe('openSessionInNewWindow', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
+  it('forwards the profile hint for multi-profile session windows', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+
+    await openSessionInNewWindow('s1', { profile: 'mission-control' })
+
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'mission-control' })
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
   it('notifies on an ok:false result', async () => {
     installBridge(vi.fn().mockResolvedValue({ ok: false, error: 'invalid-session-id' }))
 
@@ -139,5 +149,13 @@ describe('openNewSessionInNewWindow', () => {
     await openNewSessionInNewWindow()
 
     expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('sessionWindowProfile', () => {
+  it('reads the profile hint from the pre-hash query string', () => {
+    window.history.replaceState(null, '', '/?win=secondary&profile=mission-control#/s1')
+
+    expect(sessionWindowProfile()).toBe('mission-control')
   })
 })

@@ -392,4 +392,21 @@ This is derived from `hermes_constants.get_hermes_home()` which resolves to
 `~/.hermes/` by default, or the value of `HERMES_HOME` environment variable.
 
 The database file, WAL file (`state.db-wal`), and shared-memory file
-(`state.db-shm`) are all created in the same directory.
+(`state.db-shm`) are all created in the same directory when journal mode is WAL.
+
+### Journal mode and PRAGMAs
+
+WAL is the default on macOS and Linux for concurrent readers during gateway
+operation. Users can opt into DELETE mode via `database.journal_mode` in
+`config.yaml` when crash safety matters more than multi-process concurrency —
+DELETE mode writes through the rollback journal so the main DB file stays
+self-consistent after abrupt shutdown.
+
+Configurable keys (see [Configuration — Database](/user-guide/configuration#database)):
+
+- `database.journal_mode` — `""` (default), `wal`, or `delete`
+- `database.wal_autocheckpoint` — pages between automatic checkpoints (WAL only)
+- `database.journal_size_limit` — max WAL file size in bytes (WAL only)
+
+On NFS/SMB/FUSE mounts Hermes still falls back to DELETE automatically when WAL
+is unsupported, independent of config.

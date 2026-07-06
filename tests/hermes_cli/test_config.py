@@ -72,6 +72,9 @@ class TestLoadConfigDefaults:
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
+            assert config["database"]["journal_mode"] == ""
+            assert config["database"]["wal_autocheckpoint"] is None
+            assert config["database"]["journal_size_limit"] is None
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -81,6 +84,20 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+    def test_database_section_merges_from_yaml(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(
+                "database:\n"
+                "  journal_mode: delete\n"
+                "  wal_autocheckpoint: 200\n"
+                "  journal_size_limit: 10485760\n"
+            )
+            config = load_config()
+            assert config["database"]["journal_mode"] == "delete"
+            assert config["database"]["wal_autocheckpoint"] == 200
+            assert config["database"]["journal_size_limit"] == 10485760
 
 
 class TestLoadConfigParseFailure:

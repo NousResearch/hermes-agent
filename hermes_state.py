@@ -19,8 +19,10 @@ import logging
 import random
 import re
 import sqlite3
+import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -226,6 +228,143 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
         except UnicodeDecodeError:
             return None
     return str(mode).strip().lower() if mode is not None else None
+
+
+@dataclass(frozen=True)
+class DatabasePragmaConfig:
+    """SQLite PRAGMA settings for state.db from config.yaml ``database:``."""
+
+    journal_mode: Optional[str]  # None = platform default; "wal" | "delete"
+    wal_autocheckpoint: Optional[int]
+    journal_size_limit: Optional[int]
+
+
+def load_database_pragma_config() -> DatabasePragmaConfig:
+    """Load and normalize ``database:`` settings from config.yaml."""
+    from hermes_cli.config import load_config
+
+    raw = (load_config().get("database") or {})
+    jm = raw.get("journal_mode", "")
+    if jm is None or (isinstance(jm, str) and not jm.strip()):
+        journal_mode = None
+    else:
+        journal_mode = str(jm).strip().lower()
+        if journal_mode not in ("wal", "delete"):
+            raise ValueError(
+                f"database.journal_mode must be empty, 'wal', or 'delete' — got {jm!r}"
+            )
+
+    def _optional_int(key: str) -> Optional[int]:
+        val = raw.get(key)
+        if val is None:
+            return None
+        return int(val)
+
+    return DatabasePragmaConfig(
+        journal_mode=journal_mode,
+        wal_autocheckpoint=_optional_int("wal_autocheckpoint"),
+        journal_size_limit=_optional_int("journal_size_limit"),
+    )
+
+
+def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
+    """Enable F_FULLFSYNC at WAL checkpoints on macOS (#30636 / #54045)."""
+    if sys.platform != "darwin":
+        return
+    try:
+        conn.execute("PRAGMA checkpoint_fullfsync=1")
+    except sqlite3.OperationalError:
+        pass
+
+
+def _wal_sidecar_paths(db_path: Path) -> Tuple[Path, Path]:
+    """Return (wal, shm) sidecar paths for a SQLite database file."""
+    base = str(db_path)
+    return Path(f"{base}-wal"), Path(f"{base}-shm")
+
+
+def _clean_stale_wal_sidecars(db_path: Path) -> None:
+    """Remove orphaned ``-wal`` / ``-shm`` files after switching to DELETE."""
+    for sidecar in _wal_sidecar_paths(db_path):
+        try:
+            if sidecar.exists():
+                sidecar.unlink()
+        except OSError as exc:
+            logger.debug("Could not remove stale sidecar %s: %s", sidecar, exc)
+
+
+def _switch_to_delete_journal_mode(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    db_label: str,
+    *,
+    user_requested: bool,
+) -> str:
+    """Checkpoint any WAL, switch to DELETE, and remove stale sidecars."""
+    current = _on_disk_journal_mode(conn)
+    if current != "delete":
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
+        conn.execute("PRAGMA journal_mode=DELETE")
+    _clean_stale_wal_sidecars(db_path)
+    if user_requested:
+        logger.info("%s: using journal_mode=DELETE per config", db_label)
+    elif sys.platform == "win32":
+        logger.debug("%s: using journal_mode=DELETE on Windows", db_label)
+    return "delete"
+
+
+def apply_session_journal_mode(
+    conn: sqlite3.Connection,
+    *,
+    db_path: Path,
+    db_label: str = "state.db",
+    config: Optional[DatabasePragmaConfig] = None,
+) -> str:
+    """Apply journal mode for state.db using config precedence.
+
+    Precedence:
+      1. Windows — always DELETE (non-overridable).
+      2. User ``database.journal_mode`` when set.
+      3. Default — WAL with NFS/SMB/FUSE fallback via apply_wal_with_fallback.
+    """
+    if config is None:
+        config = load_database_pragma_config()
+
+    if sys.platform == "win32":
+        return _switch_to_delete_journal_mode(
+            conn, db_path, db_label, user_requested=False,
+        )
+
+    if config.journal_mode == "delete":
+        return _switch_to_delete_journal_mode(
+            conn, db_path, db_label, user_requested=True,
+        )
+
+    if config.journal_mode == "wal":
+        mode = apply_wal_with_fallback(conn, db_label=db_label)
+        _apply_macos_checkpoint_barrier(conn)
+        return mode
+
+    mode = apply_wal_with_fallback(conn, db_label=db_label)
+    _apply_macos_checkpoint_barrier(conn)
+    return mode
+
+
+def apply_database_pragmas(
+    conn: sqlite3.Connection,
+    config: DatabasePragmaConfig,
+    *,
+    journal_mode: str,
+) -> None:
+    """Apply WAL tuning PRAGMAs from config after journal mode is settled."""
+    mode = journal_mode.lower()
+    if mode == "wal" and config.wal_autocheckpoint is not None:
+        conn.execute(f"PRAGMA wal_autocheckpoint={int(config.wal_autocheckpoint)}")
+    if mode == "wal" and config.journal_size_limit is not None:
+        conn.execute(f"PRAGMA journal_size_limit={int(config.journal_size_limit)}")
 
 
 def apply_wal_with_fallback(
@@ -722,7 +861,14 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
-                apply_wal_with_fallback(self._conn, db_label="state.db")
+                db_cfg = load_database_pragma_config()
+                mode = apply_session_journal_mode(
+                    self._conn,
+                    db_path=self.db_path,
+                    db_label="state.db",
+                    config=db_cfg,
+                )
+                apply_database_pragmas(self._conn, db_cfg, journal_mode=mode)
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
 

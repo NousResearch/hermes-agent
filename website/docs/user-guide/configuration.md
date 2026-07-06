@@ -1773,6 +1773,28 @@ Smart mode is particularly useful for reducing approval fatigue — it lets the 
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::
 
+## Database
+
+SQLite tuning for the session store (`state.db`). WAL mode is the default on macOS and Linux so multiple Hermes processes (gateway, CLI, dashboard) can read sessions concurrently. For single-user installs that prioritize crash recovery over concurrent reads, opt into DELETE mode.
+
+```yaml
+database:
+  journal_mode: ""              # "" = default (WAL on POSIX, DELETE on Windows)
+  # journal_mode: delete      # opt-in: crash-safety-first; no WAL sidecar files
+  wal_autocheckpoint: null      # null = SQLite default (1000 pages); only applies in WAL mode
+  # wal_autocheckpoint: 200   # checkpoint more often (~800 KB)
+  journal_size_limit: null    # null = unlimited; only applies in WAL mode
+  # journal_size_limit: 10485760  # cap WAL file at 10 MB
+```
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| `journal_mode` | WAL (POSIX) / DELETE (Windows) | `delete` checkpoints existing WAL data before switching |
+| `wal_autocheckpoint` | SQLite default | Lower values shrink the window where data lives only in `-wal` |
+| `journal_size_limit` | unlimited | SQLite auto-checkpoints when WAL reaches this byte size |
+
+Session retention and pruning are configured separately under `sessions:` — see [Sessions](/user-guide/sessions).
+
 ## Checkpoints
 
 Automatic filesystem snapshots before destructive file operations. See the [Checkpoints & Rollback](/user-guide/checkpoints-and-rollback) for details.

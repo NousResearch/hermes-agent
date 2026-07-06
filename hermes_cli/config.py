@@ -2367,6 +2367,17 @@ DEFAULT_CONFIG = {
         "write_json_snapshots": False,
     },
 
+    # SQLite session store (state.db) — journal mode and WAL tuning.
+    # Empty journal_mode means platform default (WAL on POSIX, DELETE on Windows
+    # when that platform guard is active).  Set journal_mode: delete for
+    # crash-safety-first single-user installs; wal_autocheckpoint and
+    # journal_size_limit apply only when the final mode is WAL.
+    "database": {
+        "journal_mode": "",
+        "wal_autocheckpoint": None,
+        "journal_size_limit": None,
+    },
+
     # Contextual first-touch onboarding hints (see agent/onboarding.py).
     # Each hint is shown once per install and then latched here so it
     # never fires again.  Users can wipe the section to re-see all hints.
@@ -4121,7 +4132,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "sessions", "database", "streaming", "updates", "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry

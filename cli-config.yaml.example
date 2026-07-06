@@ -1177,6 +1177,15 @@ display:
 
 
 # =============================================================================
+# Session store (state.db) — SQLite journal mode and WAL tuning
+# =============================================================================
+# database:
+#   journal_mode: ""              # default: WAL on POSIX, DELETE on Windows
+#   # journal_mode: delete        # opt-in crash-safety-first single-user mode
+#   wal_autocheckpoint: null      # null = SQLite default; WAL mode only
+#   journal_size_limit: null      # null = unlimited; WAL mode only
+
+# =============================================================================
 # Update Behavior
 # =============================================================================
 updates:

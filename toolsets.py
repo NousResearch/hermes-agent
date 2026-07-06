@@ -276,6 +276,21 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "workflow": {
+        "description": (
+            "Workflow graph orchestration tools — gated and opt-in for "
+            "profiles that start, inspect, or cancel workflow executions."
+        ),
+        "tools": [
+            "workflow_list",
+            "workflow_show",
+            "workflow_run",
+            "workflow_execution_show",
+            "workflow_cancel",
+        ],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],

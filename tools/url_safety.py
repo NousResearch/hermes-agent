@@ -277,6 +277,55 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
+def ip_is_blocked(ip_str: str, *, block_private: bool) -> bool:
+    """Return True if a resolved IP must be refused for SSRF protection.
+
+    The single SSRF policy source reused by the yt-dlp egress proxy so it never
+    defines its own IP ranges. Composes the always-blocked cloud-metadata /
+    link-local floor (enforced regardless of ``block_private``) with the private/
+    loopback/CGNAT check (enforced only when ``block_private`` is True).
+
+    Fails CLOSED: an unparseable / empty string returns True (blocked), never
+    allow-through — a resolver that hands us garbage must not become a bypass.
+
+    Args:
+        ip_str: a resolved IP literal (IPv4, IPv6, or IPv4-mapped IPv6).
+        block_private: when True, also block RFC1918/loopback/link-local/
+            reserved/multicast/unspecified/CGNAT (the full ``_is_blocked_ip``
+            policy). When False, only the always-blocked metadata floor applies.
+
+    Returns:
+        True if the IP should be refused, False if it may be connected to.
+    """
+    try:
+        ip = ipaddress.ip_address(ip_str.strip())
+    except (ValueError, AttributeError):
+        # Not a parseable IP — fail closed.
+        return True
+
+    # Always-blocked floor: cloud metadata IPs + link-local ranges. This mirrors
+    # the checks in is_safe_url()/is_always_blocked_url() and fires regardless of
+    # the block_private flag or any config toggle. Normalize IPv4-mapped IPv6 so
+    # ::ffff:169.254.169.254 is judged by its embedded IPv4 address.
+    check_ip = ip
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        check_ip = ip.ipv4_mapped
+
+    if check_ip in _ALWAYS_BLOCKED_IPS or any(
+        check_ip in net for net in _ALWAYS_BLOCKED_NETWORKS
+    ):
+        return True
+    # Also honor the mapped-form entries directly (belt-and-suspenders for the
+    # ::ffff: literals kept in the always-blocked sets).
+    if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
+        return True
+
+    if block_private and _is_blocked_ip(ip):
+        return True
+
+    return False
+
+
 def is_always_blocked_url(url: str) -> bool:
     """Return True when the URL targets an always-blocked endpoint.
 

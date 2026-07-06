@@ -713,3 +713,51 @@ class TestRedirectTargetFromResponse:
     def test_no_location_no_next_request_returns_none(self):
         resp = _FakeResponse(is_redirect=True)
         assert redirect_target_from_response(resp) is None
+
+
+class TestIpIsBlocked:
+    """The ip_is_blocked() primitive — the single SSRF policy source reused by
+    the yt-dlp egress proxy (Phase 1 of the SSRF-proxy PRD)."""
+
+    def test_metadata_ip_blocked_regardless_of_block_private(self):
+        from tools.url_safety import ip_is_blocked
+        # Cloud metadata is ALWAYS blocked, whether or not private blocking is on.
+        assert ip_is_blocked("169.254.169.254", block_private=False) is True
+        assert ip_is_blocked("169.254.169.254", block_private=True) is True
+        assert ip_is_blocked("169.254.170.2", block_private=False) is True   # AWS ECS
+        assert ip_is_blocked("100.100.100.200", block_private=False) is True  # Alibaba
+
+    def test_private_blocked_only_when_block_private(self):
+        from tools.url_safety import ip_is_blocked
+        # RFC1918 / loopback: blocked iff block_private=True.
+        assert ip_is_blocked("192.168.1.208", block_private=True) is True
+        assert ip_is_blocked("192.168.1.208", block_private=False) is False
+        assert ip_is_blocked("127.0.0.1", block_private=True) is True
+        assert ip_is_blocked("127.0.0.1", block_private=False) is False
+        assert ip_is_blocked("10.0.0.5", block_private=True) is True
+        assert ip_is_blocked("169.254.1.1", block_private=True) is True  # link-local (non-metadata)
+
+    def test_public_allowed(self):
+        from tools.url_safety import ip_is_blocked
+        assert ip_is_blocked("8.8.8.8", block_private=True) is False
+        assert ip_is_blocked("142.250.72.206", block_private=True) is False  # a Google public IP
+
+    def test_ipv4_mapped_ipv6_normalized(self):
+        from tools.url_safety import ip_is_blocked
+        # ::ffff:x.x.x.x must be judged by the embedded IPv4 address.
+        assert ip_is_blocked("::ffff:169.254.169.254", block_private=False) is True
+        assert ip_is_blocked("::ffff:192.168.1.5", block_private=True) is True
+        assert ip_is_blocked("::ffff:192.168.1.5", block_private=False) is False
+
+    def test_cgnat_blocked_when_private(self):
+        from tools.url_safety import ip_is_blocked
+        # 100.64.0.0/10 (CGNAT) is not is_private but must block under block_private.
+        assert ip_is_blocked("100.64.0.1", block_private=True) is True
+        assert ip_is_blocked("100.64.0.1", block_private=False) is False
+
+    def test_unparseable_fails_closed(self):
+        from tools.url_safety import ip_is_blocked
+        # A non-IP string must fail closed (blocked), never allow-through.
+        assert ip_is_blocked("not-an-ip", block_private=True) is True
+        assert ip_is_blocked("not-an-ip", block_private=False) is True
+        assert ip_is_blocked("", block_private=False) is True

@@ -36,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import uuid
+import tempfile
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
@@ -1716,6 +1717,47 @@ def _ytdlp_available() -> bool:
     return shutil.which("yt-dlp") is not None
 
 
+def _make_ffmpeg_block_shim(parent_dir: Path) -> str:
+    """Create a shim bin dir whose ffmpeg/ffprobe/aria2c immediately fail.
+
+    Prepended to the child PATH when the SSRF proxy is active so a format that
+    would force an EXTERNAL (proxy-ignoring) fetch fails CLOSED — the shim
+    binaries exit non-zero, so yt-dlp cannot use ffmpeg/aria2c to egress
+    un-proxied. Unlike stripping whole PATH directories, this leaves every other
+    executable (deno/node — yt-dlp's JS-challenge solvers, git, etc.) reachable
+    on the real PATH. yt-dlp's own native downloader needs none of the shimmed
+    tools for a progressive/single-file format.
+
+    Returns the shim directory path (to be prepended to PATH).
+    """
+    shim = parent_dir / "nofetch-bin"
+    shim.mkdir(parents=True, exist_ok=True)
+    for name in ("ffmpeg", "ffprobe", "aria2c"):
+        p = shim / name
+        p.write_text(
+            "#!/bin/sh\n"
+            "echo 'blocked by SSRF proxy: external downloaders are disabled' >&2\n"
+            "exit 127\n"
+        )
+        p.chmod(0o755)
+    return str(shim)
+
+
+def _ssrf_proxy_enabled() -> bool:
+    """Whether to route yt-dlp through the in-process SSRF-filtering proxy.
+
+    Config key auxiliary.vision.ytdlp_ssrf_proxy (bool). DEFAULT FALSE in v0.1:
+    the proxy is opt-in until proven across representative extractors, because
+    default-ON + fail-closed would break every page-URL fetch on any
+    proxy/extractor incompatibility. Read through the real config loader (not an
+    env var) so the namespace matches where video_analyze reads its config.
+    """
+    val = _cfg_get_safe("auxiliary", "vision", "ytdlp_ssrf_proxy", default="")
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _ytdlp_cookie_args() -> list:
     """Return yt-dlp cookie args, reusing the fleet cookies jar when available.
 
@@ -1750,7 +1792,6 @@ async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
     site. Caps resolution + filesize so the base64 payload stays under the API
     limit; falls back to grabbing the first 3 minutes for long videos.
     """
-    import shutil
     dest_dir.mkdir(parents=True, exist_ok=True)
     out_tmpl = str(dest_dir / f"ytdl_{uuid.uuid4().hex}.%(ext)s")
     # Single progressive file (no merge -> no hard ffmpeg dependency), <=480p.
@@ -1767,12 +1808,45 @@ async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
     cookie_args = _ytdlp_cookie_args()
     base += cookie_args
 
-    def _run(extra):
+    # --- SSRF egress proxy (opt-in, default OFF) ---------------------------
+    # When enabled, route EVERY yt-dlp connection (initial fetch, redirects,
+    # sub-resources) through an in-process SSRF-filtering proxy so a page URL
+    # that redirects to an internal/metadata address is blocked at each hop.
+    # yt-dlp hands some segment/merge fetches to ffmpeg/aria2c which do NOT
+    # honor the CONNECT proxy, so we ALSO (a) force --downloader native and
+    # (b) strip ffmpeg/ffprobe/aria2c from the child PATH → a format that would
+    # force an external fetch fails closed instead of egressing un-proxied.
+    use_proxy = _ssrf_proxy_enabled()
+
+    def _child_env(proxy_url, shim_dir=None):
+        env = dict(os.environ)
+        if proxy_url:
+            env["HTTP_PROXY"] = proxy_url
+            env["HTTPS_PROXY"] = proxy_url
+            env["http_proxy"] = proxy_url
+            env["https_proxy"] = proxy_url
+            env["ALL_PROXY"] = proxy_url  # belt-only; HTTP(S)_PROXY are load-bearing
+            env.pop("NO_PROXY", None)
+            env.pop("no_proxy", None)
+            # Prepend a shim dir whose ffmpeg/ffprobe/aria2c fail, so a
+            # required-external fetch ERRORS (fails closed) rather than silently
+            # egressing un-proxied — while leaving deno/node (yt-dlp's JS
+            # challenge solvers) and everything else on the real PATH reachable.
+            if shim_dir:
+                env["PATH"] = shim_dir + os.pathsep + env.get("PATH", "")
+        return env
+
+    def _run(extra, proxy_url=None, shim_dir=None):
         import subprocess
+        argv = list(base)
+        if proxy_url:
+            argv += ["--proxy", proxy_url, "--downloader", "native"]
+        argv += extra + [url]
         proc = subprocess.run(
-            base + extra + [url],
+            argv,
             stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=180,
+            env=_child_env(proxy_url, shim_dir),
         )
         return proc
 
@@ -1797,31 +1871,43 @@ async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
 
     import subprocess as _sp
 
-    async def _run_safe(extra):
+    async def _run_safe(extra, proxy_url=None, shim_dir=None):
         # yt-dlp timing out raises TimeoutExpired instead of returning a proc.
         # Never let that escape with partials still on disk — always clean.
         try:
-            return await asyncio.to_thread(_run, extra), None
+            return await asyncio.to_thread(_run, extra, proxy_url, shim_dir), None
         except _sp.TimeoutExpired as e:
             _clean_partials()
             return None, e
 
-    proc = None
-    try:
-        # Attempt 1: whole video within the 35M cap.
-        proc, err = await _run_safe([])
-        got = _find_output()
-        if got is None:
-            _clean_partials()
-            # Attempt 2: first 3 minutes (helps long talks that blow the cap).
-            # KEEP the 35M cap here too — a section download can still exceed
-            # the base64 payload limit at high bitrate — and force an mp4 remux
-            # so the section is finalized (not left as a .part).
-            proc, err = await _run_safe(
-                ["--download-sections", "*0-180", "--force-keyframes-at-cuts",
-                 "--remux-video", "mp4"],
-            )
+    async def _do_download(proxy_url, proxy):
+        # With the proxy on, ffmpeg is shimmed to fail (fail-closed), so DON'T
+        # use --remux-video/--force-keyframes-at-cuts (they need ffmpeg). Native
+        # section download still finalizes an mp4 for a progressive format.
+        shim_parent = Path(tempfile.mkdtemp(prefix="ssrf_shim_")) if proxy_url else None
+        shim_dir = _make_ffmpeg_block_shim(shim_parent) if shim_parent else None
+        try:
+            proc, err = await _run_safe([], proxy_url, shim_dir)
             got = _find_output()
+            if got is None:
+                _clean_partials()
+                if proxy_url:
+                    # Proxied path is ffmpeg-free (shim blocks it), so a
+                    # --download-sections fallback (which needs ffmpeg) can't run.
+                    # Instead retry with a smaller progressive format that fits
+                    # the 35M cap — still a single native download, no ffmpeg.
+                    fallback = ["-f", "b[height<=240][ext=mp4]/w[ext=mp4]/w",
+                                "--max-filesize", "35M"]
+                else:
+                    # Un-proxied path may use ffmpeg for a finalized 3-min section.
+                    fallback = ["--download-sections", "*0-180",
+                                "--force-keyframes-at-cuts", "--remux-video", "mp4"]
+                proc, err = await _run_safe(fallback, proxy_url, shim_dir)
+                got = _find_output()
+        finally:
+            if shim_parent is not None:
+                import shutil as _shutil
+                _shutil.rmtree(shim_parent, ignore_errors=True)
         if got is None:
             _clean_partials()
             stderr = (proc.stderr or "").strip()[:300] if proc is not None else "timed out"
@@ -1829,7 +1915,31 @@ async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
                 "yt-dlp could not fetch a compact video from this URL. "
                 f"stderr: {stderr}"
             )
+        # Post-run runtime guard: with the proxy on, if bytes reached disk but
+        # ~0 connections traversed the proxy, an external downloader egressed
+        # un-proxied — fail closed rather than return an unvalidated file.
+        if proxy is not None and proxy.connection_count <= 0:
+            _clean_partials()
+            try:
+                got.unlink()
+            except Exception:
+                pass
+            raise ValueError(
+                "SSRF proxy guard: video bytes were fetched but no connection "
+                "traversed the proxy (an external downloader likely bypassed it). "
+                "Refusing to return an unvalidated file."
+            )
         return got
+
+    try:
+        if use_proxy:
+            from tools.ssrf_proxy import SsrfFilteringProxy
+            # Fail CLOSED: if the proxy can't start, raise — never run un-proxied.
+            proxy = SsrfFilteringProxy(block_private=True)
+            async with proxy as proxy_url:
+                return await _do_download(proxy_url, proxy)
+        else:
+            return await _do_download(None, None)
     except BaseException:
         # Any failure path (incl. cancellation): don't leak partials.
         _clean_partials()

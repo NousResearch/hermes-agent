@@ -5,6 +5,7 @@ Tools (registered in the ``a2a`` toolset):
   - a2a_discover(url)         -> fetch + summarize a peer's Agent Card
   - a2a_call(agent, message)  -> send a task to a peer, return its reply
   - a2a_list()                -> list configured peers + persisted conversations
+  - a2a_history(context_id)   -> recall a persisted A2A conversation
   - a2a_orchestrate(...)      -> fan-out task to multiple peers by capability
 
 Peers are resolved from config.yaml under ``a2a_agents``::
@@ -17,14 +18,13 @@ Peers are resolved from config.yaml under ``a2a_agents``::
         capabilities: [web_search, research]
 
 Transport is stdlib urllib (no a2a-sdk dependency). The wire format is the A2A
-JSON-RPC ``message/send`` method, so any A2A-compliant peer works.
+v1.0 JSON-RPC ``message/send`` method; replies from v0.3 peers still parse.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -96,10 +96,89 @@ def _card_url(base_url: str) -> str:
 
 
 def _rpc_url(base_url: str, card: Optional[dict]) -> str:
-    # Prefer the URL the card advertises; fall back to the base.
-    if card and isinstance(card.get("url"), str) and card["url"]:
-        return card["url"]
+    """Prefer the card's JSONRPC interface (v1.0 supportedInterfaces), then the
+    card's legacy top-level url, then the configured base."""
+    if isinstance(card, dict):
+        for iface in card.get("supportedInterfaces", []) or []:
+            if isinstance(iface, dict) and iface.get("protocolBinding") == "JSONRPC" and iface.get("url"):
+                return str(iface["url"])
+        if isinstance(card.get("url"), str) and card["url"]:
+            return card["url"]
     return base_url.rstrip("/")
+
+
+# --------------------------------------------------------------------------
+# Shared send path (used by a2a_call and a2a_orchestrate)
+# --------------------------------------------------------------------------
+
+def _short_state(state: str) -> str:
+    """TASK_STATE_COMPLETED -> completed (also passes through v0.3 states)."""
+    return state.replace("TASK_STATE_", "").replace("_", "-").lower() if state else ""
+
+
+def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
+    """Send one message/send to a peer. Returns (reply_text, context_id, state).
+
+    Raises urllib errors / ValueError for the caller to format. Handles
+    outbound redaction, audit, persistence, and metrics.
+    """
+    base_url = peer.get("url", "")
+    headers = _auth_header(peer.get("auth", {}) or {})
+    timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
+
+    # Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
+    card = None
+    try:
+        card = _http_get_json(_card_url(base_url), headers, min(timeout, 30))
+    except Exception:
+        pass
+
+    ctx = context_id or protocol.new_context_id()
+    safe_message = security.redact_outbound(message)
+    # v1.0: contextId lives inside the Message, not at the params top level.
+    rpc_body = {
+        "jsonrpc": "2.0",
+        "id": protocol.new_task_id(),
+        "method": "message/send",
+        "params": {
+            "message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx),
+        },
+    }
+
+    security.audit("outbound", agent_label, rpc_body["id"], safe_message)
+    protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
+    protocol.metrics.outbound_total += 1
+
+    resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    if "error" in resp:
+        err = resp["error"]
+        raise ValueError(f"Peer '{agent_label}' returned an error: {err.get('message', err)}")
+
+    result = resp.get("result", {})
+    reply = _reply_text_from_result(result)
+    reply_ctx, state = ctx, ""
+    if isinstance(result, dict):
+        reply_ctx = result.get("contextId", ctx)
+        state = (result.get("status") or {}).get("state", "")
+    protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
+    protocol.metrics.inbound_total += 1
+    return reply, reply_ctx, state
+
+
+def _reply_text_from_result(result: Any) -> str:
+    if not isinstance(result, dict):
+        return str(result)
+    # Artifacts first (final output), then status message (interim/clarify).
+    for artifact in result.get("artifacts", []) or []:
+        txt = protocol.extract_text(artifact)
+        if txt:
+            return txt
+    status = result.get("status", {}) or {}
+    msg = status.get("message")
+    if msg:
+        return protocol.extract_text(msg)
+    # Bare message result (message/send may return a Message instead of a Task)
+    return protocol.extract_text(result)
 
 
 # --------------------------------------------------------------------------
@@ -123,10 +202,16 @@ def a2a_discover(args: dict, **_: Any) -> str:
     caps = card.get("capabilities", {}) or {}
     skills = card.get("skills", []) or []
     auth = "yes" if card.get("security") else "no"
+    ifaces = card.get("supportedInterfaces", []) or []
+    proto = ", ".join(
+        f"{i.get('protocolBinding', '?')} v{i.get('protocolVersion', '?')}"
+        for i in ifaces if isinstance(i, dict)
+    ) or f"v{card.get('protocolVersion', '?')} (pre-1.0 card)"
     lines = [
         f"Agent: {name}",
         f"Description: {desc}",
-        f"URL: {card.get('url', url)}",
+        f"URL: {_rpc_url(url, card)}",
+        f"Protocol: {proto}",
         f"Streaming: {bool(caps.get('streaming'))}  Push: {bool(caps.get('pushNotifications'))}  Auth required: {auth}",
         f"Skills ({len(skills)}):",
     ]
@@ -155,80 +240,30 @@ def a2a_call(args: dict, **_: Any) -> str:
             f"config.yaml or pass a full http(s):// URL."
         )
 
-    base_url = peer["url"]
-    headers = _auth_header(peer["auth"])
-    timeout = peer["timeout"]
-
-    # Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
-    card = None
     try:
-        card = _http_get_json(_card_url(base_url), headers, min(timeout, 30))
-    except Exception:
-        pass
-
-    ctx = context_id or protocol.new_context_id()
-    safe_message = security.redact_outbound(message)
-    rpc_body = {
-        "jsonrpc": "2.0",
-        "id": protocol.new_task_id(),
-        "method": "message/send",
-        "params": {
-            "message": protocol.text_message("user", safe_message),
-            "contextId": ctx,  # Always send contextId so server persists under same id
-        },
-    }
-    # Also set contextId inside message for legacy callers
-    rpc_body["params"]["message"]["contextId"] = ctx
-
-    security.audit("outbound", agent, rpc_body["id"], safe_message)
-    protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
-    protocol.metrics.outbound_total += 1
-
-    try:
-        resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+        reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return f"Error: peer '{agent}' rejected auth (HTTP {e.code}). Check the configured token."
         if e.code == 429:
             return f"Error: peer '{agent}' rate limited us (HTTP 429). Retry later."
         return f"Error: call to '{agent}' failed — HTTP {e.code}."
+    except ValueError as e:
+        return str(e)
     except Exception as e:
         return f"Error: call to '{agent}' failed — {e}."
 
-    if "error" in resp:
-        err = resp["error"]
-        return f"Peer '{agent}' returned an error: {err.get('message', err)}"
-
-    result = resp.get("result", {})
-    reply = _reply_text_from_result(result)
-    reply_ctx = result.get("contextId", ctx) if isinstance(result, dict) else ctx
-    protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
-    protocol.metrics.inbound_total += 1
-
-    state = ""
-    if isinstance(result, dict):
-        state = (result.get("status") or {}).get("state", "")
     header = f"[{agent} · context {reply_ctx}"
     if state:
-        header += f" · {state}"
+        header += f" · {_short_state(state)}"
     header += "]"
-    return f"{header}\n{reply or '(no text reply)'}"
-
-
-def _reply_text_from_result(result: Any) -> str:
-    if not isinstance(result, dict):
-        return str(result)
-    # Artifacts first (final output), then status message (interim/clarify).
-    for artifact in result.get("artifacts", []) or []:
-        txt = protocol.extract_text(artifact)
-        if txt:
-            return txt
-    status = result.get("status", {}) or {}
-    msg = status.get("message")
-    if msg:
-        return protocol.extract_text(msg)
-    # Bare message result (message/send may return a Message instead of a Task)
-    return protocol.extract_text(result)
+    body = reply or "(no text reply)"
+    if state == protocol.STATE_INPUT_REQUIRED:
+        body += (
+            "\n\n(The peer needs more input — answer by calling a2a_call again "
+            f"with context_id '{reply_ctx}'.)"
+        )
+    return f"{header}\n{body}"
 
 
 def a2a_list(args: dict | None = None, **_: Any) -> str:
@@ -249,7 +284,7 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
     convos = protocol.list_conversations()
     if convos:
         lines.append("")
-        lines.append(f"Persisted conversations ({len(convos)}):")
+        lines.append(f"Persisted conversations ({len(convos)}) — recall with a2a_history:")
         for c in convos[:25]:
             lines.append(f"  - {c}")
 
@@ -262,6 +297,33 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
                  f"{m['anti_loop_triggers']} anti-loop, {m['rate_limit_triggers']} rate-limited, "
                  f"avg {m['avg_latency_ms']}ms")
 
+    return "\n".join(lines)
+
+
+def a2a_history(args: dict, **_: Any) -> str:
+    """Recall a persisted A2A conversation by context_id.
+
+    This is how prior A2A exchanges survive compaction/restarts: every turn is
+    written to ~/.hermes/a2a_conversations/<context>.jsonl and can be reloaded
+    here.
+    """
+    context_id = str(args.get("context_id") or args.get("contextId") or "").strip()
+    if not context_id:
+        return "Error: 'context_id' is required (see a2a_list for known conversations)."
+    try:
+        limit = max(1, min(int(args.get("limit") or 50), 200))
+    except (ValueError, TypeError):
+        limit = 50
+    messages = protocol.load_conversation(context_id, limit=limit)
+    if not messages:
+        return f"No persisted conversation for context '{context_id}'."
+    lines = [f"Conversation {context_id} (last {len(messages)} messages):"]
+    for m in messages:
+        role = m.get("role", "?")
+        text = (m.get("text") or "").strip()
+        if len(text) > 1000:
+            text = text[:1000] + " …[truncated]"
+        lines.append(f"[{role}] {text}")
     return "\n".join(lines)
 
 
@@ -284,44 +346,12 @@ def _match_peers_by_capability(capability: str) -> list[tuple[str, dict]]:
 def _call_peer_sync(agent_name: str, peer_entry: dict, message: str, context_id: str = "") -> tuple[str, str]:
     """Call a single peer synchronously. Returns (agent_name, reply_text)."""
     try:
-        base_url = peer_entry.get("url", "")
-        headers = _auth_header(peer_entry.get("auth", {}))
-        timeout = int(peer_entry.get("timeout", _DEFAULT_TIMEOUT))
-
-        card = None
-        try:
-            card = _http_get_json(_card_url(base_url), headers, min(timeout, 30))
-        except Exception:
-            pass
-
-        ctx = context_id or protocol.new_context_id()
-        safe_message = security.redact_outbound(message)
-        rpc_body = {
-            "jsonrpc": "2.0",
-            "id": protocol.new_task_id(),
-            "method": "message/send",
-            "params": {
-                "message": protocol.text_message("user", safe_message),
-                "contextId": ctx,  # Always send contextId so server persists under same id
-            },
+        peer = {
+            "url": peer_entry.get("url", ""),
+            "auth": peer_entry.get("auth", {}) or {},
+            "timeout": int(peer_entry.get("timeout", _DEFAULT_TIMEOUT)),
         }
-        # Also set contextId inside message for legacy callers
-        rpc_body["params"]["message"]["contextId"] = ctx
-
-        security.audit("outbound", agent_name, rpc_body["id"], safe_message)
-        protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
-        protocol.metrics.outbound_total += 1
-
-        resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
-        if "error" in resp:
-            err = resp["error"]
-            return (agent_name, f"Error: {err.get('message', err)}")
-
-        result = resp.get("result", {})
-        reply = _reply_text_from_result(result)
-        reply_ctx = result.get("contextId", ctx) if isinstance(result, dict) else ctx
-        protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
-        protocol.metrics.inbound_total += 1
+        reply, _ctx, _state = _send_task(agent_name, peer, message, context_id)
         return (agent_name, reply or "(no reply)")
     except Exception as e:
         return (agent_name, f"Error: {e}")
@@ -333,7 +363,8 @@ def a2a_orchestrate(args: dict, **_: Any) -> str:
     Modes:
       - ``all``: send to all peers matching the capability, return all replies.
       - ``first``: send to all matching peers, return the first successful reply.
-      - ``best``: send to all, return the longest/most detailed reply.
+      - ``best``: send to all, return the longest successful reply (a coarse
+        detail heuristic — use ``all`` when you want to judge yourself).
 
     Configured peers advertise capabilities in config.yaml::
 
@@ -374,7 +405,7 @@ def a2a_orchestrate(args: dict, **_: Any) -> str:
             try:
                 results.append(fut.result())
                 if mode == "first" and not results[-1][1].startswith("Error:"):
-                    # Got a good reply, cancel remaining
+                    # Got a good reply; cancel peers that haven't started yet.
                     for f in futures:
                         f.cancel()
                     break
@@ -383,21 +414,24 @@ def a2a_orchestrate(args: dict, **_: Any) -> str:
 
     # Sort results by peer name for deterministic output
     results.sort(key=lambda r: r[0])
+    successes = [(name, reply) for name, reply in results if not reply.startswith("Error:")]
 
-    if mode == "best":
-        # Pick the longest non-error reply
-        best = max(results, key=lambda r: len(r[1]) if not r[1].startswith("Error:") else 0)
-        return f"[best: {best[0]}]\n{best[1]}"
-    elif mode == "first":
-        # Return the first non-error reply
-        for name, reply in results:
-            if not reply.startswith("Error:"):
-                return f"[first: {name}]\n{reply}"
-        # All failed
+    def _all_failed() -> str:
         lines = ["All peers failed:"]
         for name, reply in results:
             lines.append(f"  {name}: {reply}")
         return "\n".join(lines)
+
+    if mode == "best":
+        if not successes:
+            return _all_failed()
+        best = max(successes, key=lambda r: len(r[1]))
+        return f"[best: {best[0]}]\n{best[1]}"
+    elif mode == "first":
+        if not successes:
+            return _all_failed()
+        name, reply = successes[0]
+        return f"[first: {name}]\n{reply}"
     else:  # mode == "all"
         lines = [f"Orchestrated '{capability}' to {len(matches)} peer(s):"]
         for name, reply in results:
@@ -460,6 +494,25 @@ _SCHEMAS: dict[str, _ToolSchema] = {
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    "a2a_history": {
+        "type": "function",
+        "function": {
+            "name": "a2a_history",
+            "description": (
+                "Recall a persisted A2A conversation transcript by context_id "
+                "(survives restarts and context compaction). Use a2a_list to "
+                "see known context ids."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "context_id": {"type": "string", "description": "Context id of the conversation to recall."},
+                    "limit": {"type": "integer", "description": "Max messages to return (default 50, max 200)."},
+                },
+                "required": ["context_id"],
+            },
+        },
+    },
     "a2a_orchestrate": {
         "type": "function",
         "function": {
@@ -467,7 +520,8 @@ _SCHEMAS: dict[str, _ToolSchema] = {
             "description": (
                 "Fan-out a task to multiple peer agents by capability. Peers are "
                 "matched from config.yaml a2a_agents.*.capabilities. Modes: 'all' "
-                "(return all replies), 'first' (first successful), 'best' (longest reply)."
+                "(return all replies), 'first' (first successful), 'best' (longest "
+                "successful reply)."
             ),
             "parameters": {
                 "type": "object",
@@ -487,6 +541,7 @@ _HANDLERS = {
     "a2a_discover": a2a_discover,
     "a2a_call": a2a_call,
     "a2a_list": a2a_list,
+    "a2a_history": a2a_history,
     "a2a_orchestrate": a2a_orchestrate,
 }
 

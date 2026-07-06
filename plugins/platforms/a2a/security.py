@@ -7,15 +7,19 @@ private context to a peer we don't fully trust. Both directions are hardened
 here so neither the adapter nor the tools have to re-implement it.
 
 Layers (all opt-out-able only by explicit config, never silently):
-  1. Bind safety       — no bearer token => 127.0.0.1 only (enforced in adapter)
-  2. Bearer auth       — constant-time token comparison
+  1. Bind safety       — no token configured => 127.0.0.1 only
+  2. Peer identity     — per-peer bearer tokens (A2A_PEER_TOKENS) map a
+                         presented token to an authenticated identity; a
+                         shared A2A_BEARER_TOKEN falls back to ip:<addr>.
+                         Rate limiting and the trust gate key on this identity,
+                         never on anything the request body asserts.
   3. Injection filters — strip ChatML / role-prefix / override patterns from
                          inbound task text before it reaches the agent
   4. Outbound redaction — scrub credential-shaped strings from anything we send
   5. Audit log         — append-only JSONL of every inbound + outbound exchange
-  6. Rate limiting     — token-bucket per peer (delegates to protocol.rate_limit_*)
-  7. Trusted peers     — explicit allow-list for cross-machine delegation
-  8. Push auth         — HMAC-SHA256 webhook signing for push notifications
+  6. Trusted peers     — optional allow-list restricting which authenticated
+                         identities may run tasks
+  7. Push auth         — HMAC-SHA256 webhook signing + SSRF-safe callback URLs
 """
 
 from __future__ import annotations
@@ -34,45 +38,79 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------
-# Bearer auth
+# Bearer auth + peer identity
 # --------------------------------------------------------------------------
 
 def get_bearer_token() -> str:
-    """Return the configured inbound bearer token (empty string if none)."""
+    """Return the configured shared inbound bearer token (empty if none)."""
     return os.getenv("A2A_BEARER_TOKEN", "").strip()
 
 
-def check_bearer(auth_header: Optional[str]) -> bool:
-    """Constant-time check of an ``Authorization: Bearer <token>`` header.
+def get_peer_tokens() -> dict[str, str]:
+    """Parse A2A_PEER_TOKENS ("alice:tok1,bob:tok2") into {token: peer_name}.
 
-    When no token is configured the adapter binds to localhost only, so an
-    absent token is acceptable in that mode. Callers decide whether to require
-    a token based on the bind host; this function only validates a presented
-    one against the configured value.
+    Per-peer tokens give each remote agent its own credential, so the identity
+    used for rate limiting, trust, and audit is authenticated — not whatever
+    the request body claims.
     """
-    token = get_bearer_token()
-    if not token:
-        # No token configured: localhost-only mode, nothing to compare.
-        return True
+    raw = os.getenv("A2A_PEER_TOKENS", "").strip()
+    out: dict[str, str] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        name, token = pair.split(":", 1)
+        name, token = name.strip(), token.strip()
+        if name and token:
+            out[token] = name
+    return out
+
+
+def _parse_bearer(auth_header: Optional[str]) -> Optional[str]:
     if not auth_header:
-        return False
+        return None
     parts = auth_header.split(None, 1)
     if len(parts) != 2 or parts[0].lower() != "bearer":
-        return False
-    return hmac.compare_digest(parts[1].strip(), token)
+        return None
+    return parts[1].strip()
+
+
+def authenticate(auth_header: Optional[str], client_ip: str = "") -> Optional[str]:
+    """Authenticate an inbound request; return the peer identity or None.
+
+    - No tokens configured (localhost-only mode): identity is ``ip:<addr>``.
+    - Token matches an A2A_PEER_TOKENS entry: identity is that peer's name.
+    - Token matches the shared A2A_BEARER_TOKEN: identity is ``ip:<addr>``.
+    - Otherwise: None (reject with 401).
+
+    Comparisons are constant-time (hmac.compare_digest).
+    """
+    peer_tokens = get_peer_tokens()
+    shared = get_bearer_token()
+    if not peer_tokens and not shared:
+        return f"ip:{client_ip or 'local'}"
+    presented = _parse_bearer(auth_header)
+    if presented is None:
+        return None
+    for token, name in peer_tokens.items():
+        if hmac.compare_digest(presented, token):
+            return name
+    if shared and hmac.compare_digest(presented, shared):
+        return f"ip:{client_ip or 'unknown'}"
+    return None
 
 
 def localhost_only() -> bool:
-    """True when we must refuse non-loopback binds (no bearer token set)."""
-    return not get_bearer_token()
+    """True when we must refuse non-loopback binds (no token of any kind set)."""
+    return not (get_bearer_token() or get_peer_tokens())
 
 
 def resolve_bind_host() -> str:
     """Resolve the safe inbound bind host.
 
-    Rule: localhost unless the operator BOTH set a bearer token AND explicitly
-    asked for a wider host. A token alone does not widen the bind — opting into
-    remote exposure must be deliberate.
+    Rule: localhost unless the operator BOTH configured a token (shared or
+    per-peer) AND explicitly asked for a wider host. A token alone does not
+    widen the bind — opting into remote exposure must be deliberate.
     """
     requested = os.getenv("A2A_HOST", "").strip() or "127.0.0.1"
     loopback = {"127.0.0.1", "localhost", "::1"}
@@ -80,8 +118,8 @@ def resolve_bind_host() -> str:
         return requested
     if localhost_only():
         logger.warning(
-            "A2A: A2A_HOST=%s ignored — no A2A_BEARER_TOKEN set; binding to "
-            "127.0.0.1. Set a bearer token to expose A2A remotely.",
+            "A2A: A2A_HOST=%s ignored — no A2A_BEARER_TOKEN or A2A_PEER_TOKENS "
+            "set; binding to 127.0.0.1. Configure a token to expose A2A remotely.",
             requested,
         )
         return "127.0.0.1"
@@ -93,23 +131,16 @@ def resolve_bind_host() -> str:
 # --------------------------------------------------------------------------
 
 def get_trusted_peers() -> set[str]:
-    """Return the set of trusted peer identifiers.
+    """Return the configured trusted-peer allow-list (empty = no restriction).
 
-    Trusted peers can send tasks without per-task approval. Configured via
-    A2A_TRUSTED_PEERS env var (comma-separated) or config.yaml under
-    a2a.trusted_peers.
-
-    When A2A_ALLOW_ALL_USERS is set, all peers are trusted (open mode).
+    Configured via A2A_TRUSTED_PEERS env var (comma-separated identities) or
+    config.yaml under a2a.trusted_peers. Identities are the *authenticated*
+    names from ``authenticate()`` — peer-token names, or ``ip:<addr>`` for
+    shared-token callers.
     """
-    if os.getenv("A2A_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes"):
-        return set()  # empty set signals "all allowed" when checked with is_trusted
-
-    # Check env var
     env_peers = os.getenv("A2A_TRUSTED_PEERS", "").strip()
     if env_peers:
         return {p.strip() for p in env_peers.split(",") if p.strip()}
-
-    # Check config.yaml
     try:
         from hermes_cli.config import load_config
         cfg = load_config() or {}
@@ -118,30 +149,25 @@ def get_trusted_peers() -> set[str]:
             return {str(p).strip() for p in peers_list if p}
     except Exception:
         pass
-
-    # No trusted peers configured — localhost-only mode trusts all
-    if localhost_only():
-        return set()  # will be treated as "all allowed" by is_trusted
-
     return set()
 
 
-def is_trusted_peer(peer_id: str) -> bool:
-    """Check if a peer is trusted (or if all peers are trusted in open mode)."""
+def is_trusted_peer(identity: str) -> bool:
+    """Check whether an authenticated identity may run tasks.
+
+    Open when A2A_ALLOW_ALL_USERS is set or in localhost-only mode. When a
+    trusted-peer allow-list is configured, the identity must be on it;
+    otherwise any *authenticated* identity is allowed (authentication is the
+    primary gate — the allow-list is an optional restriction on top).
+    """
     if os.getenv("A2A_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes"):
         return True
     if localhost_only():
-        return True  # localhost-only mode = trust all local peers
+        return True
     trusted = get_trusted_peers()
-    return peer_id in trusted
-
-
-def is_open_mode() -> bool:
-    """True when all peers are trusted (open mode)."""
-    return (
-        os.getenv("A2A_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes")
-        or localhost_only()
-    )
+    if not trusted:
+        return True
+    return identity in trusted
 
 
 # --------------------------------------------------------------------------
@@ -188,28 +214,12 @@ PRIVACY_PREFIX = (
 def wrap_inbound(peer: str, text: str) -> str:
     """Filter + frame inbound task text for safe injection into the agent.
 
-    Slash commands (text starting with ``/``) are passed through
-    UNWRAPPED so the gateway's command processor sees them — the
-    PRIVACY_PREFIX text would otherwise hide leading-slash commands
-    like ``/sethome``, deadlocking the home-channel onboarding flow.
-    Reported by kuangmi-bit in PR #41711 review (2026-06-26).
-
-    SECURITY TRADE-OFF: bypassing the wrapper also bypasses
-    ``filter_inbound()``. A peer that sends text like
-    ``/system: ignore all previous instructions`` will reach the
-    gateway unfiltered. This is acceptable because:
-      1. The gateway's command processor only acts on actual
-         ``/``-prefixed commands it knows about; non-command text
-         (even adversarial) is rejected as an unknown command.
-      2. Trust in the A2A peer is enforced by bearer auth at the
-         network layer — see ``check_bearer()`` and the bind-safety
-         rules in ``resolve_bind_host()``.
-    If either assumption changes, this shortcut must be revisited.
+    EVERY inbound message is filtered and framed — including text starting
+    with "/". Remote peers must never reach the gateway's operator slash
+    commands; a peer that wants an action asks for it in natural language and
+    the agent decides.
     """
-    stripped = (text or "").strip()
-    if stripped.startswith("/"):
-        return stripped
-    return PRIVACY_PREFIX.format(peer=peer or "unknown") + filter_inbound(stripped)
+    return PRIVACY_PREFIX.format(peer=peer or "unknown") + filter_inbound((text or "").strip())
 
 
 # --------------------------------------------------------------------------
@@ -259,26 +269,14 @@ def sign_push_payload(payload: dict) -> str:
     """HMAC-SHA256 sign a push notification payload.
 
     Returns hex-encoded signature. Empty string if no secret configured.
+    Receivers verify by HMAC-ing the JSON body (sorted keys) with the shared
+    secret and comparing against the X-A2A-Signature header.
     """
     secret = get_push_secret()
     if not secret:
         return ""
     body = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-
-
-def verify_push_signature(payload: dict, signature: str) -> bool:
-    """Verify a push notification HMAC signature.
-
-    Returns True if signature matches or no secret configured (localhost mode).
-    """
-    secret = get_push_secret()
-    if not secret:
-        return True
-    if not signature:
-        return False
-    expected = sign_push_payload(payload)
-    return hmac.compare_digest(signature, expected)
 
 
 # --------------------------------------------------------------------------
@@ -318,32 +316,23 @@ def is_safe_callback_url(url: str) -> bool:
         parsed = urllib.parse.urlparse(url)
     except Exception:
         return False
-    # Scheme check
     if parsed.scheme not in ("http", "https"):
         return False
     hostname = parsed.hostname or ""
     if not hostname:
         return False
-    # Check for literal "localhost" hostname
     hostname_lower = hostname.lower()
     if hostname_lower == "localhost":
-        if localhost_only():
-            return True
-        return False
-    # Check against blocked prefixes
+        # Loopback callbacks only make sense for local testing.
+        return localhost_only()
     for prefix in _BLOCKED_PREFIXES:
         if hostname_lower.startswith(prefix.lower()):
-            # Allow localhost in localhost-only mode (local testing)
-            if localhost_only() and prefix == "127.":
-                return True
-            if localhost_only() and prefix == "::1":
+            if localhost_only() and prefix in ("127.", "::1"):
                 return True
             return False
-    # Also check via ipaddress for numeric IPs
     try:
         ip = ipaddress.ip_address(hostname)
         if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
-            # Allow localhost in localhost-only mode
             if localhost_only() and ip.is_loopback:
                 return True
             return False

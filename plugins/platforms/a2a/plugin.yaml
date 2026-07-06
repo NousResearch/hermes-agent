@@ -1,14 +1,15 @@
 name: a2a-platform
 label: A2A
 kind: platform
-version: 0.1.0
+version: 1.0.0
 description: >
-  A2A (Agent-to-Agent) protocol support for Hermes Agent — both directions of
-  the open Linux Foundation standard for inter-agent communication.
+  A2A (Agent-to-Agent) protocol v1.0 support for Hermes Agent — both directions
+  of the open Linux Foundation standard for inter-agent communication.
 
-  OUTBOUND (client tools): a2a_discover, a2a_call, a2a_list let the agent fetch
-  another agent's Agent Card and send it tasks over JSON-RPC — works with any
-  A2A-compliant peer (Hermes, LangChain, CrewAI, Google ADK, OpenClaw, ...).
+  OUTBOUND (client tools): a2a_discover, a2a_call, a2a_list, a2a_history, and
+  a2a_orchestrate let the agent fetch another agent's Agent Card and send it
+  tasks over JSON-RPC — works with any A2A-compliant peer (Hermes, LangChain,
+  CrewAI, Google ADK, OpenClaw, ...).
 
   INBOUND (platform adapter): exposes Hermes as an A2A-discoverable agent. An
   Agent Card is served at /.well-known/agent.json and incoming tasks are routed
@@ -28,9 +29,13 @@ author: Nous Research
 # platform-plugin env var injector in hermes_cli/config.py.
 requires_env: []
 optional_env:
+  - name: A2A_PEER_TOKENS
+    description: "Per-peer bearer tokens ('alice:tok1,bob:tok2'). Each remote agent gets its own credential; the matched name is the authenticated identity used for rate limiting, trust, and audit."
+    prompt: "A2A per-peer tokens (name:token, comma-separated; or empty)"
+    password: true
   - name: A2A_BEARER_TOKEN
-    description: "Bearer token required on inbound A2A calls. UNSET => bind to 127.0.0.1 only (no remote access)."
-    prompt: "A2A bearer token (or empty for localhost-only)"
+    description: "Shared bearer token for inbound A2A calls (identity falls back to caller IP). With no token of any kind => bind to 127.0.0.1 only (no remote access)."
+    prompt: "A2A shared bearer token (or empty for localhost-only)"
     password: true
   - name: A2A_HOST
     description: "Inbound bind host. Defaults to 127.0.0.1; only widens to 0.0.0.0 when a bearer token is set AND you opt in here."

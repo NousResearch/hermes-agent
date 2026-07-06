@@ -1,38 +1,72 @@
 """
-A2A protocol helpers — Agent Card construction, JSON-RPC framing, and
-disk-backed conversation persistence.
+A2A protocol helpers — Agent Card construction, JSON-RPC framing, task store,
+and disk-backed conversation persistence.
 
-Wire shape follows the A2A spec (JSON-RPC 2.0 over HTTP):
-  - Agent Card served at GET /.well-known/agent.json
+Wire shape follows A2A Protocol v1.0 (JSON-RPC 2.0 binding over HTTP):
+  - Agent Card served at GET /.well-known/agent.json (and agent-card.json)
   - Tasks via POST {jsonrpc:"2.0", method:"message/send", params:{...}}
-  - Streaming via POST {jsonrpc:"2.0", method:"message/stream", params:{...}}
-    → SSE response with task state transitions and artifact deltas
-  - Push notifications via POST {jsonrpc:"2.0", method:"tasks/pushNotification/set"}
-  - Methods handled inbound: message/send, message/stream, tasks/get,
-    tasks/pushNotification/set, tasks/cancel
+  - Streaming via ``message/stream`` → SSE; events are StreamResponse objects
+    discriminated by member presence (``statusUpdate`` / ``artifactUpdate``),
+    stream closure signals the terminal state (no ``final`` field in v1.0)
+  - Task states / message roles are v1.0 SCREAMING_SNAKE_CASE enums
+  - Parts are the v1.0 unified shape ({"text": ..., "mediaType": ...}),
+    discriminated by member presence (no ``kind`` field)
+  - Push notification configs carry ``configId`` + ``createdAt`` and can be
+    passed inline in ``message/send`` via configuration.taskPushNotificationConfig
 
 We deliberately implement the subset of A2A needed for text task exchange with
-stdlib only (no a2a-sdk). If a2a-sdk is later added as an optional extra, the
-client can upgrade transparently — the wire format is identical.
+stdlib only (no a2a-sdk). ``extract_text`` stays tolerant of v0.3 peers.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
+from concurrent.futures import Future
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-# A2A task lifecycle states (subset we use).
-STATE_SUBMITTED = "submitted"
-STATE_WORKING = "working"
-STATE_INPUT_REQUIRED = "input-required"
-STATE_COMPLETED = "completed"
-STATE_FAILED = "failed"
-STATE_CANCELED = "canceled"
+PROTOCOL_VERSION = "1.0"
+
+# A2A v1.0 task lifecycle states.
+STATE_SUBMITTED = "TASK_STATE_SUBMITTED"
+STATE_WORKING = "TASK_STATE_WORKING"
+STATE_INPUT_REQUIRED = "TASK_STATE_INPUT_REQUIRED"
+STATE_AUTH_REQUIRED = "TASK_STATE_AUTH_REQUIRED"
+STATE_COMPLETED = "TASK_STATE_COMPLETED"
+STATE_FAILED = "TASK_STATE_FAILED"
+STATE_CANCELED = "TASK_STATE_CANCELED"
+STATE_REJECTED = "TASK_STATE_REJECTED"
+
+TERMINAL_STATES = frozenset({STATE_COMPLETED, STATE_FAILED, STATE_CANCELED, STATE_REJECTED})
+
+# A2A v1.0 message roles.
+ROLE_USER = "ROLE_USER"
+ROLE_AGENT = "ROLE_AGENT"
+
+# The agent starts its reply with this marker when it needs clarification from
+# the peer before it can complete the task; the adapter maps such replies to
+# TASK_STATE_INPUT_REQUIRED (marker stripped, text in status.message).
+INPUT_REQUIRED_MARKER = "[INPUT_REQUIRED]"
+
+# JSON-RPC / A2A error codes.
+# -32001..-32003 are A2A spec-defined and used only with their spec semantics.
+# Custom errors live at -32050..-32059 (JSON-RPC implementation-defined server
+# error space, clear of the A2A-reserved block).
+ERR_PARSE = -32700
+ERR_INVALID_PARAMS = -32602
+ERR_METHOD_NOT_FOUND = -32601
+ERR_TASK_NOT_FOUND = -32001        # A2A spec: TaskNotFoundError
+ERR_TASK_NOT_CANCELABLE = -32002   # A2A spec: TaskNotCancelableError
+ERR_PUSH_NOT_SUPPORTED = -32003    # A2A spec: PushNotificationNotSupportedError
+ERR_UNAUTHORIZED = -32050
+ERR_RATE_LIMITED = -32051
+ERR_UNTRUSTED_PEER = -32052
 
 # Maximum turns an A2A conversation can have before anti-loop kicks in.
 # Default 5, configurable via A2A_MAX_PINGPONG_TURNS env (max 20).
@@ -48,8 +82,13 @@ def max_pingpong_turns() -> int:
         return _DEFAULT_MAX_PINGPONG
 
 
+def now_iso() -> str:
+    """ISO 8601 UTC timestamp with millisecond precision (A2A v1.0)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 # --------------------------------------------------------------------------
-# Agent Card
+# Agent Card (v1.0)
 # --------------------------------------------------------------------------
 
 def build_agent_card(
@@ -62,17 +101,28 @@ def build_agent_card(
     push_notifications: bool = False,
     auth_required: bool = False,
 ) -> dict:
-    """Construct an A2A Agent Card document (the /.well-known/agent.json body)."""
+    """Construct an A2A v1.0 Agent Card document."""
     card: dict[str, Any] = {
         "name": name,
         "description": description,
-        "url": url,
-        "version": "0.2.0",
-        "protocolVersion": "0.3",
+        "url": url,  # convenience for pre-1.0 clients; canonical is supportedInterfaces
+        "version": "1.0.0",
+        "provider": {
+            "organization": os.getenv("A2A_PROVIDER_ORG", "Hermes Agent"),
+            "url": os.getenv("A2A_PROVIDER_URL", "") or url,
+        },
+        "supportedInterfaces": [
+            {
+                "url": url,
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": PROTOCOL_VERSION,
+            },
+        ],
         "capabilities": {
             "streaming": streaming,
             "pushNotifications": push_notifications,
             "stateTransitionHistory": False,
+            "extendedAgentCard": False,
         },
         "defaultInputModes": ["text/plain"],
         "defaultOutputModes": ["text/plain"],
@@ -86,53 +136,30 @@ def build_agent_card(
     return card
 
 
-def skills_from_toolsets(toolset_names: list[str]) -> list[dict]:
-    """Derive A2A skill descriptors from the agent's enabled toolsets.
+def skills_from_toolsets(toolsets: "list[str] | dict[str, list[str]] | None") -> list[dict]:
+    """Derive A2A skill descriptors from the agent's toolsets.
 
-    A2A 'skills' are coarse capability advertisements, not tool schemas. We map
-    each enabled toolset to one skill entry so peers can match tasks to us.
+    Accepts either a plain list of toolset names, or a mapping of toolset name
+    → tool names (built from the live tool registry for dynamic Agent Cards —
+    tool names become tags so peers can match tasks to us).
     """
     skills = []
-    for ts in sorted(set(toolset_names or [])):
-        skills.append({
-            "id": f"toolset.{ts}",
-            "name": ts,
-            "description": f"Hermes '{ts}' capabilities",
-            "tags": [ts],
-        })
-    if not skills:
-        skills.append({
-            "id": "general",
-            "name": "general",
-            "description": "General-purpose conversational agent",
-            "tags": ["general"],
-        })
-    return skills
-
-
-def skills_from_real_toolsets(toolset_registry: dict) -> list[dict]:
-    """Build A2A skill descriptors from the real toolset registry.
-
-    Unlike ``skills_from_toolsets`` which takes a list of names, this accepts
-    the actual toolset registry dict (toolset_name → {tools: [...], description: ...})
-    and produces richer skill cards with per-tool descriptions.
-
-    This enables Dynamic Agent Cards: the card we serve reflects what the agent
-    can *actually do* right now, not a static list.
-    """
-    skills = []
-    if toolset_registry and isinstance(toolset_registry, dict):
-        for ts_name in sorted(toolset_registry.keys()):
-            ts_info = toolset_registry[ts_name] or {}
-            tools_list = ts_info.get("tools", []) if isinstance(ts_info, dict) else []
-            tool_names = [t.get("name", str(t)) if isinstance(t, dict) else str(t) for t in (tools_list or [])]
-            desc = ts_info.get("description", f"Hermes '{ts_name}' capabilities") if isinstance(ts_info, dict) else f"Hermes '{ts_name}' capabilities"
+    if isinstance(toolsets, dict):
+        for ts_name in sorted(toolsets.keys()):
+            tool_names = [str(t) for t in (toolsets[ts_name] or [])]
             skills.append({
                 "id": f"toolset.{ts_name}",
                 "name": ts_name,
-                "description": desc,
-                # Include toolset name + tool names as tags for capability matching
+                "description": f"Hermes '{ts_name}' capabilities",
                 "tags": [ts_name] + tool_names[:10],
+            })
+    else:
+        for ts in sorted(set(toolsets or [])):
+            skills.append({
+                "id": f"toolset.{ts}",
+                "name": ts,
+                "description": f"Hermes '{ts}' capabilities",
+                "tags": [ts],
             })
     if not skills:
         skills.append({
@@ -164,20 +191,29 @@ def new_context_id() -> str:
     return "ctx-" + uuid.uuid4().hex[:16]
 
 
-def text_message(role: str, text: str) -> dict:
-    """Build an A2A Message with a single text Part."""
-    return {
-        "role": role,  # "user" | "agent"
-        "parts": [{"kind": "text", "text": text}],
+def text_part(text: str) -> dict:
+    """Build a v1.0 text Part (member-presence discriminated, no ``kind``)."""
+    return {"text": text, "mediaType": "text/plain"}
+
+
+def text_message(role: str, text: str, context_id: str = "") -> dict:
+    """Build an A2A v1.0 Message with a single text Part."""
+    msg: dict[str, Any] = {
+        "role": role,  # ROLE_USER | ROLE_AGENT
+        "parts": [text_part(text)],
         "messageId": uuid.uuid4().hex,
     }
+    if context_id:
+        msg["contextId"] = context_id
+    return msg
 
 
 def extract_text(message_or_params: dict) -> str:
-    """Pull concatenated text from an A2A Message / params payload.
+    """Pull concatenated text from an A2A Message / Task-result / params payload.
 
-    Tolerant of both ``{"message": {...}}`` params and a bare message dict, and
-    of both ``kind`` and legacy ``type`` part discriminators.
+    v1.0 Parts carry a ``text`` member directly; v0.3 used ``kind: "text"``
+    and some pre-0.3 peers used ``type``. All three shapes put the payload in
+    ``part["text"]``, so presence of a string ``text`` member is the test.
     """
     msg = message_or_params.get("message", message_or_params)
     parts = msg.get("parts", []) if isinstance(msg, dict) else []
@@ -185,106 +221,162 @@ def extract_text(message_or_params: dict) -> str:
     for part in parts:
         if not isinstance(part, dict):
             continue
-        if part.get("kind") in (None, "text") or part.get("type") == "text":
-            txt = part.get("text")
-            if isinstance(txt, str):
-                chunks.append(txt)
+        txt = part.get("text")
+        if isinstance(txt, str):
+            chunks.append(txt)
     return "\n".join(chunks).strip()
 
 
-def build_task(task_id: str, context_id: str, state: str, agent_text: str = "") -> dict:
-    """Build an A2A Task object for a message/send result."""
+def extract_context_id(params: dict) -> str:
+    """v1.0 puts contextId inside the Message; tolerate legacy top-level."""
+    msg = params.get("message") or {}
+    ctx = ""
+    if isinstance(msg, dict):
+        ctx = str(msg.get("contextId") or "")
+    return ctx or str(params.get("contextId") or "")
+
+
+def build_task(
+    task_id: str,
+    context_id: str,
+    state: str,
+    agent_text: str = "",
+    *,
+    created_at: str = "",
+) -> dict:
+    """Build an A2A v1.0 Task object for a message/send result."""
+    now = now_iso()
     task: dict[str, Any] = {
         "id": task_id,
         "contextId": context_id,
-        "status": {"state": state, "timestamp": _now_iso()},
-        "kind": "task",
+        "status": {"state": state, "timestamp": now},
+        "createdAt": created_at or now,
+        "lastModified": now,
     }
     if agent_text:
-        task["status"]["message"] = text_message("agent", agent_text)
-        task["artifacts"] = [{
-            "artifactId": uuid.uuid4().hex,
-            "parts": [{"kind": "text", "text": agent_text}],
-        }]
+        task["status"]["message"] = text_message(ROLE_AGENT, agent_text, context_id)
+        if state == STATE_COMPLETED:
+            task["artifacts"] = [{
+                "artifactId": uuid.uuid4().hex,
+                "parts": [text_part(agent_text)],
+            }]
     return task
 
 
-def build_streaming_event(event_type: str, task_id: str, context_id: str, data: dict | None = None) -> str:
-    """Build a single SSE event for message/stream responses.
+# --------------------------------------------------------------------------
+# Streaming (v1.0 StreamResponse events)
+# --------------------------------------------------------------------------
 
-    Event types following A2A spec:
-    - ``task``: full task state transition (submitted → working → completed)
-    - ``artifact``: incremental artifact delta
-    - ``status``: status update (state + optional message)
-    - ``done``: stream complete marker
-    """
-    payload: dict[str, Any] = {"taskId": task_id, "contextId": context_id}
-    if data:
-        payload.update(data)
-    return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+def status_update(task_id: str, context_id: str, state: str, text: str = "") -> dict:
+    """v1.0 StreamResponse with a statusUpdate member."""
+    status: dict[str, Any] = {"state": state, "timestamp": now_iso()}
+    if text:
+        status["message"] = text_message(ROLE_AGENT, text, context_id)
+    return {"statusUpdate": {"taskId": task_id, "contextId": context_id, "status": status}}
 
 
-def _now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+def artifact_update(task_id: str, context_id: str, text: str) -> dict:
+    """v1.0 StreamResponse with an artifactUpdate member."""
+    return {
+        "artifactUpdate": {
+            "taskId": task_id,
+            "contextId": context_id,
+            "artifact": {
+                "artifactId": uuid.uuid4().hex,
+                "parts": [text_part(text)],
+            },
+        }
+    }
+
+
+def sse_data(payload: dict) -> str:
+    """Encode one StreamResponse as an SSE data frame (member-name discriminated)."""
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def sse_done() -> str:
+    """SSE stream-closure marker — terminal state is implied by closure in v1.0."""
+    return "event: done\ndata: {}\n\n"
 
 
 # --------------------------------------------------------------------------
-# Anti-loop ping-pong protection
+# Anti-loop ping-pong protection (per-adapter instance)
 # --------------------------------------------------------------------------
 
-import threading
+class TurnTracker:
+    """Counts inbound turns per context_id to stop infinite agent↔agent loops.
 
-# Track turns per context_id to prevent infinite agent-to-agent loops.
-# A "turn" is one inbound message/send from a peer. When the count exceeds
-# max_pingpong_turns(), we reject further messages for that context.
-# OpenClaw pattern: maxPingPongTurns, default 5, max 20.
-
-_turn_counts: dict[str, int] = defaultdict(int)
-_turn_timestamps: dict[str, float] = {}
-_turn_lock = threading.Lock()
-
-# Clean up turn tracking for contexts older than 1 hour.
-_TURN_TTL = 3600
-
-
-def track_turn(context_id: str) -> int:
-    """Increment and return the turn count for this context.
-
-    Returns the *new* count. Caller should reject if > max_pingpong_turns().
-    Also prunes stale entries to prevent unbounded growth.
+    A "turn" is one inbound message/send from a peer. When the count exceeds
+    max_pingpong_turns(), the adapter rejects further messages for that context.
     """
-    with _turn_lock:
-        now = time.time()
-        # Prune stale entries
-        stale = [cid for cid, ts in _turn_timestamps.items() if now - ts > _TURN_TTL]
-        for cid in stale:
-            _turn_counts.pop(cid, None)
-            _turn_timestamps.pop(cid, None)
 
-        _turn_counts[context_id] += 1
-        _turn_timestamps[context_id] = now
-        return _turn_counts[context_id]
+    _TTL = 3600  # prune contexts idle longer than 1 hour
+
+    def __init__(self) -> None:
+        self._counts: dict[str, int] = defaultdict(int)
+        self._timestamps: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def track(self, context_id: str) -> int:
+        """Increment and return the turn count; prunes stale contexts."""
+        with self._lock:
+            now = time.time()
+            stale = [cid for cid, ts in self._timestamps.items() if now - ts > self._TTL]
+            for cid in stale:
+                self._counts.pop(cid, None)
+                self._timestamps.pop(cid, None)
+            self._counts[context_id] += 1
+            self._timestamps[context_id] = now
+            return self._counts[context_id]
+
+    def reset(self, context_id: str) -> None:
+        """Reset turn count for a context (e.g. after explicit cancel)."""
+        with self._lock:
+            self._counts.pop(context_id, None)
+            self._timestamps.pop(context_id, None)
 
 
-def turn_count(context_id: str) -> int:
-    """Return current turn count for a context (0 if unknown)."""
-    with _turn_lock:
-        return _turn_counts.get(context_id, 0)
+# --------------------------------------------------------------------------
+# Rate limiting (sliding window per authenticated peer identity)
+# --------------------------------------------------------------------------
+
+_RATE_LIMIT_DEFAULT = 60  # requests per minute
+_RATE_WINDOW = 60.0  # seconds
 
 
-def reset_turns(context_id: str) -> None:
-    """Reset turn count for a context (e.g. after explicit cancel)."""
-    with _turn_lock:
-        _turn_counts.pop(context_id, None)
-        _turn_timestamps.pop(context_id, None)
+def _rate_limit_per_minute() -> int:
+    try:
+        return max(1, int(os.getenv("A2A_RATE_LIMIT", str(_RATE_LIMIT_DEFAULT))))
+    except (ValueError, TypeError):
+        return _RATE_LIMIT_DEFAULT
+
+
+class RateLimiter:
+    """Sliding-window request limiter, one bucket per authenticated identity."""
+
+    def __init__(self) -> None:
+        self._buckets: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, identity: str) -> bool:
+        with self._lock:
+            limit = _rate_limit_per_minute()
+            now = time.time()
+            bucket = self._buckets[identity]
+            while bucket and now - bucket[0] > _RATE_WINDOW:
+                bucket.popleft()
+            if len(bucket) >= limit:
+                return False
+            bucket.append(now)
+            return True
 
 
 # --------------------------------------------------------------------------
 # Metrics collection
 # --------------------------------------------------------------------------
 
-# Lightweight in-memory metrics. Not persisted — resets on restart.
-# For a real deployment, export these via the /metrics endpoint (adapter.py).
+# Module-level singleton shared by the inbound adapter and the outbound client
+# tools so /metrics and a2a_list report both directions. Not persisted.
 class Metrics:
     """Simple counters for A2A operations."""
 
@@ -299,7 +391,7 @@ class Metrics:
         self.anti_loop_triggers = 0
         self.rate_limit_triggers = 0
         self._start_time = time.time()
-        # Rolling latency tracking (last 100 requests)
+        # Rolling latency tracking (last 100 completed inbound tasks)
         self._latencies: deque[float] = deque(maxlen=100)
 
     def record_latency(self, seconds: float) -> None:
@@ -328,6 +420,164 @@ class Metrics:
 
 
 metrics = Metrics()
+
+
+# --------------------------------------------------------------------------
+# Task store — pending AND completed tasks (queryable via tasks/get, tasks/list)
+# --------------------------------------------------------------------------
+
+class TaskStore:
+    """In-memory store of A2A tasks, kept after completion for tasks/get.
+
+    Terminal tasks are retained (bounded to _MAX_TERMINAL, oldest evicted) so
+    peers can poll tasks/get, page tasks/list, and reconnect via
+    tasks/subscribe after the fact. Watchers registered via ``watch()`` are
+    resolved with (state, reply) when the task reaches a terminal state.
+    """
+
+    _MAX_TERMINAL = 500
+
+    def __init__(self) -> None:
+        self._tasks: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+        self._watchers: dict[str, list[Future]] = {}
+        self._lock = threading.Lock()
+
+    def create(self, task_id: str, context_id: str, peer: str) -> dict:
+        rec = {
+            "task_id": task_id,
+            "context_id": context_id,
+            "peer": peer,
+            "state": STATE_SUBMITTED,
+            "reply": "",
+            "created_at": time.time(),
+            "created_iso": now_iso(),
+            "push_url": "",
+            "push_config_id": "",
+        }
+        with self._lock:
+            self._tasks[task_id] = rec
+        return dict(rec)
+
+    def set_state(self, task_id: str, state: str) -> None:
+        with self._lock:
+            rec = self._tasks.get(task_id)
+            if rec and rec["state"] not in TERMINAL_STATES:
+                rec["state"] = state
+
+    def set_push_config(self, task_id: str, url: str) -> Optional[dict]:
+        """Attach a push notification config; returns the stored config or None."""
+        with self._lock:
+            rec = self._tasks.get(task_id)
+            if not rec:
+                return None
+            rec["push_url"] = url
+            rec["push_config_id"] = "cfg-" + uuid.uuid4().hex[:12]
+            return {
+                "configId": rec["push_config_id"],
+                "taskId": task_id,
+                "createdAt": now_iso(),
+                "pushNotificationConfig": {"url": url},
+            }
+
+    def pop_push_url(self, task_id: str) -> str:
+        with self._lock:
+            rec = self._tasks.get(task_id)
+            if not rec:
+                return ""
+            url, rec["push_url"] = rec["push_url"], ""
+            return url
+
+    def get(self, task_id: str) -> Optional[dict]:
+        with self._lock:
+            rec = self._tasks.get(task_id)
+            return dict(rec) if rec else None
+
+    def complete(self, task_id: str, state: str, reply: str = "") -> Optional[dict]:
+        """Transition a task to a terminal state. Idempotent: returns None if
+        the task is unknown or already terminal (prevents double-counting)."""
+        watchers: list[Future] = []
+        with self._lock:
+            rec = self._tasks.get(task_id)
+            if not rec or rec["state"] in TERMINAL_STATES:
+                return None
+            rec["state"] = state
+            rec["reply"] = reply
+            rec["completed_at"] = time.time()
+            watchers = self._watchers.pop(task_id, [])
+            self._trim_locked()
+            out = dict(rec)
+        for fut in watchers:
+            if not fut.done():
+                fut.set_result((state, reply))
+        return out
+
+    def watch(self, task_id: str) -> Optional[Future]:
+        """Future resolved with (state, reply) at terminal transition.
+
+        Resolved immediately if the task is already terminal; None if unknown.
+        """
+        with self._lock:
+            rec = self._tasks.get(task_id)
+            if not rec:
+                return None
+            fut: Future = Future()
+            if rec["state"] in TERMINAL_STATES:
+                fut.set_result((rec["state"], rec.get("reply", "")))
+            else:
+                self._watchers.setdefault(task_id, []).append(fut)
+            return fut
+
+    def list(
+        self,
+        context_id: str = "",
+        state: str = "",
+        page_size: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """Filtered task page (newest first). Returns (records, next_offset);
+        next_offset is 0 when there are no more results."""
+        page_size = max(1, min(int(page_size or 50), 200))
+        with self._lock:
+            recs = [dict(r) for r in reversed(self._tasks.values())]
+        if context_id:
+            recs = [r for r in recs if r["context_id"] == context_id]
+        if state:
+            recs = [r for r in recs if r["state"] == state]
+        page = recs[offset:offset + page_size]
+        next_offset = offset + page_size if offset + page_size < len(recs) else 0
+        return page, next_offset
+
+    def fail_orphans(self, timeout_seconds: int = 300) -> list[str]:
+        """Mark non-terminal tasks older than timeout as FAILED; return their ids."""
+        with self._lock:
+            now = time.time()
+            stale = [
+                tid for tid, rec in self._tasks.items()
+                if rec["state"] not in TERMINAL_STATES
+                and now - rec["created_at"] > timeout_seconds
+            ]
+        failed = []
+        for tid in stale:
+            if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]"):
+                failed.append(tid)
+        return failed
+
+    def _trim_locked(self) -> None:
+        terminal = [tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES]
+        excess = len(terminal) - self._MAX_TERMINAL
+        for tid in terminal[:max(0, excess)]:
+            self._tasks.pop(tid, None)
+
+    @staticmethod
+    def to_task(rec: dict) -> dict:
+        """Render a stored record as an A2A v1.0 Task object."""
+        return build_task(
+            rec["task_id"],
+            rec["context_id"],
+            rec["state"],
+            rec.get("reply", ""),
+            created_at=rec.get("created_iso", ""),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -386,123 +636,3 @@ def list_conversations() -> list[str]:
     if not d.exists():
         return []
     return sorted(p.stem for p in d.glob("*.jsonl"))
-
-
-# --------------------------------------------------------------------------
-# Rate limiting (token bucket per peer)
-# --------------------------------------------------------------------------
-
-# Simple token-bucket rate limiter. Each peer gets a bucket.
-# Configurable via A2A_RATE_LIMIT (requests per minute, default 60).
-# OpenClaw pattern: rate limiting per agent identity.
-
-_RATE_LIMIT_DEFAULT = 60  # requests per minute
-_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
-_rate_lock = threading.Lock()
-_RATE_WINDOW = 60.0  # seconds
-
-
-def _rate_limit_per_minute() -> int:
-    try:
-        return max(1, int(os.getenv("A2A_RATE_LIMIT", str(_RATE_LIMIT_DEFAULT))))
-    except (ValueError, TypeError):
-        return _RATE_LIMIT_DEFAULT
-
-
-def rate_limit_allow(peer: str) -> bool:
-    """Check if peer is within rate limit. Returns True if allowed."""
-    with _rate_lock:
-        limit = _rate_limit_per_minute()
-        now = time.time()
-        bucket = _rate_buckets[peer]
-        # Expire old entries
-        while bucket and now - bucket[0] > _RATE_WINDOW:
-            bucket.popleft()
-        if len(bucket) >= limit:
-            return False
-        bucket.append(now)
-        return True
-
-
-def rate_limit_status(peer: str) -> dict[str, Any]:
-    """Return rate limit status for a peer."""
-    with _rate_lock:
-        limit = _rate_limit_per_minute()
-        now = time.time()
-        bucket = _rate_buckets[peer]
-        # Count active entries
-        active = sum(1 for ts in bucket if now - ts <= _RATE_WINDOW)
-    return {
-        "peer": peer,
-        "limit_per_minute": limit,
-        "used": active,
-        "remaining": max(0, limit - active),
-    }
-
-
-# --------------------------------------------------------------------------
-# Pending task registry (for async durable messaging)
-# --------------------------------------------------------------------------
-
-# Tracks tasks that are in-flight (submitted/working state) so we can
-# support async completion notifications and orphaned task cleanup.
-# OpenClaw pattern: sessions_send (async durable messaging).
-
-_pending_tasks: dict[str, dict[str, Any]] = {}
-_pending_lock = threading.Lock()
-
-
-def register_pending_task(task_id: str, context_id: str, peer: str, callback_url: str = "") -> None:
-    """Register a task as pending (in-flight)."""
-    with _pending_lock:
-        _pending_tasks[task_id] = {
-            "context_id": context_id,
-            "peer": peer,
-            "callback_url": callback_url,
-            "started_at": time.time(),
-            "state": STATE_WORKING,
-        }
-
-
-def complete_pending_task(task_id: str, state: str, reply: str = "") -> dict | None:
-    """Mark a pending task as complete. Returns the task info if found."""
-    with _pending_lock:
-        info = _pending_tasks.pop(task_id, None)
-    if info:
-        info["state"] = state
-        info["reply"] = reply
-        info["completed_at"] = time.time()
-    return info
-
-
-def pending_task_info(task_id: str) -> dict | None:
-    """Get info about a pending task (for tasks/get)."""
-    with _pending_lock:
-        return _pending_tasks.get(task_id)
-
-
-def orphaned_tasks(timeout_seconds: int = 300) -> list[dict]:
-    """Find tasks that have been pending longer than timeout.
-
-    Used by the orphaned task watchdog to clean up stale tasks.
-    """
-    with _pending_lock:
-        now = time.time()
-        return [
-            {"task_id": tid, **info}
-            for tid, info in _pending_tasks.items()
-            if now - info.get("started_at", now) > timeout_seconds
-        ]
-
-
-def clear_orphaned_tasks(timeout_seconds: int = 300) -> list[str]:
-    """Remove and return task_ids of tasks pending longer than timeout."""
-    with _pending_lock:
-        now = time.time()
-        cleared = []
-        for tid in list(_pending_tasks.keys()):
-            info = _pending_tasks[tid]
-            if now - info.get("started_at", now) > timeout_seconds:
-                _pending_tasks.pop(tid, None)
-                cleared.append(tid)
-    return cleared

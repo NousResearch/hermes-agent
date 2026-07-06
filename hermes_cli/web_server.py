@@ -8329,26 +8329,102 @@ def _cron_string_list(value: Any) -> Optional[List[str]]:
 
 
 def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional[str]:
-    """Validate a dashboard-selected cron script against the profile sandbox."""
+    """Validate a dashboard-selected cron script and resolve it to a profile-rooted relative path.
+
+    Resolution mirrors ``cron/scheduler.py::_run_job_script``: when the
+    dashboard API is mounted under a non-default (or non-default-equivalent)
+    profile, ``HERMES_HOME`` resolves to that profile's scripts dir. That
+    differs from where the scheduler actually runs the script under
+    ``get_hermes_home()`` (the platform-default ``~/.hermes/scripts/``) — so
+    a relative script path that lives at the root home (e.g. ``foo.py``) was
+    silently rejected as "script does not exist: <profile_home>/scripts/foo.py"
+    even though the scheduler runs it fine.
+
+    To keep parity with the scheduler, this resolver walks two candidates,
+    preferring the profile-specific one so per-profile isolation is preserved:
+
+    1. ``<profile_home>/scripts/<script>`` (existing behaviour; per-profile)
+    2. ``<root_home>/scripts/<script>`` (scheduler fallback; only consulted when
+       candidate (1) is absent — never escapes profile isolation when both exist)
+
+    The returned path is always profile-rooted-relative (``"foo.py"`` not
+    ``"../../.hermes/scripts/foo.py"``) and the containment guard still
+    rejects absolute paths and ``~``-prefixed paths up front.
+    """
     text = _cron_optional_text(value)
     if not text:
         return None
 
-    scripts_root = (profile_home / "scripts").resolve()
     raw_path = Path(text).expanduser()
-    candidate = raw_path.resolve() if raw_path.is_absolute() else (scripts_root / raw_path).resolve()
+
+    # Reject absolute paths and ~ expansion at the API boundary.
+    # Cron scripts must be relative to keep the scheduler's path-traversal
+    # guard meaningful — only relative paths within the scripts dir are allowed.
+    if raw_path.is_absolute():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"script path must be relative to ~/.hermes/scripts/. "
+                f"Got absolute path: {text!r}. Place scripts in ~/.hermes/scripts/ "
+                f"and use just the filename."
+            ),
+        )
+
+    # Two-stage resolution: profile-specific first, root home second.
+    # We need the profile-specific scripts/ root for the containment guard,
+    # but when the script lives at the root home we still want to surface
+    # the same relative name so the stored job record stays script-only and
+    # the scheduler can resolve it cleanly at tick time.
+    profile_scripts_root = (profile_home / "scripts").resolve()
+
+    # Stage 1: profile-specific scripts (per-profile isolation preserved)
+    profile_candidate = (profile_scripts_root / raw_path).resolve()
     try:
-        relative = candidate.relative_to(scripts_root)
+        relative = profile_candidate.relative_to(profile_scripts_root)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"script must be inside {scripts_root}",
+            detail=f"script must be inside {profile_scripts_root}",
         ) from exc
-    if not candidate.exists():
-        raise HTTPException(status_code=400, detail=f"script does not exist: {candidate}")
-    if not candidate.is_file():
-        raise HTTPException(status_code=400, detail=f"script is not a file: {candidate}")
-    return str(relative)
+
+    if profile_candidate.exists() and profile_candidate.is_file():
+        return str(relative)
+
+    # Stage 2: root home scripts (matches cron/scheduler.py::_run_job_script).
+    # Only consulted when stage 1 is absent — the profile-specific copy wins
+    # when both exist, preserving per-profile isolation. Containment against
+    # the root home's scripts dir rejects any remaining ..-escape attempts.
+    from hermes_constants import get_hermes_home
+
+    root_home = get_hermes_home().resolve()
+    root_scripts_root = (root_home / "scripts").resolve()
+    root_candidate = (root_scripts_root / raw_path).resolve()
+    try:
+        root_relative = root_candidate.relative_to(root_scripts_root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"script path escapes scripts directory: {text!r}",
+        ) from exc
+
+    if root_candidate.exists():
+        if not root_candidate.is_file():
+            raise HTTPException(
+                status_code=400,
+                detail=f"script is not a file: {root_candidate}",
+            )
+        # Return the SAME relative name so the stored job record stays
+        # platform-portable (no profile_home prefix leaked into storage).
+        # Backup equivalence: at tick time, the scheduler's own root-home
+        # fallback in _run_job_script will find the same script.
+        return str(root_relative)
+
+    # Neither location had the file — surface the profile-relative lookup
+    # in the error message since that's what the user/dashboard saw first.
+    raise HTTPException(
+        status_code=400,
+        detail=f"script does not exist: {profile_candidate}",
+    )
 
 
 def _validate_dashboard_cron_effective_job(job: Dict[str, Any]) -> None:

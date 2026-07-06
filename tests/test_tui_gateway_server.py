@@ -3961,6 +3961,113 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     assert captured["session_key"] == "session-key"
 
 
+def test_desktop_prompt_submit_serializes_agent_turns(monkeypatch):
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.delenv("HERMES_DESKTOP_MAX_ACTIVE_TURNS", raising=False)
+    with server._desktop_prompt_turn_condition:
+        server._desktop_active_prompt_turns = 0
+        server._desktop_prompt_turn_condition.notify_all()
+
+    events: list[tuple[str, str, dict | None]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: events.append((event, sid, payload)),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_voice_tts_enabled", lambda: False)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+    active_lock = threading.Lock()
+    active_turns = 0
+    max_active_turns = 0
+
+    class _Agent:
+        def __init__(self, name: str):
+            self.name = name
+
+        def clear_interrupt(self):
+            pass
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            nonlocal active_turns, max_active_turns
+            with active_lock:
+                active_turns += 1
+                max_active_turns = max(max_active_turns, active_turns)
+            try:
+                if self.name == "first":
+                    first_entered.set()
+                    assert release_first.wait(timeout=3)
+                else:
+                    second_entered.set()
+                return {
+                    "final_response": self.name,
+                    "messages": [{"role": "assistant", "content": self.name}],
+                }
+            finally:
+                with active_lock:
+                    active_turns -= 1
+
+    server._sessions["first"] = _session(agent=_Agent("first"))
+    server._sessions["second"] = _session(agent=_Agent("second"))
+
+    try:
+        first_resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "first", "text": "one"},
+            }
+        )
+        assert first_resp["result"]["status"] == "streaming"
+        assert first_entered.wait(timeout=2)
+
+        second_resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "prompt.submit",
+                "params": {"session_id": "second", "text": "two"},
+            }
+        )
+        assert second_resp["result"]["status"] == "streaming"
+        time.sleep(0.2)
+
+        assert not second_entered.is_set()
+        assert max_active_turns == 1
+        assert any(
+            event == "status.update"
+            and sid == "second"
+            and isinstance(payload, dict)
+            and "Waiting for another Desktop turn" in payload.get("text", "")
+            for event, sid, payload in events
+        )
+
+        release_first.set()
+        assert second_entered.wait(timeout=3)
+        for sid in ("first", "second"):
+            thread = server._sessions[sid].get("_run_thread")
+            if thread is not None:
+                thread.join(timeout=3)
+        assert max_active_turns == 1
+    finally:
+        release_first.set()
+        server._sessions.pop("first", None)
+        server._sessions.pop("second", None)
+        with server._desktop_prompt_turn_condition:
+            server._desktop_active_prompt_turns = 0
+            server._desktop_prompt_turn_condition.notify_all()
+
+
 def test_prompt_submit_expands_context_refs(monkeypatch):
     captured = {}
 

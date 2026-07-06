@@ -35,6 +35,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import zipfile
@@ -87,6 +88,62 @@ from gateway.status import (
     read_runtime_status,
 )
 from utils import env_var_enabled
+
+
+def _format_thread_stack_dump(limit: int = 80) -> str:
+    """Return current Python thread stacks for event-loop stall forensics."""
+    frames = sys._current_frames()
+    threads = {thread.ident: thread for thread in threading.enumerate()}
+    chunks: list[str] = []
+    for ident, frame in frames.items():
+        thread = threads.get(ident)
+        name = thread.name if thread else "unknown"
+        daemon = thread.daemon if thread else "?"
+        chunks.append(
+            f"\n--- thread id={ident} name={name!r} daemon={daemon} ---\n"
+            + "".join(traceback.format_stack(frame, limit=limit))
+        )
+    return "".join(chunks).rstrip()
+
+
+def _start_loop_stall_stack_watchdog(
+    heartbeat_state: dict,
+    *,
+    threshold_s: float = 30.0,
+    repeat_s: float = 120.0,
+) -> None:
+    """Log all Python thread stacks when the uvicorn loop stops advancing.
+
+    The loop heartbeat itself can only report a stall after the loop recovers.
+    Desktop failures have shown multi-minute stalls, so a daemon thread watches
+    the last heartbeat timestamp out-of-band and dumps stacks while the process
+    is still wedged.
+    """
+    threshold_s = max(5.0, float(threshold_s or 30.0))
+    repeat_s = max(threshold_s, float(repeat_s or 120.0))
+
+    def _watch() -> None:
+        while True:
+            time.sleep(min(5.0, threshold_s))
+            now = time.monotonic()
+            last = float(heartbeat_state.get("last", now))
+            last_dump = float(heartbeat_state.get("last_dump", 0.0))
+            stalled_for = now - last
+            if stalled_for < threshold_s or now - last_dump < repeat_s:
+                continue
+            heartbeat_state["last_dump"] = now
+            _log.warning(
+                "event loop heartbeat missing for %.1fs; dumping Python "
+                "thread stacks for stall diagnostics:%s",
+                stalled_for,
+                _format_thread_stack_dump(),
+            )
+
+    threading.Thread(
+        target=_watch,
+        name="web-loop-stall-watchdog",
+        daemon=True,
+    ).start()
 
 try:
     from fastapi import (
@@ -15368,8 +15425,24 @@ def start_server(
             _hb_interval = 2.0
             _hb_stall_threshold = 5.0
             _hb_loop = asyncio.get_running_loop()
+            _hb_state = {
+                "last": time.monotonic(),
+                "last_dump": 0.0,
+            }
+            try:
+                _dump_threshold = float(
+                    os.environ.get("HERMES_WEB_LOOP_STALL_DUMP_S") or "30"
+                )
+            except (TypeError, ValueError):
+                _dump_threshold = 30.0
+            _start_loop_stall_stack_watchdog(
+                _hb_state,
+                threshold_s=_dump_threshold,
+                repeat_s=max(120.0, _dump_threshold * 4),
+            )
 
             def _loop_heartbeat(expected: float) -> None:
+                _hb_state["last"] = time.monotonic()
                 now = _hb_loop.time()
                 drift = now - expected
                 if drift > _hb_stall_threshold:

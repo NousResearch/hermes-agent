@@ -12,6 +12,13 @@ import uvicorn
 from hermes_cli import web_server
 
 
+def test_loop_stall_stack_dump_includes_current_thread():
+    dump = web_server._format_thread_stack_dump()
+
+    assert "test_loop_stall_stack_dump_includes_current_thread" in dump
+    assert "thread id=" in dump
+
+
 def _stub_uvicorn(monkeypatch):
     """Replace uvicorn.Config/Server with fakes so start_server returns
     immediately.  Returns a dict with captured Config kwargs."""

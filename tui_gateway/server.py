@@ -244,6 +244,78 @@ _pool = concurrent.futures.ThreadPoolExecutor(
 )
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
+_desktop_prompt_turn_condition = threading.Condition()
+_desktop_active_prompt_turns = 0
+
+
+def _desktop_prompt_turn_limit() -> int:
+    """Return the Desktop in-process prompt-turn concurrency cap.
+
+    Desktop runs ``hermes serve`` as a local backend and reaches prompt turns
+    through this module's WebSocket sidecar. Those turns execute in Python
+    threads inside the same process as uvicorn's event loop, so several
+    concurrent CPU/GIL-heavy turns can starve the loop and freeze the Desktop
+    socket. Keep ordinary TUI/dashboard behavior unchanged; only desktop-spawned
+    backends default to a single active prompt turn per backend process.
+    """
+    raw = os.environ.get("HERMES_DESKTOP_MAX_ACTIVE_TURNS")
+    if raw is None:
+        if not is_truthy_value(os.environ.get("HERMES_DESKTOP")):
+            return 0
+        raw = "1"
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 1 if is_truthy_value(os.environ.get("HERMES_DESKTOP")) else 0
+
+
+@contextlib.contextmanager
+def _desktop_prompt_turn_slot(sid: str):
+    """Serialize Desktop prompt turns when the backend is Desktop-spawned."""
+    global _desktop_active_prompt_turns
+
+    limit = _desktop_prompt_turn_limit()
+    if limit <= 0:
+        yield
+        return
+
+    wait_notice_sent = False
+    while True:
+        with _desktop_prompt_turn_condition:
+            if _desktop_active_prompt_turns < limit:
+                _desktop_active_prompt_turns += 1
+                break
+            should_send_wait_notice = not wait_notice_sent
+            if should_send_wait_notice:
+                wait_notice_sent = True
+                logger.info(
+                    "Desktop prompt turn queued behind %d active turn(s) "
+                    "(limit=%d)",
+                    _desktop_active_prompt_turns,
+                    limit,
+                )
+        if should_send_wait_notice:
+            try:
+                _emit(
+                    "status.update",
+                    sid,
+                    {
+                        "kind": "activity",
+                        "text": "Waiting for another Desktop turn to finish...",
+                    },
+                )
+            except Exception:
+                pass
+        with _desktop_prompt_turn_condition:
+            _desktop_prompt_turn_condition.wait(timeout=0.5)
+
+    try:
+        yield
+    finally:
+        with _desktop_prompt_turn_condition:
+            _desktop_active_prompt_turns = max(0, _desktop_active_prompt_turns - 1)
+            _desktop_prompt_turn_condition.notify_all()
+
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
 # of corrupting the JSON protocol.
@@ -8671,7 +8743,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
-            result = agent.run_conversation(run_message, **run_kwargs)
+            with _desktop_prompt_turn_slot(sid):
+                with session["history_lock"]:
+                    if session.get("_turn_cancel_requested") or not session.get("running"):
+                        return
+                result = agent.run_conversation(run_message, **run_kwargs)
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
                 # Restore the model the user was on before the /moa one-shot.

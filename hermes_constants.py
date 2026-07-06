@@ -733,7 +733,11 @@ def get_real_home(env: dict[str, str] | None = None) -> str:
     If a parent process is already running with ``HOME={HERMES_HOME}/home``,
     this helper repairs back to the account home when possible.
     """
+    env = env or {}
     profile_home = _profile_home_path(env)
+    current_home = str(env.get("HOME") or os.getenv("HOME", "")).strip()
+    if current_home and not _is_profile_home(current_home, profile_home):
+        return current_home
     seen: set[str] = set()
     for candidate in _iter_real_home_candidates(env):
         key = _norm_home_path(candidate)

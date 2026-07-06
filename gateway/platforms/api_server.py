@@ -2474,7 +2474,8 @@ class APIServerAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             while True:
                 try:
-                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    poll_timeout = min(0.5, max(0.001, CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS))
+                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=poll_timeout))
                 except _q.Empty:
                     if agent_task.done():
                         # Drain any remaining items

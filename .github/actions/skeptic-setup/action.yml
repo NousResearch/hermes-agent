@@ -1,0 +1,28 @@
+# =============================================================================
+# Composite action: Setup environment for skeptic CLI and workspace build.
+# Used by skeptic-gate.yml and any future workflow that needs Node/pnpm.
+#
+# NOTE: LLM evaluation runs via AO worker (Codex OAuth) — no API keys needed.
+# This action does NOT install Claude/Codex CLI for LLM use in GHA.
+# =============================================================================
+name: "Skeptic setup"
+description: "Node + pnpm + workspace build (no LLM CLI installation)"
+runs:
+  using: composite
+  steps:
+    - name: Install pnpm
+      uses: pnpm/action-setup@v4
+
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: pnpm
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+      shell: bash
+
+    - name: Build workspace
+      run: pnpm -r --filter '!@jleechanorg/ao-web' build
+      shell: bash

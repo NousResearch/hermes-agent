@@ -10,8 +10,6 @@ accounts:
     - id: codex-staff
   gemini:
     - id: gemini-google-staff
-  fable:
-    - id: claude-staff
   opus:
     - id: claude-staff
 
@@ -21,15 +19,13 @@ fallback:
     - codex
     - gemini
     - ollama
-  # ห้ามใส่ fable ในสายนี้ · fable เป็นสมองพิเศษ (เฉพาะงานเกรดยาก) ไม่ใช่ coder สำรอง
   brain:
-    # สายสมอง: fable โดน limit หรือเรียกไม่ได้ → ตกไป opus 4.8 อัตโนมัติ (ใช้เงื่อนไขนี้ทุกเครื่อง)
+    # สมองหลัก = opus 4.8 ตัวเดียว (Fable ถอดออกแล้ว 2026-07-06)
     - opus
 
 limits:
   max_rounds_per_issue: 3
   max_calls_per_session: 50
-  max_fable_calls_per_session: 3
   budget: null
 
 cooldown:

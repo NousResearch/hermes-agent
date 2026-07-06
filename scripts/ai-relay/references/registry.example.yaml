@@ -10,7 +10,7 @@ ai:
     cost_tier: 5
     price_per_call_thb: 8      # [สมมติ]
     login_hint: "claude (login ผ่าน Claude Code)"
-    enabled: true
+    enabled: true             # สมองหลักตัวเดียว · คิด/วิเคราะห์/วางแผน/ตรวจ
   fable:
     vendor: anthropic
     roles: [brain]
@@ -18,9 +18,8 @@ ai:
     cost_tier: 5
     price_per_call_thb: 12     # [สมมติ] แพงสุด
     premium: true
-    machine_locked: true      # เฉพาะเครื่องเจ้าของ (โน้ตบุ๊ก+VPS)
     login_hint: "claude (login ผ่าน Claude Code)"
-    enabled: true
+    enabled: false            # ถอดออกแล้ว (เจ้าของสั่ง 2026-07-06 · ประหยัดโควต้า) · เปิดใหม่ = enabled: true + เติม adapter fable
   codex:
     vendor: openai
     roles: [coder, reviewer]

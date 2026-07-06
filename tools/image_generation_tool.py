@@ -1196,11 +1196,11 @@ IMAGE_GENERATE_SCHEMA = {
         "optional `provider` / `model` overrides when one specific call must "
         "hit a different image route. Returns the result in the `image` field — "
         "either a URL or an absolute file path. To show it to the user, "
-        "response using the file-delivery convention for the current platform "
-        "(your platform guidance describes how files are delivered here). When "
-        "the active terminal backend has a different filesystem, successful "
-        "local-file results may also include `agent_visible_image` for "
-        "follow-up terminal/file operations."
+        "reference that path/URL in your response using the file-delivery "
+        "convention for the current platform (your platform guidance describes "
+        "how files are delivered here). When the active terminal backend has a "
+        "different filesystem, successful local-file results may also include "
+        "`agent_visible_image` for follow-up terminal/file operations."
     ),
     "parameters": {
         "type": "object",

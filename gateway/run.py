@@ -7119,7 +7119,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 resolved_session_key = None
 
-        model = _resolve_gateway_model(user_config)
+        # Per-platform model override (from model_platforms config)
+        if source is not None and source.platform is not None:
+            platform_name = source.platform.value if hasattr(source.platform, 'value') else str(source.platform)
+            model_platforms = (user_config or {}).get("model_platforms", {})
+            platform_model = model_platforms.get(platform_name)
+            if platform_model and isinstance(platform_model, str) and platform_model.strip():
+                logger.info("[Model] Override for platform %s: %s -> %s", platform_name, model, platform_model.strip())
+                model = platform_model.strip()
+
         if resolved_session_key:
             self._rehydrate_session_model_override(resolved_session_key)
         _override_state = (

@@ -628,9 +628,20 @@ export function DesktopController() {
     updateSessionState
   })
 
+  const archiveSelectedSession = useCallback(() => {
+    const sessionId = $selectedStoredSessionId.get()
+
+    if (!sessionId) {
+      return
+    }
+
+    void archiveSession(sessionId)
+  }, [archiveSession])
+
   // Single global listener for every rebindable hotkey (incl. profile switching)
   // plus the on-screen keybind editor's capture mode.
   useKeybinds({
+    archiveSelectedSession,
     startFreshSession: startFreshSessionDraft,
     toggleCommandCenter,
     toggleSelectedPin

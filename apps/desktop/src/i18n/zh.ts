@@ -224,6 +224,7 @@ export const zh: Translations = {
       'session.slot.9': '切换到最近会话 9',
       'session.focusSearch': '搜索会话',
       'session.togglePin': '固定/取消固定当前会话',
+      'session.archive': '归档当前会话',
       'workspace.newWorktree': '新建工作树',
       'composer.focus': '聚焦输入框',
       'composer.modelPicker': '打开模型选择器',

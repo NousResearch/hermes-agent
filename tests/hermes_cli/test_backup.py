@@ -408,7 +408,11 @@ class TestBackup:
             assert pid_files == []
 
     def test_default_output_path(self, tmp_path, monkeypatch):
-        """When no output path given, zip goes to ~/hermes-backup-*.zip."""
+        """When no output path given, zip goes under HERMES_HOME/backups/,
+        not $HOME -- the backup carries auth.json/state.db/config.yaml, and
+        $HOME isn't protected by HERMES_HOME's 0700 mode the way ~/.hermes
+        is (see security hardening: the zip must not rely on inheriting
+        protection from a directory Hermes doesn't control)."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("model: test\n")
@@ -421,9 +425,40 @@ class TestBackup:
         from hermes_cli.backup import run_backup
         run_backup(args)
 
-        # Should exist in home dir
-        zips = list(tmp_path.glob("hermes-backup-*.zip"))
+        # Should NOT leak into $HOME.
+        assert list(tmp_path.glob("hermes-backup-*.zip")) == []
+
+        # Should exist under HERMES_HOME/backups/ instead.
+        zips = list((hermes_home / "backups").glob("hermes-backup-*.zip"))
         assert len(zips) == 1
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+    def test_zip_is_owner_only_regardless_of_destination(self, tmp_path, monkeypatch):
+        """The zip must land at 0600 whether it's the default backups/
+        location or an explicit --output elsewhere -- it carries
+        auth.json/state.db/config.yaml and is meant to be moved/copied, so
+        it can't rely on its parent directory for protection."""
+        import stat
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        old_umask = os.umask(0o022)
+        try:
+            from hermes_cli.backup import run_backup
+
+            run_backup(Namespace(output=None))
+            default_zip = next((hermes_home / "backups").glob("hermes-backup-*.zip"))
+            assert stat.S_IMODE(default_zip.stat().st_mode) == 0o600
+
+            explicit_zip = tmp_path / "explicit-backup.zip"
+            run_backup(Namespace(output=str(explicit_zip)))
+            assert stat.S_IMODE(explicit_zip.stat().st_mode) == 0o600
+        finally:
+            os.umask(old_umask)
 
     def test_skips_symlinked_files(self, tmp_path, monkeypatch):
         """Backup must not dereference symlinks and leak files outside HERMES_HOME."""

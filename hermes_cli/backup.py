@@ -305,8 +305,13 @@ def run_backup(args) -> None:
             stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
             out_path = out_path / f"hermes-backup-{stamp}.zip"
     else:
+        # Default lands under HERMES_HOME/backups/ (the same directory the
+        # pre-update/pre-migration auto-backups use, already excluded from
+        # the file walk below) rather than $HOME directly -- the backup
+        # contains auth.json/state.db/config.yaml, and $HOME isn't
+        # protected by HERMES_HOME's 0700 mode the way ~/.hermes is.
         stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        out_path = Path.home() / f"hermes-backup-{stamp}.zip"
+        out_path = hermes_root / "backups" / f"hermes-backup-{stamp}.zip"
 
     # Ensure the suffix is .zip
     if out_path.suffix.lower() != ".zip":
@@ -423,6 +428,15 @@ def run_backup(args) -> None:
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"  {arcname}: {exc}")
                 continue
+
+    # The zip carries auth.json/state.db/config.yaml verbatim -- lock it down
+    # regardless of where it landed (default backups/ dir or an explicit
+    # --output elsewhere), since it's an artifact meant to be moved/copied
+    # and can't rely on inheriting protection from its parent directory.
+    try:
+        os.chmod(out_path, 0o600)
+    except OSError:
+        pass
 
     elapsed = time.monotonic() - t0
     zip_size = out_path.stat().st_size

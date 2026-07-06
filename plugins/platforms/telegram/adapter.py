@@ -417,6 +417,22 @@ def _rich_normalize_linebreaks(text: str) -> str:
 # applied identically at every stop() site so no path can hang on a dead socket.
 _UPDATER_STOP_TIMEOUT = 15.0
 
+# Watchdog bound for `await updater.start_polling()`. When both the primary
+# Telegram API server and all fallback IPs are unreachable simultaneously,
+# ``start_polling()`` can block forever inside an exhausted httpx connection
+# pool — neither connecting nor timing out. The original bug
+# (NousResearch/hermes-agent#59614) froze the entire 3-tier reconnect ladder
+# because the coroutine never returned, never raised, and never advanced.
+# Wrapping it in ``asyncio.wait_for()`` with a configurable bound unblocks the
+# ladder so it can attempt the next retry, fall through to the heartbeat
+# watcher, and ultimately escalate to ``_set_fatal_error(retryable=True)``.
+# Default matches the recent cua-driver session-startup bound (commit
+# d537d29a6) so all Hermes async bootstraps share the same "30s is the line
+# between hung and just-slow" convention. Operators tune via
+# ``telegram.polling_start_timeout`` in config.yaml or
+# ``HERMES_TELEGRAM_POLLING_START_TIMEOUT`` env var.
+_UPDATER_START_TIMEOUT = 30.0
+
 
 class TelegramAdapter(BasePlatformAdapter):
     """
@@ -491,6 +507,51 @@ class TelegramAdapter(BasePlatformAdapter):
             value = min(value, max_value)
         return value
 
+    def _resolve_polling_start_timeout(self) -> float:
+        """Resolve the ``start_polling()`` watchdog bound from config + env.
+
+        Precedence (highest first):
+        1. ``config.extra["polling_start_timeout"]`` in ``config.yaml`` —
+           per-platform operator knob.
+        2. ``HERMES_TELEGRAM_POLLING_START_TIMEOUT`` env var — process-level
+           override (useful in containerized deploys that don't mount a
+           config file).
+        3. Module-level default ``_UPDATER_START_TIMEOUT`` (30s).
+
+        Floored at 1.0 so a misconfigured 0 cannot insta-timeout every
+        start_polling() and turn the gate into a hot loop. Capped at 600.0
+        so an accidentally huge value (e.g. ``None`` coerced to ``inf``)
+        doesn't disable the watchdog. Non-finite and unparseable inputs
+        silently fall back to the default — operators get a working
+        timeout instead of a TypeError at gateway boot.
+        """
+        import math
+
+        candidates: list = []
+        # (1) config.yaml knob.
+        try:
+            extra_cfg = self.config.extra.get("polling_start_timeout") if getattr(self, "config", None) else None
+        except Exception:
+            extra_cfg = None
+        if extra_cfg is not None:
+            candidates.append(extra_cfg)
+        # (2) env var.
+        env_raw = os.getenv("HERMES_TELEGRAM_POLLING_START_TIMEOUT")
+        if env_raw is not None:
+            candidates.append(env_raw)
+        # (3) module default.
+        candidates.append(_UPDATER_START_TIMEOUT)
+
+        for raw in candidates:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            return max(1.0, min(value, 600.0))
+        return _UPDATER_START_TIMEOUT
+
     @property
     def message_len_fn(self):
         """Telegram measures message length in UTF-16 code units."""
@@ -558,6 +619,17 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
+        # Watchdog bound for `await updater.start_polling()`. Resolved once
+        # during construction from ``telegram.polling_start_timeout`` in
+        # config.yaml's ``extra`` dict, falling back to
+        # ``HERMES_TELEGRAM_POLLING_START_TIMEOUT`` env var, falling back to
+        # the module-level default ``_UPDATER_START_TIMEOUT`` (30s). Without
+        # this bound the entire 3-tier reconnect ladder can wedge on a hung
+        # start_polling() when the httpx connection pool is exhausted (#59614).
+        # Min 1s (so a misconfigured 0 doesn't insta-timeout), max 600s (10
+        # minutes, well above the longest legitimate slow-path on a heavily
+        # congested link).
+        self._polling_start_timeout: float = self._resolve_polling_start_timeout()
         # Consecutive heartbeat probes that saw queued updates the running
         # poller is not consuming. get_me() can't see this — the send path is
         # healthy while the getUpdates consumer is wedged — so the heartbeat
@@ -1946,16 +2018,45 @@ class TelegramAdapter(BasePlatformAdapter):
         Returns True when polling started, False when a transient conflict or
         network error was scheduled for background recovery instead of raising
         (keeping the gateway process alive).
+
+        The ``start_polling()`` call is guarded by ``asyncio.wait_for`` with
+        ``self._polling_start_timeout`` (default 30s, configurable via
+        ``telegram.polling_start_timeout``). When the underlying httpx
+        connection pool is exhausted and the call hangs indefinitely — neither
+        connecting nor timing out — the watchdog raises ``TimeoutError``, which
+        is then fed to the same background-recovery ladder as a network error
+        so the gateway stays alive and the reconnect logic can take over. This
+        is the bootstrap-side half of the fix for #59614.
         """
         if not (self._app and self._app.updater):
             raise RuntimeError("Telegram application/updater not initialized")
         try:
-            await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=drop_pending_updates,
-                error_callback=error_callback,
+            await asyncio.wait_for(
+                self._app.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=drop_pending_updates,
+                    error_callback=error_callback,
+                ),
+                timeout=self._polling_start_timeout,
             )
             return True
+        except asyncio.TimeoutError as timeout_err:
+            # Treat a hung start_polling() as a recoverable network error so
+            # the bootstrap path feeds the same recovery ladder as a normal
+            # connection failure. Without this branch, an exhausted httpx
+            # pool wedges the gateway process at boot (#59614).
+            safe_err = RuntimeError(
+                "start_polling() timed out after %.1fs — connection pool may be wedged"
+                % self._polling_start_timeout
+            )
+            safe_err.__cause__ = timeout_err
+            logger.warning(
+                "[%s] Telegram polling bootstrap start_polling() timed out "
+                "after %.1fs; scheduling background recovery: %s",
+                self.name, self._polling_start_timeout, timeout_err,
+            )
+            self._schedule_polling_recovery(safe_err, reason="polling bootstrap timeout")
+            return False
         except Exception as err:
             if self._looks_like_polling_conflict(err):
                 logger.warning(
@@ -2049,10 +2150,24 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             if not app:
                 raise RuntimeError("Telegram application was torn down during reconnect")
-            await app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=False,
-                error_callback=self._polling_error_callback_ref,
+            # Guard start_polling() with the same watchdog pattern as stop():
+            # when both the primary Telegram API and all fallback IPs are
+            # unreachable, the underlying httpx connection pool can sit in a
+            # state where start_polling() neither connects nor times out —
+            # the coroutine blocks indefinitely, the 10-retry ladder stalls
+            # at attempt 1, the heartbeat loop sees _polling_error_task as
+            # "in-flight but not done" and skips recovery, and the gateway
+            # process stays alive but receives no messages for hours.
+            # Bounding start_polling() lets the ladder advance so attempt
+            # N eventually escalates to _set_fatal_error(retryable=True) and
+            # the reconnect watcher can take over. Refs: #59614.
+            await asyncio.wait_for(
+                app.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=False,
+                    error_callback=self._polling_error_callback_ref,
+                ),
+                timeout=self._polling_start_timeout,
             )
             logger.info(
                 "[%s] Telegram polling resumed after network error (attempt %d)",
@@ -2081,6 +2196,38 @@ class TelegramAdapter(BasePlatformAdapter):
                 probe = asyncio.ensure_future(self._verify_polling_after_reconnect())
                 self._background_tasks.add(probe)
                 probe.add_done_callback(self._background_tasks.discard)
+        except asyncio.TimeoutError as timeout_err:
+            # Translate a hung start_polling() into a clear RuntimeError so
+            # the chained-retry branch below schedules the next attempt with
+            # a meaningful error message — operators see "start_polling()
+            # timed out" instead of a bare asyncio.TimeoutError. The chained
+            # retry re-enters _handle_polling_network_error, which will
+            # eventually escalate to _set_fatal_error(retryable=True) once
+            # the 10-retry budget is exhausted.
+            safe_retry_error = RuntimeError(
+                "start_polling() timed out after %.1fs — connection pool may be wedged"
+                % self._polling_start_timeout
+            )
+            safe_retry_error.__cause__ = timeout_err
+            logger.warning(
+                "[%s] Telegram polling reconnect start_polling() timed out "
+                "after %.1fs; advancing ladder: %s",
+                self.name, self._polling_start_timeout, timeout_err,
+            )
+            # start_polling failed — polling is dead and no further error
+            # callbacks will fire, so schedule the next retry ourselves.
+            if not self.has_fatal_error:
+                task = asyncio.ensure_future(
+                    self._handle_polling_network_error(safe_retry_error)
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+                # This chained retry IS the in-flight recovery attempt — it
+                # must replace the reentrancy guard, otherwise the heartbeat
+                # loop, the pending-updates probe, and the PTB error callback
+                # all see _polling_error_task as "done" and can each start a
+                # second, concurrent recovery for the same outage.
+                self._polling_error_task = task
         except Exception as retry_err:
             safe_retry_error = _redact_telegram_error_text(retry_err)
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, safe_retry_error)

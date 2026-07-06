@@ -9,7 +9,7 @@
   stdenv,
   makeWrapper,
   callPackage,
-  python312,
+  python313,
   nodejs_22,
   electron,
   ripgrep,
@@ -101,12 +101,12 @@ let
 
   runtimePath = lib.makeBinPath runtimeDeps;
 
-  sitePackagesPath = python312.sitePackages;
+  sitePackagesPath = python313.sitePackages;
 
   # Walk propagatedBuildInputs to include transitive Python deps in PYTHONPATH.
   # Without this, a plugin listing e.g. requests as a dep would fail at runtime
   # if requests isn't already in the sealed uv2nix venv.
-  allExtraPythonPackages = python312.pkgs.requiredPythonModules extraPythonPackages;
+  allExtraPythonPackages = python313.pkgs.requiredPythonModules extraPythonPackages;
 
   pythonPath = lib.makeSearchPath sitePackagesPath allExtraPythonPackages;
 

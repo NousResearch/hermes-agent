@@ -252,7 +252,7 @@ services.hermes-agent = {
   # Directory plugin (source tree with plugin.yaml)
   extraPlugins = [ (pkgs.fetchFromGitHub { ... }) ];
   # Entry-point plugin (pip package)
-  extraPythonPackages = [ (pkgs.python312Packages.buildPythonPackage { ... }) ];
+  extraPythonPackages = [ (pkgs.python313Packages.buildPythonPackage { ... }) ];
   # Enable in config
   settings.plugins.enabled = [ "my-plugin" ];
 };

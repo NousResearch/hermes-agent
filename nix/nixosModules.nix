@@ -506,11 +506,11 @@
           Python packages to add to PYTHONPATH for entry-point plugin discovery.
           These are pip-packaged plugins that register via the
           hermes_agent.plugins entry-point group. Each package must be built
-          with the same Python interpreter as hermes (python312).
+          with the same Python interpreter as hermes (python313).
         '';
         example = literalExpression ''
           [
-            (pkgs.python312Packages.buildPythonPackage {
+            (pkgs.python313Packages.buildPythonPackage {
               pname = "rtk-hermes";
               version = "1.0.0";
               src = pkgs.fetchFromGitHub {

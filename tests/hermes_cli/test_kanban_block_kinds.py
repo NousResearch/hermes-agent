@@ -130,6 +130,53 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
+def test_resolve_block_recurrence_limit_reads_config_and_guards_bad_values() -> None:
+    """kanban.block_recurrence_limit overrides the default; bad values fall back."""
+    # explicit override (int and coercible string)
+    assert kb.resolve_block_recurrence_limit({"block_recurrence_limit": 4}) == 4
+    assert kb.resolve_block_recurrence_limit({"block_recurrence_limit": "7"}) == 7
+    # missing / empty -> built-in default
+    assert kb.resolve_block_recurrence_limit({}) == kb.BLOCK_RECURRENCE_LIMIT
+    # non-int / non-positive must never disable the breaker -> default
+    for bad in ("abc", 0, -3, None):
+        assert (
+            kb.resolve_block_recurrence_limit({"block_recurrence_limit": bad})
+            == kb.BLOCK_RECURRENCE_LIMIT
+        )
+
+
+def test_configured_limit_defers_triage_and_event(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With kanban.block_recurrence_limit=4, triage is deferred until the 4th
+    same-cause re-block, and the emitted event reports the configured limit."""
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda *a, **k: {"kanban": {"block_recurrence_limit": 4}},
+    )
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        # recurrences 1..3 stay in `blocked` (below the configured limit of 4)
+        for expected in (1, 2, 3):
+            kb.block_task(conn, tid, reason="need creds", kind="needs_input")
+            t = kb.get_task(conn, tid)
+            assert t.status == "blocked", f"recurrence {expected} should stay blocked"
+            assert t.block_recurrences == expected
+            kb.unblock_task(conn, tid)
+            _make_running_again(conn, tid)
+        # the 4th same-cause re-block hits the limit -> triage
+        kb.block_task(conn, tid, reason="need creds", kind="needs_input")
+        t = kb.get_task(conn, tid)
+        assert t.status == "triage"
+        assert t.block_recurrences == 4
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"]
+        assert events, "expected a block_loop_detected event"
+        assert (events[-1].payload or {}).get("limit") == 4
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------

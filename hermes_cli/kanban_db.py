@@ -131,6 +131,10 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # human-in-the-loop decision. Mirrors the dispatcher's ``DEFAULT_FAILURE_LIMIT``
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
+#
+# This is the built-in default; operators can override it with
+# ``kanban.block_recurrence_limit`` in ``config.yaml`` (resolved by
+# :func:`resolve_block_recurrence_limit`) without editing code.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
@@ -4649,7 +4653,9 @@ def block_task(
         same_cause = prev_kind == kind
         recurrences = prev_recurrences + 1 if same_cause else 1
 
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+        recurrence_limit = resolve_block_recurrence_limit()
+
+        if recurrences >= recurrence_limit:
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.
             cur = conn.execute(
@@ -4684,7 +4690,7 @@ def block_task(
                     "reason": reason,
                     "kind": kind,
                     "recurrences": recurrences,
-                    "limit": BLOCK_RECURRENCE_LIMIT,
+                    "limit": recurrence_limit,
                 },
                 run_id=run_id,
             )
@@ -7403,6 +7409,27 @@ def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= minimum else default
+
+
+def resolve_block_recurrence_limit(kanban_cfg: Optional[dict] = None) -> int:
+    """Return the unblock-loop recurrence limit.
+
+    Reads ``kanban.block_recurrence_limit`` from ``config.yaml``, falling back
+    to :data:`BLOCK_RECURRENCE_LIMIT`. A missing, non-integer, or ``< 1`` value
+    yields the default — the config is hand-edited, so a bad value must never
+    disable the loop breaker.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    return _positive_int(
+        (kanban_cfg or {}).get("block_recurrence_limit"),
+        BLOCK_RECURRENCE_LIMIT,
+    )
 
 
 def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:

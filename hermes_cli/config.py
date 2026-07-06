@@ -2622,6 +2622,12 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Unblock-loop breaker: after this many same-cause block -> unblock ->
+        # re-block cycles, the task routes to `triage` for a human instead of
+        # back to `blocked` (where a cron would keep unblocking it). Raise it
+        # for pipelines that legitimately block on more than two stages. A
+        # missing or non-positive value falls back to the built-in default.
+        "block_recurrence_limit": 2,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

@@ -5511,7 +5511,49 @@ class SessionDB:
         # Clean up on-disk files outside the DB transaction
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if removed_ids and sessions_dir is not None:
+            self._purge_gateway_routing_for_sessions(set(removed_ids), sessions_dir=sessions_dir)
         return count
+
+    def _purge_gateway_routing_for_sessions(
+        self, session_ids: "set[str]", *, sessions_dir: Path
+    ) -> None:
+        """Drop gateway_routing rows that still point at deleted session_ids.
+
+        prune_sessions() hard-deletes sessions/messages rows directly,
+        bypassing gateway/session.py's SessionStore entirely — so a routing
+        entry (session_key -> serialized SessionEntry) written before the
+        prune stays in the gateway_routing table pointing at a session_id
+        that no longer exists. The gateway's own stale-entry self-heal
+        (``_is_session_ended_in_db``) treats a missing row as "keep" (that
+        check exists for a different case: an entry not yet persisted), so
+        the dangling entry is never dropped on its own — the next message on
+        that session_key would silently rehydrate an empty session instead
+        of starting fresh.
+
+        Scoped to the routing index matching *sessions_dir*, mirroring
+        gateway/session.py's ``SessionStore._routing_scope()``.
+        """
+        try:
+            scope = str(Path(sessions_dir).resolve())
+        except Exception:
+            scope = str(sessions_dir)
+
+        entries = self.load_gateway_routing_entries(scope=scope)
+        if not entries:
+            return
+
+        stale_keys = []
+        for key, entry_json in entries.items():
+            try:
+                entry_data = json.loads(entry_json)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(entry_data, dict) and entry_data.get("session_id") in session_ids:
+                stale_keys.append(key)
+
+        if stale_keys:
+            self.delete_gateway_routing_entries(stale_keys, scope=scope)
 
     # ── Meta key/value (for scheduler bookkeeping) ──
 

@@ -4266,6 +4266,51 @@ class TestAutoMaintenance:
         assert not (sessions_dir / "old.jsonl").exists()
         assert (sessions_dir / "active.jsonl").exists()
 
+    def test_prune_sessions_drops_stale_gateway_routing_entries(self, db, tmp_path):
+        """A gateway_routing entry pointing at a pruned session_id must be
+        dropped, or the next message on that session_key would silently
+        rehydrate an empty session instead of starting fresh.
+
+        Regression test: prune_sessions() hard-deletes sessions/messages
+        rows directly, bypassing gateway/session.py's SessionStore, so a
+        routing entry written before the prune was left dangling.
+        """
+        from pathlib import Path
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        scope = str(Path(sessions_dir).resolve())
+
+        self._make_old_ended(db, "old", days_old=100)
+        db.create_session(session_id="active", source="cli")  # not ended
+
+        db.save_gateway_routing_entry(
+            "telegram:1:chat-old", json.dumps({"session_id": "old"}), scope=scope
+        )
+        db.save_gateway_routing_entry(
+            "telegram:1:chat-active", json.dumps({"session_id": "active"}), scope=scope
+        )
+
+        count = db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
+        assert count == 1
+
+        rows = db.load_gateway_routing_entries(scope=scope)
+        assert "telegram:1:chat-old" not in rows
+        assert "telegram:1:chat-active" in rows
+
+    def test_prune_sessions_without_sessions_dir_skips_routing_cleanup(self, db):
+        """No sessions_dir means no scope can be computed — must not crash,
+        and existing routing entries (any scope) are left untouched."""
+        self._make_old_ended(db, "old", days_old=100)
+        db.save_gateway_routing_entry(
+            "telegram:1:chat-old", json.dumps({"session_id": "old"}), scope="somescope"
+        )
+
+        count = db.prune_sessions(older_than_days=90)
+        assert count == 1
+        rows = db.load_gateway_routing_entries(scope="somescope")
+        assert "telegram:1:chat-old" in rows
+
 
 # =========================================================================
 # FTS5 indexing of tool_calls / tool_name (#16751)

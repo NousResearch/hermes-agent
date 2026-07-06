@@ -412,8 +412,8 @@ async function normalizeBinaryContent(content) {
 // hydrated here — no extra round trip. Handles plain text and our patched mixed
 // text+attachment groups (first text child); null for attachment/voice-only
 // targets. Capped so one long bubble can't balloon the NDJSON line.
-const REACTION_TARGET_TEXT_CAP = 2000;
-function reactionTargetText(target) {
+const MESSAGE_PREVIEW_TEXT_CAP = 2000;
+function messagePreviewText(target) {
   const c = target && typeof target === "object" ? target.content : null;
   if (!c || typeof c !== "object") return null;
   let text = null;
@@ -429,9 +429,19 @@ function reactionTargetText(target) {
     }
   }
   if (typeof text !== "string" || !text) return null;
-  return text.length > REACTION_TARGET_TEXT_CAP
-    ? text.slice(0, REACTION_TARGET_TEXT_CAP)
+  return text.length > MESSAGE_PREVIEW_TEXT_CAP
+    ? text.slice(0, MESSAGE_PREVIEW_TEXT_CAP)
     : text;
+}
+
+function reactionTargetText(target) {
+  return messagePreviewText(target);
+}
+
+function parentMessageFor(message) {
+  const parentId = message?.parentId;
+  if (!parentId || typeof parentId !== "string") return null;
+  return knownMessages.get(parentId) || null;
 }
 
 async function normalizeContent(content) {
@@ -476,6 +486,7 @@ async function normalizeEvent(space, message) {
   try {
     const msgSpace = message.space || {};
     const ts = message.timestamp;
+    const parent = parentMessageFor(message);
     return {
       messageId: message.id ?? null,
       platform: message.platform || space.__platform || "iMessage",
@@ -487,6 +498,14 @@ async function normalizeEvent(space, message) {
       },
       sender: { id: message.sender ? message.sender.id : null },
       content: await normalizeContent(message.content),
+      replyTo: message.parentId
+        ? {
+            messageId: message.parentId,
+            text: messagePreviewText(parent),
+            senderId: parent?.sender?.id ?? null,
+            direction: parent?.direction ?? null,
+          }
+        : null,
       timestamp:
         ts instanceof Date ? ts.toISOString() : ts ? String(ts) : null,
     };

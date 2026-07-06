@@ -808,6 +808,19 @@ class PhotonAdapter(BasePlatformAdapter):
             user_id=sender_id,
             user_name=sender_id or None,
         )
+        reply_to = event.get("replyTo") or {}
+        reply_to_message_id = None
+        reply_to_text = None
+        reply_to_author_id = None
+        reply_to_is_own_message = False
+        if isinstance(reply_to, dict):
+            reply_to_message_id = reply_to.get("messageId") or None
+            reply_to_text = reply_to.get("text") or None
+            reply_to_author_id = reply_to.get("senderId") or None
+            reply_to_is_own_message = reply_to.get("direction") == "outbound" or (
+                bool(reply_to_message_id)
+                and str(reply_to_message_id) in self._sent_message_ids
+            )
         message_event = MessageEvent(
             text=text,
             message_type=mtype,
@@ -817,6 +830,10 @@ class PhotonAdapter(BasePlatformAdapter):
             timestamp=timestamp,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_is_own_message=reply_to_is_own_message,
         )
         await self.handle_message(message_event)
 

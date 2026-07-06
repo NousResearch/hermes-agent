@@ -74,12 +74,62 @@ async def test_dispatch_group_type(monkeypatch: pytest.MonkeyPatch) -> None:
     event = {
         "messageId": "spc-msg-grp",
         "space": {"id": "group-guid-xyz", "type": "group", "phone": None},
-        "sender": {"id": "+15551234567"},
+        "sender": {"id": "+155****4567"},
         "content": {"type": "text", "text": "hi group"},
         "timestamp": "2026-05-14T19:06:32.000Z",
     }
     await adapter._dispatch_inbound(event)
     assert captured[0].source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_text_preserves_reply_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _dm_event("Ahaha i meant the dhl email silly", msg_id="spc-reply-1")
+    event["replyTo"] = {
+        "messageId": "spc-parent-1",
+        "text": "This is an old package at MYPUP so can be archived.",
+        "senderId": "+155****4567",
+        "direction": "inbound",
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.text == "Ahaha i meant the dhl email silly"
+    assert ev.reply_to_message_id == "spc-parent-1"
+    assert ev.reply_to_text == "This is an old package at MYPUP so can be archived."
+    assert ev.reply_to_author_id == "+155****4567"
+    assert ev.reply_to_is_own_message is False
+
+
+@pytest.mark.asyncio
+async def test_dispatch_text_marks_outbound_reply_context_as_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _dm_event("I agree with your recommendation!", msg_id="spc-reply-2")
+    event["replyTo"] = {
+        "messageId": "spc-parent-2",
+        "text": "I would archive the informational emails.",
+        "senderId": None,
+        "direction": "outbound",
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.reply_to_message_id == "spc-parent-2"
+    assert ev.reply_to_text == "I would archive the informational emails."
+    assert ev.reply_to_is_own_message is True
 
 
 # A real 1x1 transparent PNG (passes base.py's _looks_like_image magic check).

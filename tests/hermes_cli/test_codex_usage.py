@@ -2,9 +2,11 @@ from hermes_cli.codex_usage import (
     annotate_usage_trends,
     apply_alert_policy,
     compute_recommendation,
+    load_history,
     render_alert,
     render_compact,
     render_credential_insights,
+    save_history_snapshot,
     summarize_window,
     usage_bar,
 )
@@ -148,6 +150,124 @@ def test_render_compact_includes_burn_and_eta_when_trend_is_available():
     assert "🔥 Burn:" in text
     assert "5h +4.0%/h" in text
     assert "burn +4.0%/h · ETA95 07/07 14:15" in text
+
+
+def test_annotate_usage_trends_falls_back_to_window_average_on_first_run():
+    payload = {
+        "checked_at": "2026-07-06T20:00:00+09:00",
+        "accounts": [
+            {
+                "label": "company-plus-100",
+                "ok": True,
+                "primary_window": summarize_window(
+                    {
+                        "used_percent": 25,
+                        "limit_window_seconds": 18000,
+                        "reset_at": "2026-07-06T21:00:00+09:00",
+                    }
+                ),
+                "secondary_window": {},
+            }
+        ],
+    }
+
+    annotate_usage_trends(payload, history=[])
+
+    trend = payload["accounts"][0]["primary_window"]["trend"]
+    assert trend["source"] == "window_avg"
+    assert trend["burn_percent_per_hour"] == 6.25
+
+
+def test_annotate_usage_trends_ignores_usage_rollbacks_and_uses_average():
+    payload = {
+        "checked_at": "2026-07-06T20:00:00+09:00",
+        "accounts": [
+            {
+                "label": "company-plus-100",
+                "ok": True,
+                "primary_window": summarize_window(
+                    {
+                        "used_percent": 20,
+                        "limit_window_seconds": 18000,
+                        "reset_at": "2026-07-06T21:00:00+09:00",
+                    }
+                ),
+                "secondary_window": {},
+            }
+        ],
+    }
+
+    annotate_usage_trends(
+        payload,
+        history=[
+            {
+                "checked_at": "2026-07-06T19:30:00+09:00",
+                "accounts": [
+                    {
+                        "label": "company-plus-100",
+                        "ok": True,
+                        "primary_window": {"used_percent": 25, "reset_at": "2026-07-06T21:00:00+09:00"},
+                    }
+                ],
+            }
+        ],
+    )
+
+    trend = payload["accounts"][0]["primary_window"]["trend"]
+    assert trend["source"] == "window_avg"
+    assert trend["burn_percent_per_hour"] == 5.0
+
+
+def test_history_load_skips_corrupt_lines_and_save_is_nonfatal(tmp_path):
+    history_path = tmp_path / "history.jsonl"
+    history_path.write_text('{"checked_at":"old"}\nnot-json\n{"checked_at":"new"}\n', encoding="utf-8")
+
+    rows = load_history(history_path)
+
+    assert [row["checked_at"] for row in rows] == ["old", "new"]
+    save_history_snapshot(tmp_path / "missing" / "nested" / "history.jsonl", {"checked_at": "now", "accounts": []})
+    save_history_snapshot(tmp_path, {"checked_at": "now", "accounts": []})
+
+
+def test_render_compact_marks_eta_after_reset():
+    payload = {
+        "checked_at": "2026-07-06T20:00:00+09:00",
+        "accounts": [
+            {
+                "label": "company-plus-100",
+                "ok": True,
+                "plan_type": "prolite",
+                "primary_window": summarize_window(
+                    {
+                        "used_percent": 22,
+                        "limit_window_seconds": 18000,
+                        "reset_at": "2026-07-06T21:00:00+09:00",
+                    }
+                ),
+                "secondary_window": {},
+            }
+        ],
+        "recommendation": {"label": "company-plus-100", "reason": "7d ?, 5h 22%"},
+    }
+    annotate_usage_trends(
+        payload,
+        history=[
+            {
+                "checked_at": "2026-07-06T19:30:00+09:00",
+                "accounts": [
+                    {
+                        "label": "company-plus-100",
+                        "ok": True,
+                        "primary_window": {"used_percent": 20, "reset_at": "2026-07-06T21:00:00+09:00"},
+                    }
+                ],
+            }
+        ],
+    )
+
+    text = render_compact(payload)
+
+    assert "ETA95 07/07 14:15*" in text
 
 
 def test_render_compact_includes_risk_and_recommendation():

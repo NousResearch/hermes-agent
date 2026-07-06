@@ -11,6 +11,7 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -299,11 +300,11 @@ def annotate_usage_trends(
 
 def load_history(path: Path, *, limit: int = 200) -> list[dict[str, Any]]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
+        lines = deque(path.open(encoding="utf-8"), maxlen=limit)
+    except OSError:
         return []
     rows: list[dict[str, Any]] = []
-    for line in lines[-limit:]:
+    for line in lines:
         try:
             item = json.loads(line)
         except json.JSONDecodeError:
@@ -314,7 +315,6 @@ def load_history(path: Path, *, limit: int = 200) -> list[dict[str, Any]]:
 
 
 def save_history_snapshot(path: Path, payload: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     snapshot = {
         "checked_at": payload.get("checked_at"),
         "accounts": [
@@ -333,8 +333,12 @@ def save_history_snapshot(path: Path, payload: Dict[str, Any]) -> None:
             for row in payload.get("accounts") or []
         ],
     }
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")) + "\n")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        return
 
 
 def render_text(payload: Dict[str, Any]) -> str:

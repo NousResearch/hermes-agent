@@ -64,10 +64,12 @@ def test_format_secret_source_suffix_generic_label_for_future_sources():
 
 
 def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkeypatch):
-    """End-to-end: when ``apply_bitwarden_secrets`` returns applied keys,
-    they end up in ``_SECRET_SOURCES`` so the UI can label them."""
+    """End-to-end: when the Bitwarden source fetches keys, applied vars
+    end up in ``_SECRET_SOURCES`` so the UI can label them."""
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "secrets:\n"
@@ -78,22 +80,19 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
         encoding="utf-8",
     )
 
-    # Stub apply_bitwarden_secrets to return a synthetic FetchResult.
-    from agent.secret_sources.bitwarden import FetchResult
-
-    fake_result = FetchResult(
-        secrets={"ANTHROPIC_API_KEY": "sk-ant-test"},
-        applied=["ANTHROPIC_API_KEY"],
-    )
-
-    def _fake_apply(**_kwargs):
-        return fake_result
-
-    # The import inside _apply_external_secret_sources is lazy, so we
-    # patch the *module attribute* it will pull in.
+    # Stub the fetch layer under the SecretSource adapter.
     import agent.secret_sources.bitwarden as bw_module
 
-    monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fake_apply)
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(
+        bw_module,
+        "fetch_bitwarden_secrets",
+        lambda **_kw: ({"ANTHROPIC_API_KEY": "sk-ant-test"}, []),
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
 
     env_loader._apply_external_secret_sources(tmp_path)
 
@@ -131,6 +130,8 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     """
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "secrets:\n"
@@ -141,19 +142,19 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
         encoding="utf-8",
     )
 
-    from agent.secret_sources.bitwarden import FetchResult
-
     call_count = {"n": 0}
 
-    def _fake_apply(**_kwargs):
+    def _fake_fetch(**_kwargs):
         call_count["n"] += 1
-        return FetchResult(
-            secrets={"ANTHROPIC_API_KEY": "sk-ant-test"},
-            applied=["ANTHROPIC_API_KEY"],
-        )
+        return {"ANTHROPIC_API_KEY": "sk-ant-test"}, []
 
     import agent.secret_sources.bitwarden as bw_module
-    monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fake_apply)
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", _fake_fetch)
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
 
     # Five calls in a row, simulating module-import-time invocations from
     # cli.py, hermes_cli/main.py, run_agent.py, trajectory_compressor.py,

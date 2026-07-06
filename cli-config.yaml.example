@@ -1380,3 +1380,30 @@ updates:
 #       # This is a CREDENTIAL: prefer setting HERMES_DASHBOARD_OIDC_CLIENT_SECRET
 #       # in ~/.hermes/.env over putting it here in config.yaml.
 #       #   client_secret: ""
+
+# =============================================================================
+# External secret sources
+# =============================================================================
+# Pull provider credentials from external secret managers at process startup
+# instead of storing them in ~/.hermes/.env. Only the manager's bootstrap
+# token (e.g. BWS_ACCESS_TOKEN) lives in .env; everything else rotates
+# centrally in the vault. Multiple sources can be enabled at once:
+#   - "mapped" sources (explicit VAR -> ref bindings) beat "bulk" sources
+#     (whole-project dumps like Bitwarden BSM)
+#   - within a shape, the first source to claim a var wins; later claims
+#     are skipped with a startup warning (never a silent clobber)
+#   - a source's override_existing lets it beat .env/shell values, but
+#     never another secret source's claim
+# Docs: https://hermes-agent.nousresearch.com/docs/user-guide/secrets/
+#
+# secrets:
+#   # Optional explicit ordering of enabled sources.
+#   # sources: [bitwarden]
+#   bitwarden:
+#     enabled: false
+#     project_id: ""              # BSM project UUID
+#     access_token_env: BWS_ACCESS_TOKEN
+#     cache_ttl_seconds: 300      # 0 disables memory+disk caching
+#     override_existing: true     # BSM wins over .env so rotation works
+#     auto_install: true          # auto-download the pinned bws binary
+#     server_url: ""              # e.g. https://vault.bitwarden.eu (EU cloud)

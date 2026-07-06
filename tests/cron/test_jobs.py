@@ -320,6 +320,33 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_reject_past_oneshot(self, tmp_cron_dir):
+        """A one-shot whose run_at is more than ONESHOT_GRACE_SECONDS in the
+        past must raise ValueError — the job would otherwise persist with
+        next_run_at=None and silently never fire (#59395)."""
+        past = (datetime.now() - timedelta(minutes=10)).isoformat()
+        with pytest.raises(ValueError, match="in the past"):
+            create_job(prompt="Past one-shot", schedule=past, deliver="local")
+
+    def test_accept_future_oneshot(self, tmp_cron_dir):
+        """A one-shot in the future must be created normally."""
+        future = (datetime.now() + timedelta(hours=1)).isoformat()
+        job = create_job(prompt="Future one-shot", schedule=future, deliver="local")
+        assert job["next_run_at"] is not None
+        assert job["state"] == "scheduled"
+
+    def test_accept_oneshot_within_grace_window(self, tmp_cron_dir, monkeypatch):
+        """A one-shot within ONESHOT_GRACE_SECONDS of now must still be
+        accepted — the grace window exists so a job created a few seconds
+        after its target minute still fires on the next tick."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        # 30 seconds ago — well within the 120s grace window
+        recent = (now - timedelta(seconds=30)).isoformat()
+        job = create_job(prompt="Recent one-shot", schedule=recent, deliver="local")
+        assert job["next_run_at"] is not None
+        assert job["state"] == "scheduled"
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):

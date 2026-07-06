@@ -978,6 +978,19 @@ def create_job(
         no_agent=normalized_no_agent,
     )
 
+    next_run = compute_next_run(parsed_schedule)
+
+    # Reject one-shot jobs whose target time is already unreachable.
+    # _recoverable_oneshot_run_at() returns None when run_at is more than
+    # ONESHOT_GRACE_SECONDS in the past — the job would be persisted with
+    # next_run_at=None, state="scheduled", and silently never fire (#59395).
+    if next_run is None and parsed_schedule.get("kind") == "once":
+        run_at = parsed_schedule.get("run_at", "unknown")
+        raise ValueError(
+            f"Requested one-shot time {run_at} is in the past "
+            f"(grace window: {ONESHOT_GRACE_SECONDS}s) and cannot be scheduled."
+        )
+
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -1006,7 +1019,7 @@ def create_job(
         "paused_at": None,
         "paused_reason": None,
         "created_at": now,
-        "next_run_at": compute_next_run(parsed_schedule),
+        "next_run_at": next_run,
         "last_run_at": None,
         "last_status": None,
         "last_error": None,

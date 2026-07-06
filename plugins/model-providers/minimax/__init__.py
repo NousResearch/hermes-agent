@@ -1,9 +1,9 @@
 """MiniMax provider profiles (international + China).
 
-The default API-key routes use anthropic_messages because their base URLs end
-with /anthropic. Users can opt MiniMax-M3 into the OpenAI-compatible endpoint
-with base_url=https://api.minimax.io/v1; that route needs MiniMax-specific
-reasoning controls in extra_body.
+Most API-key routes use anthropic_messages because their base URLs end with
+/anthropic. The runtime resolver routes the built-in MiniMax-M3 default to
+https://api.minimax.io/v1 so this profile can request split reasoning; explicit
+user base_url overrides stay user-owned.
 """
 
 from typing import Any

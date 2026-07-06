@@ -133,6 +133,39 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+_MINIMAX_M3_OPENAI_BASE_URL = "https://api.minimax.io/v1"
+
+
+def _is_minimax_m3_model(model: Any) -> bool:
+    normalized = str(model or "").strip().lower()
+    if not normalized:
+        return False
+    return normalized.split("/")[-1] == "minimax-m3"
+
+
+def _maybe_route_default_minimax_m3_openai(
+    *,
+    provider: str,
+    base_url: str,
+    api_mode: str,
+    effective_model: Any,
+    base_url_from_default: bool,
+) -> tuple[str, str]:
+    """Route built-in MiniMax-M3 to the OpenAI-compatible split-reasoning path.
+
+    MiniMax-M3 leaks provider-specific ``<mm:think>`` markers as visible
+    content on the default Anthropic-compatible endpoint. The OpenAI-compatible
+    endpoint supports ``reasoning_split`` (emitted by the MiniMax provider
+    profile), so only the uncustomized built-in route is moved there; explicit
+    user base URL overrides keep their chosen transport.
+    """
+    if provider != "minimax" or not base_url_from_default:
+        return base_url, api_mode
+    if not _is_minimax_m3_model(effective_model):
+        return base_url, api_mode
+    return _MINIMAX_M3_OPENAI_BASE_URL, "chat_completions"
+
+
 def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:
     """Resolve api_mode for legacy/plain ``provider: custom`` endpoints.
 
@@ -405,7 +438,7 @@ def _resolve_runtime_from_pool_entry(
     # longer matches the model actually being used — the bug that caused
     # opencode-zen /v1 to be stripped for chat_completions requests when
     # config.default was still a Claude model.
-    effective_model = (target_model or model_cfg.get("default") or "")
+    effective_model = target_model or model_cfg.get("default") or ""
     base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     api_mode = "chat_completions"
@@ -479,7 +512,16 @@ def _resolve_runtime_from_pool_entry(
         # fell back to the hardcoded default).  Env var overrides win (#6039).
         pconfig = PROVIDER_REGISTRY.get(provider)
         pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
-        if configured_provider == provider and pool_url_is_default:
+        env_url = ""
+        if pconfig and pconfig.base_url_env_var:
+            env_url = (
+                _getenv(pconfig.base_url_env_var, "")
+                or os.getenv(pconfig.base_url_env_var, "")
+            ).strip().rstrip("/")
+        cfg_base_url = ""
+        if provider in {"minimax", "minimax-cn"} and pool_url_is_default and env_url:
+            base_url = env_url
+        elif configured_provider == provider and pool_url_is_default:
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
             if cfg_base_url:
                 base_url = cfg_base_url
@@ -501,6 +543,13 @@ def _resolve_runtime_from_pool_entry(
             detected = _detect_api_mode_for_url(base_url)
             if detected:
                 api_mode = detected
+        base_url, api_mode = _maybe_route_default_minimax_m3_openai(
+            provider=provider,
+            base_url=base_url,
+            api_mode=api_mode,
+            effective_model=effective_model,
+            base_url_from_default=bool(pool_url_is_default and not env_url and not cfg_base_url),
+        )
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
@@ -1358,6 +1407,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -1461,7 +1511,10 @@ def _resolve_explicit_runtime(
     if pconfig and pconfig.auth_type == "api_key":
         env_url = ""
         if pconfig.base_url_env_var:
-            env_url = _getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+            env_url = (
+                _getenv(pconfig.base_url_env_var, "")
+                or os.getenv(pconfig.base_url_env_var, "")
+            ).strip().rstrip("/")
 
         base_url = explicit_base_url
         if not base_url:
@@ -1493,6 +1546,18 @@ def _resolve_explicit_runtime(
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected
+        effective_model = target_model or model_cfg.get("default") or ""
+        base_url, api_mode = _maybe_route_default_minimax_m3_openai(
+            provider=provider,
+            base_url=base_url,
+            api_mode=api_mode,
+            effective_model=effective_model,
+            base_url_from_default=bool(
+                not explicit_base_url
+                and not env_url
+                and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
+            ),
+        )
 
         return {
             "provider": provider,
@@ -1661,6 +1726,7 @@ def resolve_runtime_provider(
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if explicit_runtime:
         return explicit_runtime
@@ -1997,7 +2063,15 @@ def resolve_runtime_provider(
         cfg_base_url = ""
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+        env_url = ""
+        if pconfig.base_url_env_var:
+            env_url = (
+                _getenv(pconfig.base_url_env_var, "")
+                or os.getenv(pconfig.base_url_env_var, "")
+            ).strip().rstrip("/")
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
+        if provider in {"minimax", "minimax-cn"} and env_url:
+            base_url = env_url
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
@@ -2028,6 +2102,18 @@ def resolve_runtime_provider(
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected
+        effective_model = target_model or model_cfg.get("default") or ""
+        base_url, api_mode = _maybe_route_default_minimax_m3_openai(
+            provider=provider,
+            base_url=base_url,
+            api_mode=api_mode,
+            effective_model=effective_model,
+            base_url_from_default=bool(
+                not cfg_base_url
+                and not env_url
+                and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
+            ),
+        )
         # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
         if provider in {"opencode-zen", "opencode-go"}:
             from hermes_cli.models import normalize_opencode_base_url

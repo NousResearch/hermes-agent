@@ -21,6 +21,15 @@ def _fake_invoke_jwt(ttl_seconds=3600):
     return f"{header}.{payload}.sig"
 
 
+class _NoCredentialPool:
+    def has_credentials(self):
+        return False
+
+
+def _disable_credential_pool(monkeypatch):
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _NoCredentialPool())
+
+
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     class _Entry:
         access_token = "pool-token"
@@ -43,6 +52,65 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["api_key"] == "pool-token"
     assert resolved["credential_pool"] is not None
     assert resolved["source"] == "manual"
+
+
+def test_minimax_m3_credential_pool_default_route_uses_openai_endpoint(monkeypatch):
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://api.minimax.io/anthropic"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "minimax", "default": "minimax/minimax-m3"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.minimax.io/v1"
+    assert resolved["api_key"] == "pool-token"
+
+
+def test_minimax_m3_credential_pool_env_base_url_preserves_user_route(monkeypatch):
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://api.minimax.io/anthropic"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "minimax", "default": "minimax/minimax-m3"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setenv("MINIMAX_BASE_URL", "https://api.minimax.io/anthropic")
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+    assert resolved["api_key"] == "pool-token"
 
 
 def test_resolve_runtime_provider_nous_pool_uses_env_base_url_override(monkeypatch):
@@ -1467,6 +1535,7 @@ def test_anthropic_messages_in_valid_api_modes():
 
 def test_api_key_provider_anthropic_url_auto_detection(monkeypatch):
     """API-key providers with /anthropic base URL should auto-detect anthropic_messages mode."""
+    _disable_credential_pool(monkeypatch)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
@@ -1481,6 +1550,7 @@ def test_api_key_provider_anthropic_url_auto_detection(monkeypatch):
 
 def test_api_key_provider_explicit_api_mode_config(monkeypatch):
     """API-key providers should respect api_mode from model config."""
+    _disable_credential_pool(monkeypatch)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"api_mode": "anthropic_messages"})
     monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
@@ -1494,6 +1564,7 @@ def test_api_key_provider_explicit_api_mode_config(monkeypatch):
 
 def test_minimax_default_url_uses_anthropic_messages(monkeypatch):
     """MiniMax with default /anthropic URL should auto-detect anthropic_messages mode."""
+    _disable_credential_pool(monkeypatch)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
@@ -1506,8 +1577,70 @@ def test_minimax_default_url_uses_anthropic_messages(monkeypatch):
     assert resolved["base_url"] == "https://api.minimax.io/anthropic"
 
 
+def test_minimax_m3_default_route_uses_openai_reasoning_split_endpoint(monkeypatch):
+    """Built-in MiniMax-M3 should use /v1 so the profile can request reasoning_split."""
+    _disable_credential_pool(monkeypatch)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "minimax", "default": "minimax/minimax-m3"},
+    )
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.minimax.io/v1"
+
+
+def test_minimax_m3_default_route_ignores_stale_anthropic_api_mode(monkeypatch):
+    """A stale persisted api_mode must not keep M3 on the inline-reasoning route."""
+    _disable_credential_pool(monkeypatch)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "minimax",
+            "default": "MiniMax-M3",
+            "api_mode": "anthropic_messages",
+        },
+    )
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.minimax.io/v1"
+
+
+def test_minimax_m3_env_base_url_preserves_user_route(monkeypatch):
+    """An explicit MiniMax base URL remains user-owned, even for M3."""
+    _disable_credential_pool(monkeypatch)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "minimax", "default": "MiniMax-M3"},
+    )
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.setenv("MINIMAX_BASE_URL", "https://api.minimax.io/anthropic")
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
 def test_minimax_v1_url_uses_chat_completions(monkeypatch):
     """MiniMax with /v1 base URL should use chat_completions (user override for regions where /anthropic 404s)."""
+    _disable_credential_pool(monkeypatch)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
@@ -1522,6 +1655,7 @@ def test_minimax_v1_url_uses_chat_completions(monkeypatch):
 
 def test_minimax_cn_v1_url_uses_chat_completions(monkeypatch):
     """MiniMax-CN with /v1 base URL should use chat_completions (user override)."""
+    _disable_credential_pool(monkeypatch)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-cn")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-minimax-cn-key")
@@ -1536,6 +1670,7 @@ def test_minimax_cn_v1_url_uses_chat_completions(monkeypatch):
 
 def test_minimax_explicit_api_mode_respected(monkeypatch):
     """Explicit api_mode config should override MiniMax auto-detection."""
+    _disable_credential_pool(monkeypatch)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"api_mode": "chat_completions"})
     monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
@@ -1549,6 +1684,7 @@ def test_minimax_explicit_api_mode_respected(monkeypatch):
 
 def test_minimax_config_base_url_overrides_hardcoded_default(monkeypatch):
     """model.base_url in config.yaml should override the hardcoded default (#6039)."""
+    _disable_credential_pool(monkeypatch)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {
         "provider": "minimax",
@@ -1566,6 +1702,7 @@ def test_minimax_config_base_url_overrides_hardcoded_default(monkeypatch):
 
 def test_minimax_env_base_url_still_wins_over_config(monkeypatch):
     """MINIMAX_BASE_URL env var should take priority over config.yaml model.base_url."""
+    _disable_credential_pool(monkeypatch)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {
         "provider": "minimax",
@@ -1582,6 +1719,7 @@ def test_minimax_env_base_url_still_wins_over_config(monkeypatch):
 
 def test_minimax_config_base_url_ignored_for_different_provider(monkeypatch):
     """model.base_url should NOT be used when model.provider doesn't match."""
+    _disable_credential_pool(monkeypatch)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {
         "provider": "openrouter",

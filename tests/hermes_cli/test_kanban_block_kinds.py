@@ -17,10 +17,12 @@ forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 
 
@@ -30,6 +32,14 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Default every test to an interactive Main/default session so the
+    # needs_input unblock guard is a no-op unless a test opts in. Without
+    # this, the worker env that runs the suite (HERMES_PROFILE=coder,
+    # HERMES_KANBAN_TASK=...) leaks in and trips the guard for the older
+    # tests that unblock a needs_input task. Guard tests override these via
+    # monkeypatch after requesting the fixture.
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
     kb.init_db()
     return home
 
@@ -200,3 +210,147 @@ def test_block_without_kind_is_backward_compatible(kanban_home: Path) -> None:
         t = kb.get_task(conn, tid)
         assert t.status == "blocked"
         assert t.block_kind is None
+
+
+# ---------------------------------------------------------------------------
+# needs_input unblock guard — only Main/default may clear a human gate
+# ---------------------------------------------------------------------------
+
+
+def test_needs_input_unblock_refused_from_worker(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dispatched worker (HERMES_KANBAN_TASK set) cannot self-approve."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="which key?", kind="needs_input")
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        with pytest.raises(ValueError, match="requires human"):
+            kb.unblock_task(conn, tid)
+
+        # The refusal is atomic — the task stays blocked, kind preserved.
+        t = kb.get_task(conn, tid)
+        assert t.status == "blocked"
+        assert t.block_kind == "needs_input"
+
+
+def test_needs_input_unblock_refused_from_nondefault_profile(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-default profile is not the human Main/default session either."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="which key?", kind="needs_input")
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.setenv("HERMES_PROFILE", "some-worker")
+        with pytest.raises(ValueError, match="non-interactive"):
+            kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_needs_input_unblock_succeeds_from_main_default(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interactive Main/default (no worker task, default profile) may clear it."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="which key?", kind="needs_input")
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.setenv("HERMES_PROFILE", "default")
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_needs_input_unblock_succeeds_when_profile_unset(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No env at all is the plain interactive case and must succeed."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="which key?", kind="needs_input")
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_worker_can_still_unblock_other_kinds(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard is scoped to needs_input; capability/transient are unaffected."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "some-task")
+    for kind in ("capability", "transient"):
+        with kb.connect_closing() as conn:
+            tid = _running_task(conn, title=f"t-{kind}")
+            kb.block_task(conn, tid, reason="x", kind=kind)
+            assert kb.unblock_task(conn, tid)
+            assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_worker_can_still_unblock_untyped_block(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A legacy un-typed (block_kind is None) block is not gated by the guard."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "some-task")
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="legacy")
+        assert kb.get_task(conn, tid).block_kind is None
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+# ---------------------------------------------------------------------------
+# CLI layer: the refusal must make the unblock handler return non-zero
+# ---------------------------------------------------------------------------
+
+
+def _unblock_ns(tid: str) -> argparse.Namespace:
+    return argparse.Namespace(task_ids=[tid], reason=None)
+
+
+def test_cli_unblock_needs_input_from_worker_returns_nonzero(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The worker CLI call is refused: rc != 0, task stays blocked."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="which key?", kind="needs_input")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+    rc = kc._cmd_unblock(_unblock_ns(tid))
+    assert rc != 0
+
+    err = capsys.readouterr().err
+    assert "kanban:" in err
+    assert "requires human" in err
+
+    with kb.connect_closing() as conn:
+        t = kb.get_task(conn, tid)
+        assert t.status == "blocked"
+        assert t.block_kind == "needs_input"
+
+
+def test_cli_unblock_needs_input_from_main_returns_zero(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interactive Main/default clears the gate and exits 0."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="which key?", kind="needs_input")
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "default")
+
+    rc = kc._cmd_unblock(_unblock_ns(tid))
+    assert rc == 0
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "ready"

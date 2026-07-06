@@ -4745,6 +4745,29 @@ def promote_task(
     return True, None
 
 
+def _is_noninteractive_unblock_session() -> bool:
+    """True when the caller is a dispatched worker or a non-default profile.
+
+    A ``needs_input`` block encodes a human decision the worker could not
+    derive on its own; only an interactive Main/default session may clear it.
+    Without this check a dispatched worker that happens to have a terminal can
+    run ``hermes kanban unblock <task_id>`` (or the ``kanban_unblock`` tool) and
+    silently bypass the human-approval gate. We treat two signals as
+    non-interactive/non-default:
+
+    * ``HERMES_KANBAN_TASK`` set — the process is a dispatched worker scoped to
+      a task (the dispatcher sets this; see ``spawn_worker`` env plumbing).
+    * ``HERMES_PROFILE`` set to anything other than ``default`` — a
+      non-default profile is not the human Main/default session.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return True
+    profile = os.environ.get("HERMES_PROFILE")
+    if profile and profile != "default":
+        return True
+    return False
+
+
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
 
@@ -4754,13 +4777,29 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    A ``needs_input`` block may only be cleared from an interactive
+    Main/default session. When called from a dispatched worker or a
+    non-default profile (see :func:`_is_noninteractive_unblock_session`) this
+    raises :class:`ValueError` rather than silently unblocking, closing the
+    bypass where a worker with a terminal could self-approve a human gate.
+    Other block kinds (dependency/capability/transient/None) are unaffected.
     """
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id, block_kind FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
         ).fetchone()
+        if (
+            stale
+            and stale["block_kind"] == "needs_input"
+            and _is_noninteractive_unblock_session()
+        ):
+            raise ValueError(
+                "Refused: cannot unblock needs_input block from non-interactive "
+                "session. This block requires human (Main/default) approval."
+            )
         if stale and stale["current_run_id"]:
             conn.execute(
                 """

@@ -2009,7 +2009,18 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            try:
+                ok = kb.unblock_task(conn, tid)
+            except ValueError as exc:
+                # The DB guard refuses e.g. a worker / non-interactive session
+                # clearing a needs_input human gate. Surface the refusal and
+                # count it as a failure so this command handler returns
+                # non-zero instead of depending on the generic top-level
+                # exception path.
+                failed.append(tid)
+                print(f"kanban: {exc}", file=sys.stderr)
+                continue
+            if not ok:
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:

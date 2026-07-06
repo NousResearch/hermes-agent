@@ -88,6 +88,24 @@ export interface PluginRegistry {
 }
 
 // ---------------------------------------------------------------------------
+// React Flow surface
+// ---------------------------------------------------------------------------
+
+export interface HermesPluginReactFlow {
+  ReactFlow: typeof import("@xyflow/react").ReactFlow;
+  ReactFlowProvider: typeof import("@xyflow/react").ReactFlowProvider;
+  Background: typeof import("@xyflow/react").Background;
+  Controls: typeof import("@xyflow/react").Controls;
+  MiniMap: typeof import("@xyflow/react").MiniMap;
+  Handle: typeof import("@xyflow/react").Handle;
+  Position: typeof import("@xyflow/react").Position;
+  MarkerType: typeof import("@xyflow/react").MarkerType;
+  addEdge: typeof import("@xyflow/react").addEdge;
+  applyNodeChanges: typeof import("@xyflow/react").applyNodeChanges;
+  applyEdgeChanges: typeof import("@xyflow/react").applyEdgeChanges;
+}
+
+// ---------------------------------------------------------------------------
 // SDK surface (window.__HERMES_PLUGIN_SDK__)
 // ---------------------------------------------------------------------------
 
@@ -97,6 +115,10 @@ export interface HermesPluginSDK {
 
   /** React core — use instead of importing/bundling react. */
   React: typeof import("react").default;
+  /** React Flow editor primitives exposed from the host bundle. */
+  ReactFlow: HermesPluginReactFlow;
+  /** Lowercase alias for plugins that prefer namespace-style access. */
+  reactFlow: HermesPluginReactFlow;
   hooks: {
     useState: typeof import("react").useState;
     useEffect: typeof import("react").useEffect;

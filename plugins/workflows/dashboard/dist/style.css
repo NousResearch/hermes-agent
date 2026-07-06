@@ -231,8 +231,109 @@
   font-size: 0.72rem;
 }
 
+.hermes-workflows .hermes-workflows-builder {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(240px, 0.38fr);
+  gap: 0.75rem;
+  min-height: 28rem;
+}
+
+.hermes-workflows .hermes-workflows-canvas {
+  min-height: 28rem;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: calc(var(--radius, 0.75rem) * 0.75);
+  background: color-mix(in srgb, var(--color-background) 80%, transparent);
+}
+
+.hermes-workflows .hermes-workflows-canvas .react-flow {
+  color: var(--color-foreground);
+}
+
+.hermes-workflows .hermes-workflows-rf-node,
+.hermes-workflows .hermes-workflows-inspector {
+  border: 1px solid var(--color-border);
+  border-radius: calc(var(--radius, 0.75rem) * 0.75);
+  background: color-mix(in srgb, var(--color-card) 92%, transparent);
+  padding: 0.55rem 0.65rem;
+}
+
+.hermes-workflows .hermes-workflows-rf-node {
+  min-width: 9.5rem;
+  cursor: pointer;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--color-background) 70%, transparent);
+}
+
+.hermes-workflows .hermes-workflows-rf-node-title {
+  font-weight: 700;
+}
+
+.hermes-workflows .hermes-workflows-rf-node-type,
+.hermes-workflows .hermes-workflows-rf-node-status {
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.7rem;
+}
+
+.hermes-workflows .hermes-workflows-rf-node-shell.is-selected .hermes-workflows-rf-node,
+.hermes-workflows .hermes-workflows-rf-node-shell.selected .hermes-workflows-rf-node {
+  border-color: var(--color-primary);
+}
+
+.hermes-workflows .is-status-running .hermes-workflows-rf-node,
+.hermes-workflows .is-status-waiting .hermes-workflows-rf-node {
+  border-color: color-mix(in srgb, var(--color-primary) 65%, var(--color-border));
+}
+
+.hermes-workflows .is-status-succeeded .hermes-workflows-rf-node {
+  border-color: color-mix(in srgb, #22c55e 65%, var(--color-border));
+}
+
+.hermes-workflows .is-status-failed .hermes-workflows-rf-node {
+  border-color: color-mix(in srgb, var(--color-destructive, #ef4444) 70%, var(--color-border));
+}
+
+.hermes-workflows .hermes-workflows-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.hermes-workflows .hermes-workflows-node-json {
+  min-height: 15rem;
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--color-border);
+  border-radius: calc(var(--radius, 0.75rem) * 0.75);
+  background: color-mix(in srgb, var(--color-background) 85%, transparent);
+  color: inherit;
+  padding: 0.6rem;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.hermes-workflows .hermes-workflows-file-button {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: calc(var(--radius, 0.75rem) * 0.75);
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+}
+
+.hermes-workflows .hermes-workflows-file-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
 @media (max-width: 980px) {
-  .hermes-workflows .hermes-workflows-grid {
+  .hermes-workflows .hermes-workflows-grid,
+  .hermes-workflows .hermes-workflows-builder {
     grid-template-columns: 1fr;
   }
 

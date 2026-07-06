@@ -8,8 +8,21 @@
   const React = SDK.React;
   const h = React.createElement;
   const Card = SDK.components && SDK.components.Card ? SDK.components.Card : "section";
+  const FlowSDK = SDK.ReactFlow || SDK.reactFlow || {};
+  const ReactFlow = FlowSDK.ReactFlow;
+  const ReactFlowProvider = FlowSDK.ReactFlowProvider;
+  const Background = FlowSDK.Background;
+  const Controls = FlowSDK.Controls;
+  const MiniMap = FlowSDK.MiniMap;
+  const Handle = FlowSDK.Handle;
+  const Position = FlowSDK.Position || { Left: "left", Right: "right" };
+  const MarkerType = FlowSDK.MarkerType || { ArrowClosed: "arrowclosed" };
+  const addEdge = FlowSDK.addEdge;
+  const applyNodeChanges = FlowSDK.applyNodeChanges;
+  const applyEdgeChanges = FlowSDK.applyEdgeChanges;
   const API = "/api/plugins/workflows";
   const DEFINITIONS_API = "/api/plugins/workflows/definitions";
+  const NODE_KIND_LIST = ["trigger", "pass", "switch", "agent_task", "wait", "parallel", "join", "fail"];
   const EXAMPLE_DEFINITION = [
     "id: dashboard_demo",
     "name: Dashboard Demo",
@@ -39,6 +52,10 @@
     return String(value);
   }
 
+  function classSafe(value) {
+    return String(value || "unknown").replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
+  }
+
   function jsonBlock(value) {
     try {
       return JSON.stringify(value || {}, null, 2);
@@ -47,26 +64,147 @@
     }
   }
 
+  function parseJsonObject(text) {
+    try {
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function nodeList(spec) {
     const nodes = spec && spec.nodes ? spec.nodes : {};
-    if (Array.isArray(nodes)) return nodes;
-    return Object.keys(nodes).map(function (id) {
-      return Object.assign({ id: id }, nodes[id] || {});
+    if (Array.isArray(nodes)) return nodes.map(function (node, index) {
+      return Object.assign({ id: node.id || node.name || "node_" + (index + 1), specKind: "node" }, node || {});
     });
+    return Object.keys(nodes).map(function (id) {
+      return Object.assign({ id: id, specKind: "node" }, nodes[id] || {});
+    });
+  }
+
+  function triggerList(spec) {
+    return asArray(spec && spec.triggers).map(function (trigger, index) {
+      const id = trigger.id || trigger.name || "trigger_" + (index + 1);
+      return Object.assign({ id: id, type: "trigger", trigger_type: trigger.type, specKind: "trigger" }, trigger || {});
+    });
+  }
+
+  function graphNodeList(spec) {
+    return triggerList(spec).concat(nodeList(spec));
+  }
+
+  function splitPort(value) {
+    const parts = safeString(value).split(".");
+    return { nodeId: parts.shift() || "?", port: parts.join(".") };
   }
 
   function edgeList(spec) {
     return asArray(spec && spec.edges).map(function (edge, index) {
+      const source = splitPort(edge.from || edge.source || edge.start || "?");
+      const target = splitPort(edge.to || edge.target || edge.end || "?");
       return {
         id: edge.id || String(index + 1),
-        from: edge.from || edge.source || edge.start || "?",
-        to: edge.to || edge.target || edge.end || "?",
+        from: source.nodeId,
+        to: target.nodeId,
+        label: edge.label || edge.condition || source.port || target.port || "",
+        raw: edge,
       };
     });
   }
 
   function statusClass(status) {
     return "hermes-workflows-badge " + (status === false ? "is-off" : "is-on");
+  }
+
+  function eventStatus(row) {
+    const payload = (row && row.payload) || {};
+    const kind = String((row && row.kind) || "");
+    if (payload.status) return payload.status;
+    if (kind.indexOf("node_succeeded") !== -1) return "succeeded";
+    if (kind.indexOf("node_failed") !== -1) return "failed";
+    if (kind.indexOf("node_started") !== -1 || kind.indexOf("node_running") !== -1) return "running";
+    if (kind.indexOf("execution_waiting") !== -1) return "waiting";
+    return "";
+  }
+
+  function statusByNode(events) {
+    const statuses = {};
+    asArray(events).forEach(function (row) {
+      const payload = (row && row.payload) || {};
+      const status = eventStatus(row);
+      asArray(payload.waiting_nodes).forEach(function (nodeId) {
+        statuses[nodeId] = "waiting";
+      });
+      const nodeId = payload.node_id || payload.nodeId || payload.node || (payload.error && payload.error.node) || row.node_id;
+      if (nodeId && status) statuses[nodeId] = status;
+    });
+    return statuses;
+  }
+
+  function makeWorkflowNode(kind) {
+    return function WorkflowNode(props) {
+      const data = (props && props.data) || {};
+      const status = data.status || "idle";
+      const node = data.node || {};
+      return h("div", {
+        className: "hermes-workflows-rf-node is-" + classSafe(kind) + " is-status-" + classSafe(status),
+        onClick: function (event) {
+          event.stopPropagation();
+          if (data.onSelect) data.onSelect(node);
+        },
+      },
+        Handle ? h(Handle, { type: "target", position: Position.Left }) : null,
+        h("div", { className: "hermes-workflows-rf-node-title" }, safeString(node.id || data.id)),
+        h("div", { className: "hermes-workflows-rf-node-type" }, kind),
+        status && status !== "idle" ? h("div", { className: "hermes-workflows-rf-node-status" }, safeString(status)) : null,
+        Handle ? h(Handle, { type: "source", position: Position.Right }) : null
+      );
+    };
+  }
+
+  const NODE_TYPES = {
+    trigger: makeWorkflowNode("trigger"),
+    pass: makeWorkflowNode("pass"),
+    switch: makeWorkflowNode("switch"),
+    agent_task: makeWorkflowNode("agent_task"),
+    wait: makeWorkflowNode("wait"),
+    parallel: makeWorkflowNode("parallel"),
+    join: makeWorkflowNode("join"),
+    fail: makeWorkflowNode("fail"),
+  };
+
+  function buildFlowNodes(spec, statuses, selectedNode, onSelect) {
+    return graphNodeList(spec).map(function (node, index) {
+      const id = node.id || node.name || "node_" + (index + 1);
+      const kind = NODE_TYPES[node.type] ? node.type : "pass";
+      return {
+        id: id,
+        type: kind,
+        position: { x: (index % 3) * 250, y: Math.floor(index / 3) * 155 },
+        className: "hermes-workflows-rf-node-shell is-status-" + classSafe(statuses[id] || "idle") + (selectedNode && selectedNode.id === id ? " is-selected" : ""),
+        data: { id: id, node: node, status: statuses[id] || "idle", onSelect: onSelect },
+      };
+    });
+  }
+
+  function buildFlowEdges(spec) {
+    return edgeList(spec).map(function (edge) {
+      return {
+        id: edge.id,
+        source: edge.from,
+        target: edge.to,
+        label: edge.label,
+        markerEnd: { type: MarkerType.ArrowClosed },
+      };
+    });
+  }
+
+  function cleanedNodeForSpec(node) {
+    const cleaned = Object.assign({}, node || {});
+    delete cleaned.specKind;
+    delete cleaned.trigger_type;
+    return cleaned;
   }
 
   function WorkflowsPage() {
@@ -84,9 +222,27 @@
     const stateSelectedExecution = useState(null);
     const selectedExecution = stateSelectedExecution[0];
     const setSelectedExecution = stateSelectedExecution[1];
+    const stateSelectedNode = useState(null);
+    const selectedNode = stateSelectedNode[0];
+    const setSelectedNode = stateSelectedNode[1];
+    const stateNodeJson = useState("");
+    const nodeJson = stateNodeJson[0];
+    const setNodeJson = stateNodeJson[1];
+    const stateNodeMessage = useState("");
+    const nodeMessage = stateNodeMessage[0];
+    const setNodeMessage = stateNodeMessage[1];
+    const stateFlowNodes = useState([]);
+    const flowNodes = stateFlowNodes[0];
+    const setFlowNodes = stateFlowNodes[1];
+    const stateFlowEdges = useState([]);
+    const flowEdges = stateFlowEdges[0];
+    const setFlowEdges = stateFlowEdges[1];
     const stateEditorText = useState(EXAMPLE_DEFINITION);
     const editorText = stateEditorText[0];
     const setEditorText = stateEditorText[1];
+    const stateDraftSpec = useState(null);
+    const draftSpec = stateDraftSpec[0];
+    const setDraftSpec = stateDraftSpec[1];
     const stateRunWorkflowId = useState("");
     const runWorkflowId = stateRunWorkflowId[0];
     const setRunWorkflowId = stateRunWorkflowId[1];
@@ -119,14 +275,33 @@
       setError(err && err.message ? err.message : String(err));
     }
 
+    function updateEditorText(text) {
+      setEditorText(text);
+      if (!parseJsonObject(text)) setDraftSpec(null);
+    }
+
+    function activeSpec() {
+      return parseJsonObject(editorText) || draftSpec || null;
+    }
+
+    function selectNodeForInspector(node) {
+      setSelectedNode(node);
+      setNodeJson(jsonBlock(node));
+      setNodeMessage("");
+    }
+
     function loadDefinition(workflowId) {
       if (!workflowId) {
         setSelectedDefinition(null);
+        setDraftSpec(null);
+        setSelectedNode(null);
         return Promise.resolve(null);
       }
       return api("/definitions/" + encodeURIComponent(workflowId)).then(function (res) {
         const definition = res.definition || null;
         setSelectedDefinition(definition);
+        setDraftSpec(definition && definition.spec ? definition.spec : null);
+        setSelectedNode(null);
         if (definition) setRunWorkflowId(definition.workflow_id || definition.id || workflowId);
         return definition;
       });
@@ -166,6 +341,8 @@
         if (nextId) return loadDefinition(nextId);
         setRunWorkflowId("");
         setSelectedDefinition(null);
+        setDraftSpec(null);
+        setSelectedNode(null);
         return null;
       });
     }
@@ -195,6 +372,13 @@
       refresh();
     }, []);
 
+    useEffect(function () {
+      const spec = activeSpec();
+      const statuses = statusByNode(events);
+      setFlowNodes(spec ? buildFlowNodes(spec, statuses, selectedNode, selectNodeForInspector) : []);
+      setFlowEdges(spec ? buildFlowEdges(spec) : []);
+    }, [draftSpec, editorText, events, selectedNode]);
+
     function validateDefinition() {
       setValidating(true);
       setError("");
@@ -205,6 +389,7 @@
       }).then(function (res) {
         const definition = res.definition || {};
         setStatus("Validated " + safeString(definition.workflow_id || definition.id));
+        setDraftSpec(definition.spec || null);
         if (definition.spec) setSelectedDefinition(definition);
       }).catch(fail).finally(function () { setValidating(false); });
     }
@@ -219,6 +404,7 @@
       }).then(function (res) {
         const definition = res.definition || {};
         const id = definition.workflow_id || definition.id || "";
+        setDraftSpec(definition.spec || null);
         setStatus("Deployed " + safeString(id));
         return loadDefinitions(id);
       }).catch(fail).finally(function () { setDeploying(false); });
@@ -243,6 +429,95 @@
         setStatus("Started execution " + safeString(executionId));
         return loadExecutions(executionId);
       }).catch(fail).finally(function () { setRunning(false); });
+    }
+
+    function importDefinitionFile(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function () {
+        updateEditorText(String(reader.result || ""));
+        setStatus("Import YAML loaded " + safeString(file.name));
+        setSelectedNode(null);
+      };
+      reader.onerror = function () { setError("Could not import workflow file."); };
+      reader.readAsText(file);
+      event.target.value = "";
+    }
+
+    function exportYAML() {
+      const spec = activeSpec();
+      const base = (spec && (spec.id || spec.workflow_id || spec.name)) || runWorkflowId || "workflow";
+      const blob = new Blob([editorText], { type: "text/yaml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = classSafe(base) + ".yaml";
+      anchor.click();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+      setStatus("Export YAML downloaded " + anchor.download);
+    }
+
+    function copyYAML() {
+      if (!navigator.clipboard) {
+        setError("Clipboard API unavailable; use Export YAML instead.");
+        return;
+      }
+      navigator.clipboard.writeText(editorText).then(function () {
+        setStatus("Export YAML copied to clipboard.");
+      }).catch(fail);
+    }
+
+    function useJsonDraft() {
+      const spec = parseJsonObject(editorText) || draftSpec;
+      if (!spec) {
+        setNodeMessage("Validate the YAML draft before converting it to JSON; no stale workflow was used.");
+        return;
+      }
+      updateEditorText(JSON.stringify(spec, null, 2));
+      setNodeMessage("Converted current workflow draft to JSON; node edits can now be applied.");
+    }
+
+    function applyNodeJson() {
+      if (!selectedNode) return;
+      let nextNode;
+      try {
+        nextNode = JSON.parse(nodeJson);
+      } catch (err) {
+        setNodeMessage("Invalid node JSON: " + (err && err.message ? err.message : String(err)));
+        return;
+      }
+
+      const spec = parseJsonObject(editorText);
+      if (!spec) {
+        setNodeMessage("Current definition text is YAML. Convert to JSON before applying node JSON; YAML was not changed.");
+        return;
+      }
+
+      const clean = cleanedNodeForSpec(nextNode);
+      const nextId = clean.id || selectedNode.id;
+      if (selectedNode.specKind === "trigger") {
+        spec.triggers = asArray(spec.triggers).map(function (trigger) {
+          const triggerId = trigger.id || trigger.name;
+          return triggerId === selectedNode.id ? clean : trigger;
+        });
+      } else if (Array.isArray(spec.nodes)) {
+        spec.nodes = spec.nodes.map(function (node) {
+          const nodeId = node.id || node.name;
+          return nodeId === selectedNode.id ? clean : node;
+        });
+      } else {
+        spec.nodes = spec.nodes || {};
+        if (nextId !== selectedNode.id) delete spec.nodes[selectedNode.id];
+        const nodeValue = Object.assign({}, clean);
+        delete nodeValue.id;
+        spec.nodes[nextId] = nodeValue;
+      }
+
+      updateEditorText(JSON.stringify(spec, null, 2));
+      setSelectedDefinition(Object.assign({}, selectedDefinition || {}, { spec: spec }));
+      setSelectedNode(Object.assign({}, nextNode, { id: nextId, specKind: selectedNode.specKind }));
+      setNodeMessage("Applied node JSON to editor draft.");
     }
 
     function renderDefinitionList() {
@@ -319,18 +594,17 @@
       );
     }
 
-    function renderGraph() {
-      const spec = selectedDefinition && selectedDefinition.spec ? selectedDefinition.spec : null;
-      const nodes = nodeList(spec);
+    function renderSimpleGraph(spec) {
+      const nodes = graphNodeList(spec);
       const edges = edgeList(spec);
-      return h("div", { className: "hermes-workflows-graph" },
-        h("div", null,
-          h("h2", null, "Readonly graph"),
-          h("p", { className: "hermes-workflows-muted" }, spec ? safeString(spec.name || selectedDefinition.name || selectedDefinition.workflow_id) : "Select or validate a workflow to render its nodes and edges.")
-        ),
+      return h("div", { className: "hermes-workflows-graph-fallback" },
         nodes.length ? h("div", { className: "hermes-workflows-node-grid" }, nodes.map(function (node) {
           const id = node.id || node.name || "node";
-          return h("div", { key: id, className: "hermes-workflows-node-card" },
+          return h("div", {
+            key: id,
+            className: "hermes-workflows-node-card",
+            onClick: function () { selectNodeForInspector(node); },
+          },
             h("h3", null, safeString(id)),
             h("div", { className: "hermes-workflows-node-type" }, safeString(node.type)),
             h("pre", { className: "hermes-workflows-pre" }, jsonBlock(node))
@@ -339,9 +613,73 @@
         h("div", { className: "hermes-workflows-stack" },
           h("h3", null, "Edges"),
           edges.length ? edges.map(function (edge) {
-            return h("div", { key: edge.id, className: "hermes-workflows-edge-card" }, safeString(edge.from) + " → " + safeString(edge.to));
+            const text = safeString(edge.from) + " → " + safeString(edge.to) + (edge.label ? " · " + edge.label : "");
+            return h("div", { key: edge.id, className: "hermes-workflows-edge-card" }, text);
           }) : h("p", { className: "hermes-workflows-muted" }, "No edges defined.")
         )
+      );
+    }
+
+    function renderInspector(spec) {
+      return h("aside", { className: "hermes-workflows-inspector" },
+        h("h3", null, "Node inspector"),
+        selectedNode ? h("div", { className: "hermes-workflows-stack" },
+          h("div", { className: "hermes-workflows-meta" }, "selectedNode " + safeString(selectedNode.id)),
+          h("textarea", {
+            className: "hermes-workflows-node-json",
+            value: nodeJson,
+            onChange: function (event) { setNodeJson(event.target.value); },
+          }),
+          h("div", { className: "hermes-workflows-row" },
+            h("button", { type: "button", onClick: applyNodeJson }, "Apply node JSON"),
+            h("button", { type: "button", onClick: useJsonDraft, disabled: !spec }, "Use JSON draft")
+          ),
+          nodeMessage ? h("p", { className: "hermes-workflows-muted" }, nodeMessage) : null
+        ) : h("p", { className: "hermes-workflows-muted" }, "Select a node to edit its JSON. YAML drafts are preserved until you choose Use JSON draft.")
+      );
+    }
+
+    function renderReactFlowGraph(spec) {
+      if (!ReactFlow || !ReactFlowProvider) return renderSimpleGraph(spec);
+      return h("div", { className: "hermes-workflows-builder" },
+        h("div", { className: "hermes-workflows-canvas" },
+          h(ReactFlowProvider, null,
+            h(ReactFlow, {
+              nodes: flowNodes,
+              edges: flowEdges,
+              nodeTypes: NODE_TYPES,
+              fitView: true,
+              nodesDraggable: true,
+              nodesConnectable: true,
+              onNodeClick: function (_, node) {
+                if (node && node.data && node.data.node) selectNodeForInspector(node.data.node);
+              },
+              onNodesChange: applyNodeChanges ? function (changes) { setFlowNodes(applyNodeChanges(changes, flowNodes)); } : undefined,
+              onEdgesChange: applyEdgeChanges ? function (changes) { setFlowEdges(applyEdgeChanges(changes, flowEdges)); } : undefined,
+              onConnect: addEdge ? function (connection) {
+                setFlowEdges(addEdge(Object.assign({ label: "draft", markerEnd: { type: MarkerType.ArrowClosed } }, connection), flowEdges));
+                setStatus("Draft connection added visually; edit YAML/JSON to persist it.");
+              } : undefined,
+            },
+              Background ? h(Background, null) : null,
+              Controls ? h(Controls, null) : null,
+              MiniMap ? h(MiniMap, null) : null
+            )
+          )
+        ),
+        renderInspector(spec)
+      );
+    }
+
+    function renderGraph() {
+      const spec = activeSpec();
+      return h("div", { className: "hermes-workflows-graph" },
+        h("div", null,
+          h("h2", null, "Visual workflow editor"),
+          h("p", { className: "hermes-workflows-muted" }, spec ? safeString(spec.name || spec.id || spec.workflow_id) : "Select or validate a workflow to render its nodes and edges.")
+        ),
+        spec ? renderReactFlowGraph(spec) : h("p", { className: "hermes-workflows-muted" }, "No workflow graph available yet."),
+        !ReactFlow ? h("p", { className: "hermes-workflows-muted" }, "React Flow SDK unavailable; showing the simple HTML graph fallback.") : null
       );
     }
 
@@ -349,7 +687,7 @@
       h(Card, { className: "hermes-workflows-header" },
         h("div", null,
           h("h1", null, "Workflows"),
-          h("p", { className: "hermes-workflows-muted" }, "Practical workflow screen for definitions, manual runs, executions, and graph previews.")
+          h("p", { className: "hermes-workflows-muted" }, "Visual workflow builder for definitions, manual runs, executions, and graph inspection.")
         ),
         h("button", { type: "button", disabled: loading, onClick: function () { refresh(); } }, loading ? "Refreshing…" : "Refresh")
       ),
@@ -403,11 +741,17 @@
             h("textarea", {
               className: "hermes-workflows-editor",
               value: editorText,
-              onChange: function (event) { setEditorText(event.target.value); },
+              onChange: function (event) { updateEditorText(event.target.value); },
             }),
             h("div", { className: "hermes-workflows-row" },
               h("button", { type: "button", disabled: validating, onClick: validateDefinition }, validating ? "Validating…" : "Validate"),
-              h("button", { type: "button", disabled: deploying, onClick: deployDefinition, className: "hermes-workflows-primary" }, deploying ? "Deploying…" : "Deploy")
+              h("button", { type: "button", disabled: deploying, onClick: deployDefinition, className: "hermes-workflows-primary" }, deploying ? "Deploying…" : "Deploy"),
+              h("label", { className: "hermes-workflows-file-button" },
+                "Import YAML",
+                h("input", { type: "file", accept: ".yaml,.yml,.json,application/yaml,application/x-yaml,application/json", onChange: importDefinitionFile })
+              ),
+              h("button", { type: "button", onClick: exportYAML }, "Export YAML"),
+              h("button", { type: "button", onClick: copyYAML }, "Copy YAML")
             )
           ),
           h(Card, { className: "hermes-workflows-panel" }, renderGraph()),

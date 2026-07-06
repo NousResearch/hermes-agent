@@ -121,6 +121,74 @@ def test_dashboard_bundle_registers_plugin_without_build_scaffolding():
     assert "__webpack_require__" not in bundle
 
 
+def test_web_plugin_sdk_exposes_react_flow_to_static_plugins():
+    package_json = json.loads((REPO_ROOT / "web" / "package.json").read_text())
+    assert package_json["dependencies"]["@xyflow/react"] == "^12.11.1"
+
+    registry = (REPO_ROOT / "web" / "src" / "plugins" / "registry.ts").read_text(
+        encoding="utf-8"
+    )
+    sdk_types = (REPO_ROOT / "web" / "src" / "plugins" / "sdk.d.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'from "@xyflow/react"' in registry
+    assert 'import "@xyflow/react/dist/style.css"' in registry
+    assert "ReactFlow:" in registry
+    assert "reactFlow:" in registry
+    for marker in [
+        "ReactFlowProvider",
+        "Background",
+        "Controls",
+        "MiniMap",
+        "Handle",
+        "Position",
+        "MarkerType",
+        "addEdge",
+        "applyNodeChanges",
+        "applyEdgeChanges",
+    ]:
+        assert marker in registry
+        assert marker in sdk_types
+
+
+def test_dashboard_bundle_contains_visual_editor_markers():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    assert "SDK.ReactFlow" in bundle or "SDK.reactFlow" in bundle
+    assert "ReactFlowProvider" in bundle
+    for marker in ["Background", "Controls", "MiniMap", "Handle", "Position"]:
+        assert marker in bundle
+
+    for node_type in [
+        "trigger",
+        "pass",
+        "switch",
+        "agent_task",
+        "wait",
+        "parallel",
+        "join",
+        "fail",
+    ]:
+        assert node_type in bundle
+
+    assert ".split(\".\")" in bundle or ".split('.')" in bundle
+    for marker in [
+        "selectedNode",
+        "applyNodeJson",
+        "draftSpec",
+        "setDraftSpec(null)",
+        "Validate the YAML draft before converting",
+        "Import YAML",
+        "Export YAML",
+        ".yaml",
+        "statusByNode",
+        "node_succeeded",
+        "node_failed",
+        "execution_waiting",
+    ]:
+        assert marker in bundle
+
+
 def test_dashboard_bundle_contains_workflow_mvp_api_and_ui_markers():
     bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
     for marker in [
@@ -140,7 +208,7 @@ def test_dashboard_bundle_contains_workflow_mvp_api_and_ui_markers():
         "Manual run form",
         "Execution list",
         "Execution detail timeline",
-        "Readonly graph",
+        "Visual workflow editor",
         "hermes-workflows-list",
         "hermes-workflows-editor",
         "hermes-workflows-run-form",

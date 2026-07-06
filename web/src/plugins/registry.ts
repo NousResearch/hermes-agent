@@ -17,6 +17,20 @@ import React, {
   useContext,
   createContext,
 } from "react";
+import {
+  ReactFlow,
+  ReactFlowProvider,
+  Background,
+  Controls,
+  MiniMap,
+  Handle,
+  Position,
+  MarkerType,
+  addEdge,
+  applyNodeChanges,
+  applyEdgeChanges,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import { api, fetchJSON, authedFetch, buildWsUrl, buildWsAuthParam } from "@/lib/api";
 import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -102,6 +116,20 @@ export const SDK_CONTRACT_VERSION = "1.1.0";
 // here (duplicate ambient declarations with differing modifiers conflict).
 
 export function exposePluginSDK() {
+  const reactFlow = {
+    ReactFlow,
+    ReactFlowProvider,
+    Background,
+    Controls,
+    MiniMap,
+    Handle,
+    Position,
+    MarkerType,
+    addEdge,
+    applyNodeChanges,
+    applyEdgeChanges,
+  };
+
   window.__HERMES_PLUGINS__ = {
     register: registerPlugin,
     registerSlot,
@@ -113,6 +141,8 @@ export function exposePluginSDK() {
     sdkVersion: SDK_CONTRACT_VERSION,
     // React core — plugins use these instead of importing react
     React,
+    ReactFlow: reactFlow,
+    reactFlow: reactFlow,
     hooks: {
       useState,
       useEffect,

@@ -3226,7 +3226,7 @@ class TestTransientTransportRetry:
     Salvaged from PR #16587 (@ARegalado1). The original fixed only the
     context-compression caller; this lives in call_llm so every auxiliary
     task (compression, memory flush, title-gen, session-search, vision)
-    gets the same same-target retry, and the gate reuses the canonical
+    gets the same-target retry, and the gate reuses the canonical
     _is_connection_error detector.
     """
 

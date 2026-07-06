@@ -140,8 +140,44 @@ class TestInheritContextIntegration:
         parent.tool_progress_callback = None
         parent.thinking_callback = None
         parent.prefill_messages = None
+        # The GATEWAY populates _session_messages (not conversation_history) — mirror
+        # the real production attribute so the fold reads the same source it does live.
+        parent._session_messages = conversation_history
         parent.conversation_history = conversation_history
         return parent
+
+    def _make_gateway_parent(self, session_messages):
+        """A gateway-shaped parent: has _session_messages, NO conversation_history
+        attr at all (a real AIAgent in the gateway has no such attribute). Uses a
+        plain object, not MagicMock, so getattr misses are real misses — this is
+        what makes it a faithful regression for the 'INHERITED: no' production bug."""
+        import threading
+
+        class _GatewayAgent:
+            pass
+
+        p = _GatewayAgent()
+        p.base_url = "https://openrouter.ai/api/v1"
+        p.api_key = "***"
+        p.provider = "openrouter"
+        p.api_mode = "chat_completions"
+        p.model = "anthropic/claude-sonnet-4"
+        p.platform = "discord"
+        p.providers_allowed = None
+        p.providers_ignored = None
+        p.providers_order = None
+        p.provider_sort = None
+        p._session_db = None
+        p._delegate_depth = 0
+        p._active_children = []
+        p._active_children_lock = threading.Lock()
+        p._print_fn = None
+        p.tool_progress_callback = None
+        p.thinking_callback = None
+        p.prefill_messages = None
+        p._session_messages = session_messages
+        # NOTE: deliberately NO conversation_history attribute (gateway reality)
+        return p
 
     def _capture_child_kwargs(self, **delegate_kwargs):
         """Run delegate_task with AIAgent patched; return the kwargs the child got."""
@@ -184,6 +220,39 @@ class TestInheritContextIntegration:
         assert "INHERITED CONTEXT FROM PARENT SESSION" in pf[0]["content"]
         assert "ap-southeast-2" in pf[0]["content"]
         assert "replica-4 CrashLooping" in pf[0]["content"]
+
+    def test_gateway_parent_with_only_session_messages_still_inherits(self):
+        """REGRESSION for the live 'INHERITED: no' bug (2026-07-05): a gateway
+        AIAgent has NO conversation_history attribute — its live transcript is on
+        _session_messages. The fold must read _session_messages, or production
+        inheritance silently yields nothing while unit tests (which set
+        conversation_history) pass. Uses a plain gateway-shaped object with only
+        _session_messages set."""
+        session_messages = [
+            {"role": "user", "content": "The Meridian canary is at 12 percent"},
+            {"role": "assistant", "content": "Noted, 12% canary."},
+        ]
+        parent = self._make_gateway_parent(session_messages)
+        assert not hasattr(parent, "conversation_history"), "fixture must mirror gateway (no conversation_history)"
+        captured = self._capture_child_kwargs(
+            goal="what is the canary percent", inherit_context=True, parent_agent=parent,
+        )
+        pf = captured.get("prefill_messages")
+        assert isinstance(pf, list) and len(pf) == 1, f"gateway parent did not inherit: {pf!r}"
+        assert pf[0]["role"] == "user"
+        assert "12 percent" in pf[0]["content"]
+
+    def test_empty_session_messages_does_not_fall_through_to_conversation_history(self):
+        """Greptile P2: a gateway parent with _session_messages == [] (fresh/closed
+        turn) has genuinely nothing to inherit. The `is None` (not truthiness) check
+        must NOT fall through to conversation_history — and the fold of [] yields
+        None, so the child gets no prefill (correct: nothing to inherit)."""
+        parent = self._make_gateway_parent([])  # present but EMPTY
+        captured = self._capture_child_kwargs(
+            goal="do a scoped task", inherit_context=True, parent_agent=parent,
+        )
+        pf = captured.get("prefill_messages")
+        assert pf is None, f"empty transcript should fold to no prefill, got {pf!r}"
 
     def test_inherit_false_default_does_not_seed_conversation_history(self):
         history = [{"role": "user", "content": "SECRET_SHOULD_NOT_LEAK to the child"}]

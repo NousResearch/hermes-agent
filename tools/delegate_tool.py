@@ -1441,8 +1441,24 @@ def _build_child_agent(
                     _max_tokens = min(_max_tokens, int(_win * 0.25))
             except Exception:
                 pass
+            # Read the parent's LIVE transcript. The gateway populates
+            # `_session_messages` (agent_init.py + conversation_loop.py); the CLI
+            # console uses `conversation_history`. A gateway AIAgent has NO
+            # `conversation_history` attr, so reading only that made the fold empty
+            # in production (the E2E "INHERITED: no" bug) even though unit tests —
+            # which set conversation_history on a FakeParent — passed. Prefer the
+            # gateway source, fall back to the CLI one. (background_review.py reads
+            # `_session_messages` the same way.)
+            # Discriminate PRESENT-BUT-EMPTY from ABSENT with `is None`: a gateway
+            # agent with `_session_messages == []` (fresh/closed turn) genuinely has
+            # nothing to inherit and must NOT fall through to the (absent, → None)
+            # `conversation_history` — a truthiness `or` would, harmlessly here but
+            # sloppily (Greptile P2). `_fold_...([], ...)` already returns None.
+            _parent_history = getattr(parent_agent, "_session_messages", None)
+            if _parent_history is None:
+                _parent_history = getattr(parent_agent, "conversation_history", None)
             _folded = _fold_conversation_history_to_context(
-                getattr(parent_agent, "conversation_history", None), _max_tokens
+                _parent_history, _max_tokens
             )
             if _folded is not None:
                 child_prefill_messages = [_folded]

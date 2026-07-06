@@ -1168,6 +1168,29 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_bundle_content_hash_matches_path_order_with_file_directory_prefix(self, tmp_path):
+        """A sibling file and directory sharing a prefix must not cause false updates."""
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "same content",
+                "references/styles.md": "style index\n",
+                "references/styles/warm.md": "warm style\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        (skill_dir / "references" / "styles").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("same content")
+        (skill_dir / "references" / "styles.md").write_text("style index\n")
+        (skill_dir / "references" / "styles" / "warm.md").write_text("warm style\n")
+
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
     def test_bundle_content_hash_accepts_binary_files(self):
         bundle = SkillBundle(
             name="demo-binary-skill",

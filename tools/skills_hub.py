@@ -3571,9 +3571,17 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
 
 
 def bundle_content_hash(bundle: SkillBundle) -> str:
-    """Compute a deterministic hash for an in-memory skill bundle."""
+    """Compute a deterministic hash for an in-memory skill bundle.
+
+    Keep the traversal order symmetric with ``tools.skills_guard.content_hash``.
+    That function sorts ``Path`` objects, not raw relative strings, so a file and
+    directory with the same prefix (for example ``references/styles.md`` and
+    ``references/styles/foo.md``) must be ordered by path components here too.
+    Otherwise ``hermes skills check`` reports a permanent update even immediately
+    after installing the skill.
+    """
     h = hashlib.sha256()
-    for rel_path in sorted(bundle.files):
+    for rel_path in sorted(bundle.files, key=lambda p: PurePosixPath(p).parts):
         # Include the path so swapping file contents between two paths
         # changes the hash (avoids filename-swap evading update detection).
         h.update(rel_path.encode("utf-8"))

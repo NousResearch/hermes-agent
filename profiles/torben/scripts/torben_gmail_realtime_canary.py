@@ -37,4 +37,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from torben_job_contract import run_job
+
+    raise SystemExit(run_job("torben-gmail-realtime-canary", main))

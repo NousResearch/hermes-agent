@@ -36,6 +36,11 @@ def main() -> int:
         subscription_name=os.getenv("TORBEN_GMAIL_PUBSUB_SUBSCRIPTION", DEFAULT_SUBSCRIPTION_NAME),
         limit=int(os.getenv("TORBEN_GMAIL_PUBSUB_PULL_LIMIT", "10")),
         max_history_pages=int(os.getenv("TORBEN_GMAIL_HISTORY_MAX_PAGES", "10")),
+        history_rate_limit_retries=int(os.getenv("TORBEN_GMAIL_HISTORY_RATE_LIMIT_RETRIES", "0")),
+        history_rate_limit_backoff_seconds=float(os.getenv("TORBEN_GMAIL_HISTORY_RATE_LIMIT_BACKOFF_SECONDS", "1.0")),
+        history_rate_limit_max_sleep_seconds=float(os.getenv("TORBEN_GMAIL_HISTORY_RATE_LIMIT_MAX_SLEEP_SECONDS", "30.0")),
+        history_rate_limit_jitter_seconds=float(os.getenv("TORBEN_GMAIL_HISTORY_RATE_LIMIT_JITTER_SECONDS", "0.5")),
+        history_rate_limit_cooldown_seconds=int(os.getenv("TORBEN_GMAIL_HISTORY_RATE_LIMIT_COOLDOWN_SECONDS", "3600")),
         max_messages_per_account=int(os.getenv("TORBEN_GMAIL_PUBSUB_MAX_MESSAGES", "40")),
         max_body_fetches_per_account=int(os.getenv("TORBEN_GMAIL_PUBSUB_MAX_BODY_FETCHES", "20")),
         max_realtime_age_seconds=int(os.getenv("TORBEN_GMAIL_PUBSUB_MAX_MESSAGE_AGE_SECONDS", "7200")),
@@ -48,4 +53,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from torben_job_contract import run_job
+
+    raise SystemExit(run_job("torben-gmail-pubsub-pull", main))

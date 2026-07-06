@@ -14,17 +14,24 @@ def main() -> int:
     parser.add_argument("--handle", required=True, help="Action handle, e.g. EA-20260625-001")
     parser.add_argument("--approved-by", default="signal", help="Approval source for audit history")
     parser.add_argument("--dry-run", action="store_true", help="Validate without mutating Gmail")
+    parser.add_argument(
+        "--auto-apply",
+        action="store_true",
+        help="Require the email_archive_delete_label policy gate before applying.",
+    )
     args = parser.parse_args()
 
     home = get_hermes_home()
     state_dir = home / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     result = apply_hygiene_action(
-        ledger=ActionLedger(state_dir / "torben-action-ledger.json"),
+        ledger=ActionLedger(state_dir / "torben-action-ledger.jsonl"),
         config_path=home / "config" / "google_accounts.yaml",
         handle=args.handle,
         approved_by=args.approved_by,
         dry_run=args.dry_run,
+        auto_apply=args.auto_apply,
+        profile_home=home,
     )
     output_path = state_dir / f"torben-email-hygiene-apply-{args.handle}.json"
     tmp = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
@@ -35,4 +42,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from torben_job_contract import run_job
+
+    raise SystemExit(run_job("torben-email-hygiene-apply", main))

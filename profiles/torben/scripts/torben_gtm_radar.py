@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -14,6 +15,7 @@ from hermes_cli.signal_coo.gtm_radar_adapter import (
     load_magnus_gtm_radar,
     write_gtm_radar_adapter_artifacts,
 )
+from torben_gtm_feedback import apply_feedback_to_radar, evaluate_liveness, load_feedback
 
 DEFAULT_MAGNUS_ROOT = Path("/Users/ericfreeman/magnus")
 DEFAULT_TORBEN_HERMES_HOME = Path("/Users/ericfreeman/.hermes/profiles/torben")
@@ -184,6 +186,9 @@ def main() -> int:
     state_dir = home / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     radar_path = Path(os.getenv("TORBEN_GTM_RADAR_PATH") or DEFAULT_MAGNUS_RADAR_PATH)
+    feedback_path = Path(os.getenv("TORBEN_GTM_FEEDBACK_PATH") or state_dir / "torben-gtm-radar-feedback.json")
+    liveness_state_path = Path(os.getenv("TORBEN_GTM_LIVENESS_STATE_PATH") or state_dir / "torben-gtm-liveness-state.json")
+    conversions_path = Path(os.getenv("TORBEN_GTM_CONVERSIONS_PATH") or state_dir / "torben-gtm-conversions.json")
     preview = _truthy(os.getenv("TORBEN_GTM_RADAR_PREVIEW"))
     max_items = int(os.getenv("TORBEN_GTM_RADAR_MAX_ITEMS", "3"))
 
@@ -191,10 +196,11 @@ def main() -> int:
         source_refresh = None
         if _refresh_magnus_enabled(preview=preview):
             source_refresh = _refresh_magnus_radar(preview=preview)
-        radar = load_magnus_gtm_radar(radar_path)
+        feedback = load_feedback(feedback_path)
+        radar = apply_feedback_to_radar(load_magnus_gtm_radar(radar_path), feedback)
         payload = build_torben_gtm_radar_adapter(
             radar,
-            ledger=ActionLedger(state_dir / "torben-action-ledger.json"),
+            ledger=ActionLedger(state_dir / "torben-action-ledger.jsonl"),
             state_path=state_dir / "torben-gtm-radar-adapter-state.json",
             max_items=max_items,
             mark_delivered=not preview,
@@ -202,16 +208,46 @@ def main() -> int:
         )
         if source_refresh:
             payload["source_refresh"] = source_refresh
+        payload["feedback"] = {
+            "path": str(feedback_path),
+            "event_count": len(feedback.get("events") or []),
+            "current_focus": feedback.get("current_focus"),
+        }
+        if conversions_path.exists():
+            conversions_payload = json.loads(conversions_path.read_text(encoding="utf-8") or "{}")
+            conversions_by_day = conversions_payload.get("conversions_by_day") if isinstance(conversions_payload, dict) else {}
+            if isinstance(conversions_by_day, dict):
+                liveness = evaluate_liveness(
+                    conversions_by_day=conversions_by_day,
+                    state_path=liveness_state_path,
+                    today=datetime.now(timezone.utc).date(),
+                )
+                payload["liveness"] = liveness
+                if liveness.get("wakeAgent") and not payload.get("wakeAgent"):
+                    payload["wakeAgent"] = True
+                    payload["text"] = liveness.get("text")
+        payload.setdefault("packages_dir", str(state_dir / "gtm-content-packages"))
     except Exception as exc:  # noqa: BLE001
         payload = {
             "task": "torben_gtm_radar_adapter",
             "wakeAgent": True,
+            "status": "error",
             "error": {
                 "type": type(exc).__name__,
                 "message": str(exc)[:300],
             },
+            "posted": 0,
+            "replied": 0,
+            "scheduled": 0,
+            "sent": 0,
             "public_actions_taken": 0,
             "external_mutations": 0,
+            "approval_status": "not_required_error",
+            "source_refs": [],
+            "thesis": None,
+            "suggested_action": "hold",
+            "candidate_count": 0,
+            "packages_dir": str(state_dir / "gtm-content-packages"),
             "text": (
                 "Torben / GTM Radar\n\n"
                 "Magnus GTM radar refresh failed before it could produce a useful brief.\n"
@@ -219,6 +255,7 @@ def main() -> int:
                 "Nothing has been posted, replied to, scheduled, or sent.\n"
             ),
         }
+    payload.setdefault("packages_dir", str(state_dir / "gtm-content-packages"))
 
     write_gtm_radar_adapter_artifacts(
         payload,
@@ -231,4 +268,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from torben_job_contract import run_job
+
+    raise SystemExit(run_job("torben-gtm-radar", main))

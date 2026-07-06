@@ -18,6 +18,7 @@ from hermes_cli.signal_coo.meeting_prep import (
     select_pre_call_alerts,
     stage_meeting_prep_action,
 )
+from torben_attention_contract import dedupe_meeting_alerts
 
 
 def _utc_now() -> datetime:
@@ -106,12 +107,13 @@ def main() -> int:
         bucket_minutes=bucket_minutes,
         max_alerts=int(os.getenv("TORBEN_MEETING_PREP_MAX_ALERTS", "1")),
     )
+    alerts = dedupe_meeting_alerts(alerts)
 
     if not alerts:
         print(json.dumps({"wakeAgent": False, "reason": "no upcoming meeting prep alert"}))
         return 0
 
-    ledger = ActionLedger(state_dir / "torben-action-ledger.json")
+    ledger = ActionLedger(state_dir / "torben-action-ledger.jsonl")
     for event in alerts:
         if preview:
             event["handle"] = "PREVIEW-MEETING-001"
@@ -139,6 +141,7 @@ def main() -> int:
             "Start with: 'You have <meeting> in <minutes> minutes.'",
             "Include why the call appears to exist, the likely goal/outcome, and one recommended line or question.",
             "If calendar context is weak, say what is missing instead of inventing prior context.",
+            "When there is no richer signal or thread summary, still include known attendee basics if available: role/job, company, and what the company does; label unknowns instead of leaving the prep generic.",
             "Mention the handle so Eric can ask for changes or add context.",
             "Do not include raw attendee emails; use names/domains only when useful.",
             "If the alert is not actionable, respond exactly [SILENT].",
@@ -173,4 +176,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from torben_job_contract import run_job
+
+    raise SystemExit(run_job("torben-meeting-prep-watch", main))

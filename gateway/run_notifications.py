@@ -951,6 +951,7 @@ class GatewayNotificationsMixin:
         return SessionSource(
             platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=_opt("thread_id"),
             user_id=_opt("user_id"), user_name=_opt("user_name"), scope_id=scope_id, profile=profile,
+            message_id=_opt("message_id"),
         )
 
     async def _drain_watch_notifications(self, completion_queue) -> None:
@@ -1078,9 +1079,11 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            # Older producers may lack an anchor; use the canonical origin, never a foreground event.
+            message_id = str(evt.get("message_id") or "").strip() or getattr(source, "message_id", None)
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                message_id=message_id or None, metadata=metadata,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
@@ -1663,7 +1666,9 @@ class GatewayNotificationsMixin:
             with _log_suppressed(logging.ERROR, "Watcher delivery error: %s"):
                 send_meta = {"thread_id": thread_id} if thread_id else None
                 await adapter.send(
-                    chat_id, message_text, metadata=_non_conversational_metadata(send_meta, platform=platform_name),
+                    chat_id, message_text,
+                    reply_to=str(watcher.get("message_id") or "").strip() or getattr(source, "message_id", None),
+                    metadata=_non_conversational_metadata(send_meta, platform=platform_name),
                 )
 
     @staticmethod

@@ -200,6 +200,49 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+@pytest.mark.parametrize("is_batch", [False, True])
+@pytest.mark.parametrize("message_id", ["om_thread_root", ""])
+def test_completion_event_preserves_dispatch_reply_anchor(is_batch, message_id):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    gate = threading.Event()
+
+    def runner():
+        assert gate.wait(5)
+        return {"results": [{"status": "completed", "summary": "ok"}]} if is_batch else {
+            "status": "completed", "summary": "ok",
+        }
+
+    tokens = set_session_vars(message_id=message_id)
+    try:
+        dispatch = ad.dispatch_async_delegation_batch if is_batch else ad.dispatch_async_delegation
+        result = dispatch(
+            **({"goals": ["g1", "g2"]} if is_batch else {"goal": "g"}),
+            context=None, toolsets=None, role="leaf", model="m",
+            session_key="agent:main:feishu:group:oc_chat:omt_topic", runner=runner,
+        )
+    finally:
+        clear_session_vars(tokens)
+        gate.set()
+    assert result["status"] == "dispatched"
+    event = _drain_for(result["delegation_id"])
+    assert event is not None
+    assert event.get("message_id", "") == message_id
+    assert bool(event.get("is_batch")) == is_batch
+
+
+def test_interim_failure_notice_preserves_reply_anchor():
+    ad._records["d-anchor"] = {
+        "delegation_id": "d-anchor", "status": "running", "is_batch": True,
+        "message_id": "om_root", "session_key": "agent:main:feishu:group:oc_chat:omt_topic",
+    }
+    ad.push_task_failure_notice("d-anchor", {"task_index": 0, "status": "error"}, n_tasks=2)
+    event = _drain_for("d-anchor")
+    assert event["message_id"] == "om_root"
+    assert event["task_failure_notice"] is True
+    ad._records.clear()
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",

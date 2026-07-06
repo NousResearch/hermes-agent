@@ -424,6 +424,31 @@ class TestUpdateJob:
         assert get_job(job["id"]) is not None
         assert get_job("../escape") is None
 
+    def test_update_rejects_past_oneshot_schedule(self, tmp_cron_dir):
+        """Changing a job's schedule to a past one-shot timestamp must raise
+        ValueError — same guard as create_job (#59395)."""
+        job = create_job(prompt="Existing", schedule="every 1h")
+        past = (datetime.now() - timedelta(minutes=10)).isoformat()
+        past_schedule = parse_schedule(past)
+        with pytest.raises(ValueError, match="in the past"):
+            update_job(job["id"], {
+                "schedule": past_schedule,
+                "schedule_display": past_schedule["display"],
+            })
+
+    def test_update_accepts_future_oneshot_schedule(self, tmp_cron_dir):
+        """Changing a job's schedule to a future one-shot must succeed."""
+        job = create_job(prompt="Existing", schedule="every 1h")
+        future = (datetime.now() + timedelta(hours=1)).isoformat()
+        future_schedule = parse_schedule(future)
+        updated = update_job(job["id"], {
+            "schedule": future_schedule,
+            "schedule_display": future_schedule["display"],
+        })
+        assert updated is not None
+        assert updated["next_run_at"] is not None
+        assert updated["schedule"]["kind"] == "once"
+
 
 class TestPauseResumeJob:
     def test_pause_sets_state(self, tmp_cron_dir):
@@ -443,6 +468,35 @@ class TestPauseResumeJob:
         assert resumed["state"] == "scheduled"
         assert resumed["paused_at"] is None
         assert resumed["paused_reason"] is None
+
+    def test_resume_rejects_past_oneshot(self, tmp_cron_dir, monkeypatch):
+        """Resuming a paused one-shot whose time is now in the past must raise
+        ValueError — the revived job would silently never fire."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        # Create directly — bypass create_job's past-oneshot guard so we can
+        # test the resume path independently.
+        job = {
+            "id": "test-resume-past",
+            "name": "test-resume-past",
+            "prompt": "Past one-shot",
+            "schedule": {"kind": "once", "run_at": (now - timedelta(minutes=5)).isoformat(), "display": "once"},
+            "repeat": {"times": 1, "completed": 0},
+            "enabled": False,
+            "state": "paused",
+            "paused_at": now.isoformat(),
+            "paused_reason": "test",
+            "next_run_at": None,
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": (now - timedelta(hours=1)).isoformat(),
+            "deliver": "local",
+        }
+        save_jobs([job])
+        with pytest.raises(ValueError, match="in the past"):
+            resume_job("test-resume-past")
 
 
 class TestResolveJobRef:

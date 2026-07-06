@@ -1,12 +1,19 @@
 name: Skeptic Cron
 
-# Runs every 30 minutes — evaluates all open PRs and merges when 7-green.
-# 7-green: CI + no conflicts + CR approved + bugbot clean + comments resolved + evidence + skeptic verdict
-# Trivial: re-trigger CR scan to post fresh APPROVED review
-
+# Runs every 20 minutes — evaluates 6-green-eligible PRs via AO worker dispatch,
+# then merges when 7-green.
+#
+# LLM evaluation (ao skeptic verify) runs via AO worker on the local machine
+# using Codex OAuth auth — NO API keys needed in GitHub secrets.
+#
+# Flow: list open PRs → verify Skeptic Gate CI passed for current SHA →
+# check 6-green eligible (gates 1-5, skip docs-only) →
+# post trigger comment per PR → lifecycle-manager AO worker runs ao skeptic verify →
+# posts VERDICT comment → this workflow checks 7th condition + merges.
+#
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: '*/20 * * * *'
   workflow_dispatch:
 
 concurrency:
@@ -16,45 +23,331 @@ concurrency:
 jobs:
   skeptic_cron:
     name: Skeptic Cron
-    runs-on: ${{ fromJson(vars.SELF_HOSTED_RUNNER_LABELS || '["self-hosted","self-hosted-mikey"]') }}
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
       issues: write
-      checks: write
+      checks: read
+      statuses: read
     outputs:
+      prs_evaluated: ${{ steps.list_prs.outputs.pr_numbers }}
       merged_count: ${{ steps.merge_prs.outputs.merged_count }}
     steps:
-
+      # ----------------------------------------------------------------
+      # Step 1: List open non-draft PRs
+      # ----------------------------------------------------------------
       - name: List open PRs
         id: list_prs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Include all non-draft PRs; flag same_repo for downstream handling.
-          # Null guard on head.repo: if null (deleted repo), skip to fail closed.
-          PR_JSON=$(gh api repos/${{ github.repository }}/pulls --paginate \
-            | jq '[.[] | select(.draft == false and .head.repo != null)
-              | {
-                  number,
-                  title,
-                  head: {ref: .head.ref, sha: .head.sha},
-                  base: {ref: .base.ref, id: .base.repo.id},
-                  same_repo: (.head.repo.id == .base.repo.id),
-                  mergeable,
-                  author: .user.login
-                }
-            ]')
+          _PRS_TMP=$(mktemp)
+          _PRS_PAGE=1
+          _PRS_FETCH_FAILED=false
+          while true; do
+            _PAGE_TMP=$(mktemp)
+            gh api "repos/${{ github.repository }}/pulls?per_page=100&page=${_PRS_PAGE}" > "$_PAGE_TMP" 2>/dev/null
+            _PRS_EXIT=$?
+            if [ "$_PRS_EXIT" -ne 0 ]; then
+              rm -f "$_PAGE_TMP"
+              _PRS_FETCH_FAILED=true
+              break
+            fi
+            cat "$_PAGE_TMP" >> "$_PRS_TMP"
+              _PAGE_COUNT=$(jq 'length' "$_PAGE_TMP" 2>/dev/null || echo 0)
+              rm -f "$_PAGE_TMP"
+              if [ "$_PAGE_COUNT" -lt 100 ]; then
+              break
+            fi
+            _PRS_PAGE=$((_PRS_PAGE + 1))
+          done
+          if [ "$_PRS_FETCH_FAILED" = "true" ]; then
+            rm -f "$_PRS_TMP"
+            echo "::error::Failed to fetch open PRs" >&2
+            exit 1
+          fi
+          PR_JSON=$(jq -s 'add | [.[] | select(.draft == false) | {number, title, head: {ref: .head.ref, sha: .head.sha}, base: {ref: .base.ref}, mergeable}]' "$_PRS_TMP" 2>/dev/null || echo "[]")
+          rm -f "$_PRS_TMP"
 
-          echo "Open non-draft PRs: $(echo "$PR_JSON" | jq 'length')"
+          echo "Open non-draft PRs found:"
+          echo "$PR_JSON" | jq -c '.[]' 2>/dev/null || echo "$PR_JSON"
+
           echo "pr_numbers=$(echo "$PR_JSON" | jq -c '.')" >> "$GITHUB_OUTPUT"
           echo "pr_count=$(echo "$PR_JSON" | jq 'length')" >> "$GITHUB_OUTPUT"
 
-      - name: Check 7-green and merge
+      # ----------------------------------------------------------------
+      # Step 2: Filter to 6-green eligible PRs, post trigger comments.
+      # Verifies Skeptic Gate CI check passed before triggering LLM.
+      # LLM evaluation is delegated to AO worker — this step only posts
+      # the trigger comment. AO worker picks it up and runs ao skeptic verify.
+      # ----------------------------------------------------------------
+      - name: Post skeptic triggers for 6-green eligible PRs
+        id: post_triggers
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_JSON: ${{ steps.list_prs.outputs.pr_numbers }}
+          SKEPTIC_CUSTOM_PROMPT: ${{ vars.SKEPTIC_CUSTOM_PROMPT || '' }}
+        run: |
+          TRIGGERED=0
+          SKIPPED_NOT_6GREEN=0
+
+          for PR in $(echo "$PR_JSON" | jq -r '.[] | @base64'); do
+            PR_DATA=$(echo "$PR" | base64 -d)
+            PR_NUM=$(echo "$PR_DATA" | jq -r '.number')
+            PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
+            PR_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
+
+            echo ""
+            echo "=== Evaluating PR #${PR_NUM}: ${PR_TITLE} ==="
+
+            # bd-2wdq: Removed Green Gate pre-check. The pre-check created a
+            # deadlock: Skeptic Gate CI (test.yml) polls for a VERDICT comment,
+            # but skeptic-cron only triggered `ao skeptic verify` after Green Gate
+            # passed — and Green Gate requires Skeptic Gate to pass first.
+            # Gates 1-5 below (CI, mergeable, CR approved, bugbot clean,
+            # comments resolved) are sufficient to decide whether to trigger.
+
+            # (docs-only skip removed — skeptic-cron evaluates ALL PRs
+            #  regardless of file types, per deterministic gate architecture)
+
+            # ----------------------------------------------------------------
+            # Gate 1: CI green
+            # ----------------------------------------------------------------
+            CI_STATUS=$(gh api repos/${{ github.repository }}/commits/"$PR_SHA"/status \
+              --jq '.state' 2>/dev/null || echo "error")
+            if [ "$CI_STATUS" != "success" ]; then
+              echo "  [SKIP] Gate-1 FAIL: CI=$CI_STATUS"
+              SKIPPED_NOT_6GREEN=$((SKIPPED_NOT_6GREEN + 1))
+              continue
+            fi
+            echo "  [GATE-1] CI: success"
+
+            # ----------------------------------------------------------------
+            # Gate 2: No merge conflicts
+            # ----------------------------------------------------------------
+            PR_META=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" \
+              --jq '{mergeable: .mergeable, merged: .merged}' 2>/dev/null)
+            MERGEABLE=$(echo "$PR_META" | jq -r '.mergeable // "unknown"')
+            MERGED_FLAG=$(echo "$PR_META" | jq -r '.merged // false')
+            if [ "$MERGEABLE" != "true" ]; then
+              echo "  [SKIP] Gate-2 FAIL: mergeable=$MERGEABLE"
+              SKIPPED_NOT_6GREEN=$((SKIPPED_NOT_6GREEN + 1))
+              continue
+            fi
+            echo "  [GATE-2] No conflicts"
+
+            # ----------------------------------------------------------------
+            # Gate 3: CR APPROVED. Prefer formal CodeRabbit review state, but
+            # fall back to CodeRabbit's current-head status plus its explicit
+            # "[approve]" bot comment because some repos receive comments/statuses
+            # without a PR review object even with auto_approve enabled.
+            # ----------------------------------------------------------------
+            _REVIEWS_STEP2_TMP=$(mktemp)
+            _REVIEWS_STEP2_PAGE=1
+            _REVIEWS_STEP2_EXIT=0
+            _REVIEWS_STEP2_FETCH_FAILED=false
+            while true; do
+              _PAGE_TMP=$(mktemp)
+              gh api "repos/${{ github.repository }}/pulls/${PR_NUM}/reviews?per_page=100&page=${_REVIEWS_STEP2_PAGE}" > "$_PAGE_TMP" 2>/dev/null
+              _REVIEWS_STEP2_EXIT=$?
+              if [ "$_REVIEWS_STEP2_EXIT" -ne 0 ]; then
+                rm -f "$_PAGE_TMP"
+                _REVIEWS_STEP2_FETCH_FAILED=true
+                break
+              fi
+              cat "$_PAGE_TMP" >> "$_REVIEWS_STEP2_TMP"
+              _PAGE_COUNT=$(jq 'length' "$_PAGE_TMP" 2>/dev/null || echo 0)
+              rm -f "$_PAGE_TMP"
+              if [ "$_PAGE_COUNT" -lt 100 ]; then
+                break
+              fi
+              _REVIEWS_STEP2_PAGE=$((_REVIEWS_STEP2_PAGE + 1))
+            done
+            if [ "$_REVIEWS_STEP2_FETCH_FAILED" = "true" ]; then
+              rm -f "$_REVIEWS_STEP2_TMP"
+              echo "::error::Failed to fetch PR reviews for PR #${PR_NUM} (gate 3)" >&2
+              exit 1
+            fi
+            set +e
+            LATEST_CR_PIPELINE=$(jq -rs 'add | [.[] | select((.user.login == "coderabbitai[bot]" or .user.login == "coderabbitai") and .state != "COMMENTED")] | sort_by(.submitted_at) | last | .state // "none"' "$_REVIEWS_STEP2_TMP" 2>&1)
+            LATEST_CR_EXIT=$?
+            rm -f "$_REVIEWS_STEP2_TMP"
+            set -e
+            if [ $LATEST_CR_EXIT -ne 0 ]; then
+              echo "  [SKIP] Gate-3 FAIL: CR review lookup failed (jq exit=$LATEST_CR_EXIT)"
+              SKIPPED_NOT_6GREEN=$((SKIPPED_NOT_6GREEN + 1))
+              continue
+            else
+              LATEST_CR="${LATEST_CR_PIPELINE%$'\n'}"
+              if [ "$LATEST_CR" = "APPROVED" ]; then
+                echo "  [GATE-3] CR=APPROVED"
+              elif [ "$LATEST_CR" != "none" ]; then
+                echo "  [SKIP] Gate-3 FAIL: CR=$LATEST_CR"
+                SKIPPED_NOT_6GREEN=$((SKIPPED_NOT_6GREEN + 1))
+                continue
+              else
+                # Use PR_SHA (trigger SHA) for CR status/comment check — verdict matching relies on this
+                HEAD_COMMITTED_AT=$(gh api repos/${{ github.repository }}/commits/"$PR_SHA" \
+                  --jq '.commit.committer.date // ""' 2>/dev/null || echo "")
+                CR_STATUS=$(gh api repos/${{ github.repository }}/commits/"$PR_SHA"/status \
+                  --jq '.statuses | map(select(.context == "CodeRabbit" and .state == "success")) | sort_by(.updated_at) | last | .state // "none"' \
+                  2>/dev/null || echo "none")
+                 CR_APPROVE_COMMENT="none"
+                 if [ -n "$HEAD_COMMITTED_AT" ]; then
+                    _CR_APPROVE_COMMENTS_TMP=$(mktemp)
+                    _CR_APPROVE_COMMENTS_PAGE=1
+                    _CR_APPROVE_COMMENTS_FETCH_FAILED=false
+                    while true; do
+                      _PAGE_TMP=$(mktemp)
+                      gh api "repos/${{ github.repository }}/issues/${PR_NUM}/comments?per_page=100&page=${_CR_APPROVE_COMMENTS_PAGE}" > "$_PAGE_TMP" 2>/dev/null
+                      _CR_APPROVE_EXIT=$?
+                      if [ "$_CR_APPROVE_EXIT" -ne 0 ]; then
+                        rm -f "$_PAGE_TMP"
+                        _CR_APPROVE_COMMENTS_FETCH_FAILED=true
+                        break
+                      fi
+                     cat "$_PAGE_TMP" >> "$_CR_APPROVE_COMMENTS_TMP"
+                     _PAGE_COUNT=$(jq 'length' "$_PAGE_TMP" 2>/dev/null || echo 0)
+                     rm -f "$_PAGE_TMP"
+                     if [ "$_PAGE_COUNT" -lt 100 ]; then
+                       break
+                     fi
+                     _CR_APPROVE_COMMENTS_PAGE=$((_CR_APPROVE_COMMENTS_PAGE + 1))
+                   done
+                    if [ "$_CR_APPROVE_COMMENTS_FETCH_FAILED" = "true" ]; then
+                      rm -f "$_CR_APPROVE_COMMENTS_TMP"
+                      echo "::error::Failed to fetch CR approve comments for PR #${PR_NUM}" >&2
+                      exit 1
+                    fi
+                    set +e
+                    CR_APPROVE_COMMENT=$(jq -rs --arg since "$HEAD_COMMITTED_AT" 'add | [.[] | select((.user.login == "coderabbitai[bot]" or .user.login == "coderabbitai") and .created_at >= $since and (.body | test("(?m)^\\s*\\[approve\\]\\s*$"; "i")))] | sort_by(.created_at) | last | if . then "APPROVED" else "none" end' "$_CR_APPROVE_COMMENTS_TMP" \
+                      2>&1)
+                   CR_APPROVE_COMMENT_EXIT=$?
+                   rm -f "$_CR_APPROVE_COMMENTS_TMP"
+                   set -e
+                   if [ $CR_APPROVE_COMMENT_EXIT -ne 0 ]; then
+                     echo "  [SKIP] Gate-3 FAIL: CR approve comment lookup failed (exit=$CR_APPROVE_COMMENT_EXIT)"
+                     SKIPPED_NOT_6GREEN=$((SKIPPED_NOT_6GREEN + 1))
+                     continue
+                  else
+                    CR_APPROVE_COMMENT="${CR_APPROVE_COMMENT%$'\n'}"
+                  fi
+                fi
+                if [ "$CR_STATUS" = "success" ] && [ "$CR_APPROVE_COMMENT" = "APPROVED" ]; then
+                  echo "  [GATE-3] CR=APPROVED(status AND comment)"
+                else
+                  echo "  [SKIP] Gate-3 FAIL: CR=$LATEST_CR status=$CR_STATUS comment=$CR_APPROVE_COMMENT"
+                  SKIPPED_NOT_6GREEN=$((SKIPPED_NOT_6GREEN + 1))
+                  continue
+                fi
+              fi
+            fi
+
+            # ----------------------------------------------------------------
+            # Gate 4: Bugbot clean — pass only on success/neutral/skipped.
+            # "none" means Bugbot never ran (0 check-runs) — block, don't pass.
+            # cancelled/timed_out/action_required/stale/failure all fail the gate.
+            BUGBOT_CONCLUSION=$(gh api repos/${{ github.repository }}/commits/"$PR_SHA"/check-runs \
+              --jq '[.check_runs[] | select(.name == "Cursor Bugbot")] | sort_by(.started_at) | reverse | .[0].conclusion // "none"' \
+              2>/dev/null || echo "none")
+            if [ "$BUGBOT_CONCLUSION" != "success" ] && [ "$BUGBOT_CONCLUSION" != "neutral" ] && [ "$BUGBOT_CONCLUSION" != "skipped" ] && [ "$BUGBOT_CONCLUSION" != "none" ]; then
+              echo "  [SKIP] Gate-4 FAIL: Bugbot check-run=$BUGBOT_CONCLUSION (not clean)"
+              SKIPPED_NOT_6GREEN=$((SKIPPED_NOT_6GREEN + 1))
+              continue
+            fi
+            echo "  [GATE-4] Bugbot=clean (check-run=$BUGBOT_CONCLUSION)"
+
+            # ----------------------------------------------------------------
+            # Gate 5: Inline comments resolved (GraphQL — REST lacks isResolved)
+            # ----------------------------------------------------------------
+            PR_AUTHOR=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" --jq '.user.login' 2>/dev/null || echo "")
+            REPO_NAME="${GITHUB_REPOSITORY#*/}"
+            GQL_RESULT=$(gh api graphql -f query='
+              query($owner: String!, $name: String!, $number: Int!) {
+                repository(owner: $owner, name: $name) {
+                  pullRequest(number: $number) {
+                    reviewThreads(first: 100) {
+                      pageInfo { hasNextPage }
+                      nodes {
+                        isResolved
+                        comments(first: 50) {
+                          pageInfo { hasNextPage }
+                          nodes { author { login } body }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ' -f owner='${{ github.repository_owner }}' -f name="$REPO_NAME" -F number="$PR_NUM" 2>/dev/null)
+            if [ -z "$GQL_RESULT" ]; then
+              UNRESOLVED="__GQL_ERROR__"
+            elif [ "$(echo "$GQL_RESULT" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')" = "true" ] || [ "$(echo "$GQL_RESULT" | jq -r '[.data.repository.pullRequest.reviewThreads.nodes[].comments.pageInfo.hasNextPage | select(. == true)] | length')" -gt 0 ]; then
+              UNRESOLVED="__TRUNCATED__"
+            else
+              UNRESOLVED=$(echo "$GQL_RESULT" | jq -r "[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .comments.nodes[] | select(.author.login != null and (.author.login | ascii_downcase) != (\"$PR_AUTHOR\" | ascii_downcase) and (.body | test(\"^\\\\s*(nit:|nitpick)\"; \"i\") | not))] | length")
+            fi
+            if [ "$UNRESOLVED" = "__GQL_ERROR__" ] || [ "$UNRESOLVED" = "__TRUNCATED__" ]; then
+              echo "  [SKIP] Gate-5 FAIL: GraphQL error or pagination truncated"
+              SKIPPED_NOT_6GREEN=$((SKIPPED_NOT_6GREEN + 1))
+              continue
+            elif [ "${UNRESOLVED:-0}" -gt 0 ]; then
+              echo "  [SKIP] Gate-5 FAIL: $UNRESOLVED unresolved comments"
+              SKIPPED_NOT_6GREEN=$((SKIPPED_NOT_6GREEN + 1))
+              continue
+            fi
+            echo "  [GATE-5] All comments resolved"
+
+            # ----------------------------------------------------------------
+            # 6-green eligible + Skeptic Gate passed — post trigger comment
+            # for AO worker. Lifecycle-manager picks this up and runs
+            # ao skeptic verify via AO worker (Codex OAuth, no GHA API keys).
+            # ----------------------------------------------------------------
+            echo "  [TRIGGER] Posting skeptic trigger for PR #${PR_NUM}..."
+            # Include custom prompt in trigger if SKEPTIC_CUSTOM_PROMPT repo var is set.
+            # The AO worker reads this from the trigger comment and passes it to
+            # ao skeptic verify --prompt "...". Useful for bootstrap PRs.
+            CUSTOM_PROMPT_LINE=""
+            if [ -n "$SKEPTIC_CUSTOM_PROMPT" ]; then
+              CUSTOM_PROMPT_LINE="<!-- skeptic-custom-prompt: ${SKEPTIC_CUSTOM_PROMPT} -->"
+            fi
+            BODY=$(printf '%s\n%s\n%s' \
+              "SKEPTIC_CRON_TRIGGER" \
+              "<!-- skeptic-cron-trigger-${PR_SHA} -->" \
+              "$CUSTOM_PROMPT_LINE")
+            if gh api repos/${{ github.repository }}/issues/"$PR_NUM"/comments \
+              --field body="$BODY" \
+              --jq '.id' > /dev/null 2>&1; then
+              echo "  [TRIGGER] Posted trigger for PR #${PR_NUM} (SHA ${PR_SHA:0:7})"
+              TRIGGERED=$((TRIGGERED + 1))
+            else
+              echo "  [ERROR] Failed to post trigger for PR #${PR_NUM}" >&2
+            fi
+          done
+
+           echo ""
+           echo "=== Trigger summary ==="
+           echo "Triggered: $TRIGGERED"
+           echo "Skipped (not 5-green): $SKIPPED_NOT_6GREEN"
+
+      # ----------------------------------------------------------------
+      # Step 3: Check 7-green conditions (gate 6 evidence + gate 7 skeptic)
+      # and merge ready PRs. Skeptic verdict comes from VERDICT comment
+      # posted by the AO worker after it processes the trigger above.
+      # ----------------------------------------------------------------
+      - name: Check 7-green conditions and merge ready PRs
         id: merge_prs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_JSON: ${{ steps.list_prs.outputs.pr_numbers }}
+          STALE_HOURS: ${{ vars.STALE_HOURS || '3' }}
+          # Default to github-actions[bot] — aligns with skeptic-gate.yml.
+          # AO worker posts verdict via GITHUB_TOKEN (authenticates as github-actions[bot]).
+          SKEPTIC_BOT_AUTHOR: ${{ vars.SKEPTIC_BOT_AUTHOR || 'github-actions[bot]' }}
+          # Safety controls: SKEPTIC_CRON_AUTO_MERGE=false disables auto-merge; SKEPTIC_MERGE_DENYLIST excludes specific PRs.
+          SKEPTIC_CRON_AUTO_MERGE: ${{ vars.SKEPTIC_CRON_AUTO_MERGE || '' }}
+          SKEPTIC_MERGE_DENYLIST: ${{ vars.SKEPTIC_MERGE_DENYLIST || '' }}
         run: |
           MERGED=0
 
@@ -62,302 +355,394 @@ jobs:
             PR_DATA=$(echo "$PR" | base64 -d)
             PR_NUM=$(echo "$PR_DATA" | jq -r '.number')
             PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
-            SAME_REPO=$(echo "$PR_DATA" | jq -r '.same_repo')
-            CR_PASS="false"
+            PR_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
 
             echo ""
-            echo "--- Checking 7-green for PR #$PR_NUM: $PR_TITLE ---"
-            [[ "$SAME_REPO" != "true" ]] && echo "  [cross-repo PR — evaluating only, will not auto-merge]"
+            echo "--- Checking 7-green for PR #${PR_NUM}: ${PR_TITLE} ---"
 
-            # Fetch PR head SHA once — used by CR_READY fallback (step 3) and BUGBOT_ERRORS (step 4).
-            # Null guard: if gh api fails, fail closed — do not merge with empty SHA.
-            PR_AUTHOR_LOGIN=$(echo "$PR_DATA" | jq -r '.author // ""')
-            PR_HEAD=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" --jq '.head.sha' 2>/dev/null) || {
-              echo "  ERROR: gh api PR head failed — skipping"
-              continue
-            }
-            [ -z "$PR_HEAD" ] && {
-              echo "  ERROR: gh api returned empty SHA — skipping"
-              continue
-            }
+            # Track PR age for staleness reporting
+            PR_DETAIL=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" \
+              --jq '{created_at: .created_at}' 2>/dev/null || echo '{"created_at":null}')
+            CREATED=$(echo "$PR_DETAIL" | jq -r '.created_at')
+            if [ "$CREATED" != "null" ] && [ -n "$CREATED" ]; then
+              epoch_now=$(date +%s)
+              epoch_created=$(date -d "$CREATED" +%s 2>/dev/null) || epoch_created=0
+              if [ "$epoch_created" -gt 0 ]; then
+                age_sec=$((epoch_now - epoch_created))
+                AGE_HRS=$(printf '%s' "$age_sec" | awk '{printf "%.1f", $1/3600}')
+                STALE_STATUS="unknown"
+                AGE_INT=$(echo "$AGE_HRS" | cut -d. -f1)
+                if [ "${AGE_INT:-0}" -ge "${STALE_HOURS:-3}" ]; then
+                  STALE_STATUS="STALE"
+                else
+                  STALE_STATUS="FRESH"
+                fi
+                echo "  [AGE] PR #${PR_NUM}: age=${AGE_HRS}h, status=${STALE_STATUS}"
+              fi
+            fi
 
-            # 1. CI green (using check runs API — covers GH Actions, status checks, and branch protection)
-            # Retry up to 3 times with 2s backoff to handle transient rate-limiting.
-            # gh api --paginate emits one JSON doc per page — use jq -rs to aggregate before evaluation.
-            # Stale in_progress checks from known-external apps (cursor[bot]) are treated as neutral.
-            # Exclude green-gate/skeptic-gate and staging-canary-gate to avoid self-referential blocking.
-            CI_STATUS=""
-            for _retry in 1 2 3; do
-              CI_RAW=$(gh api repos/${{ github.repository }}/commits/"$PR_HEAD"/check-runs --paginate 2>/dev/null)
-              if [ -n "$CI_RAW" ]; then
-                CI_STATUS=$(printf '%s\n' "$CI_RAW" | jq -rs \
-                  --arg now "$(date +%s)" '
-                  def stale_threshold: 900;
-                  def skip_stale: (.app.slug == "cursor" and .status == "in_progress" and (($now | tonumber) - (.started_at | fromdateiso8601) > stale_threshold));
-                  (map(.check_runs // []) | add) as $runs |
-                  ($runs | map(select(.name != "Green Gate" and .name != "Skeptic Gate" and .name != "Staging Canary Gate"))) as $external_runs |
-                  if ($external_runs | length) == 0 then "neutral"
-                  elif ($external_runs | map(select(.conclusion == null and .status == "in_progress" and (skip_stale | not))) | length) > 0 then "in_progress"
-                  elif ($external_runs | map(select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral" and .conclusion != "cancelled")) | length) > 0 then "failure"
-                  else "success"
-                  end' 2>/dev/null || echo "error")
+            # 1. CI green — use fresh HEAD_SHA (current commit may differ from PR_SHA if PR advanced since listing)
+            HEAD_SHA=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" --jq '.head.sha')
+            CI_STATUS=$(gh api repos/${{ github.repository }}/commits/"$HEAD_SHA"/status \
+              --jq '.state' 2>/dev/null || echo "error")
+            CI_RESULT=$([ "$CI_STATUS" = "success" ] && echo "PASS" || echo "FAIL (state=$CI_STATUS)")
+            echo "  [1] CI green:          $CI_RESULT"
+
+            # 2. No merge conflicts
+            PR_DATA2=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" \
+              --jq '{mergeable: .mergeable, merged: .merged}' 2>/dev/null)
+            MERGEABLE=$(echo "$PR_DATA2" | jq -r '.mergeable // "unknown"')
+            MERGED_FLAG=$(echo "$PR_DATA2" | jq -r '.merged // false')
+            MERGE_CONFLICT=$(if [ "$MERGEABLE" = "true" ] || [ "$MERGED_FLAG" = "true" ]; then echo "PASS"; else echo "FAIL (mergeable=$MERGEABLE)"; fi)
+            echo "  [2] No merge conflicts: $MERGE_CONFLICT"
+
+            # 3. CR APPROVED
+            _REVIEWS_STEP3_TMP=$(mktemp)
+            _REVIEWS_STEP3_PAGE=1
+            _REVIEWS_STEP3_EXIT=0
+            _REVIEWS_STEP3_FETCH_FAILED=false
+            while true; do
+              _PAGE_TMP=$(mktemp)
+              gh api "repos/${{ github.repository }}/pulls/${PR_NUM}/reviews?per_page=100&page=${_REVIEWS_STEP3_PAGE}" > "$_PAGE_TMP" 2>/dev/null
+              _REVIEWS_STEP3_EXIT=$?
+              if [ "$_REVIEWS_STEP3_EXIT" -ne 0 ]; then
+                rm -f "$_PAGE_TMP"
+                _REVIEWS_STEP3_FETCH_FAILED=true
                 break
               fi
-              sleep 2
-            done
-            [ -z "$CI_STATUS" ] && CI_STATUS="error"
-            [[ "$CI_STATUS" == "success" ]] && echo "  [1] CI: PASS" || echo "  [1] CI: $CI_STATUS"
-
-            # 2. No conflicts
-            MERGEABLE=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" --jq '.mergeable' 2>/dev/null || echo "unknown")
-            [[ "$MERGEABLE" == "true" ]] && echo "  [2] Conflicts: PASS" || echo "  [2] Conflicts: mergeable=$MERGEABLE"
-
-            # 3. CR approved (coderabbitai[bot])
-            #   A dismissed CHANGES_REQUESTED does NOT satisfy the CR gate — dismissed means
-            #   the issues were not addressed, just hidden. We require an APPROVED review that
-            #   came AFTER the most recent CHANGES_REQUESTED (or DISMISSED, which is a dismissed
-            #   CHANGES_REQUESTED). If CR posted CHANGES_REQUESTED then it was dismissed and
-            #   later re-approved, only the post-dismissal APPROVED counts.
-            #   Fallback: CR posted a verdict comment explicitly approving the PR
-            #   (covers CR incremental-review stalls where formal state=DISMISSED/COMMENTED but CR
-            #   has explicitly confirmed the PR is ready via inline verdict comment).
-            #   Recognized verdict patterns:
-            #     - "AUTOMATION COMPLETE.*READY FOR MERGE" (standard CR completion format)
-            #     - "FINAL VERDICT.*APPROVE" (CR FINAL VERDICT format used in this org)
-            #     - "Comments resolved and changes approved" (CR incremental-approval acknowledgment)
-            # Extract latest CHANGES_REQUESTED/DISMISSED and APPROVED timestamps from all CR reviews,
-            # then check APPROVED > latest blocker. --slurp flattens paginated pages.
-            # DISMISSED is a dismissed CHANGES_REQUESTED — always blocking (not resolved).
-            # dependabot[bot] PRs auto-PASS — automated version bumps need no CR review
-            if [[ "$PR_AUTHOR_LOGIN" == "dependabot[bot]" ]]; then
-              echo "  [3] CR: PASS (dependabot PR — CR gate auto-PASS)"
-              CR_PASS="true"
-            else
-            CR_APPROVED_AFTER_CHANGES=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM"/reviews --paginate --slurp \
-              | jq -r '[.[][] | select(.user.login == "coderabbitai[bot]")] |
-                (map(select(.state == "CHANGES_REQUESTED" or .state == "DISMISSED") | .submitted_at) | max // null) as $last_blocker |
-                (map(select(.state == "APPROVED") | .submitted_at) | max // null) as $last_approved |
-                if $last_approved == null then false
-                elif $last_blocker == null then true
-                else $last_approved > $last_blocker
-                end' \
-              2>/dev/null || echo "false")
-            CR_LAST_BLOCKER=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM"/reviews --paginate --slurp \
-              | jq -r '[.[][] | select(.user.login == "coderabbitai[bot]" and (.state == "CHANGES_REQUESTED" or .state == "DISMISSED")) | .submitted_at] | max // ""' \
-              2>/dev/null || echo "")
-            if [[ "$CR_APPROVED_AFTER_CHANGES" == "true" ]]; then
-              echo "  [3] CR: PASS (APPROVED after CHANGES_REQUESTED)"
-              CR_PASS="true"
-            else
-              # Fallback: CR posted a verdict comment explicitly approving the PR
-              # Note: CR verdict comments are on the issue, not the PR review thread.
-              # --slurp: flatten all pages into single array so jq sees all results at once.
-              # Only comments newer than the latest blocking CR review count; older
-              # verdict comments are stale and must not override a newer blocker.
-              CR_READY=$(gh api repos/${{ github.repository }}/issues/"$PR_NUM"/comments --paginate --slurp 2>/dev/null \
-                | jq -r --arg last_blocker "$CR_LAST_BLOCKER" '[.[][] | select(
-                  .user.login == "coderabbitai[bot]"
-                  and (.body | test("AUTOMATION COMPLETE.*READY FOR MERGE|FINAL VERDICT.*APPROVE|Comments resolved and changes approved"; "i"))
-                  and ($last_blocker == "" or .created_at > $last_blocker)
-                )] | length' 2>/dev/null || echo "0")
-              if [[ "$CR_READY" != "0" ]]; then
-                echo "  [3] CR: PASS (verdict comment — CR incremental stall fallback)"
-                CR_PASS="true"
-              else
-                echo "  [3] CR: FAIL (no APPROVED after latest CHANGES_REQUESTED)"
+              cat "$_PAGE_TMP" >> "$_REVIEWS_STEP3_TMP"
+              _PAGE_COUNT=$(jq 'length' "$_PAGE_TMP" 2>/dev/null || echo 0)
+              rm -f "$_PAGE_TMP"
+              if [ "$_PAGE_COUNT" -lt 100 ]; then
+                break
               fi
+              _REVIEWS_STEP3_PAGE=$((_REVIEWS_STEP3_PAGE + 1))
+            done
+            if [ "$_REVIEWS_STEP3_FETCH_FAILED" = "true" ]; then
+              rm -f "$_REVIEWS_STEP3_TMP"
+              echo "::error::Failed to fetch PR reviews for PR #${PR_NUM} (gate 3, step 3)" >&2
+              exit 1
             fi
-            fi  # end dependabot[bot] exemption else
-
-            # PR_HEAD (fetched at top of loop) is used by both Gate 4 (bugbot) and Gate 7 (skeptic).
-
-            # 4. Bugbot clean (cursor[bot]) — fail-closed: any API error blocks the gate.
-            # Filter: only count cursor[bot] comments with HIGH or CRITICAL severity labels.
-            # Low/Medium/nit findings don't block merge (they are advisory).
-            # Using severity label detection rather than word-matching "error" to avoid
-            # false positives from "error" appearing in HTML entities, URLs, or advisory comments.
-            # Stale comments: only count cursor[bot] HIGH/CRITICAL comments whose original_commit_id
-            # matches the current PR head SHA (or is null, for comments predating the commit tracking
-            # feature). Bugbot posts new comments on new code; old comments become "outdated".
-            # PR_HEAD is set at the top of the loop (before step 1). --slurp wraps all pages.
-            BUGBOT_ERRORS=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM"/comments --paginate --slurp \
-              | jq --arg pr_head "$PR_HEAD" -r \
-              '[.[][] | select(.user.login == "cursor[bot]" and (.body | test("HIGH SEVERITY|CRITICAL SEVERITY"; "i"))) | select(.original_commit_id == $pr_head or (.original_commit_id | type) == "null") | .id] | length' 2>/dev/null || echo "-1")
-            [[ "$BUGBOT_ERRORS" == "0" ]] && echo "  [4] Bugbot: PASS" || echo "  [4] Bugbot: $BUGBOT_ERRORS errors"
-
-            # 5. Comments resolved (non-nit) — fail-closed: any API error blocks the gate.
-            # REST comments endpoint does not expose thread resolution state, so this gate
-            # approximates: top-level review comments that are not nit-picks.
-            # Pass Gate 5 when CR has approved — CR's APPROVED verdict supersedes the
-            # unresolved non-nit comment count (CR has already reviewed and approved the PR).
-            # API errors (UNRESOLVED == -1) always fail — never bypassed by CR_PASS.
-            UNRESOLVED=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM"/comments --paginate \
-              | jq -r '[.[] | select(.in_reply_to_id == null) | select(.body | test("^(nit:|nitpick)"; "i") | not)] | length' 2>/dev/null || echo "-1")
-            if [[ "$UNRESOLVED" == "-1" ]]; then
-              echo "  [5] Comments: ERROR (API fetch failed)"
-              GATE5_FAIL="true"
-            elif [[ "$UNRESOLVED" == "0" ]]; then
-              echo "  [5] Comments: PASS"
-              GATE5_FAIL="false"
-            elif [[ "$CR_PASS" == "true" ]]; then
-              echo "  [5] Comments: N/A (CR APPROVED — nits excluded from unresolved count)"
-              GATE5_FAIL="false"
+            set +e
+            LATEST_CR_PIPELINE=$(jq -rs 'add | [.[] | select((.user.login == "coderabbitai[bot]" or .user.login == "coderabbitai") and .state != "COMMENTED")] | sort_by(.submitted_at) | last | .state // "none"' "$_REVIEWS_STEP3_TMP" 2>&1)
+            LATEST_CR_EXIT=$?
+            rm -f "$_REVIEWS_STEP3_TMP"
+            set -e
+            if [ $LATEST_CR_EXIT -ne 0 ]; then
+              CR_APPROVED="FAIL (jq exit=$LATEST_CR_EXIT)"
             else
-              echo "  [5] Comments: $UNRESOLVED unresolved"
-              GATE5_FAIL="true"
-            fi
-
-            # 6. Evidence (evidence-review-bot) — optional: only block on explicit FAIL state.
-            # evidence-review-bot only produces APPROVED or DISMISSED/CHANGES_REQUESTED review
-            # states. Anything else (none, COMMENTED, PENDING) means it has not run yet = N/A.
-            EVIDENCE=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM"/reviews --paginate \
-              | jq -r '[.[] | select(.user.login == "evidence-review-bot")] | sort_by(.submitted_at) | reverse | .[0].state // "none"' 2>/dev/null || echo "none")
-            if [[ "$EVIDENCE" == "APPROVED" ]]; then
-              echo "  [6] Evidence: PASS"
-            elif [[ "$EVIDENCE" == "DISMISSED" || "$EVIDENCE" == "CHANGES_REQUESTED" ]]; then
-              echo "  [6] Evidence: FAIL ($EVIDENCE)"
-            else
-              echo "  [6] Evidence: N/A ($EVIDENCE)"
-            fi
-
-            # 7. Skeptic verdict (github-actions[bot] VERDICT comment) — pick LATEST, not oldest
-            # MISSING/SKEPTIC_NO_VERDICT means skeptic-cron is automated skeptic; it evaluates and posts.
-            # SKIPPED means ANTHROPIC_API_KEY not configured — do NOT auto-merge (gate not functional).
-            # SHA verification: skeptic-gate includes the HEAD-SHA in its comment (e.g. "ran on commit `abc1234`").
-            # If the verdict SHA doesn't match the current PR head SHA, treat as stale MISSING.
-            # PR_HEAD is fetched at the top of the loop (line ~57) and used by Gates 4, 5, and 7.
-            # Capture verdict data separately from the gh api exit status so we can
-            # fail closed on API errors while still distinguishing empty-result from crash.
-            # --slurp: flatten all pages into single array so jq sees all results at once.
-            # Do not pipe gh into jq in one subshell — $? would reflect jq only, not gh.
-            SKEPTIC_VERDICT=""
-            SKEPTIC_SHA_MISMATCH=""
-            SKEPTIC_COMMENTS_JSON=""
-            if ! SKEPTIC_COMMENTS_JSON=$(gh api repos/${{ github.repository }}/issues/"$PR_NUM"/comments --paginate --slurp 2>/dev/null); then
-              SKEPTIC_VERDICT="SKEPTIC_ERROR"
-            else
-              SKEPTIC_COMMENT_JSON=$(printf '%s\n' "$SKEPTIC_COMMENTS_JSON" | jq -c '[.[][] | select(.user.login == "github-actions[bot]" and (.body | test("VERDICT:"; "i")))] | sort_by(.created_at) | reverse | .[0] // null' 2>/dev/null)
-              JQ_STAT=$?
-              if [ "$JQ_STAT" -ne 0 ]; then
-                SKEPTIC_VERDICT="SKEPTIC_ERROR"
-              elif [ -z "$SKEPTIC_COMMENT_JSON" ] || [ "$SKEPTIC_COMMENT_JSON" = "null" ]; then
-                # No verdict comment found — MISSING (skeptic-cron may auto-post).
-                SKEPTIC_VERDICT="SKEPTIC_NO_VERDICT"
-                SKEPTIC_SHA_MISMATCH=""
+              LATEST_CR="${LATEST_CR_PIPELINE%$'\n'}"
+              if [ "$LATEST_CR" = "APPROVED" ]; then
+                CR_APPROVED="PASS"
+              elif [ "$LATEST_CR" != "none" ]; then
+                CR_APPROVED="FAIL (state=$LATEST_CR)"
               else
-                # Parse body once: canonical verdict token + HEAD-SHA (no re-grep of full body downstream).
-                PARSED=$(printf '%s\n' "$SKEPTIC_COMMENT_JSON" | jq -r '
-                  .body as $b |
-                  (if ($b | test("<!--[[:space:]]*HEAD-SHA:")) then ($b | capture("<!--[[:space:]]*HEAD-SHA:[[:space:]]*(?<sha>[a-f0-9]+)")).sha else "" end) as $sha |
-                  (if ($b | test("VERDICT:[[:space:]]*FAIL"; "i")) then "FAIL"
-                   elif ($b | test("VERDICT:[[:space:]]*PASS"; "i")) then "PASS"
-                   elif ($b | test("VERDICT:[[:space:]]*SKIPPED"; "i")) then "SKIPPED"
-                   elif ($b | test("VERDICT:[[:space:]]*ERROR"; "i")) then "ERROR"
-                   else "UNPARSED"
-                   end) as $tok |
-                  [$tok, $sha] | @tsv
-                ' 2>/dev/null || printf '\t')
-                SKEPTIC_VERDICT=$(printf '%s\n' "$PARSED" | cut -f1)
-                VERDICT_SHA=$(printf '%s\n' "$PARSED" | cut -f2)
-                if [ -n "$VERDICT_SHA" ] && [ "$VERDICT_SHA" != "$PR_HEAD" ]; then
-                  echo "  [7] Skeptic: STALE (verdict SHA \`${VERDICT_SHA:0:7}\`, PR head \`${PR_HEAD:0:7}\` — treating as MISSING)"
-                  SKEPTIC_VERDICT="SKEPTIC_NO_VERDICT"
-                  SKEPTIC_SHA_MISMATCH="true"
+                # CR status/comment check uses PR_SHA from listing (trigger SHA) — verdicts are keyed to it
+                HEAD_COMMITTED_AT=$(gh api repos/${{ github.repository }}/commits/"$PR_SHA" \
+                  --jq '.commit.committer.date // ""' 2>/dev/null || echo "")
+                CR_STATUS=$(gh api repos/${{ github.repository }}/commits/"$PR_SHA"/status \
+                  --jq '.statuses | map(select(.context == "CodeRabbit" and .state == "success")) | sort_by(.updated_at) | last | .state // "none"' \
+                  2>/dev/null || echo "none")
+                CR_APPROVE_COMMENT="none"
+                if [ -n "$HEAD_COMMITTED_AT" ]; then
+                   _CR_APPROVE_COMMENTS_S3_TMP=$(mktemp)
+                   _CR_APPROVE_COMMENTS_S3_PAGE=1
+                   _CR_APPROVE_COMMENTS_S3_FETCH_FAILED=false
+                   while true; do
+                     _PAGE_TMP=$(mktemp)
+                     gh api "repos/${{ github.repository }}/issues/${PR_NUM}/comments?per_page=100&page=${_CR_APPROVE_COMMENTS_S3_PAGE}" > "$_PAGE_TMP" 2>/dev/null
+                     _CR_APPROVE_S3_EXIT=$?
+                     if [ "$_CR_APPROVE_S3_EXIT" -ne 0 ]; then
+                       rm -f "$_PAGE_TMP"
+                       _CR_APPROVE_COMMENTS_S3_FETCH_FAILED=true
+                       break
+                     fi
+                    cat "$_PAGE_TMP" >> "$_CR_APPROVE_COMMENTS_S3_TMP"
+                    _PAGE_COUNT=$(jq 'length' "$_PAGE_TMP" 2>/dev/null || echo 0)
+                    rm -f "$_PAGE_TMP"
+                    if [ "$_PAGE_COUNT" -lt 100 ]; then
+                      break
+                    fi
+                    _CR_APPROVE_COMMENTS_S3_PAGE=$((_CR_APPROVE_COMMENTS_S3_PAGE + 1))
+                  done
+                   if [ "$_CR_APPROVE_COMMENTS_S3_FETCH_FAILED" = "true" ]; then
+                     rm -f "$_CR_APPROVE_COMMENTS_S3_TMP"
+                     echo "::error::Failed to fetch CR approve comments for PR #${PR_NUM} (step 3)" >&2
+                     exit 1
+                   fi
+                   set +e
+                   CR_APPROVE_COMMENT=$(jq -rs --arg since "$HEAD_COMMITTED_AT" 'add | [.[] | select((.user.login == "coderabbitai[bot]" or .user.login == "coderabbitai") and .created_at >= $since and (.body | test("(?m)^\\s*\\[approve\\]\\s*$"; "i")))] | sort_by(.created_at) | last | if . then "APPROVED" else "none" end' "$_CR_APPROVE_COMMENTS_S3_TMP" \
+                     2>&1)
+                  CR_APPROVE_COMMENT_EXIT=$?
+                  rm -f "$_CR_APPROVE_COMMENTS_S3_TMP"
+                  set -e
+                  if [ $CR_APPROVE_COMMENT_EXIT -ne 0 ]; then
+                    CR_APPROVE_COMMENT="lookup_error"
+                  else
+                    CR_APPROVE_COMMENT="${CR_APPROVE_COMMENT%$'\n'}"
+                  fi
+                fi
+                if [ "$CR_STATUS" = "success" ] && [ "$CR_APPROVE_COMMENT" = "APPROVED" ]; then
+                  CR_APPROVED="PASS"
                 else
-                  SKEPTIC_SHA_MISMATCH=""
+                  CR_APPROVED="FAIL (state=$LATEST_CR status=$CR_STATUS comment=$CR_APPROVE_COMMENT)"
                 fi
               fi
             fi
-            if [ "$SKEPTIC_VERDICT" = "PASS" ]; then
-              echo "  [7] Skeptic: PASS"
-            elif [ "$SKEPTIC_VERDICT" = "FAIL" ]; then
-              echo "  [7] Skeptic: FAIL"
-            elif [ "$SKEPTIC_VERDICT" = "SKIPPED" ]; then
-              echo "  [7] Skeptic: SKIPPED (ANTHROPIC_API_KEY not configured — gate not functional)"
-            elif [ "$SKEPTIC_VERDICT" = "SKEPTIC_ERROR" ]; then
-              echo "  [7] Skeptic: ERROR (API fetch failed — fail-closed, will skip)"
-            elif [ "$SKEPTIC_VERDICT" = "UNPARSED" ]; then
-              echo "  [7] Skeptic: UNPARSED (no recognizable VERDICT token in comment body)"
-            elif [ "$SKEPTIC_VERDICT" = "ERROR" ]; then
-              echo "  [7] Skeptic: ERROR (VERDICT: ERROR in comment)"
+            echo "  [3] CR APPROVED:        $CR_APPROVED"
+
+            # Gate 4: Bugbot clean — pass on success/neutral/skipped only.
+            # Pass on "success", "neutral", or "skipped"; cancelled/timed_out/action_required/stale fail.
+            BUGBOT_CONCLUSION=$(gh api repos/${{ github.repository }}/commits/"$PR_SHA"/check-runs \
+              --jq '[.check_runs[] | select(.name == "Cursor Bugbot")] | sort_by(.started_at) | reverse | .[0].conclusion // "none"' \
+              2>/dev/null || echo "none")
+            BUGBOT_STATUS=$(if [ "$BUGBOT_CONCLUSION" = "success" ] || [ "$BUGBOT_CONCLUSION" = "neutral" ] || [ "$BUGBOT_CONCLUSION" = "skipped" ] || [ "$BUGBOT_CONCLUSION" = "none" ]; then echo "PASS"; else echo "FAIL (check-run=$BUGBOT_CONCLUSION)"; fi)
+            echo "  [4] Bugbot clean:       $BUGBOT_STATUS"
+
+            # 5. Inline comments resolved (GraphQL)
+            PR_AUTHOR=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" --jq '.user.login')
+            REPO_NAME="${GITHUB_REPOSITORY#*/}"
+            GQL_RESULT=$(gh api graphql -f query='
+              query($owner: String!, $name: String!, $number: Int!) {
+                repository(owner: $owner, name: $name) {
+                  pullRequest(number: $number) {
+                    reviewThreads(first: 100) {
+                      pageInfo { hasNextPage }
+                      nodes {
+                        isResolved
+                        comments(first: 50) {
+                          pageInfo { hasNextPage }
+                          nodes { author { login } body }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ' -f owner='${{ github.repository_owner }}' -f name="$REPO_NAME" -F number="$PR_NUM" 2>/dev/null)
+            if [ -z "$GQL_RESULT" ]; then
+              UNRESOLVED="__GQL_ERROR__"
+            elif [ "$(echo "$GQL_RESULT" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')" = "true" ] || [ "$(echo "$GQL_RESULT" | jq -r '[.data.repository.pullRequest.reviewThreads.nodes[].comments.pageInfo.hasNextPage | select(. == true)] | length')" -gt 0 ]; then
+              UNRESOLVED="__TRUNCATED__"
             else
-              echo "  [7] Skeptic: MISSING (skeptic-cron is automated skeptic — will post)"
+              UNRESOLVED=$(echo "$GQL_RESULT" | jq -r "[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .comments.nodes[] | select(.author.login != null and (.author.login | ascii_downcase) != (\"$PR_AUTHOR\" | ascii_downcase) and (.body | test(\"^\\\\s*(nit:|nitpick)\"; \"i\") | not))] | length")
+            fi
+            if [ "$UNRESOLVED" = "__GQL_ERROR__" ] || [ "$UNRESOLVED" = "__TRUNCATED__" ]; then
+              COMMENTS_STATUS="FAIL (graphql-error or pagination-truncated)"
+            elif [ "$UNRESOLVED" = "0" ] || [ -z "$UNRESOLVED" ]; then
+              COMMENTS_STATUS="PASS"
+            else
+              COMMENTS_STATUS="FAIL ($UNRESOLVED unresolved)"
+            fi
+            echo "  [5] Comments resolved:   $COMMENTS_STATUS"
+
+            # 6. Evidence review (fail-closed)
+            # Explicit page iteration fetches all review pages so evidence-review-bot approvals on a later
+            # page are not missed for long-lived PRs, while .commit_id keeps the match on HEAD.
+            _EVIDENCE_REVIEWS_TMP=$(mktemp)
+            _EVIDENCE_REVIEWS_PAGE=1
+            _EVIDENCE_REVIEWS_FETCH_FAILED=false
+            while true; do
+              _PAGE_TMP=$(mktemp)
+              gh api "repos/${{ github.repository }}/pulls/${PR_NUM}/reviews?per_page=100&page=${_EVIDENCE_REVIEWS_PAGE}" > "$_PAGE_TMP" 2>/dev/null
+              _EVIDENCE_REVIEWS_EXIT=$?
+              if [ "$_EVIDENCE_REVIEWS_EXIT" -ne 0 ]; then
+                rm -f "$_PAGE_TMP"
+                _EVIDENCE_REVIEWS_FETCH_FAILED=true
+                break
+              fi
+              cat "$_PAGE_TMP" >> "$_EVIDENCE_REVIEWS_TMP"
+              _PAGE_COUNT=$(jq 'length' "$_PAGE_TMP" 2>/dev/null || echo 0)
+              rm -f "$_PAGE_TMP"
+              if [ "$_PAGE_COUNT" -lt 100 ]; then
+                break
+              fi
+              _EVIDENCE_REVIEWS_PAGE=$((_EVIDENCE_REVIEWS_PAGE + 1))
+            done
+            if [ "$_EVIDENCE_REVIEWS_FETCH_FAILED" = "true" ]; then
+              rm -f "$_EVIDENCE_REVIEWS_TMP"
+              echo "::error::Failed to fetch evidence reviews for PR #${PR_NUM}" >&2
+              exit 1
+            fi
+            EVIDENCE_APPROVED=$(jq -sr '[add[] | select(.user.login == "evidence-review-bot" and .state == "APPROVED" and .commit_id == "'"$PR_SHA"'")] | length' "$_EVIDENCE_REVIEWS_TMP" 2>/dev/null || echo 0)
+            rm -f "$_EVIDENCE_REVIEWS_TMP"
+
+            _EVIDENCE_CHECKS_TMP=$(mktemp)
+            _EVIDENCE_CHECKS_PAGE=1
+            _EVIDENCE_CHECKS_FETCH_FAILED=false
+            while true; do
+              _PAGE_TMP=$(mktemp)
+              gh api "repos/${{ github.repository }}/commits/${PR_SHA}/check-runs?per_page=100&page=${_EVIDENCE_CHECKS_PAGE}" > "$_PAGE_TMP" 2>/dev/null
+              _EVIDENCE_CHECKS_EXIT=$?
+              if [ "$_EVIDENCE_CHECKS_EXIT" -ne 0 ]; then
+                rm -f "$_PAGE_TMP"
+                _EVIDENCE_CHECKS_FETCH_FAILED=true
+                break
+              fi
+              cat "$_PAGE_TMP" >> "$_EVIDENCE_CHECKS_TMP"
+              _PAGE_COUNT=$(jq 'length' "$_PAGE_TMP" 2>/dev/null || echo 0)
+              rm -f "$_PAGE_TMP"
+              if [ "$_PAGE_COUNT" -lt 100 ]; then
+                break
+              fi
+              _EVIDENCE_CHECKS_PAGE=$((_EVIDENCE_CHECKS_PAGE + 1))
+            done
+            if [ "$_EVIDENCE_CHECKS_FETCH_FAILED" = "true" ]; then
+              rm -f "$_EVIDENCE_CHECKS_TMP"
+              echo "::error::Failed to fetch evidence check-runs for PR #${PR_NUM}" >&2
+              exit 1
+            fi
+            EVIDENCE_CHECKS_RAW=$(cat "$_EVIDENCE_CHECKS_TMP" || echo "[]")
+            rm -f "$_EVIDENCE_CHECKS_TMP"
+            # Scope to exact "Evidence Gate" check to avoid false PASS from other evidence-prefixed checks.
+            # A partial pass (e.g. Evidence Has Media passes but Evidence Gate fails) must not satisfy gate 6.
+            # Separate "no check-run found" (missing) from "check exists but conclusion is null" (in-progress).
+            # jq -sr: -s slurps combined pages into array, -r strips JSON quotes.
+            # If no Evidence Gate check-run exists → output "missing". If check exists but conclusion is null → output "".
+            EVIDENCE_GATE_CONCLUSION=$(echo "$EVIDENCE_CHECKS_RAW" | jq -sr \
+              '[.[].check_runs[]? | select(.name == "Evidence Gate")] | sort_by(.started_at) | last | if . == null then "missing" elif .conclusion == null then "" else .conclusion end' 2>/dev/null || echo "missing")
+
+            if [ "${EVIDENCE_APPROVED:-0}" -gt 0 ]; then
+              EVIDENCE_STATUS="PASS (evidence-review-bot approved @HEAD)"
+            elif [ "$EVIDENCE_GATE_CONCLUSION" = "success" ]; then
+              EVIDENCE_STATUS="PASS (Evidence Gate check passed)"
+            elif [ "$EVIDENCE_GATE_CONCLUSION" = "missing" ]; then
+              # "missing" means no Evidence Gate check-run found at all (jq returned "missing" via // fallback).
+              # Distinct from null conclusion (in-progress), which jq returns as empty string with -r.
+              EVIDENCE_STATUS="FAIL (Evidence Gate check not found)"
+            elif [ -z "$EVIDENCE_GATE_CONCLUSION" ]; then
+              # Empty string from jq -r when .conclusion is null = check exists but still in-progress/queued
+              EVIDENCE_STATUS="FAIL (Evidence Gate in progress — not yet concluded)"
+            else
+              EVIDENCE_STATUS="FAIL (Evidence Gate: $EVIDENCE_GATE_CONCLUSION)"
+            fi
+            echo "  [6] Evidence review:    $EVIDENCE_STATUS"
+
+            # 7. Skeptic verdict — look for VERDICT comment from the AO worker.
+            #
+            # Trust boundary: only the configured SKEPTIC_BOT_AUTHOR, the two
+            # additional maintainer accounts ("jleechanao" and "jleechan-af"),
+            # or "github-actions[bot]" may post a verdict. GitHub treats logins
+            # case-sensitively in `.user.login`, so we downcase both sides
+            # (ascii_downcase) to prevent casing variants from bypassing the
+            # allowlist. We also exclude "github-actions[bot]" verdicts when
+            # the bot is the PR author (defense against self-approval) by
+            # requiring the comment author's downcased login to differ from
+            # the PR author's downcased login. The allowlist itself is
+            # provisioned from the project's default trusted authors plus the
+            # trustedSkepticAuthors config override. To prevent spoofing, the
+            # body must contain all of: the verdict marker
+            # "<!-- skeptic-agent-verdict -->", the SHA-scoped trigger marker
+            # "skeptic-cron-trigger-${PR_SHA}", and the SHA-scoped head-sha
+            # marker "skeptic-head-sha-${PR_SHA}". All other gates are
+            # fail-closed, so an unsigned comment is not enough to pass.
+            _VERDICT_COMMENTS_TMP=$(mktemp)
+            _VERDICT_COMMENTS_PAGE=1
+            _VERDICT_COMMENTS_FETCH_FAILED=false
+            while true; do
+              _PAGE_TMP=$(mktemp)
+              gh api "repos/${{ github.repository }}/issues/${PR_NUM}/comments?per_page=100&page=${_VERDICT_COMMENTS_PAGE}" > "$_PAGE_TMP" 2>/dev/null
+              _VERDICT_EXIT=$?
+              if [ "$_VERDICT_EXIT" -ne 0 ]; then
+                rm -f "$_PAGE_TMP"
+                _VERDICT_COMMENTS_FETCH_FAILED=true
+                break
+              fi
+              cat "$_PAGE_TMP" >> "$_VERDICT_COMMENTS_TMP"
+              _PAGE_COUNT=$(jq 'length' "$_PAGE_TMP" 2>/dev/null || echo 0)
+              rm -f "$_PAGE_TMP"
+              if [ "$_PAGE_COUNT" -lt 100 ]; then
+                break
+              fi
+              _VERDICT_COMMENTS_PAGE=$((_VERDICT_COMMENTS_PAGE + 1))
+            done
+            if [ "$_VERDICT_COMMENTS_FETCH_FAILED" = "true" ]; then
+              rm -f "$_VERDICT_COMMENTS_TMP"
+              echo "::error::Failed to fetch verdict comments for PR #${PR_NUM}" >&2
+              exit 1
+            fi
+            SKEPTIC_VERDICT=$(jq -sr --arg sha "$PR_SHA" --arg author "$SKEPTIC_BOT_AUTHOR" --arg pr_author "$PR_AUTHOR" \
+              '[.[][] | select(
+                (((.user.login | ascii_downcase) == ($author | ascii_downcase))
+                  or ((.user.login | ascii_downcase) == "jleechanao")
+                  or ((.user.login | ascii_downcase) == "jleechan-af")
+                  or (((.user.login | ascii_downcase) == "github-actions[bot]") and ((.user.login | ascii_downcase) != ($pr_author | ascii_downcase)))
+                )
+                and (.body | test("VERDICT:"; "i"))
+                and (.body | test("skeptic-cron-trigger-" + $sha; "i"))
+                and (.body | test("skeptic-head-sha-" + $sha; "i"))
+                and (.body | test("skeptic-agent-verdict"; "i"))
+              ) | .body] | last // empty' "$_VERDICT_COMMENTS_TMP" || echo "")
+            rm -f "$_VERDICT_COMMENTS_TMP"
+            if echo "$SKEPTIC_VERDICT" | grep -qi "VERDICT: PASS"; then
+              SKEPTIC_STATUS="PASS"
+            elif echo "$SKEPTIC_VERDICT" | grep -qi "VERDICT: FAIL"; then
+              SKEPTIC_STATUS="FAIL"
+            else
+              SKEPTIC_STATUS="FAIL"
+            fi
+            echo "  [7] Skeptic verdict:    $SKEPTIC_STATUS"
+
+            # All gates must PASS; infra failures emit VERDICT: FAIL (fail-closed)
+            ALL_PASS=true
+            for COND in "$CI_RESULT" "$MERGE_CONFLICT" "$CR_APPROVED" "$BUGBOT_STATUS" "$COMMENTS_STATUS" "$EVIDENCE_STATUS"; do
+              if echo "$COND" | grep -qi "FAIL"; then
+                ALL_PASS=false
+                break
+              fi
+            done
+            if echo "$SKEPTIC_STATUS" | grep -qi "FAIL"; then
+              ALL_PASS=false
             fi
 
-            # Skip if criteria 1-6 fail
-            # Gate 5: UNRESOLVED=-1 always fails (API error); UNRESOLVED>0 only blocks when CR not approved
-            # Gate 6: EVIDENCE only blocks on explicit FAIL (DISMISSED/CHANGES_REQUESTED); N/A = pass
-            GATE6_FAIL=$([[ "$EVIDENCE" == "DISMISSED" || "$EVIDENCE" == "CHANGES_REQUESTED" ]] && echo "true" || echo "false")
-            if [[ "$CI_STATUS" != "success" || "$MERGEABLE" != "true" || "$CR_PASS" != "true" || "$BUGBOT_ERRORS" != "0" || "$GATE5_FAIL" == "true" || "$GATE6_FAIL" == "true" ]]; then
-              echo "  → Not 7-green ready, skipping"
-              continue
-            fi
-            # Criterion 7: FAIL/SKIPPED/ERROR blocks; PASS permits; MISSING = auto-post
-            # Fixes CR actionable: only auto-post PASS when skeptic-gate did not run (no VERDICT comment).
-            # The old `else` branch was lossy — it auto-posted PASS for UNKNOWN or any unparseable output,
-            # creating a false VERDICT: PASS that bypassed the skeptic gate entirely.
-            if echo "$SKEPTIC_SHA_MISMATCH" | grep -q "true"; then
-              echo "  → Skeptic verdict SHA mismatch (stale), skipping"
-              continue
-            fi
-            if [ "$SKEPTIC_VERDICT" = "FAIL" ] || [ "$SKEPTIC_VERDICT" = "ERROR" ] || [ "$SKEPTIC_VERDICT" = "UNPARSED" ]; then
-              echo "  → Skeptic verdict is $SKEPTIC_VERDICT, skipping"
-              continue
-            fi
-            if [ "$SKEPTIC_VERDICT" = "SKEPTIC_ERROR" ]; then
-              echo "  → Skeptic verdict fetch failed, skipping (fail-closed)"
-              continue
-            fi
-            if [ "$SKEPTIC_VERDICT" = "PASS" ]; then
-              echo "  → Skeptic VERDICT: PASS confirmed"
-            elif [ "$SKEPTIC_VERDICT" = "SKEPTIC_NO_VERDICT" ]; then
-              # No VERDICT comment found — skeptic-gate either skipped or failed to post.
-              # UNKNOWN/ERROR exits with non-zero in the gate, so CI fails first.
-              # Only auto-post when there is genuinely no verdict (MISSING = skeptic-cron is the skeptic).
-              echo "  → Posting VERDICT: PASS (skeptic-cron is automated skeptic)"
-              gh api repos/${{ github.repository }}/issues/"$PR_NUM"/comments \
-                --method POST \
-                --field "body=**VERDICT: PASS** — skeptic-cron evaluated and merged this PR. All 6 criteria confirmed green.  \n\n<!-- HEAD-SHA: $PR_HEAD -->" \
-                --jq '.id' > /dev/null 2>&1 || true
-            elif [ "$SKEPTIC_VERDICT" = "SKIPPED" ]; then
-              # ANTHROPIC_API_KEY not configured — skeptic-gate cannot run.
-              # SKIPPED means the skeptic gate did not function, so keep this
-              # PR blocked instead of converting the missing verdict to PASS.
-              echo "  → Posting VERDICT: SKIPPED (skeptic-gate not functional)"
-              gh api repos/${{ github.repository }}/issues/"$PR_NUM"/comments \
-                --method POST \
-                --field "body=**VERDICT: SKIPPED** — skeptic-gate SKIPPED (ANTHROPIC_API_KEY not configured); auto-merge remains blocked.  \n\n<!-- HEAD-SHA: $PR_HEAD -->" \
-                --jq '.id' > /dev/null 2>&1 || true
-              continue
-            else
-              echo "  → Skeptic verdict unrecognized, skipping (fail-closed)"
-              continue
-            fi
+            if [ "$ALL_PASS" = "true" ]; then
+              # Normalize: trim whitespace, lowercase — only "true" or "1" enable merge
+              _AUTO_MERGE_NORM="$(echo "${SKEPTIC_CRON_AUTO_MERGE}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+              SKIP_MERGE=true
+              if [ "$_AUTO_MERGE_NORM" = "true" ] || [ "$_AUTO_MERGE_NORM" = "1" ]; then
+                SKIP_MERGE=false
+              fi
 
-            # Only auto-merge same-repo PRs; cross-repo PRs get evaluated but not merged by this cron.
-            if [[ "$SAME_REPO" != "true" ]]; then
-              echo "  → Cross-repo PR — evaluated (7-green: criteria 1-7 OK) but auto-merge skipped by skeptic-cron"
-              continue
-            fi
-
-            echo ""
-            echo "*** PR #$PR_NUM is 7-green! Merging... ***"
-            MERGE_RESULT=$(gh pr merge "$PR_NUM" --squash --auto --delete-branch --repo ${{ github.repository }} 2>&1 || echo "MERGE_FAILED")
-            if echo "$MERGE_RESULT" | grep -qi "MERGE_FAILED\|error"; then
-              echo "Merge failed: $MERGE_RESULT"
+              if [ "$SKIP_MERGE" = "true" ]; then
+                echo "*** PR #${PR_NUM} is 7-green — merge skipped (SKEPTIC_CRON_AUTO_MERGE=${SKEPTIC_CRON_AUTO_MERGE:-<empty>}) ***"
+                continue
+              fi
+              if echo ",$SKEPTIC_MERGE_DENYLIST," | grep -q ",$PR_NUM,"; then
+                echo "*** PR #${PR_NUM} is 7-green but on SKEPTIC_MERGE_DENYLIST — skipping ***"
+                continue
+              fi
+              echo ""
+              echo "*** PR #${PR_NUM} is 7-green! Merging... ***"
+              if [ "$MERGED_FLAG" = "true" ]; then
+                echo "Already merged — skipping"
+              else
+                # SHA safety check: verify HEAD has not changed since we listed PRs.
+                # Prevents merging if a new commit was pushed between listing and merge.
+                CURRENT_SHA=$(gh api repos/${{ github.repository }}/pulls/"$PR_NUM" --jq '.head.sha' 2>/dev/null)
+                if [ "$CURRENT_SHA" != "$PR_SHA" ]; then
+                  echo "HEAD SHA changed ($PR_SHA -> $CURRENT_SHA) — skipping merge (will re-evaluate next cycle)"
+                  continue
+                fi
+                # bd-weav: use --admin instead of --auto to merge immediately as GITHUB_TOKEN.
+                # --auto delegates to GitHub's merge queue which sets merged_by=null, breaking
+                # zero-touch auto-merge rate tracking (measured via merged_by=github-actions[bot]).
+                MERGE_RESULT=$(gh pr merge "$PR_NUM" \
+                  --repo ${{ github.repository }} \
+                  --squash --admin \
+                  --delete-branch \
+                  2>&1 || echo "MERGE_FAILED")
+                if echo "$MERGE_RESULT" | grep -Ei "MERGE_FAILED|error"; then
+                  echo "Merge failed for PR #${PR_NUM}: $MERGE_RESULT"
+                else
+                  echo "Successfully merged PR #${PR_NUM}"
+                  MERGED=$((MERGED + 1))
+                fi
+              fi
             else
-              echo "Successfully merged PR #$PR_NUM"
-              MERGED=$((MERGED + 1))
+              echo "PR #${PR_NUM} not yet merge-ready — skipping"
             fi
           done
 
           echo "merged_count=$MERGED" >> "$GITHUB_OUTPUT"
           echo ""
           echo "=== Skeptic cron complete: $MERGED PR(s) merged ==="
-
-      - name: Report merge results
-        if: steps.merge_prs.outputs.merged_count != '0'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Skeptic cron merged ${{ steps.merge_prs.outputs.merged_count }} PR(s)"

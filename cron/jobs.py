@@ -1703,6 +1703,23 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 break
                         continue
 
+            # Before returning a one-shot job as due, advance its
+            # next_run_at past the next scheduler tick so other processes
+            # (gateway + desktop running concurrent schedulers) don't
+            # double-execute it (#59229).  The advance is persisted
+            # immediately under the same lock that get_due_jobs holds.
+            # mark_job_run re-anchors next_run_at on completion (success
+            # or failure), so a tick death between here and execution
+            # only delays the job by a single tick window — not lost.
+            if kind == "once":
+                claimed_next = (now + timedelta(seconds=60)).isoformat()
+                job["next_run_at"] = claimed_next
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"]:
+                        rj["next_run_at"] = claimed_next
+                        needs_save = True
+                        break
+
             due.append(job)
 
     if needs_save:

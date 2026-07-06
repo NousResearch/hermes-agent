@@ -927,7 +927,9 @@ class TestGetDueJobs:
         due = get_due_jobs()
 
         assert [job["id"] for job in due] == ["oneshot-recover"]
-        assert get_job("oneshot-recover")["next_run_at"] == run_at
+        # next_run_at is now advanced past the tick window to prevent
+        # cross-process double-execution (#59229).
+        assert get_job("oneshot-recover")["next_run_at"] == (now + timedelta(seconds=60)).isoformat()
 
     def test_broken_stale_one_shot_without_next_run_is_not_recovered(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)

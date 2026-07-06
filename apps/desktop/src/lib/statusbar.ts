@@ -57,6 +57,28 @@ export function contextBarLabel(usage: UsageStats): string {
   return `[${contextBar(usage.context_percent)}] ${pct}%`
 }
 
+export function contextCapacityClassName(percent: number | undefined): string {
+  const pct = Math.max(0, Math.min(100, percent ?? 0))
+
+  if (pct >= 95) {
+    return 'text-[color-mix(in_srgb,var(--ui-red)_86%,var(--ui-text-tertiary))]'
+  }
+
+  if (pct >= 80) {
+    return 'text-[color-mix(in_srgb,var(--ui-orange)_82%,var(--ui-text-tertiary))]'
+  }
+
+  if (pct >= 50) {
+    return 'text-[color-mix(in_srgb,var(--ui-yellow)_74%,var(--ui-text-tertiary))]'
+  }
+
+  if (pct > 0) {
+    return 'text-[color-mix(in_srgb,var(--ui-green)_52%,var(--ui-text-tertiary))]'
+  }
+
+  return 'text-muted-foreground/80'
+}
+
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 

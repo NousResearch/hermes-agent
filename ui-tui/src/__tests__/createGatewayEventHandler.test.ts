@@ -66,6 +66,31 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('merges token usage events into live usage state', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        context_length: 131_072,
+        context_pct: 9.4,
+        context_tokens: 12_345,
+        input_tokens: 100,
+        output_tokens: 20,
+        total_tokens: 120
+      },
+      type: 'token.usage'
+    } as any)
+
+    expect(getUiState().usage).toMatchObject({
+      context_max: 131_072,
+      context_percent: 9.4,
+      context_used: 12_345,
+      input: 100,
+      output: 20,
+      total: 120
+    })
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

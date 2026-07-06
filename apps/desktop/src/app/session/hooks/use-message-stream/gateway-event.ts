@@ -11,6 +11,7 @@ import { playCompletionSound } from '@/lib/completion-sound'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { usageFromTokenUsagePayload } from '@/lib/usage-events'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -222,6 +223,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           void queryClient.invalidateQueries({
             queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
           })
+        }
+      } else if (event.type === 'token.usage') {
+        if (!explicitSid || isActiveEvent) {
+          const usage = usageFromTokenUsagePayload(payload)
+
+          if (usage) {
+            setCurrentUsage(current => ({ ...current, ...usage }))
+          }
         }
       } else if (event.type === 'message.start') {
         if (!sessionId) {

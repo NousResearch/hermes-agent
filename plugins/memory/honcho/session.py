@@ -602,6 +602,7 @@ class HonchoSessionManager:
         self, session_key: str, query: str,
         reasoning_level: str | None = None,
         peer: str = "user",
+        apply_injection_cap: bool = True,
     ) -> str:
         """
         Query Honcho's dialectic endpoint about a peer.
@@ -655,8 +656,10 @@ class HonchoSessionManager:
                 target_peer = self._get_or_create_peer(target_peer_id)
                 result = target_peer.chat(query, reasoning_level=level) or ""
 
-            # Apply Hermes-side char cap before caching
-            if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:
+            # Apply Hermes-side char cap before caching (auto-injection only;
+            # the honcho_reasoning tool passes apply_injection_cap=False so
+            # explicit user queries get the full server response — #59469).
+            if apply_injection_cap and result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:
                 result = result[:self._dialectic_max_chars].rsplit(" ", 1)[0] + " …"
             return result
         except Exception as e:

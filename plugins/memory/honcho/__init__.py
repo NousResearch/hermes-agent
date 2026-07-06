@@ -1359,6 +1359,7 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._session_key, query,
                     reasoning_level=reasoning_level,
                     peer=peer,
+                    apply_injection_cap=False,
                 )
                 # Update cadence tracker so auto-injection respects the gap after an explicit call
                 self._last_dialectic_turn = self._turn_count

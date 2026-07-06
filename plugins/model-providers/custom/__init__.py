@@ -16,6 +16,48 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 
+# Substrings that mark a model as supporting ``reasoning_effort`` on a
+# custom OpenAI-compatible endpoint (#59660). Substring (not exact)
+# match so vendor prefixes (``z-ai/glm-5.2``), alias spellings
+# (``glm-5-2``, ``glm-5p2``), and the canonical name all hit. Tokens are
+# deliberately conservative — every name on this list is a known
+# reasoning-capable model family. A miss is benign (omits the field
+# rather than 400ing the request); a false positive would 400.
+_REASONING_MODEL_TOKENS: tuple = (
+    "glm-4.5", "glm-4.6", "glm-5",     # GLM 4.5+ and 5.x (the Z.AI family)
+    "o1", "o3", "o4",                   # OpenAI reasoning
+    "qwq",                              # Qwen QwQ
+    "qwen3",                            # Qwen3 (Qwen's hybrid reasoning model)
+    "deepseek-r",                       # DeepSeek-R
+    "claude-sonnet-4.5", "claude-opus-4.5",  # Claude 4.5+
+    "magistral",                        # Mistral reasoning
+)
+
+
+def _model_supports_reasoning_effort(model: str | None) -> bool:
+    """Return True when the model is known to accept ``reasoning_effort``.
+
+    Used by :meth:`CustomProfile.build_api_kwargs_extras` to gate
+    forwarding of the user's reasoning-effort preference. Models not on
+    this list produce an empty ``top_level`` dict so the endpoint's server
+    default applies — a graceful degradation rather than a 400 on an
+    unknown field.
+
+    The list is intentionally conservative. We only mark a model as
+    "supports reasoning_effort" when we've verified it. Plain models
+    (llama, mistral, qwen2.5, gemma, phi-3, etc.) are excluded by design
+    — the field is not just ignored on these models, it actively 400s
+    some local Ollama builds.
+    """
+    if not model:
+        # No model name → no way to know. Default to safe: omit the
+        # field. The user's primary cloud model will still get the
+        # field via a different provider profile (OpenRouter/Nous).
+        return False
+    m = model.strip().lower()
+    return any(token in m for token in _REASONING_MODEL_TOKENS)
+
+
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
@@ -24,6 +66,7 @@ class CustomProfile(ProviderProfile):
         *,
         reasoning_config: dict | None = None,
         ollama_num_ctx: int | None = None,
+        model: str | None = None,
         **ctx: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
@@ -39,11 +82,19 @@ class CustomProfile(ProviderProfile):
         # (GLM-5.2 on Volcengine ARK, vLLM, Ollama, llama.cpp, …).
         #
         #   - disabled  → extra_body.think = False (Ollama's thinking-off flag)
-        #   - enabled + effort set → TOP-LEVEL reasoning_effort string, the
-        #     format GLM-5.2/ARK and other OpenAI-compatible reasoning APIs
-        #     expect (GLM documents "high" and "max"; "max" is its default).
+        #   - enabled + effort set + model is reasoning-capable → TOP-LEVEL
+        #     reasoning_effort string, the format GLM-5.2/ARK and other
+        #     OpenAI-compatible reasoning APIs expect (GLM documents "high"
+        #     and "max"; "max" is its default).
         #   - enabled + no effort  → omit both, so the endpoint applies its own
         #     server-side default (do NOT force a level the user didn't pick).
+        #   - enabled + effort set + model is NOT reasoning-capable → omit too.
+        #     Forwarding ``reasoning_effort`` to a non-reasoning model 400s
+        #     the request (the local Ollama plain models reject the field
+        #     outright). The user's primary/interactive model is usually a
+        #     cloud reasoning-capable model via OpenRouter/Nous; the bug
+        #     surfaces only on cross-provider fallback to a plain model.
+        #     Safer to omit than to 400. (#59660)
         #
         # We deliberately do NOT emit ``think=True`` on enable: it is an
         # Ollama-only flag and thinking is already server-default-on for these
@@ -54,7 +105,7 @@ class CustomProfile(ProviderProfile):
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
                 extra_body["think"] = False
-            elif _effort:
+            elif _effort and _model_supports_reasoning_effort(model):
                 top_level["reasoning_effort"] = _effort
 
         return extra_body, top_level

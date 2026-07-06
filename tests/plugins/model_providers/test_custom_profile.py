@@ -116,3 +116,106 @@ class TestCustomReasoningWithNumCtx:
         )
         assert eb == {"options": {"num_ctx": 8192}}
         assert tl == {"reasoning_effort": "high"}
+
+
+# ---------------------------------------------------------------------------
+# Model-aware reasoning gating (#59660)
+# ---------------------------------------------------------------------------
+
+
+class TestCustomReasoningModelAware:
+    """``reasoning_effort`` must not be forwarded to non-reasoning models.
+
+    Before #59660, ``CustomProfile.build_api_kwargs_extras`` unconditionally
+    set ``top_level['reasoning_effort']`` whenever the user had a non-empty
+    ``reasoning_config['effort']``, regardless of whether the actual model
+    being called supports reasoning/thinking. This caused silent HTTP 400s
+    on cross-provider fallback to local Ollama plain models (e.g. llama3.1
+    8b) whose API rejects the field outright.
+
+    Fix: gate the ``reasoning_effort`` emission on a per-model allowlist
+    (mirroring ``ZaiProfile._model_supports_thinking``). Models NOT in the
+    allowlist must produce an empty ``top_level`` dict so the endpoint's
+    server default applies, rather than crashing on the unknown field.
+    """
+
+    @pytest.mark.parametrize(
+        "non_reasoning_model",
+        [
+            "llama3.1-8b-64k",      # the canonical repro from #59660
+            "llama3.2-3b",         # plain non-reasoning llama
+            "mistral-7b",          # plain non-reasoning mistral
+            "qwen2.5-7b",          # plain Qwen 2.5 (NOT Qwen3, which is reasoning)
+            "phi-3-mini-4k",       # plain non-reasoning phi
+            "gemma-2-9b",          # plain non-reasoning gemma
+        ],
+    )
+    def test_non_reasoning_model_omits_reasoning_effort(
+        self, custom_profile, non_reasoning_model
+    ):
+        """Non-reasoning models must not receive ``reasoning_effort`` in top_level.
+
+        The user's primary/interactive model is usually a cloud reasoning-
+        capable model via OpenRouter or Nous, where ``reasoning_effort`` is
+        accepted. On cross-provider fallback to a local Ollama plain model
+        (e.g. ``llama3.1-8b-64k``), the field 400s the request. The
+        CustomProfile must check the actual model and only forward the
+        field when the model is known to support it.
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model=non_reasoning_model,
+        )
+        assert "reasoning_effort" not in tl, (
+            f"Non-reasoning model {non_reasoning_model!r} got reasoning_effort "
+            f"in top_level ({tl!r}) — will 400 the request (#59660)"
+        )
+        # ``think=False`` on disable is still allowed since it's the
+        # explicit "turn off thinking" hint, not an effort level. So we
+        # only assert the top-level ``reasoning_effort`` is absent.
+
+    def test_known_reasoning_model_still_passes_through(self, custom_profile):
+        """Regression guard: GLM-5.2 (a known reasoning model) must still
+        receive the ``reasoning_effort`` field as before.
+
+        Models in the per-profile allowlist keep their previous wire
+        shape. This test would have caught a fix that over-corrects by
+        dropping the field for every model.
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            model="glm-5.2",
+        )
+        assert tl == {"reasoning_effort": "max"}
+
+    def test_unknown_model_defaults_to_omitting_reasoning_effort(self, custom_profile):
+        """An unknown model name (custom OpenAI-compatible endpoint) must
+        default to NOT sending ``reasoning_effort`` — the safe choice when
+        we don't know whether the model supports it.
+
+        Better to silently omit the field than to crash on a 400. The
+        user's endpoint will just not receive the effort hint, which is a
+        graceful degradation.
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="some-unknown-custom-model-7b",
+        )
+        assert "reasoning_effort" not in tl
+
+    def test_non_reasoning_model_disable_still_sends_think_false(self, custom_profile):
+        """``reasoning_config={'enabled': False}`` is the explicit turn-off
+        signal. It must still emit ``extra_body.think = False`` even for
+        non-reasoning models — the Ollama convention treats ``think=False``
+        as a no-op for plain models (they have no thinking to disable) but
+        it's also a valid query parameter that the server accepts.
+
+        This guards against an over-correction where the fix accidentally
+        drops the disable case for non-reasoning models.
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="llama3.1-8b-64k",
+        )
+        assert eb == {"think": False}
+        assert "reasoning_effort" not in tl

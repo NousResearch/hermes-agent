@@ -603,6 +603,92 @@ def test_nemo_relay_plugin_activates_and_owns_dynamic_plugins(tmp_path, monkeypa
     assert event_names.index("atif.deregister") < event_names.index("plugin.activation.close")
 
 
+@pytest.mark.parametrize(
+    ("provider", "api_mode", "expected_surface", "should_rewrite"),
+    [
+        ("custom", "chat_completions", "openai.chat_completions", True),
+        ("openai-codex", "codex_responses", "openai.responses", True),
+        ("anthropic", "anthropic_messages", "anthropic.messages", True),
+        ("custom", "anthropic_messages", "anthropic.messages", True),
+        ("bedrock", "bedrock_converse", "bedrock", False),
+    ],
+)
+def test_nemo_relay_managed_llm_uses_wire_protocol_for_interceptor_dispatch(
+    tmp_path,
+    monkeypatch,
+    provider,
+    api_mode,
+    expected_surface,
+    should_rewrite,
+):
+    fake = _FakeNemoRelay()
+    supported_surfaces = {
+        "anthropic.messages",
+        "openai.chat_completions",
+        "openai.responses",
+    }
+
+    def execute(name, request, func, **kwargs):
+        fake.events.append(("llm.execute.start", name, request.content, kwargs))
+        content = dict(request.content)
+        if name in supported_surfaces:
+            content["rewritten_for"] = name
+        result = func(_FakeLLMRequest(request.headers, content))
+        fake.events.append(("llm.execute.end", name, result, kwargs))
+        return result
+
+    fake.llm.execute = execute
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+
+    result = plugin.on_llm_execution_middleware(
+        session_id="s1",
+        provider=provider,
+        api_mode=api_mode,
+        model="fixture",
+        request={"messages": [{"role": "user", "content": "hi"}]},
+        next_call=lambda request: request,
+    )
+
+    execute_start = next(
+        event for event in fake.events if event[0] == "llm.execute.start"
+    )
+    assert execute_start[1] == expected_surface
+    assert execute_start[3]["metadata"]["provider"] == provider
+    assert execute_start[3]["metadata"]["api_mode"] == api_mode
+    if should_rewrite:
+        assert result["rewritten_for"] == expected_surface
+    else:
+        assert "rewritten_for" not in result
+
+
+def test_nemo_relay_managed_tool_returns_post_interceptor_result(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+
+    def execute(name, args, func, **kwargs):
+        fake.events.append(("tool.execute.start", name, args, kwargs))
+        raw = func({"intercepted": True, **args})
+        result = {"compressed": True, "raw": raw}
+        fake.events.append(("tool.execute.end", name, result, kwargs))
+        return result
+
+    fake.tools.execute = execute
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+
+    result = plugin.on_tool_execution_middleware(
+        session_id="s1",
+        tool_name="fixture-tool",
+        args={"value": 1},
+        next_call=lambda args: {"tool_output": args},
+    )
+
+    assert result == {
+        "compressed": True,
+        "raw": {"tool_output": {"intercepted": True, "value": 1}},
+    }
+
+
 def test_nemo_relay_plugin_activates_before_registering_managed_middleware(tmp_path, monkeypatch):
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)

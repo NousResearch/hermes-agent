@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 _INIT_FAILED = object()
 _LOCK = threading.RLock()
 _RUNTIME: "_Runtime | object | None" = None
+_RELAY_LLM_SURFACE_BY_API_MODE = {
+    "anthropic_messages": "anthropic.messages",
+    "chat_completions": "openai.chat_completions",
+    "codex_responses": "openai.responses",
+}
 
 
 @dataclass
@@ -358,6 +363,8 @@ class _Runtime:
         normalize_payload: Callable[[Any], Any],
         shape_response: Callable[[Any], Any],
         make_managed_execute: Callable[[Callable[[Any], Any]], Any],
+        *,
+        preserve_raw_response: bool,
     ) -> Any:
         # NeMo Relay's native managed execution may wrap a failing callback as an
         # internal runtime error, hiding the real downstream provider/tool
@@ -387,7 +394,9 @@ class _Runtime:
             if downstream_error is not None and _is_relay_wrapped_callback_error(exc, callback_error):
                 raise downstream_error
             raise
-        return raw_response["value"] if raw_response["set"] else managed_result
+        if preserve_raw_response and raw_response["set"]:
+            return raw_response["value"]
+        return managed_result
 
     def execute_llm(self, kwargs: dict[str, Any]) -> Any:
         state = self.ensure_session(kwargs)
@@ -404,7 +413,7 @@ class _Runtime:
         def _make_managed(impl: Callable[[Any], Any]) -> Any:
             async def _managed_execute() -> Any:
                 result = self.nemo_relay.llm.execute(
-                    str(kwargs.get("provider") or "llm"),
+                    _relay_llm_surface(kwargs),
                     request,
                     impl,
                     handle=state.handle,
@@ -426,7 +435,7 @@ class _Runtime:
             return _managed_execute()
 
         return self._run_managed_with_downstream_preservation(
-            next_call, _normalize, _llm_response_payload, _make_managed
+            next_call, _normalize, _llm_response_payload, _make_managed, preserve_raw_response=True
         )
 
     def execute_tool(self, kwargs: dict[str, Any]) -> Any:
@@ -464,7 +473,7 @@ class _Runtime:
             return _managed_execute()
 
         return self._run_managed_with_downstream_preservation(
-            next_call, _normalize, _jsonable, _make_managed
+            next_call, _normalize, _jsonable, _make_managed, preserve_raw_response=False
         )
 
 
@@ -920,6 +929,14 @@ def _tool_key(kwargs: dict[str, Any]) -> str:
     return str(
         kwargs.get("tool_call_id")
         or f"{_session_id(kwargs)}:{kwargs.get('turn_id') or ''}:{kwargs.get('tool_name') or 'tool'}"
+    )
+
+
+def _relay_llm_surface(kwargs: dict[str, Any]) -> str:
+    api_mode = str(kwargs.get("api_mode") or "").strip().lower()
+    return _RELAY_LLM_SURFACE_BY_API_MODE.get(
+        api_mode,
+        str(kwargs.get("provider") or "llm"),
     )
 
 

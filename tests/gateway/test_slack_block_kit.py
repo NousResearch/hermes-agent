@@ -251,3 +251,85 @@ class TestLimits:
         for junk in ["```unterminated\ncode", "| broken | table", "> ", "#" * 10]:
             # must not raise; either blocks or None
             render_blocks(junk)
+
+
+class TestEmptyContentGuards:
+    """Empty content must never produce a Slack-rejected (invalid_blocks) payload.
+
+    Slack rejects a rich_text_section / rich_text_preformatted /
+    rich_text_quote whose ``elements`` is empty or contains a zero-length
+    ``text`` element, and a ``header`` whose plain_text is empty. Each guard
+    below corresponds to a real chat.postMessage rejection observed in
+    production ("missing element" / "must be more than 0 characters").
+    """
+
+    @staticmethod
+    def _assert_schema_valid(blocks):
+        def walk(o):
+            if isinstance(o, dict):
+                if o.get("type") in (
+                    "rich_text_section", "rich_text_preformatted", "rich_text_quote"
+                ):
+                    assert o.get("elements"), f"empty {o['type']} elements"
+                if o.get("type") == "text":
+                    assert len(o.get("text", "")) > 0, "zero-length text element"
+                if o.get("type") == "header":
+                    assert o["text"]["text"], "empty plain_text header"
+                for v in o.values():
+                    walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    walk(v)
+
+        walk(blocks)
+
+    def test_ragged_and_empty_table_cells_are_schema_valid(self):
+        # Blank middle cell + ragged short row (padded with "") must not emit
+        # an empty section or a 0-char text element.
+        md = (
+            "| x | y | z |\n"
+            "| --- | --- | --- |\n"
+            "| 1 |  | 3 |\n"   # blank middle cell
+            "| 4 |"           # ragged row -> padded with empty cells
+        )
+        blocks = render_blocks(md)
+        assert blocks[0]["type"] == "table"
+        self._assert_schema_valid(blocks)
+
+    def test_empty_code_fence_quote_and_list_item_are_schema_valid(self):
+        # Empty fenced code block (common around empty tool output), blank
+        # quote line, and empty list item must all stay schema-valid.
+        md = "```\n```\n\n> \n\n- \n- real item"
+        blocks = render_blocks(md)
+        assert blocks is not None
+        self._assert_schema_valid(blocks)
+
+    def test_multiline_quote_preserves_newline_separators(self):
+        # _quote_block separates lines with length-1 "\n" text elements; the
+        # guard must KEEP them so a multi-line blockquote stays multi-line.
+        blocks = render_blocks("> alpha\n> bravo")
+        quote = None
+        for b in blocks:
+            for el in b.get("elements", []):
+                if isinstance(el, dict) and el.get("type") == "rich_text_quote":
+                    quote = el
+        assert quote is not None, "no rich_text_quote produced"
+        texts = [e.get("text") for e in quote["elements"] if e.get("type") == "text"]
+        assert "\n" in texts, "newline separator dropped from multi-line quote"
+        assert any("alpha" in (t or "") for t in texts)
+        assert any("bravo" in (t or "") for t in texts)
+
+    def test_emphasis_only_header_is_dropped_not_empty(self):
+        # "# ***" reduces to "" after marker-strip; an empty plain_text header
+        # is rejected by Slack, so the header is skipped entirely.
+        blocks = render_blocks("# ***\n\nreal body")
+        assert not any(b.get("type") == "header" for b in blocks)
+        self._assert_schema_valid(blocks)
+
+    def test_normal_content_unaffected(self):
+        # Guard must not alter well-formed content.
+        md = "# Title\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n> quoted\n\n- item"
+        blocks = render_blocks(md)
+        assert any(b.get("type") == "header" for b in blocks)
+        assert any(b.get("type") == "table" for b in blocks)
+        self._assert_schema_valid(blocks)

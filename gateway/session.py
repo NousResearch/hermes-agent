@@ -1499,12 +1499,23 @@ class SessionStore:
                         "gateway.session: routing key %r -> %s is ended in "
                         "state.db but still live in sessions.json; dropping "
                         "stale entry and recovering/recreating the session "
-                        "(#54878)",
+                        "(#54878/#59580)",
                         session_key, entry.session_id,
                     )
                     self._entries.pop(session_key, None)
-                    was_auto_reset = False
-                    auto_reset_reason = None
+                    # The recovery/create fallthrough below will overwrite
+                    # these flags based on what actually happens — see
+                    # #59580. Falling through to a *brand-new* session
+                    # (recovery returned None) must mark was_auto_reset=True
+                    # so the message handler in run.py emits the same
+                    # "session automatically reset" notice the user already
+                    # gets for idle/daily/suspended/resume_pending_expired.
+                    # Until we know whether recovery succeeded, leave the
+                    # flags in a sentinel "True with unknown reason" state;
+                    # they're tightened immediately after the recovery
+                    # branch returns.
+                    was_auto_reset = True
+                    auto_reset_reason = "stale_routing_recovered"
                     reset_had_activity = False
                     # Fall through to the recovery/create path below; the
                     # stale entry is gone so we must NOT consult its
@@ -1571,6 +1582,16 @@ class SessionStore:
                     now=now,
                 )
                 if recovered_entry is not None:
+                    # Successful recovery reopens the SAME session_id
+                    # (preserving transcript) — clear the stale-routing
+                    # reset flags so the user does not get a spurious
+                    # "session automatically reset" notice for a recovery
+                    # that was effectively transparent.
+                    if getattr(recovered_entry, "was_auto_reset", False) and \
+                            getattr(recovered_entry, "auto_reset_reason", None) == \
+                            "stale_routing_recovered":
+                        recovered_entry.was_auto_reset = False
+                        recovered_entry.auto_reset_reason = None
                     self._entries[session_key] = recovered_entry
                     self._save()
                     return recovered_entry

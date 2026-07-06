@@ -738,11 +738,163 @@ def _close_sessions_for_transport(
     return reaped, detached
 
 
+def _set_session_owner(sid: str, owner: str) -> None:
+    """Mark ``sid`` as owned by ``owner`` (``"tui"`` or ``"gateway"``).
+
+    Used by the cross-runtime gate in `_peer_ownership_check` (#59580) so a
+    TUI process that has merely *attached* to a session another runtime is
+    actively routing for does not finalize the underlying session on TUI
+    shutdown. Safe to call before the session is in ``_sessions`` (no-op).
+    """
+    if not owner:
+        return
+    with _sessions_lock:
+        session = _sessions.get(sid)
+        if session is None:
+            return
+        # Only ever tighten ownership — never demote a "gateway" claim back to
+        # "tui" because the runtime went away (the gateway may still be alive
+        # and merely facing a transient transport flap).
+        prev = session.get("owner")
+        if prev == "gateway" and owner != "gateway":
+            return
+        session["owner"] = owner
+
+
 def _shutdown_sessions() -> None:
+    """End every session the TUI *owns*.
+
+    Prior to #59580 this finalized every session in the in-memory map, even
+    sessions for which another runtime (a gateway peer) is the authoritative
+    route. That left the gateway routing entries pointing at a finalized
+    session_id — the next inbound platform message hit the gateway's
+    stale-routing self-heal (#54878), recovered nothing, and silently opened
+    a brand-new session with zero notification to the user. The fix: only
+    finalize sessions whose ``owner`` is ``"tui"`` (or untagged legacy
+    records for backwards compatibility). Sessions owned by ``"gateway"``
+    are left intact; their routing continues regardless of TUI exit.
+    """
     with _sessions_lock:
         sids = list(_sessions)
     for sid in sids:
+        with _sessions_lock:
+            session = _sessions.get(sid) or {}
+        owner = session.get("owner") or "tui"
+        if owner != "tui":
+            # Another runtime owns the routing — do not finalize.
+            logger.debug(
+                "tui_shutdown: skipping sid=%s (owner=%s); gateway peer still routes here",
+                sid, owner,
+            )
+            continue
         _close_session_by_id(sid, end_reason="tui_shutdown")
+
+
+def _peer_routing_session_ids(session_key: str) -> set[str]:
+    """Return session ids the gateway still routes for ``session_key``.
+
+    Reads ``gateway/sessions.json`` (the gateway's authoritative routing
+    index) directly — bypassing the heavy ``SessionStore`` constructor —
+    so the TUI sidecar doesn't pay to spin up a gateway DB connection
+    just to peek at routing state. Returns an empty set if the gateway
+    isn't running, the file doesn't exist, or the key isn't routed there.
+    Used by `_peer_ownership_check` to decide whether to flip a TUI-
+    attached session's ``owner`` to ``"gateway"`` so subsequent TUI
+    shutdowns leave it intact.
+    """
+    if not session_key:
+        return set()
+    try:
+        from pathlib import Path
+        import json as _json
+        home = Path(get_hermes_home())
+        sessions_file = home / "gateway" / "sessions.json"
+        if not sessions_file.exists():
+            return set()
+        try:
+            with open(sessions_file, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+        except Exception:
+            return set()
+        if not isinstance(data, dict):
+            return set()
+        # Strip documentation sentinels ("_README" etc.) that the gateway
+        # writes alongside real entries — they're not routing keys.
+        entry = data.get(session_key)
+        if not isinstance(entry, dict):
+            return set()
+        sid = entry.get("session_id") or ""
+        if not sid:
+            return set()
+        return {sid}
+    except Exception:
+        return set()
+
+
+def _peer_ownership_check(sid: str, session: dict) -> None:
+    """Self-heal: drop the in-memory ``sid`` if the gateway peer route is gone.
+
+    Analog of the gateway's #54878 self-heal for the TUI side (#59580).
+    Walks ``gateway/sessions.json`` once and, if this TUI session's
+    ``session_key`` is *not* routed by a live gateway process, drops any
+    in-memory TUI session whose owner is recorded as ``"gateway"`` — or
+    whose transport is ``_detached_ws_transport`` and whose peer session_id
+    matches a stale gateway entry. Prevents the TUI from holding a
+    half-built session that no live process will ever resume.
+    """
+    if not session:
+        return
+    key = session.get("session_key") or _session_lookup_key(session, fallback="")
+    if not key:
+        return
+    peer_sids = _peer_routing_session_ids(key)
+    owner = session.get("owner") or "tui"
+    sid_self = session.get("session_id") or sid
+    # If the gateway already routes for this key but to a *different* id,
+    # the TUI's local record is stale. Drop it so the next attach() rebuilds
+    # from the gateway's live session_id.
+    if peer_sids and sid_self not in peer_sids:
+        logger.warning(
+            "tui.session: dropping stale in-memory sid=%s for key=%r; "
+            "gateway peer still routes to %s (#59580)",
+            sid, key, sorted(peer_sids),
+        )
+        with _sessions_lock:
+            _sessions.pop(sid, None)
+        return
+    # If the TUI session claimed owner=="gateway" but the gateway no longer
+    # routes here, downgrade back to "tui" so a future shutdown does tear
+    # it down. Also drop the session outright if its transport is dead, so
+    # the user is not stuck looking at a half-built window.
+    if owner == "gateway" and not peer_sids:
+        logger.info(
+            "tui.session: gateway peer dropped route for key=%r; downgrading "
+            "sid=%s owner back to tui and clearing stale routing (#59580)",
+            key, sid,
+        )
+        with _sessions_lock:
+            sess = _sessions.get(sid)
+            if sess is not None:
+                sess["owner"] = "tui"
+                if _transport_is_dead(sess.get("transport")):
+                    _sessions.pop(sid, None)
+        return
+    # And the inverse self-heal: a TUI session routed exclusively through a
+    # live gateway peer (i.e. owner==tui but peer_sids says otherwise) MUST
+    # be flipped to gateway ownership so a later _shutdown_sessions() leaves
+    # the gateway's authoritative session alone.
+    if owner == "tui" and peer_sids and sid_self in peer_sids:
+        # Cross-runtime shared session — mark ownership but keep the
+        # in-memory record (the agent still serves this process's UI).
+        with _sessions_lock:
+            sess = _sessions.get(sid)
+            if sess is not None and sess.get("owner") != "gateway":
+                logger.debug(
+                    "tui.session: marking sid=%s owner=gateway (peer still "
+                    "routes key=%r to %s)",
+                    sid, key, sorted(peer_sids),
+                )
+                sess["owner"] = "gateway"
 
 
 # Last-resort net for any disconnect path that slips past the WS finally. TTL is
@@ -871,8 +1023,39 @@ def _start_idle_reaper() -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
+def _start_stale_routing_self_heal() -> None:
+    """Run ``_peer_ownership_check`` once at startup (#59580).
+
+    Catches stale in-memory TUI session records the previous run left
+    behind when the gateway peer dropped a routing entry mid-turn. Without
+    this, the user would stare at a half-built composer window on next
+    launch, or — worse — the TUI would finalize a dead session on its
+    next shutdown. Runs on a daemon timer so import-time cost stays zero.
+    """
+
+    def _run():
+        try:
+            with _sessions_lock:
+                snapshot = list(_sessions.items())
+            for sid, sess in snapshot:
+                try:
+                    _peer_ownership_check(sid, sess)
+                except Exception:
+                    logger.debug(
+                        "stale-routing self-heal skipped for sid=%s",
+                        sid, exc_info=True,
+                    )
+        except Exception:
+            logger.debug("stale-routing self-heal boot pass failed", exc_info=True)
+
+    timer = threading.Timer(0.2, _run)
+    timer.daemon = True
+    timer.start()
+
+
 atexit.register(_shutdown_sessions)
 _start_idle_reaper()
+_start_stale_routing_self_heal()
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -4426,6 +4609,15 @@ def _init_session(
             # Pin async event emissions to whichever transport created the
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
+            # Session ownership marker (#59580 — fix/hard-03). Default is "tui"
+            # because _init_session is the in-process resume path; if the
+            # session is gated behind an external runtime (e.g. an active
+            # gateway peer routing entry for the same session_key), the caller
+            # may flip this to "gateway" via _set_session_owner(). The TUI's
+            # _shutdown_sessions() only finalizes owner=="tui" sessions so a
+            # TUI exit never ends a session another runtime is actively
+            # routing to.
+            "owner": "tui",
         }
     db = session_db if session_db is not None else _get_db()
     if db is not None:
@@ -4998,6 +5190,11 @@ def _(rid, params: dict) -> dict:
             "tool_progress_mode": _load_tool_progress_mode(),
             "tool_started_at": {},
             "transport": current_transport() or _stdio_transport,
+            # Session ownership marker (#59580 — fix/hard-03). Defaults to
+            # "tui" for sessions created/attached in-process. If another
+            # runtime (gateway peer) already owns the routing for this
+            # session_key, callers can flip this via _set_session_owner().
+            "owner": "tui",
         }
         _register_session_cwd(_sessions[sid])
 
@@ -5250,6 +5447,11 @@ def _deferred_session_record(
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
         "transport": current_transport() or _stdio_transport,
+        # Session ownership marker (#59580 — fix/hard-03). Default "tui";
+        # the caller of _claim_or_reuse_live may override via
+        # _set_session_owner() when it detects an external runtime (gateway)
+        # already owns the routing for this session_key.
+        "owner": "tui",
     }
 
 

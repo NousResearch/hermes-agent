@@ -1006,3 +1006,609 @@ test(tools): add unit tests for file_operations
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+
+---
+
+## Agent-Specific Contributor Guidance
+
+The following sections were moved out of `AGENTS.md` so routine agent sessions do not automatically load contributor-only policy and deep development notes. `AGENTS.md` now keeps the compact runtime instructions; open this guide when doing PR review, subsystem work, or policy-sensitive contributions.
+
+## Contribution Rubric — What We Want / What We Don't
+
+This is the project's intent layer. Use it two ways:
+
+1. **For humans and for your own work** — what gets merged and what gets
+   rejected, so a contribution aims at the target.
+2. **For automated review (the triage sweeper)** — guidance on when a PR is
+   safe to close on the three allowed reasons (`implemented_on_main`,
+   `cannot_reproduce`, `incoherent`) and, just as important, **when NOT to
+   close** one. Taste-based "we don't want this / out of scope" closes are NOT
+   an automated decision — those stay with a human maintainer. The sweeper's
+   job here is to recognize design intent and *avoid wrongly closing a
+   legitimate contribution*, not to make the won't-implement call itself.
+
+Read the balance right: Hermes ships a **lot** — most merges are bug fixes to
+real reported behavior, and the product surface (platforms, channels,
+providers, models, desktop/TUI features) expands aggressively and on purpose.
+The restraint below is aimed squarely at the **core agent + the model tool
+schema**, the one place where every addition is paid for on every API call.
+"Smallest footprint" governs *how a capability is wired into the core*, NOT
+whether the product is allowed to grow. We are expansive at the edges and
+conservative at the waist.
+
+### What we want
+
+- **Fix real bugs, well.** The bulk of what lands is `fix(...)` against an
+  actual reported symptom. A good fix reproduces the symptom on current
+  `main`, points to the exact line where it manifests, and fixes the whole bug
+  class — sibling call paths included — not just the one site the reporter hit.
+- **Expand reach at the edges.** New platform adapters, channels, providers,
+  models, and desktop/TUI/dashboard features are welcome and land routinely,
+  including large ones (a new messaging channel, a session-cap feature, a
+  Windows PTY bridge). Breadth in the product is a goal, not a footprint
+  concern — as long as it integrates with the existing setup/config UX
+  (`hermes tools`, `hermes setup`, auto-install) rather than bolting on a raw
+  env var.
+- **Refactor god-files into clean modules.** Extracting a multi-thousand-line
+  cluster out of `cli.py` / `run_agent.py` / `gateway/run.py` into a focused
+  mixin or module is wanted work, even when the diff is huge and mechanical
+  (large `+N/-N` refactors merge regularly). The "every line traces to the
+  request" test applies to *feature* PRs; a declared refactor's request IS the
+  extraction.
+- **Keep the core narrow.** New *model tools* are the expensive exception —
+  every tool ships on every API call. Prefer, in order: extend existing code →
+  CLI command + skill → service-gated tool (`check_fn`) → plugin → MCP server
+  in the catalog → new core tool (last resort). See "The Footprint Ladder."
+- **Extend, don't duplicate.** Before adding a module/manager/hook, check
+  whether existing infrastructure already covers the use case. When several PRs
+  integrate the same *category*, design one shared interface instead of merging
+  them one at a time (see the ABC + orchestrator note under the Footprint
+  Ladder).
+- **Behavior contracts over snapshots.** Tests should assert how two pieces of
+  data must relate (invariants), not freeze a current value (model lists,
+  config version literals, enumeration counts). See "Don't write
+  change-detector tests."
+- **E2E validation, not just green unit mocks.** For anything touching
+  resolution chains, config propagation, security boundaries, remote
+  backends, or file/network I/O, exercise the real path with real imports
+  against a temp `HERMES_HOME`. Mocks hide integration bugs.
+- **Cache-, alternation-, and invariant-safe.** Preserve prompt caching, strict
+  message role alternation (never two same-role messages in a row; never a
+  synthetic user message injected mid-loop), and a system prompt that is
+  byte-stable for the life of a conversation.
+- **Contributor credit preserved.** Salvage external work by cherry-picking
+  (rebase-merge) so authorship survives in git history; don't reimplement from
+  scratch when you can build on top.
+
+### What we don't want (rejected even when well-built)
+
+- **Speculative infrastructure.** Hooks, callbacks, or extension points with no
+  concrete consumer. Adding a hook is easy; removing one after plugins depend
+  on it is hard. A hook is NOT speculative if a contributor has a real, stated
+  use case — even if the consumer ships separately.
+- **New `HERMES_*` env vars for non-secret config.** `.env` is for secrets
+  only (API keys, tokens, passwords). All behavioral settings — timeouts,
+  thresholds, feature flags, display prefs — go in `config.yaml`. Bridge to an
+  internal env var if the mechanism needs one, but user-facing docs point to
+  `config.yaml`. Reject PRs that tell users to "set X in your .env" unless X
+  is a credential.
+- **A new core tool when terminal + file already do the job, or when a skill
+  would.** If the only barrier is file visibility on a remote backend, fix the
+  mount, not the toolset.
+- **Lazy-reading escape hatches on instructional tools.** No `offset`/`limit`
+  pagination on tools that load content the agent must read fully (skills,
+  prompts, playbooks). Models will read page 1 and skip the rest.
+- **"Fixes" that destroy the feature they secure.** A mitigation that kills the
+  feature's purpose is the wrong mitigation. Read the original commit's intent
+  (`git log -p -S`) before restricting behavior; find a fix that preserves the
+  feature.
+- **Outbound telemetry / usage attribution without opt-in gating.** No new
+  analytics, third-party identifier tagging, or attribution tags until a
+  generic user-facing opt-in (config gate + setup prompt + `hermes tools`
+  toggle) exists. Park behind a label, do not merge.
+- **Change-detector tests, cache-breaking mid-conversation, dead code wired in
+  without E2E proof, and plugins that touch core files.** Plugins live in their
+  own directory and work within the ABCs/hooks we provide; if a plugin needs
+  more, widen the generic plugin surface, don't special-case it in core.
+- **Third-party products / other people's projects integrated into the core
+  tree.** Observability backends, vendor SaaS integrations, analytics dashboards,
+  and similar "someone else's product" plugins do NOT land under `plugins/` in
+  this repo. They place an ongoing maintenance burden on us to keep them working
+  against a fast-moving core, for a backend we don't own. Ship them as a
+  **standalone plugin repo** users install into `~/.hermes/plugins/` (or via a
+  pip entry point), and promote them in the Nous Research Discord
+  (`#plugins-skills-and-skins`). This is a coupling-and-maintenance decision, not
+  a quality bar — the plugin can be excellent and still be a close. PRs that add
+  such a directory to the tree are closed with a pointer to publish it as its own
+  repo.
+
+### Before you call it a bug — verify the premise (and when NOT to close)
+
+The most common reason a well-written PR gets closed is not code quality — it
+is that the change is built on a **wrong premise**, or it treats an
+**intentional design as a gap**. These patterns cut both ways: they tell a
+human reviewer what to scrutinize, and they tell the automated sweeper when a
+PR is NOT safe to close as `implemented_on_main` / `cannot_reproduce` (when in
+doubt, leave it open for a human). They are distilled from real closes.
+
+- **"Intentional design, not a gap."** A limitation that looks like an
+  oversight is often deliberate. Before "fixing" a missing link or a
+  restriction, ask whether the isolation IS the design. Example: profiles are
+  independent islands on purpose — a PR adding live config inheritance from the
+  default profile was closed because coupling profiles together is exactly what
+  the design prevents (the copy-at-creation `--clone` path already covers the
+  legitimate "start from my default" case). Read the original commit's intent
+  (`git log -p -S "<symbol>"`) before assuming something is unfinished.
+- **"The premise doesn't hold against how X actually works."** A PR's
+  justification frequently rests on a wrong mental model of an existing
+  mechanism. Trace the real code/runtime before accepting the rationale. Two
+  real closes: a rate-limit "re-probe during cooldown" PR (the breaker only
+  trips on a *confirmed-empty* account bucket, so re-probing just hammers a
+  bucket we've already proven empty); a usage-accumulation fix whose new branch
+  **never executes at runtime** because an earlier guard already popped the
+  state it depended on. If you can't point to the exact line where the bug
+  manifests AND show the fix changes that line's behavior, you haven't verified
+  the premise.
+- **"This fix was wrong — the absence/omission was deliberate."** Adding the
+  obvious-looking missing piece can break things the omission was protecting.
+  Example: restoring "missing" `__init__.py` files made a test tree importable
+  as a dotted package that shadowed the real plugin, deleting its `register()`
+  at import time. The absence was load-bearing.
+- **"Overreached / resurrected an approach we'd moved past."** Scope creep that
+  supersedes an agreed-on base, or revives a direction the maintainers
+  deliberately closed, gets rejected even when the code works. Keep the change
+  to the narrow piece that was actually agreed; offer the rest as a focused
+  follow-up.
+
+The throughline: **verify the claim AND the intent against the codebase before
+writing or merging a fix.** A confirmed reproduction on current `main` plus a
+line-level account of where the fix acts beats a plausible-sounding rationale
+every time. When in doubt about intent, it is cheaper to ask than to ship a
+fix that fights the design.
+
+### The Footprint Ladder (new capability decision)
+
+Each rung adds more permanent surface than the one above. Choose the highest
+(least-footprint) rung that correctly solves the problem:
+
+1. **Extend existing code** — the capability is a variation of something that
+   already exists. Zero new surface.
+2. **CLI command + skill** — manages config/state/infra expressible as shell
+   commands. The agent runs `hermes <subcommand>` guided by a skill. Zero
+   model-tool footprint. Default choice for subscriptions, scheduled tasks,
+   service setup. Examples: `hermes webhook`, `hermes cron`, `hermes tools`.
+3. **Service-gated tool (`check_fn`)** — needs structured params/returns AND
+   only appears when a prerequisite is configured. Zero footprint otherwise.
+   Examples: Home Assistant tools (gated on token), memory-provider tools.
+4. **Plugin** — third-party/niche/user-specific capability that doesn't ship in
+   core. Lives in `~/.hermes/plugins/` or a pip package, discovered at runtime.
+5. **MCP server (in the catalog)** — if the capability genuinely needs to be a
+   tool (structured I/O the agent invokes) but isn't core-fundamental, prefer
+   building it as an MCP server and adding it to the MCP catalog over growing
+   the core toolset. The agent connects to it through the built-in MCP client;
+   zero permanent core-schema footprint, and it's reusable by any MCP host.
+6. **New core tool** — only when the capability is fundamental, broadly useful
+   to nearly every user, and unreachable via terminal + file (or an MCP server).
+   Examples of correct core tools: terminal, read_file, web_search,
+   browser_navigate.
+
+When 3+ open PRs try to integrate the same *category* of thing (memory
+backends, providers, notifiers), don't merge them one at a time — design an
+ABC + orchestrator, wrap the existing built-in as the first provider, and turn
+the competing PRs into plugins against that interface.
+
+
+## TUI Architecture (ui-tui + tui_gateway)
+
+The TUI is a full replacement for the classic (prompt_toolkit) CLI, activated via `hermes --tui` or `HERMES_TUI=1`.
+
+### Process Model
+
+```
+hermes --tui
+  └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)
+       │                                  └─ AIAgent + tools + sessions
+       └─ renders transcript, composer, prompts, activity
+```
+
+TypeScript owns the screen. Python owns sessions, tools, model calls, and slash command logic.
+
+### Transport
+
+Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. See `tui_gateway/server.py` for the full method/event catalog.
+
+### Key Surfaces
+
+| Surface | Ink component | Gateway method |
+|---------|---------------|----------------|
+| Chat streaming | `app.tsx` + `messageLine.tsx` | `prompt.submit` → `message.delta/complete` |
+| Tool activity | `thinking.tsx` | `tool.start/progress/complete` |
+| Approvals | `prompts.tsx` | `approval.respond` ← `approval.request` |
+| Clarify/sudo/secret | `prompts.tsx`, `maskedPrompt.tsx` | `clarify/sudo/secret.respond` |
+| Session picker | `sessionPicker.tsx` | `session.list/resume` |
+| Slash commands | Local handler + fallthrough | `slash.exec` → `_SlashWorker`, `command.dispatch` |
+| Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
+| Theming | `theme.ts` + `branding.tsx` | `gateway.ready` with skin data |
+
+### Slash Command Flow
+
+1. Built-in client commands (`/help`, `/quit`, `/clear`, `/resume`, `/copy`, `/paste`, etc.) handled locally in `app.tsx`
+2. Everything else → `slash.exec` (runs in persistent `_SlashWorker` subprocess) → `command.dispatch` fallback
+
+### Dev Commands
+
+```bash
+cd ui-tui
+npm install       # first time
+npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
+npm start         # production
+npm run build     # full build (hermes-ink + tsc)
+npm run typecheck # typecheck only (tsc --noEmit)
+npm run lint      # eslint
+npm run fmt       # prettier
+npm test          # vitest
+```
+
+### TUI in the Dashboard (`hermes dashboard` → `/chat`)
+
+The dashboard embeds the real `hermes --tui` — **not** a rewrite.  See `hermes_cli/pty_bridge.py` + the `@app.websocket("/api/pty")` endpoint in `hermes_cli/web_server.py`.
+
+- Browser loads `web/src/pages/ChatPage.tsx`, which mounts xterm.js's `Terminal` with the WebGL renderer, `@xterm/addon-fit` for container-driven resize, and `@xterm/addon-unicode11` for modern wide-character widths.
+- `/api/pty?token=…` upgrades to a WebSocket; auth uses the same ephemeral `_SESSION_TOKEN` as REST, via query param (browsers can't set `Authorization` on WS upgrade).
+- The server spawns whatever `hermes --tui` would spawn, through `ptyprocess` (POSIX PTY — WSL works, native Windows does not).
+- Frames: raw PTY bytes each direction; resize via `\x1b[RESIZE:<cols>;<rows>]` intercepted on the server and applied with `TIOCSWINSZ`.
+
+**Do not re-implement the primary chat experience in React.** The main transcript, composer/input flow (including slash-command behavior), and PTY-backed terminal belong to the embedded `hermes --tui` — anything new you add to Ink shows up in the dashboard automatically. If you find yourself rebuilding the transcript or composer for the dashboard, stop and extend Ink instead.
+
+**Structured React UI around the TUI is allowed when it is not a second chat surface.** Sidebar widgets, inspectors, summaries, status panels, and similar supporting views (e.g. `ChatSidebar`, `ModelPickerDialog`, `ToolCall`) are fine when they complement the embedded TUI rather than replacing the transcript / composer / terminal. Keep their state independent of the PTY child's session and surface their failures non-destructively so the terminal pane keeps working unimpaired.
+
+### Electron Desktop Chat App (`apps/desktop/`)
+
+A **separate** chat surface from both the classic CLI and the dashboard's embedded TUI. It is an Electron + React + nanostore renderer (`@assistant-ui/react`) that talks to a `tui_gateway` backend over JSON-RPC (`requestGateway(method, params)`). The WebSocket/JSON-RPC transport lives in the framework-agnostic `apps/shared` package (`@hermes/shared` — `JsonRpcGatewayClient` + WS URL helpers), which the web dashboard (`web/`) also consumes; **desktop has no build/runtime dependency on the dashboard frontend** — it spawns a headless `hermes serve` backend server (the same gateway `dashboard` serves, minus the browser UI). `dashboard` and `serve` share `cmd_dashboard`/`start_server` but are independent surfaces — neither launches the other. The one exception is a backward-compat *fallback*: `serve` is newer, so the desktop spawn (`electron/backend-command.cjs` + `backendSupportsServe()` in `main.cjs`) detects whether the resolved runtime registers `serve` and, only when it does not (an older managed install / PATH `hermes` the app hasn't updated yet), rewrites the argv to the legacy `dashboard --no-open`. Without that, a new app against an un-upgraded runtime would crash on an unknown subcommand and brick every mid-upgrade user. It does NOT embed `hermes --tui` — it has its own composer, transcript, and slash-command pipeline. Route desktop bugs to the `hermes-desktop-app-work` skill, not `hermes-dashboard-work`.
+
+**Slash commands in the desktop app are curated client-side, then dispatched to the backend.** The pipeline:
+
+- **Backend already provides everything.** `tui_gateway/server.py` `commands.catalog` (empty-query list) and `complete.slash` (typed-query completions) both include built-in commands, user `quick_commands`, AND skill-derived commands (`scan_skill_commands()` / `get_skill_commands()`). The desktop app does not need a new RPC to see skills.
+- **The renderer curates via `apps/desktop/src/lib/desktop-slash-commands.ts`.** This is the load-bearing file. It holds `DESKTOP_COMMANDS` (the ~19 built-ins shown in the palette) plus block-lists for terminal-only / messaging-only / picker-owned / settings-owned / advanced commands that should NOT clutter the desktop popover.
+  - `isDesktopSlashCommand(name)` — gates **execution**. Returns true for built-ins AND for any non-built-in (skill / quick command), so typed extension commands run.
+  - `isDesktopSlashSuggestion(name)` — gates **discovery/completion**. Used by BOTH completion paths in `app/chat/composer/hooks/use-slash-completions.ts` (empty-query catalog filter + typed-query `complete.slash` filter) and by `filterDesktopCommandsCatalog`.
+  - `isDesktopSlashExtensionCommand(name)` — true when the command is NOT a known Hermes built-in (i.e. a skill or user quick command). Both suggestion and catalog-filter paths allow extensions through so skill commands surface in the palette. (Added when fixing "skill commands missing from the desktop slash palette" — the curated allow-list was silently dropping every skill/quick command from completions even though they executed fine when typed.)
+- **Dispatch** lives in `app/session/hooks/use-prompt-actions.ts` (`runSlash`): built-ins that the desktop owns (`/skin`, `/help`, `/new`, …) are handled locally or via `commands.catalog`; everything else goes to `slash.exec`, falling back to `command.dispatch` (which the gateway resolves into skill / alias / exec directives). A skill command resolves to `{type: "skill", message}` and is submitted as a normal prompt.
+
+**Rule:** the desktop slash palette's curation is about hiding noise (terminal-only / messaging-only built-ins), NOT about hiding user-activated extensions. Skill commands and `quick_commands` are extensions the backend surfaces — they belong in completions. If you tighten `desktop-slash-commands.ts`, keep `isDesktopSlashExtensionCommand` flowing into both the suggestion and catalog-filter paths. Tests: `apps/desktop/src/lib/desktop-slash-commands.test.ts` (run via the repo-root `vitest`, since `apps/desktop` resolves deps from the root workspace install).
+
+---
+
+
+## Dependency Pinning Policy
+
+All dependencies must have upper bounds to limit supply-chain attack surface.
+This policy was established after the litellm compromise (PR #2796, #2810) and
+reinforced after the Mini Shai-Hulud worm campaign (May 2026).
+
+| Source type | Treatment | Example |
+|---|---|---|
+| PyPI package | `>=floor,<next_major` | `"httpx>=0.28.1,<1"` |
+| Git URL | Commit SHA | `git+https://...@<40-char-sha>` |
+| GitHub Actions | Commit SHA + comment | `uses: actions/checkout@<sha>  # v4` |
+| CI-only pip | `==exact` | `pyyaml==6.0.2` |
+
+**When adding a new dependency to `pyproject.toml`:**
+1. Pin to `>=current_version,<next_major` for post-1.0 (e.g. `>=1.5.0,<2`).
+2. For pre-1.0 packages, use `<0.(current_minor + 2)` (e.g. `>=0.29,<0.32`).
+3. Never commit a bare `>=X.Y.Z` without a ceiling — CI and reviewers will reject it.
+4. Run `uv lock` to regenerate `uv.lock` with hashes.
+
+Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
+
+---
+
+
+## Skin/Theme System
+
+The skin engine (`hermes_cli/skin_engine.py`) provides data-driven CLI visual customization. Skins are **pure data** — no code changes needed to add a new skin.
+
+### Architecture
+
+```
+hermes_cli/skin_engine.py    # SkinConfig dataclass, built-in skins, YAML loader
+~/.hermes/skins/*.yaml       # User-installed custom skins (drop-in)
+```
+
+- `init_skin_from_config()` — called at CLI startup, reads `display.skin` from config
+- `get_active_skin()` — returns cached `SkinConfig` for the current skin
+- `set_active_skin(name)` — switches skin at runtime (used by `/skin` command)
+- `load_skin(name)` — loads from user skins first, then built-ins, then falls back to default
+- Missing skin values inherit from the `default` skin automatically
+
+### What skins customize
+
+| Element | Skin Key | Used By |
+|---------|----------|---------|
+| Banner panel border | `colors.banner_border` | `banner.py` |
+| Banner panel title | `colors.banner_title` | `banner.py` |
+| Banner section headers | `colors.banner_accent` | `banner.py` |
+| Banner dim text | `colors.banner_dim` | `banner.py` |
+| Banner body text | `colors.banner_text` | `banner.py` |
+| Response box border | `colors.response_border` | `cli.py` |
+| Spinner faces (waiting) | `spinner.waiting_faces` | `display.py` |
+| Spinner faces (thinking) | `spinner.thinking_faces` | `display.py` |
+| Spinner verbs | `spinner.thinking_verbs` | `display.py` |
+| Spinner wings (optional) | `spinner.wings` | `display.py` |
+| Tool output prefix | `tool_prefix` | `display.py` |
+| Per-tool emojis | `tool_emojis` | `display.py` → `get_tool_emoji()` |
+| Agent name | `branding.agent_name` | `banner.py`, `cli.py` |
+| Welcome message | `branding.welcome` | `cli.py` |
+| Response box label | `branding.response_label` | `cli.py` |
+| Prompt symbol | `branding.prompt_symbol` | `cli.py` |
+
+### Built-in skins
+
+- `default` — Classic Hermes gold/kawaii (the current look)
+- `ares` — Crimson/bronze war-god theme with custom spinner wings
+- `mono` — Clean grayscale monochrome
+- `slate` — Cool blue developer-focused theme
+
+### Adding a built-in skin
+
+Add to `_BUILTIN_SKINS` dict in `hermes_cli/skin_engine.py`:
+
+```python
+"mytheme": {
+    "name": "mytheme",
+    "description": "Short description",
+    "colors": { ... },
+    "spinner": { ... },
+    "branding": { ... },
+    "tool_prefix": "┊",
+},
+```
+
+### User skins (YAML)
+
+Users create `~/.hermes/skins/<name>.yaml`:
+
+```yaml
+name: cyberpunk
+description: Neon-soaked terminal theme
+
+colors:
+  banner_border: "#FF00FF"
+  banner_title: "#00FFFF"
+  banner_accent: "#FF1493"
+
+spinner:
+  thinking_verbs: ["jacking in", "decrypting", "uploading"]
+  wings:
+    - ["⟨⚡", "⚡⟩"]
+
+branding:
+  agent_name: "Cyber Agent"
+  response_label: " ⚡ Cyber "
+
+tool_prefix: "▏"
+```
+
+Activate with `/skin cyberpunk` or `display.skin: cyberpunk` in config.yaml.
+
+---
+
+
+### Skill authoring standards (HARDLINE)
+
+Every new or modernized skill — bundled, optional, or contributed —
+must meet these standards before merge. Reviewers reject PRs that
+violate them.
+
+1. **`description` ≤ 60 characters, one sentence, ends with a period.**
+   Long descriptions bloat skill listings and dilute the model's
+   attention when many skills are loaded. State the capability, not
+   the implementation. No marketing words ("powerful",
+   "comprehensive", "seamless", "advanced"). Don't repeat the skill
+   name. Verify with:
+   ```python
+   import re, pathlib
+   m = re.search(r'^description: (.*)$',
+                 pathlib.Path('skills/<cat>/<name>/SKILL.md').read_text(),
+                 re.MULTILINE)
+   assert len(m.group(1)) <= 60, len(m.group(1))
+   ```
+
+2. **Tools referenced in SKILL.md prose must be native Hermes tools or
+   MCP servers the skill explicitly expects.** When the skill needs a
+   capability, point at the proper tool by name in backticks
+   (`` `terminal` ``, `` `web_extract` ``, `` `read_file` ``,
+   `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``,
+   `` `browser_navigate` ``, `` `delegate_task` ``, etc.). Do NOT
+   name shell utilities the agent already has wrapped — `grep` →
+   `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` →
+   `patch`, `find`/`ls` → `search_files target='files'`. If the skill
+   depends on an MCP server, name the MCP server and document the
+   expected setup in `## Prerequisites`. Anything else (third-party
+   CLIs, shell pipelines, etc.) is fair game inside script files but
+   should not be the headline interaction surface in the prose.
+
+3. **`platforms:` gating audited against actual script imports.**
+   Skills that use POSIX-only primitives (`fcntl`, `termios`,
+   `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, `/tmp`
+   hardcoded, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`,
+   `systemctl`) must declare their supported platforms. Default
+   posture: try to fix it cross-platform first — `tempfile.gettempdir`,
+   `pathlib.Path`, `psutil.pid_exists`, Python-level filtering instead
+   of `grep`. Gate to a narrower set only when the dependency is
+   genuinely platform-bound.
+
+4. **`author` credits the human contributor first.** For external
+   contributions, the contributor's real name + GitHub handle goes
+   first; "Hermes Agent" is the secondary collaborator. If the
+   contributor's commit shows "Hermes Agent" as author (because they
+   used Hermes to draft the skill), replace it with their actual name
+   — credit the human, not the tool.
+
+5. **SKILL.md body uses the modern section order.** `# <Skill> Skill`
+   title, 2-3 sentence intro stating what it does and doesn't do,
+   `## When to Use`, `## Prerequisites`, `## How to Run`,
+   `## Quick Reference`, `## Procedure`, `## Pitfalls`,
+   `## Verification`. Target ~200 lines for a complex skill,
+   ~100 lines for a simple one. Cut redundant intro fluff, marketing
+   prose, and re-explanations of env vars already in
+   `## Prerequisites`.
+
+6. **Scripts go in `scripts/`, references in `references/`,
+   templates in `templates/`.** Don't expect the model to inline-write
+   parsers, XML walkers, or non-trivial logic every call — ship a
+   helper script. Reference it from SKILL.md by path relative to the
+   skill directory.
+
+7. **Tests live at `tests/skills/test_<skill>_skill.py`** and use only
+   stdlib + pytest + `unittest.mock`. No live network calls. Run via
+   `scripts/run_tests.sh tests/skills/test_<skill>_skill.py -q`.
+
+8. **`.env.example` additions are isolated to a clearly delimited
+   block.** Don't touch the surrounding file — contributor-supplied
+   `.env.example` versions are usually stale and edits outside the
+   skill's own block must be dropped during salvage.
+
+The full salvage / modernization checklist for external skill PRs
+lives in the `hermes-agent-dev` skill at
+`references/new-skill-pr-salvage.md` — load it before polishing
+contributor skill PRs.
+
+---
+
+
+## Profiles: Multi-Instance Support
+
+Hermes supports **profiles** — multiple fully isolated instances, each with its own
+`HERMES_HOME` directory (config, API keys, memory, sessions, skills, gateway, etc.).
+
+The core mechanism: `_apply_profile_override()` in `hermes_cli/main.py` sets
+`HERMES_HOME` before any module imports. All `get_hermes_home()` references
+automatically scope to the active profile.
+
+### Rules for profile-safe code
+
+1. **Use `get_hermes_home()` for all HERMES_HOME paths.** Import from `hermes_constants`.
+   NEVER hardcode `~/.hermes` or `Path.home() / ".hermes"` in code that reads/writes state.
+   ```python
+   # GOOD
+   from hermes_constants import get_hermes_home
+   config_path = get_hermes_home() / "config.yaml"
+
+   # BAD — breaks profiles
+   config_path = Path.home() / ".hermes" / "config.yaml"
+   ```
+
+2. **Use `display_hermes_home()` for user-facing messages.** Import from `hermes_constants`.
+   This returns `~/.hermes` for default or `~/.hermes/profiles/<name>` for profiles.
+   ```python
+   # GOOD
+   from hermes_constants import display_hermes_home
+   print(f"Config saved to {display_hermes_home()}/config.yaml")
+
+   # BAD — shows wrong path for profiles
+   print("Config saved to ~/.hermes/config.yaml")
+   ```
+
+3. **Module-level constants are fine** — they cache `get_hermes_home()` at import time,
+   which is AFTER `_apply_profile_override()` sets the env var. Just use `get_hermes_home()`,
+   not `Path.home() / ".hermes"`.
+
+4. **Tests that mock `Path.home()` must also set `HERMES_HOME`** — since code now uses
+   `get_hermes_home()` (reads env var), not `Path.home() / ".hermes"`:
+   ```python
+   with patch.object(Path, "home", return_value=tmp_path), \
+        patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+       ...
+   ```
+
+5. **Gateway platform adapters should use token locks** — if the adapter connects with
+   a unique credential (bot token, API key), call `acquire_scoped_lock()` from
+   `gateway.status` in the `connect()`/`start()` method and `release_scoped_lock()` in
+   `disconnect()`/`stop()`. This prevents two profiles from using the same credential.
+   See `plugins/platforms/irc/adapter.py` for the canonical pattern.
+
+6. **Profile operations are HOME-anchored, not HERMES_HOME-anchored** — `_get_profiles_root()`
+   returns `Path.home() / ".hermes" / "profiles"`, NOT `get_hermes_home() / "profiles"`.
+   This is intentional — it lets `hermes -p coder profile list` see all profiles regardless
+   of which one is active.
+
+
+## Testing
+
+**ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
+hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
+`-n auto` xdist workers, in-tree subprocess-isolation plugin). Direct `pytest`
+on a 16+ core developer machine with API keys set diverges from CI in ways
+that have caused multiple "works locally, fails in CI" incidents (and the reverse).
+
+```bash
+scripts/run_tests.sh                                  # full suite, CI-parity
+scripts/run_tests.sh tests/gateway/                   # one directory
+scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
+scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+```
+
+### Subprocess-per-test-file isolation
+
+Every test file runs in a freshly-spawned Python subprocess via `run_tests_parallel.py`. This means module-level dicts/sets and
+ContextVars from one test file cannot leak into the next.
+
+### Why the wrapper
+
+|                     | Without wrapper                             | With wrapper                              |
+| ------------------- | ------------------------------------------- | ----------------------------------------- |
+| Provider API keys   | Whatever is in your env (auto-detects pool) | All env vars except a specific few unset. |
+| HOME / `~/.hermes/` | Your real config+auth.json                  | Temp dir per test                         |
+| Timezone            | Local TZ (PDT etc.)                         | UTC                                       |
+| Locale              | Whatever is set                             | C.UTF-8                                   |
+
+
+### Don't write change-detector tests
+
+A test is a **change-detector** if it fails whenever data that is **expected
+to change** gets updated — model catalogs, config version numbers,
+enumeration counts, hardcoded lists of provider models. These tests add no
+behavioral coverage; they just guarantee that routine source updates break
+CI and cost engineering time to "fix."
+
+**Do not write:**
+
+```python
+# catalog snapshot — breaks every model release
+assert "gemini-2.5-pro" in _PROVIDER_MODELS["gemini"]
+assert "MiniMax-M2.7" in models
+
+# config version literal — breaks every schema bump
+assert DEFAULT_CONFIG["_config_version"] == 21
+
+# enumeration count — breaks every time a skill/provider is added
+assert len(_PROVIDER_MODELS["huggingface"]) == 8
+```
+
+**Do write:**
+
+```python
+# behavior: does the catalog plumbing work at all?
+assert "gemini" in _PROVIDER_MODELS
+assert len(_PROVIDER_MODELS["gemini"]) >= 1
+
+# behavior: does migration bump the user's version to current latest?
+assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+
+# invariant: no plan-only model leaks into the legacy list
+assert not (set(moonshot_models) & coding_plan_only_models)
+
+# invariant: every model in the catalog has a context-length entry
+for m in _PROVIDER_MODELS["huggingface"]:
+    assert m.lower() in DEFAULT_CONTEXT_LENGTHS_LOWER
+```
+
+The rule: if the test reads like a snapshot of current data, delete it. If
+it reads like a contract about how two pieces of data must relate, keep it.
+When a PR adds a new provider/model and you want a test, make the test
+assert the relationship (e.g. "catalog entries all have context lengths"),
+not the specific names.
+
+Reviewers should reject new change-detector tests; authors should convert
+them into invariants before re-requesting review.

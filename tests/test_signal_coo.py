@@ -2585,6 +2585,104 @@ def test_torben_cli_operating_brief_and_scopes(tmp_path, capsys):
     assert [scope["scope"] for scope in scopes_payload["scopes"]] == ["ea", "gtm", "finance"]
 
 
+def _write_ladder_config(tmp_path):
+    config = tmp_path / "torben-autonomy-ladder.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "schema": "torben.autonomy-ladder-config.v1",
+                "state_path": str(tmp_path / "torben-autonomy-ladder.json"),
+                "event_log_path": str(tmp_path / "torben-autonomy-ladder-events.jsonl"),
+                "categories": {
+                    "gmail_archive": {
+                        "initial_rung": "packet_only",
+                        "N_clean_required": 10,
+                        "max_per_run": 1,
+                        "max_per_day": 3,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return config
+
+
+def test_torben_resolve_reply_promotes_only_from_eric_signal_sender(tmp_path, capsys):
+    config = _write_ladder_config(tmp_path)
+
+    exit_code = torben_command(
+        Namespace(
+            torben_action="resolve-reply",
+            reply=["promote", "gmail_archive"],
+            ledger=str(tmp_path / "actions.json"),
+            sender="+1 (516) 384-3337",
+            ladder_config=str(config),
+            json=True,
+        )
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "promoted"
+    assert payload["promotion"]["category"] == "gmail_archive"
+    assert payload["promotion"]["actor"] == "+15163843337"
+    assert payload["promotion"]["from_rung"] == "packet_only"
+    assert payload["promotion"]["to_rung"] == "approve_each"
+
+    state = json.loads((tmp_path / "torben-autonomy-ladder.json").read_text(encoding="utf-8"))
+    assert state["categories"]["gmail_archive"]["rung"] == "approve_each"
+    event = json.loads((tmp_path / "torben-autonomy-ladder-events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert event["event"] == "promotion"
+    assert event["from_rung"] == "packet_only"
+    assert event["to_rung"] == "approve_each"
+
+
+def test_torben_resolve_reply_rejects_promotion_from_other_sender(tmp_path, capsys):
+    config = _write_ladder_config(tmp_path)
+
+    exit_code = torben_command(
+        Namespace(
+            torben_action="resolve-reply",
+            reply=["promote", "gmail_archive"],
+            ledger=str(tmp_path / "actions.json"),
+            sender="+15551234567",
+            ladder_config=str(config),
+            json=True,
+        )
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "rejected"
+    assert payload["promotion"]["reason"] == "promotion_requires_eric_signal_sender"
+    assert not (tmp_path / "torben-autonomy-ladder.json").exists()
+    event = json.loads((tmp_path / "torben-autonomy-ladder-events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert event["event"] == "promotion_rejected"
+    assert event["sender"] == "+15551234567"
+
+
+def test_torben_resolve_reply_does_not_infer_promotion(tmp_path, capsys):
+    config = _write_ladder_config(tmp_path)
+
+    exit_code = torben_command(
+        Namespace(
+            torben_action="resolve-reply",
+            reply=["gmail_archive", "looks", "eligible"],
+            ledger=str(tmp_path / "actions.json"),
+            sender="+15163843337",
+            ladder_config=str(config),
+            json=True,
+        )
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "not_found"
+    assert not (tmp_path / "torben-autonomy-ladder.json").exists()
+    assert not (tmp_path / "torben-autonomy-ladder-events.jsonl").exists()
+
+
 def test_torben_cli_auth_check_reports_oauth_mcp_native_policy(tmp_path, monkeypatch, capsys):
     hermes_home = tmp_path / "torben"
     hermes_home.mkdir()

@@ -2398,6 +2398,16 @@ DEFAULT_CONFIG = {
                 "On it.",
             ],
         },
+        # Auto-join a voice channel when an allowed user enters one, instead
+        # of requiring them to type /voice join every time. OFF by default —
+        # purely additive on top of the existing manual /voice join path.
+        "voice": {
+            "auto_join_on_user_join": False,  # opt-in master switch
+            # Optional allowlist of user IDs/usernames that trigger auto-join.
+            # Empty list = any user already authorized via
+            # DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES may trigger it.
+            "auto_join_users": [],
+        },
     },
 
     # WhatsApp platform settings (gateway mode)

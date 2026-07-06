@@ -789,6 +789,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_mixers: Dict[int, Any] = {}  # guild_id -> VoiceMixer
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
+        # Opt-in auto-join: automatically call join_voice_channel() when an
+        # allowed user enters a voice channel, instead of requiring /voice
+        # join every time. OFF by default. See discord.voice.* in config.yaml.
+        self._voice_auto_join_cfg: Dict[str, Any] = self._load_voice_auto_join_config()
         # Track threads where the bot has participated so follow-up messages
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
@@ -1146,13 +1150,6 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
-                # Only track channels where the bot is connected
-                bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if not bot_guild_ids:
-                    return
-                guild_id = member.guild.id
-                if guild_id not in bot_guild_ids:
-                    return
                 # Ignore the bot itself
                 if member == adapter_self._client.user:
                     return
@@ -1165,16 +1162,65 @@ class DiscordAdapter(BasePlatformAdapter):
                     and before.channel != after.channel
                 )
 
+                # Only track channels where the bot is connected, EXCEPT for the
+                # auto-join path below, which by definition fires before the bot
+                # is connected in that guild.
+                bot_guild_ids = set(adapter_self._voice_clients.keys())
+                guild_id = member.guild.id
+
                 if joined or left or switched:
-                    logger.info(
-                        "Voice state: %s (%d) %s (guild %d)",
-                        member.display_name,
-                        member.id,
-                        "joined " + after.channel.name if joined
-                        else "left " + before.channel.name if left
-                        else f"moved {before.channel.name} -> {after.channel.name}",
-                        guild_id,
-                    )
+                    if guild_id in bot_guild_ids:
+                        logger.info(
+                            "Voice state: %s (%d) %s (guild %d)",
+                            member.display_name,
+                            member.id,
+                            "joined " + after.channel.name if joined
+                            else "left " + before.channel.name if left
+                            else f"moved {before.channel.name} -> {after.channel.name}",
+                            guild_id,
+                        )
+
+                # ── Opt-in auto-join (discord.voice.auto_join_on_user_join) ──
+                # Purely additive: does not alter existing tracking/logging
+                # above, and reuses the same join_voice_channel() path (and
+                # its own per-guild lock) that /voice join calls.
+                if joined and not getattr(member, "bot", False):
+                    auto_cfg = getattr(adapter_self, "_voice_auto_join_cfg", None) or {}
+                    if auto_cfg.get("auto_join_on_user_join"):
+                        trigger_users = auto_cfg.get("auto_join_users") or []
+                        member_matches_trigger_list = (
+                            not trigger_users
+                            or str(member.id) in {str(u) for u in trigger_users}
+                            or (member.name and member.name in {str(u) for u in trigger_users})
+                        )
+                        if member_matches_trigger_list and adapter_self._is_allowed_user(
+                            str(member.id), member, guild=member.guild, is_dm=False
+                        ):
+                            # Already connected to this exact channel in this
+                            # guild? join_voice_channel() no-ops in that case
+                            # anyway, but skip the call entirely when nothing
+                            # would change to avoid needless log noise.
+                            existing_vc = adapter_self._voice_clients.get(guild_id)
+                            already_here = (
+                                existing_vc
+                                and existing_vc.is_connected()
+                                and existing_vc.channel.id == after.channel.id
+                            )
+                            if not already_here:
+                                try:
+                                    await adapter_self.join_voice_channel(after.channel)
+                                    logger.info(
+                                        "[%s] Auto-joined voice channel %s (triggered by %s)",
+                                        adapter_self.name,
+                                        after.channel.name,
+                                        member.display_name,
+                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        "[%s] Auto-join voice channel failed: %s",
+                                        adapter_self.name,
+                                        e,
+                                    )
 
             # Register slash commands
             if self._slash_commands:
@@ -2643,6 +2689,31 @@ class DiscordAdapter(BasePlatformAdapter):
                         defaults[k] = v
         except Exception as e:
             logger.debug("Could not load discord.voice_fx config: %s", e)
+        return defaults
+
+    def _load_voice_auto_join_config(self) -> Dict[str, Any]:
+        """Read auto-join-on-user-join settings from config.yaml.
+
+        All settings live under ``discord.voice`` in config.yaml (NOT the
+        .env file — these are behavioral, not secrets). OFF by default;
+        users opt in with ``discord.voice.auto_join_on_user_join: true``.
+
+        Returns a dict with safe defaults so callers never KeyError.
+        """
+        defaults: Dict[str, Any] = {
+            "auto_join_on_user_join": False,
+            "auto_join_users": [],
+        }
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            voice_cfg = ((cfg.get("discord") or {}).get("voice") or {})
+            if isinstance(voice_cfg, dict):
+                for k, v in voice_cfg.items():
+                    if k in defaults and v is not None:
+                        defaults[k] = v
+        except Exception as e:
+            logger.debug("Could not load discord.voice config: %s", e)
         return defaults
 
     def _get_ambient_pcm(self) -> Optional[bytes]:

@@ -745,6 +745,9 @@ def _chown_to_hermes_uid(path) -> None:
         pass
 
 
+_HERMES_HOME_MODE_WARNED = False
+
+
 def _secure_dir(path):
     """Set directory to owner-only access (0700 by default). No-op on Windows.
 
@@ -756,7 +759,10 @@ def _secure_dir(path):
     (e.g. HERMES_HOME_MODE=0701) for deployments where a web server (nginx,
     caddy, etc.) needs to traverse HERMES_HOME to reach a served subdirectory.
     The execute-only bit on a directory permits cd-through without exposing
-    directory listings.
+    directory listings. If the override grants read or write to group/other
+    (beyond that documented execute-only pattern), every file inside relies
+    on its own mode for protection instead of the directory — we warn once
+    so a copy-pasted ``0755``/``0777`` doesn't silently widen exposure.
 
     Also applies ``HERMES_UID``/``HERMES_GID``-based ownership when those env
     vars are set (#34107 — Docker deployments need this so profile subdirs
@@ -770,6 +776,17 @@ def _secure_dir(path):
         mode = int(mode_str, 8) if mode_str else 0o700
     except ValueError:
         mode = 0o700
+    global _HERMES_HOME_MODE_WARNED
+    if mode & 0o066 and not _HERMES_HOME_MODE_WARNED:
+        _HERMES_HOME_MODE_WARNED = True
+        logger.warning(
+            "HERMES_HOME_MODE=%s grants read or write to group/other. "
+            "Files inside HERMES_HOME (state.db, logs, sessions) are no "
+            "longer protected by directory traversal and depend on their "
+            "own permissions. The documented pattern for web-server "
+            "traversal is execute-only (e.g. 0701/0711).",
+            oct(mode),
+        )
     try:
         os.chmod(path, mode)
     except (OSError, NotImplementedError):

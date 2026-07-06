@@ -107,6 +107,49 @@ class TestEnsureHermesHome:
         assert not profile_home.exists()
 
 
+class TestSecureDirHomeModeWarning:
+    """HERMES_HOME_MODE overrides that grant group/other read or write should
+    warn once, since every file inside HERMES_HOME then relies on its own
+    mode instead of directory traversal for protection."""
+
+    def _reset_warned_flag(self):
+        import hermes_cli.config as config_module
+        config_module._HERMES_HOME_MODE_WARNED = False
+
+    def test_warns_when_mode_grants_group_or_other_access(self, tmp_path, caplog):
+        self._reset_warned_flag()
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "HERMES_HOME_MODE": "0755"}):
+            with caplog.at_level("WARNING", logger="hermes_cli.config"):
+                ensure_hermes_home()
+        assert any("HERMES_HOME_MODE" in r.message for r in caplog.records)
+
+    def test_no_warning_for_documented_execute_only_override(self, tmp_path, caplog):
+        self._reset_warned_flag()
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "HERMES_HOME_MODE": "0701"}):
+            with caplog.at_level("WARNING", logger="hermes_cli.config"):
+                ensure_hermes_home()
+        assert not any("HERMES_HOME_MODE" in r.message for r in caplog.records)
+
+    def test_no_warning_without_override(self, tmp_path, caplog):
+        self._reset_warned_flag()
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            os.environ.pop("HERMES_HOME_MODE", None)
+            with caplog.at_level("WARNING", logger="hermes_cli.config"):
+                ensure_hermes_home()
+        assert not any("HERMES_HOME_MODE" in r.message for r in caplog.records)
+
+    def test_warns_only_once_per_process(self, tmp_path, caplog):
+        self._reset_warned_flag()
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "HERMES_HOME_MODE": "0755"}):
+            with caplog.at_level("WARNING", logger="hermes_cli.config"):
+                # ensure_hermes_home() alone calls _secure_dir ~10 times
+                # (home + subdirs) -- confirms the warn-once guard holds
+                # across a single call, not just across separate calls.
+                ensure_hermes_home()
+        warn_count = sum(1 for r in caplog.records if "HERMES_HOME_MODE" in r.message)
+        assert warn_count == 1
+
+
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

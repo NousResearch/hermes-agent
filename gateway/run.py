@@ -10677,9 +10677,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
+                from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
+                _plat = source.platform.value if source.platform else None
+                _plat_disabled = _get_plat_disabled(platform=_plat) if _plat else set()
                 _combined_parts: list[str] = []
                 _loaded_names: list[str] = []
                 for _sname in _skill_names:
+                    if _sname in _plat_disabled:
+                        logger.info("[Gateway] Skipping disabled auto-skill '%s' for platform '%s'", _sname, _plat)
+                        continue
                     _loaded = _load_skill_payload(_sname, task_id=_quick_key)
                     if _loaded:
                         _loaded_skill, _skill_dir, _display_name = _loaded

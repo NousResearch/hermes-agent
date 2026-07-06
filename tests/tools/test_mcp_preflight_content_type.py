@@ -305,6 +305,41 @@ def test_run_skips_preflight_for_oauth(monkeypatch):
     )
 
 
+def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
+    """``skip_preflight: true`` in server config bypasses the probe entirely.
+
+    Escape hatch for valid Streamable HTTP servers whose HEAD/GET answers a
+    non-MCP content type (and whose POST probe still can't be validated, e.g.
+    non-OAuth auth schemes the probe headers don't satisfy).
+    """
+    import tools.mcp_tool as _mcp
+
+    preflight_calls: list[str] = []
+
+    async def _inner():
+        async def _fake_preflight(self, url, **kwargs):
+            preflight_calls.append(url)
+
+        async def _fake_run_http(self, config):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(_mcp, "_validate_remote_mcp_url", lambda n, u: None)
+        monkeypatch.setattr(_mcp.MCPServerTask, "_preflight_content_type", _fake_preflight)
+        monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
+
+        task = _mcp.MCPServerTask("skip-preflight-test")
+        with pytest.raises(asyncio.CancelledError):
+            await task.run({
+                "url": "https://mcp.example.com/mcp",
+                "skip_preflight": True,
+            })
+
+    asyncio.run(_inner())
+    assert preflight_calls == [], (
+        "_preflight_content_type must not be called when skip_preflight is set"
+    )
+
+
 def test_ssl_verify_and_cert_forwarded(monkeypatch):
     captured: dict = {}
 

@@ -20,6 +20,7 @@ class _FakeHTTPResponse:
     def __init__(self, status: int, body: bytes):
         self.status = status
         self._body = body
+        self.read_calls: list[int] = []
 
     def __enter__(self):
         return self
@@ -27,8 +28,11 @@ class _FakeHTTPResponse:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        if size is None or size < 0:
+            return self._body
+        return self._body[:size]
 
 
 def _openai_models_body(*ids: str) -> bytes:
@@ -203,6 +207,36 @@ def test_http_get_json_on_http_error_returns_code_none():
         status, body = azure_detect._http_get_json("https://x/", "k")
     assert status == 403
     assert body is None
+
+
+def test_http_get_json_bounds_success_body(monkeypatch):
+    """Oversized model-list responses preserve status but skip JSON parsing."""
+    monkeypatch.setattr(azure_detect, "_AZURE_DETECT_JSON_BODY_MAX_BYTES", 8)
+    response = _FakeHTTPResponse(200, b"x" * 9)
+
+    with patch(
+        "hermes_cli.azure_detect.urllib_request.urlopen",
+        return_value=response,
+    ):
+        status, body = azure_detect._http_get_json("https://x/models", "k")
+
+    assert status == 200
+    assert body is None
+    assert response.read_calls == [9]
+
+
+def test_probe_anthropic_messages_bounds_error_body(monkeypatch):
+    """Oversized HTTP error bodies are not scanned to detect Anthropic mode."""
+    import urllib.error
+
+    monkeypatch.setattr(azure_detect, "_AZURE_DETECT_ERROR_BODY_MAX_BYTES", 8)
+    response = _FakeHTTPResponse(400, b"anthropic" + b"x")
+    err = urllib.error.HTTPError("https://x/", 400, "Bad Request", {}, response)
+
+    with patch("hermes_cli.azure_detect.urllib_request.urlopen", side_effect=err):
+        assert azure_detect._probe_anthropic_messages("https://x/", "k") is False
+
+    assert response.read_calls == [9]
 
 
 # ----------------------------------------------------------------------

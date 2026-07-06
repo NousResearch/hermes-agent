@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import sys
 import threading
 import time
@@ -488,6 +489,350 @@ def _sudo_stdin_block_result(description: str) -> dict:
             "attack vector. Set SUDO_PASSWORD in your .env file if the "
             "agent needs passwordless sudo, or run the sudo command "
             "manually in your own terminal."
+        ),
+    }
+
+
+# =========================================================================
+# GitHub PR publish guard
+# =========================================================================
+#
+# A raw `gh pr create` can publish an entire `base...head` diff from a branch
+# that happens to contain stale fork history. Keep PR creation unchanged by
+# default for public Hermes users, while allowing managed agent deployments to
+# opt into an approval-time warning or a hard diff-size gate.
+_RAW_GH_PR_CREATE_RE = re.compile(r'\bgh\s+pr\s+create\b', re.IGNORECASE)
+_RAW_GH_PR_CREATE_READ_ONLY_HEADS = {
+    "echo",
+    "printf",
+    "grep",
+    "rg",
+    "ripgrep",
+}
+_PR_PUBLISH_GUARD_KEY = "GitHub PR publish scope"
+_PR_PUBLISH_GUARD_LIMITS = {
+    "max_files": 80,
+    "max_commits": 20,
+    "max_line_delta": 20000,
+}
+_PR_PUBLISH_GUARD_MODES = {"off", "warn", "block"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _pr_publish_guard_limits() -> dict:
+    return {
+        "max_files": _env_int("HERMES_PR_GUARD_MAX_FILES",
+                              _PR_PUBLISH_GUARD_LIMITS["max_files"]),
+        "max_commits": _env_int("HERMES_PR_GUARD_MAX_COMMITS",
+                                _PR_PUBLISH_GUARD_LIMITS["max_commits"]),
+        "max_line_delta": _env_int("HERMES_PR_GUARD_MAX_LINE_DELTA",
+                                   _PR_PUBLISH_GUARD_LIMITS["max_line_delta"]),
+    }
+
+
+def _normalize_pr_publish_guard_mode(value) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in {"1", "true", "yes", "on", "enforce", "enforced"}:
+        return "block"
+    if mode in {"ask", "approval", "prompt"}:
+        return "warn"
+    if mode in _PR_PUBLISH_GUARD_MODES:
+        return mode
+    return "off"
+
+
+def _pr_publish_guard_mode() -> str:
+    raw = os.getenv("HERMES_PR_PUBLISH_GUARD")
+    if raw is not None:
+        return _normalize_pr_publish_guard_mode(raw)
+    try:
+        raw = _get_approval_config().get("pr_publish_guard", "off")
+    except Exception:
+        raw = "off"
+    return _normalize_pr_publish_guard_mode(raw)
+
+
+def _command_starts_as_read_only_search(command: str) -> bool:
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.split()
+    if not tokens:
+        return False
+    head = tokens[0].lower()
+    if head in _RAW_GH_PR_CREATE_READ_ONLY_HEADS:
+        return True
+    return head == "git" and len(tokens) > 1 and tokens[1].lower() == "grep"
+
+
+def _extract_option(tokens: list[str], long_name: str, short_name: str) -> str:
+    for idx, token in enumerate(tokens):
+        if token == long_name or token == short_name:
+            if idx + 1 < len(tokens):
+                return tokens[idx + 1]
+        prefix = f"{long_name}="
+        if token.startswith(prefix):
+            return token[len(prefix):]
+    return ""
+
+
+def _gh_pr_create_tail(command: str) -> str:
+    normalized = _normalize_command_for_detection(command)
+    match = _RAW_GH_PR_CREATE_RE.search(normalized)
+    if not match:
+        return ""
+    if _command_starts_as_read_only_search(normalized):
+        return ""
+    return normalized[match.end():]
+
+
+def _git_capture(cwd: str, args: list[str]) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def _resolve_git_ref(cwd: str, candidates: list[str]) -> str:
+    for ref in candidates:
+        if not ref:
+            continue
+        result = _git_capture(cwd, ["rev-parse", "--verify", f"{ref}^{{commit}}"])
+        if result is not None and result.returncode == 0:
+            return ref
+    return ""
+
+
+def _branch_part(ref: str) -> str:
+    text = (ref or "").strip()
+    if ":" in text and not text.startswith("refs/"):
+        return text.split(":", 1)[1].strip()
+    return text
+
+
+def _numstat_totals(stdout: str) -> tuple[int, int, int]:
+    additions = deletions = binary_files = 0
+    for line in (stdout or "").splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) < 2:
+            continue
+        if parts[0] == "-" or parts[1] == "-":
+            binary_files += 1
+            continue
+        try:
+            additions += int(parts[0])
+            deletions += int(parts[1])
+        except ValueError:
+            continue
+    return additions, deletions, binary_files
+
+
+def _pr_publish_guard_report(command: str, cwd: str | None = None) -> dict:
+    """Return an approval/block report for `gh pr create` commands."""
+    tail = _gh_pr_create_tail(command)
+    if not tail:
+        return {"applies": False}
+    mode = _pr_publish_guard_mode()
+    if mode == "off":
+        return {"applies": False, "mode": "off"}
+    cwd = os.path.abspath(os.path.expanduser(cwd or os.getcwd()))
+    limits = _pr_publish_guard_limits()
+    report = {
+        "applies": True,
+        "ok": False,
+        "action": "block" if mode == "block" else "warn",
+        "mode": mode,
+        "cwd": cwd,
+        "base": "main",
+        "head": "",
+        "changed_file_count": None,
+        "commit_count": None,
+        "additions": None,
+        "deletions": None,
+        "line_delta": None,
+        "limits": limits,
+        "problems": [],
+        "description": "",
+    }
+
+    try:
+        tokens = shlex.split(tail, posix=True)
+    except ValueError:
+        tokens = tail.split()
+    base = _extract_option(tokens, "--base", "-B") or "main"
+    head_arg = _branch_part(_extract_option(tokens, "--head", "-H"))
+    report["base"] = base
+
+    top = _git_capture(cwd, ["rev-parse", "--show-toplevel"])
+    if top is None or top.returncode != 0:
+        report["problems"].append(
+            f"cannot inspect PR scope because {cwd!r} is not a git checkout"
+        )
+        report["description"] = report["problems"][0]
+        if mode == "warn":
+            report["action"] = "warn"
+        return report
+    repo_root = (top.stdout or "").strip() or cwd
+    report["repo_root"] = repo_root
+
+    if not head_arg:
+        current = _git_capture(repo_root, ["rev-parse", "--abbrev-ref", "HEAD"])
+        if current is None or current.returncode != 0:
+            report["problems"].append("cannot determine current branch for PR head")
+            report["description"] = report["problems"][0]
+            return report
+        head_arg = (current.stdout or "").strip()
+    report["head"] = head_arg
+
+    if head_arg in {"main", "master"} or head_arg == base:
+        if mode == "block":
+            report["problems"].append(
+                f"refusing to create a PR from integration branch {head_arg!r}"
+            )
+        else:
+            report["problems"].append(
+                f"GitHub PR publish from integration branch {head_arg!r}; "
+                "warn mode requires explicit approval before continuing"
+            )
+
+    base_ref = _resolve_git_ref(repo_root, [f"origin/{base}", f"upstream/{base}", base])
+    head_ref = _resolve_git_ref(repo_root, [head_arg, f"origin/{head_arg}", f"fork/{head_arg}"])
+    if not base_ref:
+        report["problems"].append(f"cannot resolve PR base ref {base!r}")
+    if not head_ref:
+        report["problems"].append(f"cannot resolve PR head ref {head_arg!r}")
+    if report["problems"]:
+        report["description"] = "; ".join(report["problems"])
+        if mode == "warn":
+            report["action"] = "warn"
+        return report
+
+    report["base_ref"] = base_ref
+    report["head_ref"] = head_ref
+    diff_spec = f"{base_ref}...{head_ref}"
+    paths = _git_capture(repo_root, ["diff", "--name-only", diff_spec])
+    commits = _git_capture(repo_root, ["rev-list", "--count", f"{base_ref}..{head_ref}"])
+    numstat = _git_capture(repo_root, ["diff", "--numstat", diff_spec])
+    if paths is None or paths.returncode != 0:
+        report["problems"].append("cannot inspect changed paths for PR branch")
+    if commits is None or commits.returncode != 0:
+        report["problems"].append("cannot inspect commit count for PR branch")
+    if numstat is None or numstat.returncode != 0:
+        report["problems"].append("cannot inspect diff size for PR branch")
+    if report["problems"]:
+        report["description"] = "; ".join(report["problems"])
+        if mode == "warn":
+            report["action"] = "warn"
+        return report
+
+    changed_paths = [line for line in paths.stdout.splitlines() if line.strip()]
+    additions, deletions, binary_files = _numstat_totals(numstat.stdout)
+    try:
+        commit_count = int((commits.stdout or "").strip() or "0")
+    except ValueError:
+        commit_count = 0
+    line_delta = additions + deletions
+    report.update({
+        "changed_file_count": len(changed_paths),
+        "commit_count": commit_count,
+        "additions": additions,
+        "deletions": deletions,
+        "line_delta": line_delta,
+        "binary_file_count": binary_files,
+    })
+
+    if len(changed_paths) > limits["max_files"]:
+        report["problems"].append(
+            f"PR branch changes {len(changed_paths)} files; limit is {limits['max_files']}"
+        )
+    if commit_count > limits["max_commits"]:
+        report["problems"].append(
+            f"PR branch has {commit_count} commits ahead of base; limit is {limits['max_commits']}"
+        )
+    if line_delta > limits["max_line_delta"]:
+        report["problems"].append(
+            f"PR branch changes {line_delta} lines; limit is {limits['max_line_delta']}"
+        )
+    if report["problems"]:
+        report["description"] = "; ".join(report["problems"])
+        if mode == "warn":
+            report["action"] = "warn"
+        return report
+
+    report["ok"] = True
+    report["action"] = "warn"
+    report["description"] = (
+        f"GitHub PR publish from {head_arg!r} into {base!r}: "
+        f"{len(changed_paths)} file(s), {commit_count} commit(s), "
+        f"+{additions}/-{deletions}. Review this diff before approving."
+    )
+    return report
+
+
+def _pr_publish_guard_block_result(report: dict) -> dict:
+    return {
+        "approved": False,
+        "pr_publish_guard": report,
+        "message": (
+            f"BLOCKED: {report.get('description') or 'GitHub PR scope could not be verified'}. "
+            "Hermes blocks `gh pr create` in HERMES_PR_PUBLISH_GUARD=block "
+            "mode when it cannot verify the exact branch diff or when the "
+            "publish surface is too large. Create a clean task branch, "
+            "reduce the diff, switch the guard to warn/off if this is an "
+            "intentional local workflow, or run the PR creation yourself "
+            "outside the agent."
+        ),
+    }
+
+
+def _pr_publish_requires_approval_result(report: dict) -> dict:
+    return {
+        "approved": False,
+        "pattern_key": _PR_PUBLISH_GUARD_KEY,
+        "description": report.get("description") or _PR_PUBLISH_GUARD_KEY,
+        "pr_publish_guard": report,
+        "message": (
+            f"BLOCKED: {report.get('description')}. GitHub PR creation is an "
+            "external publish action and HERMES_PR_PUBLISH_GUARD="
+            f"{report.get('mode', 'warn')} requires an interactive approval "
+            "surface. Re-run from CLI/gateway approval mode, set "
+            "HERMES_EXEC_ASK=1, set HERMES_PR_PUBLISH_GUARD=off, or create "
+            "the PR yourself."
+        ),
+    }
+
+
+def _pr_publish_guard_cron_result(report: dict) -> dict:
+    if _get_cron_approval_mode() == "approve":
+        return {"approved": True, "message": None, "pr_publish_guard": report}
+    return {
+        "approved": False,
+        "pattern_key": _PR_PUBLISH_GUARD_KEY,
+        "description": report.get("description") or _PR_PUBLISH_GUARD_KEY,
+        "pr_publish_guard": report,
+        "message": (
+            f"BLOCKED: GitHub PR creation requires approval "
+            f"({report.get('description') or _PR_PUBLISH_GUARD_KEY}) but "
+            "cron jobs run without a user present to approve it. To allow "
+            "PR creation from this trusted cron profile, set "
+            "approvals.cron_mode: approve in config.yaml."
         ),
     }
 
@@ -1964,7 +2309,8 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
 
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
-                            has_host_access: bool = False) -> dict:
+                            has_host_access: bool = False,
+                            cwd: str | None = None) -> dict:
     """Check if a command is dangerous and handle approval.
 
     This is the main entry point called by terminal_tool before executing
@@ -1976,6 +2322,7 @@ def check_dangerous_command(command: str, env_type: str,
         approval_callback: Optional CLI callback for interactive prompts.
         has_host_access: True when a Docker sandbox bind-mounts host paths,
             so its commands can reach the host and must not skip approval.
+        cwd: Effective command working directory for repository-scoped guards.
 
     Returns:
         {"approved": True/False, "message": str or None, ...}
@@ -1993,6 +2340,12 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    pr_guard = _pr_publish_guard_report(command, cwd=cwd)
+    if pr_guard.get("applies") and pr_guard.get("action") == "block":
+        logger.warning("GitHub PR publish scope block: %s (command: %s)",
+                       pr_guard.get("description"), command[:200])
+        return _pr_publish_guard_block_result(pr_guard)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
@@ -2000,6 +2353,60 @@ def check_dangerous_command(command: str, env_type: str,
 
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
+
+    if pr_guard.get("applies") and pr_guard.get("action") == "warn":
+        is_cli = env_var_enabled("HERMES_INTERACTIVE")
+        is_gateway = _is_gateway_approval_context()
+        is_ask = env_var_enabled("HERMES_EXEC_ASK")
+        if env_var_enabled("HERMES_CRON_SESSION"):
+            return _pr_publish_guard_cron_result(pr_guard)
+        if not is_cli and not is_gateway and not is_ask:
+            return _pr_publish_requires_approval_result(pr_guard)
+        session_key = get_current_session_key()
+        if is_approved(session_key, _PR_PUBLISH_GUARD_KEY):
+            return {"approved": True, "message": None, "pr_publish_guard": pr_guard}
+        if is_gateway or is_ask:
+            submit_pending(session_key, {
+                "command": command,
+                "pattern_key": _PR_PUBLISH_GUARD_KEY,
+                "description": pr_guard.get("description") or _PR_PUBLISH_GUARD_KEY,
+                "pr_publish_guard": pr_guard,
+            })
+            return {
+                "approved": False,
+                "pattern_key": _PR_PUBLISH_GUARD_KEY,
+                "status": "approval_required",
+                "command": command,
+                "description": pr_guard.get("description"),
+                "pr_publish_guard": pr_guard,
+                "message": (
+                    f"⚠️ {pr_guard.get('description')} "
+                    f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+                ),
+            }
+        choice = prompt_dangerous_approval(
+            command,
+            pr_guard.get("description") or _PR_PUBLISH_GUARD_KEY,
+            allow_permanent=False,
+            approval_callback=approval_callback,
+        )
+        if choice == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: User denied GitHub PR creation. The user has NOT "
+                    "consented to this publish action. Do NOT retry this "
+                    "command, do NOT rephrase it, and do NOT attempt the same "
+                    "outcome via a different command."
+                ),
+                "pattern_key": _PR_PUBLISH_GUARD_KEY,
+                "description": pr_guard.get("description"),
+                "pr_publish_guard": pr_guard,
+            }
+        if choice in {"session", "always"}:
+            approve_session(session_key, _PR_PUBLISH_GUARD_KEY)
+        return {"approved": True, "message": None,
+                "user_approved": True, "pr_publish_guard": pr_guard}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
@@ -2223,7 +2630,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             cwd: str | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -2260,11 +2668,17 @@ def check_all_command_guards(command: str, env_type: str,
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
 
+    pr_guard = _pr_publish_guard_report(command, cwd=cwd)
+    if pr_guard.get("applies") and pr_guard.get("action") == "block":
+        logger.warning("GitHub PR publish scope block: %s (command: %s)",
+                       pr_guard.get("description"), command[:200])
+        return _pr_publish_guard_block_result(pr_guard)
+
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
-        return {"approved": True, "message": None}
+        return {"approved": True, "message": None, "pr_publish_guard": pr_guard}
 
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
@@ -2278,6 +2692,8 @@ def check_all_command_guards(command: str, env_type: str,
     if not is_cli and not is_gateway and not is_ask:
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
+            if pr_guard.get("applies") and pr_guard.get("action") == "warn":
+                return _pr_publish_guard_cron_result(pr_guard)
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
@@ -2339,6 +2755,8 @@ def check_all_command_guards(command: str, env_type: str,
                             ),
                         }
                     # else: tirith_fail_open is True — allow as before
+        if pr_guard.get("applies") and pr_guard.get("action") == "warn":
+            return _pr_publish_requires_approval_result(pr_guard)
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -2394,6 +2812,10 @@ def check_all_command_guards(command: str, env_type: str,
     warnings = []  # list of (pattern_key, description, is_tirith)
 
     session_key = get_current_session_key()
+
+    if pr_guard.get("applies") and pr_guard.get("action") == "warn":
+        if not is_approved(session_key, _PR_PUBLISH_GUARD_KEY):
+            warnings.append((_PR_PUBLISH_GUARD_KEY, pr_guard["description"], True))
 
     # Tirith block/warn → approvable warning with rich findings.
     # Previously, tirith "block" was a hard block with no approval prompt.
@@ -2480,6 +2902,8 @@ def check_all_command_guards(command: str, env_type: str,
                 # "always" to session scope below, so the UI must not offer it.
                 "allow_permanent": not has_tirith,
             }
+            if pr_guard.get("applies"):
+                approval_data["pr_publish_guard"] = pr_guard
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
@@ -2543,8 +2967,11 @@ def check_all_command_guards(command: str, env_type: str,
                 # choice == "once": no persistence — command allowed this
                 # single time only, matching the CLI's behavior.
 
-            return {"approved": True, "message": None,
-                    "user_approved": True, "description": combined_desc}
+            result = {"approved": True, "message": None,
+                      "user_approved": True, "description": combined_desc}
+            if pr_guard.get("applies"):
+                result["pr_publish_guard"] = pr_guard
+            return result
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat. Redact secrets in the
@@ -2558,6 +2985,7 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": _disp_combined_desc,
+            "pr_publish_guard": pr_guard if pr_guard.get("applies") else None,
         })
         return {
             "approved": False,
@@ -2624,8 +3052,11 @@ def check_all_command_guards(command: str, env_type: str,
             approve_permanent(key)
             save_permanent_allowlist(_permanent_approved)
 
-    return {"approved": True, "message": None,
-            "user_approved": True, "description": combined_desc}
+    result = {"approved": True, "message": None,
+              "user_approved": True, "description": combined_desc}
+    if pr_guard.get("applies"):
+        result["pr_publish_guard"] = pr_guard
+    return result
 
 
 def check_execute_code_guard(code: str, env_type: str,

@@ -279,11 +279,13 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
 
 
 def _check_all_guards(command: str, env_type: str,
-                      has_host_access: bool = False) -> dict:
+                      has_host_access: bool = False,
+                      cwd: str | None = None) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
-                                  has_host_access=has_host_access)
+                                  has_host_access=has_host_access,
+                                  cwd=cwd)
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
@@ -2269,10 +2271,16 @@ def terminal_tool(
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
+        effective_cwd = _resolve_command_cwd(
+            workdir=workdir,
+            env=env,
+            default_cwd=cwd,
+        )
         if not force:
             approval = _check_all_guards(
                 command, env_type,
                 has_host_access=_docker_has_host_access(config),
+                cwd=effective_cwd,
             )
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
@@ -2353,11 +2361,6 @@ def terminal_tool(
             # For non-local backends: runs inside the sandbox via env.execute().
             from tools.process_registry import process_registry
 
-            effective_cwd = _resolve_command_cwd(
-                workdir=workdir,
-                env=env,
-                default_cwd=cwd,
-            )
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(

@@ -46,7 +46,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_run = sub.add_parser("run", help="Start a workflow execution")
     p_run.add_argument("workflow_id")
-    p_run.add_argument("--input", default=None, help="JSON object to use as workflow input")
+    p_run.add_argument("--input", default=None, help="JSON file path containing an object")
     p_run.add_argument("--json", action="store_true")
 
     p_exec = sub.add_parser("executions", help="List, show, or cancel workflow executions")
@@ -330,16 +330,23 @@ def _cmd_executions_cancel(args: argparse.Namespace) -> int:
             print(f"Execution {execution.execution_id} already {execution.status}.")
             return 0
         now = int(time.time())
+        terminal_statuses = tuple(sorted(_TERMINAL_STATUSES))
+        placeholders = ", ".join("?" for _ in terminal_statuses)
         with wfdb.write_txn(conn):
-            conn.execute(
-                """
+            updated = conn.execute(
+                f"""
                 UPDATE workflow_executions
                    SET status = 'cancelled', claim_lock = NULL,
                        claim_expires = NULL, updated_at = ?
                  WHERE execution_id = ?
+                   AND status NOT IN ({placeholders})
                 """,
-                (now, execution.execution_id),
+                (now, execution.execution_id, *terminal_statuses),
             )
+            if updated.rowcount == 0:
+                current = wfdb.get_execution(conn, execution.execution_id)
+                print(f"Execution {current.execution_id} already {current.status}.")
+                return 0
     print(f"Cancelled execution {args.execution_id}")
     return 0
 

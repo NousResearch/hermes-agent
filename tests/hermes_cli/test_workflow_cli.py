@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import workflows as wc
+from hermes_cli import workflows_db as wfdb
 
 
 @pytest.fixture
@@ -74,6 +76,46 @@ def test_validate_reports_bad_edge_target(workflow_home, tmp_path, capsys):
     assert "Error:" in err
     assert "unknown edge target: missing" in err
     assert "Traceback" not in err
+
+
+def test_main_workflow_validate_bad_edge_exits_without_traceback(
+    workflow_home,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    spec_path = _write_workflow(tmp_path / "bad.yaml", bad_target=True)
+
+    from hermes_cli import config as config_mod
+    from hermes_cli import main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "workflow", "validate", str(spec_path)])
+    monkeypatch.setattr(main_mod, "_set_process_title", lambda: None)
+    monkeypatch.setattr(main_mod, "_cleanup_quarantined_exes", lambda: None)
+    monkeypatch.setattr(main_mod, "_recover_from_interrupted_install", lambda: None)
+    monkeypatch.setattr(main_mod, "_try_termux_fast_tui_launch", lambda: False)
+    monkeypatch.setattr(main_mod, "_try_termux_fast_cli_launch", lambda: False)
+    monkeypatch.setattr(main_mod, "_prepare_agent_startup", lambda _args: None)
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod.main()
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert captured.out == ""
+    assert "Error:" in captured.err
+    assert "unknown edge target: missing" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_run_input_help_describes_json_file_path(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        _parser().parse_args(["workflow", "run", "--help"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert "JSON file path containing an object" in captured.out
 
 
 def test_deploy_then_list_and_show_json(workflow_home, tmp_path, capsys):
@@ -186,3 +228,43 @@ def test_cancel_queued_execution(workflow_home, tmp_path, capsys):
     assert rc == 0
     assert err == ""
     assert json.loads(out)["status"] == "cancelled"
+
+
+def test_cancel_does_not_overwrite_terminal_status_race(
+    workflow_home,
+    tmp_path,
+    capsys,
+    monkeypatch,
+):
+    spec_path = _write_workflow(tmp_path / "workflow.yaml")
+    assert _run(["deploy", str(spec_path)], capsys)[0] == 0
+    rc, out, _err = _run(["run", "code-change-review", "--json"], capsys)
+    assert rc == 0
+    execution_id = json.loads(out)["execution_id"]
+    original_get_execution = wfdb.get_execution
+    first_read = True
+
+    def get_execution_then_complete(conn, requested_id):
+        nonlocal first_read
+        execution = original_get_execution(conn, requested_id)
+        if requested_id == execution_id and first_read:
+            first_read = False
+            conn.execute(
+                """
+                UPDATE workflow_executions
+                   SET status = 'succeeded', updated_at = ?
+                 WHERE execution_id = ?
+                """,
+                (execution.updated_at + 1, execution_id),
+            )
+        return execution
+
+    monkeypatch.setattr(wfdb, "get_execution", get_execution_then_complete)
+
+    rc, out, err = _run(["executions", "cancel", execution_id], capsys)
+
+    assert rc == 0
+    assert err == ""
+    assert f"Execution {execution_id} already succeeded." in out
+    with wfdb.connect() as conn:
+        assert original_get_execution(conn, execution_id).status == "succeeded"

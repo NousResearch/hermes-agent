@@ -18,30 +18,60 @@ nodes:
     type: agent_task
     profile: implementer
     title: "Implement code change"
-    prompt:
-      task: "Implement the requested code change in the repo path from this prompt. Complete the Kanban task with JSON."
-      repo: "${ input.repo }"
-      branch: "${ input.branch }"
-      change_request: "${ input.change_request }"
-      result_contract:
-        summary: "Short implementation summary"
-        changed_files: ["path/to/file"]
-        verification: ["command and result"]
+    prompt: |
+      You are the `implementer` profile executing workflow cell `implement`.
+
+      Workflow goal:
+      Implement and review a requested code change.
+
+      Cell objective:
+      Implement the requested code change in repo `${ input.repo }` on branch `${ input.branch }`.
+
+      Change request:
+      ${ input.change_request }
+
+      Constraints:
+      - Stay within the requested change.
+      - Preserve existing behavior and public interfaces unless the change request requires otherwise.
+      - Run relevant tests or explain why they could not be run.
+      - Complete the Kanban task with JSON only.
+
+      Return JSON matching this contract:
+      {
+        "summary": "Short implementation summary",
+        "changed_files": ["path/to/file"],
+        "verification": ["command and result"]
+      }
 
   review:
     type: agent_task
     profile: reviewer
     title: "Review code change"
-    prompt:
-      task: "Review the implementation in the repo path from this prompt. Complete the Kanban task with JSON."
-      repo: "${ input.repo }"
-      branch: "${ input.branch }"
-      implementation: "${ node.implement.output }"
-      result_contract:
-        verdict: "approved or changes_requested"
-        confidence: 0.0
-        reason: "Why this verdict was reached"
-        required_changes: ["change to make, if any"]
+    prompt: |
+      You are the `reviewer` profile executing workflow cell `review`.
+
+      Workflow goal:
+      Implement and review a requested code change.
+
+      Cell objective:
+      Review the implementation in repo `${ input.repo }` on branch `${ input.branch }`.
+
+      Implementation context:
+      ${ node.implement.output }
+
+      Constraints:
+      - Check correctness, scope control, risks, and verification quality.
+      - Request only changes needed to meet the original change request.
+      - Use `approved` only when confidence is high enough for the workflow to continue.
+      - Complete the Kanban task with JSON only.
+
+      Return JSON matching this contract:
+      {
+        "verdict": "approved or changes_requested",
+        "confidence": 0.0,
+        "reason": "Why this verdict was reached",
+        "required_changes": ["change to make, if any"]
+      }
 
   decision:
     type: switch
@@ -68,30 +98,62 @@ nodes:
     type: agent_task
     profile: implementer
     title: "Revise code change after review"
-    prompt:
-      task: "Revise the implementation according to review feedback in the repo path from this prompt. Complete with JSON."
-      repo: "${ input.repo }"
-      branch: "${ input.branch }"
-      original_implementation: "${ node.implement.output }"
-      review_feedback: "${ node.review.output }"
-      result_contract:
-        summary: "Short revision summary"
-        changed_files: ["path/to/file"]
-        verification: ["command and result"]
+    prompt: |
+      You are the `implementer` profile executing workflow cell `revise`.
+
+      Workflow goal:
+      Implement and review a requested code change.
+
+      Cell objective:
+      Revise the implementation in repo `${ input.repo }` on branch `${ input.branch }` according to review feedback.
+
+      Original implementation:
+      ${ node.implement.output }
+
+      Review feedback:
+      ${ node.review.output }
+
+      Constraints:
+      - Address the review feedback without broadening scope.
+      - Preserve working behavior that the review did not challenge.
+      - Run relevant tests or explain why they could not be run.
+      - Complete the Kanban task with JSON only.
+
+      Return JSON matching this contract:
+      {
+        "summary": "Short revision summary",
+        "changed_files": ["path/to/file"],
+        "verification": ["command and result"]
+      }
 
   second_review:
     type: agent_task
     profile: reviewer
     title: "Review revised code change"
-    prompt:
-      task: "Review the revised implementation in the repo path from this prompt. Complete with JSON."
-      repo: "${ input.repo }"
-      branch: "${ input.branch }"
-      revision: "${ node.revise.output }"
-      result_contract:
-        verdict: "approved or changes_requested"
-        confidence: 0.0
-        reason: "Why this verdict was reached"
+    prompt: |
+      You are the `reviewer` profile executing workflow cell `second_review`.
+
+      Workflow goal:
+      Implement and review a requested code change.
+
+      Cell objective:
+      Review the revised implementation in repo `${ input.repo }` on branch `${ input.branch }`.
+
+      Revision context:
+      ${ node.revise.output }
+
+      Constraints:
+      - Verify the revision resolves the requested changes.
+      - Check for regressions, missed feedback, and verification gaps.
+      - Use `approved` only when the revised change is acceptable.
+      - Complete the Kanban task with JSON only.
+
+      Return JSON matching this contract:
+      {
+        "verdict": "approved or changes_requested",
+        "confidence": 0.0,
+        "reason": "Why this verdict was reached"
+      }
 
   second_decision:
     type: switch

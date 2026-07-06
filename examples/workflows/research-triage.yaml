@@ -28,29 +28,66 @@ nodes:
     type: agent_task
     profile: researcher
     title: "Gather research sources"
-    prompt:
-      task: "Gather current, citable sources for the topic. Complete the Kanban task with JSON."
-      topic: "${ input.topic }"
-      freshness: "${ input.freshness }"
-      result_contract:
-        sources:
-          - title: "Source title"
-            url: "https://example.com"
-            why_it_matters: "One sentence"
-        summary: "Short source summary"
+    prompt: |
+      You are the `researcher` profile executing workflow cell `gather`.
+
+      Workflow goal:
+      Gather, risk-scan, and summarize research for triage.
+
+      Cell objective:
+      Gather current, citable sources for topic `${ input.topic }` with freshness `${ input.freshness }`.
+
+      Context:
+      - Topic: `${ input.topic }`
+      - Freshness requirement: `${ input.freshness }`
+
+      Constraints:
+      - Prefer primary or highly credible sources.
+      - Include URLs suitable for citation.
+      - Avoid stale or duplicate coverage when better sources exist.
+      - Complete the Kanban task with JSON only.
+
+      Return JSON matching this contract:
+      {
+        "sources": [
+          {
+            "title": "Source title",
+            "url": "https://example.com",
+            "why_it_matters": "One sentence"
+          }
+        ],
+        "summary": "Short source summary"
+      }
 
   risk_scan:
     type: agent_task
     profile: researcher
     title: "Scan research risks and duplicates"
-    prompt:
-      task: "Look for duplicate coverage, stale claims, and weak sources. Complete with JSON."
-      topic: "${ input.topic }"
-      freshness: "${ input.freshness }"
-      result_contract:
-        risks: ["risk or caveat"]
-        exclusions: ["source or angle to skip"]
-        confidence: 0.0
+    prompt: |
+      You are the `researcher` profile executing workflow cell `risk_scan`.
+
+      Workflow goal:
+      Gather, risk-scan, and summarize research for triage.
+
+      Cell objective:
+      Look for duplicate coverage, stale claims, and weak sources for topic `${ input.topic }` with freshness `${ input.freshness }`.
+
+      Context:
+      - Topic: `${ input.topic }`
+      - Freshness requirement: `${ input.freshness }`
+
+      Constraints:
+      - Flag claims that need stronger evidence.
+      - Exclude weak, redundant, or stale sources and angles.
+      - Calibrate confidence to the quality and freshness of available evidence.
+      - Complete the Kanban task with JSON only.
+
+      Return JSON matching this contract:
+      {
+        "risks": ["risk or caveat"],
+        "exclusions": ["source or angle to skip"],
+        "confidence": 0.0
+      }
 
   merge:
     type: join
@@ -59,16 +96,34 @@ nodes:
     type: agent_task
     profile: analyst
     title: "Summarize and score research"
-    prompt:
-      task: "Synthesize the gathered research and risk scan. Complete with JSON."
-      topic: "${ input.topic }"
-      gathered: "${ node.merge.output.branches.gather }"
-      risks: "${ node.merge.output.branches.risks }"
-      result_contract:
-        score: 0.0
-        summary: "Decision-ready summary"
-        recommendation: "publish, watch, or ignore"
-        next_actions: ["action"]
+    prompt: |
+      You are the `analyst` profile executing workflow cell `summarize`.
+
+      Workflow goal:
+      Gather, risk-scan, and summarize research for triage.
+
+      Cell objective:
+      Synthesize the gathered research and risk scan for topic `${ input.topic }`.
+
+      Gathered research:
+      ${ node.merge.output.branches.gather }
+
+      Risk scan:
+      ${ node.merge.output.branches.risks }
+
+      Constraints:
+      - Weigh source quality, freshness, and risk caveats before scoring.
+      - Make the summary decision-ready and concise.
+      - Recommend exactly one of `publish`, `watch`, or `ignore`.
+      - Complete the Kanban task with JSON only.
+
+      Return JSON matching this contract:
+      {
+        "score": 0.0,
+        "summary": "Decision-ready summary",
+        "recommendation": "publish, watch, or ignore",
+        "next_actions": ["action"]
+      }
 
   triage:
     type: switch

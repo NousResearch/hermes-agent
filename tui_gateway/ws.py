@@ -428,10 +428,13 @@ async def handle_ws(ws: Any) -> None:
         if transport is not None:
             transport.close()
 
-            # Reap sessions this transport owned (close_on_disconnect sidecar
-            # sessions) or detach the rest to the drop sentinel so later emits
-            # don't crash into a closed socket or fall through to desktop stdout
-            # logs. Detached sessions are handed to the grace-windowed WS-orphan
+            # Detach this transport from the sessions it was attached to — a
+            # session may still have other live clients attached through its
+            # fanout transport and must keep streaming to them. Sessions left
+            # with no live transport are reaped (close_on_disconnect sidecar
+            # sessions) or parked on the drop sentinel so later emits don't
+            # crash into a closed socket or fall through to desktop stdout
+            # logs. Parked sessions are handed to the grace-windowed WS-orphan
             # reaper inside _close_sessions_for_transport (a quick reconnect /
             # session.resume cancels it). This is the single WS-disconnect
             # teardown path.

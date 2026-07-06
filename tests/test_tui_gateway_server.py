@@ -1964,6 +1964,167 @@ def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     assert server._ws_session_is_orphaned(done) is False
 
 
+def test_session_event_transport_fans_out_to_attached_clients():
+    """Live session events should reach every attached client transport."""
+
+    class _CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            return None
+
+    first = _CaptureTransport()
+    second = _CaptureTransport()
+    session = _session(transport=first)
+    server._sessions["fanout-sid"] = session
+
+    try:
+        server._attach_session_transport(session, second)
+        server._emit("status.update", "fanout-sid", {"text": "hello"})
+
+        assert [f["params"]["type"] for f in first.frames] == ["status.update"]
+        assert [f["params"]["type"] for f in second.frames] == ["status.update"]
+    finally:
+        server._sessions.pop("fanout-sid", None)
+
+
+def test_session_activate_attaches_request_transport():
+    """Switching to a live session should subscribe the new client to events."""
+
+    class _CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            return None
+
+    first = _CaptureTransport()
+    second = _CaptureTransport()
+    session = _session(transport=first)
+    server._sessions["activate-fanout-sid"] = session
+
+    try:
+        response = server.dispatch(
+            {
+                "id": "activate",
+                "method": "session.activate",
+                "params": {"session_id": "activate-fanout-sid"},
+            },
+            transport=second,
+        )
+
+        assert response["result"]["session_id"] == "activate-fanout-sid"
+        server._emit("session.info", "activate-fanout-sid", {"cwd": "/tmp"})
+
+        assert [f["params"]["type"] for f in first.frames] == ["session.info"]
+        assert [f["params"]["type"] for f in second.frames] == ["session.info"]
+    finally:
+        server._sessions.pop("activate-fanout-sid", None)
+
+
+def test_session_transport_detach_keeps_remaining_clients():
+    """Disconnecting one client should not orphan a session with another client."""
+
+    class _CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            return None
+
+    first = _CaptureTransport()
+    second = _CaptureTransport()
+    session = _session(transport=first)
+    server._sessions["fanout-detach-sid"] = session
+
+    try:
+        server._attach_session_transport(session, second)
+
+        assert server._detach_transport_from_sessions(first) == ["fanout-detach-sid"]
+        assert server._ws_session_is_orphaned(session) is False
+
+        server._emit("message.delta", "fanout-detach-sid", {"text": "after"})
+        assert first.frames == []
+        assert [f["params"]["type"] for f in second.frames] == ["message.delta"]
+    finally:
+        server._sessions.pop("fanout-detach-sid", None)
+
+
+def test_session_fanout_drops_stale_clients():
+    """A broken fanout member should be removed without blocking healthy peers."""
+
+    class _DeadTransport:
+        def __init__(self):
+            self.calls = 0
+
+        def write(self, obj):
+            self.calls += 1
+            return False
+
+        def close(self):
+            return None
+
+    class _CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            return None
+
+    dead = _DeadTransport()
+    live = _CaptureTransport()
+    session = _session(transport=dead)
+    server._sessions["fanout-stale-sid"] = session
+
+    try:
+        server._attach_session_transport(session, live)
+
+        server._emit("status.update", "fanout-stale-sid", {"text": "one"})
+        server._emit("status.update", "fanout-stale-sid", {"text": "two"})
+
+        assert dead.calls == 1
+        assert [f["params"]["payload"]["text"] for f in live.frames] == ["one", "two"]
+    finally:
+        server._sessions.pop("fanout-stale-sid", None)
+
+
+def test_ws_orphan_reap_handles_empty_fanout():
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+        def close(self):
+            return None
+
+    first = _LiveTransport()
+    second = _LiveTransport()
+    session = _session(transport=first)
+    server._attach_session_transport(session, second)
+
+    assert server._ws_session_is_orphaned(session) is False
+    server._detach_session_transport(session, first)
+    assert server._ws_session_is_orphaned(session) is False
+    server._detach_session_transport(session, second)
+    assert server._ws_session_is_orphaned(session) is True
+
+
 def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     """Grace=0 disables the reaper entirely (pre-fix park-forever behaviour)."""
     fired = {"timer": False}

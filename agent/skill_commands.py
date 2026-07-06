@@ -696,13 +696,26 @@ def build_preloaded_skills_prompt(
     skill_identifiers: list[str],
     task_id: str | None = None,
 ) -> tuple[str, list[str], list[str]]:
-    """Load one or more skills for session-wide CLI preloading.
+    """Load one or more skills for session-wide CLI/TUI preloading.
 
     Returns (prompt_text, loaded_skill_names, missing_identifiers).
+
+    Disabled skills are treated the same as missing ones: this loads via a
+    raw identifier straight into ``_load_skill_payload``, bypassing
+    ``get_skill_commands()``'s scan-time disabled filter — mirrors the
+    bundle-invocation gate (#59156). Without this, ``hermes -s <skill>`` or
+    a deployment's ``HERMES_TUI_SKILLS`` env var could force-load a skill an
+    operator disabled via ``skills.disabled``/``skills.platform_disabled``.
     """
     prompt_parts: list[str] = []
     loaded_names: list[str] = []
     missing: list[str] = []
+
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+        disabled_names = get_disabled_skill_names()
+    except Exception:
+        disabled_names = set()
 
     seen: set[str] = set()
     for raw_identifier in skill_identifiers:
@@ -717,6 +730,10 @@ def build_preloaded_skills_prompt(
             continue
 
         loaded_skill, skill_dir, skill_name = loaded
+
+        if skill_name in disabled_names or identifier in disabled_names:
+            missing.append(identifier)
+            continue
 
         # Track active usage for Curator lifecycle management (#17782)
         try:

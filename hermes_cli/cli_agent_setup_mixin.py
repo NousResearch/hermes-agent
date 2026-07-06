@@ -438,6 +438,7 @@ class CLIAgentSetupMixin:
                     # Keep _pending_title so it can be retried after row creation succeeds
             return True
         except Exception as e:
+            logger.exception("Agent initialization failed")
             ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
             return False
 

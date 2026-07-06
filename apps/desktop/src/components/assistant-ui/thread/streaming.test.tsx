@@ -436,6 +436,21 @@ describe('assistant-ui streaming renderer', () => {
     expect(screen.getByRole('alert').textContent).toContain('OpenRouter rejected the request (403).')
   })
 
+  it('renders assistant message URLs as visible links', async () => {
+    const { container } = render(
+      <MessageHarness
+        message={assistantMessage('Open http://localhost:5173/ or https://example.com/docs for details.', false)}
+      />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('a[href="http://localhost:5173/"]')).toBeTruthy()
+      expect(container.querySelector('a[href="https://example.com/docs"]')).toBeTruthy()
+    })
+    expect(container.textContent).toContain('localhost')
+    expect(container.textContent).toContain('Docs')
+  })
+
   it('omits the dismiss control when no onDismissError handler is supplied', () => {
     render(<MessageHarness message={assistantErrorMessage('OpenRouter rejected the request (403).')} />)
 

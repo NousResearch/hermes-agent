@@ -202,13 +202,14 @@ def _recommendation_sort_key(row: Dict[str, Any]) -> tuple[Any, ...]:
     secondary_reset = _window_reset_dt(row, "secondary_window")
     secondary_missing = secondary_reset is None
     secondary_used = _percent(row, "secondary_window")
-    # Reset timestamp is the primary policy. If the endpoint does not expose a
-    # reset timestamp, fall back to the old conservative behavior: lower 7d
-    # usage first. When reset timestamps tie, burn the fuller soon-resetting
-    # window first.
+    # Prefer an available credential whose 7d window has not started / does not
+    # expose a reset timestamp yet. A tiny warm-up call can start that 7d reset
+    # clock, maximizing usable weekly rotation. After every candidate has a
+    # reset timestamp, reset time becomes the primary policy. When reset times
+    # tie, burn the fuller soon-resetting window first.
     return (
-        1 if secondary_missing else 0,
-        secondary_reset or datetime.max.replace(tzinfo=datetime.now().astimezone().tzinfo),
+        0 if secondary_missing else 1,
+        secondary_reset or datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo),
         secondary_used if secondary_missing else -secondary_used,
         _percent(row, "primary_window"),
         int(row.get("priority") or 999),

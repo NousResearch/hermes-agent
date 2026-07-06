@@ -62,16 +62,28 @@ def test_recommendation_prefers_soonest_weekly_reset_then_usage_fallback():
     assert "7d reset" in rec["reason"]
 
 
-def test_recommendation_falls_back_to_lowest_weekly_usage_without_reset_times():
+def test_recommendation_prefers_unstarted_weekly_window_before_known_resets():
     accounts = [
-        {"label": "a", "ok": True, "primary_window": {"used_percent": 1}, "secondary_window": {"used_percent": 70}},
-        {"label": "b", "ok": True, "primary_window": {"used_percent": 60}, "secondary_window": {"used_percent": 40}},
+        {
+            "label": "started",
+            "ok": True,
+            "available": True,
+            "primary_window": {"used_percent": 1},
+            "secondary_window": {"used_percent": 10, "reset_at": "2099-07-07T10:00:00+09:00", "remaining": "1h"},
+        },
+        {
+            "label": "unstarted",
+            "ok": True,
+            "available": True,
+            "primary_window": {"used_percent": 1},
+            "secondary_window": {"used_percent": 0},
+        },
     ]
 
     rec = compute_recommendation(accounts)
 
     assert rec is not None
-    assert rec["label"] == "b"
+    assert rec["label"] == "unstarted"
 
 
 def test_annotate_usage_trends_uses_recent_history_for_burn_and_eta():

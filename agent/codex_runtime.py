@@ -228,6 +228,96 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     }
 
 
+def _record_codex_app_server_kanban_failure(agent, turn) -> bool:
+    """Close a Kanban run when Codex app-server exits a turn unsuccessfully.
+
+    ``codex_app_server`` is an early-return runtime path. If its inner
+    ``run_turn`` hits the app-server deadline, Hermes receives a partial turn
+    result instead of flowing through ``turn_finalizer.py``. A Kanban worker
+    would then exit with the task still ``running`` and the dispatcher would
+    report a generic protocol violation. Record the concrete runtime failure
+    here so the claim/run are closed before process exit.
+    """
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return False
+    if os.environ.get("HERMES_KANBAN_GOAL_MODE"):
+        return False
+
+    raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    expected_run_id = None
+    if raw_run_id:
+        try:
+            expected_run_id = int(raw_run_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "codex app-server Kanban failure finalizer skipped task %s: "
+                "invalid HERMES_KANBAN_RUN_ID=%r",
+                task_id, raw_run_id,
+            )
+            return False
+
+    error_text = str(
+        getattr(turn, "error", None)
+        or "codex app-server turn interrupted before terminal Kanban acknowledgement"
+    )
+    lowered = error_text.lower()
+    interrupted = bool(getattr(turn, "interrupted", False))
+    outcome = (
+        "timed_out"
+        if interrupted or "timed out" in lowered or "timeout" in lowered
+        else "crashed"
+    )
+
+    payload = {
+        "runtime": "codex_app_server",
+    }
+    for key, value in (
+        ("turn_id", getattr(turn, "turn_id", None)),
+        ("thread_id", getattr(turn, "thread_id", None)),
+        ("session_id", getattr(agent, "session_id", None)),
+        ("tool_iterations", getattr(turn, "tool_iterations", None)),
+    ):
+        if value is not None:
+            payload[key] = value
+
+    try:
+        from hermes_cli import kanban_db as kb
+
+        with kb.connect_closing() as conn:
+            task = kb.get_task(conn, task_id)
+            if task is None or task.status != "running":
+                return False
+            if getattr(task, "goal_mode", False):
+                return False
+            if (
+                expected_run_id is not None
+                and task.current_run_id != expected_run_id
+            ):
+                return False
+            kb._record_task_failure(
+                conn,
+                task_id,
+                error=error_text,
+                outcome=outcome,
+                release_claim=True,
+                end_run=True,
+                event_payload_extra=payload,
+            )
+            logger.info(
+                "recorded codex app-server %s failure for Kanban task %s",
+                outcome, task_id,
+            )
+            return True
+    except Exception:
+        logger.warning(
+            "failed to record codex app-server Kanban failure for task %s",
+            task_id,
+            exc_info=True,
+        )
+        return False
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -354,6 +444,9 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+
+    if turn.interrupted or turn.error is not None:
+        _record_codex_app_server_kanban_failure(agent, turn)
 
     # Splice projected messages into the conversation. The projector emits
     # standard {role, content, tool_calls, tool_call_id} entries, which

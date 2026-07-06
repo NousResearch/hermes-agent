@@ -39,6 +39,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
+from hermes_cli.workspace_guard import validate_session_workspace
 from utils import (
     atomic_json_write,
     base_url_host_matches,
@@ -3604,6 +3605,31 @@ class GatewaySlashCommandsMixin:
             # non-Matrix adapter so one user can't attach to another's
             # persisted transcript.
             return t("gateway.resume.blocked_not_owner", name=name)
+
+        # Workspace guard: prevent cross-workspace context leakage on resume.
+        # Blocks restore if stored session's git_repo_root differs from current cwd's repo root.
+        # Legacy sessions with null git_repo_root get a warning but are allowed through.
+        try:
+            target_session = await self._session_db.get_session(target_id)
+            if target_session and target_session.get("git_repo_root"):
+                result = validate_session_workspace(
+                    session_row=target_session,
+                    current_cwd=os.getcwd(),
+                )
+                if not result.ok:
+                    return t(
+                        "gateway.resume.workspace_blocked",
+                        reason=result.reason,
+                        stored_workspace=result.stored_workspace,
+                        current_workspace=result.current_workspace,
+                    )
+                elif result.warning:
+                    logger.debug(
+                        "Workspace guard warning on resume %s: %s", target_id, result.reason
+                    )
+        except Exception as exc:
+            logger.debug("Workspace guard check failed for resume %s: %s", target_id, exc)
+        # Non-fatal: if guard module fails or DB lookup fails, allow resume to proceed.
 
         # Check if already on that session
         current_entry = self.session_store.get_or_create_session(source)

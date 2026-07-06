@@ -82,6 +82,32 @@ def _assert_pass_spec(spec: dict) -> None:
     assert spec["nodes"]["start"]["type"] == "pass"
 
 
+def test_prompt_assistant_drafts_text_prompt(client):
+    r = client.post(
+        "/api/plugins/workflows/prompt-assistant/draft",
+        json={
+            "workflow_goal": "Review code changes before merge",
+            "node_id": "review",
+            "profile": "reviewer",
+            "cell_objective": "Review implementation output and decide whether it is approved",
+            "available_context": ["${ input.repo }", "${ node.implement.output }"],
+            "expected_output": {
+                "verdict": "approved|changes_requested",
+                "reason": "string",
+            },
+            "constraints": ["Return JSON only", "Mention required changes if any"],
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["prompt_text"]
+    assert "Review code changes before merge" in body["prompt_text"]
+    assert "${ input.repo }" in body["prompt_text"]
+    assert "verdict" in body["prompt_text"]
+    assert body["result_contract"]["verdict"] == "approved|changes_requested"
+
+
 def test_manifest_points_to_plugin_api():
     manifest_file = PLUGIN_DIR / "manifest.json"
     assert manifest_file.exists(), f"manifest missing: {manifest_file}"
@@ -212,6 +238,10 @@ def test_dashboard_bundle_contains_text_first_agent_cell_editor_markers():
         "renderAgentCellEditor",
         "promptText",
         "resultContractText",
+        "/prompt-assistant/draft",
+        "draftPromptWithAssistant",
+        "Available context placeholders",
+        "Expected output contract JSON",
     ]:
         assert marker in bundle
 

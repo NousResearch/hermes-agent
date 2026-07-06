@@ -306,6 +306,24 @@
     const stateAdvancedJsonOpen = useState(false);
     const advancedJsonOpen = stateAdvancedJsonOpen[0];
     const setAdvancedJsonOpen = stateAdvancedJsonOpen[1];
+    const statePromptAssistantOpen = useState(false);
+    const promptAssistantOpen = statePromptAssistantOpen[0];
+    const setPromptAssistantOpen = statePromptAssistantOpen[1];
+    const statePromptAssistantGoal = useState("");
+    const promptAssistantGoal = statePromptAssistantGoal[0];
+    const setPromptAssistantGoal = statePromptAssistantGoal[1];
+    const statePromptAssistantObjective = useState("");
+    const promptAssistantObjective = statePromptAssistantObjective[0];
+    const setPromptAssistantObjective = statePromptAssistantObjective[1];
+    const statePromptAssistantContext = useState("${ input }\n${ node.previous.output }");
+    const promptAssistantContext = statePromptAssistantContext[0];
+    const setPromptAssistantContext = statePromptAssistantContext[1];
+    const statePromptAssistantOutput = useState('{"summary":"string","status":"string"}');
+    const promptAssistantOutput = statePromptAssistantOutput[0];
+    const setPromptAssistantOutput = statePromptAssistantOutput[1];
+    const statePromptAssistantConstraints = useState("Return JSON only");
+    const promptAssistantConstraints = statePromptAssistantConstraints[0];
+    const setPromptAssistantConstraints = statePromptAssistantConstraints[1];
     const stateNodeMessage = useState("");
     const nodeMessage = stateNodeMessage[0];
     const setNodeMessage = stateNodeMessage[1];
@@ -368,11 +386,17 @@
       setNodeJson(jsonBlock(node));
       setNodeMessage("");
       setAdvancedJsonOpen(false);
+      setPromptAssistantOpen(false);
       const rawPrompt = node ? node.prompt : undefined;
+      const assistantOutput = node && node.result_contract ? jsonBlock(node.result_contract) : '{"summary":"string","status":"string"}';
       setAgentProfile(node && node.profile ? String(node.profile) : "");
       setAgentTitle(node && node.title ? String(node.title) : "");
       setPromptText(rawPrompt === null || rawPrompt === undefined ? "" : (typeof rawPrompt === "string" ? rawPrompt : jsonBlock(rawPrompt)));
       setResultContractText(jsonBlock((node && node.result_contract) || {}));
+      setPromptAssistantObjective(node && node.title ? String(node.title) : "");
+      setPromptAssistantContext("${ input }\n${ node.previous.output }");
+      setPromptAssistantOutput(assistantOutput);
+      setPromptAssistantConstraints("Return JSON only");
     }
 
     function loadDefinition(workflowId) {
@@ -638,6 +662,32 @@
       setNodeMessage("Applied agent cell prompt to workflow draft.");
     }
 
+    function draftPromptWithAssistant() {
+      const outputText = promptAssistantOutput.trim();
+      const expectedOutput = outputText ? parseJsonObject(outputText) : {};
+      if (outputText && !expectedOutput) {
+        setNodeMessage("Expected output contract JSON must be a JSON object.");
+        return;
+      }
+      api("/prompt-assistant/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workflow_goal: promptAssistantGoal,
+          node_id: selectedNode && selectedNode.id,
+          profile: agentProfile,
+          cell_objective: promptAssistantObjective,
+          available_context: promptAssistantContext.split(/\n+/).map(function (line) { return line.trim(); }).filter(Boolean),
+          expected_output: expectedOutput,
+          constraints: promptAssistantConstraints.split(/\n+/).map(function (line) { return line.trim(); }).filter(Boolean),
+        }),
+      }).then(function (res) {
+        setPromptText(res.prompt_text || "");
+        setResultContractText(jsonBlock(res.result_contract || expectedOutput));
+        setNodeMessage("Prompt assistant drafted a cell prompt. Review it, then Apply cell prompt.");
+      }).catch(fail);
+    }
+
     function renderDefinitionList() {
       return h("div", { className: "hermes-workflows-list" },
         definitions.length ? definitions.map(function (definition) {
@@ -753,6 +803,34 @@
       );
     }
 
+    function renderPromptAssistant() {
+      if (!promptAssistantOpen) return null;
+      return h("div", { className: "hermes-workflows-assistant" },
+        h("h4", null, "Prompt assistant"),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Workflow goal"),
+          h("textarea", { value: promptAssistantGoal, onChange: function (event) { setPromptAssistantGoal(event.target.value); } })
+        ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Cell objective"),
+          h("textarea", { value: promptAssistantObjective, onChange: function (event) { setPromptAssistantObjective(event.target.value); } })
+        ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Available context placeholders, one per line"),
+          h("textarea", { value: promptAssistantContext, onChange: function (event) { setPromptAssistantContext(event.target.value); } })
+        ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Expected output contract JSON"),
+          h("textarea", { value: promptAssistantOutput, onChange: function (event) { setPromptAssistantOutput(event.target.value); } })
+        ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Constraints, one per line"),
+          h("textarea", { value: promptAssistantConstraints, onChange: function (event) { setPromptAssistantConstraints(event.target.value); } })
+        ),
+        h("button", { type: "button", onClick: draftPromptWithAssistant, className: "hermes-workflows-primary" }, "Draft prompt")
+      );
+    }
+
     function renderAgentCellEditor() {
       return h("div", { className: "hermes-workflows-stack" },
         h("h3", null, "Cell editor"),
@@ -775,9 +853,10 @@
         ),
         h("div", { className: "hermes-workflows-row" },
           h("button", { type: "button", onClick: applyAgentCellForm, className: "hermes-workflows-primary" }, "Apply cell prompt"),
-          h("button", { type: "button", disabled: true, title: "Prompt assistant is added in a later task." }, "Prompt assistant"),
+          h("button", { type: "button", onClick: function () { setPromptAssistantOpen(!promptAssistantOpen); } }, promptAssistantOpen ? "Hide Prompt assistant" : "Prompt assistant"),
           h("button", { type: "button", onClick: function () { setAdvancedJsonOpen(!advancedJsonOpen); } }, advancedJsonOpen ? "Hide Advanced JSON" : "Advanced JSON")
-        )
+        ),
+        renderPromptAssistant()
       );
     }
 

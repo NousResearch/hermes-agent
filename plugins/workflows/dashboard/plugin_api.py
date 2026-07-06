@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from hermes_cli import workflows_db as wfdb
 from hermes_cli import workflows_dispatcher
@@ -182,6 +182,63 @@ def _input_from_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(input_data, dict):
         raise ValueError("workflow input must be a JSON object")
     return input_data
+
+
+class PromptAssistantDraftRequest(BaseModel):
+    workflow_goal: str = ""
+    node_id: str = ""
+    profile: str = ""
+    cell_objective: str = ""
+    available_context: list[str] = Field(default_factory=list)
+    expected_output: dict[str, Any] = Field(default_factory=dict)
+    constraints: list[str] = Field(default_factory=list)
+
+
+class PromptAssistantDraftResponse(BaseModel):
+    prompt_text: str
+    result_contract: dict[str, Any]
+    notes: list[str] = Field(default_factory=list)
+
+
+def _draft_cell_prompt(req: PromptAssistantDraftRequest) -> PromptAssistantDraftResponse:
+    context_lines = "\n".join(
+        f"- {item}" for item in req.available_context if str(item).strip()
+    )
+    constraint_lines = "\n".join(
+        f"- {item}" for item in req.constraints if str(item).strip()
+    )
+    contract = req.expected_output or {"summary": "string", "status": "string"}
+    contract_json = json.dumps(contract, indent=2, ensure_ascii=False, sort_keys=True)
+    default_constraints = "- Be concise.\n- Do not perform work outside this cell objective."
+    prompt = f"""You are the `{req.profile or 'assigned'}` profile executing workflow cell `{req.node_id or 'cell'}`.
+
+Workflow goal:
+{req.workflow_goal or 'Complete the workflow objective.'}
+
+Cell objective:
+{req.cell_objective or 'Complete this cell and report the result.'}
+
+Available workflow context:
+{context_lines or '- Use the workflow input and upstream node outputs referenced in this prompt.'}
+
+Constraints:
+{constraint_lines or default_constraints}
+
+Return JSON only matching this contract:
+```json
+{contract_json}
+```
+""".strip()
+    return PromptAssistantDraftResponse(
+        prompt_text=prompt,
+        result_contract=contract,
+        notes=["Review placeholders before deploy; they are rendered at execution time."],
+    )
+
+
+@router.post("/prompt-assistant/draft")
+def prompt_assistant_draft(req: PromptAssistantDraftRequest) -> dict[str, Any]:
+    return _draft_cell_prompt(req).model_dump()
 
 
 @router.get("/definitions")

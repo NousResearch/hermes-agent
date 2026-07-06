@@ -5767,7 +5767,11 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        try:
+            launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        except KeyboardInterrupt:
+            print("\n✓ Hermes Desktop closed (KeyboardInterrupt)")
+            sys.exit(0)
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:
@@ -5785,7 +5789,11 @@ def cmd_gui(args: argparse.Namespace):
 
     launch_command.extend(config_electron_flags)
     print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
-    launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
+    try:
+        launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
+    except KeyboardInterrupt:
+        print("\n✓ Hermes Desktop closed (KeyboardInterrupt)")
+        sys.exit(0)
     sys.exit(launch_result.returncode)
 
 

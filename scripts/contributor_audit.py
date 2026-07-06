@@ -41,8 +41,6 @@ IGNORED_PATTERNS = [
     re.compile(r"^Copilot$", re.IGNORECASE),
     re.compile(r"^Cursor(\s+Agent)?$", re.IGNORECASE),
     re.compile(r"^Codex$", re.IGNORECASE),
-    re.compile(r"^OpenAI Codex$", re.IGNORECASE),
-    re.compile(r"^CommandCode", re.IGNORECASE),
     re.compile(r"^github-advanced-security(\[bot\])?$", re.IGNORECASE),
     re.compile(r"^GitHub\s*Actions?$", re.IGNORECASE),
     re.compile(r"^github-actions(\[bot\])?$", re.IGNORECASE),
@@ -61,8 +59,6 @@ IGNORED_EMAILS = {
     "hermes-audit@example.com",
     "hermes@habibilabs.dev",
     "omx@oh-my-codex.dev",
-    "codex@openai.com",
-    "noreply@commandcode.ai",
 }
 
 

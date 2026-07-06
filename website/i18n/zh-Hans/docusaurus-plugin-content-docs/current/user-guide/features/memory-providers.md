@@ -467,7 +467,7 @@ hermes config set memory.provider byterover
 | | |
 |---|---|
 | **适合场景** | 带用户 profile 和会话级图谱构建的语义召回 |
-| **依赖** | `pip install supermemory` + [API key](http://app.supermemory.ai/integrations?connect=hermes) |
+| **依赖** | `pip install supermemory` + [API key](https://supermemory.ai) |
 | **数据存储** | Supermemory Cloud |
 | **费用** | Supermemory 定价 |
 

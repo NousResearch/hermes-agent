@@ -57,19 +57,19 @@ What tools do you have available?
 ### CLI 麦克风 + 播放
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[voice]"
+pip install "hermes-agent[voice]"
 ```
 
 ### 消息平台
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
+pip install "hermes-agent[messaging]"
 ```
 
 ### 高级 ElevenLabs TTS
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[tts-premium]"
+pip install "hermes-agent[tts-premium]"
 ```
 
 ### 本地 NeuTTS（可选）
@@ -81,7 +81,7 @@ python -m pip install -U neutts[all]
 ### 全部安装
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"
+pip install "hermes-agent[all]"
 ```
 
 ## 第三步：安装系统依赖

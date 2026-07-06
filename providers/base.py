@@ -163,7 +163,6 @@ class ProviderProfile:
         self,
         *,
         api_key: str | None = None,
-        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Fetch the live model list from the provider's models endpoint.
@@ -176,8 +175,7 @@ class ProviderProfile:
              endpoint differs from the inference base URL, e.g. OpenRouter
              exposes a public catalog at /api/v1/models while inference is
              at /api/v1)
-          2. base_url (caller override — user-configured model.base_url)
-          3. self.base_url + "/models"  (standard OpenAI-compat fallback)
+          2. self.base_url + "/models"  (standard OpenAI-compat fallback)
 
         The default implementation sends Bearer auth when api_key is given
         and forwards self.default_headers. Override to customise auth, path,
@@ -186,12 +184,11 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
-        effective_base = base_url or self.base_url
         url = (self.models_url or "").strip()
         if not url:
-            if not effective_base:
+            if not self.base_url:
                 return None
-            url = effective_base.rstrip("/") + "/models"
+            url = self.base_url.rstrip("/") + "/models"
 
         import json
         import urllib.request

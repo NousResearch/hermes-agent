@@ -66,12 +66,8 @@ runtime/
 
 # ---------- Not needed inside the Docker image ----------
 
-# Desktop app source (Tauri/Electron); never installed in the container.
-# apps/shared is the dashboard↔desktop websocket helper and is linked from
-# web/package.json as a file: workspace dep — keep it in the build context.
+# Desktop app source (Tauri/Electron); never installed in the container
 apps/
-!apps/shared/
-!apps/shared/**
 
 # Test suite — not shipped in production images
 tests/
@@ -106,3 +102,6 @@ acp_registry/
 .gitattributes
 .hadolint.yaml
 .mailmap
+
+# Top-level LICENSE (not matched by *.md); not needed inside the container
+LICENSE

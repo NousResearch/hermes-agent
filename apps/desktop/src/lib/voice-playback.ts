@@ -8,12 +8,6 @@ import {
 
 import { sanitizeTextForSpeech } from './speech-text'
 
-// Free Edge TTS occasionally hands back audio that never fires `playing`/`ended`
-// nor `error` — leaving voice mode stuck "speaking" forever. Reject if playback
-// fails to start or stalls mid-stream for this long (rearmed on each progress
-// tick, so legitimately long speech is never cut off).
-const PLAYBACK_STALL_MS = 15_000
-
 let currentAudio: HTMLAudioElement | null = null
 let currentStop: (() => void) | null = null
 let sequence = 0
@@ -84,29 +78,10 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
     setVoicePlaybackState(currentState('speaking', options, audio))
 
     await new Promise<void>((resolve, reject) => {
-      let stall: number | null = null
-
       const cleanup = () => {
-        if (stall !== null) {
-          window.clearTimeout(stall)
-          stall = null
-        }
-
         audio.removeEventListener('ended', onEnded)
         audio.removeEventListener('error', onError)
-        audio.removeEventListener('timeupdate', armStall)
         currentStop = null
-      }
-
-      const armStall = () => {
-        if (stall !== null) {
-          window.clearTimeout(stall)
-        }
-
-        stall = window.setTimeout(() => {
-          cleanup()
-          reject(new Error('Playback stalled'))
-        }, PLAYBACK_STALL_MS)
       }
 
       const onEnded = () => {
@@ -126,9 +101,7 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
 
       audio.addEventListener('ended', onEnded, { once: true })
       audio.addEventListener('error', onError, { once: true })
-      audio.addEventListener('timeupdate', armStall)
-      armStall()
-      void audio.play().catch(onError)
+      void audio.play().catch(reject)
     })
 
     if (!isCurrent()) {

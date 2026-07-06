@@ -78,7 +78,7 @@ def active_session_limit_message(active_count: int, max_sessions: int) -> str:
 
 
 def _state_dir() -> Path:
-    return Path(get_hermes_home()) / "runtime"
+    return get_hermes_home() / "runtime"
 
 
 def _state_path() -> Path:
@@ -309,43 +309,6 @@ def release_active_session(lease: ActiveSessionLease) -> None:
                 _write_entries(state_path, kept)
     finally:
         lease.released = True
-
-
-def transfer_active_session(
-    lease: ActiveSessionLease,
-    *,
-    session_id: str,
-    metadata: Optional[dict[str, Any]] = None,
-) -> bool:
-    """Move an existing lease to a new session id without dropping the slot."""
-    new_session_id = str(session_id or "")
-    if not new_session_id:
-        return False
-    if lease.released:
-        return False
-    if not lease.enabled:
-        lease.session_id = new_session_id
-        return True
-
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
-        entries = _prune_dead(_read_entries(state_path))
-        updated = False
-        for entry in entries:
-            if str(entry.get("lease_id") or "") != lease.lease_id:
-                continue
-            entry["session_id"] = new_session_id
-            entry["updated_at"] = time.time()
-            if metadata:
-                entry["metadata"] = {
-                    str(k): v for k, v in metadata.items() if isinstance(k, str)
-                }
-            updated = True
-            break
-        if updated:
-            _write_entries(state_path, entries)
-            lease.session_id = new_session_id
-        return updated
 
 
 def active_session_registry_snapshot() -> list[dict[str, Any]]:

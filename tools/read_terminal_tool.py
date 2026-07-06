@@ -13,7 +13,6 @@ import os
 from typing import Callable, Optional
 
 from tools.registry import registry, tool_error
-from utils import env_var_enabled
 
 
 def read_terminal_tool(
@@ -51,7 +50,7 @@ def read_terminal_tool(
 
 def check_read_terminal_requirements() -> bool:
     """Desktop GUI only — HERMES_DESKTOP is set on the gateway the app spawns."""
-    return env_var_enabled("HERMES_DESKTOP")
+    return (os.getenv("HERMES_DESKTOP") or "").strip().lower() in ("1", "true", "yes")
 
 
 READ_TERMINAL_SCHEMA = {

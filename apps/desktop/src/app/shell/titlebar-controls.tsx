@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -175,7 +174,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       {visiblePaneTools.length > 0 && (
         <div
           aria-label={t.shell.paneControls}
-          className="fixed top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))] z-70 flex flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
+          className="fixed top-(--titlebar-controls-top) right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))] z-70 flex flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
         >
           {visiblePaneTools.map(tool => (
             <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
@@ -205,43 +204,41 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
 
   if (tool.href) {
     return (
-      <Tip label={tool.title ?? tool.label}>
-        <Button asChild className={className} size="icon-titlebar" variant="ghost">
-          <a
-            aria-label={tool.label}
-            href={tool.href}
-            onPointerDown={event => event.stopPropagation()}
-            rel="noreferrer"
-            target="_blank"
-          >
-            {tool.icon}
-          </a>
-        </Button>
-      </Tip>
+      <Button asChild className={className} size="icon-titlebar" variant="ghost">
+        <a
+          aria-label={tool.label}
+          href={tool.href}
+          onPointerDown={event => event.stopPropagation()}
+          rel="noreferrer"
+          target="_blank"
+          title={tool.title ?? tool.label}
+        >
+          {tool.icon}
+        </a>
+      </Button>
     )
   }
 
   return (
-    <Tip label={tool.title ?? tool.label}>
-      <Button
-        aria-label={tool.label}
-        aria-pressed={tool.active ?? undefined}
-        className={className}
-        disabled={tool.disabled}
-        onClick={() => {
-          if (tool.to) {
-            navigate(tool.to)
-          }
+    <Button
+      aria-label={tool.label}
+      aria-pressed={tool.active ?? undefined}
+      className={className}
+      disabled={tool.disabled}
+      onClick={() => {
+        if (tool.to) {
+          navigate(tool.to)
+        }
 
-          tool.onSelect?.()
-        }}
-        onPointerDown={event => event.stopPropagation()}
-        size="icon-titlebar"
-        type="button"
-        variant="ghost"
-      >
-        {tool.icon}
-      </Button>
-    </Tip>
+        tool.onSelect?.()
+      }}
+      onPointerDown={event => event.stopPropagation()}
+      size="icon-titlebar"
+      title={tool.title ?? tool.label}
+      type="button"
+      variant="ghost"
+    >
+      {tool.icon}
+    </Button>
   )
 }

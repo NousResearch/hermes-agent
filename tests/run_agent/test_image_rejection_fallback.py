@@ -195,7 +195,6 @@ class TestImageRejectionPhraseIsolation:
         "does not support vision",
         "model does not support image",
         "image_url'. expected",
-        "no endpoints found that support image input",
     )
 
     def _matches(self, body: str) -> bool:
@@ -245,27 +244,9 @@ class TestImageRejectionPhraseIsolation:
             # match the agent cascaded into compression / context-too-large
             # recovery instead of just stripping the images.
             "Invalid 'input[56].content[1].image_url'. Expected a valid URL, but got a value with an invalid format.",
-            # OpenRouter 404 when no upstream endpoint for the model accepts
-            # image input — issue #21160. The exact wording from the report.
-            "HTTP 404: No endpoints found that support image input",
         ]
         for body in bodies:
             assert self._matches(body) is True, f"false negative on: {body}"
-
-    def test_openrouter_data_policy_no_endpoints_does_not_trip(self):
-        """OpenRouter has several 'no endpoints ...' 404 bodies. Only the
-        image-input one is an image rejection — the guardrail / data-policy
-        variants (agent/error_classifier.py) are about routing restrictions,
-        not vision, and must route to their own handler, not get their images
-        stripped.
-        """
-        bodies = [
-            "No endpoints available matching your guardrail restrictions",
-            "No endpoints available matching your data policy",
-            "No endpoints found matching your data policy",
-        ]
-        for body in bodies:
-            assert self._matches(body) is False, f"false positive on: {body}"
 
     def test_codex_data_url_rejection_does_not_false_match_other_url_errors(self):
         """The narrow 'image_url'. expected' phrase (keyed on the

@@ -32,11 +32,7 @@ describe('dimColorFallback', () => {
   })
 
   it('does not apply when dim is explicitly configured', () => {
-    expect(
-      dimColorFallback({ HERMES_TUI_DIM: '1', TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)
-    ).toBeUndefined()
-    expect(
-      dimColorFallback({ HERMES_TUI_DIM: '0', TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)
-    ).toBeUndefined()
+    expect(dimColorFallback({ HERMES_TUI_DIM: '1', TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)).toBeUndefined()
+    expect(dimColorFallback({ HERMES_TUI_DIM: '0', TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)).toBeUndefined()
   })
 })

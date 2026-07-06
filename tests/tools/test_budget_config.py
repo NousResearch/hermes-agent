@@ -18,7 +18,6 @@ from tools.budget_config import (
     DEFAULT_TURN_BUDGET_CHARS,
     PINNED_THRESHOLDS,
     BudgetConfig,
-    budget_for_context_window,
 )
 
 
@@ -175,83 +174,3 @@ class TestResolveThreshold:
         """Canonical case: read_file must always return inf."""
         cfg = BudgetConfig()
         assert cfg.resolve_threshold("read_file") == float("inf")
-
-    @patch("tools.registry.registry")
-    def test_registry_value_capped_at_default(self, mock_registry):
-        """A scaled-down budget caps an oversized registry value (#23767).
-
-        web/terminal/x_search register max_result_size_chars=100_000; a small
-        model's scaled budget must not be re-inflated by that.
-        """
-        mock_registry.get_max_result_size.return_value = 100_000
-        cfg = BudgetConfig(default_result_size=30_000)
-        assert cfg.resolve_threshold("web_search") == 30_000
-
-    @patch("tools.registry.registry")
-    def test_registry_inf_not_capped(self, mock_registry):
-        """An inf registry value (e.g. a future pinned-like tool) is preserved."""
-        mock_registry.get_max_result_size.return_value = float("inf")
-        cfg = BudgetConfig(default_result_size=30_000)
-        assert cfg.resolve_threshold("some_tool") == float("inf")
-
-    @patch("tools.registry.registry")
-    def test_default_budget_unchanged_for_100k_tool(self, mock_registry):
-        """Default budget keeps 100K registry tools at 100K (no behavior change)."""
-        mock_registry.get_max_result_size.return_value = 100_000
-        cfg = BudgetConfig()  # default_result_size == 100_000
-        assert cfg.resolve_threshold("web_search") == 100_000
-
-
-# ---------------------------------------------------------------------------
-# budget_for_context_window() — context-aware scaling (#23767)
-# ---------------------------------------------------------------------------
-
-
-class TestBudgetForContextWindow:
-    """Scaling the tool-output budget to the active model's context window."""
-
-    def test_none_returns_default(self):
-        assert budget_for_context_window(None) is DEFAULT_BUDGET
-
-    def test_zero_or_negative_returns_default(self):
-        assert budget_for_context_window(0) is DEFAULT_BUDGET
-        assert budget_for_context_window(-5) is DEFAULT_BUDGET
-
-    def test_large_model_unchanged(self):
-        """A 200K-token model keeps the historical 100K/200K char defaults."""
-        cfg = budget_for_context_window(200_000)
-        assert cfg.default_result_size == DEFAULT_RESULT_SIZE_CHARS
-        assert cfg.turn_budget == DEFAULT_TURN_BUDGET_CHARS
-
-    def test_very_large_model_still_capped_at_default(self):
-        """A 1M-token model never exceeds the historical defaults (cap)."""
-        cfg = budget_for_context_window(1_000_000)
-        assert cfg.default_result_size == DEFAULT_RESULT_SIZE_CHARS
-        assert cfg.turn_budget == DEFAULT_TURN_BUDGET_CHARS
-
-    def test_small_model_scaled_down(self):
-        """A 65K-token model gets a budget proportional to its window.
-
-        window_chars = 65_536*4 = 262_144; per_result = 15% = 39_321;
-        per_turn = 30% = 78_643. Both below the 100K/200K defaults.
-        """
-        cfg = budget_for_context_window(65_536)
-        assert cfg.default_result_size < DEFAULT_RESULT_SIZE_CHARS
-        assert cfg.turn_budget < DEFAULT_TURN_BUDGET_CHARS
-        assert cfg.default_result_size == int(65_536 * 4 * 0.15)
-        assert cfg.turn_budget == int(65_536 * 4 * 0.30)
-
-    def test_tiny_model_floored(self):
-        """A tiny window can't drop below the floor (usable preview survives)."""
-        cfg = budget_for_context_window(8_000)
-        assert cfg.default_result_size >= 8_000
-        assert cfg.turn_budget >= 16_000
-
-    def test_scaled_budget_constrains_oversized_result(self):
-        """A 279K-char result against a 65K model exceeds the scaled per-result
-        threshold, so it will be persisted/truncated rather than sent whole."""
-        cfg = budget_for_context_window(65_536)
-        huge_len = 279_549
-        threshold = cfg.resolve_threshold("mcp_firecrawl_firecrawl_search")
-        assert threshold < huge_len
-        assert cfg.default_result_size < huge_len

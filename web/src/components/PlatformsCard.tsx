@@ -1,4 +1,4 @@
-import { AlertTriangle, PowerOff, Radio, Wifi, WifiOff } from "lucide-react";
+import { AlertTriangle, Radio, Wifi, WifiOff } from "lucide-react";
 import type { PlatformStatus } from "@/lib/api";
 import { isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -9,11 +9,10 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
   const { t } = useI18n();
   const platformStateBadge: Record<
     string,
-    { tone: "success" | "warning" | "destructive" | "outline"; label: string }
+    { tone: "success" | "warning" | "destructive"; label: string }
   > = {
     connected: { tone: "success", label: t.status.connected },
     disconnected: { tone: "warning", label: t.status.disconnected },
-    disabled: { tone: "outline", label: t.status.disabled ?? "Disabled" },
     fatal: { tone: "destructive", label: t.status.error },
   };
 
@@ -39,9 +38,7 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
               ? Wifi
               : info.state === "fatal"
                 ? AlertTriangle
-                : info.state === "disabled"
-                  ? PowerOff
-                  : WifiOff;
+                : WifiOff;
 
           return (
             <div
@@ -55,9 +52,7 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
                       ? "text-success"
                       : info.state === "fatal"
                         ? "text-destructive"
-                        : info.state === "disabled"
-                          ? "text-muted-foreground"
-                          : "text-warning"
+                        : "text-warning"
                   }`}
                 />
 
@@ -67,13 +62,7 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
                   </span>
 
                   {info.error_message && (
-                    <span
-                      className={`font-mondwest normal-case text-xs ${
-                        info.state === "disabled"
-                          ? "text-muted-foreground"
-                          : "text-destructive"
-                      }`}
-                    >
+                    <span className="font-mondwest normal-case text-xs text-destructive">
                       {info.error_message}
                     </span>
                   )}

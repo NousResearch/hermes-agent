@@ -121,11 +121,10 @@ outside the supported security posture.
 ### 2.3 Credential Scoping
 
 Hermes Agent filters the environment it passes to its lower-trust
-in-process components: shell subprocesses, MCP subprocesses,
-cron job scripts, and the code-execution child. Credentials like
-provider API keys and gateway tokens are stripped by default;
-variables explicitly declared by the operator or by a loaded
-skill are passed through.
+in-process components: shell subprocesses, MCP subprocesses, and
+the code-execution child. Credentials like provider API keys and
+gateway tokens are stripped by default; variables explicitly
+declared by the operator or by a loaded skill are passed through.
 
 This reduces casual exfiltration. It is not containment. Any
 component running inside the agent process (skills, plugins, hook

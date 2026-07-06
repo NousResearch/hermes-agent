@@ -12,16 +12,22 @@ docstring.
 """
 from __future__ import annotations
 
+import subprocess
 import time
 
-from tests.docker.conftest import docker_exec, docker_exec_sh, start_container, start_container
+from tests.docker.conftest import docker_exec, docker_exec_sh
 
 
 def test_orphan_zombies_reaped(
     built_image: str, container_name: str,
 ) -> None:
     """Spawn an orphan child that exits immediately. PID 1 must reap it."""
-    start_container(built_image, container_name, cmd="sleep 60")
+    subprocess.run(
+        ["docker", "run", "-d", "--name", container_name, built_image,
+         "sleep", "60"],
+        check=True, capture_output=True, timeout=30,
+    )
+    time.sleep(2)
 
     # `( ( sleep 0.1 & ) & ); sleep 1` creates a grandchild detached from
     # the original docker exec session — it becomes an orphan reparented

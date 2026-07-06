@@ -18,13 +18,7 @@ the agent repeatedly re-surfacing already-cancelled work across turns.
 These tests pin the post-fix invariants so the conflict cannot regress.
 """
 
-from agent.context_compressor import (
-    HISTORICAL_IN_PROGRESS_HEADING,
-    HISTORICAL_PENDING_ASKS_HEADING,
-    HISTORICAL_REMAINING_WORK_HEADING,
-    HISTORICAL_TASK_HEADING,
-    SUMMARY_PREFIX,
-)
+from agent.context_compressor import SUMMARY_PREFIX
 
 
 def test_no_resume_exactly_directive():
@@ -36,22 +30,8 @@ def test_latest_message_wins_on_conflict():
     """The prefix must explicitly say latest user message wins on conflict."""
     lower = SUMMARY_PREFIX.lower()
     assert "latest user message" in lower
-    assert HISTORICAL_TASK_HEADING.lower() in lower
-    assert HISTORICAL_PENDING_ASKS_HEADING.lower() in lower
-    assert HISTORICAL_REMAINING_WORK_HEADING.lower() in lower
     # Must have an explicit conflict-resolution rule.
-    assert "wins" in lower or "supersede" in lower or "discard" in lower or "priority" in lower
-
-
-def test_handoff_sections_are_framed_as_historical():
-    """The summary headings referenced in the prefix must sound historical,
-    not like live instructions for the current turn."""
-    lower = SUMMARY_PREFIX.lower()
-    assert "## active task" not in lower
-    assert "## pending user asks" not in lower
-    assert "## remaining work" not in lower
-    assert HISTORICAL_TASK_HEADING.lower() in lower
-    assert HISTORICAL_IN_PROGRESS_HEADING.lower() in lower
+    assert "wins" in lower or "supersede" in lower or "discard" in lower
 
 
 def test_reverse_signals_called_out():
@@ -80,37 +60,3 @@ def test_memory_authority_preserved():
     assert "MEMORY.md" in SUMMARY_PREFIX
     assert "USER.md" in SUMMARY_PREFIX
     assert "authoritative" in SUMMARY_PREFIX
-
-
-def test_no_background_consistency_carveout():
-    """The "consistent → use as background" carveout licensed stale-task
-    resumption on topic overlap (#41607, #38364, #42812). It must stay gone,
-    and the prefix must explicitly neutralize topic overlap."""
-    lower = SUMMARY_PREFIX.lower()
-    assert "you may use the summary as background" not in lower
-    assert "topic overlap" in lower
-
-
-def test_replaced_prefixes_are_frozen_for_renormalization():
-    """Every retired SUMMARY_PREFIX must be frozen into
-    _HISTORICAL_SUMMARY_PREFIXES, otherwise summaries persisted by older
-    builds lose detection/renormalization after an upgrade. The carveout-era
-    prefix is the latest retiree."""
-    from agent.context_compressor import (
-        _HISTORICAL_SUMMARY_PREFIXES,
-        ContextCompressor,
-    )
-
-    carveout_era = [
-        p for p in _HISTORICAL_SUMMARY_PREFIXES
-        if "you may use the summary as background" in p
-    ]
-    assert carveout_era, "carveout-era prefix missing from frozen tuple"
-    # The live prefix must never be one of the frozen ones.
-    assert SUMMARY_PREFIX not in _HISTORICAL_SUMMARY_PREFIXES
-    # Detection + strip must work for every frozen prefix.
-    for old_prefix in _HISTORICAL_SUMMARY_PREFIXES:
-        content = old_prefix + "\n## Summary body"
-        assert ContextCompressor._is_context_summary_content(content)
-        stripped = ContextCompressor._strip_summary_prefix(content)
-        assert not stripped.startswith(old_prefix)

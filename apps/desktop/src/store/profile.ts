@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { getProfiles, setApiRequestProfile } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -12,8 +12,6 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
-import { setConnection } from '@/store/session'
-import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
@@ -36,13 +34,6 @@ export const $profiles = atom<ProfileInfo[]>([])
 
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
-}
-
-export async function refreshProfiles(): Promise<ProfileInfo[]> {
-  const { profiles } = await getProfiles()
-  $profiles.set(profiles)
-
-  return profiles
 }
 
 // ── Rail order ─────────────────────────────────────────────────────────────
@@ -110,10 +101,7 @@ interface ActiveProfileResponse {
 // Best-effort: failures (backend not up yet) leave the prior values intact.
 export async function refreshActiveProfile(): Promise<void> {
   try {
-    const res = await window.hermesDesktop.api<ActiveProfileResponse>({
-      path: '/api/profiles/active',
-      timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
-    })
+    const res = await window.hermesDesktop.api<ActiveProfileResponse>({ path: '/api/profiles/active' })
 
     setActiveProfile(res.current || 'default')
   } catch {
@@ -121,7 +109,8 @@ export async function refreshActiveProfile(): Promise<void> {
   }
 
   try {
-    await refreshProfiles()
+    const { profiles } = await getProfiles()
+    $profiles.set(profiles)
   } catch {
     // Leave the cached list in place.
   }
@@ -154,13 +143,12 @@ export const $activeGatewayProfile = atom<string>('default')
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
 
-// Bumped whenever the open session should be dropped for a fresh new-session
-// draft: a profile switch/create (below), or deleting the project that owns the
-// currently-open session (store/projects). The chat controller subscribes and
-// resets to the intro draft, so we never strand the user in an orphaned view.
+// Bumped whenever the profile context actually changes (switch or create). The
+// chat controller subscribes and drops to a fresh new-session draft, so the
+// session you were in doesn't stay sticky across a profile switch.
 export const $freshSessionRequest = atom(0)
 
-export function requestFreshSession(): void {
+function requestFreshSession(): void {
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
 
@@ -178,7 +166,6 @@ $activeGatewayProfile.subscribe(value => {
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
     // Profile-scoped settings + the unified session list are now stale.
     void queryClient.invalidateQueries()
-    resetStarmapGraph()
   }
 
   _lastRoutedProfile = key
@@ -190,32 +177,6 @@ $activeGatewayProfile.subscribe(value => {
 export const $gatewaySwapTarget = atom<string | null>(null)
 
 let gatewaySwitch: Promise<void> | null = null
-
-// Keep the renderer's $connection (mode / baseUrl / profile) in lockstep with
-// the profile the live gateway is now on. $connection seeds from the PRIMARY
-// (window) backend at boot and otherwise only refreshes on a sleep/wake
-// reconnect — so activating a *background* profile left $connection describing
-// the primary, with the wrong `mode` for everything that branches on
-// local-vs-remote. Headline symptom: with a local primary and a remote pool
-// profile active, image attachments went out via the path-based `image.attach`
-// instead of `image.attach_bytes`, handing the remote gateway a client-only
-// path it can't resolve ("image not found: C:\…"), while the /api/fs/* file
-// browser and /api/media fetches targeted the wrong machine (#46651).
-// Best-effort: a failed descriptor fetch leaves the prior connection intact for
-// boot/reconnect to resync.
-async function syncConnectionToActiveProfile(profile: string): Promise<void> {
-  const getConnection = window.hermesDesktop?.getConnection
-
-  if (!getConnection) {
-    return
-  }
-
-  try {
-    setConnection(await getConnection(profile))
-  } catch {
-    // Leave the prior connection in place; boot/reconnect resyncs it later.
-  }
-}
 
 // Make `profile`'s backend the active gateway, lazily opening its socket if it
 // isn't live yet. Unlike the old single-socket swap, background profiles keep
@@ -257,9 +218,6 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // the active gateway at it — without closing the profile you came from.
     await ensureGatewayForProfile(target)
     $activeGatewayProfile.set(target)
-    // The active backend just changed; resync $connection so remote-aware
-    // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.
-    await syncConnectionToActiveProfile(target)
   })()
 
   try {

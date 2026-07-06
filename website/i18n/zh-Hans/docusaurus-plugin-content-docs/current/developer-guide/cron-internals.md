@@ -159,38 +159,30 @@ import requests, json
 
 ## 投递模型
 
-Cron 任务结果可投递到任何受支持的平台。
-
-裸平台名（`slack`、`telegram` 等）会投递到该平台配置的**主频道**。若要投递到**特定**目标，请在冒号后追加目标：`platform:<target>`。目标在任务触发时解析（而非创建时），因此任务可以指定一个尚未连接的平台目标，待其上线后即开始投递。
-
-大多数平台还支持以第三段指定可选的话题/线程：`platform:<chat_id>:<thread_id>`。
+Cron 任务结果可投递到任何受支持的平台：
 
 | 目标 | 语法 | 示例 |
 |--------|--------|---------|
 | 来源聊天 | `origin` | 投递到创建该任务的聊天 |
 | 本地文件 | `local` | 保存到 `~/.hermes/cron/output/` |
-| Telegram | `telegram`、`telegram:<chat_id>`、`telegram:<chat_id>:<thread_id>`、`telegram:@username` | `telegram:-1001234567890:17585` |
-| Discord | `discord`、`discord:#channel`、`discord:<channel_id>`、`discord:<channel_id>:<thread_id>` | `discord:#engineering` |
-| Slack | `slack`、`slack:#channel`、`slack:<channel_id>`、`slack:<channel_id>:<thread_ts>` | `slack:#engineering` |
-| Matrix | `matrix`、`matrix:<!room_id:server>`、`matrix:<@user:server>` | `matrix:!abc123:example.org` |
-| Feishu | `feishu`、`feishu:<chat_id>`、`feishu:<chat_id>:<thread_id>` | `feishu:oc_abc123def` |
-| WhatsApp | `whatsapp`、`whatsapp:<jid>`、`whatsapp:+<E.164>` | `whatsapp:123456@g.us` |
-| Signal | `signal`、`signal:group:<id>`、`signal:+<E.164>` | `signal:group:aBcD==` |
-| SMS | `sms`、`sms:+<E.164>` | `sms:+<E.164 号码>` |
-| Email | `email`、`email:<address>` | `email:alerts@example.com` |
-| Weixin | `weixin`、`weixin:<wxid>` | `weixin:wxid_abc123` |
-| Mattermost | `mattermost` 或 `mattermost:<channel_id>` | 裸名投递到 Mattermost 主频道 |
-| Home Assistant | `homeassistant` 或 `homeassistant:<conversation>` | 裸名投递到 HA 对话 |
-| DingTalk | `dingtalk` 或 `dingtalk:<chat_id>` | 裸名投递到钉钉 |
-| WeCom | `wecom` 或 `wecom:<chat_id>` | 裸名投递到企业微信 |
-| BlueBubbles | `bluebubbles` 或 `bluebubbles:<chat_guid>` | 裸名通过 BlueBubbles 投递到 iMessage |
-| QQ Bot | `qqbot` 或 `qqbot:<chat_id>` | 裸名通过官方 API v2 投递到 QQ（腾讯） |
+| Telegram | `telegram` 或 `telegram:<chat_id>` | `telegram:-1001234567890` |
+| Discord | `discord` 或 `discord:#channel` | `discord:#engineering` |
+| Slack | `slack` | 投递到 Slack 主频道 |
+| WhatsApp | `whatsapp` | 投递到 WhatsApp 主会话 |
+| Signal | `signal` | 投递到 Signal |
+| Matrix | `matrix` | 投递到 Matrix 主房间 |
+| Mattermost | `mattermost` | 投递到 Mattermost 主频道 |
+| Email | `email` | 通过邮件投递 |
+| SMS | `sms` | 通过短信投递 |
+| Home Assistant | `homeassistant` | 投递到 HA 对话 |
+| DingTalk | `dingtalk` | 投递到钉钉 |
+| Feishu | `feishu` | 投递到飞书 |
+| WeCom | `wecom` | 投递到企业微信 |
+| Weixin | `weixin` | 投递到微信（WeChat） |
+| BlueBubbles | `bluebubbles` | 通过 BlueBubbles 投递到 iMessage |
+| QQ Bot | `qqbot` | 通过官方 API v2 投递到 QQ（腾讯） |
 
-第一组平台具有显式、经校验的目标语法——具名频道（`#channel`）、话题/线程、房间/用户 ID、群组 ID 或电话号码。其余平台接受通用的 `platform:<chat_id>` 形式（冒号后的值原样用作目标 ID）；裸平台名始终投递到主频道。
-
-**具名频道**（`slack:#engineering`、`discord:#engineering`，或像 `slack:engineering` 这样的友好名称）会根据 gateway 从已连接适配器构建的频道目录进行解析，因此 gateway 必须已发现该频道，名称解析才能成功；原始 ID（`slack:C0123ABCD45`）则始终可用。
-
-对于 **Telegram 话题**，使用 `telegram:<chat_id>:<thread_id>`（例如 `telegram:-1001234567890:17585`）。对于 **Slack 线程**，第三段是父消息的 `thread_ts`（例如 `slack:C0123ABCD45:1700000000.000100`），因此仅在回复某条已有消息下方时适用。
+对于 Telegram 话题，使用格式 `telegram:<chat_id>:<thread_id>`（例如 `telegram:-1001234567890:17585`）。
 
 ### 响应包装
 

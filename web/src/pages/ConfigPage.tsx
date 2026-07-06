@@ -177,19 +177,9 @@ export default function ConfigPage() {
       .getDefaults()
       .then(setDefaults)
       .catch(() => {});
-    // getConfigRaw is profile-scoped (fetchJSON appends ?profile=), so its
-    // `path` reflects the switched profile's config.yaml. /api/status's
-    // config_path is machine-global (the dashboard's own profile) — wrong
-    // header under the global profile switcher, so it's only a fallback.
-    api
-      .getConfigRaw()
-      .then((resp) => {
-        if (resp.path) setConfigPath(resp.path);
-      })
-      .catch(() => {});
     api
       .getStatus()
-      .then((resp) => setConfigPath((prev) => prev ?? resp.config_path))
+      .then((resp) => setConfigPath(resp.config_path))
       .catch(() => {});
   }, []);
 

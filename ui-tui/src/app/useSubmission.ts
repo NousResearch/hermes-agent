@@ -1,20 +1,28 @@
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
-import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
+import { attachedImageNotice } from '../domain/messages.js'
+import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
+import type {
+  InputDetectDropResponse,
+  PromptSubmitResponse,
+  SessionSteerResponse,
+  ShellExecResponse
+} from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 import type { Msg } from '../types.js'
 
 import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
-import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
+const SESSION_BUSY_RE = /session busy|waiting for model response/i
+
+const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
 
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
@@ -80,19 +88,62 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (text: string, showUserMessage = true) => {
       const expand = expandSnips(composerState.pasteSnips)
 
-      submitPrompt(
-        text,
-        {
-          appendMessage,
-          enqueue: composerActions.enqueue,
-          expand,
-          gw,
-          maybeGoodVibes,
-          setLastUserMsg,
-          sys
-        },
-        showUserMessage
-      )
+      const startSubmit = (displayText: string, submitText: string, showUserMessage = true) => {
+        const sid = getUiState().sid
+
+        if (!sid) {
+          return sys('session not ready yet')
+        }
+
+        turnController.clearStatusTimer()
+        maybeGoodVibes(submitText)
+        setLastUserMsg(text)
+
+        if (showUserMessage) {
+          appendMessage({ role: 'user', text: displayText })
+        }
+
+        patchUiState({ busy: true, status: 'running…' })
+        turnController.bufRef = ''
+        turnController.interrupted = false
+
+        gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
+          if (isSessionBusyError(e)) {
+            composerActions.enqueue(submitText)
+            patchUiState({ busy: true, status: 'queued for next turn' })
+
+            return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+          }
+
+          sys(`error: ${e.message}`)
+          patchUiState({ busy: false, status: 'ready' })
+        })
+      }
+
+      const sid = getUiState().sid
+
+      if (!sid) {
+        return sys('session not ready yet')
+      }
+
+      // Always ask the backend whether this looks like a file drop.
+      // The backend's _detect_file_drop handles paths with spaces, quotes,
+      // Windows drive letters, and escaped characters correctly.
+      gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
+        .then(r => {
+          if (!r?.matched) {
+            return startSubmit(text, expand(text), showUserMessage)
+          }
+
+          if (r.is_image) {
+            turnController.pushActivity(attachedImageNotice(r))
+          } else {
+            turnController.pushActivity(`detected file: ${r.name}`)
+          }
+
+          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
+        })
+        .catch(() => startSubmit(text, expand(text), showUserMessage))
     },
     [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
@@ -303,10 +354,14 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (value: string) => {
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
-        const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
 
-        if (next !== null) {
-          return composerActions.setInput(next)
+        if (row?.text) {
+          const text = value.startsWith('/') && row.text.startsWith('/') ? row.text.slice(1) : row.text
+          const next = value.slice(0, composerState.compReplace) + text
+
+          if (next !== value) {
+            return composerActions.setInput(next)
+          }
         }
       }
 

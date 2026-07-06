@@ -20,7 +20,8 @@ def _no_unawaited_warnings(caught, *, coro_name: str = "") -> bool:
     """Return True if no "X was never awaited" warning slipped through.
 
     When *coro_name* is provided, only warnings naming that coroutine are
-    counted
+    counted — xdist workers may emit unrelated unawaited-coroutine warnings
+    (e.g. ``AsyncMockMixin._execute_mock_call``) from concurrent tests.
     """
     bad = [
         w for w in caught

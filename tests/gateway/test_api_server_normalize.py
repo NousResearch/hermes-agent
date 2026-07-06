@@ -1,6 +1,5 @@
 """Tests for _normalize_chat_content in the API server adapter."""
 
-from gateway.platforms import api_server
 from gateway.platforms.api_server import _normalize_chat_content
 
 
@@ -86,19 +85,3 @@ class TestNormalizeChatContent:
 
     def test_empty_list_returns_empty(self):
         assert _normalize_chat_content([]) == ""
-
-    def test_many_small_parts_normalize_without_quadratic_rescan(self, monkeypatch):
-        """Large content arrays should normalize in linear time."""
-        content = [{"type": "text", "text": "x"} for _ in range(1000)]
-        sum_calls = 0
-
-        def counting_sum(values):
-            nonlocal sum_calls
-            sum_calls += 1
-            return sum(values)
-
-        monkeypatch.setattr(api_server, "sum", counting_sum, raising=False)
-        result = _normalize_chat_content(content)
-
-        assert result.count("x") == 1000
-        assert sum_calls == 0

@@ -1,8 +1,6 @@
 import ignore from 'ignore'
 
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
-import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
-import { ALWAYS_EXCLUDED } from '@/lib/excluded-paths'
 
 export type ProjectTreeEntry = HermesReadDirEntry
 
@@ -29,7 +27,7 @@ function decodeDataUrl(dataUrl: string) {
 }
 
 function clean(path: string) {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
+  return path.replace(/\/+$/, '') || '/'
 }
 
 /** Strict POSIX-style relative path; null if `child` is not inside `root`. */
@@ -65,11 +63,15 @@ function ancestorDirs(root: string, dir: string) {
 }
 
 async function gitRootFor(start: string) {
-  const key = `${desktopFsCacheKey()}:${clean(start)}`
+  if (!window.hermesDesktop?.gitRoot) {
+    return null
+  }
+
+  const key = clean(start)
   let cached = gitRootCache.get(key)
 
   if (!cached) {
-    cached = desktopGitRoot(clean(start))
+    cached = window.hermesDesktop.gitRoot(key)
     gitRootCache.set(key, cached)
   }
 
@@ -78,14 +80,18 @@ async function gitRootFor(start: string) {
 
 /** Read .gitignore at `dir` if it actually exists — never probe missing files. */
 async function readGitignore(dir: string): Promise<GitignoreRule | null> {
+  if (!window.hermesDesktop?.readDir || !window.hermesDesktop.readFileDataUrl) {
+    return null
+  }
+
   try {
-    const listing = await readDesktopDir(dir)
+    const listing = await window.hermesDesktop.readDir(dir)
 
     if (!listing.entries.some(e => e.name === '.gitignore' && !e.isDirectory)) {
       return null
     }
 
-    const text = decodeDataUrl(await readDesktopFileDataUrl(`${dir}/.gitignore`))
+    const text = decodeDataUrl(await window.hermesDesktop.readFileDataUrl(`${dir}/.gitignore`))
 
     return { base: dir, ig: ignore().add(text) }
   } catch {
@@ -94,11 +100,11 @@ async function readGitignore(dir: string): Promise<GitignoreRule | null> {
 }
 
 async function gitignoreFor(dir: string) {
-  const key = `${desktopFsCacheKey()}:${clean(dir)}`
+  const key = clean(dir)
   let cached = gitignoreCache.get(key)
 
   if (!cached) {
-    cached = readGitignore(clean(dir))
+    cached = readGitignore(key)
     gitignoreCache.set(key, cached)
   }
 
@@ -136,10 +142,9 @@ export async function readProjectDir(dirPath: string, rootPath = dirPath): Promi
     return { entries: [], error: 'no-bridge' }
   }
 
-  const result = await readDesktopDir(dirPath)
-  const entries = (result?.entries ?? []).filter(entry => !ALWAYS_EXCLUDED.has(entry.name))
+  const result = await window.hermesDesktop.readDir(dirPath)
 
-  return { ...result, entries: await filterIgnored(entries, rootPath, dirPath) }
+  return { ...result, entries: await filterIgnored(result.entries, rootPath, dirPath) }
 }
 
 export function clearProjectDirCache(rootPath?: string) {
@@ -150,7 +155,7 @@ export function clearProjectDirCache(rootPath?: string) {
     return
   }
 
-  const key = `${desktopFsCacheKey()}:${clean(rootPath)}`
+  const key = clean(rootPath)
   gitRootCache.delete(key)
   gitignoreCache.delete(key)
 }

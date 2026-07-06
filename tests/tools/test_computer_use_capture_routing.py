@@ -204,7 +204,7 @@ class TestCaptureResponseRoutedToAuxVision:
         args, _kwargs = fake_vat.call_args
         path_arg, prompt_arg = args[0], args[1]
         assert str(tmp_cache_dir) in path_arg
-        assert "desktop application screenshot" in prompt_arg
+        assert "macOS application screenshot" in prompt_arg
         # AX summary is included so the aux model can ground its description
         # against the same set-of-mark index the agent will see.
         assert "Sign in" in prompt_arg
@@ -298,17 +298,15 @@ class TestCaptureResponseRoutedToAuxVision:
                    new_callable=lambda: fake_vat):
             resp = cu_tool._capture_response(cap)
 
-        # Aux failure with routing requested degrades to the AX/SOM text
-        # payload. Falling through to a multimodal envelope can hand pixels to
-        # a text-only model and fail the provider request.
-        assert isinstance(resp, str)
-        body = json.loads(resp)
-        assert body.get("vision_unavailable") is True
+        # Aux failure → fall back to multimodal envelope (so the user still
+        # gets *something* useful even if vision is broken).
+        assert isinstance(resp, dict)
+        assert resp.get("_multimodal") is True
         # Temp file must still be cleaned up.
         assert observed_path["path"]
         assert not os.path.exists(observed_path["path"])
 
-    def test_empty_aux_analysis_degrades_to_text_payload(self, tmp_cache_dir):
+    def test_empty_aux_analysis_falls_back_to_multimodal(self, tmp_cache_dir):
         from tools.computer_use import tool as cu_tool
 
         cap = _make_capture(mode="som")
@@ -325,15 +323,12 @@ class TestCaptureResponseRoutedToAuxVision:
                    new_callable=lambda: fake_vat):
             resp = cu_tool._capture_response(cap)
 
-        # Empty analysis is treated as failure; with routing requested the
-        # capture degrades to the AX/SOM text payload (elements stay usable)
-        # rather than embedding an empty 'vision_analysis' string.
-        assert isinstance(resp, str)
-        body = json.loads(resp)
-        assert body.get("vision_unavailable") is True
-        assert body.get("elements") is not None
+        # Empty analysis is treated as failure — we'd rather show pixels
+        # than embed an empty 'vision_analysis' string into the result.
+        assert isinstance(resp, dict)
+        assert resp.get("_multimodal") is True
 
-    def test_invalid_aux_response_degrades_to_text_payload(self, tmp_cache_dir):
+    def test_invalid_aux_response_falls_back_to_multimodal(self, tmp_cache_dir):
         from tools.computer_use import tool as cu_tool
 
         cap = _make_capture(mode="som")
@@ -350,9 +345,8 @@ class TestCaptureResponseRoutedToAuxVision:
                    new_callable=lambda: fake_vat):
             resp = cu_tool._capture_response(cap)
 
-        assert isinstance(resp, str)
-        body = json.loads(resp)
-        assert body.get("vision_unavailable") is True
+        assert isinstance(resp, dict)
+        assert resp.get("_multimodal") is True
 
 
 # ---------------------------------------------------------------------------

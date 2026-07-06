@@ -39,7 +39,7 @@ from gateway.session import SessionSource
 class _NoDeleteAdapter(BasePlatformAdapter):
     """Adapter that does NOT override delete_message (silent degrade)."""
 
-    async def connect(self, *, is_reconnect: bool = False):
+    async def connect(self):
         pass
 
     async def disconnect(self):
@@ -59,7 +59,7 @@ class _DeleteCapableAdapter(BasePlatformAdapter):
         super().__init__(*a, **kw)
         self.deleted: list[tuple[str, str]] = []
 
-    async def connect(self, *, is_reconnect: bool = False):
+    async def connect(self):
         pass
 
     async def disconnect(self):

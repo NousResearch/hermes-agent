@@ -32,7 +32,10 @@ export function profileColor(name: null | string | undefined): null | string {
 
 // A profile's effective color: a user-picked override wins, else the
 // deterministic hue. Default/empty stays neutral (null) regardless.
-export function resolveProfileColor(name: null | string | undefined, overrides: Record<string, string>): null | string {
+export function resolveProfileColor(
+  name: null | string | undefined,
+  overrides: Record<string, string>
+): null | string {
   const key = (name ?? '').trim()
 
   if (!key || key === 'default') {

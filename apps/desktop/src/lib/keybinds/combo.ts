@@ -175,13 +175,6 @@ export function formatCombo(combo: string): string {
   return IS_MAC ? tokens.join('') : tokens.join('+')
 }
 
-// True when focus currently sits inside an element matching `selector`. The
-// primitive for focus-scoped shortcuts — e.g. routing ⌘W to whichever surface
-// (terminal, preview, …) owns focus.
-export function isFocusWithin(selector: string): boolean {
-  return document.activeElement?.closest(selector) != null
-}
-
 // True when focus is in a text-entry surface, so bare-key shortcuts don't fire
 // while the user is typing.
 export function isEditableTarget(target: EventTarget | null): boolean {

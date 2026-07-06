@@ -240,21 +240,3 @@ class TestBranchCommandDef:
         from hermes_cli.commands import COMMAND_REGISTRY
         branch = next(c for c in COMMAND_REGISTRY if c.name == "branch")
         assert branch.category == "Session"
-
-
-class TestBranchFlushesBeforeEndSession:
-    """Regression for #47202: /branch must flush un-persisted messages to
-    the session DB before ending the old session, just like /new and
-    compress_context() already do."""
-
-    def test_branch_flushes_when_agent_present(self, cli_instance, session_db):
-        from cli import HermesCLI
-
-        agent = MagicMock()
-        cli_instance.agent = agent
-
-        HermesCLI._handle_branch_command(cli_instance, "/branch")
-
-        agent._flush_messages_to_session_db.assert_called_once_with(
-            cli_instance.conversation_history
-        )

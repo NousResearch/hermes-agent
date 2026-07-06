@@ -93,13 +93,7 @@ describe('fuzzyRank', () => {
 
   it('is stable for equal scores (original index tiebreak)', () => {
     const items = ['ab', 'ab', 'ab']
-
-    const ranked = fuzzyRank(
-      items.map((v, i) => ({ v, i })),
-      'ab',
-      x => x.v
-    )
-
+    const ranked = fuzzyRank(items.map((v, i) => ({ v, i })), 'ab', x => x.v)
     expect(ranked.map(r => r.item.i)).toEqual([0, 1, 2])
   })
 

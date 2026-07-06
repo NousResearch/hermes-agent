@@ -28,7 +28,6 @@ from pydantic import BaseModel
 from hermes_cli.dashboard_auth import (
     get_provider,
     list_providers,
-    list_session_providers,
 )
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
@@ -39,7 +38,6 @@ from hermes_cli.dashboard_auth.base import (
 from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie,
     clear_session_cookies,
-    clear_sso_attempt_cookie,
     detect_https,
     read_pkce_cookie,
     read_session_cookies,
@@ -151,9 +149,7 @@ async def login_page(request: Request) -> HTMLResponse:
 
 @router.get("/api/auth/providers", name="auth_providers")
 async def api_auth_providers() -> Any:
-    # Advertise only interactive providers; a token-only credential (e.g. drain)
-    # is not a sign-in option.
-    providers = list_session_providers()
+    providers = list_providers()
     if not providers:
         # Q13: fail-closed when zero providers are registered.
         return JSONResponse(
@@ -186,11 +182,6 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         raise HTTPException(
             status_code=404,
             detail=f"Unknown provider: {provider!r}",
-        )
-    if not getattr(p, "supports_session", True):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Provider does not support interactive login: {provider!r}",
         )
 
     try:
@@ -359,9 +350,6 @@ async def auth_callback(
         prefix=_prefix(request),
     )
     clear_pkce_cookie(resp, prefix=_prefix(request))
-    # Clear the one-shot auto-SSO loop-guard marker now that login succeeded,
-    # so it never lingers to suppress a future silent attempt after logout.
-    clear_sso_attempt_cookie(resp, prefix=_prefix(request))
     return resp
 
 
@@ -608,8 +596,7 @@ async def api_auth_ws_ticket(request: Request):
 
     Browsers cannot set ``Authorization`` on a WebSocket upgrade, so in
     gated mode the SPA POSTs this endpoint to get a ``?ticket=`` value to
-    append to ``/api/pty``, ``/api/console``, ``/api/ws``, ``/api/pub``, or
-    ``/api/events``.
+    append to ``/api/pty``, ``/api/ws``, ``/api/pub``, or ``/api/events``.
 
     The ticket has a 30-second TTL and is single-use. Calling this endpoint
     multiple times in quick succession (e.g. one ticket per WS) is the

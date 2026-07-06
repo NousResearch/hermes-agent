@@ -274,125 +274,17 @@ class TestEnsurepipFix:
 # =========================================================================
 
 class TestHostPrefixList:
-    """Verify the host prefix list catches common host-only paths.
+    """Verify the host prefix list catches common host-only paths."""
 
-    The prefixes used to live as an inline literal inside ``_get_env_config``;
-    they now live in the module-level ``_HOST_CWD_PREFIXES`` constant shared by
-    both the ``_get_env_config`` sanitizer and the override-resolution guard
-    (``_is_unusable_container_cwd``). Assert the *behavior* (each common host
-    prefix is flagged as unusable inside a container) rather than grepping a
-    function's source — the latter is a change-detector that breaks on any
-    refactor that moves the constant.
-    """
-
-    def test_all_common_host_prefixes_present_in_constant(self):
-        """The shared prefix constant must list the common host-only roots."""
-        for prefix in ("/Users/", "/home/", "C:\\", "C:/"):
-            assert prefix in _tt_mod._HOST_CWD_PREFIXES, (
-                f"Host prefix {prefix!r} missing from _HOST_CWD_PREFIXES. "
+    def test_all_common_host_prefixes_caught(self):
+        """The host prefix check should catch /Users/, /home/, C:\\, C:/."""
+        # Read the actual source to verify the prefixes
+        import inspect
+        source = inspect.getsource(_tt_mod._get_env_config)
+        for prefix in ["/Users/", "/home/", 'C:\\\\"', "C:/"]:
+            # Normalize for source comparison
+            check = prefix.rstrip('"')
+            assert check in source or prefix in source, (
+                f"Host prefix {prefix!r} not found in _get_env_config. "
                 "Container backends need this to avoid using host paths."
             )
-
-    def test_all_common_host_paths_flagged_unusable(self):
-        """A host path under each prefix must be rejected as a container cwd."""
-        for host_path in ("/Users/me/proj", "/home/me/proj",
-                           "C:\\Users\\me", "C:/Users/me"):
-            assert _tt_mod._is_unusable_container_cwd(host_path) is True, (
-                f"Host path {host_path!r} should be rejected as a container "
-                "cwd but was accepted."
-            )
-
-
-# =========================================================================
-# Test 7: Host-bound Docker sandboxes must not bypass dangerous-command
-# approval. Isolated Docker keeps the container fast-path; once a host path
-# is bind-mounted into the container, a command like `rm -rf /workspace` can
-# reach real host files, so it goes through the normal approval flow.
-# (PR #6436, @Kolektori)
-# =========================================================================
-
-class TestDockerHostBindApproval:
-    """Docker host bind mounts disable the container approval fast-path."""
-
-    def test_docker_host_access_detection(self):
-        """_docker_has_host_access flags bind-mounted host paths only."""
-        # Isolated docker (no host binds) -> not host access.
-        assert _tt_mod._docker_has_host_access(
-            {"env_type": "docker", "docker_volumes": [],
-             "host_cwd": None, "docker_mount_cwd_to_workspace": False}) is False
-        # Host-path bind mount -> host access.
-        assert _tt_mod._docker_has_host_access(
-            {"env_type": "docker", "docker_volumes": ["/tmp:/hosttmp"]}) is True
-        # Named volume (not a host path) -> not host access.
-        assert _tt_mod._docker_has_host_access(
-            {"env_type": "docker", "docker_volumes": ["myvol:/data"]}) is False
-        # cwd auto-mount flag -> host access.
-        assert _tt_mod._docker_has_host_access(
-            {"env_type": "docker", "host_cwd": "/home/u/p",
-             "docker_mount_cwd_to_workspace": True}) is True
-        # Windows host path -> host access.
-        assert _tt_mod._docker_has_host_access(
-            {"env_type": "docker", "docker_volumes": ["C:\\Users:/data"]}) is True
-        # Other container backends never report host access.
-        assert _tt_mod._docker_has_host_access(
-            {"env_type": "modal", "docker_volumes": ["/tmp:/x"]}) is False
-
-    def test_should_skip_container_guards(self):
-        """Docker skips only when isolated; other sandboxes always skip."""
-        import tools.approval as A
-        assert A._should_skip_container_guards("docker", has_host_access=False) is True
-        assert A._should_skip_container_guards("docker", has_host_access=True) is False
-        assert A._should_skip_container_guards("modal", has_host_access=True) is True
-        assert A._should_skip_container_guards("singularity") is True
-        assert A._should_skip_container_guards("daytona") is True
-        assert A._should_skip_container_guards("local") is False
-
-    def test_isolated_docker_keeps_fast_path(self, monkeypatch):
-        """Isolated Docker still bypasses dangerous-command approval."""
-        import tools.approval as A
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda _c: {"action": "allow", "findings": [], "summary": ""})
-        res = A.check_all_command_guards("rm -rf /workspace", "docker",
-                                         has_host_access=False)
-        assert res["approved"] is True
-
-    def test_host_bound_docker_requires_approval(self, monkeypatch):
-        """Host-bound Docker dangerous command escalates instead of bypassing."""
-        import tools.approval as A
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda _c: {"action": "allow", "findings": [], "summary": ""})
-        res = A.check_all_command_guards("rm -rf /workspace", "docker",
-                                         has_host_access=True)
-        # Must NOT take the silent container fast-path.
-        assert res.get("approved") is not True
-        assert res.get("status") == "pending_approval"
-
-    def test_execute_code_isolated_docker_keeps_fast_path(self, monkeypatch):
-        """Isolated Docker execute_code still bypasses the guard."""
-        import tools.approval as A
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        res = A.check_execute_code_guard("import os", "docker",
-                                         has_host_access=False)
-        assert res["approved"] is True
-
-    def test_execute_code_host_bound_docker_requires_approval(self, monkeypatch):
-        """Host-bound Docker execute_code does not get the container fast-path."""
-        import tools.approval as A
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        res = A.check_execute_code_guard(
-            "import os; os.system('rm -rf /workspace')", "docker",
-            has_host_access=True)
-        assert res.get("approved") is not True
-        assert res.get("status") == "pending_approval"
-
-    def test_execute_code_vercel_sandbox_always_skips(self, monkeypatch):
-        """vercel_sandbox has no host-bind concept and stays always-skipped."""
-        import tools.approval as A
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        res = A.check_execute_code_guard("import os", "vercel_sandbox",
-                                         has_host_access=True)
-        assert res["approved"] is True

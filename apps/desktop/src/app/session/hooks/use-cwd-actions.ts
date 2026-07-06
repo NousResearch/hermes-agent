@@ -20,7 +20,6 @@ export function useCwdActions({
 }: CwdActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
-
   const refreshProjectBranch = useCallback(
     async (cwd: string) => {
       const target = cwd.trim()

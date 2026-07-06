@@ -22,7 +22,7 @@ _PERSISTABLE_PROVIDER_SOURCES = frozenset({
     ("minimax-oauth", "oauth"),
     ("nous", "device_code"),
     ("openai-codex", "device_code"),
-    ("xai-oauth", "device_code"),
+    ("xai-oauth", "loopback_pkce"),
 })
 
 _SAFE_SECRETISH_METADATA_KEYS = frozenset({

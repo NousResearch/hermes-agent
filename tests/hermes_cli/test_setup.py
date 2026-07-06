@@ -164,12 +164,6 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
     monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
-    # Keep the checklist pre-selection (so matrix stays "configured" and the
-    # post-config service guidance runs), but stub the migrated plugins'
-    # interactive_setup so their wizards don't read real stdin. #41112.
-    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda _q, _items, pre=(), **k: list(pre))
-    import hermes_cli.gateway as _gw_mod
-    monkeypatch.setattr(_gw_mod, "_configure_platform", lambda *a, **k: None)
     monkeypatch.setattr("platform.system", lambda: "Linux")
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
@@ -209,12 +203,6 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
-    # Keep the checklist pre-selection (so matrix stays "configured" and the
-    # post-config service guidance runs), but stub the migrated plugins'
-    # interactive_setup so their wizards don't read real stdin. #41112.
-    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda _q, _items, pre=(), **k: list(pre))
-    import hermes_cli.gateway as _gw_mod
-    monkeypatch.setattr(_gw_mod, "_configure_platform", lambda *a, **k: None)
     monkeypatch.setattr("platform.system", lambda: "Linux")
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
@@ -491,52 +479,33 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     assert config["terminal"]["modal_mode"] == "direct"
 
 
-# test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
-# _setup_slack wizard migrated to the slack plugin's interactive_setup (#41112).
+def test_setup_slack_saves_home_channel(monkeypatch):
+    """_setup_slack() saves SLACK_HOME_CHANNEL when the user provides one."""
+    saved = {}
+    prompts = iter(["xoxb-test-token", "xapp-test-token", "", "C01ABC2DE3F"])
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda k, v: saved.update({k: v}))
+    monkeypatch.setattr(setup_mod, "prompt", lambda *_a, **_kw: next(prompts))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: False)
+    monkeypatch.setattr(setup_mod, "_write_slack_manifest_and_instruct", lambda: None)
+
+    setup_mod._setup_slack()
+
+    assert saved.get("SLACK_HOME_CHANNEL") == "C01ABC2DE3F"
 
 
-def test_prompt_yes_no_returns_default_when_noninteractive_env_set(monkeypatch):
-    """HERMES_NONINTERACTIVE=1 (set by dashboard/desktop spawns) must make
-    prompt_yes_no fall back to its default instead of reading stdin."""
-    monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
+def test_setup_slack_home_channel_empty_not_saved(monkeypatch):
+    """_setup_slack() does not save SLACK_HOME_CHANNEL when left blank."""
+    saved = {}
+    prompts = iter(["xoxb-test-token", "xapp-test-token", "", ""])
 
-    def _boom(*_a, **_k):
-        raise AssertionError("input() must not be called in non-interactive mode")
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda k, v: saved.update({k: v}))
+    monkeypatch.setattr(setup_mod, "prompt", lambda *_a, **_kw: next(prompts))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: False)
+    monkeypatch.setattr(setup_mod, "_write_slack_manifest_and_instruct", lambda: None)
 
-    monkeypatch.setattr("builtins.input", _boom)
+    setup_mod._setup_slack()
 
-    assert setup_mod.prompt_yes_no("Install it now?", True) is True
-    assert setup_mod.prompt_yes_no("Install it now?", False) is False
-
-
-def test_prompt_yes_no_eof_returns_default_instead_of_exiting(monkeypatch):
-    """A closed/redirected stdin (EOFError) must yield the default, not abort.
-
-    Regression: the Windows gateway start path asks "Install it now?" when the
-    service is not installed; spawned from the desktop app (stdin=DEVNULL) the
-    EOFError used to sys.exit(1), killing every desktop-triggered restart."""
-    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
-
-    def _eof(*_a, **_k):
-        raise EOFError
-
-    monkeypatch.setattr("builtins.input", _eof)
-
-    assert setup_mod.prompt_yes_no("Install it now?", True) is True
-    assert setup_mod.prompt_yes_no("Install it now?", False) is False
-
-
-def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
-    """Ctrl+C is an explicit user abort and must keep exiting."""
-    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
-
-    def _interrupt(*_a, **_k):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr("builtins.input", _interrupt)
-
-    import pytest
-
-    with pytest.raises(SystemExit):
-        setup_mod.prompt_yes_no("Install it now?", True)
-
+    assert "SLACK_HOME_CHANNEL" not in saved

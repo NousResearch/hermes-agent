@@ -334,48 +334,6 @@
     );
     return html;
   }
-  const MARKDOWN_ALLOWED_TAGS = new Set([
-    "a",
-    "code",
-    "em",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "li",
-    "p",
-    "pre",
-    "strong",
-    "ul",
-  ]);
-  function escapeAttribute(value) {
-    return escapeHtml(value).replace(/`/g, "&#96;");
-  }
-  function sanitizeMarkdownAttrs(tag, attrs) {
-    if (tag === "a") {
-      const hrefMatch =
-        /\shref=(["'])(.*?)\1/i.exec(attrs) ||
-        /\shref=([^\s>]+)/i.exec(attrs);
-      const href = hrefMatch ? (hrefMatch[2] || hrefMatch[1] || "").trim() : "";
-      if (!/^(https?:\/\/|mailto:)/i.test(href)) return "";
-      return ` href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer"`;
-    }
-    if (tag === "pre" && /\sclass=(["'])hermes-kanban-md-code\1/i.test(attrs)) {
-      return ' class="hermes-kanban-md-code"';
-    }
-    return "";
-  }
-  function sanitizeMarkdownHtml(html) {
-    return String(html || "").replace(
-      /<\/?([a-zA-Z][A-Za-z0-9-]*)([^>]*)>/g,
-      (match, rawTag, attrs) => {
-        const tag = rawTag.toLowerCase();
-        if (!MARKDOWN_ALLOWED_TAGS.has(tag)) return "";
-        if (/^<\s*\//.test(match)) return `</${tag}>`;
-        return `<${tag}${sanitizeMarkdownAttrs(tag, attrs || "")}>`;
-      },
-    );
-  }
 
   function MarkdownBlock(props) {
     const enabled = props.enabled !== false;
@@ -384,7 +342,7 @@
     }
     return h("div", {
       className: "hermes-kanban-md",
-      dangerouslySetInnerHTML: { __html: sanitizeMarkdownHtml(renderMarkdown(props.source || "")) },
+      dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || "") },
     });
   }
 

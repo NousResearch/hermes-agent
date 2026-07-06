@@ -5,7 +5,6 @@ import { notify, notifyError } from '@/store/notifications'
 
 interface ExportSessionParams {
   sessionId: string
-  profile?: string | null
   title?: string | null
   session?: SessionInfo
 }
@@ -32,8 +31,7 @@ export async function exportSession(sessionId: string, params: Omit<ExportSessio
   }
 
   try {
-    const profile = params.profile ?? params.session?.profile
-    const { messages } = await getSessionMessages(sessionId, profile)
+    const { messages } = await getSessionMessages(sessionId)
 
     const payload = {
       exported_at: new Date().toISOString(),

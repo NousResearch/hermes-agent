@@ -313,10 +313,8 @@ function linuxCopyArgs(tool: 'wl-copy' | 'xclip' | 'xsel'): string[] {
   switch (tool) {
     case 'wl-copy':
       return []
-
     case 'xclip':
       return ['-selection', 'clipboard']
-
     case 'xsel':
       return ['--clipboard', '--input']
   }

@@ -205,14 +205,7 @@ class MemoryStore:
             if not query:
                 return []
 
-            # FTS5 AND-joins tokens by default, which zeroes out recall on
-            # natural-language queries. Reuse the retriever's sanitizer
-            # (stopword drop + OR-join content tokens). Imported lazily to
-            # avoid a store->retrieval import cycle.
-            from plugins.memory.holographic.retrieval import FactRetriever
-
-            match_query = FactRetriever._sanitize_fts_query(query)
-            params: list = [match_query, min_trust]
+            params: list = [query, min_trust]
             category_clause = ""
             if category is not None:
                 category_clause = "AND f.category = ?"

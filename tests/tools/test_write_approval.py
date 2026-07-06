@@ -107,63 +107,6 @@ def test_memory_gate_on_then_apply(hermes_home):
     assert "approved entry" in store.user_entries[0]
 
 
-def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, capsys):
-    """#46783: ``/memory approve`` from a context with no live agent (e.g. the
-    Desktop GUI) passed ``memory_store=None`` into the shared handler, which
-    returned "memory store unavailable" and applied nothing. The CLI handler must
-    fall back to a freshly loaded on-disk store, like the gateway path does."""
-    import json
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools import write_approval as wa
-    from hermes_cli.cli_commands_mixin import CLICommandsMixin
-
-    _set_approval("memory", True)
-    staging = MemoryStore(); staging.load_from_disk()
-    r = json.loads(memory_tool("add", "memory", "remember the launch date", store=staging))
-    assert r.get("pending_id"), r
-    assert wa.pending_count("memory") == 1
-
-    # Bare CLI handler with no live agent → store resolves to None pre-fix.
-    handler = CLICommandsMixin.__new__(CLICommandsMixin)
-    handler.agent = None
-    handler._handle_memory_command("/memory approve all")
-
-    out = capsys.readouterr().out
-    assert "memory store unavailable" not in out, out
-    assert "Approved 1" in out, out
-    assert wa.pending_count("memory") == 0
-    # The approved write landed in a freshly loaded on-disk store (MEMORY.md).
-    reloaded = MemoryStore(); reloaded.load_from_disk()
-    assert any("remember the launch date" in e for e in reloaded.memory_entries)
-
-
-def test_load_on_disk_store_honors_configured_char_limits(hermes_home, monkeypatch):
-    """load_on_disk_store() must read memory.memory_char_limit /
-    user_char_limit from config so approvals applied without a live agent
-    enforce the SAME caps as the live agent (agent_init.py). Falls back to
-    defaults when config can't be loaded.
-    """
-    from tools.memory_tool import load_on_disk_store
-
-    # Config override path: helper picks up the configured limits.
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"memory": {"memory_char_limit": 999, "user_char_limit": 444}},
-    )
-    store = load_on_disk_store()
-    assert store.memory_char_limit == 999
-    assert store.user_char_limit == 444
-
-    # Failure path: config raises → defaults, never blows up.
-    def _boom():
-        raise RuntimeError("no config")
-
-    monkeypatch.setattr("hermes_cli.config.load_config", _boom)
-    fallback = load_on_disk_store()
-    assert fallback.memory_char_limit == 2200
-    assert fallback.user_char_limit == 1375
-
-
 # ---------------------------------------------------------------------------
 # Skill gate
 # ---------------------------------------------------------------------------

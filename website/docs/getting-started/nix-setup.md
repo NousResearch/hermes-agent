@@ -6,13 +6,7 @@ description: "Install and deploy Hermes Agent with Nix — from quick `nix run` 
 
 # Nix & NixOS Setup
 
-:::warning Tier 2 platform
-Nix and NixOS are [Tier 2 platforms](./platform-support.md#tier-2). The flake and NixOS module documented here are maintained on a best-effort basis only. Commits to `main` may break these packages at any point in time.
-
-For a supported setup, use one of the standard [installation](./installation.md) paths - either Docker or an FHS environment.
-:::
-
-Hermes Agent ships a Nix flake & a NixOS module.
+Hermes Agent ships a Nix flake with three levels of integration:
 
 | Level | Who it's for | What you get |
 |-------|-------------|--------------|
@@ -40,39 +34,42 @@ The `curl | bash` installer manages Python, Node, and dependencies itself. The N
 No clone needed. Nix fetches, builds, and runs everything:
 
 ```bash
-# Run the desktop app
-nix run github:NousResearch/hermes-agent#desktop
+# Run directly (builds on first use, cached after)
+nix run github:NousResearch/hermes-agent -- setup
+nix run github:NousResearch/hermes-agent -- chat
 
 # Or install persistently
-nix profile install github:NousResearch/hermes-agent#desktop
-
-# run the tui
-nix run github:NousResearch/hermes-agent -- setup
-nix run github:NousResearch/hermes-agent -- --tui
-
-# or install it in your profile
 nix profile install github:NousResearch/hermes-agent
 hermes setup
-hermes --tui
+hermes chat
 ```
 
 After `nix profile install`, `hermes`, `hermes-agent`, and `hermes-acp` are on your PATH. From here, the workflow is identical to the [standard installation](./installation.md) — `hermes setup` walks you through provider selection, `hermes gateway install` sets up a launchd (macOS) or systemd user service, and config lives in `~/.hermes/`.
 
 :::warning Messaging platforms (Discord, Telegram, Slack)
-The default package includes ALL libraries hermes-agent might need. if you want a smaller variant, check the other flake outputs. 
+The default package doesn't include messaging platform libraries — they were moved to on-demand installation, which can't work in Nix's read-only environment. If you plan to connect the agent to Discord, Telegram, or Slack, install the `messaging` variant:
 
-The `default` package adds ~700 MB to the closure. If you only need messaging platforms, `#messaging` adds just ~33 MB.
+```bash
+nix profile install github:NousResearch/hermes-agent#messaging
+```
 
+For all optional extras (voice, all providers, all platforms):
+
+```bash
+nix profile install github:NousResearch/hermes-agent#full
+```
+
+The `full` variant adds ~700 MB to the closure. If you only need messaging platforms, `#messaging` adds just ~33 MB.
 :::
 
 <details>
-<summary><strong>Running from a local clone</strong></summary>
+<summary><strong>Building from a local clone</strong></summary>
 
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-nix develop
-hermes setup
+nix build
+./result/bin/hermes setup
 ```
 
 </details>

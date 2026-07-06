@@ -39,7 +39,6 @@ export function defineFieldCopy(copy: FieldCopyTree): Record<string, string> {
         }
 
         result[flatKey] = value
-
         continue
       }
 

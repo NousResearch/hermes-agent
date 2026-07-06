@@ -155,7 +155,6 @@ export function GatewaySettings() {
       })
 
     return () => void (cancelled = true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload on scope change only; copy is stable
   }, [scope])
 
   // Debounced probe of the entered remote URL. Only runs in remote mode with a
@@ -293,7 +292,10 @@ export function GatewaySettings() {
       notify({
         kind: 'warning',
         title: g.incompleteTitle,
-        message: authMode === 'oauth' ? g.incompleteSignIn : g.incompleteToken
+        message:
+          authMode === 'oauth'
+            ? g.incompleteSignIn
+            : g.incompleteToken
       })
 
       return
@@ -384,7 +386,10 @@ export function GatewaySettings() {
       notify({
         kind: 'warning',
         title: g.incompleteTitle,
-        message: authMode === 'oauth' ? g.incompleteSignInTest : g.incompleteTokenTest
+        message:
+          authMode === 'oauth'
+            ? g.incompleteSignInTest
+            : g.incompleteTokenTest
       })
 
       return
@@ -417,7 +422,12 @@ export function GatewaySettings() {
   }
 
   if (!window.hermesDesktop?.getConnectionConfig) {
-    return <EmptyState description={g.unavailableDesc} title={g.unavailableTitle} />
+    return (
+      <EmptyState
+        description={g.unavailableDesc}
+        title={g.unavailableTitle}
+      />
+    )
   }
 
   return (
@@ -460,7 +470,9 @@ export function GatewaySettings() {
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <div>
             <div className="font-medium">{g.envOverrideTitle}</div>
-            <div className="mt-1 leading-5">{g.envOverrideDesc}</div>
+            <div className="mt-1 leading-5">
+              {g.envOverrideDesc}
+            </div>
           </div>
         </div>
       ) : null}

@@ -20,39 +20,6 @@ from typing import List, Optional, Callable
 MAX_CHOICES = 4
 
 
-def _flatten_choice(c) -> str:
-    """Coerce a single choice into its user-facing display string.
-
-    The schema declares choices as bare strings, but LLMs sometimes emit
-    dict-shaped choices like ``[{"description": "..."}]``. A naive ``str(c)``
-    turns the whole dict into its Python repr — ``{'description': '...'}`` —
-    which then leaks onto every surface that renders the choice (CLI panel,
-    Discord buttons, Telegram numbered list) AND is returned verbatim as the
-    user's answer. Normalising here, at the one platform-agnostic entry point,
-    fixes the whole class in one place instead of per-adapter.
-
-    Dict unwrap order is the canonical LLM tool-call user-facing keys:
-    ``label`` → ``description`` → ``text`` → ``title``. ``name`` and ``value``
-    are deliberately excluded — they're component-shaped fields that could
-    carry raw enum values or short identifiers, not human-readable labels. A
-    dict with none of the canonical keys is dropped (returns ""), since a
-    garbage label is worse than no choice at all.
-    """
-    if c is None:
-        return ""
-    if isinstance(c, str):
-        return c.strip()
-    if isinstance(c, dict):
-        for key in ("label", "description", "text", "title"):
-            v = c.get(key)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        return ""
-    if isinstance(c, (list, tuple)):
-        return " ".join(_flatten_choice(x) for x in c).strip()
-    return str(c).strip()
-
-
 def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
@@ -81,12 +48,7 @@ def clarify_tool(
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
-        # LLMs sometimes emit dict-shaped choices (e.g. [{"description": "..."}])
-        # instead of bare strings. _flatten_choice unwraps them to their
-        # user-facing text here — the single platform-agnostic entry point —
-        # so the CLI panel, Discord buttons, and Telegram list all render clean
-        # text and the resolved answer is never a raw Python dict repr.
-        choices = [s for s in (_flatten_choice(c) for c in choices) if s]
+        choices = [str(c).strip() for c in choices if str(c).strip()]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:
@@ -131,12 +93,6 @@ CLARIFY_SCHEMA = {
         "or types their own answer via a 5th 'Other' option.\n"
         "2. **Open-ended** — omit choices entirely. The user types a free-form "
         "response.\n\n"
-        "CRITICAL: when you are offering options, put each option ONLY in the "
-        "`choices` array — NEVER enumerate the options inside the `question` "
-        "text. The UI renders `choices` as selectable rows; options written "
-        "into the question string render as dead prose the user can't pick. "
-        "Right: question='Which deployment target?', choices=['staging', "
-        "'prod']. Wrong: question='Which target? 1) staging 2) prod', choices=[].\n\n"
         "Use this tool when:\n"
         "- The task is ambiguous and you need the user to choose an approach\n"
         "- You want post-task feedback ('How did that work out?')\n"
@@ -151,22 +107,16 @@ CLARIFY_SCHEMA = {
         "properties": {
             "question": {
                 "type": "string",
-                "description": (
-                    "The question itself, and ONLY the question (e.g. 'Which "
-                    "deployment target?'). Do NOT embed the answer options here "
-                    "— pass them as separate elements in `choices`."
-                ),
+                "description": "The question to present to the user.",
             },
             "choices": {
                 "type": "array",
                 "items": {"type": "string"},
                 "maxItems": MAX_CHOICES,
                 "description": (
-                    "REQUIRED whenever you are presenting selectable options: "
-                    "each distinct option is its own array element (up to 4). "
-                    "The UI renders these as pickable rows and auto-appends an "
-                    "'Other (type your answer)' option. Omit this parameter "
-                    "entirely ONLY for a genuinely open-ended free-text question."
+                    "Up to 4 answer choices. Omit this parameter entirely to "
+                    "ask an open-ended question. When provided, the UI "
+                    "automatically appends an 'Other (type your answer)' option."
                 ),
             },
         },

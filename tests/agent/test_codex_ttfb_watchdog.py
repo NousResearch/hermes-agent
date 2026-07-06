@@ -380,7 +380,7 @@ def test_large_codex_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypat
 
     monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
 
-    large_input = "x" * 44_000  # ~11k estimated tokens, above the 10k gate.
+    large_input = "x" * 120_000  # ~30k estimated tokens, above large-request gate.
     resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
     assert resp is sentinel
     assert "codex_ttfb_kill" not in closes
@@ -415,7 +415,7 @@ def test_large_codex_request_strict_ttfb_env_still_reconnects(tmp_path, monkeypa
 
     monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
 
-    large_input = "x" * 44_000
+    large_input = "x" * 120_000
     try:
         with pytest.raises(TimeoutError) as excinfo:
             h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})

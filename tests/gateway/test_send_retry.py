@@ -35,7 +35,7 @@ class _StubAdapter(BasePlatformAdapter):
         self._send_calls.append((chat_id, content))
         return self._next_result()
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -282,57 +282,3 @@ class TestSendWithRetryFallback:
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2)
         assert not result.success
         assert len(adapter._send_calls) == 2  # original + fallback only
-
-
-# ---------------------------------------------------------------------------
-# _send_with_retry — retry_after honor
-# ---------------------------------------------------------------------------
-
-class TestSendWithRetryAfter:
-    @pytest.mark.asyncio
-    async def test_retry_after_honored_on_first_retry(self):
-        """When the initial result has retry_after, the first retry waits that long."""
-        adapter = _StubAdapter()
-        adapter._send_results = [
-            SendResult(success=False, error="Flood control exceeded. Retry in 37 seconds",
-                       retryable=True, retry_after=37.0),
-            SendResult(success=True, message_id="ok"),
-        ]
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=2.0)
-        assert result.success
-        # First sleep should use retry_after (~37s + jitter), not base_delay (~2s)
-        first_sleep = mock_sleep.call_args_list[0][0][0]
-        assert first_sleep >= 36.0  # 37 - 1 (max jitter)
-
-    @pytest.mark.asyncio
-    async def test_retry_after_from_subsequent_result(self):
-        """If a retry itself returns retry_after, the next retry honors it."""
-        adapter = _StubAdapter()
-        adapter._send_results = [
-            SendResult(success=False, error="ConnectError", retryable=True),
-            SendResult(success=False, error="Flood control exceeded. Retry in 30 seconds",
-                       retryable=True, retry_after=30.0),
-            SendResult(success=True, message_id="ok"),
-        ]
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=2.0)
-        assert result.success
-        # Second sleep should use the retry_after from the second result
-        second_sleep = mock_sleep.call_args_list[1][0][0]
-        assert second_sleep >= 29.0  # 30 - 1 (max jitter)
-
-    @pytest.mark.asyncio
-    async def test_no_retry_after_uses_default_backoff(self):
-        """Without retry_after, default exponential backoff is used."""
-        adapter = _StubAdapter()
-        adapter._send_results = [
-            SendResult(success=False, error="ConnectError", retryable=True),
-            SendResult(success=True, message_id="ok"),
-        ]
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=2.0)
-        assert result.success
-        # Sleep should be ~2s (base_delay * 2^0 + jitter), NOT 37s
-        first_sleep = mock_sleep.call_args_list[0][0][0]
-        assert first_sleep < 5.0

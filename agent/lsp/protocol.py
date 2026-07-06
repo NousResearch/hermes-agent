@@ -91,7 +91,7 @@ async def read_message(reader: asyncio.StreamReader) -> Optional[dict]:
         header_bytes += len(line)
         if header_bytes > 8192:
             raise LSPProtocolError(
-                "LSP header block exceeded 8 KiB without terminator"
+                f"LSP header block exceeded 8 KiB without terminator"
             )
         line = line[:-2]  # strip CRLF
         if not line:

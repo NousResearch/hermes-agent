@@ -61,19 +61,19 @@ If that is not solid yet, fix text mode first.
 ### CLI microphone + playback
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[voice]"
+pip install "hermes-agent[voice]"
 ```
 
 ### Messaging platforms
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
+pip install "hermes-agent[messaging]"
 ```
 
 ### Premium ElevenLabs TTS
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[tts-premium]"
+pip install "hermes-agent[tts-premium]"
 ```
 
 ### Local NeuTTS (optional)
@@ -85,7 +85,7 @@ python -m pip install -U neutts[all]
 ### Everything
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"
+pip install "hermes-agent[all]"
 ```
 
 ## Step 3: install system dependencies

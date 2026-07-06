@@ -158,33 +158,17 @@ SearXNG ships with JSON output disabled by default. Copy the generated config an
 docker cp searxng:/etc/searxng/settings.yml ~/searxng/searxng/settings.yml
 ```
 
-Open `~/searxng/searxng/settings.yml`.
-If `use_default_settings: true` is present, the file only contains your overrides. All other settings are inherited from the built-in defaults.
-To enable JSON responses for Hermes, add the following override:
+Open `~/searxng/searxng/settings.yml` and find the `formats` block (around line 84):
 
 ```yaml
-search:
-  formats:
-    - html
-    - json
-```
+# Before (default — JSON disabled):
+formats:
+  - html
 
-Your `settings.yml` should look similar to:
-
-```yaml
-# Read the documentation before extending the defaults:
-# https://docs.searxng.org/admin/settings/
-
-use_default_settings: true
-
-server:
-  secret_key: "abcdef12345678"
-  image_proxy: true
-
-search:
-  formats:
-    - html
-    - json
+# After (enable JSON for Hermes):
+formats:
+  - html
+  - json
 ```
 
 **5. Restart to apply:**
@@ -321,7 +305,7 @@ web:
 web:
   backend: "xai"
   xai:
-    model: grok-build-0.1        # reasoning model required by web_search (default)
+    model: grok-4.3              # reasoning model required by web_search (default)
     allowed_domains:             # optional, max 5 — mutex with excluded_domains
       - arxiv.org
     excluded_domains:            # optional, max 5

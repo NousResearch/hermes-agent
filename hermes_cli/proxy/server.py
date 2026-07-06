@@ -50,10 +50,6 @@ _HOP_BY_HOP_HEADERS = frozenset(
 
 DEFAULT_PORT = 8645
 DEFAULT_HOST = "127.0.0.1"
-# Body cap for forwarded requests. Chat-completion payloads with long agent
-# conversations can be large; mirror api_server's MAX_REQUEST_BYTES (10 MB).
-# client_max_size bounds every read path, including chunked bodies.
-MAX_REQUEST_BYTES = 10_000_000
 
 
 def _json_error(status: int, message: str, code: str = "proxy_error") -> "web.Response":
@@ -93,7 +89,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
         )
 
-    app = web.Application(client_max_size=MAX_REQUEST_BYTES)
+    app = web.Application()
     # AppKey ensures forward-compat with future aiohttp versions that strip
     # bare-string keys.
     _adapter_key = web.AppKey("adapter", UpstreamAdapter)

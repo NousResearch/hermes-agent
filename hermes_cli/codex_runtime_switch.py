@@ -144,17 +144,8 @@ def apply(
             codex_version=ver if ok else None,
         )
 
-    # No-config-change paths. For `auto` we return immediately — disabling
-    # doesn't touch ~/.codex/. For `codex_app_server`, we fall through to
-    # the migration block below: the config value is already correct, but
-    # the world state (managed block in ~/.codex/config.toml, hermes-tools
-    # MCP callback, plugin discovery) may be stale or missing — common
-    # footgun when users pre-set `openai_runtime: codex_app_server` in
-    # config.yaml without ever running the slash command. The migration is
-    # idempotent by design (it replaces its own managed block in place), so
-    # re-running is cheap and safe.
-    reapplying_enable = new_value == current == "codex_app_server"
-    if new_value == current and not reapplying_enable:
+    # No change requested
+    if new_value == current:
         return CodexRuntimeStatus(
             success=True,
             new_value=current,
@@ -181,26 +172,22 @@ def apply(
                 codex_version=None,
             )
 
-    if not reapplying_enable:
-        set_runtime(config, new_value)
-        if persist_callback is not None:
-            try:
-                persist_callback(config)
-            except Exception as exc:
-                logger.exception("failed to persist openai_runtime change")
-                return CodexRuntimeStatus(
-                    success=False,
-                    new_value=new_value,
-                    old_value=current,
-                    message=f"updated config in memory but persist failed: {exc}",
-                )
+    set_runtime(config, new_value)
+    if persist_callback is not None:
+        try:
+            persist_callback(config)
+        except Exception as exc:
+            logger.exception("failed to persist openai_runtime change")
+            return CodexRuntimeStatus(
+                success=False,
+                new_value=new_value,
+                old_value=current,
+                message=f"updated config in memory but persist failed: {exc}",
+            )
 
-    if reapplying_enable:
-        msg_lines = [
-            f"openai_runtime already set to {current} — re-applying migration"
-        ]
-    else:
-        msg_lines = [f"openai_runtime: {current} → {new_value}"]
+    msg_lines = [
+        f"openai_runtime: {current} → {new_value}",
+    ]
     if new_value == "codex_app_server":
         ok, ver = _check_binary_cached()
         if ok:

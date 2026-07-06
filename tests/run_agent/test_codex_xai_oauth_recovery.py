@@ -252,35 +252,6 @@ def test_summarize_api_error_decorates_xai_body_message():
     assert "X Premium+ does NOT include" in summary
 
 
-def test_summarize_api_error_handles_nested_provider_message():
-    """HF router may put a structured object in error.message."""
-    from run_agent import AIAgent
-
-    class _NestedProviderErr(Exception):
-        status_code = 400
-        body = {
-            "error": {
-                "message": {
-                    "type": "Bad Request",
-                    "code": "context_length_exceeded",
-                    "message": (
-                        "This model's maximum context length is 262144 tokens. "
-                        "Please reduce the length of the messages."
-                    ),
-                    "param": None,
-                },
-                "type": "invalid_request_error",
-                "param": None,
-                "code": None,
-            }
-        }
-
-    summary = AIAgent._summarize_api_error(_NestedProviderErr("400"))
-    assert "HTTP 400" in summary
-    assert "maximum context length is 262144 tokens" in summary
-    assert "context_length_exceeded" not in summary
-
-
 def test_summarize_api_error_idempotent_for_entitlement_hint():
     """Decorating twice must not double up the hint."""
     from run_agent import AIAgent
@@ -976,29 +947,6 @@ def test_grok_4_still_resolves_to_256k():
         # must be "grok-4" (or a more specific variant family if one is
         # ever added).  The 256k contract must hold.
         assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 256_000
-
-
-def test_grok_composer_context_length_is_200k():
-    """grok-composer-2.5-fast is OAuth-only and missing from /v1/models.
-
-    Without a specific entry it fell through to the generic ``grok`` 131k
-    catch-all.  xAI publishes a 200k usable context window for Composer 2.5
-    on Grok Build (SuperGrok / Premium+); /v1/responses additionally caps
-    the input+output budget at ~262144, but the usable context (what we
-    track) is 200k.
-    """
-    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
-
-    assert DEFAULT_CONTEXT_LENGTHS["grok-composer"] == 200_000
-    slug = "grok-composer-2.5-fast"
-    matched_key = max(
-        (k for k in DEFAULT_CONTEXT_LENGTHS if k in slug.lower()),
-        key=len,
-    )
-    assert matched_key == "grok-composer", (
-        f"Expected longest-first match on grok-composer for {slug}, got {matched_key}"
-    )
-    assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 200_000
 
 
 # ---------------------------------------------------------------------------

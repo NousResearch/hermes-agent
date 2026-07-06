@@ -26,11 +26,6 @@ from typing import Optional
 
 _log = logging.getLogger(__name__)
 
-# Home Assistant Supervisor ingress prefixes are already 63 chars before
-# deployments add their own sub-path. Keep a bounded header budget, but leave
-# room for mainstream reverse-proxy path mounts.
-_MAX_PREFIX_LENGTH = 256
-
 # Characters that, if present in a public_url or prefix value, indicate
 # either a typo or a header-injection attempt. Reject the whole value
 # rather than try to sanitise — the operator can fix their config.
@@ -42,7 +37,6 @@ _REJECT_CHARS = frozenset(('"', "'", "<", ">", " ", "\n", "\r", "\t"))
 # misconfigured deploy. Keyed on the raw value too, so changing the
 # config and reloading surfaces a fresh warning.
 _warned_malformed_public_urls: set = set()
-_warned_malformed_prefixes: set = set()
 
 
 def _warn_if_malformed(source: str, raw: str) -> None:
@@ -78,23 +72,6 @@ def _warn_if_malformed(source: str, raw: str) -> None:
     )
 
 
-def _warn_if_malformed_prefix(raw: Optional[str], reason: str) -> None:
-    """Warn once when a non-empty X-Forwarded-Prefix value is rejected."""
-    cleaned = raw.strip() if raw else ""
-    if not cleaned:
-        return
-    key = (cleaned, reason)
-    if key in _warned_malformed_prefixes:
-        return
-    _warned_malformed_prefixes.add(key)
-    _log.warning(
-        "X-Forwarded-Prefix header %r was ignored because %s. "
-        "Dashboard URLs will be generated without a reverse-proxy path prefix.",
-        cleaned,
-        reason,
-    )
-
-
 def normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value.
 
@@ -117,16 +94,8 @@ def normalise_prefix(raw: Optional[str]) -> str:
         or ".." in p
         or any(c in p for c in _REJECT_CHARS)
     ):
-        _warn_if_malformed_prefix(
-            raw,
-            "it contains a disallowed character or path sequence",
-        )
         return ""
-    if len(p) > _MAX_PREFIX_LENGTH:
-        _warn_if_malformed_prefix(
-            raw,
-            f"it is longer than {_MAX_PREFIX_LENGTH} characters",
-        )
+    if len(p) > 64:
         return ""
     return p
 

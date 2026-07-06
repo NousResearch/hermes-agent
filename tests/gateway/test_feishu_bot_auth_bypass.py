@@ -21,7 +21,6 @@ def _isolate_feishu_env(monkeypatch):
         "FEISHU_ALLOW_BOTS",
         "FEISHU_ALLOWED_USERS",
         "FEISHU_ALLOW_ALL_USERS",
-        "TELEGRAM_ALLOW_BOTS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):

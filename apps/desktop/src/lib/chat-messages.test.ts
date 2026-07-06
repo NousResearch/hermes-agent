@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
-  appendReasoningPart,
   chatMessageText,
   preserveLocalAssistantErrors,
   renderMediaTags,
@@ -96,38 +95,6 @@ describe('toChatMessages', () => {
     )
   })
 
-  it('keeps the generated image on the tool row while preserving agent prose', () => {
-    const [message] = toChatMessages([
-      {
-        content: '',
-        role: 'assistant',
-        timestamp: 1,
-        tool_calls: [{ id: 'img-1', function: { name: 'image_generate', arguments: '{"prompt":"draw a cat"}' } }]
-      },
-      {
-        content: '{"success":true,"image":"https://cdn.example/cat.png"}',
-        role: 'tool',
-        timestamp: 2,
-        tool_call_id: 'img-1',
-        tool_name: 'image_generate'
-      },
-      {
-        content: 'Here you go.\n\n![Generated image](https://cdn.example/cat.png)',
-        role: 'assistant',
-        timestamp: 3
-      }
-    ])
-
-    const toolPart = message.parts.find(
-      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
-        part.type === 'tool-call' && part.toolName === 'image_generate'
-    )
-
-    expect(toolPart?.result).toMatchObject({ image: 'https://cdn.example/cat.png', success: true })
-    // The duplicated image is stripped, but the agent's words survive.
-    expect(chatMessageText(message)).toBe('Here you go.')
-  })
-
   it('coerces non-string message content without throwing', () => {
     const [message] = toChatMessages([
       {
@@ -173,52 +140,6 @@ describe('renderMediaTags', () => {
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
-  })
-})
-
-describe('interleaved reasoning/text coalescing', () => {
-  it('keeps narration contiguous when reasoning interrupts mid-sentence', () => {
-    // Models that interleave reasoning_content + content deltas emit
-    // text → reasoning → text within one tool-bounded segment. The two text
-    // fragments are really one sentence and must not be split by the
-    // "Thinking" block between them.
-    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me ')
-    parts = appendReasoningPart(parts, 'checking the file...')
-    parts = appendAssistantTextPart(parts, 'verify the full file is correct:')
-
-    expect(parts.map(p => p.type)).toEqual(['text', 'reasoning'])
-    expect((parts[0] as { text: string }).text).toBe('Let me verify the full file is correct:')
-    expect((parts[1] as { text: string }).text).toBe('checking the file...')
-  })
-
-  it('merges reasoning bursts that straddle a narration fragment', () => {
-    let parts: ChatMessagePart[] = appendReasoningPart([], 'first thought ')
-    parts = appendAssistantTextPart(parts, 'Working on it.')
-    parts = appendReasoningPart(parts, 'second thought')
-
-    expect(parts.map(p => p.type)).toEqual(['reasoning', 'text'])
-    expect((parts[0] as { text: string }).text).toBe('first thought second thought')
-    expect((parts[1] as { text: string }).text).toBe('Working on it.')
-  })
-
-  it('starts a fresh text part after a tool call (segment boundary)', () => {
-    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me check.')
-    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running')
-    parts = appendAssistantTextPart(parts, 'Now editing.')
-
-    expect(parts.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
-    expect((parts[0] as { text: string }).text).toBe('Let me check.')
-    expect((parts[2] as { text: string }).text).toBe('Now editing.')
-  })
-
-  it('does not merge reasoning across a tool call', () => {
-    let parts: ChatMessagePart[] = appendReasoningPart([], 'before tool')
-    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running')
-    parts = appendReasoningPart(parts, 'after tool')
-
-    expect(parts.map(p => p.type)).toEqual(['reasoning', 'tool-call', 'reasoning'])
-    expect((parts[0] as { text: string }).text).toBe('before tool')
-    expect((parts[2] as { text: string }).text).toBe('after tool')
   })
 })
 

@@ -260,6 +260,33 @@ def test_dashboard_markdown_html_is_sanitized_before_render():
     assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
 
 
+def test_dashboard_done_cards_have_explicit_delete_action_for_mobile():
+    """Done cards need a visible delete affordance; drag-to-trash is weak on phones."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "onDelete: props.onDelete" in js
+    assert 't.status === "done" && props.onDelete' in js
+    assert 'className: "hermes-kanban-card-delete-done"' in js
+    assert 'props.onDelete(t.id);' in js
+
+
+def test_dashboard_mobile_kanban_css_is_present():
+    """The plugin should present phone-sized columns instead of a desktop-only grid."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    styles = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    css = styles.read_text()
+
+    assert "Mobile board ergonomics" in css
+    assert "@media (max-width: 768px)" in css
+    assert "scroll-snap-type: x mandatory" in css
+    assert "flex-basis: min(86vw, 360px)" in css
+    assert ".hermes-kanban-card-delete-done" in css
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------

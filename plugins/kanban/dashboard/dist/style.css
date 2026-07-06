@@ -291,6 +291,27 @@
   color: var(--color-foreground);
 }
 
+.hermes-kanban-card-delete-done {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-height: 1.6rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-sm, 0.25rem);
+  border: 1px solid color-mix(in srgb, var(--color-destructive, #d14a4a) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 8%, transparent);
+  color: var(--color-destructive, #d14a4a);
+  font-size: 0.68rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.hermes-kanban-card-delete-done:hover,
+.hermes-kanban-card-delete-done:focus-visible {
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 16%, transparent);
+  outline: none;
+}
+
 .hermes-kanban-assignee {
   font-weight: 500;
   color: color-mix(in srgb, var(--color-foreground) 80%, var(--color-muted-foreground));
@@ -1580,4 +1601,73 @@
 
 .hermes-kanban-trash-label {
   font-weight: 500;
+}
+
+/* ---- Mobile board ergonomics ----------------------------------------- */
+@media (max-width: 768px) {
+  .hermes-kanban {
+    gap: 0.75rem;
+  }
+
+  .hermes-kanban-columns {
+    gap: 0.65rem;
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .hermes-kanban-column {
+    flex-basis: min(86vw, 360px);
+    max-height: none;
+    min-height: 56vh;
+    scroll-snap-align: start;
+  }
+
+  .hermes-kanban-column-body {
+    max-height: none;
+    overflow-y: visible;
+  }
+
+  .hermes-kanban-card-content {
+    padding: 0.65rem 0.7rem !important;
+    gap: 0.42rem;
+  }
+
+  .hermes-kanban-card-title {
+    font-size: 0.92rem;
+  }
+
+  .hermes-kanban-card-delete-done {
+    min-height: 2rem;
+    padding: 0.25rem 0.55rem;
+    font-size: 0.72rem;
+  }
+
+  .hermes-kanban-trash {
+    flex: 0 0 min(42vw, 180px);
+    min-height: 56vh;
+    position: sticky;
+    right: 0;
+    z-index: 2;
+  }
+
+  .hermes-kanban-bulk {
+    position: sticky;
+    bottom: max(0.5rem, env(safe-area-inset-bottom));
+    z-index: 40;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    align-items: center;
+    padding: 0.5rem;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .hermes-kanban-bulk > * {
+    flex: 0 0 auto;
+  }
+
+  .hermes-kanban .flex.flex-wrap.items-end.gap-3 > .flex.flex-col.gap-1,
+  .hermes-kanban .flex.flex-wrap.items-end.gap-3 input.w-56 {
+    width: 100%;
+  }
 }

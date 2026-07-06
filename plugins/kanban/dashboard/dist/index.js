@@ -2432,6 +2432,7 @@
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
+                      onDelete: props.onDelete,
                     });
                   }),
                 );
@@ -2446,6 +2447,7 @@
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
+                  onDelete: props.onDelete,
                 });
               }),
       ),
@@ -2606,6 +2608,20 @@
                   className: "hermes-kanban-needs-assignee",
                   title: tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile."),
                 }, tx(i18n, "needsAssignee", "Needs assignee"))
+              : null,
+            t.status === "done" && props.onDelete
+              ? h("button", {
+                  type: "button",
+                  className: "hermes-kanban-card-delete-done",
+                  title: tx(i18n, "deleteDoneTask", "Delete completed task"),
+                  "aria-label": tx(i18n, "deleteDoneTask", "Delete completed task"),
+                  onClick: function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    props.onDelete(t.id);
+                  },
+                }, "🗑", h("span", { className: "hermes-kanban-card-delete-done-text" },
+                  tx(i18n, "delete", "Delete")))
               : null,
           ),
           h("div", { className: "hermes-kanban-card-title" },

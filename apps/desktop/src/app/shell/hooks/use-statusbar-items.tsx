@@ -12,7 +12,7 @@ import { Activity, AlertCircle, Clock, Command, Hash, Loader2, Terminal, Zap, Za
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
-import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
+import { setDesktopYoloMode, setGlobalYolo } from '@/lib/yolo-session'
 import {
   $activeSessionId,
   $busy,
@@ -112,14 +112,13 @@ export function useStatusbarItems({
         return
       }
 
+      // Plain click: persist the desktop-wide default and apply it to the
+      // current runtime session (when one exists — a new-chat draft has none
+      // yet and picks the persisted default up on session create).
       const sid = $activeSessionId.get()
 
-      if (!sid) {
-        return
-      }
-
       try {
-        await setSessionYolo(requestGateway, sid, next)
+        await setDesktopYoloMode(requestGateway, sid, next)
       } catch {
         setYoloActive(!next)
       }

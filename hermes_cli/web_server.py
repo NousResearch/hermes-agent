@@ -737,6 +737,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # (`onboarding.seen` is an internal latch dict, not a user setting), so fold
     # it into the agent tab rather than spawning a one-field orphan category.
     "onboarding": "agent",
+    # Desktop YOLO is an approval-bypass preference, so keep it with the
+    # existing security/approval controls instead of creating a one-field tab.
+    "desktop": "security",
     # Only `telegram.reactions` currently lives under telegram — fold it in
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.

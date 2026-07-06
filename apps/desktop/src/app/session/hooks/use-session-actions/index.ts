@@ -17,6 +17,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $desktopYoloDefault,
   $messages,
   $sessions,
   $yoloActive,
@@ -132,7 +133,7 @@ export function useSessionActions({
       // refreshCurrentModel). Only $currentServiceTier (a live-session mirror)
       // is cleared.
       setCurrentServiceTier('')
-      setYoloActive(false)
+      setYoloActive($desktopYoloDefault.get())
       // In a project → the repo's default-branch (main worktree) checkout; not in
       // a project → detached. So cmd-n "knows" the project instead of inheriting
       // whatever linked worktree the last session drifted into.

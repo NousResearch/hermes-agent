@@ -2454,6 +2454,12 @@ DEFAULT_CONFIG = {
         "destructive_slash_confirm": True,
     },
 
+    # Native desktop app preferences. Desktop defaults new chats to
+    # session-scoped YOLO while CLI/TUI/cron keep approvals.mode semantics.
+    "desktop": {
+        "yolo_default": True,
+    },
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)

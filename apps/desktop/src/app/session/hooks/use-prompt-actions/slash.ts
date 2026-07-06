@@ -12,7 +12,7 @@ import {
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
-import { setSessionYolo } from '@/lib/yolo-session'
+import { setDesktopYoloMode } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
@@ -25,8 +25,7 @@ import {
   $yoloActive,
   setModelPickerOpen,
   setSessionPickerOpen,
-  setSessions,
-  setYoloActive
+  setSessions
 } from '@/store/session'
 
 import type { BrowserManageResponse, SessionTitleResponse, SlashExecResponse } from '../../../types'
@@ -241,16 +240,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           const sid = sessionHint || activeSessionIdRef.current
           const next = !$yoloActive.get()
 
-          if (!sid) {
-            setYoloActive(next)
-            notify({ kind: 'success', message: next ? copy.yoloArmed : copy.yoloOff })
-
-            return
-          }
-
           try {
-            const active = await setSessionYolo(requestGateway, sid, next)
-            appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
+            const active = await setDesktopYoloMode(requestGateway, sid, next)
+
+            if (sid) {
+              appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
+            } else {
+              notify({ kind: 'success', message: active ? copy.yoloArmed : copy.yoloOff })
+            }
           } catch {
             notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
           }

@@ -22,7 +22,7 @@ Resolution facts (verified against the managed runtime):
   * The sweep dir is ``<workspace>/outputs/<PRODUCT_RUN_ID>/``. PRODUCT_RUN_ID
     is the value of the per-run HTTP header ``X-KarinAI-Run-Id`` the backend
     sends to the api_server; it is bound into per-run context as
-    ``HERMES_PRODUCT_RUN_ID`` (see gateway/session_context.py and
+    ``HERMES_PRODUCT_RUN_ID`` (see karinai/runtime/session_bridge.py and
     gateway/platforms/api_server.py:_handle_runs). It is NOT the agent's own
     internal run id (``run_<uuid>``).
   * When no product run id is bound (CLI / dev / non-managed), the tool stages

@@ -5,7 +5,19 @@ import json
 import urllib.error
 
 from gateway.session_context import clear_session_vars, set_session_vars
+from karinai.runtime.session_bridge import bind_karinai_run_context
 from tools import karinai_app_tools
+
+
+def _bind_gateway(url: str, token: str, expires_at: str = "") -> list:
+    """Bind an api_server session with run-scoped app-tool gateway creds, as
+    the api_server's _bind_api_server_session does: base session vars via
+    set_session_vars, KarinAI vars via bind_karinai_run_context, one token list."""
+    tokens = set_session_vars(platform="api_server", async_delivery=False)
+    tokens += bind_karinai_run_context(
+        app_tool_gateway={"url": url, "token": token, "expires_at": expires_at}
+    )
+    return tokens
 
 
 class _FakeResponse:
@@ -47,12 +59,7 @@ def test_app_tool_execute_posts_to_run_scoped_gateway(monkeypatch) -> None:
         return _FakeResponse({"successful": True, "data": {"messages": []}})
 
     monkeypatch.setattr(karinai_app_tools.urllib.request, "urlopen", fake_urlopen)
-    tokens = set_session_vars(
-        platform="api_server",
-        app_tool_gateway_url="http://backend.internal/internal/app-tools",
-        app_tool_gateway_token="kat_secret",
-        async_delivery=False,
-    )
+    tokens = _bind_gateway("http://backend.internal/internal/app-tools", "kat_secret")
     try:
         result = json.loads(
             karinai_app_tools._handle_execute(
@@ -119,12 +126,7 @@ def test_gateway_http_error_does_not_leak_token_or_url(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(karinai_app_tools.urllib.request, "urlopen", fake_urlopen)
-    tokens = set_session_vars(
-        platform="api_server",
-        app_tool_gateway_url=GATEWAY_URL,
-        app_tool_gateway_token=SECRET_TOKEN,
-        async_delivery=False,
-    )
+    tokens = _bind_gateway(GATEWAY_URL, SECRET_TOKEN)
     try:
         raw_result = karinai_app_tools._handle_execute(
             {"tool_slug": "GOOGLESUPER_FETCH_EMAILS", "arguments": {}}
@@ -148,12 +150,7 @@ def test_generic_gateway_error_returns_static_message(monkeypatch) -> None:
         raise urllib.error.URLError(f"[Errno -2] Name or service not known: {GATEWAY_HOST}")
 
     monkeypatch.setattr(karinai_app_tools.urllib.request, "urlopen", fake_urlopen)
-    tokens = set_session_vars(
-        platform="api_server",
-        app_tool_gateway_url=GATEWAY_URL,
-        app_tool_gateway_token=SECRET_TOKEN,
-        async_delivery=False,
-    )
+    tokens = _bind_gateway(GATEWAY_URL, SECRET_TOKEN)
     try:
         raw_result = karinai_app_tools._handle_list({})
     finally:
@@ -175,13 +172,7 @@ def test_expired_gateway_returns_clean_message_without_http_call(monkeypatch) ->
         return _FakeResponse({"successful": True})
 
     monkeypatch.setattr(karinai_app_tools.urllib.request, "urlopen", fake_urlopen)
-    tokens = set_session_vars(
-        platform="api_server",
-        app_tool_gateway_url=GATEWAY_URL,
-        app_tool_gateway_token=SECRET_TOKEN,
-        app_tool_gateway_expires_at="2000-01-01T00:00:00.000000Z",
-        async_delivery=False,
-    )
+    tokens = _bind_gateway(GATEWAY_URL, SECRET_TOKEN, expires_at="2000-01-01T00:00:00.000000Z")
     try:
         exec_result = json.loads(
             karinai_app_tools._handle_execute({"tool_slug": "X", "arguments": {}})
@@ -207,13 +198,7 @@ def test_future_expiry_still_calls_gateway(monkeypatch) -> None:
         return _FakeResponse({"successful": True, "data": {}})
 
     monkeypatch.setattr(karinai_app_tools.urllib.request, "urlopen", fake_urlopen)
-    tokens = set_session_vars(
-        platform="api_server",
-        app_tool_gateway_url=GATEWAY_URL,
-        app_tool_gateway_token=SECRET_TOKEN,
-        app_tool_gateway_expires_at="2999-01-01T00:00:00.000000Z",
-        async_delivery=False,
-    )
+    tokens = _bind_gateway(GATEWAY_URL, SECRET_TOKEN, expires_at="2999-01-01T00:00:00.000000Z")
     try:
         result = json.loads(
             karinai_app_tools._handle_execute({"tool_slug": "X", "arguments": {}})
@@ -232,12 +217,7 @@ def test_token_never_appears_in_serialized_result(monkeypatch) -> None:
         return _FakeResponse({"successful": True, "data": {"messages": []}})
 
     monkeypatch.setattr(karinai_app_tools.urllib.request, "urlopen", fake_urlopen)
-    tokens = set_session_vars(
-        platform="api_server",
-        app_tool_gateway_url=GATEWAY_URL,
-        app_tool_gateway_token=SECRET_TOKEN,
-        async_delivery=False,
-    )
+    tokens = _bind_gateway(GATEWAY_URL, SECRET_TOKEN)
     try:
         exec_result = karinai_app_tools._handle_execute(
             {"tool_slug": "X", "arguments": {"q": 1}}
@@ -276,12 +256,7 @@ def test_app_tools_advertised_only_when_token_bound() -> None:
 
     # Bound (as /v1/runs delivers): tools appear — even right after a tokenless
     # call, proving the memo/check caches don't mask the token path.
-    tokens = set_session_vars(
-        platform="api_server",
-        app_tool_gateway_url=GATEWAY_URL,
-        app_tool_gateway_token=SECRET_TOKEN,
-        async_delivery=False,
-    )
+    tokens = _bind_gateway(GATEWAY_URL, SECRET_TOKEN)
     try:
         assert advertised() == app_tools
     finally:

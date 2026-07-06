@@ -923,9 +923,15 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'message.complete': {
+        // recordMessageComplete now short-circuits when the message.complete
+        // belongs to a turn that was already persisted (a duplicate emit,
+        // or a stale event from an interrupted turn that the user has
+        // since moved past). In that case `finalMessages` is empty and we
+        // simply skip the append — this is what prevents the assistant's
+        // final reply from rendering twice in the transcript (#59423).
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
-        if (!wasInterrupted) {
+        if (!wasInterrupted && finalMessages.length) {
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
 

@@ -8199,24 +8199,110 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
 
 
 class SessionPrune(BaseModel):
-    older_than_days: int = 90
+    older_than_days: Optional[float] = 90
     source: Optional[str] = None
     profile: Optional[str] = None
+    # Extended filters (all optional, AND together — mirrors the CLI flags)
+    started_before: Optional[float] = None  # epoch seconds
+    started_after: Optional[float] = None  # epoch seconds
+    title_like: Optional[str] = None
+    end_reason: Optional[str] = None
+    cwd_prefix: Optional[str] = None
+    min_messages: Optional[int] = None
+    max_messages: Optional[int] = None
+    model_like: Optional[str] = None
+    provider: Optional[str] = None
+    user_id: Optional[str] = None
+    chat_id: Optional[str] = None
+    chat_type: Optional[str] = None
+    branch_like: Optional[str] = None
+    min_tokens: Optional[int] = None
+    max_tokens: Optional[int] = None
+    min_cost: Optional[float] = None
+    max_cost: Optional[float] = None
+    min_tool_calls: Optional[int] = None
+    max_tool_calls: Optional[int] = None
+    include_archived: bool = False
+    dry_run: bool = False
 
 
 @app.post("/api/sessions/prune")
 async def prune_sessions_endpoint(body: SessionPrune):
-    """Delete ended sessions older than N days (mirrors `hermes sessions prune`)."""
-    if body.older_than_days < 1:
+    """Delete ended sessions matching filters (mirrors `hermes sessions prune`)."""
+    has_window = (
+        body.started_before is not None or body.started_after is not None
+    )
+    if body.older_than_days is not None and body.older_than_days < 1 and not has_window:
         raise HTTPException(status_code=400, detail="older_than_days must be >= 1")
+    # Mirror the CLI: the implicit 90-day cutoff only applies to a truly bare
+    # prune. Any attribute filter (source, title, model, ...) suppresses it
+    # unless the caller explicitly sent older_than_days.
+    _attr_filters_set = any(
+        getattr(body, f) is not None
+        for f in (
+            "source", "title_like", "end_reason", "cwd_prefix",
+            "min_messages", "max_messages", "model_like", "provider",
+            "user_id", "chat_id", "chat_type", "branch_like",
+            "min_tokens", "max_tokens", "min_cost", "max_cost",
+            "min_tool_calls", "max_tool_calls",
+        )
+    )
+    _older_than_explicit = "older_than_days" in body.model_fields_set
+    _effective_older_than = body.older_than_days
+    if has_window or (_attr_filters_set and not _older_than_explicit):
+        _effective_older_than = None
     profile_home = _cron_profile_home(body.profile)[1] if body.profile else get_hermes_home()
     db = _open_session_db_for_profile(body.profile)
     try:
+        filters = dict(
+            older_than_days=_effective_older_than,
+            source=(body.source or None),
+            started_before=body.started_before,
+            started_after=body.started_after,
+            title_like=(body.title_like or None),
+            end_reason=(body.end_reason or None),
+            cwd_prefix=(body.cwd_prefix or None),
+            min_messages=body.min_messages,
+            max_messages=body.max_messages,
+            model_like=(body.model_like or None),
+            provider=(body.provider or None),
+            user_id=(body.user_id or None),
+            chat_id=(body.chat_id or None),
+            chat_type=(body.chat_type or None),
+            branch_like=(body.branch_like or None),
+            min_tokens=body.min_tokens,
+            max_tokens=body.max_tokens,
+            min_cost=body.min_cost,
+            max_cost=body.max_cost,
+            min_tool_calls=body.min_tool_calls,
+            max_tool_calls=body.max_tool_calls,
+            archived=None if body.include_archived else False,
+        )
+        if body.dry_run:
+            rows = db.list_prune_candidates(**filters)
+            return {
+                "ok": True,
+                "removed": 0,
+                "matched": len(rows),
+                # Rows are ordered oldest-first.
+                "oldest_started_at": rows[0]["started_at"] if rows else None,
+                "newest_started_at": rows[-1]["started_at"] if rows else None,
+                "sessions": [
+                    {
+                        "id": r["id"],
+                        "source": r["source"],
+                        "title": r.get("title"),
+                        "model": r.get("model"),
+                        "started_at": r["started_at"],
+                        "message_count": r["message_count"],
+                    }
+                    for r in rows
+                ],
+            }
         sessions_dir = profile_home / "sessions"
         removed = db.prune_sessions(
-            older_than_days=body.older_than_days,
-            source=(body.source or None),
             sessions_dir=sessions_dir if sessions_dir.exists() else None,
+            **filters,
         )
         return {"ok": True, "removed": removed}
     finally:
@@ -9152,8 +9238,15 @@ async def auth_mcp_server(name: str, profile: Optional[str] = None):
                 # The default 30s connect timeout would kill the flow while the
                 # user is still on the consent screen — give the browser
                 # round-trip the full callback window (300s in mcp_oauth) plus
-                # headroom so the connect wrapper can't pre-empt it.
-                tools = _probe_single_server(name, cfg, connect_timeout=315)
+                # headroom so the connect wrapper can't pre-empt it. Honor a
+                # larger configured connect_timeout when the user set one.
+                try:
+                    _cfg_timeout = float(cfg.get("connect_timeout", 0))
+                except (TypeError, ValueError):
+                    _cfg_timeout = 0.0
+                tools = _probe_single_server(
+                    name, cfg, connect_timeout=max(_cfg_timeout, 315)
+                )
             except Exception:
                 storage.restore(backup)
                 raise

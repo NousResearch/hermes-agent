@@ -4,6 +4,8 @@ import logging
 import os
 from unittest.mock import patch
 
+from agent.secret_scope import reset_secret_scope, set_secret_scope
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import (
     ChannelOverride,
     GatewayConfig,
@@ -402,6 +404,32 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """``gateway.multiplex_profiles: true`` (the nested form written by
+        ``hermes config set gateway.multiplex_profiles true``) must enable
+        multiplexing when loaded via load_gateway_config().
+
+        Regression: load_gateway_config() only surfaced the *top-level*
+        ``multiplex_profiles`` key into gw_data, so a config.yaml that pinned
+        the flag under the nested ``gateway:`` section silently loaded with
+        multiplex_profiles=False. (from_dict honors the nested fallback, but
+        load_gateway_config builds gw_data from the top-level keys before
+        calling from_dict, so the nested value never reached it.)
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
 
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so
@@ -1169,6 +1197,43 @@ class TestLoadGatewayConfig:
 
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
+
+    def test_profile_scoped_env_overrides_do_not_fall_back_to_default_profile_env(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        default_home = tmp_path / "default-home"
+        default_home.mkdir()
+        default_config = default_home / "config.yaml"
+        default_config.write_text(
+            "multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        secondary_home = tmp_path / "secondary-home"
+        secondary_home.mkdir()
+        secondary_config = secondary_home / "config.yaml"
+        secondary_config.write_text(
+            "multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "default-token")
+
+        home_token = set_hermes_home_override(str(secondary_home))
+        secret_token = set_secret_scope({"DISCORD_BOT_TOKEN": "worker-token"})
+        try:
+            config = load_gateway_config()
+        finally:
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
+
+        assert config.multiplex_profiles is True
+        assert config.platforms[Platform.DISCORD].token == "worker-token"
+        assert Platform.API_SERVER not in config.platforms
 
 
 class TestHomeChannelEnvOverrides:

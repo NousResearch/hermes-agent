@@ -134,14 +134,65 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
 ]
 
+def _is_likely_emoji_codepoint(ch: str) -> bool:
+    """Return True for ``ch`` if it sits in a code-point range that the
+    Unicode emoji ZWJ sequence machinery actually joins.
+
+    The official Extended_Pictographic property is not exposed via
+    Python's stdlib ``unicodedata`` module — only ranges are accessible.
+    This helper encodes the high-confidence subset:
+
+    - ``category`` ``So`` (symbol-other): covers 📙 🐈 ⬛ 👨 etc.
+    - ``category`` ``Sk`` (symbol-modifier): covers 〽️ etc.
+    - Code-point block ``U+1F000–U+1FFFF``: emoji proper (pictographs,
+      symbols, emoticons, transport, supplemental).
+    - Code-point block ``U+2600–U+27BF``: misc symbols + dingbats.
+    - Code-point block ``U+2B00–U+2BFF``: arrows + misc symbols.
+    - Code-point block ``U+2300–U+23FF``: misc technical + clock faces.
+
+    Anything outside these ranges — Latin letters, CJK ideographs,
+    ASCII punctuation, spaces — returns False and the surrounding
+    ``scan_for_threats`` will keep flagging U+200D as a potential
+    text-hiding signal (#59437).
+
+    The check is deliberately conservative: it may allow a few rare
+    sequences that ARE benign but not pure emoji (e.g. ZWJ-joined
+    flags via regional indicator pairs in some tooling). Allowing
+    a benign sequence through is far cheaper than blocking a real
+    emoji and dropping an entire persona / instruction file.
+    """
+    if not ch:
+        return False
+    cat = unicodedata.category(ch)
+    if cat in ("So", "Sk"):
+        return True
+    cp = ord(ch)
+    return (
+        0x1F000 <= cp <= 0x1FFFF
+        or 0x2600 <= cp <= 0x27BF
+        or 0x2B00 <= cp <= 0x2BFF
+        or 0x2300 <= cp <= 0x23FF
+    )
+
+
 # Invisible / bidirectional unicode characters used in injection attacks.
 # Aligned with skills_guard.py INVISIBLE_CHARS — directional isolates
 # (U+2066-U+2069) and invisible math operators (U+2062-U+2064) are real
 # attack tools.
+#
+# Note: U+200D (zero-width joiner) is intentionally NOT in this set.
+# The original catalogue treated *every* ZWJ as injection — which
+# wrongly rejected legitimate emoji like 🐈‍⬛ (U+1F408 U+200D U+2B1B),
+# 👨‍💻 (U+1F468 U+200D U+1F4BB), 👩‍👧 (U+1F469 U+200D U+1F467), and
+# dozens of flag/skin-tone sequences. When a coded approach instead
+# inspects the *neighbours* of ZWJ and lets the character pass when
+# both surrounding code points are emoji, legitimate emoji load
+# cleanly while genuine text-hiding ZWJ is still flagged — see
+# scan_for_threats() and _is_emoji_zwj_sequence_joiner (#59437).
+_ZWJ = "\u200d"
 INVISIBLE_CHARS = frozenset({
     '\u200b',  # zero-width space
     '\u200c',  # zero-width non-joiner
-    '\u200d',  # zero-width joiner
     '\u2060',  # word joiner
     '\u2062',  # invisible times
     '\u2063',  # invisible separator
@@ -229,12 +280,47 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     content = content[:MAX_SCAN_CHARS]
 
     # Invisible unicode — single pass through the content set, not 17
-    # ``in`` lookups.  Run this on the RAW content before NFKC normalisation,
-    # since normalisation can strip some of these codepoints.
+    # ``in`` lookups.  Run this on the RAW content before NFKC
+    # normalisation, since normalisation can strip some of these
+    # codepoints.
+    #
+    # U+200D (zero-width joiner) is handled separately, see below:
+    # the set-intersection approach flagged every ZWJ — including the
+    # legitimate ones that join emoji like 🐈‍⬛, 👨‍💻, 👩‍👧 — causing
+    # context files containing any of these to be silently dropped
+    # with ``invisible_unicode_U+200D`` (#59437). The motivation for
+    # flagging ZWJ originally was text-hiding ('foo\u200dbar' looks
+    # like 'foobar' in humans but injects differently). We preserve
+    # that signal but exempt ZWJ whose immediate neighbours are emoji
+    # code points — the unicode property ``Extended_Pictographic``
+    # is not in stdlib ``unicodedata``, so we use
+    # :func:`_is_likely_emoji_codepoint`'s high-confidence range
+    # fallback.
     char_set = set(content)
     invisible_hits = char_set & INVISIBLE_CHARS
     for ch in invisible_hits:
         findings.append(f"invisible_unicode_U+{ord(ch):04X}")
+
+    # ZWJ: only flag when its neighbours are NOT both emoji code points.
+    # Iterate the raw content (preserving order so we can read
+    # neighbours cheaply) and skip ZWJ inside an emoji sequence.
+    if _ZWJ in content:
+        for idx, ch in enumerate(content):
+            if ch != _ZWJ:
+                continue
+            prev_ch = content[idx - 1] if idx > 0 else ""
+            next_ch = content[idx + 1] if idx + 1 < len(content) else ""
+            # If BOTH neighbours are emoji code points it's a benign
+            # emoji-ZWJ-emoji sequence (e.g. 🐈‍⬛ = U+1F408 ZWJ U+2B1B).
+            # Otherwise it's a genuine text-hiding signal and we flag it.
+            if not (
+                _is_likely_emoji_codepoint(prev_ch)
+                and _is_likely_emoji_codepoint(next_ch)
+            ):
+                findings.append(f"invisible_unicode_U+{ord(_ZWJ):04X}")
+                # One finding per file is enough; the prompt_builder
+                # blocks the whole file on the first hit anyway.
+                break
 
     # Normalise to NFKC so full-width / compatibility Unicode variants
     # (e.g. ｃａｔ → cat, Ａ → A) are folded to their ASCII counterparts before

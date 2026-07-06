@@ -292,6 +292,23 @@ Help me refactor the auth module please             2h ago        cli    2025030
 What's the weather in Las Vegas?                    3d ago        tele   20250303_101500_f
 ```
 
+### Search Session Text
+
+Use `hermes sessions search` when you remember words from the conversation but not the title or ID. It searches saved user and assistant messages with the same FTS5-backed recall index used by the `session_search` tool.
+
+```bash
+# Search transcript text and print matching session IDs plus snippets
+hermes sessions search "auth refactor"
+
+# Show more matches or bias toward recent messages
+hermes sessions search deploy --limit 10 --sort newest
+
+# Script against the structured payload
+hermes sessions search "rate limit" --json
+```
+
+The query supports FTS5 syntax, including quoted phrases, `OR`, `NOT`, and prefix terms like `deploy*`. Search results include a ready-to-run `hermes --resume <session-id>` command.
+
 ### Export Sessions
 
 ```bash

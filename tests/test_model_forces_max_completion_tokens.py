@@ -91,7 +91,7 @@ class TestNegativeCases:
         assert model_forces_max_completion_tokens("qwen2.5-72b") is False
 
     def test_deepseek_family(self):
-        assert model_forces_max_completion_tokens("deepseek-chat") is False
+        assert model_forces_max_completion_tokens("deepseek-v4-flash") is False
 
 
 # ─── Edge cases ─────────────────────────────────────────────────────────────

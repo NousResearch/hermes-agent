@@ -83,7 +83,7 @@ class TestDeepSeekProfileWiring:
     def test_deepseek_no_forced_max_tokens(self, transport):
         profile = get_provider_profile("deepseek")
         kwargs = transport.build_kwargs(
-            model="deepseek-chat",
+            model="deepseek-v4-flash",
             messages=_msgs(),
             tools=None,
             provider_profile=profile,
@@ -96,14 +96,14 @@ class TestDeepSeekProfileWiring:
             ollama_num_ctx=None,
         )
         # DeepSeek has no default_max_tokens
-        assert kwargs["model"] == "deepseek-chat"
+        assert kwargs["model"] == "deepseek-v4-flash"
         assert kwargs.get("max_tokens") is None or "max_tokens" not in kwargs
 
     def test_deepseek_messages_passed(self, transport):
         profile = get_provider_profile("deepseek")
         msgs = _msgs()
         kwargs = transport.build_kwargs(
-            model="deepseek-chat",
+            model="deepseek-v4-flash",
             messages=msgs,
             tools=None,
             provider_profile=profile,

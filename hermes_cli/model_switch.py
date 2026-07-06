@@ -142,8 +142,9 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
     # Google
     "gemini":    ModelIdentity("google", "gemini"),
 
-    # DeepSeek
-    "deepseek":  ModelIdentity("deepseek", "deepseek-chat"),
+    # DeepSeek — default shorthand should resolve to the current fast V4 model,
+    # not the deprecated deepseek-chat alias.
+    "deepseek":  ModelIdentity("deepseek", "deepseek-v4-flash"),
 
     # X.AI
     "grok":      ModelIdentity("x-ai", "grok"),

@@ -180,7 +180,7 @@ class TestPriorityProcessingModels(unittest.TestCase):
         # Non-OpenAI, non-Anthropic models
         assert model_supports_fast_mode("gemini-3-pro-preview") is False
         assert model_supports_fast_mode("kimi-k2-thinking") is False
-        assert model_supports_fast_mode("deepseek-chat") is False
+        assert model_supports_fast_mode("deepseek-v4-flash") is False
         assert model_supports_fast_mode("") is False
         assert model_supports_fast_mode(None) is False
 

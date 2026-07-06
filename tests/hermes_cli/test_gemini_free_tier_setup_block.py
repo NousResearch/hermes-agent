@@ -132,7 +132,7 @@ class TestGeminiSetupFreeTierBlock:
             "agent.gemini_native_adapter.probe_gemini_tier",
         ) as mock_probe, patch(
             "hermes_cli.auth._prompt_model_selection",
-            return_value="deepseek-chat",
+            return_value="deepseek-v4-flash",
         ), patch(
             "hermes_cli.auth.deactivate_provider",
         ), patch("builtins.input", return_value=""):

@@ -179,7 +179,7 @@ openrouter = OpenRouterProfile(
     fallback_models=(
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
-        "deepseek/deepseek-chat",
+        "deepseek/deepseek-v4-flash",
         "google/gemini-3-flash-preview",
         "qwen/qwen3-plus",
     ),

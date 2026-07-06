@@ -2814,7 +2814,7 @@ class TestWebServerEndpoints:
             # Auto — follows main, never stale.
             "vision": {"provider": "auto", "model": ""},
             # Pinned to a third provider — also stale vs the new main.
-            "curator": {"provider": "deepseek", "model": "deepseek-chat"},
+            "curator": {"provider": "deepseek", "model": "deepseek-v4-flash"},
         }
         save_config(cfg)
 

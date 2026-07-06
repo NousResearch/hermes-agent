@@ -12,12 +12,11 @@ Different LLM providers expect model identifiers in different formats:
   model IDs, but Claude still uses hyphenated native names like
   ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
-- **DeepSeek** accepts ``deepseek-chat`` (V3), ``deepseek-reasoner``
-  (R1-family), and the first-class V-series IDs (``deepseek-v4-pro``,
-  ``deepseek-v4-flash``, and any future ``deepseek-v<N>-*``).  Older
-  Hermes revisions folded every non-reasoner input into
-  ``deepseek-chat``, which on aggregators routes to V3 — so a user
-  picking V4 Pro was silently downgraded.
+- **DeepSeek** canonicalises to first-class V-series IDs
+  (``deepseek-v4-pro``, ``deepseek-v4-flash``, and future
+  ``deepseek-v<N>-*``). Deprecated aliases such as ``deepseek-chat``
+  and ``deepseek-reasoner`` are mapped to V4 Flash / V4 Pro before an
+  API call is made.
 - **Custom** and remaining providers pass the name through as-is.
 
 This module centralises that translation so callers can simply write::
@@ -118,8 +117,9 @@ _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 # DeepSeek special handling
 # ---------------------------------------------------------------------------
-# DeepSeek's API only recognises exactly two model identifiers.  We map
-# common aliases and patterns to the canonical names.
+# DeepSeek model routing. Versioned V4 names are the canonical public IDs.
+# Legacy Chat/Reasoner aliases are accepted as user input only and are
+# immediately translated to current V4 targets.
 
 _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "reasoner",
@@ -130,11 +130,14 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
 })
 
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-chat",       # V3 on DeepSeek direct and most aggregators
-    "deepseek-reasoner",   # R1-family reasoning model
     "deepseek-v4-pro",     # V4 Pro — first-class model ID
     "deepseek-v4-flash",   # V4 Flash — first-class model ID
 })
+
+_DEEPSEEK_LEGACY_ALIASES: dict[str, str] = {
+    "deepseek-chat": "deepseek-v4-flash",
+    "deepseek-reasoner": "deepseek-v4-pro",
+}
 
 # First-class V-series IDs (``deepseek-v4-pro``, ``deepseek-v4-flash``,
 # future ``deepseek-v5-*``, dated variants like ``deepseek-v4-flash-20260423``).
@@ -149,13 +152,15 @@ def _normalize_for_deepseek(model_name: str) -> str:
     """Map a model input to a DeepSeek-accepted identifier.
 
     Rules:
-    - Already a known canonical (``deepseek-chat``/``deepseek-reasoner``/
-      ``deepseek-v4-pro``/``deepseek-v4-flash``) -> pass through.
+    - Already a current V-series canonical (``deepseek-v4-pro`` /
+      ``deepseek-v4-flash``) -> pass through.
+    - Deprecated ``deepseek-chat`` / ``deepseek-reasoner`` inputs -> map to
+      ``deepseek-v4-flash`` / ``deepseek-v4-pro``.
     - Matches the V-series pattern ``deepseek-v<digit>...`` -> pass through
       (covers future ``deepseek-v5-*`` and dated variants without a release).
     - Contains a reasoner keyword (r1, think, reasoning, cot, reasoner)
-      -> ``deepseek-reasoner``.
-    - Everything else -> ``deepseek-chat``.
+      -> ``deepseek-v4-pro``.
+    - Everything else -> ``deepseek-v4-flash``.
 
     Args:
         model_name: The bare model name (vendor prefix already stripped).
@@ -168,6 +173,9 @@ def _normalize_for_deepseek(model_name: str) -> str:
     if bare in _DEEPSEEK_CANONICAL_MODELS:
         return bare
 
+    if bare in _DEEPSEEK_LEGACY_ALIASES:
+        return _DEEPSEEK_LEGACY_ALIASES[bare]
+
     # V-series first-class IDs (v4-pro, v4-flash, future v5-*, dated variants)
     if _DEEPSEEK_V_SERIES_RE.match(bare):
         return bare
@@ -175,9 +183,9 @@ def _normalize_for_deepseek(model_name: str) -> str:
     # Check for reasoner-like keywords anywhere in the name
     for keyword in _DEEPSEEK_REASONER_KEYWORDS:
         if keyword in bare:
-            return "deepseek-reasoner"
+            return "deepseek-v4-pro"
 
-    return "deepseek-chat"
+    return "deepseek-v4-flash"
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +250,33 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     if normalized_prefix and normalized_prefix == normalized_target:
         return remainder.strip()
     return model_name
+
+
+def _strip_matching_provider_qualifier(model_name: str, target_provider: str) -> str:
+    """Strip ``[@]provider:`` only when it matches the target provider.
+
+    Some UI/context-reference surfaces render provider-qualified model choices
+    as ``@deepseek:deepseek-v4-flash``. That is useful as a selector, but the
+    native provider API must receive only the model id. Unknown or mismatched
+    qualifiers are preserved so model names containing ordinary colons are not
+    accidentally mangled.
+    """
+    raw = (model_name or "").strip()
+    candidate = raw[1:] if raw.startswith("@") else raw
+    colon = candidate.find(":")
+    if colon <= 0:
+        return raw
+
+    provider_part = candidate[:colon].strip()
+    model_part = candidate[colon + 1:].strip()
+    if not provider_part or not model_part:
+        return raw
+
+    normalized_prefix = _normalize_provider_alias(provider_part)
+    normalized_target = _normalize_provider_alias(target_provider)
+    if normalized_prefix and normalized_prefix == normalized_target:
+        return model_part
+    return raw
 
 
 def detect_vendor(model_name: str) -> Optional[str]:
@@ -312,10 +347,15 @@ def _prepend_vendor(model_name: str) -> str:
         'my-custom-thing'
     """
     if "/" in model_name:
+        vendor, bare = model_name.split("/", 1)
+        if vendor.lower() == "deepseek":
+            return f"deepseek/{_normalize_for_deepseek(bare)}"
         return model_name
 
     vendor = detect_vendor(model_name)
     if vendor:
+        if vendor == "deepseek":
+            return f"deepseek/{_normalize_for_deepseek(model_name)}"
         return f"{vendor}/{model_name}"
     return model_name
 
@@ -368,11 +408,11 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         >>> normalize_model_for_provider("minimax-m2.5-free", "opencode-zen")
         'minimax-m2.5-free'
 
-        >>> normalize_model_for_provider("deepseek-v3", "deepseek")
-        'deepseek-chat'
+        >>> normalize_model_for_provider("deepseek-chat", "deepseek")
+        'deepseek-v4-flash'
 
         >>> normalize_model_for_provider("deepseek-r1", "deepseek")
-        'deepseek-reasoner'
+        'deepseek-v4-pro'
 
         >>> normalize_model_for_provider("my-model", "custom")
         'my-model'
@@ -388,6 +428,7 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         return name
 
     provider = _normalize_provider_alias(target_provider)
+    name = _strip_matching_provider_qualifier(name, provider)
 
     # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:

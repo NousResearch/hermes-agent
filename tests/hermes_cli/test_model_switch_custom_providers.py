@@ -259,10 +259,10 @@ def test_list_enumerates_dict_format_models_alongside_default(monkeypatch):
                 "name": "DeepSeek",
                 "base_url": "https://api.deepseek.com",
                 "api_mode": "chat_completions",
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-flash",
                 "models": {
-                    "deepseek-chat": {"context_length": 128000},
-                    "deepseek-reasoner": {"context_length": 128000},
+                    "deepseek-v4-flash": {"context_length": 1_000_000},
+                    "deepseek-v4-pro": {"context_length": 1_000_000},
                 },
             }
         ],
@@ -271,7 +271,7 @@ def test_list_enumerates_dict_format_models_alongside_default(monkeypatch):
 
     ds_rows = [p for p in providers if p["name"] == "DeepSeek"]
     assert len(ds_rows) == 1
-    assert ds_rows[0]["models"] == ["deepseek-chat", "deepseek-reasoner"]
+    assert ds_rows[0]["models"] == ["deepseek-v4-flash", "deepseek-v4-pro"]
     assert ds_rows[0]["total_models"] == 2
 
 
@@ -321,10 +321,10 @@ def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
             {
                 "name": "DeepSeek",
                 "base_url": "https://api.deepseek.com",
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-flash",
                 "models": {
-                    "deepseek-chat": {"context_length": 128000},
-                    "deepseek-reasoner": {"context_length": 128000},
+                    "deepseek-v4-flash": {"context_length": 1_000_000},
+                    "deepseek-v4-pro": {"context_length": 1_000_000},
                 },
             }
         ],
@@ -332,8 +332,8 @@ def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
     )
 
     ds_rows = [p for p in providers if p["name"] == "DeepSeek"]
-    assert ds_rows[0]["models"].count("deepseek-chat") == 1
-    assert ds_rows[0]["models"] == ["deepseek-chat", "deepseek-reasoner"]
+    assert ds_rows[0]["models"].count("deepseek-v4-flash") == 1
+    assert ds_rows[0]["models"] == ["deepseek-v4-flash", "deepseek-v4-pro"]
 
 
 

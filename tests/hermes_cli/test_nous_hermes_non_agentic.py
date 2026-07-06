@@ -59,7 +59,7 @@ def test_matches_real_nous_hermes_chat_models(model_name: str) -> None:
         "gpt-5",
         "openai/gpt-4o",
         "google/gemini-2.5-flash",
-        "deepseek-chat",
+        "deepseek-v4-flash",
         # Non-chat Hermes models we don't warn about
         "hermes-llm-2",
         "hermes2-pro",

@@ -245,8 +245,8 @@ class TestDetectProviderForModel:
         assert result[0] == "anthropic"
 
     def test_deepseek_model_detected(self):
-        """deepseek-chat should resolve to deepseek provider."""
-        result = detect_provider_for_model("deepseek-chat", "openai-codex")
+        """deepseek-v4-flash should resolve to deepseek provider."""
+        result = detect_provider_for_model("deepseek-v4-flash", "openai-codex")
         assert result is not None
         # Provider is deepseek (direct) or openrouter (fallback) depending on creds
         assert result[0] in {"deepseek", "openrouter"}

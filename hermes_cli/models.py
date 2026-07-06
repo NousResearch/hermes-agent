@@ -353,8 +353,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": [
         "deepseek-v4-pro",
         "deepseek-v4-flash",
-        "deepseek-chat",
-        "deepseek-reasoner",
     ],
     "xiaomi": [
         "mimo-v2.5-pro",
@@ -1951,7 +1949,7 @@ def detect_provider_for_model(
     """Auto-detect the best provider for a model name.
 
     Returns ``(provider_id, model_name)`` — the model name may be remapped
-    (e.g. bare ``deepseek-chat`` → ``deepseek/deepseek-chat`` for OpenRouter).
+    (e.g. bare ``deepseek-v4-flash`` → ``deepseek/deepseek-v4-flash`` for OpenRouter).
     Returns ``None`` when no confident match is found.
 
     Priority:
@@ -1988,7 +1986,7 @@ def _find_openrouter_slug(model_name: str) -> Optional[str]:
 
     Handles:
     - Exact match: ``anthropic/claude-opus-4.6`` → as-is
-    - Bare name: ``deepseek-chat`` → ``deepseek/deepseek-chat``
+    - Bare name: ``deepseek-v4-flash`` → ``deepseek/deepseek-v4-flash``
     - Bare name: ``claude-opus-4.6`` → ``anthropic/claude-opus-4.6``
     """
     name_lower = model_name.strip().lower()

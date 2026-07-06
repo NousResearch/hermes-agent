@@ -4491,6 +4491,14 @@ def _apply_model_assignment_sync(
     if scope == "main":
         if not provider or not model:
             raise HTTPException(status_code=400, detail="provider and model required for main")
+        if provider.strip().lower() == "moa":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "MoA cannot be saved as the default model/provider. "
+                    "Use `/moa <prompt>` for one-shot runs, or an interactive session-only `/model ... --provider moa --session` switch."
+                ),
+            )
         provider, model = _normalize_main_model_assignment(provider, model)
         model_cfg = _apply_main_model_assignment(
             cfg.get("model", {}), provider, model, base_url, api_key

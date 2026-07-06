@@ -7893,20 +7893,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     current_model=self.model or "",
                     current_base_url=self.base_url or "",
                     current_api_key=self.api_key or "",
-                    is_global=persist_global,
+                    is_global=(False if provider_data.get("slug") == "moa" else persist_global),
                     explicit_provider=provider_data.get("slug"),
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"),
                 )
+                picker_persist_global = False if provider_data.get("slug") == "moa" else persist_global
                 self._close_model_picker()
                 if getattr(self, "_app", None):
                     threading.Thread(
                         target=self._confirm_and_apply_model_switch_result,
-                        args=(result, persist_global),
+                        args=(result, picker_persist_global),
                         daemon=True,
                     ).start()
                 else:
-                    self._confirm_and_apply_model_switch_result(result, persist_global)
+                    self._confirm_and_apply_model_switch_result(result, picker_persist_global)
                 return
             self._close_model_picker()
 
@@ -7948,6 +7949,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # model.persist_switch_by_default (defaults to True so /model survives
         # across sessions).
         persist_global = resolve_persist_behavior(is_global_flag, is_session)
+        if explicit_provider.strip().lower() == "moa" and not is_global_flag:
+            # MoA is allowed only as a manual interactive mode, not as the
+            # unattended/default route. Plain `/model ... --provider moa`
+            # therefore becomes session-only by default; `--global` is rejected
+            # later in switch_model() with a targeted message.
+            persist_global = False
 
         # --refresh: wipe the on-disk picker cache before building the
         # provider list. Forces a live re-fetch of every authed provider's

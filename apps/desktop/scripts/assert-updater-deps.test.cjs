@@ -48,9 +48,12 @@ function makeFixture(root, closure = CLOSURE, { writeManifest = true } = {}) {
   const resourcesDir = path.join(root, 'Resources')
   const vendorNm = path.join(resourcesDir, UPDATER_DIR, VENDOR_NODE_MODULES)
   for (const pkg of closure) {
-    const entryAbs = path.join(vendorNm, ...pkg.entry.split('/'))
-    fs.mkdirSync(path.dirname(entryAbs), { recursive: true })
-    fs.writeFileSync(entryAbs, `module.exports = {} // ${pkg.name}\n`)
+    // entry may be null (stager: unresolvable main -> dir check alone).
+    if (pkg.entry) {
+      const entryAbs = path.join(vendorNm, ...pkg.entry.split('/'))
+      fs.mkdirSync(path.dirname(entryAbs), { recursive: true })
+      fs.writeFileSync(entryAbs, `module.exports = {} // ${pkg.name}\n`)
+    }
     // A package.json so the dir is a plausible package (the gate checks the dir
     // exists; this keeps the fixture realistic).
     const pkgJson = path.join(vendorNm, ...pkg.dir.split('/'), 'package.json')
@@ -150,6 +153,15 @@ test('FAIL: manifest absent (whole updater-deps copy dropped) -> not ok', () => 
     const res = checkUpdaterDeps(resourcesDir)
     assert.equal(res.ok, false)
     assert.ok(res.missing.some((m) => m.includes(MANIFEST_NAME)))
+  })
+})
+
+test('PASS: manifest entry null (unresolvable main) -> dir check alone suffices', () => {
+  withTempFixture((root) => {
+    const closure = CLOSURE.map((p) => (p.name === 'sax' ? { ...p, entry: null } : p))
+    const resourcesDir = makeFixture(root, closure)
+    const res = checkUpdaterDeps(resourcesDir)
+    assert.equal(res.ok, true, JSON.stringify(res.missing))
   })
 })
 

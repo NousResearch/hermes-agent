@@ -190,16 +190,32 @@ function stagedDestFor(name, srcDir) {
 }
 
 /**
- * The package's main-entry file, relative to the package dir. Read from its
- * package.json `main` (default `index.js`), matching what require() loads at
- * runtime -- the same entry the integrity gate insists must have shipped.
+ * The package's main-entry file, relative to the package dir, resolved to the
+ * REAL file require() would load -- not the raw package.json `main` string.
+ * Raw mains are legal without an extension or with a `./` prefix (ms ships
+ * `"./index"`, tiny-typed-emitter `"lib/index"`); the integrity gate does a
+ * literal isFile() on the recorded path, so recording the raw string made the
+ * gate's very first real run (0.16.6) fail on paths like `ms/./index` that
+ * require() resolves but the filesystem doesn't know. Resolution happens HERE,
+ * at stage time, where the source files are on disk: require.resolve() on the
+ * package dir applies Node's full main/index resolution. If even that can't
+ * produce a file inside the package (exotic exports-only package), return null
+ * and let the gate fall back to the dir-presence check for that package.
  */
 function entryRelFor(srcDir) {
   try {
-    const main = require(path.join(srcDir, 'package.json')).main || 'index.js'
-    return main
+    // realpath BOTH sides before relativizing: require.resolve returns the
+    // real path, so a symlinked srcDir (macOS /var -> /private/var, pnpm-style
+    // layouts) would otherwise relativize into ../.. garbage.
+    const realSrc = fs.realpathSync(path.resolve(srcDir))
+    const abs = require.resolve(realSrc)
+    const rel = path.relative(realSrc, abs)
+    // A main outside its own package dir would make the manifest lie; treat as
+    // unresolvable rather than recording a path the gate can't join safely.
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return null
+    return rel
   } catch {
-    return 'index.js'
+    return null
   }
 }
 
@@ -242,9 +258,10 @@ function main() {
     manifestPackages.push({
       name,
       dir,
-      // Package-main relative to vendor/node_modules, POSIX-joined -- the file
-      // the gate re-checks exists in the packaged tree.
-      entry: `${dir}/${entryRel.split(path.sep).join('/')}`,
+      // Package-main relative to vendor/node_modules, POSIX-joined -- the
+      // REAL resolved file the gate re-checks exists in the packaged tree.
+      // null = no resolvable main (gate then relies on the dir check alone).
+      entry: entryRel ? `${dir}/${entryRel.split(path.sep).join('/')}` : null,
     })
   }
 
@@ -277,4 +294,10 @@ function main() {
   )
 }
 
-main()
+// Testable seam (stage-updater-deps.test.cjs unit-tests the entry resolution
+// that broke the 0.16.6 gate); running as a script stages as before.
+module.exports = { entryRelFor }
+
+if (require.main === module) {
+  main()
+}

@@ -2104,7 +2104,7 @@ def list_authenticated_providers(
         )
     ):
         _models = [current_model] if current_model else []
-        if _can_probe_custom_provider(row_is_current=True):
+        if refresh or probe_current_custom_provider:
             try:
                 from hermes_cli.models import fetch_api_models
 

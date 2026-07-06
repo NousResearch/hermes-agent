@@ -17,6 +17,7 @@ Key design decisions:
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -123,6 +124,38 @@ T = TypeVar("T")
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 19
+
+
+def _create_owner_only(path: Path) -> None:
+    """Pre-create *path* as an empty owner-only (0600) file if it doesn't
+    exist yet, so sqlite3.connect() opens an already-secured file instead of
+    creating one at the process umask (0644 under the common 022 default).
+    No-op on Windows (mode bits aren't meaningful there) and if another
+    process wins the create race — that process already set the same mode.
+    """
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+    except FileExistsError:
+        pass
+    except OSError:
+        pass
+
+
+def _secure_wal_files(db_path: Path) -> None:
+    """chmod the -wal/-shm sidecar files to 0600 if WAL mode created them.
+
+    SQLite creates these itself once journal_mode=WAL is set; they don't
+    inherit db_path's mode and are created at the process umask, so they
+    need the same treatment as the main file, after the fact.
+    """
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(db_path) + suffix)
+        try:
+            if sidecar.exists():
+                os.chmod(sidecar, 0o600)
+        except OSError:
+            pass
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -930,6 +963,7 @@ class SessionDB:
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            _create_owner_only(self.db_path)
 
             def _connect_and_init():
                 self._conn = sqlite3.connect(
@@ -946,6 +980,7 @@ class SessionDB:
                 )
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
+                _secure_wal_files(self.db_path)
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
 

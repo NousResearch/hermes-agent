@@ -1,0 +1,802 @@
+{
+ "news": {
+  "world": [
+   {
+    "title": "Global climate summit ends with landmark pledge on emissions",
+    "url": "https://example.com/sample/world-1",
+    "summary": "Delegates from 190 countries agreed to a phased reduction framework, with review checkpoints every two years.",
+    "source": "BBC World",
+    "age_minutes": 42
+   },
+   {
+    "title": "Historic ceasefire agreement reaches its first 30-day milestone",
+    "url": "https://example.com/sample/world-2",
+    "summary": "Observers report the truce is largely holding, with humanitarian corridors now open in three regions.",
+    "source": "NPR World",
+    "age_minutes": 95
+   },
+   {
+    "title": "Elections watchdog reports record turnout across the region",
+    "url": "https://example.com/sample/world-3",
+    "summary": "Early counts suggest turnout topped 78%, the highest in three decades of monitoring.",
+    "source": "The Guardian World",
+    "age_minutes": 160
+   },
+   {
+    "title": "New rail corridor connects three capitals for the first time",
+    "url": "https://example.com/sample/world-4",
+    "summary": "The 1,200 km high-speed line cuts cross-border travel from fourteen hours to five.",
+    "source": "BBC World",
+    "age_minutes": 240
+   },
+   {
+    "title": "UN report highlights progress on global literacy goals",
+    "url": "https://example.com/sample/world-5",
+    "summary": "Youth literacy has climbed to 94% worldwide, though regional gaps persist, the agency said.",
+    "source": "NPR World",
+    "age_minutes": 320
+   },
+   {
+    "title": "Coastal cities test early-warning network for extreme weather",
+    "url": "https://example.com/sample/world-6",
+    "summary": "The sensor mesh gives residents up to 40 minutes of additional evacuation lead time.",
+    "source": "The Guardian World",
+    "age_minutes": 400
+   }
+  ],
+  "tech": [
+   {
+    "title": "Open-source laptop project ships its first developer edition",
+    "url": "https://example.com/sample/tech-1",
+    "summary": "The modular design lets owners swap the mainboard, ports, and battery without special tools.",
+    "source": "The Verge",
+    "age_minutes": 30
+   },
+   {
+    "title": "Researchers demo battery tech with double today's energy density",
+    "url": "https://example.com/sample/tech-2",
+    "summary": "Solid-state cells survived 1,000 charge cycles in lab testing while retaining 92% capacity.",
+    "source": "Ars Technica",
+    "age_minutes": 75
+   },
+   {
+    "title": "Show HN: I built a self-hosted dashboard for everything I use",
+    "url": "https://example.com/sample/tech-3",
+    "summary": "A weekend project that grew into a full personal command center — launcher, feeds, lists and notes.",
+    "source": "Hacker News",
+    "age_minutes": 120
+   },
+   {
+    "title": "Major browser adds native support for local-first sync",
+    "url": "https://example.com/sample/tech-4",
+    "summary": "The API lets web apps sync across devices end-to-end encrypted, without a vendor cloud.",
+    "source": "The Verge",
+    "age_minutes": 200
+   },
+   {
+    "title": "The quiet rise of small language models on personal hardware",
+    "url": "https://example.com/sample/tech-5",
+    "summary": "Sub-10B parameter models now handle most everyday tasks entirely on-device.",
+    "source": "Ars Technica",
+    "age_minutes": 280
+   },
+   {
+    "title": "Ask HN: What does your personal productivity stack look like in 2026?",
+    "url": "https://example.com/sample/tech-6",
+    "summary": "Hundreds of replies compare launchers, note systems, and self-hosted dashboards.",
+    "source": "Hacker News",
+    "age_minutes": 350
+   }
+  ],
+  "business": [
+   {
+    "title": "Markets steady as central bank signals no change to rates",
+    "url": "https://example.com/sample/biz-1",
+    "summary": "Equities drifted higher after the announcement, with tech and utilities leading gains.",
+    "source": "CNBC",
+    "age_minutes": 25
+   },
+   {
+    "title": "Small-business optimism index hits a four-year high",
+    "url": "https://example.com/sample/biz-2",
+    "summary": "Hiring plans and capital-spending intentions both rose for the third straight month.",
+    "source": "MarketWatch",
+    "age_minutes": 90
+   },
+   {
+    "title": "Chipmaker announces $20B expansion of domestic fabrication",
+    "url": "https://example.com/sample/biz-3",
+    "summary": "The new fab campus is expected to create 8,000 jobs and come online within three years.",
+    "source": "CNBC",
+    "age_minutes": 150
+   },
+   {
+    "title": "Remote work settles at one-third of all professional hours",
+    "url": "https://example.com/sample/biz-4",
+    "summary": "New labor data suggests hybrid arrangements have stabilized after years of churn.",
+    "source": "MarketWatch",
+    "age_minutes": 230
+   },
+   {
+    "title": "Renewables attract record quarterly investment inflows",
+    "url": "https://example.com/sample/biz-5",
+    "summary": "Storage and grid-modernization projects drew the largest share of new capital.",
+    "source": "CNBC",
+    "age_minutes": 310
+   }
+  ],
+  "science": [
+   {
+    "title": "Astronomers confirm water vapor in nearby exoplanet atmosphere",
+    "url": "https://example.com/sample/sci-1",
+    "summary": "Spectra from the orbiting telescope show clear absorption bands on a temperate super-Earth.",
+    "source": "ScienceDaily",
+    "age_minutes": 50
+   },
+   {
+    "title": "Artemis crew completes final training for lunar south pole mission",
+    "url": "https://example.com/sample/sci-2",
+    "summary": "The four astronauts will attempt the first landing at the pole late next year.",
+    "source": "NASA",
+    "age_minutes": 110
+   },
+   {
+    "title": "Gene therapy trial restores partial vision in 12 of 14 patients",
+    "url": "https://example.com/sample/sci-3",
+    "summary": "The single-injection treatment targets a rare inherited retinal condition.",
+    "source": "ScienceDaily",
+    "age_minutes": 180
+   },
+   {
+    "title": "Deep-sea expedition catalogs 100 previously unknown species",
+    "url": "https://example.com/sample/sci-4",
+    "summary": "Highlights include a bioluminescent octopus and a coral that thrives near thermal vents.",
+    "source": "ScienceDaily",
+    "age_minutes": 260
+   },
+   {
+    "title": "New solar sail design passes key deployment test in orbit",
+    "url": "https://example.com/sample/sci-5",
+    "summary": "The 80-square-meter sail unfurled flawlessly and is now raising its orbit without propellant.",
+    "source": "NASA",
+    "age_minutes": 340
+   }
+  ],
+  "sports": [
+   {
+    "title": "Underdogs complete stunning comeback to reach the final",
+    "url": "https://example.com/sample/sport-1",
+    "summary": "Trailing by two goals at the break, they scored three in eleven second-half minutes.",
+    "source": "BBC Sport",
+    "age_minutes": 35
+   },
+   {
+    "title": "Marathon world record falls by 41 seconds in Berlin",
+    "url": "https://example.com/sample/sport-2",
+    "summary": "Perfect conditions and a fearless final 10K produced a landmark 2:00:12 finish.",
+    "source": "ESPN",
+    "age_minutes": 100
+   },
+   {
+    "title": "League announces expansion to two new cities next season",
+    "url": "https://example.com/sample/sport-3",
+    "summary": "The franchise fees set a record, and both ownership groups plan new arenas.",
+    "source": "ESPN",
+    "age_minutes": 170
+   },
+   {
+    "title": "Injury update: star striker expected back for playoffs",
+    "url": "https://example.com/sample/sport-4",
+    "summary": "Scans showed the hamstring strain is minor; a three-week recovery is projected.",
+    "source": "BBC Sport",
+    "age_minutes": 250
+   },
+   {
+    "title": "Grand slam qualifier produces the upset of the tournament",
+    "url": "https://example.com/sample/sport-5",
+    "summary": "The world No. 214 defeated the third seed in straight sets on center court.",
+    "source": "ESPN",
+    "age_minutes": 330
+   }
+  ],
+  "entertainment": [
+   {
+    "title": "Indie film sweeps festival awards ahead of wide release",
+    "url": "https://example.com/sample/ent-1",
+    "summary": "The micro-budget drama took best picture, director, and screenplay honors.",
+    "source": "Variety",
+    "age_minutes": 45
+   },
+   {
+    "title": "Beloved sci-fi series confirms final season premiere date",
+    "url": "https://example.com/sample/ent-2",
+    "summary": "The showrunners promise a ten-episode arc that answers the show's oldest mysteries.",
+    "source": "BBC Entertainment",
+    "age_minutes": 105
+   },
+   {
+    "title": "Streaming numbers reveal a documentary renaissance",
+    "url": "https://example.com/sample/ent-3",
+    "summary": "Nonfiction titles took five of the top ten slots for the first time ever.",
+    "source": "Variety",
+    "age_minutes": 175
+   },
+   {
+    "title": "Reunion tour sells out 40 stadium dates in a single morning",
+    "url": "https://example.com/sample/ent-4",
+    "summary": "Ticket platforms reported their highest single-day demand on record.",
+    "source": "BBC Entertainment",
+    "age_minutes": 255
+   },
+   {
+    "title": "Game adaptation earns rare praise from both critics and fans",
+    "url": "https://example.com/sample/ent-5",
+    "summary": "The series holds a 94% critics score, with viewership doubling week over week.",
+    "source": "Variety",
+    "age_minutes": 335
+   }
+  ],
+  "top": [
+   {
+    "title": "Markets steady as central bank signals no change to rates",
+    "url": "https://example.com/sample/biz-1",
+    "summary": "Equities drifted higher after the announcement, with tech and utilities leading gains.",
+    "source": "CNBC",
+    "age_minutes": 25
+   },
+   {
+    "title": "Open-source laptop project ships its first developer edition",
+    "url": "https://example.com/sample/tech-1",
+    "summary": "The modular design lets owners swap the mainboard, ports, and battery without special tools.",
+    "source": "The Verge",
+    "age_minutes": 30
+   },
+   {
+    "title": "Underdogs complete stunning comeback to reach the final",
+    "url": "https://example.com/sample/sport-1",
+    "summary": "Trailing by two goals at the break, they scored three in eleven second-half minutes.",
+    "source": "BBC Sport",
+    "age_minutes": 35
+   },
+   {
+    "title": "Global climate summit ends with landmark pledge on emissions",
+    "url": "https://example.com/sample/world-1",
+    "summary": "Delegates from 190 countries agreed to a phased reduction framework, with review checkpoints every two years.",
+    "source": "BBC World",
+    "age_minutes": 42
+   },
+   {
+    "title": "Indie film sweeps festival awards ahead of wide release",
+    "url": "https://example.com/sample/ent-1",
+    "summary": "The micro-budget drama took best picture, director, and screenplay honors.",
+    "source": "Variety",
+    "age_minutes": 45
+   },
+   {
+    "title": "Astronomers confirm water vapor in nearby exoplanet atmosphere",
+    "url": "https://example.com/sample/sci-1",
+    "summary": "Spectra from the orbiting telescope show clear absorption bands on a temperate super-Earth.",
+    "source": "ScienceDaily",
+    "age_minutes": 50
+   },
+   {
+    "title": "Researchers demo battery tech with double today's energy density",
+    "url": "https://example.com/sample/tech-2",
+    "summary": "Solid-state cells survived 1,000 charge cycles in lab testing while retaining 92% capacity.",
+    "source": "Ars Technica",
+    "age_minutes": 75
+   },
+   {
+    "title": "Small-business optimism index hits a four-year high",
+    "url": "https://example.com/sample/biz-2",
+    "summary": "Hiring plans and capital-spending intentions both rose for the third straight month.",
+    "source": "MarketWatch",
+    "age_minutes": 90
+   },
+   {
+    "title": "Historic ceasefire agreement reaches its first 30-day milestone",
+    "url": "https://example.com/sample/world-2",
+    "summary": "Observers report the truce is largely holding, with humanitarian corridors now open in three regions.",
+    "source": "NPR World",
+    "age_minutes": 95
+   },
+   {
+    "title": "Marathon world record falls by 41 seconds in Berlin",
+    "url": "https://example.com/sample/sport-2",
+    "summary": "Perfect conditions and a fearless final 10K produced a landmark 2:00:12 finish.",
+    "source": "ESPN",
+    "age_minutes": 100
+   },
+   {
+    "title": "Beloved sci-fi series confirms final season premiere date",
+    "url": "https://example.com/sample/ent-2",
+    "summary": "The showrunners promise a ten-episode arc that answers the show's oldest mysteries.",
+    "source": "BBC Entertainment",
+    "age_minutes": 105
+   },
+   {
+    "title": "Artemis crew completes final training for lunar south pole mission",
+    "url": "https://example.com/sample/sci-2",
+    "summary": "The four astronauts will attempt the first landing at the pole late next year.",
+    "source": "NASA",
+    "age_minutes": 110
+   },
+   {
+    "title": "Show HN: I built a self-hosted dashboard for everything I use",
+    "url": "https://example.com/sample/tech-3",
+    "summary": "A weekend project that grew into a full personal command center — launcher, feeds, lists and notes.",
+    "source": "Hacker News",
+    "age_minutes": 120
+   },
+   {
+    "title": "Chipmaker announces $20B expansion of domestic fabrication",
+    "url": "https://example.com/sample/biz-3",
+    "summary": "The new fab campus is expected to create 8,000 jobs and come online within three years.",
+    "source": "CNBC",
+    "age_minutes": 150
+   },
+   {
+    "title": "Elections watchdog reports record turnout across the region",
+    "url": "https://example.com/sample/world-3",
+    "summary": "Early counts suggest turnout topped 78%, the highest in three decades of monitoring.",
+    "source": "The Guardian World",
+    "age_minutes": 160
+   },
+   {
+    "title": "League announces expansion to two new cities next season",
+    "url": "https://example.com/sample/sport-3",
+    "summary": "The franchise fees set a record, and both ownership groups plan new arenas.",
+    "source": "ESPN",
+    "age_minutes": 170
+   },
+   {
+    "title": "Streaming numbers reveal a documentary renaissance",
+    "url": "https://example.com/sample/ent-3",
+    "summary": "Nonfiction titles took five of the top ten slots for the first time ever.",
+    "source": "Variety",
+    "age_minutes": 175
+   },
+   {
+    "title": "Gene therapy trial restores partial vision in 12 of 14 patients",
+    "url": "https://example.com/sample/sci-3",
+    "summary": "The single-injection treatment targets a rare inherited retinal condition.",
+    "source": "ScienceDaily",
+    "age_minutes": 180
+   }
+  ]
+ },
+ "weather": {
+  "location": {
+   "name": "New York",
+   "lat": 40.7128,
+   "lon": -74.006
+  },
+  "units": {
+   "temp": "°C",
+   "wind": "km/h"
+  },
+  "current": {
+   "temp": 19.4,
+   "feels": 18.9,
+   "humidity": 58,
+   "wind": 14.3,
+   "code": 2
+  },
+  "hourly": [
+   {
+    "time": null,
+    "temp": 9.9,
+    "precipProb": 15,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 10.9,
+    "precipProb": 8,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 12.2,
+    "precipProb": 0,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 13.8,
+    "precipProb": 0,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 15.5,
+    "precipProb": 0,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 17.2,
+    "precipProb": 0,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 18.8,
+    "precipProb": 0,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 20.1,
+    "precipProb": 0,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 21.1,
+    "precipProb": 0,
+    "code": 2
+   },
+   {
+    "time": null,
+    "temp": 21.8,
+    "precipProb": 0,
+    "code": 2
+   },
+   {
+    "time": null,
+    "temp": 22.0,
+    "precipProb": 0,
+    "code": 2
+   },
+   {
+    "time": null,
+    "temp": 21.8,
+    "precipProb": 0,
+    "code": 2
+   },
+   {
+    "time": null,
+    "temp": 21.1,
+    "precipProb": 0,
+    "code": 2
+   },
+   {
+    "time": null,
+    "temp": 20.1,
+    "precipProb": 2,
+    "code": 2
+   },
+   {
+    "time": null,
+    "temp": 18.8,
+    "precipProb": 10,
+    "code": 2
+   },
+   {
+    "time": null,
+    "temp": 17.2,
+    "precipProb": 18,
+    "code": 2
+   },
+   {
+    "time": null,
+    "temp": 15.5,
+    "precipProb": 25,
+    "code": 2
+   },
+   {
+    "time": null,
+    "temp": 13.8,
+    "precipProb": 31,
+    "code": 61
+   },
+   {
+    "time": null,
+    "temp": 12.2,
+    "precipProb": 36,
+    "code": 61
+   },
+   {
+    "time": null,
+    "temp": 10.9,
+    "precipProb": 39,
+    "code": 61
+   },
+   {
+    "time": null,
+    "temp": 9.9,
+    "precipProb": 30,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 9.2,
+    "precipProb": 29,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 9.0,
+    "precipProb": 26,
+    "code": 1
+   },
+   {
+    "time": null,
+    "temp": 9.2,
+    "precipProb": 21,
+    "code": 1
+   }
+  ],
+  "daily": [
+   {
+    "date": null,
+    "min": 12.1,
+    "max": 21.8,
+    "code": 2,
+    "precipProb": 10
+   },
+   {
+    "date": null,
+    "min": 13.0,
+    "max": 23.1,
+    "code": 1,
+    "precipProb": 5
+   },
+   {
+    "date": null,
+    "min": 14.2,
+    "max": 24.0,
+    "code": 3,
+    "precipProb": 20
+   },
+   {
+    "date": null,
+    "min": 13.5,
+    "max": 19.9,
+    "code": 61,
+    "precipProb": 65
+   },
+   {
+    "date": null,
+    "min": 11.8,
+    "max": 18.4,
+    "code": 63,
+    "precipProb": 80
+   },
+   {
+    "date": null,
+    "min": 12.6,
+    "max": 20.7,
+    "code": 2,
+    "precipProb": 25
+   },
+   {
+    "date": null,
+    "min": 13.9,
+    "max": 22.5,
+    "code": 1,
+    "precipProb": 10
+   }
+  ]
+ },
+ "markets": {
+  "assets": [
+   {
+    "symbol": "BTC",
+    "name": "Bitcoin",
+    "price": 112840.0,
+    "change24h": 2.41,
+    "spark": [
+     109360.29,
+     109366.65,
+     109460.97,
+     109638.95,
+     109857.33,
+     110049.37,
+     110148.89,
+     110114.6,
+     109946.44,
+     109688.35,
+     109416.25,
+     109215.2,
+     109153.19,
+     109260.25,
+     109519.79,
+     109874.96,
+     110247.85,
+     110565.11,
+     110781.37,
+     110892.65,
+     110935.47,
+     110971.89,
+     111065.97,
+     111259.44,
+     111555.12,
+     111913.72,
+     112265.34,
+     112531.81,
+     112652.43,
+     112604.63,
+     112412.38,
+     112139.67,
+     111871.02,
+     111685.51,
+     111632.88,
+     111719.6,
+     111909.36,
+     112137.77,
+     112335.95,
+     112455.28
+    ]
+   },
+   {
+    "symbol": "ETH",
+    "name": "Ethereum",
+    "price": 4187.5,
+    "change24h": 3.12,
+    "spark": [
+     4051.6,
+     4062.31,
+     4067.27,
+     4064.29,
+     4053.53,
+     4037.58,
+     4020.77,
+     4007.82,
+     4002.46,
+     4006.22,
+     4018.13,
+     4035.0,
+     4052.61,
+     4067.12,
+     4076.26,
+     4080.1,
+     4080.86,
+     4082.06,
+     4087.18,
+     4098.34,
+     4115.45,
+     4136.08,
+     4156.17,
+     4171.29,
+     4178.1,
+     4175.44,
+     4164.71,
+     4149.51,
+     4134.47,
+     4123.85,
+     4120.2,
+     4123.71,
+     4132.26,
+     4142.27,
+     4150.09,
+     4153.28,
+     4151.51,
+     4146.76,
+     4142.6,
+     4142.99
+    ]
+   },
+   {
+    "symbol": "SOL",
+    "name": "Solana",
+    "price": 216.4,
+    "change24h": -1.87,
+    "spark": [
+     226.6,
+     226.22,
+     225.53,
+     224.76,
+     224.16,
+     223.86,
+     223.85,
+     224.01,
+     224.11,
+     223.92,
+     223.3,
+     222.24,
+     220.88,
+     219.48,
+     218.32,
+     217.64,
+     217.54,
+     217.98,
+     218.76,
+     219.6,
+     220.25,
+     220.55,
+     220.46,
+     220.1,
+     219.68,
+     219.43,
+     219.49,
+     219.89,
+     220.51,
+     221.12,
+     221.45,
+     221.29,
+     220.57,
+     219.36,
+     217.88,
+     216.42,
+     215.25,
+     214.55,
+     214.35,
+     214.54
+    ]
+   },
+   {
+    "symbol": "DOGE",
+    "name": "Dogecoin",
+    "price": 0.2412,
+    "change24h": -0.62,
+    "spark": [
+     0.242931,
+     0.241613,
+     0.240992,
+     0.241075,
+     0.241669,
+     0.242452,
+     0.24309,
+     0.243348,
+     0.24317,
+     0.242696,
+     0.242203,
+     0.242007,
+     0.242344,
+     0.243276,
+     0.24466,
+     0.246183,
+     0.247453,
+     0.248126,
+     0.24801,
+     0.247127,
+     0.245706,
+     0.244106,
+     0.242701,
+     0.241765,
+     0.241387,
+     0.241453,
+     0.2417,
+     0.241817,
+     0.241557,
+     0.240838,
+     0.239773,
+     0.238641,
+     0.237797,
+     0.237549,
+     0.238052,
+     0.239252,
+     0.240892,
+     0.242588,
+     0.243946,
+     0.244681
+    ]
+   }
+  ]
+ },
+ "geocode": [
+  {
+   "name": "New York",
+   "region": "New York",
+   "country": "United States",
+   "lat": 40.7128,
+   "lon": -74.006
+  },
+  {
+   "name": "London",
+   "region": "England",
+   "country": "United Kingdom",
+   "lat": 51.5074,
+   "lon": -0.1278
+  },
+  {
+   "name": "Tokyo",
+   "region": "Tokyo",
+   "country": "Japan",
+   "lat": 35.6762,
+   "lon": 139.6503
+  }
+ ]
+}

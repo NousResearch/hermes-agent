@@ -122,6 +122,19 @@ Behavior:
 - Documents the `KARINAI_MANAGED_RUNTIME=true` no-args startup path.
 - Documents the explicit `karinai-managed-runtime` command alias.
 
+### `hermes_cli/config.py`
+
+Status: managed-mode gate is permanent product-specific behavior; the non-fatal seeding write is upstreamable hardening.
+
+Reason: upstream `_ensure_default_soul_md` (new in v2026.7.1) upgrades a legacy-template `SOUL.md` in place during `ensure_hermes_home()`. Managed KarinAI state dirs carry a read-only `SOUL.md` seeded by `docker/stage2-hook.sh`, so the in-place write raised `PermissionError` and crashed agent creation on every `/v1/runs` request (caught by the stage deploy smoke on the v2026.7.1 sync).
+
+Behavior:
+
+- In managed mode (`KARINAI_MANAGED_RUNTIME` truthy), skip SOUL.md seeding entirely — the managed system prompt takes its identity from `karinai/prompts/`, not `SOUL.md`.
+- Outside managed mode, an unwritable `SOUL.md` degrades to a warning instead of failing agent startup (seeding is best-effort).
+- Tests: `tests/karinai/test_soul_md_seeding.py`.
+- Known pre-existing gap (unchanged by this patch, product follow-up): managed prompts replace the identity slot but still include context files, so a stage2-seeded `SOUL.md` can surface under "# Project Context" in managed containers. Consider `skip_context_files` or dropping the stage2 SOUL.md seed for managed images.
+
 ### `pyproject.toml`
 
 Status: product-specific packaging patch.

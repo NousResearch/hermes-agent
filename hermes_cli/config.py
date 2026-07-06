@@ -825,7 +825,19 @@ def _ensure_default_soul_md(home: Path) -> None:
     the old comment-only scaffold (seeded by older install.sh / install.ps1 /
     docker images, which shadowed the runtime default) get upgraded in place to
     DEFAULT_SOUL_MD. A SOUL.md the user actually customized is never touched.
+
+    KarinAI managed runtime: skipped entirely. The managed system prompt takes
+    its identity from karinai/prompts/, not SOUL.md (see docs/karinai-patches.md
+    → agent/system_prompt.py), and managed state dirs carry a read-only SOUL.md
+    seeded by docker/stage2-hook.sh — an in-place upgrade attempt would crash
+    agent creation with PermissionError.
     """
+    # Same parser that decides managed startup (karinai/runtime/config.py),
+    # so the gate can never disagree with the runtime about managed mode.
+    from karinai.runtime.config import parse_bool
+
+    if parse_bool(os.getenv("KARINAI_MANAGED_RUNTIME"), default=False):
+        return
     soul_path = home / "SOUL.md"
     if soul_path.exists():
         try:
@@ -835,7 +847,14 @@ def _ensure_default_soul_md(home: Path) -> None:
         if not is_legacy_template_soul(existing):
             return
         # Legacy empty template -> upgrade to the real default in place.
-    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    try:
+        soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    except OSError as exc:
+        # A read-only or otherwise unwritable SOUL.md must never make agent
+        # startup fail — the runtime default is used when the file is absent
+        # or stale, so seeding is best-effort.
+        logger.warning("Could not seed/upgrade SOUL.md at %s: %s", soul_path, exc)
+        return
     _secure_file(soul_path)
 
 

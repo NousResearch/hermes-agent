@@ -73,6 +73,21 @@ hermes gateway restart
 
 `workflow.dispatch_in_gateway` defaults to `false`, so a gateway will not tick workflows until you opt in.
 
+## Build workflows with Hermes
+
+You do not have to write a workflow definition by hand. Ask Hermes to use the
+`hermes-workflow-builder` skill:
+
+```text
+Use hermes-workflow-builder to create a workflow that researches a topic,
+reviews source quality, summarizes findings, and routes high-value results to
+an analyst profile.
+```
+
+The skill decomposes the goal into workflow cells, writes text-first cell
+prompts, creates YAML under `.hermes/workflows/`, validates it with
+`hermes workflow validate`, and can deploy it when you approve.
+
 ## CLI reference
 
 ```bash

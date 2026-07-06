@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from gateway.session_context import clear_session_vars, set_session_vars
 from hermes_state import SessionDB
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
@@ -253,6 +254,83 @@ class TestDiscoveryShape:
         result = json.loads(session_search(query="modpack", db=db, current_session_id="s_newest"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
+
+    def test_shared_context_defaults_discovery_to_current_chat_thread(self, db):
+        now = int(time.time())
+
+        db.create_session(
+            "s_signal_prior_same_scope",
+            source="signal",
+            chat_id="group-alpha",
+            chat_type="group",
+            thread_id="topic-1",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (now - 120, "Alpha Topic Earlier", "s_signal_prior_same_scope"),
+        )
+        db.append_message("s_signal_prior_same_scope", role="user", content="Need the room inventory migration plan")
+
+        db.create_session(
+            "s_signal_current",
+            source="signal",
+            chat_id="group-alpha",
+            chat_type="group",
+            thread_id="topic-1",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (now - 100, "Alpha Topic", "s_signal_current"),
+        )
+        db.append_message("s_signal_current", role="user", content="Need the room inventory migration plan")
+
+        db.create_session(
+            "s_signal_other_topic",
+            source="signal",
+            chat_id="group-alpha",
+            chat_type="group",
+            thread_id="topic-2",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (now - 90, "Other Topic", "s_signal_other_topic"),
+        )
+        db.append_message("s_signal_other_topic", role="user", content="Need the room inventory migration plan")
+
+        db.create_session(
+            "s_signal_other_chat",
+            source="signal",
+            chat_id="group-beta",
+            chat_type="group",
+            thread_id="topic-1",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (now - 80, "Other Chat", "s_signal_other_chat"),
+        )
+        db.append_message("s_signal_other_chat", role="user", content="Need the room inventory migration plan")
+        db._conn.commit()
+
+        tokens = set_session_vars(
+            platform="signal",
+            source="signal",
+            chat_id="group-alpha",
+            thread_id="topic-1",
+            session_id="s_signal_current",
+        )
+        try:
+            result = json.loads(
+                session_search(
+                    query="room inventory migration plan",
+                    db=db,
+                    current_session_id="s_signal_current",
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        sids = [r["session_id"] for r in result["results"]]
+        assert sids == ["s_signal_prior_same_scope"]
 
 
 class TestDiscoverySort:

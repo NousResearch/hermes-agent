@@ -33,6 +33,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
+from gateway.session_context import get_session_env
+
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
 # delegate subagent runs are tagged "subagent" — neither belongs in the
@@ -139,6 +141,46 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
     # Strip None values to keep payload tight, but always keep content
     # (absent content is meaningful — tool-call-only assistant turns).
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
+
+
+def _current_recall_scope() -> Optional[Dict[str, str]]:
+    """Return current shared-chat scope for default discovery filtering.
+
+    Only shared gateway contexts get implicit scoping. Local/CLI contexts and
+    sessions without a bound chat id remain global.
+    """
+    platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+    source = (get_session_env("HERMES_SESSION_SOURCE", "") or platform).strip().lower()
+    chat_id = (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip()
+    thread_id = (get_session_env("HERMES_SESSION_THREAD_ID", "") or "").strip()
+    if not source or source in {"local", "cli"}:
+        return None
+    if not chat_id:
+        return None
+    return {
+        "source": source,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+    }
+
+
+def _session_matches_scope(db, session_id: Optional[str], scope: Optional[Dict[str, str]]) -> bool:
+    """True when the session belongs to the current shared chat/thread scope."""
+    if not scope or not session_id:
+        return True
+    try:
+        meta = db.get_session(session_id) or {}
+    except Exception:
+        logging.debug("get_session failed for scope filter %s", session_id, exc_info=True)
+        return False
+    if (meta.get("source") or "").strip().lower() != scope["source"]:
+        return False
+    if (meta.get("chat_id") or "") != scope["chat_id"]:
+        return False
+    scope_thread = scope.get("thread_id") or ""
+    if scope_thread:
+        return (meta.get("thread_id") or "") == scope_thread
+    return True
 
 
 def _resolve_profile_db(profile: str):
@@ -508,6 +550,7 @@ def _discover(
     role_list = role_filter if role_filter else ["user", "assistant"]
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
     title_result = _title_match_result(db, query, current_lineage_root)
+    current_scope = _current_recall_scope()
 
     try:
         raw_results = db.search_messages(
@@ -529,6 +572,11 @@ def _discover(
     # top `limit` results (#19434). Stable — preserves BM25/recency order
     # within each class.
     raw_results = _order_for_recall(raw_results)
+
+    if current_scope:
+        raw_results = [r for r in raw_results if _session_matches_scope(db, r.get("session_id"), current_scope)]
+        if title_result and not _session_matches_scope(db, title_result.get("session_id"), current_scope):
+            title_result = None
 
     if not raw_results and not title_result:
         return json.dumps({

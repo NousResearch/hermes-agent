@@ -2347,7 +2347,8 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
-    model: Optional[Dict[str, Any]] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2428,13 +2429,10 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
-    # Resolve per-invocation model override.
+    # Resolve per-invocation model/provider override.
     # Priority: per-invocation model > delegation config > parent inherit
-    invocation_model_obj = model or {}
-    invocation_model_name = invocation_model_obj.get("model")
-    invocation_provider = invocation_model_obj.get("provider")
-    child_model = invocation_model_name or creds["model"]
-    child_provider = invocation_provider or creds["provider"]
+    child_model = model or creds["model"]
+    child_provider = provider or creds["provider"]
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2494,9 +2492,22 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
-            task_model_obj = t.get("model") or invocation_model_obj
-            task_model = task_model_obj.get("model") or child_model
-            task_provider = task_model_obj.get("provider") or child_provider
+            # Per-task model/provider override: if the task specifies its own
+            # model or provider, re-resolve credentials for that task so the
+            # correct base_url / api_key / api_mode are derived from the
+            # per-task provider (not the global delegation config).
+            if t.get("model") or t.get("provider"):
+                task_cfg = dict(cfg)
+                if t.get("model"):
+                    task_cfg["model"] = t["model"]
+                if t.get("provider"):
+                    task_cfg["provider"] = t["provider"]
+                try:
+                    task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+                except ValueError as exc:
+                    return tool_error(str(exc))
+            else:
+                task_creds = creds
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2504,14 +2515,14 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=task_model,
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=task_provider,
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
@@ -3366,18 +3377,26 @@ DELEGATE_TASK_SCHEMA = {
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
                         "model": {
-                            "type": "object",
-                            "description": "Optional per-subagent model override. Overrides the delegation config/parent model for this invocation.",
-                            "properties": {
-                                "provider": {
-                                    "type": "string",
-                                    "description": "Provider name (e.g. openrouter, anthropic, or custom:<name>). Omit to use the current provider chain."
-                                },
-                                "model": {
-                                    "type": "string",
-                                    "description": "Model name (e.g. anthropic/claude-sonnet-4, claude-sonnet-4, gemma4:31b)"
-                                }
-                            },
+                            "type": "string",
+                            "description": (
+                                "Model override for this specific task "
+                                "(e.g. 'claude-haiku-4-5', 'claude-opus-4-5', "
+                                "'minimaxai/minimax-m2.7'). When omitted, inherits "
+                                "the parent config or top-level delegation.model. "
+                                "Use lighter models (haiku) for simple tool tasks; "
+                                "heavier models (opus) for complex reasoning."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Provider override for this specific task "
+                                "(e.g. 'anthropic', 'nvidia', 'openrouter'). "
+                                "When set alongside 'model', full credentials are "
+                                "resolved via the provider system — base_url, "
+                                "api_key, and api_mode are derived automatically. "
+                                "When omitted, inherits the parent provider."
+                            ),
                         },
                     },
                     "required": ["goal"],
@@ -3405,18 +3424,23 @@ DELEGATE_TASK_SCHEMA = {
                 ),
             },
             "model": {
-                "type": "object",
-                "description": "Optional per-subagent model override. Overrides the delegation config/parent model for this invocation.",
-                "properties": {
-                    "provider": {
-                        "type": "string",
-                        "description": "Provider name (e.g. openrouter, anthropic, or custom:<name>). Omit to use the current provider chain."
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Model name (e.g. anthropic/claude-sonnet-4, claude-sonnet-4, gemma4:31b)"
-                    }
-                },
+                "type": "string",
+                "description": (
+                    "Model override for this invocation "
+                    "(e.g. 'claude-haiku-4-5', 'claude-opus-4-5', "
+                    "'minimaxai/minimax-m2.7'). When omitted, inherits "
+                    "the delegation config or parent model."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Provider override for all subagents in this invocation "
+                    "(e.g. 'anthropic', 'nvidia', 'openrouter'). "
+                    "When set alongside 'model', full credentials are "
+                    "resolved via the provider system — base_url, "
+                    "api_key, and api_mode are derived automatically."
+                ),
             },
         },
         "required": [],
@@ -3479,6 +3503,7 @@ registry.register(
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
         model=args.get("model"),
+        provider=args.get("provider"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

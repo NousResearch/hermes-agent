@@ -927,9 +927,13 @@ class TestGetDueJobs:
         due = get_due_jobs()
 
         assert [job["id"] for job in due] == ["oneshot-recover"]
-        # next_run_at is now advanced past the tick window to prevent
-        # cross-process double-execution (#59229).
-        assert get_job("oneshot-recover")["next_run_at"] == (now + timedelta(seconds=60)).isoformat()
+        # Recovery restores next_run_at to the original run time; the
+        # cross-process double-exec guard (#59229) is a separate run_claim
+        # stamped under the lock, not a next_run_at mutation.
+        recovered = get_job("oneshot-recover")
+        assert recovered["next_run_at"] == run_at
+        assert recovered.get("run_claim") is not None
+        assert recovered["run_claim"]["at"] == now.isoformat()
 
     def test_broken_stale_one_shot_without_next_run_is_not_recovered(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
@@ -959,6 +963,80 @@ class TestGetDueJobs:
 
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
+
+    def test_one_shot_not_redispatched_while_running(self, tmp_cron_dir, monkeypatch):
+        """#59229: two concurrent schedulers must not double-execute a one-shot.
+
+        Reproduces the reported failure with a job whose run OUTLIVES the tick
+        interval (a ~2.5-min research prompt). Process A's tick returns it as
+        due and stamps a run_claim; while A is still running, every later tick
+        (process B, or A's own next tick) must see the fresh claim and skip —
+        not just for one tick window but for the whole run.
+        """
+        from cron.jobs import _hermes_now
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "long-oneshot", "name": "R", "prompt": "2.5min research",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+        }])
+
+        # Process A tick: picks it up + claims it.
+        dueA = get_due_jobs()
+        assert [j["id"] for j in dueA] == ["long-oneshot"]
+        assert get_job("long-oneshot").get("run_claim") is not None
+
+        # Process B (and A's own subsequent ticks) while A is still running:
+        # 28s later (the exact gap in the report) AND 61s later (past any
+        # fixed +60s window) — both must skip.
+        for gap in (28, 61, 130):
+            monkeypatch.setattr("cron.jobs._hermes_now",
+                                lambda t0=t0, g=gap: t0 + timedelta(seconds=g))
+            assert get_due_jobs() == [], f"double-dispatched at +{gap}s"
+
+    def test_one_shot_run_claim_expires_after_ttl(self, tmp_cron_dir, monkeypatch):
+        """A claiming tick that DIED mid-run must not wedge the one-shot forever:
+        once the run_claim is older than the TTL it is re-dispatched (recovered)."""
+        from cron.jobs import _hermes_now, ONESHOT_RUN_CLAIM_TTL_SECONDS
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "wedged", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+        }])
+        assert [j["id"] for j in get_due_jobs()] == ["wedged"]  # A claims, then dies
+
+        # Just inside the TTL: still claimed → skipped.
+        monkeypatch.setattr("cron.jobs._hermes_now",
+                            lambda: t0 + timedelta(seconds=ONESHOT_RUN_CLAIM_TTL_SECONDS - 10))
+        assert get_due_jobs() == []
+
+        # Just past the TTL: stale claim → re-dispatched (recovered), re-claimed.
+        monkeypatch.setattr("cron.jobs._hermes_now",
+                            lambda: t0 + timedelta(seconds=ONESHOT_RUN_CLAIM_TTL_SECONDS + 10))
+        recovered = get_due_jobs()
+        assert [j["id"] for j in recovered] == ["wedged"]
+
+    def test_mark_job_run_clears_one_shot_run_claim(self, tmp_cron_dir, monkeypatch):
+        """mark_job_run() clears the run_claim on completion so a re-dispatched
+        one-shot (e.g. a stale-recovered retry) is claimable again."""
+        from cron.jobs import _hermes_now
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        # Give it repeat headroom so mark_job_run keeps the job around.
+        save_jobs([{
+            "id": "claimclear", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 2, "completed": 0},
+        }])
+        assert [j["id"] for j in get_due_jobs()] == ["claimclear"]
+        assert get_job("claimclear").get("run_claim") is not None
+        mark_job_run("claimclear", True)
+        assert get_job("claimclear")["run_claim"] is None
+
 
     def test_broken_cron_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)

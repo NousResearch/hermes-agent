@@ -33,6 +33,63 @@
 
 <div class="box warn">全模块最重要的一条铁律:<strong>「注册」不等于「暴露」</strong>。一个工具就算成功 <code>register()</code> 进了注册表,只要它的 <code>toolset</code> 没被列进当前启用的工具集(或 <code>check_fn</code> 没通过),模型就<strong>永远看不到它</strong>。这是内核「窄腰」设计的落点——每个工具都要在每次 API 调用时下发,所以默认只暴露该暴露的。</div>
 
+<h2 id="arch">架构全景</h2>
+<p>一张图看清整套系统:上半是<strong>「进」——工具怎么被登记、发现、分组</strong>;中间是<strong><code>ToolRegistry</code> 单例</strong>这个所有人都读写的中央枢纽;下半是<strong>「出」——怎么暴露给模型、又被点名执行</strong>。虚线标出的是「运行时动态往注册表里增删」的两条扩展路(MCP / 插件)。数字标签对应本模块 5 篇文档。</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    subgraph IN["① 进:登记 &amp; 发现（第 1–2 篇）"]
+        TF["tools/*.py<br/>模块顶层 registry.register()"]
+        DISC["discover_builtin_tools()<br/>AST 扫描·自动 import"]
+        TF -- "被 import 时触发" --&gt; REG
+        DISC -- "扫 tools/*.py 只认顶层 register" --&gt; TF
+    end
+
+    subgraph HUB["中央枢纽"]
+        REG["ToolRegistry 单例<br/>_tools{name→ToolEntry}<br/>RLock · _generation 代际号"]
+    end
+
+    subgraph GROUP["② 分组（第 3 篇）"]
+        TS["toolsets.py<br/>TOOLSETS · _HERMES_CORE_TOOLS<br/>resolve_toolset()"]
+    end
+
+    subgraph OUT["③ 出:暴露 &amp; 分发（第 4–5 篇）"]
+        GTD["get_tool_definitions()<br/>check_fn 过滤 · 动态 schema<br/>memo · 后处理 · Tool Search"]
+        HFC["handle_function_call()<br/>+ agent 级拦截 invoke_tool"]
+        DISP["registry.dispatch()<br/>→ handler → JSON"]
+    end
+
+    MODEL(["🤖 模型 LLM"])
+    MCP["MCP 客户端<br/>mcp_tool.py"]:::ext
+    PLUG["插件<br/>ctx.register_tool"]:::ext
+
+    REG -- "④ 按工具集+check_fn 生成 schema" --&gt; GTD
+    TS -- "解析出工具名集合" --&gt; GTD
+    GTD -- "工具 schema 列表" --&gt; MODEL
+    MODEL -- "⑤ tool_calls 点名" --&gt; HFC
+    HFC --&gt; DISP
+    DISP -- "查 ToolEntry.handler" --&gt; REG
+    DISP -- "结果 JSON 回灌" --&gt; MODEL
+
+    MCP -. "运行时 register/deregister（override）" .-&gt; REG
+    PLUG -. "register_tool（受 override 策略约束）" .-&gt; REG
+
+    classDef ext stroke-dasharray:5 5;
+</pre>
+</div>
+<p style="font-size:13px;color:var(--muted)">若图未显示,通常是离线无法加载 Mermaid;上方「一句话全貌」与下面各篇文档已含全部信息。</p>
+
+<h3 id="arch-read">怎么读这张图</h3>
+<table>
+<tr><th>区块</th><th>是什么</th><th>对应文档</th></tr>
+<tr><td><strong>① 进</strong></td><td>工具文件顶层 <code>register()</code> 上户口;<code>discover_builtin_tools</code> 用 AST 扫描自动发现并 import 它们</td><td>第 1、2 篇</td></tr>
+<tr><td><strong>中央枢纽</strong></td><td><code>ToolRegistry</code> 单例——全进程唯一一本户口;用 <code>RLock</code> 串行化写、<code>_generation</code> 代际号让下游缓存精确失效</td><td>第 1 篇</td></tr>
+<tr><td><strong>② 分组</strong></td><td><code>toolsets.py</code> 把工具名打包成「哪个平台用哪套」,<code>resolve_toolset</code> 递归展开</td><td>第 3 篇</td></tr>
+<tr><td><strong>③ 出</strong></td><td><code>get_tool_definitions</code> 过滤+暴露 schema 给模型;模型点名后 <code>handle_function_call</code>(含 agent 级拦截)→ <code>dispatch</code> → handler</td><td>第 4、5 篇</td></tr>
+<tr><td><strong>虚线扩展</strong></td><td>MCP 客户端、插件在<strong>运行时</strong>往同一个注册表增删工具,受 override 策略约束</td><td>第 5 篇</td></tr>
+</table>
+<div class="box tip"><strong>一个心智模型:</strong>把 <code>ToolRegistry</code> 想成机场的<strong>中央调度台</strong>——所有航班(工具)不管是定期的(内置自动发现)还是临时的(MCP/插件运行时加),都在这里登记;而「暴露给模型」像<strong>候机屏</strong>,只显示<strong>这个航站楼、此刻、还没延误</strong>的那些航班(按工具集 + <code>check_fn</code> 过滤),不是把注册表里所有航班一股脑全列出来。</div>
+
 <h2 id="docs">本模块文档</h2>
 <div class="toc">
   <a href="01-registry.html">
@@ -91,7 +148,12 @@
 <footer>工具系统 · 模块导览 · project-analysis/tools/ · 仅供本机学习</footer>
 </div>
 <script src="../vscode-links.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <script>
+  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  try { mermaid.initialize({ startOnLoad:true, theme: dark?'dark':'base',
+    themeVariables: dark?{}:{ primaryColor:'#f5edd6', primaryBorderColor:'#b8860b', primaryTextColor:'#21252b',
+      lineColor:'#b8860b', secondaryColor:'#fffdf6', tertiaryColor:'#fff8c5' } }); } catch(e){}
   const bar = document.getElementById('progress');
   const onScroll = () => { const h=document.documentElement; const sc=h.scrollTop||document.body.scrollTop;
     const max=h.scrollHeight-h.clientHeight; bar.style.width=(max>0?(sc/max)*100:0)+'%'; };

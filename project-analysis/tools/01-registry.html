@@ -77,6 +77,29 @@ registry.register(                              # ← 模块顶层调用:import 
 <div class="filehint">tools/registry.py · class ToolEntry</div>
 <p>字段和 <code>register()</code> 的参数一一对应。之后所有子系统都通过 <code>registry.get_entry(name)</code> 拿到这个 <code>ToolEntry</code>,再取它的 <code>schema</code>(暴露)、<code>handler</code>(分发)、<code>check_fn</code>(可用性)、<code>toolset</code>(分组)。</p>
 
+<h5>插一句:<code>__slots__</code> 是干嘛的</h5>
+<p>普通 Python 类,每个实例背后都藏着一个 <code>__dict__</code>(字典)存它的属性——灵活(能随时挂任意新属性),但每个实例都为此多占一份字典内存:</p>
+<pre><code>class Normal:
+    def __init__(self): self.name = "x"
+n = Normal()
+n.__dict__          # {'name': 'x'}   ← 每个实例都带一个 dict
+n.whatever = 123    # 随便加新属性也行,悄悄存进那个 dict
+</code></pre>
+<p><code>__slots__</code> 等于告诉 Python:「这个类的实例<strong>只会有列出的这几个属性,别再给我建 <code>__dict__</code> 了</strong>」。于是改用更紧凑的<strong>固定槽位</strong>(类似 C 结构体):</p>
+<pre><code>class Slotted:
+    __slots__ = ("name",)
+    def __init__(self): self.name = "x"
+s = Slotted()
+s.name              # x        ✅ 正常读写
+s.whatever = 123    # ❌ AttributeError: 没有 'whatever' 这个 slot
+</code></pre>
+<table>
+  <tr><th>好处</th><th>原因</th></tr>
+  <tr><td><strong>省内存</strong></td><td>不给每个实例建 <code>__dict__</code>,改用固定槽位。<code>ToolEntry</code> 一个进程里可能有上百个实例(每工具一个,还可能多 agent),省下的字典累积可观</td></tr>
+  <tr><td><strong>防手滑加属性</strong></td><td>写 <code>entry.chek_fn = ...</code>(打错字漏个 c)会<strong>当场 <code>AttributeError</code></strong>,而不是普通类那样<strong>默默新建</strong>一个错属性、让你 <code>entry.check_fn</code> 读到旧值、bug 极难查</td></tr>
+</table>
+<div class="box tip"><code>ToolEntry</code> 是个<strong>纯数据容器</strong>——字段就是固定的那 11 个(即 <code>register()</code> 的参数),不需要运行时动态挂属性。这正是 <code>__slots__</code> 的理想场景:字段集合已知且固定、实例多、只当结构体用。反过来,若一个类需要动态挂属性,就<u>不</u>该用 <code>__slots__</code>。</div>
+
 <h2 id="singleton">单例:全进程只有一本户口</h2>
 <p>注册表是<strong>模块级单例</strong>——文件末尾实例化一次,整个进程共用:</p>
 <pre><code># tools/registry.py 末尾
@@ -128,6 +151,35 @@ if existing and existing.toolset != toolset:
 </table>
 <div class="box warn"><strong>「谁写的 handler」绑定在定义处,骗不过去。</strong><code>_plugin_owner_of(handler)</code> 看的是 <code>handler.__globals__["__name__"]</code>——即这个函数<strong>定义在哪个模块</strong>,这是在定义时就固定的,不随调用点/线程/时机漂移。lambda 和嵌套函数继承定义模块的 globals,所以插件<strong>没法用回调「洗白」一次越权覆盖</strong>。授权策略(<code>register_plugin_override_policy</code>)是<strong>持久</strong>的、从不清除,即便插件事后用延迟/线程回调再 <code>register()</code>,也照样被同一条策略拦。</div>
 
+<h5>展开:<code>__globals__["__name__"]</code> 为什么骗不过去</h5>
+<p>这段是防覆盖闸里最精妙、也最值得单独拆开看的一处。它回答一个<strong>安全问题</strong>:怎么保证没授权的插件,没法用小花招偷偷覆盖内置工具?先看那两段真实代码:</p>
+<pre><code>def _plugin_owner_of(self, handler):
+    mod = handler.__globals__.get("__name__", "")     # ← 关键:handler 定义在哪个模块
+    if mod in self._plugin_override_policy: return mod
+    if mod.startswith("hermes_plugins."):    return mod
+    return None
+
+def register_plugin_override_policy(self, module_namespace, allowed):
+    self._plugin_override_policy[module_namespace] = bool(allowed)   # 加载时记下,从不删
+</code></pre>
+<p><strong>什么是 <code>handler.__globals__["__name__"]</code>:</strong>Python 里<strong>每个函数对象</strong>都随身带着 <code>__globals__</code>——它指向<strong>这个函数被 <code>def</code> 定义时所在模块</strong>的全局命名空间;而每个模块的全局里都有个 <code>__name__</code>,值就是模块名。</p>
+<pre><code># 文件 hermes_plugins/evil/__init__.py 里:
+def my_handler(args, **kw): ...
+my_handler.__globals__["__name__"]      # → "hermes_plugins.evil"
+</code></pre>
+<p><strong>要害:<code>__globals__</code> 记的是「函数在哪儿<u>被定义</u>」,不是「在哪儿<u>被调用</u>」。</strong>这个绑定在 <code>def</code> 执行那一刻就定死了——你把函数传给别人、塞进变量、跨线程调、延迟几秒再调,它都<strong>不变</strong>;因为它记的是「出生地」,不是「此刻在谁手里」。</p>
+<p>于是插件想把「我这段代码干的越权」洗白成「不是我干的」的各种花招,全部失效:</p>
+<table>
+  <tr><th>插件的花招</th><th>为什么失败</th></tr>
+  <tr><td>用 <code>lambda args: ...</code> 包一层再 register</td><td>lambda <strong>继承定义它的模块的 <code>__globals__</code></strong> → 还是 <code>hermes_plugins.evil</code></td></tr>
+  <tr><td>定义嵌套函数(闭包)去调</td><td>嵌套函数同样继承外层模块的 globals → 还是插件模块</td></tr>
+  <tr><td>起后台线程,在线程里 register</td><td>线程只改「调用点」,handler 的<strong>定义处没变</strong> → 还是插件模块</td></tr>
+  <tr><td>延迟到加载完之后再 register</td><td>见下「持久策略」——照样拦</td></tr>
+</table>
+<p><strong>对比反例:如果改用「调用栈」判断就能被骗。</strong>假如不看 <code>__globals__</code>,而是问「现在是谁在调 register?」,插件把 handler 交给一个「中立」辅助函数去注册,调用栈顶就成了那个中立函数、不是插件——越权得逞。正因为<strong>调用栈会随「谁来调」而变</strong>、可被操纵,而 <code>__globals__</code> 是<strong>定义时固定的指纹</strong>、操纵不了,所以判定必须绑在定义处。</p>
+<p><strong>为什么授权策略要「持久、从不清除」:</strong>插件的 <code>register()</code> 不一定在加载那一瞬间就调完——它可能挂个回调、开个线程,几秒后才 register。若授权策略「用完就清」,那个<strong>延迟发生</strong>的 register 查策略时就查不到授权记录了,要么误放行(危险)、要么误拦合法授权。做成<strong>持久</strong>的,就意味着不管这次 register 是<strong>同步立即</strong>发生还是<strong>延迟/线程回调</strong>里发生,查到的都是<strong>加载时就定好的同一条</strong>策略。</p>
+<div class="box tip"><strong>一句话:</strong>授权判定问的不是「<strong>现在谁在调用</strong>」(可伪装),而是「<strong>这个 handler 是哪个模块 <code>def</code> 出来的</strong>」(定义时固定、不可伪装);再配上授权策略<strong>持久保存</strong>——于是无论插件用 lambda 包、闭包套、开线程、还是延迟回调,都改不了那段代码的「出生地指纹」,也躲不过加载时登记好的那条策略。越权覆盖内置工具这条路被从根上堵死。</div>
+
 <h2 id="generation">_generation:一个会「涨」的版本号</h2>
 <p>注册表内部有个单调递增的<strong>代际计数器</strong> <code>_generation</code>,每次注册表<strong>发生变动</strong>(register / deregister / 注册别名 / MCP 刷新)就 +1:</p>
 <pre><code>self._tools[name] = ToolEntry(...)
@@ -135,7 +187,40 @@ if existing and existing.toolset != toolset:
 self._generation += 1        # 每次 mutation 都涨一格
 </code></pre>
 <p>它的用途:让下游的<strong>缓存能安全 memo</strong>。第 4 篇会看到 <code>get_tool_definitions()</code> 把结果缓存起来,缓存键里就带着 <code>registry._generation</code>——只要注册表没变(代际号没涨),缓存就一直有效;一旦有工具增删(比如 MCP 动态刷新),代际号一变,旧缓存自动失效。这样既省了重复计算,又不会用到过时的工具列表。</p>
-<div class="box tip">为什么不用「时间戳」或「每次都重算」?代际计数器是<strong>精确失效</strong>:只有真正变动才 +1,读方拿 <code>(参数..., _generation)</code> 当缓存键即可,零猜测、零时钟依赖。这是并发安全的经典手法——所有 mutation 都在 <code>self._lock</code>(一把 <code>RLock</code>)里做,读方拿稳定快照,配合代际号就能放心缓存。</div>
+
+<h5>缓存键到底怎么工作(具体走一遍)</h5>
+<p>「生成发给模型的工具 schema 列表」这件事不便宜(要解析工具集、跑一堆 check_fn、做后处理)。所以下游用一个字典把算好的结果<strong>缓存</strong>起来,键里带上 <code>_generation</code>:</p>
+<pre><code># 极简版示意(真实版本第 4 篇细讲)
+key = (enabled_toolsets, disabled_toolsets, registry._generation)   # ← 代际号是键的一部分
+if key in cache:
+    return cache[key]          # 命中:直接返回,跳过整条流水线
+result = 真正去算一遍(...)      # 未命中:算,然后存
+cache[key] = result
+</code></pre>
+<p>关键在于:<strong>代际号一变,键就变;键一变,就必然「未命中」→ 强制重算。</strong>走一遍:</p>
+<pre><code>第 1 轮:_generation=7 → key=(..,7) 未命中 → 算 → 存 cache[(..,7)]
+第 2 轮:注册表没变,_generation 还是 7 → key=(..,7) 命中 → 直接用缓存 ✅ 省了
+        ── 这时 MCP 刷新了一批工具,_generation: 7 → 8 ──
+第 3 轮:_generation=8 → key=(..,8) 是【新键】,cache 里没有 → 未命中 → 重算 ✅ 不会用到旧的
+</code></pre>
+<p>所以旧缓存 <code>cache[(..,7)]</code> 不用谁去主动「删」——它只是<strong>再也不会被查到</strong>了(没人会再拿 7 当键)。这就叫<strong>「精确失效」</strong>:只有真正发生过变动(代际号涨了),缓存才失效;没变动就一直命中。</p>
+
+<h5>为什么不用「每次都重算」或「时间戳」</h5>
+<table>
+  <tr><th>做法</th><th>问题</th></tr>
+  <tr><td><strong>每次都重算</strong>(干脆不缓存)</td><td>结果永远对,但<strong>白白重复算</strong>——热路径(网关、agent 初始化)每轮都重跑整条流水线,浪费</td></tr>
+  <tr><td><strong>用时间戳</strong>(记「上次改于几点」,比时间新旧)</td><td>① 依赖时钟精度——同一毫秒内改两次可能<strong>分不出</strong>;② 系统时钟被回拨/校时会<strong>乱套</strong>(“变新”变成“变旧”);③ 时间戳只告诉你「变过」,不天然当键用</td></tr>
+  <tr><td><strong>代际计数器</strong>(本方案)</td><td>只有真正变动才 +1,<strong>单调递增、绝不回头</strong>;直接塞进缓存键即可,<strong>零时钟依赖、零猜测</strong></td></tr>
+</table>
+<div class="box tip"><strong>再加一层并发安全:</strong>所有会改注册表的操作(register/deregister/别名/MCP 刷新)都在同一把锁 <code>self._lock</code>(<code>RLock</code>)里做,<code>_generation += 1</code> 也在锁内——保证「改内容」和「涨代际号」是<strong>一起发生</strong>的,不会出现「工具已经改了、代际号还没涨」的中间态。读方则先在锁内拿一份<strong>稳定快照</strong>(<code>_snapshot_entries()</code>)再慢慢用,配合这个单调号,就能放心缓存、不怕读到改一半的状态。</div>
+
+<div class="box warn"><strong>别混:<code>_generation</code> 是<u>整个注册表</u>一个,不是每个工具一个。</strong>它挂在 <code>ToolRegistry</code> 单例上(<code>self._generation</code>),不在 <code>ToolEntry</code> 里——回看上面 <code>ToolEntry.__slots__</code> 那 11 个字段,并<u>没有</u> <code>_generation</code>。
+<table>
+  <tr><th>东西</th><th>挂在哪</th><th>有几个</th></tr>
+  <tr><td><code>ToolEntry</code>(name/schema/handler/check_fn…)</td><td>每个工具一个</td><td>几十上百个</td></tr>
+  <tr><td><code>_generation</code></td><td><code>ToolRegistry</code> 单例本身</td><td><strong>全进程 1 个</strong></td></tr>
+</table>
+它记的是「<strong>整张户口本改过几次</strong>」,不是「某个工具改过几次」——<u>任何</u>一个工具的增删都让这<strong>同一个</strong>计数器 +1(注册 A → 1、注册 B → 2、删掉 A → 3、MCP 刷一批 → 4)。因为下游那个缓存缓的是「<strong>一整份</strong>工具 schema 列表」,只需要「注册表整体变没变过」这<strong>一个</strong>信号。像图书馆<strong>整馆的馆藏版本号</strong>:不管今天进哪本、退哪本,版本号都 +1;它不是贴在每本书上的「这本第几版」(那才是各 <code>ToolEntry</code> 自己的事)。</div>
 
 <h2 id="misc">还顺手记了两样:toolset check 与别名</h2>
 <p><strong>① toolset 的 check_fn 备案。</strong>注册时若带了 <code>check_fn</code>,注册表会把「这个工具集<strong>第一次</strong>出现的 check_fn」记进 <code>_toolset_checks[toolset]</code>:</p>
@@ -150,7 +235,7 @@ self._generation += 1        # 每次 mutation 都涨一格
 <div class="box">
 <ul>
 <li>注册表是所有工具的<strong>中央户口本</strong>:工具文件在<strong>模块顶层</strong>调一次 <code>registry.register()</code> 上户口,其余子系统只读这一本。</li>
-<li><code>register()</code> 把参数打包成 <code>ToolEntry</code>(<code>__slots__</code> 固定字段)存进单例 <code>registry</code>;三要素是 <code>name</code> / <code>toolset</code> / <code>schema</code> / <code>handler</code>,handler <strong>必须返回 JSON 字符串</strong>。</li>
+<li><code>register()</code> 把参数打包成 <code>ToolEntry</code>(<code>__slots__</code> 固定字段)存进单例 <code>registry</code>;<strong>四个必填参数</strong>是 <code>name</code> / <code>toolset</code> / <code>schema</code> / <code>handler</code>(其余都有默认值),handler <strong>必须返回 JSON 字符串</strong>。</li>
 <li>注册表处在导入链<strong>最底层</strong>(不 import 任何工具或 model_tools),所以循环导入安全。</li>
 <li><strong>override 防覆盖闸</strong>:默认拒绝顶掉别人的同名工具;MCP↔MCP 例外;插件想覆盖内置需操作员 <code>allow_tool_override</code> 授权——授权绑定在 handler 的<strong>定义模块</strong>上,骗不过去。</li>
 <li><code>_generation</code> 代际计数器每次变动 +1,让下游缓存(第 4 篇)能<strong>精确失效</strong>。</li>

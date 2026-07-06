@@ -30,6 +30,40 @@ from hermes_cli.profiles import get_active_profile_name
 
 
 # ---------------------------------------------------------------------------
+# Skill-name validation (prevents crash-loop-retry at spawn time)
+# ---------------------------------------------------------------------------
+
+def _validate_skill_names(names):
+    """Resolve each skill name against the installed skills dirs.
+
+    Returns (ok, bad_names). bad_names is empty when every name resolves.
+    A name resolves when a skill dir with a matching ``SKILL.md`` parent
+    exists under any configured skills directory (local or external).
+    """
+    bad = []
+    if not names:
+        return True, []
+    try:
+        from tools.skill_manager_tool import _find_skill
+    except Exception:
+        # If the resolver can't be imported, skip validation rather than
+        # block legitimate work — the spawn-time error is still the
+        # safety net.
+        return True, []
+    for n in names:
+        # Accept "namespace/name" and "name" forms. _find_skill matches
+        # on the trailing path component (skill_md.parent.name == name).
+        bare = n.split("/", 1)[-1]
+        try:
+            if _find_skill(bare) is None:
+                bad.append(n)
+        except Exception:
+            # Resolver raised — don't block on it, let spawn handle it.
+            continue
+    return (not bad), bad
+
+
+# ---------------------------------------------------------------------------
 # Small formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -1326,6 +1360,20 @@ def _cmd_create(args: argparse.Namespace) -> int:
         )
         return 2
     with kb.connect_closing() as conn:
+        # Validate skill names before creating the card — a bad skill
+        # name crashes the worker at spawn and burns the retry budget
+        # without ever doing the work. Reject early with a clear error
+        # naming the unresolvable skills.
+        skills_requested = getattr(args, "skills", None) or []
+        ok, bad = _validate_skill_names(skills_requested)
+        if not ok:
+            print(
+                f"kanban: --skill: unresolvable skill name(s): {', '.join(bad)}",
+                file=sys.stderr,
+            )
+            hint = "Use the skill's trailing path component (e.g. 'web-search' for 'universal/web-search')."
+            print(f"  Hint: {hint}", file=sys.stderr)
+            return 2
         task_id = kb.create_task(
             conn,
             title=args.title,
@@ -1377,6 +1425,17 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
     if not workers:
         print("kanban swarm: at least one --worker is required", file=sys.stderr)
         return 2
+    # Validate skill names on every worker before creating the graph —
+    # a bad skill name crashes the worker at spawn and stalls the whole
+    # swarm (verifier/synthesizer never start). Reject early.
+    for w in workers:
+        ok, bad = _validate_skill_names(w.skills or [])
+        if not ok:
+            print(
+                f"kanban swarm: worker {w.profile!r} has unresolvable skill name(s): {', '.join(bad)}",
+                file=sys.stderr,
+            )
+            return 2
     with kb.connect_closing() as conn:
         created = ks.create_swarm(
             conn,

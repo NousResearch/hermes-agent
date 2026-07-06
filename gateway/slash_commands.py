@@ -3356,6 +3356,11 @@ class GatewaySlashCommandsMixin:
     async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
         """Handle /topic for Telegram DM user-managed topic sessions."""
         source = event.source
+        if (
+            source.platform == Platform.TELEGRAM
+            and source.chat_type in {"group", "channel", "thread"}
+        ):
+            return await self._handle_group_topic_context_command(event)
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
             return t("gateway.topic.not_telegram_dm")
         if not self._session_db:
@@ -3441,6 +3446,155 @@ class GatewaySlashCommandsMixin:
             return t("gateway.topic.thread_ready")
 
         return await self._telegram_topic_root_status_message(source)
+
+    async def _handle_group_topic_context_command(self, event: MessageEvent) -> str:
+        """Handle /topic metadata commands inside Telegram group/forum topics."""
+        source = event.source
+        if source.platform != Platform.TELEGRAM:
+            return t("gateway.topic.not_telegram_dm")
+        if not source.thread_id:
+            return "Use /topic inside a Telegram group topic/thread to manage persistent topic context."
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+
+        auth_fn = getattr(self, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                if not auth_fn(source):
+                    return t("gateway.topic.unauthorized")
+            except Exception:
+                logger.debug("Group topic auth check failed", exc_info=True)
+
+        args = event.get_command_args().strip()
+        lowered = args.lower()
+
+        if lowered in {"help", "?", "-h", "--help"}:
+            return (
+                "/topic — show persistent context for this Telegram group topic\n"
+                "/topic set <name> :: <purpose> — save this topic's durable label\n"
+                "/topic workdir <path>|show|clear — bind a working directory to this topic\n"
+                "/topic skills skill-a, skill-b — save topic-bound skill metadata\n\n"
+                "This compact topic context survives /new; the chat transcript does not."
+            )
+
+        platform = source.platform.value
+        chat_id = str(source.chat_id)
+        thread_id = str(source.thread_id)
+        profile = str(source.profile or "default")
+
+        if lowered.startswith("set "):
+            payload = args[4:].strip()
+            if not payload:
+                return "Usage: /topic set <name> :: <purpose>"
+            if "::" in payload:
+                name, purpose = [part.strip() for part in payload.split("::", 1)]
+            else:
+                name, purpose = payload, ""
+            if not name and not purpose:
+                return "Usage: /topic set <name> :: <purpose>"
+            ctx = await self._session_db.upsert_gateway_topic_context(
+                platform=platform,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                profile=profile,
+                chat_name=source.chat_name,
+                topic_name=name or None,
+                purpose=purpose or None,
+            )
+            session_key = self._session_key_for_source(source)
+            self._evict_cached_agent(session_key)
+            return (
+                "Topic context saved. It will survive /new in this topic.\n\n"
+                f"Topic: {ctx.get('topic_name') or '—'}\n"
+                f"Purpose: {ctx.get('purpose') or '—'}"
+            )
+
+        if lowered == "workdir" or lowered.startswith("workdir "):
+            rest = args[len("workdir"):].strip()
+            rest_lower = rest.lower()
+            if not rest or rest_lower == "show":
+                ctx = await self._session_db.get_gateway_topic_context(
+                    platform=platform,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    profile=profile,
+                )
+                current = (ctx or {}).get("workdir")
+                if not current:
+                    return "No working directory is bound to this topic. Use: /topic workdir <absolute path>"
+                exists = "" if Path(current).expanduser().is_dir() else " (⚠ missing on disk)"
+                return f"Topic workdir: {current}{exists}"
+            if rest_lower == "clear":
+                await self._session_db.set_gateway_topic_context_workdir(
+                    platform=platform,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    profile=profile,
+                    workdir=None,
+                )
+                session_key = self._session_key_for_source(source)
+                self._evict_cached_agent(session_key)
+                return "Topic workdir cleared. Tools run from the default directory again."
+            path = Path(rest).expanduser()
+            if not path.is_absolute():
+                return f"Workdir must be an absolute path (or start with ~). Got: {rest}"
+            if not path.is_dir():
+                return f"Directory does not exist: {path}"
+            resolved = str(path)
+            await self._session_db.set_gateway_topic_context_workdir(
+                platform=platform,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                profile=profile,
+                workdir=resolved,
+            )
+            session_key = self._session_key_for_source(source)
+            self._evict_cached_agent(session_key)
+            return (
+                f"Topic workdir set: {resolved}\n"
+                "Tools now run in this directory. Project rules (AGENTS.md) will load "
+                "into the prompt on the next /new."
+            )
+
+        if lowered.startswith("skills "):
+            skills = [item.strip() for item in args[7:].split(",") if item.strip()]
+            if not skills:
+                return "Usage: /topic skills hermes-agent, obsidian"
+            ctx = await self._session_db.upsert_gateway_topic_context(
+                platform=platform,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                profile=profile,
+                chat_name=source.chat_name,
+                skills=skills,
+            )
+            session_key = self._session_key_for_source(source)
+            self._evict_cached_agent(session_key)
+            return "Topic skills saved: " + ", ".join(ctx.get("skills") or [])
+
+        if args:
+            return "Unknown /topic subcommand. Use /topic help."
+
+        ctx = await self._session_db.get_gateway_topic_context(
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            profile=profile,
+        )
+        if not ctx:
+            return (
+                "No persistent topic context is set for this Telegram topic yet.\n\n"
+                "Use: /topic set <name> :: <purpose>"
+            )
+        lines = ["Persistent topic context for this Telegram topic:"]
+        lines.append(f"Topic: {ctx.get('topic_name') or '—'}")
+        lines.append(f"Purpose: {ctx.get('purpose') or '—'}")
+        lines.append(f"Workdir: {ctx.get('workdir') or '—'}")
+        skills = ctx.get("skills") or []
+        if skills:
+            lines.append("Skills: " + ", ".join(skills))
+        return "\n".join(lines)
 
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""

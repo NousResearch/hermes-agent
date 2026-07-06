@@ -157,6 +157,26 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
 
+### Group topics as persistent workspaces
+
+In Telegram forum groups, Hermes scopes sessions by the group's `chat_id` plus the topic's `message_thread_id`. That means each group topic gets an independent conversation lane, and `/new` resets only the current topic's transcript.
+
+Hermes can also store a compact, explicit topic context for a forum topic. This is separate from global memory and survives `/new` in that topic:
+
+```text
+/topic
+/topic set Hermes docs patch :: Plan and implement persistent topic context after /new
+/topic skills hermes-agent, obsidian
+/topic workdir ~/code/my-project
+```
+
+- `/topic` shows the current topic's persistent context.
+- `/topic set <name> :: <purpose>` saves the topic label and purpose.
+- `/topic skills ...` stores topic-bound skill metadata for the topic.
+- `/topic workdir <path>|show|clear` binds an absolute working directory to the topic; the session's cwd is pinned there, so terminal/file tools and project-rule (AGENTS.md) discovery run from the project directory. Survives `/new` like the rest of the topic context.
+
+This context is compact metadata, not full Telegram history. Telegram's Bot API cannot fetch arbitrary old topic history on demand; Hermes can only use messages it has already seen, local session history, and explicitly stored topic context.
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.

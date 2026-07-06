@@ -10780,7 +10780,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
-        
+        _topic_ctx = await self._load_gateway_topic_context(source)
+        if _topic_ctx:
+            try:
+                from gateway.topic_context import format_topic_context_prompt
+                context.topic_context_prompt = format_topic_context_prompt(_topic_ctx)
+            except Exception:
+                logger.debug("Failed to format gateway topic context", exc_info=True)
+            context.topic_workdir = self._validate_topic_workdir(_topic_ctx)
+
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         
@@ -13689,6 +13697,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._telegram_capability_hint_ts[chat_id] = now
         return True
 
+    async def _load_gateway_topic_context(
+        self, source: SessionSource
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch compact persistent context row for Telegram group/forum topics."""
+        if source.platform != Platform.TELEGRAM:
+            return None
+        if source.chat_type not in {"group", "channel", "thread"}:
+            return None
+        if not source.chat_id or not source.thread_id:
+            return None
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return None
+        try:
+            ctx = await session_db.get_gateway_topic_context(
+                platform=source.platform.value,
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+                profile=str(source.profile or "default"),
+            )
+        except Exception:
+            logger.debug("Failed to load gateway topic context", exc_info=True)
+            return None
+        return ctx or None
+
+    def _validate_topic_workdir(self, ctx: Optional[Dict[str, Any]]) -> str:
+        """Return an existing absolute workdir for a topic, or "" if unset/missing.
+
+        No silent fallback: if the bound directory has vanished we log a warning
+        and return "" so the session runs from the default cwd rather than a dead
+        path.
+        """
+        if not ctx:
+            return ""
+        raw = str(ctx.get("workdir") or "").strip()
+        if not raw:
+            return ""
+        try:
+            path = Path(raw).expanduser()
+            if path.is_dir():
+                return str(path)
+        except Exception:
+            logger.debug("Failed to validate topic workdir %r", raw, exc_info=True)
+            return ""
+        logger.warning(
+            "Topic workdir %r no longer exists; running without it", raw
+        )
+        return ""
+
     def _telegram_topic_help_text(self) -> str:
         return (
             "/topic — enable multi-session DM mode (one bot, many parallel chats)\n"
@@ -14801,6 +14858,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            cwd=getattr(context, "topic_workdir", "") or "",
             async_delivery=_async_delivery,
         )
 

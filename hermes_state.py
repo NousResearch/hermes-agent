@@ -5622,6 +5622,207 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def apply_gateway_topic_context_migration(self) -> None:
+        """Create generic gateway topic-context tables for compact thread memory."""
+        def _do(conn):
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS gateway_topic_contexts (
+                    platform TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    profile TEXT NOT NULL DEFAULT 'default',
+                    chat_name TEXT,
+                    topic_name TEXT,
+                    purpose TEXT,
+                    workdir TEXT,
+                    skills_json TEXT NOT NULL DEFAULT '[]',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (platform, chat_id, thread_id, profile)
+                );
+                """
+            )
+            cols = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(gateway_topic_contexts)"
+                ).fetchall()
+            }
+            if "workdir" not in cols:
+                conn.execute(
+                    "ALTER TABLE gateway_topic_contexts ADD COLUMN workdir TEXT"
+                )
+        self._execute_write(_do)
+
+    @staticmethod
+    def _decode_gateway_topic_context_list(raw: object) -> List[str]:
+        try:
+            data = json.loads(str(raw or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        items: List[str] = []
+        for item in data[:20]:
+            text = str(item or "").strip().replace("\x00", "")
+            if text:
+                items.append(text[:800])
+        return items
+
+    @staticmethod
+    def _encode_gateway_topic_context_list(values: Optional[List[str]]) -> Optional[str]:
+        if values is None:
+            return None
+        items: List[str] = []
+        for item in values[:20]:
+            text = str(item or "").strip().replace("\x00", "")
+            if text:
+                items.append(text[:800])
+        return json.dumps(items, ensure_ascii=False)
+
+    @staticmethod
+    def _clean_gateway_topic_context_field(value: Optional[str], *, limit: int = 800) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip().replace("\x00", "")
+        return text[:limit] if text else None
+
+    def _row_to_gateway_topic_context(self, row) -> Dict[str, Any]:
+        data = dict(row)
+        data["skills"] = self._decode_gateway_topic_context_list(data.pop("skills_json", "[]"))
+        return data
+
+    def get_gateway_topic_context(
+        self,
+        *,
+        platform: str,
+        chat_id: str,
+        thread_id: str,
+        profile: str = "default",
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch compact persistent context for one gateway topic/thread."""
+        if not platform or not chat_id or not thread_id:
+            return None
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT * FROM gateway_topic_contexts
+                    WHERE platform = ? AND chat_id = ? AND thread_id = ? AND profile = ?
+                    """,
+                    (str(platform), str(chat_id), str(thread_id), str(profile or "default")),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if row is None:
+            return None
+        return self._row_to_gateway_topic_context(row)
+
+    def upsert_gateway_topic_context(
+        self,
+        *,
+        platform: str,
+        chat_id: str,
+        thread_id: str,
+        profile: str = "default",
+        chat_name: Optional[str] = None,
+        topic_name: Optional[str] = None,
+        purpose: Optional[str] = None,
+        skills: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create or update compact persistent context for one gateway topic/thread."""
+        if not platform or not chat_id or not thread_id:
+            raise ValueError("platform, chat_id, and thread_id are required")
+        self.apply_gateway_topic_context_migration()
+        now = time.time()
+        platform = str(platform)
+        chat_id = str(chat_id)
+        thread_id = str(thread_id)
+        profile = str(profile or "default")
+        chat_name = self._clean_gateway_topic_context_field(chat_name, limit=240)
+        topic_name = self._clean_gateway_topic_context_field(topic_name, limit=240)
+        purpose = self._clean_gateway_topic_context_field(purpose, limit=1200)
+        skills_json = self._encode_gateway_topic_context_list(skills)
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO gateway_topic_contexts (
+                    platform, chat_id, thread_id, profile, chat_name, topic_name,
+                    purpose, skills_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, '[]'), ?, ?)
+                ON CONFLICT(platform, chat_id, thread_id, profile) DO UPDATE SET
+                    chat_name = COALESCE(excluded.chat_name, gateway_topic_contexts.chat_name),
+                    topic_name = COALESCE(excluded.topic_name, gateway_topic_contexts.topic_name),
+                    purpose = COALESCE(excluded.purpose, gateway_topic_contexts.purpose),
+                    skills_json = COALESCE(?, gateway_topic_contexts.skills_json),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    platform, chat_id, thread_id, profile, chat_name, topic_name,
+                    purpose, skills_json, now, now,
+                    skills_json,
+                ),
+            )
+        self._execute_write(_do)
+        ctx = self.get_gateway_topic_context(
+            platform=platform, chat_id=chat_id, thread_id=thread_id, profile=profile
+        )
+        if ctx is None:
+            raise RuntimeError("failed to upsert gateway topic context")
+        return ctx
+
+    def set_gateway_topic_context_workdir(
+        self,
+        *,
+        platform: str,
+        chat_id: str,
+        thread_id: str,
+        profile: str = "default",
+        workdir: Optional[str],
+    ) -> Dict[str, Any]:
+        """Set (or clear, when workdir is None) the working directory for one topic.
+
+        Kept separate from upsert_gateway_topic_context: that method uses
+        COALESCE(excluded...) to preserve unspecified fields, which cannot express
+        "clear back to NULL". Here we assign workdir explicitly so passing None
+        writes NULL.
+        """
+        if not platform or not chat_id or not thread_id:
+            raise ValueError("platform, chat_id, and thread_id are required")
+        self.apply_gateway_topic_context_migration()
+        now = time.time()
+        platform = str(platform)
+        chat_id = str(chat_id)
+        thread_id = str(thread_id)
+        profile = str(profile or "default")
+        workdir = self._clean_gateway_topic_context_field(workdir, limit=500)
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO gateway_topic_contexts (
+                    platform, chat_id, thread_id, profile, workdir,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(platform, chat_id, thread_id, profile) DO UPDATE SET
+                    workdir = ?,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    platform, chat_id, thread_id, profile, workdir, now, now,
+                    workdir,
+                ),
+            )
+        self._execute_write(_do)
+        ctx = self.get_gateway_topic_context(
+            platform=platform, chat_id=chat_id, thread_id=thread_id, profile=profile
+        )
+        if ctx is None:
+            raise RuntimeError("failed to set gateway topic context workdir")
+        return ctx
+
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.
 

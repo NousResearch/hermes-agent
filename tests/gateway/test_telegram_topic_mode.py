@@ -293,7 +293,7 @@ async def test_telegram_group_prompt_is_not_topic_lobby_even_when_dm_topic_mode_
 
 
 @pytest.mark.asyncio
-async def test_topic_command_is_private_dm_only_and_does_not_enable_group_topic_mode(
+async def test_topic_command_in_group_topic_shows_context_without_enabling_dm_topic_mode(
     tmp_path, monkeypatch
 ):
     import gateway.run as gateway_run
@@ -310,7 +310,8 @@ async def test_topic_command_is_private_dm_only_and_does_not_enable_group_topic_
 
     result = await runner._handle_message(_make_group_event("/topic", thread_id="555"))
 
-    assert "only available in Telegram private chats" in result
+    assert "No persistent topic context is set" in result
+    assert "Use: /topic set" in result
     assert session_db.is_telegram_topic_mode_enabled(chat_id="-100123", user_id="208214988") is False
     runner._run_agent.assert_not_called()
 

@@ -1,0 +1,141 @@
+---
+slug: /
+sidebar_position: 0
+title: "Hermes Agent 문서"
+description: "Nous Research가 만든 스스로 개선하는 AI 에이전트. 경험에서 스킬을 만들고, 사용 중 개선하며, 세션을 넘어 기억하는 내장 학습 루프를 제공합니다."
+hide_table_of_contents: true
+displayed_sidebar: docs
+---
+
+import Link from "@docusaurus/Link";
+
+# Hermes Agent
+
+[Nous Research](https://nousresearch.com)가 만든 스스로 개선하는 AI 에이전트입니다. Hermes는 경험에서 스킬을 만들고, 사용 중 스킬을 개선하며, 필요한 지식을 저장하도록 스스로를 유도하고, 여러 세션에 걸쳐 사용자를 점점 더 깊이 이해하는 내장 학습 루프를 갖춘 에이전트입니다.
+
+<div
+  style={{
+    display: "flex",
+    gap: "1rem",
+    marginBottom: "2rem",
+    flexWrap: "wrap",
+  }}
+>
+  <Link
+    to="/getting-started/installation"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      backgroundColor: "#FFD700",
+      color: "#07070d",
+      borderRadius: "8px",
+      fontWeight: 600,
+      textDecoration: "none",
+    }}
+  >
+    시작하기 →
+  </Link>
+  <a
+    href="https://hermes-agent.nousresearch.com/"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    데스크톱 다운로드
+  </a>
+  <a
+    href="https://github.com/NousResearch/hermes-agent"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    GitHub에서 보기
+  </a>
+</div>
+
+## 설치
+
+### Windows 또는 macOS
+
+명령줄 앱과 데스크톱 앱을 쉽게 설치하려면 웹사이트에서 [Hermes Desktop 설치 프로그램](https://hermes-agent.nousresearch.com/)을 내려받아 실행하세요.
+
+### Hermes Desktop 없이 설치하기
+
+명령줄 전용으로 설치하려면 다음을 실행하세요.
+
+#### Linux / macOS / WSL2 / Android (Termux)
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+#### Windows (native)
+
+PowerShell에서 실행하세요.
+
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```
+
+설치 프로그램이 무엇을 하는지, 사용자별/루트 설치 경로가 어떻게 다른지, Windows 관련 주의점은 전체 **[설치 가이드](/getting-started/installation)**를 참고하세요. 전체 플랫폼 지원 범위는 **[플랫폼 지원](/getting-started/platform-support)**에서 볼 수 있습니다.
+
+:::tip 가장 빠르게 동작하는 에이전트 만들기
+설치 후 `hermes setup --portal`을 실행하세요. 하나의 OAuth 로그인으로 모델과 네 가지 Tool Gateway 도구(웹 검색, 이미지 생성, TTS, 브라우저)를 함께 설정합니다. 자세한 내용은 [Nous Portal](/integrations/nous-portal)을 참고하세요.
+:::
+
+## Hermes Agent란?
+
+Hermes는 IDE에 묶인 코딩 보조 도구도, 단일 API를 감싼 챗봇도 아닙니다. 오래 실행될수록 더 유능해지는 **자율 에이전트**입니다. 5달러짜리 VPS, GPU 클러스터, 혹은 유휴 상태에서는 비용이 거의 들지 않는 서버리스 인프라(Daytona, Modal) 어디에서든 실행할 수 있습니다. 직접 SSH로 접속하지 않는 클라우드 VM에서 Hermes가 작업하는 동안 Telegram으로 대화할 수도 있습니다. 노트북에 묶이지 않습니다.
+
+## 빠른 링크
+
+|                                                                         |                                                                       |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 🚀 **[설치](/getting-started/installation)**                            | Linux, macOS, WSL2, Windows native, Android에서 60초 안에 설치        |
+| 📖 **[빠른 시작 튜토리얼](/getting-started/quickstart)**                | 첫 대화와 바로 써볼 핵심 기능                                         |
+| 🗺️ **[학습 경로](/getting-started/learning-path)**                       | 경험 수준에 맞는 문서 찾기                                            |
+| ⚙️ **[설정](/user-guide/configuration)**                                | 설정 파일, 제공자, 모델, 옵션                                         |
+| 💬 **[메시징 게이트웨이](/user-guide/messaging)**                       | Telegram, Discord, Slack, WhatsApp, Teams 등 연결                     |
+| 🔧 **[도구와 도구셋](/user-guide/features/tools)**                      | 60개 이상의 내장 도구와 설정 방법                                     |
+| 🧠 **[메모리 시스템](/user-guide/features/memory)**                     | 세션을 넘어 성장하는 영구 메모리                                      |
+| 📚 **[스킬 시스템](/user-guide/features/skills)**                       | 에이전트가 만들고 재사용하는 절차적 메모리                            |
+| 🔌 **[MCP 통합](/user-guide/features/mcp)**                             | MCP 서버에 연결하고 도구를 필터링하며 Hermes를 안전하게 확장          |
+| 🧭 **[Hermes에서 MCP 사용하기](/guides/use-mcp-with-hermes)**           | 실전 MCP 설정 패턴, 예제, 튜토리얼                                    |
+| 🎙️ **[음성 모드](/user-guide/features/voice-mode)**                     | CLI, Telegram, Discord, Discord VC에서 실시간 음성 상호작용           |
+| 🗣️ **[Hermes에서 음성 모드 사용하기](/guides/use-voice-mode-with-hermes)** | Hermes 음성 워크플로의 실전 설정과 사용법                         |
+| 🎭 **[Personality와 SOUL.md](/user-guide/features/personality)**        | 전역 SOUL.md로 Hermes의 기본 말투 정의                                |
+| 📄 **[컨텍스트 파일](/user-guide/features/context-files)**              | 모든 대화에 영향을 주는 프로젝트 컨텍스트 파일                        |
+| 🔒 **[보안](/user-guide/security)**                                     | 명령 승인, 권한 부여, 컨테이너 격리                                   |
+| 💡 **[팁과 모범 사례](/guides/tips)**                                  | Hermes를 더 잘 쓰기 위한 빠른 팁                                      |
+| 🏗️ **[아키텍처](/developer-guide/architecture)**                       | 내부 동작 방식                                                        |
+| ❓ **[FAQ와 문제 해결](/reference/faq)**                                | 자주 묻는 질문과 해결 방법                                            |
+
+## 핵심 기능
+
+- **닫힌 학습 루프** — 에이전트가 관리하는 메모리, 주기적 저장 유도, 자율 스킬 생성, 사용 중 스킬 개선, LLM 요약이 결합된 FTS5 세션 검색, [Honcho](https://github.com/plastic-labs/honcho) 기반 사용자 모델링
+- **노트북 밖 어디서나 실행** — local, Docker, SSH, Daytona, Singularity, Modal 등 6개 터미널 백엔드. Daytona와 Modal은 유휴 시 환경을 절전해 비용을 거의 들이지 않습니다.
+- **사용자가 있는 곳에서 동작** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, Email, SMS, DingTalk, Feishu, WeCom, Weixin, QQ Bot, Yuanbao, BlueBubbles, Home Assistant, Microsoft Teams, Google Chat 등 20개 이상의 플랫폼을 하나의 게이트웨이로 지원
+- **모델 트레이너가 만든 에이전트** — Hermes, Nomos, Psyche를 만든 [Nous Research](https://nousresearch.com)가 제작. [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai), OpenAI, 또는 임의의 엔드포인트와 함께 사용 가능
+- **예약 자동화** — 모든 플랫폼으로 전달할 수 있는 내장 cron
+- **위임과 병렬화** — 독립된 서브에이전트를 생성해 병렬 작업을 수행. `execute_code`를 통한 프로그래밍 방식 도구 호출로 여러 단계 파이프라인을 한 번의 추론 호출로 압축
+- **열린 표준 스킬** — [agentskills.io](https://agentskills.io)와 호환. 스킬은 이식 가능하고 공유 가능하며, Skills Hub를 통해 커뮤니티가 기여할 수 있습니다.
+- **완전한 웹 제어** — 검색, 추출, 브라우징, 비전, 이미지 생성, TTS. [Nous Portal](/integrations/nous-portal) 구독 하나로 모두 제공
+- **MCP 지원** — 모든 MCP 서버에 연결해 도구 기능 확장
+- **연구 친화적** — 배치 처리, trajectory export, Atropos 기반 RL 학습 지원. Hermes, Nomos, Psyche 모델을 만든 [Nous Research](https://nousresearch.com)가 제작
+
+## LLM과 코딩 에이전트를 위한 문서
+
+이 문서의 기계 판독용 진입점입니다.
+
+- **[`/llms.txt`](/llms.txt)** — 모든 문서 페이지의 짧은 설명이 포함된 선별 인덱스입니다. 약 17KB로 LLM 컨텍스트에 넣기 안전합니다.
+- **[`/llms-full.txt`](/llms-full.txt)** — 모든 문서 페이지를 하나의 마크다운 파일로 이어 붙인 버전입니다. 약 1.8MB입니다.
+
+두 파일은 `/docs/llms.txt`와 `/docs/llms-full.txt`에서도 접근할 수 있으며, 배포 때마다 새로 생성됩니다.

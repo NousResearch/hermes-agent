@@ -13968,7 +13968,8 @@ def main():
         description="Show current OpenAI Codex quota, reset windows, alerts, and recommended credential.",
     )
     codex_usage_parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
-    codex_usage_parser.add_argument("--compact", action="store_true", help="print Telegram-friendly compact output")
+    codex_usage_parser.add_argument("--compact", action="store_true", help="print Telegram-friendly compact output (default)")
+    codex_usage_parser.add_argument("--verbose", action="store_true", help="print detailed per-account text output")
     codex_usage_parser.add_argument("--alert-threshold", type=float, help="legacy: alert when either window is at/above this percent")
     codex_usage_parser.add_argument("--primary-threshold", type=float, help="5h window alert threshold percent")
     codex_usage_parser.add_argument("--secondary-threshold", type=float, help="7d window alert threshold percent")
@@ -13977,7 +13978,7 @@ def main():
     def _cmd_codex_usage(_args):
         from hermes_cli.codex_usage import main as _codex_usage_main
         argv = []
-        for _flag in ("json", "compact", "quiet_ok"):
+        for _flag in ("json", "compact", "verbose", "quiet_ok"):
             if getattr(_args, _flag, False):
                 argv.append("--" + _flag.replace("_", "-"))
         for _flag in ("alert_threshold", "primary_threshold", "secondary_threshold"):

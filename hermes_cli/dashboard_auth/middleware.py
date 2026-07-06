@@ -185,6 +185,16 @@ def _auto_sso_response(request: Request) -> Response | None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     provider = providers[0]
+
+    # Auto-SSO is only meaningful for OAuth/redirect providers.  A
+    # pure-password provider (supports_password=True, e.g. basic) has no
+    # IDP to silently bounce to — its start_login() raises
+    # NotImplementedError.  Return None so the caller falls through to
+    # _unauth_response, which renders the /login interstitial with the
+    # password form.
+    if getattr(provider, "supports_password", False):
+        return None
+
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

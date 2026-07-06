@@ -593,3 +593,50 @@ def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 401
     assert "unreachable" not in r.text.lower()
+
+
+def test_auto_sso_skips_password_only_provider():
+    """When the sole provider is password-only (e.g. basic), auto-SSO must NOT
+    redirect to /auth/login (which would hit start_login() and crash with
+    NotImplementedError).  Instead the middleware should fall through to
+    _unauth_response → /login, where the password form renders.
+
+    Regression guard for #56067 / #57211 / #58166.
+    """
+    from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
+
+    clear_providers()
+    register_provider(
+        BasicAuthProvider(
+            username="admin",
+            password_hash=hash_password("test-password"),
+            secret=b"test-secret-at-least-16-bytes!!",
+        )
+    )
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.bound_port = 443
+    web_server.app.state.auth_required = True
+    try:
+        client = TestClient(
+            web_server.app, base_url="https://fly-app.fly.dev"
+        )
+        r = client.get("/", follow_redirects=False)
+        assert r.status_code == 302, (
+            f"Expected 302, got {r.status_code}: {r.text}"
+        )
+        # Must redirect to /login (password form), NOT /auth/login (OAuth).
+        location = r.headers["location"]
+        assert "/login" in location, f"Expected redirect to /login, got {location}"
+        assert "/auth/login" not in location, (
+            f"auto-SSO must NOT redirect to /auth/login for a password-only "
+            f"provider — that would crash with NotImplementedError. "
+            f"Got: {location}"
+        )
+    finally:
+        clear_providers()
+        web_server.app.state.bound_host = prev_host
+        web_server.app.state.bound_port = prev_port
+        web_server.app.state.auth_required = prev_required

@@ -8337,25 +8337,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "'open'."
             )
 
-        # Secondary profiles must never bind ports — the default profile's
-        # listener serves every profile through /p/<profile>/. Force-disable
-        # any port-binding platform that _apply_env_overrides may have enabled.
-        for pb_platform in _PORT_BINDING_PLATFORM_VALUES:
-            try:
-                plat = Platform(pb_platform)
-            except ValueError:
-                continue
-            if plat in profile_cfg.platforms:
-                profile_cfg.platforms[plat].enabled = False
-
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
                 continue
-            # The default profile owns the single shared HTTP listener and
-            # serves every profile through the /p/<profile>/ URL prefix.
-            # A secondary profile must NOT enable a port-binding platform.
+            # A secondary profile must NOT enable a port-binding platform: the
+            # default profile's listener already serves every profile via the
+            # /p/<profile>/ prefix, so a second bind can only collide. This is a
+            # config error, not a transient failure — fail fast and loud.
             if platform.value in _PORT_BINDING_PLATFORM_VALUES:
                 raise MultiplexConfigError(
                     f"Profile '{profile_name}' enables the port-binding platform "

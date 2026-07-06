@@ -654,23 +654,31 @@ class CLIAgentSetupMixin:
             )
 
         for i, (role, text) in enumerate(entries):
+            # Guard against empty / whitespace-only messages which would
+            # produce msg_lines=[] and crash on msg_lines[0] (Fixes #59265).
+            msg_lines = text.splitlines() or [""]
+            if not text:
+                # Don't silently swallow — log at DEBUG so this is observable
+                # when investigating session content issues.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "_display_resumed_history: encountered empty %s message at index %d",
+                    role, i,
+                )
             if role == "user":
                 lines.append("  ● You: ", style=f"dim bold {_session_label_c}")
                 # Show first line inline, indent rest
-                msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"         {ml}\n", style="dim")
             elif role == "assistant_last":
                 # Last assistant response shown in full, non-dim
                 lines.append("  ◆ Hermes: ", style=f"bold {_assistant_label_c}")
-                msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="")
                 for ml in msg_lines[1:]:
                     lines.append(f"            {ml}\n", style="")
             else:
                 lines.append("  ◆ Hermes: ", style=f"dim bold {_assistant_label_c}")
-                msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"            {ml}\n", style="dim")

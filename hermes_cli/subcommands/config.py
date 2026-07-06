@@ -34,6 +34,16 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     )
     config_set.add_argument("value", nargs="?", help="Value to set")
 
+    # config remove / config delete
+    config_remove = config_subparsers.add_parser(
+        "remove",
+        aliases=["delete"],
+        help="Remove a configuration key from config.yaml (or .env for API keys/tokens)",
+    )
+    config_remove.add_argument(
+        "key", help="Configuration key (e.g., model, terminal.backend, OPENROUTER_API_KEY)"
+    )
+
     # config path
     config_subparsers.add_parser("path", help="Print config file path")
 

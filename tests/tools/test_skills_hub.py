@@ -1302,6 +1302,23 @@ class TestCreateSourceRouter:
         gh_idx = next(i for i, src in enumerate(sources) if isinstance(src, GitHubSource))
         assert url_idx < gh_idx
 
+    def test_user_taps_are_split_from_default_github_source(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.skills_hub.TapsManager",
+            lambda: type("Mgr", (), {
+                "list_taps": lambda self: [{"repo": "owner/repo", "path": "skills/"}],
+            })(),
+        )
+
+        sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
+        github_sources = [src for src in sources if isinstance(src, GitHubSource)]
+
+        assert len(github_sources) == 2
+        assert github_sources[0].user_tap_source is False
+        assert github_sources[0].taps == GitHubSource.DEFAULT_TAPS
+        assert github_sources[1].user_tap_source is True
+        assert github_sources[1].taps == [{"repo": "owner/repo", "path": "skills/"}]
+
 
 # ---------------------------------------------------------------------------
 # HubLockFile
@@ -2471,3 +2488,35 @@ class TestParallelSearchSourcesTimeout:
         assert source_counts.get("a") == 1
         assert source_counts.get("b") == 1
         assert len(all_results) == 2
+
+    def test_index_available_keeps_user_github_taps(self):
+        """Default search skips indexed API sources, but not user taps.
+
+        Custom taps live in the user's local taps.json, so the centralized
+        index cannot cover them. Regression for #14466.
+        """
+        index = _FakeSource("hermes-index", results=[])
+        index.is_available = True
+
+        default_github = _FakeSource("github", results=[self._meta("default")])
+        default_called = {"value": False}
+
+        def _default_search(_query: str, limit: int = 10) -> List[SkillMeta]:
+            default_called["value"] = True
+            return [self._meta("default")]
+
+        default_github.search = _default_search  # type: ignore[method-assign]
+
+        user_tap = _FakeSource("github", results=[self._meta("user-tap")])
+        user_tap.user_tap_source = True
+
+        all_results, source_counts, timed_out_ids = parallel_search_sources(
+            [index, default_github, user_tap],
+            query="my-fancy-skill",
+            overall_timeout=1,
+        )
+
+        assert default_called["value"] is False
+        assert timed_out_ids == []
+        assert source_counts == {"hermes-index": 0, "github": 1}
+        assert [r.identifier for r in all_results] == ["user-tap/x"]

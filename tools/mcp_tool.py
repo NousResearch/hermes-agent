@@ -4759,8 +4759,22 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
             return_exceptions=True,
         )
 
+    # The outer probe bound must not undercut any server's own connect_timeout
+    # budget, or a server with connect_timeout > 120 is cancelled by the outer
+    # cap before its inner wait_for elapses and is silently dropped from the
+    # result. Mirror _probe_single_server's `connect_timeout + 10`, keeping 120s
+    # as a floor for the common many-small-servers case. Coerce defensively so a
+    # non-numeric connect_timeout can't crash the outer bound.
+    connect_timeouts = []
+    for cfg in enabled.values():
+        try:
+            connect_timeouts.append(float(cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)))
+        except (TypeError, ValueError):
+            connect_timeouts.append(float(_DEFAULT_CONNECT_TIMEOUT))
+    outer_timeout = max(120.0, max(connect_timeouts) + 10.0)
+
     try:
-        _run_on_mcp_loop(_probe_all, timeout=120)
+        _run_on_mcp_loop(_probe_all, timeout=outer_timeout)
     except Exception as exc:
         logger.debug("MCP probe failed: %s", exc)
     finally:

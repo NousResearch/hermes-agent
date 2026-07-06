@@ -177,6 +177,46 @@ class TestProbeMcpServerTools:
         assert result == {}
         mock_stop.assert_called_once()
 
+    def test_outer_timeout_respects_large_connect_timeout(self):
+        """A server with connect_timeout > 120 must not be cancelled by the
+        outer probe bound before its own inner wait_for budget elapses."""
+        config = {
+            "slow": {"command": "npx", "connect_timeout": 300},
+        }
+        mock_tool = SimpleNamespace(name="do_thing", description="Do a thing")
+        mock_server = MagicMock()
+        mock_server._tools = [mock_tool]
+        mock_server.shutdown = AsyncMock()
+
+        async def fake_connect(name, cfg):
+            return mock_server
+
+        captured = {}
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
+             patch("tools.mcp_tool._stop_mcp_loop"):
+
+            def run_coro(coro_or_factory, timeout=120):
+                captured["timeout"] = timeout
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+                loop = asyncio.new_event_loop()
+                try:
+                    return loop.run_until_complete(coro)
+                finally:
+                    loop.close()
+
+            mock_run.side_effect = run_coro
+
+            from tools.mcp_tool import probe_mcp_server_tools
+            probe_mcp_server_tools()
+
+        # Outer bound must scale to the configured connect_timeout: max(120, 300 + 10).
+        assert captured.get("timeout", 0) >= 310
+
     def test_skips_disabled_servers(self):
         """Disabled servers are not probed."""
         config = {

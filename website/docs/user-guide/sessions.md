@@ -335,19 +335,67 @@ If the title is already in use by another session, an error is shown.
 # Delete ended sessions older than 90 days (default)
 hermes sessions prune
 
-# Custom age threshold
+# Custom age threshold — bare numbers are days
 hermes sessions prune --older-than 30
+
+# Durations work too: 5h, 30m, 2d, 1w
+hermes sessions prune --older-than 12h
+
+# Delete only a specific time window (e.g. a batch of test sessions
+# created in the last 5 hours)
+hermes sessions prune --newer-than 5h
+
+# Explicit window with absolute timestamps
+hermes sessions prune --after "2026-07-05 09:00" --before "2026-07-05 14:30"
 
 # Only prune sessions from a specific platform
 hermes sessions prune --source telegram --older-than 60
+
+# More filters — all AND together
+hermes sessions prune --newer-than 5h --title "smoke test"   # title substring
+hermes sessions prune --older-than 30 --max-messages 3        # tiny sessions
+hermes sessions prune --cwd ~/scratch --end-reason done       # by cwd / end reason
+
+# Preview what would be deleted, without deleting anything
+hermes sessions prune --newer-than 5h --dry-run
 
 # Skip confirmation
 hermes sessions prune --older-than 30 --yes
 ```
 
+Time values (`--older-than`, `--newer-than`, `--before`, `--after`) accept a
+duration (`5h`, `30m`, `2d`, `1w`), a bare number of days, or an ISO
+timestamp (`2026-07-05`, `2026-07-05 14:30`). `--older-than`/`--before` set
+the upper bound; `--newer-than`/`--after` set the lower bound. Combine both
+for a window.
+
+Archived sessions are skipped by default; pass `--include-archived` to
+delete them too.
+
 :::info
 Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
 :::
+
+### Bulk-Archive Sessions
+
+If you want sessions out of your listings without deleting anything,
+`hermes sessions archive` takes the same filters as `prune` but soft-hides
+matching sessions instead (sets the same archived flag as archiving a single
+session from the Desktop/Dashboard UI — messages and search stay intact):
+
+```bash
+# Archive everything from the last 5 hours (e.g. 75 CI smoke-test sessions)
+hermes sessions archive --newer-than 5h
+
+# Archive by title substring, preview first
+hermes sessions archive --title "dry run" --dry-run
+hermes sessions archive --title "dry run" --yes
+```
+
+At least one filter is required — a bare `hermes sessions archive` refuses to
+archive your entire history. Archived sessions are hidden from
+`hermes sessions list` and `/resume` but remain in the database and can be
+unarchived from the Desktop/Dashboard session list.
 
 ### Session Statistics
 

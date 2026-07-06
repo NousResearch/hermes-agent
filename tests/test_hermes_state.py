@@ -1936,6 +1936,131 @@ class TestPruneSessions:
             assert db.get_session(sid) is None
 
 
+class TestPruneSessionFilters:
+    """Extended filter surface shared by prune/archive/list_prune_candidates."""
+
+    @staticmethod
+    def _mk(db, sid, *, source="cli", age_seconds=0, title=None,
+            end_reason="done", message_count=0, cwd=None):
+        db.create_session(session_id=sid, source=source, cwd=cwd)
+        db.end_session(sid, end_reason=end_reason)
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, message_count = ?, title = ? "
+            "WHERE id = ?",
+            (time.time() - age_seconds, message_count, title, sid),
+        )
+        db._conn.commit()
+
+    def test_started_after_window_prunes_only_recent(self, db):
+        self._mk(db, "recent1", age_seconds=3600)       # 1h ago
+        self._mk(db, "recent2", age_seconds=2 * 3600)   # 2h ago
+        self._mk(db, "old", age_seconds=10 * 3600)      # 10h ago
+
+        cutoff = time.time() - 5 * 3600
+        pruned = db.prune_sessions(older_than_days=None, started_after=cutoff)
+        assert pruned == 2
+        assert db.get_session("old") is not None
+        assert db.get_session("recent1") is None
+
+    def test_before_after_window(self, db):
+        self._mk(db, "inside", age_seconds=5 * 3600)
+        self._mk(db, "too_new", age_seconds=1 * 3600)
+        self._mk(db, "too_old", age_seconds=20 * 3600)
+
+        now = time.time()
+        pruned = db.prune_sessions(
+            older_than_days=None,
+            started_after=now - 10 * 3600,
+            started_before=now - 2 * 3600,
+        )
+        assert pruned == 1
+        assert db.get_session("inside") is None
+        assert db.get_session("too_new") is not None
+        assert db.get_session("too_old") is not None
+
+    def test_title_and_message_count_filters(self, db):
+        self._mk(db, "smoke1", age_seconds=60, title="Codex Smoke Test 1",
+                 message_count=2)
+        self._mk(db, "smoke2", age_seconds=60, title="codex smoke test 2",
+                 message_count=8)
+        self._mk(db, "real", age_seconds=60, title="Debugging auth",
+                 message_count=8)
+
+        rows = db.list_prune_candidates(title_like="smoke")
+        assert {r["id"] for r in rows} == {"smoke1", "smoke2"}
+
+        pruned = db.prune_sessions(
+            older_than_days=None, title_like="Smoke", max_messages=3
+        )
+        assert pruned == 1
+        assert db.get_session("smoke1") is None
+        assert db.get_session("smoke2") is not None
+        assert db.get_session("real") is not None
+
+    def test_end_reason_and_cwd_filters(self, db):
+        self._mk(db, "s1", age_seconds=60, end_reason="done",
+                 cwd="/home/u/scratch/x")
+        self._mk(db, "s2", age_seconds=60, end_reason="error",
+                 cwd="/home/u/scratch")
+        self._mk(db, "s3", age_seconds=60, end_reason="done",
+                 cwd="/home/u/work")
+
+        rows = db.list_prune_candidates(cwd_prefix="/home/u/scratch")
+        assert {r["id"] for r in rows} == {"s1", "s2"}
+
+        pruned = db.prune_sessions(
+            older_than_days=None, end_reason="done",
+            cwd_prefix="/home/u/scratch",
+        )
+        assert pruned == 1
+        assert db.get_session("s1") is None
+
+    def test_prune_excludes_archived_when_requested(self, db):
+        self._mk(db, "arch", age_seconds=60)
+        self._mk(db, "plain", age_seconds=60)
+        db.set_session_archived("arch", True)
+
+        pruned = db.prune_sessions(older_than_days=None, started_after=0,
+                                   archived=False)
+        assert pruned == 1
+        assert db.get_session("arch") is not None
+        assert db.get_session("plain") is None
+
+    def test_archive_sessions_bulk(self, db):
+        self._mk(db, "a1", age_seconds=3600)
+        self._mk(db, "a2", age_seconds=2 * 3600)
+        self._mk(db, "keep", age_seconds=10 * 3600)
+        # Active session in the window must never be touched
+        db.create_session(session_id="live", source="cli")
+
+        cutoff = time.time() - 5 * 3600
+        count = db.archive_sessions(started_after=cutoff)
+        assert count == 2
+        assert db.get_session("a1")["archived"] == 1
+        assert db.get_session("a2")["archived"] == 1
+        assert db.get_session("keep")["archived"] == 0
+        assert db.get_session("live")["archived"] == 0
+        # Idempotent: already-archived rows aren't re-selected
+        assert db.archive_sessions(started_after=cutoff) == 0
+
+    def test_list_prune_candidates_matches_prune(self, db):
+        self._mk(db, "c1", age_seconds=3600, source="cli")
+        self._mk(db, "c2", age_seconds=3600, source="telegram")
+        rows = db.list_prune_candidates(started_after=0, source="cli")
+        assert [r["id"] for r in rows] == ["c1"]
+        pruned = db.prune_sessions(older_than_days=None, started_after=0,
+                                   source="cli")
+        assert pruned == 1
+
+    def test_default_signature_unchanged(self, db):
+        """Legacy positional call keeps working with identical semantics."""
+        self._mk(db, "ancient", age_seconds=200 * 86400)
+        self._mk(db, "fresh", age_seconds=60)
+        assert db.prune_sessions(90) == 1
+        assert db.get_session("ancient") is None
+        assert db.get_session("fresh") is not None
+
+
 class TestDeleteSessionOrphansChildren:
     def test_delete_orphans_children(self, db):
         """Deleting a parent session orphans its children."""

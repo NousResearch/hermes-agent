@@ -8199,24 +8199,65 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
 
 
 class SessionPrune(BaseModel):
-    older_than_days: int = 90
+    older_than_days: Optional[float] = 90
     source: Optional[str] = None
     profile: Optional[str] = None
+    # Extended filters (all optional, AND together — mirrors the CLI flags)
+    started_before: Optional[float] = None  # epoch seconds
+    started_after: Optional[float] = None  # epoch seconds
+    title_like: Optional[str] = None
+    end_reason: Optional[str] = None
+    cwd_prefix: Optional[str] = None
+    min_messages: Optional[int] = None
+    max_messages: Optional[int] = None
+    include_archived: bool = False
+    dry_run: bool = False
 
 
 @app.post("/api/sessions/prune")
 async def prune_sessions_endpoint(body: SessionPrune):
-    """Delete ended sessions older than N days (mirrors `hermes sessions prune`)."""
-    if body.older_than_days < 1:
+    """Delete ended sessions matching filters (mirrors `hermes sessions prune`)."""
+    has_window = (
+        body.started_before is not None or body.started_after is not None
+    )
+    if body.older_than_days is not None and body.older_than_days < 1 and not has_window:
         raise HTTPException(status_code=400, detail="older_than_days must be >= 1")
     profile_home = _cron_profile_home(body.profile)[1] if body.profile else get_hermes_home()
     db = _open_session_db_for_profile(body.profile)
     try:
+        filters = dict(
+            older_than_days=None if has_window else body.older_than_days,
+            source=(body.source or None),
+            started_before=body.started_before,
+            started_after=body.started_after,
+            title_like=(body.title_like or None),
+            end_reason=(body.end_reason or None),
+            cwd_prefix=(body.cwd_prefix or None),
+            min_messages=body.min_messages,
+            max_messages=body.max_messages,
+            archived=None if body.include_archived else False,
+        )
+        if body.dry_run:
+            rows = db.list_prune_candidates(**filters)
+            return {
+                "ok": True,
+                "removed": 0,
+                "matched": len(rows),
+                "sessions": [
+                    {
+                        "id": r["id"],
+                        "source": r["source"],
+                        "title": r.get("title"),
+                        "started_at": r["started_at"],
+                        "message_count": r["message_count"],
+                    }
+                    for r in rows
+                ],
+            }
         sessions_dir = profile_home / "sessions"
         removed = db.prune_sessions(
-            older_than_days=body.older_than_days,
-            source=(body.source or None),
             sessions_dir=sessions_dir if sessions_dir.exists() else None,
+            **filters,
         )
         return {"ok": True, "removed": removed}
     finally:

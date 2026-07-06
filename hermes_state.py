@@ -5266,13 +5266,180 @@ class SessionDB:
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    @staticmethod
+    def _prune_filter_where(
+        *,
+        started_before: Optional[float] = None,
+        started_after: Optional[float] = None,
+        source: Optional[str] = None,
+        title_like: Optional[str] = None,
+        end_reason: Optional[str] = None,
+        cwd_prefix: Optional[str] = None,
+        min_messages: Optional[int] = None,
+        max_messages: Optional[int] = None,
+        archived: Optional[bool] = None,
+    ) -> Tuple[str, list]:
+        """Build the shared WHERE clause for bulk prune/archive selection.
+
+        All filters AND together. Only ended sessions are ever candidates
+        (``ended_at IS NOT NULL``) so a live session is never selected.
+        ``archived`` is a tri-state: ``None`` = both, ``True`` = only
+        archived rows, ``False`` = only unarchived rows.
+
+        The clause references the ``s`` table alias — callers must select
+        ``FROM sessions s``.
+        """
+        clauses = ["s.ended_at IS NOT NULL"]
+        params: list = []
+        if started_before is not None:
+            clauses.append("s.started_at < ?")
+            params.append(started_before)
+        if started_after is not None:
+            clauses.append("s.started_at >= ?")
+            params.append(started_after)
+        if source:
+            clauses.append("s.source = ?")
+            params.append(source)
+        if title_like:
+            clauses.append("LOWER(COALESCE(s.title, '')) LIKE ?")
+            params.append(f"%{title_like.lower()}%")
+        if end_reason:
+            clauses.append("s.end_reason = ?")
+            params.append(end_reason)
+        if cwd_prefix:
+            clause, clause_params = _cwd_prefix_clause(cwd_prefix)
+            clauses.append(clause)
+            params.extend(clause_params)
+        if min_messages is not None:
+            clauses.append("s.message_count >= ?")
+            params.append(min_messages)
+        if max_messages is not None:
+            clauses.append("s.message_count <= ?")
+            params.append(max_messages)
+        if archived is True:
+            clauses.append("s.archived = 1")
+        elif archived is False:
+            clauses.append("s.archived = 0")
+        return " AND ".join(clauses), params
+
+    def list_prune_candidates(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        *,
+        started_before: Optional[float] = None,
+        started_after: Optional[float] = None,
+        title_like: Optional[str] = None,
+        end_reason: Optional[str] = None,
+        cwd_prefix: Optional[str] = None,
+        min_messages: Optional[int] = None,
+        max_messages: Optional[int] = None,
+        archived: Optional[bool] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return the sessions a matching :meth:`prune_sessions` /
+        :meth:`archive_sessions` call would touch, without modifying anything.
+
+        Backs ``--dry-run`` and pre-confirmation counts. Accepts the same
+        filters as :meth:`prune_sessions`. Rows are ordered oldest-first and
+        carry ``id, source, title, started_at, ended_at, message_count,
+        archived``.
+        """
+        if started_before is None and older_than_days is not None:
+            started_before = time.time() - (older_than_days * 86400)
+        where, params = self._prune_filter_where(
+            started_before=started_before,
+            started_after=started_after,
+            source=source,
+            title_like=title_like,
+            end_reason=end_reason,
+            cwd_prefix=cwd_prefix,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            archived=archived,
+        )
+        with self._lock:
+            cursor = self._conn.execute(
+                f"""SELECT s.id, s.source, s.title, s.started_at, s.ended_at,
+                           s.message_count, s.archived
+                    FROM sessions s WHERE {where}
+                    ORDER BY s.started_at ASC""",
+                params,
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def archive_sessions(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        *,
+        started_before: Optional[float] = None,
+        started_after: Optional[float] = None,
+        title_like: Optional[str] = None,
+        end_reason: Optional[str] = None,
+        cwd_prefix: Optional[str] = None,
+        min_messages: Optional[int] = None,
+        max_messages: Optional[int] = None,
+        archived: Optional[bool] = False,
+    ) -> int:
+        """Bulk-archive (soft-hide) every session matching the filters.
+
+        Same filter surface as :meth:`prune_sessions`, but instead of deleting
+        rows it flips ``archived = 1`` via :meth:`set_session_archived` so
+        each match's compression lineage is archived as a unit (an unarchived
+        compression root would otherwise resurrect the conversation in
+        Desktop's projected list). Nothing is deleted; messages and transcript
+        files are untouched. Returns the number of sessions matched.
+
+        ``archived`` defaults to ``False`` here (only select rows not yet
+        archived) so repeat runs are idempotent no-ops.
+        """
+        rows = self.list_prune_candidates(
+            older_than_days=older_than_days,
+            source=source,
+            started_before=started_before,
+            started_after=started_after,
+            title_like=title_like,
+            end_reason=end_reason,
+            cwd_prefix=cwd_prefix,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            archived=archived,
+        )
+        for row in rows:
+            self.set_session_archived(row["id"], True)
+        return len(rows)
+
     def prune_sessions(
         self,
-        older_than_days: int = 90,
+        older_than_days: Optional[float] = 90,
         source: str = None,
         sessions_dir: Optional[Path] = None,
+        *,
+        started_before: Optional[float] = None,
+        started_after: Optional[float] = None,
+        title_like: Optional[str] = None,
+        end_reason: Optional[str] = None,
+        cwd_prefix: Optional[str] = None,
+        min_messages: Optional[int] = None,
+        max_messages: Optional[int] = None,
+        archived: Optional[bool] = None,
     ) -> int:
-        """Delete sessions older than N days. Returns count of deleted sessions.
+        """Delete sessions matching the filters. Returns count deleted.
+
+        Default behavior (no keyword filters) is unchanged: delete ended
+        sessions older than ``older_than_days`` days, optionally restricted
+        to ``source``. Additional keyword filters AND together:
+
+        * ``started_before`` / ``started_after`` — epoch bounds on
+          ``started_at``. ``started_before`` overrides ``older_than_days``;
+          pass ``older_than_days=None`` for no upper age bound (e.g. when
+          only pruning a recent window via ``started_after``).
+        * ``title_like`` — case-insensitive substring match on title.
+        * ``end_reason`` — exact match.
+        * ``cwd_prefix`` — session cwd equals or is under this path.
+        * ``min_messages`` / ``max_messages`` — bounds on message_count.
+        * ``archived`` — tri-state: None = both (default), True = only
+          archived, False = only unarchived.
 
         Only prunes ended sessions (not active ones).  Child sessions outside
         the prune window are orphaned (parent_session_id set to NULL) rather
@@ -5281,21 +5448,25 @@ class SessionDB:
         ``request_dump_*``) for every pruned session, outside the DB
         transaction.
         """
-        cutoff = time.time() - (older_than_days * 86400)
+        if started_before is None and older_than_days is not None:
+            started_before = time.time() - (older_than_days * 86400)
+        where, where_params = self._prune_filter_where(
+            started_before=started_before,
+            started_after=started_after,
+            source=source,
+            title_like=title_like,
+            end_reason=end_reason,
+            cwd_prefix=cwd_prefix,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            archived=archived,
+        )
         removed_ids: list[str] = []
 
         def _do(conn):
-            if source:
-                cursor = conn.execute(
-                    """SELECT id FROM sessions
-                       WHERE started_at < ? AND ended_at IS NOT NULL AND source = ?""",
-                    (cutoff, source),
-                )
-            else:
-                cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
-                    (cutoff,),
-                )
+            cursor = conn.execute(
+                f"SELECT s.id FROM sessions s WHERE {where}", where_params
+            )
             session_ids = {row["id"] for row in cursor.fetchall()}
 
             if not session_ids:

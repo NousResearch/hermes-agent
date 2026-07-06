@@ -55,7 +55,7 @@ const {
   macTitleBarOverlayHeight
 } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
-const { readLiveUpdateMarker } = require('./update-marker.cjs')
+const { readLiveUpdateMarker, writeUpdateMarker } = require('./update-marker.cjs')
 const {
   resolveUnpackedRelease,
   decideRelaunchOutcome,
@@ -1338,6 +1338,28 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   if (!fileExists(python)) return null
 
   const root = path.dirname(venvRoot)
+
+  // Smoke-test the venv interpreter before trusting it. A venv whose update
+  // died mid-`pip install` still has python.exe + hermes.exe on disk, but the
+  // backend dies on its first import (e.g. ModuleNotFoundError: dotenv) before
+  // the gateway ever binds. Returning it here also BYPASSED the caller's
+  // `--version` probe, so Retry/"Repair install" re-resolved the same broken
+  // venv forever instead of falling through to the bootstrap installer.
+  // Mirror isActiveRuntimeUsable(): probe with the checkout on PYTHONPATH so a
+  // healthy source-tree venv passes.
+  if (
+    !canImportHermesCli(python, {
+      env: {
+        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+      }
+    })
+  ) {
+    rememberLog(
+      `Ignoring venv Hermes at ${python}: runtime import probe failed (broken/partial venv); falling through to bootstrap.`
+    )
+    return null
+  }
+
   return {
     label: `existing Hermes Python at ${python}`,
     command: python,
@@ -2293,6 +2315,17 @@ async function applyUpdates(opts = {}) {
     })
     child.unref()
 
+    // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
+    // quit dwell. The Tauri updater won't write its own marker for several
+    // seconds (window init + manifest), and during that gap our renderer
+    // can reconnect and spawn a fresh backend that re-locks .pyd files in
+    // the venv. By writing the marker ourselves the renderer's
+    // waitForUpdateToFinish() gate sees a live update and parks instead.
+    // The updater overwrites this with its own PID later; same format.
+    if (Number.isInteger(child.pid)) {
+      writeUpdateMarker(HERMES_HOME, child.pid)
+    }
+
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
 
     // Linger on the "updating — don't reopen" overlay long enough for the user
@@ -2349,6 +2382,13 @@ async function handOffWindowsBootstrapRecovery(reason) {
     windowsHide: false
   })
   child.unref()
+
+  // Same marker pre-write as applyUpdates — see comment there. The recovery
+  // hand-off has the same window where the renderer can respawn a backend
+  // before the updater writes its own marker.
+  if (Number.isInteger(child.pid)) {
+    writeUpdateMarker(HERMES_HOME, child.pid)
+  }
 
   rememberLog(
     `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`

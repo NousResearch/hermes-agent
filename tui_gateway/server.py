@@ -955,6 +955,24 @@ def _profile_scoped(handler):
 _CWD_PLACEHOLDERS = {".", "auto", "cwd"}
 
 
+def _configured_cwd_from_cfg(cfg: dict | None) -> str | None:
+    """Return an absolute, existing ``terminal.cwd`` from a config mapping.
+
+    Returns None for placeholders (``.``/``auto``/``cwd``), missing values, or
+    paths that don't resolve to a real directory.
+    """
+    if not isinstance(cfg, dict):
+        return None
+    terminal_cfg = cfg.get("terminal")
+    if not isinstance(terminal_cfg, dict):
+        return None
+    raw = str(terminal_cfg.get("cwd") or "").strip()
+    if not raw or raw in _CWD_PLACEHOLDERS:
+        return None
+    resolved = os.path.abspath(os.path.expanduser(raw))
+    return resolved if os.path.isdir(resolved) else None
+
+
 def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     """Resolve a non-launch profile's ``terminal.cwd`` from its own config.yaml.
 
@@ -974,13 +992,37 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
             return None
         with open(p, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        raw = str((data.get("terminal") or {}).get("cwd") or "").strip()
-        if not raw or raw in _CWD_PLACEHOLDERS:
-            return None
-        resolved = os.path.abspath(os.path.expanduser(raw))
-        return resolved if os.path.isdir(resolved) else None
+        return _configured_cwd_from_cfg(data)
     except Exception:
         return None
+
+
+def _launch_configured_cwd() -> str | None:
+    """Resolve the launch profile's ``terminal.cwd`` from config.yaml.
+
+    Dashboard ``/chat`` for the launch profile attaches to the dashboard
+    process's in-memory TUI gateway. The Node PTY child receives a bridged
+    ``TERMINAL_CWD`` env var, but this in-memory process does not — so reading
+    the process env alone leaves a fresh chat starting in ``os.getcwd()``
+    (wherever ``hermes dashboard`` was launched) instead of the configured
+    ``terminal.cwd``. Read config directly so changing ``terminal.cwd`` affects
+    new in-memory TUI sessions too.
+    """
+    try:
+        return _configured_cwd_from_cfg(_load_cfg())
+    except Exception:
+        return None
+
+
+def _default_session_cwd() -> str:
+    """Fallback cwd for a session with no explicit / stored / profile cwd.
+
+    Mirrors the launch-config-aware tail of :func:`_completion_cwd` so freshly
+    created AND resumed sessions land in the configured ``terminal.cwd`` rather
+    than ``os.getcwd()`` when the in-memory gateway's process env has no bridged
+    ``TERMINAL_CWD``.
+    """
+    return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or os.getcwd()
 
 
 def write_json(obj: dict) -> bool:
@@ -1373,6 +1415,11 @@ def _completion_cwd(params: dict | None = None) -> str:
         # A session bound to another profile resolves its workspace from THAT
         # profile's config before falling back to the launch profile's env var.
         or _profile_configured_cwd(_profile_home(params.get("profile")))
+        # The launch profile's dashboard /chat attaches to the dashboard's
+        # in-memory gateway, which does NOT inherit the PTY child's bridged
+        # TERMINAL_CWD. Read the launch profile's config.yaml directly so a
+        # configured terminal.cwd wins over a stale process env / launch dir.
+        or _launch_configured_cwd()
         or os.environ.get("TERMINAL_CWD")
         or os.getcwd()
     )
@@ -2364,7 +2411,9 @@ def _load_provider_routing() -> dict:
 
 
 def _load_show_reasoning() -> bool:
-    return bool((_load_cfg().get("display") or {}).get("show_reasoning", False))
+    # Fallback True — keep in sync with DEFAULT_CONFIG display.show_reasoning
+    # (this loader reads the raw user YAML without the DEFAULT_CONFIG merge).
+    return bool((_load_cfg().get("display") or {}).get("show_reasoning", True))
 
 
 def _load_memory_notifications() -> str:
@@ -5399,7 +5448,7 @@ def _(rid, params: dict) -> dict:
             if lease is not None:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
-        cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
+        cwd = profile_resume_cwd or _default_session_cwd()
         record = _deferred_session_record(
             target,
             cols=cols,
@@ -5472,7 +5521,7 @@ def _(rid, params: dict) -> dict:
         # the build drops the provider ("No LLM provider configured").
         overrides = _stored_session_runtime_overrides(found) or {}
         model_override = overrides.get("model_override") or {}
-        cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
+        cwd = profile_resume_cwd or _default_session_cwd()
         record = _deferred_session_record(
             target,
             cols=cols,
@@ -5758,7 +5807,7 @@ def _fallback_session_info(session: dict) -> dict:
     if agent is not None:
         return _session_info(agent)
     return {
-        "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+        "cwd": _default_session_cwd(),
         "lazy": True,
         "model": _resolve_model(),
         "skills": {},
@@ -10828,7 +10877,7 @@ def _(rid, params: dict) -> dict:
                 effort = str(raw_effort or "medium")
         display = (
             "show"
-            if bool((cfg.get("display") or {}).get("show_reasoning", False))
+            if bool((cfg.get("display") or {}).get("show_reasoning", True))
             else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})

@@ -263,7 +263,67 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
 
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
-    """Pull known channels/contacts from sessions.json origin data."""
+    """Pull known channels/contacts from gateway session origin data.
+
+    state.db is the primary source (#9006): gateway session rows persist
+    origin_json.  Falls back to sessions.json for pre-migration databases.
+    """
+    entries = _build_from_sessions_db(platform_name)
+    if entries:
+        return entries
+    return _build_from_sessions_json(platform_name)
+
+
+def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
+    """Pull channels/contacts from state.db gateway session rows."""
+    entries: List[Dict[str, str]] = []
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            lister = getattr(db, "list_gateway_sessions", None)
+            if not callable(lister):
+                return []
+            rows = lister(platform=platform_name, active_only=False)
+        finally:
+            db.close()
+
+        seen_ids = set()
+        for row in rows:
+            origin: Dict[str, Any] = {}
+            if row.get("origin_json"):
+                try:
+                    parsed = json.loads(row["origin_json"])
+                    if isinstance(parsed, dict):
+                        origin = parsed
+                except (TypeError, ValueError):
+                    pass
+            if not origin:
+                origin = {
+                    "chat_id": row.get("chat_id"),
+                    "thread_id": row.get("thread_id"),
+                    "chat_name": row.get("display_name"),
+                }
+            entry_id = _session_entry_id(origin)
+            if not entry_id or entry_id in seen_ids:
+                continue
+            seen_ids.add(entry_id)
+            entries.append({
+                "id": entry_id,
+                "name": _session_entry_name(origin),
+                "type": row.get("chat_type") or "dm",
+                "thread_id": origin.get("thread_id"),
+            })
+    except Exception as e:
+        logger.debug(
+            "Channel directory: state.db session read failed for %s: %s",
+            platform_name, e,
+        )
+    return entries
+
+
+def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
+    """Legacy fallback: pull channels/contacts from sessions.json origin data."""
     sessions_path = get_hermes_home() / "sessions" / "sessions.json"
     if not sessions_path.exists():
         return []

@@ -3,6 +3,7 @@ import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
+import { stripCronPromptHint } from '@/components/assistant-ui/thread/timeline-data'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
@@ -106,6 +107,9 @@ export const UserMessage: FC<{
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
+  // Cron sessions store the scheduler's injected guidance as part of the user
+  // message — hide it in the bubble; edit/restore still use the full text.
+  const displayText = stripCronPromptHint(messageText)
   const threadRunning = useAuiState(s => s.thread.isRunning)
 
   const latestUserId = useAuiState(s => {
@@ -209,7 +213,7 @@ export const UserMessage: FC<{
     )
   }
 
-  const hasBody = messageText.trim().length > 0
+  const hasBody = displayText.trim().length > 0
   const isLatestUser = messageId === latestUserId
   const showStop = !readOnly && isLatestUser && threadRunning && Boolean(onCancel)
   // Restore (re-run this exact prompt) is available everywhere the Stop button
@@ -235,7 +239,7 @@ export const UserMessage: FC<{
           clicking to edit can't grow the bubble by a sub-pixel and reflow the
           turn 1px. */}
       <div className="min-h-[1.25rem]" ref={clampInnerRef}>
-        <UserMessageText className="wrap-anywhere" text={messageText} />
+        <UserMessageText className="wrap-anywhere" text={displayText} />
       </div>
     </div>
   )

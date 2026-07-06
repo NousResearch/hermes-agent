@@ -14,6 +14,23 @@ export interface TimelineEntry {
 // Injected as user messages for alternation; not human prompts (thread.tsx).
 const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
 
+// The cron scheduler prepends a delivery/[SILENT] guidance paragraph to every
+// job prompt (cron/scheduler.py cron_hint). It's agent plumbing, not something
+// the human wrote — strip it so the UI shows only the actual job prompt.
+const CRON_HINT_PREFIX = '[IMPORTANT: You are running as a scheduled cron job.'
+
+export function stripCronPromptHint(text: string): string {
+  if (!text.startsWith(CRON_HINT_PREFIX)) {
+    return text
+  }
+
+  // The hint is a single paragraph whose closing `]` sits at a line end
+  // (interior `[SILENT]` mentions are mid-sentence, never before a newline).
+  const end = text.indexOf(']\n')
+
+  return end === -1 ? '' : text.slice(end + 1).trimStart()
+}
+
 const PREVIEW_MAX = 120
 
 export function timelinePreview(text: string, max: number = PREVIEW_MAX): string {
@@ -34,7 +51,7 @@ export function deriveTimelineEntries(messages: readonly TimelineSourceMessage[]
       continue
     }
 
-    const text = message.text.trim()
+    const text = stripCronPromptHint(message.text.trim()).trim()
 
     if (!text || PROCESS_NOTIFICATION_RE.test(text)) {
       continue

@@ -174,6 +174,25 @@ class TestVoiceAttachmentSSRFProtection:
         assert transcript is None
         adapter._http_client.get.assert_not_called()
 
+    def test_stt_log_omits_transcript_content(self, caplog):
+        # QQ's asr_refer_text is the user's transcribed voice — must not be
+        # logged (same class as merged Slack fix #58501; log length, not text).
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        secret = "transfer 5000 euros to account 12345 right now"
+
+        with caplog.at_level("DEBUG"):
+            transcript = asyncio.run(
+                adapter._stt_voice_attachment(
+                    "http://x/v.silk", "audio/silk", "v.silk",
+                    asr_refer_text=secret,
+                )
+            )
+
+        assert transcript == secret
+        assert secret not in caplog.text
+        assert f"{len(secret)} chars" in caplog.text
+
+
     def test_connect_uses_redirect_guard_hook(self):
         from gateway.platforms.qqbot import QQAdapter, _ssrf_redirect_guard
 

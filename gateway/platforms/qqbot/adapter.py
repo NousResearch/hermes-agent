@@ -1850,7 +1850,7 @@ class QQAdapter(BasePlatformAdapter):
         # 1. Use QQ's built-in ASR text if available
         if asr_refer_text:
             logger.debug(
-                "[%s] STT: using QQ asr_refer_text: %r", self._log_tag, asr_refer_text[:100]
+                "[%s] STT: using QQ asr_refer_text (%d chars)", self._log_tag, len(asr_refer_text)
             )
             return asr_refer_text
 
@@ -1940,7 +1940,7 @@ class QQAdapter(BasePlatformAdapter):
                 pass
 
             if transcript:
-                logger.debug("[%s] STT success: %r", self._log_tag, transcript[:100])
+                logger.debug("[%s] STT success (%d chars)", self._log_tag, len(transcript))
             else:
                 logger.warning("[%s] STT: ASR returned empty transcript", self._log_tag)
             return transcript

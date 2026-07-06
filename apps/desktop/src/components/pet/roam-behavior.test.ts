@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { chooseMove, dwellMs, type DwellRange, HOP_CHANCE, pickStrollTarget, REST_CHANCE, type Rng } from './roam-behavior'
+import {
+  chooseMove,
+  dwellMs,
+  type DwellRange,
+  HOP_CHANCE,
+  pickStrollTarget,
+  REST_CHANCE,
+  type Rng
+} from './roam-behavior'
 import type { Ledge } from './roam-geometry'
 
 // Deterministic rng that replays a fixed sequence (last value sticks).

@@ -82,6 +82,51 @@ def _get_max_read_chars() -> int:
     _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
     return _max_read_chars_cached
 
+
+def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bool]:
+    """Trim line-numbered ``read_file`` content to fit a char budget.
+
+    Ported in spirit from nearai/ironclaw#5029 (dual line/byte cap on
+    ``read_file``). Where hermes previously hard-rejected an oversized read
+    (forcing the model to guess a smaller ``limit`` and burn a round-trip
+    returning nothing), this trims the content to the last *complete line*
+    that fits within ``max_chars`` and reports how many lines were kept so
+    the caller can offer a ``next_offset`` continuation.
+
+    ``content`` is the gutter-rendered text (``LINE_NUM|CONTENT`` joined by
+    ``\\n``). Individual lines are already clamped to ``get_max_line_length()``
+    upstream, so a single line never blows the whole budget on its own; the
+    overflow this handles is the *accumulation* of many lines under the
+    line-count limit (logs, wide CSV rows, minified data).
+
+    Returns ``(kept_text, lines_kept, truncated)``. When ``content`` already
+    fits, returns it unchanged with ``truncated=False``. If not even the
+    first line fits, that single line is clamped on a code-point boundary
+    (Python ``str`` slicing never splits a code point) so the read never
+    returns empty and the cursor can still advance.
+    """
+    if len(content) <= max_chars:
+        return content, (content.count("\n") + 1 if content else 0), False
+
+    lines = content.split("\n")
+    kept: list[str] = []
+    running = 0
+    for line in lines:
+        # +1 for the "\n" that rejoins this line to the previous one.
+        addition = len(line) + (1 if kept else 0)
+        if running + addition > max_chars:
+            break
+        kept.append(line)
+        running += addition
+
+    if not kept:
+        # First line alone exceeds the budget. Clamp on a code-point
+        # boundary rather than emitting nothing.
+        kept.append(lines[0][:max_chars])
+
+    return "\n".join(kept), len(kept), True
+
+
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000  # 512 KB
@@ -1073,6 +1118,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
                     "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                    "docker_network": config.get("docker_network", True),
                 }
 
             ssh_config = None
@@ -1176,17 +1222,30 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 content_len = len(result_dict["content"])
                 max_chars = _get_max_read_chars()
                 if content_len > max_chars:
-                    return json.dumps({
-                        "error": (
-                            f"Read produced {content_len:,} characters which exceeds "
-                            f"the safety limit ({max_chars:,} chars). "
-                            "Use offset and limit to read a smaller range. "
-                            f"The document has {total_lines} lines of extracted text."
-                        ),
-                        "path": path,
-                        "total_lines": total_lines,
-                        "file_size": result_dict["file_size"],
-                    }, ensure_ascii=False)
+                    # Graceful char-budget truncation (nearai/ironclaw#5029):
+                    # trim to the last complete line that fits and offer a
+                    # next_offset rather than rejecting the whole extraction.
+                    trimmed, lines_kept, _ = _truncate_to_char_budget(
+                        result_dict["content"], max_chars
+                    )
+                    next_offset = offset + lines_kept
+                    shown_end = offset + lines_kept - 1
+                    result_dict["content"] = trimmed
+                    result_dict["truncated"] = True
+                    result_dict["truncated_by"] = "bytes"
+                    result_dict["next_offset"] = next_offset
+                    result_dict["hint"] = (
+                        f"Output truncated at the {max_chars:,}-char read budget "
+                        f"after {lines_kept} line(s) (showing lines {offset}-"
+                        f"{shown_end} of {total_lines}). Use offset={next_offset} "
+                        "to continue."
+                    )
+                    if len(trimmed.split("\n", 1)[0]) >= max_chars:
+                        result_dict["hint"] += (
+                            " Note: the first line alone exceeded the budget and "
+                            "was clamped mid-line; its remainder is not "
+                            "retrievable via offset."
+                        )
                 if result_dict["content"]:
                     result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
                 return json.dumps(result_dict, ensure_ascii=False)
@@ -1289,18 +1348,36 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
         if content_len > max_chars:
+            # Graceful char-budget truncation (ported from nearai/ironclaw#5029).
+            # Instead of rejecting the whole read — which forces the model to
+            # guess a smaller `limit` and wastes a round-trip returning nothing
+            # — trim to the last complete line that fits and offer a
+            # `next_offset` so the model can paginate forward. This rescues the
+            # "few but very long lines" case (logs, wide CSVs, minified data)
+            # that sails past the line-count `limit` but blows the char budget.
             total_lines = result_dict.get("total_lines", "unknown")
-            return json.dumps({
-                "error": (
-                    f"Read produced {content_len:,} characters which exceeds "
-                    f"the safety limit ({max_chars:,} chars). "
-                    "Use offset and limit to read a smaller range. "
-                    f"The file has {total_lines} lines total."
-                ),
-                "path": path,
-                "total_lines": total_lines,
-                "file_size": file_size,
-            }, ensure_ascii=False)
+            trimmed, lines_kept, _ = _truncate_to_char_budget(
+                result.content or "", max_chars
+            )
+            next_offset = offset + lines_kept
+            shown_end = offset + lines_kept - 1
+            result.content = trimmed
+            result_dict["content"] = trimmed
+            result_dict["truncated"] = True
+            result_dict["truncated_by"] = "bytes"
+            result_dict["next_offset"] = next_offset
+            result_dict["hint"] = (
+                f"Output truncated at the {max_chars:,}-char read budget after "
+                f"{lines_kept} line(s) (showing lines {offset}-{shown_end} of "
+                f"{total_lines}). Use offset={next_offset} to continue."
+            )
+            if len(trimmed.split("\n", 1)[0]) >= max_chars:
+                result_dict["hint"] += (
+                    " Note: the first line alone exceeded the budget and was "
+                    "clamped mid-line; its remainder is not retrievable via "
+                    "offset."
+                )
+            content_len = len(trimmed)
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
@@ -1935,7 +2012,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {

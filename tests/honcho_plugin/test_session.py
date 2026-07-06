@@ -412,6 +412,52 @@ class TestPeerLookupHelpers:
             "session_id": session.honcho_session_id,
         }])
 
+    def test_list_conclusions_uses_query_when_query_given(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+        scope.query.return_value = [
+            SimpleNamespace(id="nano1", content="User prefers dark mode"),
+        ]
+
+        result = mgr.list_conclusions(session.key, query="dark mode")
+
+        assert result == [{"id": "nano1", "content": "User prefers dark mode"}]
+        scope.query.assert_called_once_with("dark mode", top_k=20)
+        scope.list.assert_not_called()
+
+    def test_list_conclusions_uses_list_when_no_query(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+        scope.list.return_value = SimpleNamespace(
+            items=[SimpleNamespace(id="nano2", content="Robert likes vinyl")]
+        )
+
+        result = mgr.list_conclusions(session.key)
+
+        assert result == [{"id": "nano2", "content": "Robert likes vinyl"}]
+        scope.list.assert_called_once_with(size=20)
+        scope.query.assert_not_called()
+
+    def test_list_conclusions_returns_empty_list_on_exception(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+        scope.list.side_effect = RuntimeError("boom")
+
+        assert mgr.list_conclusions(session.key) == []
+
+    def test_list_conclusions_returns_empty_list_without_cached_session(self):
+        mgr = HonchoSessionManager()
+        assert mgr.list_conclusions("missing-session") == []
+
 
 class TestConcludeToolDispatch:
     def test_conclude_schema_has_no_anyof(self):
@@ -421,6 +467,8 @@ class TestConcludeToolDispatch:
         assert params["type"] == "object"
         assert "conclusion" in params["properties"]
         assert "delete_id" in params["properties"]
+        assert "list" in params["properties"]
+        assert "query" in params["properties"]
         assert "anyOf" not in params
         assert "oneOf" not in params
         assert "allOf" not in params
@@ -529,7 +577,7 @@ class TestConcludeToolDispatch:
         result = provider.handle_tool_call("honcho_conclude", {})
 
         parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
         provider._manager.create_conclusion.assert_not_called()
         provider._manager.delete_conclusion.assert_not_called()
 
@@ -545,7 +593,7 @@ class TestConcludeToolDispatch:
             {"conclusion": "User prefers dark mode", "delete_id": "conc-123"},
         )
         parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
         provider._manager.create_conclusion.assert_not_called()
         provider._manager.delete_conclusion.assert_not_called()
 
@@ -558,7 +606,7 @@ class TestConcludeToolDispatch:
         provider._manager = MagicMock()
         result = provider.handle_tool_call("honcho_conclude", {"conclusion": "   "})
         parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
         provider._manager.create_conclusion.assert_not_called()
 
     def test_honcho_conclude_rejects_whitespace_only_delete_id(self):
@@ -570,8 +618,65 @@ class TestConcludeToolDispatch:
         provider._manager = MagicMock()
         result = provider.handle_tool_call("honcho_conclude", {"delete_id": "  "})
         parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
         provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_list_mode_dispatches_to_manager(self):
+        """list=true with a query should return conclusions (with ids) via list_conclusions."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.list_conclusions.return_value = [
+            {"id": "nano1", "content": "User prefers dark mode"},
+        ]
+
+        result = provider.handle_tool_call("honcho_conclude", {"list": True, "query": "dark mode"})
+
+        parsed = json.loads(result)
+        assert parsed == {"conclusions": [{"id": "nano1", "content": "User prefers dark mode"}]}
+        provider._manager.list_conclusions.assert_called_once_with(
+            "telegram:123",
+            query="dark mode",
+            peer="user",
+        )
+
+    def test_honcho_conclude_list_mode_omits_query_when_not_given(self):
+        """list=true without a query should list recent conclusions (query=None)."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.list_conclusions.return_value = []
+
+        result = provider.handle_tool_call("honcho_conclude", {"list": True})
+
+        json.loads(result)
+        provider._manager.list_conclusions.assert_called_once_with(
+            "telegram:123",
+            query=None,
+            peer="user",
+        )
+
+    def test_honcho_conclude_rejects_list_with_conclusion(self):
+        """list=true combined with conclusion violates exactly-one-of and is rejected."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode", "list": True},
+        )
+
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
+        provider._manager.list_conclusions.assert_not_called()
+        provider._manager.create_conclusion.assert_not_called()
 
     def test_sync_turn_strips_leaked_memory_context_before_honcho_ingest(self):
         provider = HonchoMemoryProvider()

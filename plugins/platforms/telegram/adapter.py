@@ -3600,8 +3600,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # so OPC doesn't edit the stub with the raw "MEDIA" fragment.
             _cid_str_early = str(chat_id)
             if (bool(metadata and (metadata.get("expect_edits") or metadata.get("notify")))
-                    and (_cid_str_early in self._guest_only_chats
-                         or self._pending_guest_queries.get(_cid_str_early) is not None)):
+                    and self._is_guest_chat(_cid_str_early)):
                 _buf_early = self._guest_reply_buffer.get(_cid_str_early, "")
                 if _buf_early:
                     _buf_cleaned = re.sub(r"(?i)^MEDIA:?\s*\S*\s*", "", _buf_early).strip()
@@ -3617,7 +3616,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # stores chat_id_str = str(msg.chat.id)); chat_id here may arrive as int from
             # the event source, which would silently miss every dict lookup.
             _cid_str = str(chat_id)
-            if self._pending_guest_queries.get(_cid_str) is not None or _cid_str in self._guest_only_chats:
+            if self._is_guest_chat(_cid_str):
                 # Tool-use progress blocks (💻 terminal etc.) come through
                 # send() from send_progress_messages().  The stream consumer
                 # always sets expect_edits=True on the first frame and
@@ -4013,7 +4012,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         # Guest chats have no existing message to edit and status messages would
         # consume the one-shot query_id before the real answer is ready.
-        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+        if self._is_guest_chat(chat_id):
             return SendResult(success=True, message_id=None)
         key = (str(chat_id), str(status_key))
         cached_id = self._status_message_ids.get(key)
@@ -4567,7 +4566,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Guest chats: draft streaming requires an existing message to animate;
         # the bot is not a member, so suppress silently.
-        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+        if self._is_guest_chat(chat_id):
             return SendResult(success=True, message_id=None)
 
         # Rich draft fast-path (Bot API 10.1 sendRichMessageDraft): render the
@@ -6884,6 +6883,18 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_GUEST_MODE", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _is_guest_chat(self, chat_id: Any) -> bool:
+        """Return whether *chat_id* is currently a guest-mode (non-member) chat.
+
+        True while a guest turn is in flight (``_pending_guest_queries``) or for
+        the remainder of processing after the query has been consumed
+        (``_guest_only_chats``). Shared by every send-path method that must
+        suppress normal ``sendMessage``-family calls in guest chats — the bot
+        isn't a member, so those calls fail with ``Forbidden``.
+        """
+        _cid_str = str(chat_id)
+        return self._pending_guest_queries.get(_cid_str) is not None or _cid_str in self._guest_only_chats
+
     def _telegram_exclusive_bot_mentions(self) -> bool:
         """Return whether explicit @...bot mentions exclusively route group messages."""
         configured = self.config.extra.get("exclusive_bot_mentions")
@@ -7781,8 +7792,10 @@ class TelegramAdapter(BasePlatformAdapter):
             if _uid > self._last_guest_update_id:
                 self._last_guest_update_id = _uid
                 self._persist_guest_update_id(_uid)
-            # Trim set to last 500 entries
-            if len(self._seen_guest_update_ids) > 500:
+            # Trim set to last 200 entries — matches the persisted on-disk cap
+            # in _persist_guest_update_id, so in-memory and reloaded-after-restart
+            # dedup coverage are consistent instead of silently differing (500 vs 200).
+            if len(self._seen_guest_update_ids) > 200:
                 _min = min(self._seen_guest_update_ids)
                 self._seen_guest_update_ids.discard(_min)
 
@@ -7804,6 +7817,31 @@ class TelegramAdapter(BasePlatformAdapter):
 
         chat_id_str = str(msg.chat.id) if msg.chat else ""
         if not chat_id_str:
+            return
+
+        # Guest state (_pending_guest_queries, _guest_reply_buffer,
+        # _guest_inline_message_ids) is keyed by chat_id, not guest_query_id —
+        # a second @mention from the same chat while a turn is still in flight
+        # would otherwise overwrite the first turn's query id and reset its
+        # stub sentinel, orphaning the first stub and letting the two replies'
+        # buffered text cross-contaminate. Reject the new query outright with
+        # its own immediate answer instead of touching in-flight state.
+        if chat_id_str in self._pending_guest_queries:
+            _busy_result = {
+                "type": "article",
+                "id": "busy",
+                "title": "Still working on the previous request",
+                "input_message_content": {
+                    "message_text": "⏳ Still working on a previous request in this chat — please wait for that reply, then ask again.",
+                },
+            }
+            try:
+                await self._bot.do_api_request(
+                    "answerGuestQuery",
+                    api_kwargs={"guest_query_id": guest_query_id, "result": _busy_result},
+                )
+            except Exception as _busy_err:
+                logger.warning("[%s] guest busy-reply failed (chat=%s): %s", self.name, chat_id_str, _busy_err)
             return
 
         # Register state, fire stub, route to skill layer.

@@ -41,6 +41,7 @@ const {
   guardLinkTitleSession,
   readLinkTitleWindowTitle
 } = require('./link-title-window.cjs')
+const { fetchGithubLinkTitle } = require('./link-title-github.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
@@ -3667,11 +3668,16 @@ function fetchLinkTitle(rawUrl) {
   if (titleCache.has(key)) return Promise.resolve(titleCache.get(key))
   if (titleInflight.has(key)) return titleInflight.get(key)
 
-  const pending = fetchHtmlTitleWithCurl(url)
+  const pending = fetchGithubLinkTitle(url, {
+    childOptions: hiddenWindowsChildOptions({}),
+    ghBinary: resolveGhBinary()
+  })
     .catch(() => '')
     .then(value => usableTitle((value || '').slice(0, 240)))
-    .then(
-      async value => value || usableTitle(((await fetchHtmlTitleWithRenderer(url).catch(() => '')) || '').slice(0, 240))
+    .then(value => value || fetchHtmlTitleWithCurl(url).catch(() => ''))
+    .then(value => usableTitle((value || '').slice(0, 240)))
+    .then(async value =>
+      value || usableTitle(((await fetchHtmlTitleWithRenderer(url).catch(() => '')) || '').slice(0, 240))
     )
     .then(clean => {
       cacheTitle(key, clean)

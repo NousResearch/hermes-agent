@@ -507,6 +507,46 @@ def get_all_skills_dirs() -> List[Path]:
     return dirs
 
 
+def normalize_skill_lookup_name(identifier: str) -> str:
+    """Normalize a skill identifier to a ``skill_view()``-safe relative path.
+
+    Slash commands and cron jobs may store absolute paths to skills that live
+    under ``~/.hermes/skills/`` (including via symlinks) or configured
+    ``skills.external_dirs``. ``skill_view()`` rejects absolute names for
+    security, so callers must translate trusted absolute paths to their
+    relative form first.
+    """
+    raw_identifier = (identifier or "").strip()
+    if not raw_identifier:
+        return raw_identifier
+
+    identifier_path = Path(raw_identifier).expanduser()
+    if not identifier_path.is_absolute():
+        return raw_identifier.lstrip("/")
+
+    trusted_roots = [get_skills_dir()]
+    try:
+        trusted_roots.extend(get_external_skills_dirs())
+    except Exception:
+        pass
+
+    # Prefer the lexical path under a trusted skill root before resolving
+    # symlinks. Slash-command discovery can legitimately find a skill via
+    # ~/.hermes/skills/<name> where <name> is a symlink to a checked-out
+    # skill elsewhere. Resolving first turns that trusted visible path into
+    # an arbitrary absolute path that skill_view() refuses to load.
+    for root in trusted_roots:
+        try:
+            return str(identifier_path.relative_to(root))
+        except ValueError:
+            continue
+
+    try:
+        return str(identifier_path.resolve().relative_to(get_skills_dir().resolve()))
+    except Exception:
+        return raw_identifier
+
+
 def _resolve_for_skill_ownership(path) -> Path:
     path_obj = path if isinstance(path, Path) else Path(str(path))
     try:

@@ -1,4 +1,7 @@
 .DS_Store
+# Design System กลาง — ไฟล์ที่ generate (build เอง ไม่ commit)
+design-system-standard-v2/tokens/dist/
+design-system-standard-v2/**/__pycache__/
 /venv/
 venv
 /_pycache/
@@ -7,6 +10,8 @@ __pycache__/
 .venv/
 .venv-ears/
 scripts/jarvis-voice/.venv-ears/
+scripts/jarvis-voice/.venv-gemini/
+scripts/jarvis-voice/.venv-*/
 scripts/jarvis-voice/models/
 .vscode/
 .qwen/
@@ -90,3 +95,4 @@ docs/superpowers/*
 tools/knowledge-graph-3d/3d-force-graph.min.js
 tools/knowledge-graph-3d/graph.json
 .playwright-cli/
+scripts/jarvis-voice/.env

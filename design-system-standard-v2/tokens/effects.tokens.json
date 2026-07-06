@@ -1,0 +1,133 @@
+{
+  "$schema": "https://www.designtokens.org/schemas/2025.10/format.json",
+  "$description": "Expressive layer (ชั้นหรู) — แปลงจากคลัง 60-Design/ux-effects + a-premium profiles. ป้ายความแรงใน $extensions.severity: green=CSS เบา, yellow=framer/lenis, red=WebGL เฉพาะหน้า pitch. Preset: off | standard(green+yellow) | premium(ทั้งหมด).",
+  "display": {
+    "$description": "Display type scale สำหรับ hero งานพรีเมียม (จากช่องว่าง fontSize เดิมสูงสุด 32px)",
+    "fontSize": {
+      "md": { "$type": "dimension", "$value": { "value": 48, "unit": "px" } },
+      "lg": { "$type": "dimension", "$value": { "value": 64, "unit": "px" } },
+      "xl": { "$type": "dimension", "$value": { "value": 96, "unit": "px" } },
+      "2xl": { "$type": "dimension", "$value": { "value": 128, "unit": "px" } }
+    },
+    "weight": {
+      "thin": { "$type": "fontWeight", "$value": 200 },
+      "light": { "$type": "fontWeight", "$value": 300 }
+    }
+  },
+  "glow": {
+    "$description": "แสงเรืองจากสีแบรนด์ (เงาสี) · อ้างอิง Linear/Stripe dark-luxe · severity: green",
+    "subtle": {
+      "$type": "shadow",
+      "$extensions": { "severity": "green", "source": "a-premium/01-linear" },
+      "$value": {
+        "offsetX": { "value": 0, "unit": "px" },
+        "offsetY": { "value": 0, "unit": "px" },
+        "blur": { "value": 24, "unit": "px" },
+        "spread": { "value": -4, "unit": "px" },
+        "color": { "colorSpace": "oklch", "components": [0.6, 0.19, 257], "alpha": 0.35 }
+      }
+    },
+    "ambient": {
+      "$type": "shadow",
+      "$extensions": { "severity": "green" },
+      "$value": [
+        {
+          "offsetX": { "value": 0, "unit": "px" },
+          "offsetY": { "value": 0, "unit": "px" },
+          "blur": { "value": 40, "unit": "px" },
+          "spread": { "value": -6, "unit": "px" },
+          "color": { "colorSpace": "oklch", "components": [0.6, 0.19, 257], "alpha": 0.45 }
+        },
+        {
+          "offsetX": { "value": 0, "unit": "px" },
+          "offsetY": { "value": 8, "unit": "px" },
+          "blur": { "value": 64, "unit": "px" },
+          "spread": { "value": -12, "unit": "px" },
+          "color": { "colorSpace": "oklch", "components": [0.58, 0.19, 25], "alpha": 0.3 }
+        }
+      ]
+    },
+    "dramatic": {
+      "$type": "shadow",
+      "$extensions": { "severity": "yellow", "note": "เฉพาะ hero/pitch — แสงคู่สองสี" },
+      "$value": [
+        {
+          "offsetX": { "value": 0, "unit": "px" },
+          "offsetY": { "value": 0, "unit": "px" },
+          "blur": { "value": 80, "unit": "px" },
+          "spread": { "value": -8, "unit": "px" },
+          "color": { "colorSpace": "oklch", "components": [0.6, 0.19, 257], "alpha": 0.6 }
+        },
+        {
+          "offsetX": { "value": 0, "unit": "px" },
+          "offsetY": { "value": 0, "unit": "px" },
+          "blur": { "value": 140, "unit": "px" },
+          "spread": { "value": -20, "unit": "px" },
+          "color": { "colorSpace": "oklch", "components": [0.62, 0.2, 25], "alpha": 0.5 }
+        }
+      ]
+    }
+  },
+  "gradient": {
+    "$description": "ชุด gradient มาตรฐาน · จาก ux-effects/animated-mesh-gradient (Stripe) + diagonal-skew-section",
+    "brandSweep": {
+      "$type": "gradient",
+      "$extensions": { "severity": "green", "source": "ux-effects/animated-mesh-gradient" },
+      "$value": {
+        "angle": "135deg",
+        "stops": [
+          { "color": { "colorSpace": "oklch", "components": [0.6, 0.19, 257] }, "position": 0 },
+          { "color": { "colorSpace": "oklch", "components": [0.52, 0.18, 260] }, "position": 0.55 },
+          { "color": { "colorSpace": "oklch", "components": [0.58, 0.19, 25] }, "position": 1 }
+        ]
+      }
+    },
+    "darkLuxe": {
+      "$type": "gradient",
+      "$extensions": { "severity": "green", "source": "a-premium/01-linear" },
+      "$value": {
+        "angle": "180deg",
+        "stops": [
+          { "color": { "colorSpace": "oklch", "components": [0.2, 0.014, 255] }, "position": 0 },
+          { "color": { "colorSpace": "oklch", "components": [0.15, 0.012, 255] }, "position": 1 }
+        ]
+      }
+    },
+    "metallicGold": {
+      "$type": "gradient",
+      "$extensions": { "severity": "green", "note": "งานหรู/รางวัล — ทองโลหะ" },
+      "$value": {
+        "angle": "120deg",
+        "stops": [
+          { "color": { "colorSpace": "oklch", "components": [0.83, 0.13, 80] }, "position": 0 },
+          { "color": { "colorSpace": "oklch", "components": [0.67, 0.16, 75] }, "position": 0.5 },
+          { "color": { "colorSpace": "oklch", "components": [0.55, 0.14, 72] }, "position": 1 }
+        ]
+      }
+    }
+  },
+  "glass": {
+    "$description": "กระจกฝ้า + ม่านแสง · severity: yellow (backdrop-filter กิน GPU)",
+    "blur": {
+      "sm": { "$type": "dimension", "$extensions": { "severity": "yellow" }, "$value": { "value": 8, "unit": "px" } },
+      "md": { "$type": "dimension", "$extensions": { "severity": "yellow" }, "$value": { "value": 16, "unit": "px" } },
+      "lg": { "$type": "dimension", "$extensions": { "severity": "yellow" }, "$value": { "value": 32, "unit": "px" } }
+    },
+    "surfaceAlpha": { "$type": "number", "$value": 0.65 },
+    "borderAlpha": { "$type": "number", "$value": 0.18 }
+  },
+  "cinematic": {
+    "$description": "motion ระดับฉาก (จากช่องว่าง duration เดิมสูงสุด 480ms) · เคารพ prefers-reduced-motion เสมอ",
+    "duration": {
+      "scene": { "$type": "duration", "$extensions": { "severity": "yellow" }, "$value": { "value": 800, "unit": "ms" } },
+      "epic": { "$type": "duration", "$extensions": { "severity": "yellow" }, "$value": { "value": 1400, "unit": "ms" } }
+    },
+    "stagger": {
+      "tight": { "$type": "duration", "$value": { "value": 60, "unit": "ms" } },
+      "relaxed": { "$type": "duration", "$value": { "value": 120, "unit": "ms" } }
+    },
+    "easing": {
+      "luxe": { "$type": "cubicBezier", "$value": [0.16, 1, 0.3, 1] }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+กำลังเปิดไฟล์ `preview/onemanfleet-ds.html` เพื่อวิจารณ์จากโค้ดจริง
+# วิจารณ์ `preview/onemanfleet-ds.html` (จากโค้ดจริง)
+
+## (1) Type scale / จังหวะ hierarchy
+
+- **ไม่มีสเกลจริง** — มีแต่ตัวเลขกระจัดกระจาย (10, 10.5, 11, 12.5, 13, 15.5, 16, 20, 23, 26, 30, 32, 44, clamp 40–72, clamp 38–84) ไม่มี `--font-size-*` ทั้งที่หน้านี้ขายว่า token-driven
+- **Display ซ้ำซ้อน** — `page-hero h1` (72px/280) กับ `lux-hero h3` (84px/250) แข่งกันเป็นคนละระบบ ไม่ใช่ hierarchy เดียว
+- **กระโดดชั้นใหญ่** — 72px → 23px (`sec-h h2`) ไม่มีระดับกลาง (title/subtitle) ที่ชัด
+- **น้ำหนักตัวอักษรแปลก** — 250, 280, 450, 650, 750, 780 Noto Sans Thai ไม่มีจริง → browser ปัดเป็น 300/400/700 ทำให้ “บางหรู” ที่ตั้งใจไว้ไม่เกิด
+- **Type specimen โกหก** — โชว์ 44/280, 20/700, 15/400 แต่ body ใช้ 16px, h2 ใช้ 23px, caption ใช้ 12–12.5px คนละชุด
+- **letter-spacing ละเอียดเกิน** — .16em, .17em, .18em, .2em ต่างกันนิดเดียว ไม่รู้สึกเป็น rhythm รู้สึกเป็น “ปรับทีละตัว”
+
+## (2) Spacing rhythm
+
+- **ไม่มี spacing token** — ทุกค่าเป็น magic number ไม่มี `--space-*` หรือ base unit
+- **ไม่สม่ำเสมอบนกริด** — 7, 11, 13, 14, 16, 18, 22, 26, 34, 44, 64, 72, 88, 140 ปนกัน ไม่ใช่ 4/8px system ที่ Linear/Stripe ใช้จริง
+- **gap ไม่ unify** — grid 14px, row 12px, tiers 16px, hero-stats 44px, inline `margin-bottom:14px/16px/18px` แตกเป็น 3–4 จังหวะ
+- **density 0.75× แค่ row-h** — padding card/table ยัง 18–26px เหมือนเดิม โซน Admin ไม่รู้สึก “แน่น” จริง
+- **sec margin 72px คงที่** — ทุก section เท่ากัน ไม่มีจังหวะ “หายใจ” หลัง hero vs ก่อน footer
+
+## (3) Composition / ความหรู
+
+- **layout ปลอดภัยเกินไป** — `max-width:1020px` กลางหน้า + sidebar + card ซ้ำๆ = หน้า design-system docs ไม่ใช่งาน 10–20 ล้าน
+- **visual signature เป็น template** — radial blur mesh + gradient text แดง→ทอง + glass card + glow + `meshFloat` animation = ชุด “premium dark SaaS 2024” ไม่ใช่เอกลักษณ์ OneManFleet
+- **hero สองชั้นแย่งสายตา** — `page-hero` แล้วตามด้วย `lux-hero` อีกที ไม่มี focal point เดียว
+- **proof/pricing เป็น boilerplate** — 3 คอลัมน์ซ้ำ (proof-strip, lux-cards, tiers) ตัวเลข 1,248 / 99.2% / ฿4.8M วนมา ไม่มีเรื่องเล่า
+- **ไม่มี asset จริง** — ไม่มีโลโก้, ภาพ, icon set, illustration มีแต่ CSS trick + emoji เมนู (🪪 ◧ ✦)
+- **แสดง conflict ภายในให้ลูกค้าเห็น** — warning สี #1A1A2E vs #231F20 ทำลายความมั่นใจทันที
+
+## (4) จุดที่ยังดู AI-generated
+
+- Copy อธิบายตัวเอง: *"hero มืดแบบ Linear · แสงไล่สีแบบ Stripe"*, *"PREMIUM · 10–20M CLASS"*
+- Label framework: `LAYER H · DIRECTION`, `LAYER E · PRESET PREMIUM`, `G1 · HERO + PROOF`, `TOKENS`, `PATTERNS`
+- Metric นักพัฒนาเป็น hero stat: `77 หัวข้อ`, `22/22 WCAG`
+- Footer สารภาพ: *"ยังไม่แตะ component จริง"* — ลูกค้าไม่ควรเห็น
+- Inline style กระจาย (`style="margin-bottom:14px"`, `font-size:26px`) แทน token
+- 5 states เป็นกล่อง dashed checklist ไม่ใช่ empty state ที่ออกแบบ
+- Pricing 3 tier + “แนะนำ” badge + ✓ list = SaaS generator มาตรฐาน
+- ไฟล์ขาด `<!DOCTYPE html>`, `<html>`, `<body>` และ **ไม่ได้โหลด Noto Sans Thai** — แค่ประกาศชื่อใน CSS
+
+## (5) 3 อย่างที่ควรแก้ก่อนส่งลูกค้า
+
+1. **ลบเนื้อหา “ภายในงาน” ออกให้หมด** — Direction Check warning, layer labels, ชื่อ Linear/Stripe, stat 77/22, footer disclaimer, badge “10–20M CLASS” → ลูกค้าต้องเห็นแบรนด์ ไม่เห็นกระบวนการทำ DS
+
+2. **ทำ type + spacing ให้เป็นของจริง** — กำหนด `--font-*` / `--space-*` ชุดเดียว, โหลด Noto Sans Thai, ใช้น้ำหนักที่มีจริง (300/400/600/700), ให้ specimen ตรงกับหน้าจริง, รวม display เป็น hero เดียว
+
+3. **ตัด cliché premium แล้วเลือก visual หนึ่งทาง** — เอา animated mesh + gradient `<b>` + glass ออก หรือลดเหลือจุดเดียว; ใส่ logo/icon/ภาพจริง; แก้ canonical color ให้ชัดก่อนโชว์ swatch — งานราคานี้ลูกค้าจับได้ทันทีว่า “หน้าโชว์ token” ไม่ใช่ “ผลงานที่จะเอาไปทำเว็บจริง”
+
+---
+
+**สรุปสั้น:** โทเคนสี/contrast ทำมาดี แต่ typography + spacing ยังไม่เป็นระบบ composition เป็น dark-SaaS template ที่อ้าง Linear/Stripe ในตัวเอง — ยังไม่ผ่านระดับ pitch 10–20 ล้านจนกว่าจะซ่อน scaffolding และมี visual identity ที่ไม่พึ่ง gradient+glow อย่างเดียว

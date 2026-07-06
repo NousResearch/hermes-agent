@@ -872,9 +872,16 @@ class SessionDB:
     # Instead, we keep the SQLite timeout short (1s) and handle retries at the
     # application level with random jitter, which naturally staggers competing
     # writers and avoids the convoy.
-    _WRITE_MAX_RETRIES = 15
+    # Retry budget raised 2026-07-06: the old 15 × ~85ms ≈ 1.3s of total
+    # patience was exhausted by a heavy compression write holding the WAL lock
+    # for seconds while ~20 concurrent processes convoyed — surfacing as
+    # "database is locked" during preflight compression. 40 × up-to-400ms gives
+    # ~8s (worst ~16s); a write that can't land in 8s under load is far better
+    # waited-out than errored. Early attempts stay fast, so interactive paths
+    # still clear transient locks quickly.
+    _WRITE_MAX_RETRIES = 40
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
-    _WRITE_RETRY_MAX_S = 0.150   # 150ms
+    _WRITE_RETRY_MAX_S = 0.400   # 400ms (was 150ms)
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
     # Merge fragmented FTS5 segments every N successful writes. The message

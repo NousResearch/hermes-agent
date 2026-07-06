@@ -876,11 +876,16 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
 
 
-def build_assistant_message(agent, assistant_message, finish_reason: str) -> dict:
+def build_assistant_message(agent, assistant_message, finish_reason: str, token_count: int = None) -> dict:
     """Build a normalized assistant message dict from an API response message.
 
     Handles reasoning extraction, reasoning_details, and optional tool_calls
     so both the tool-call path and the final-response path share one builder.
+
+    ``token_count`` is the output token count for this assistant message,
+    extracted from the API response's usage data.  When provided it is
+    stored on the message dict so that ``_flush_messages_to_session_db``
+    can persist it into the ``messages.token_count`` column (issue #58719).
     """
     assistant_tool_calls = getattr(assistant_message, "tool_calls", None)
     reasoning_text = agent._extract_reasoning(assistant_message)
@@ -952,6 +957,8 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         "reasoning": reasoning_text,
         "finish_reason": finish_reason,
     }
+    if token_count is not None:
+        msg["token_count"] = token_count
 
     raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
     if raw_reasoning_content is None and hasattr(assistant_message, "model_extra"):

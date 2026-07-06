@@ -146,9 +146,31 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
 # ----------------------------------------------------------------------------
 
 
-def _header_block(text: str) -> Block:
+def _nonempty_elements(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Make a rich_text child-element list safe for Slack.
+
+    Slack rejects any ``rich_text_section`` / ``rich_text_preformatted`` /
+    ``rich_text_quote`` whose ``elements`` list is empty or contains a ``text``
+    element of zero length (``invalid_blocks``: "missing element" / "must be
+    more than 0 characters"). Empty content is common — ragged table rows are
+    padded with ``""``, agents emit empty code fences around empty tool output,
+    blank quote lines and empty list items occur in the wild — so drop
+    zero-length text elements and, if nothing remains, substitute a single
+    space, which renders as blank yet stays schema-valid. Used by every
+    rich_text builder so empty content can never poison the whole payload.
+    """
+    els = [e for e in elements if not (e.get("type") == "text" and not e.get("text"))]
+    return els or [{"type": "text", "text": " "}]
+
+
+def _header_block(text: str) -> Optional[Block]:
     # header blocks are plain_text only, 150 char cap.
     clean = re.sub(r"[*_~`]", "", text).strip()
+    if not clean:
+        # Emphasis-/whitespace-only header (e.g. "# ***" or "#   ") reduces to
+        # empty; Slack rejects an empty plain_text with invalid_blocks. Skip it
+        # (caller drops None) rather than poison the whole payload.
+        return None
     if len(clean) > MAX_HEADER_TEXT:
         clean = clean[: MAX_HEADER_TEXT - 1] + "…"
     return {"type": "header", "text": {"type": "plain_text", "text": clean, "emoji": True}}
@@ -165,7 +187,7 @@ def _preformatted_block(text: str) -> Block:
         "elements": [
             {
                 "type": "rich_text_preformatted",
-                "elements": [{"type": "text", "text": text.rstrip("\n")}],
+                "elements": _nonempty_elements([{"type": "text", "text": text.rstrip("\n")}]),
             }
         ],
     }
@@ -179,7 +201,7 @@ def _quote_block(lines: List[str]) -> Block:
         section_children.extend(_inline_elements(ln))
     return {
         "type": "rich_text",
-        "elements": [{"type": "rich_text_quote", "elements": section_children}],
+        "elements": [{"type": "rich_text_quote", "elements": _nonempty_elements(section_children)}],
     }
 
 
@@ -207,7 +229,7 @@ def _list_block(items: List[Tuple[int, bool, str]]) -> Block:
             cur_key = key
         assert cur is not None
         cur["elements"].append(
-            {"type": "rich_text_section", "elements": _inline_elements(text)}
+            {"type": "rich_text_section", "elements": _nonempty_elements(_inline_elements(text))}
         )
     return {"type": "rich_text", "elements": elements}
 
@@ -252,11 +274,16 @@ def _split_row(row: str) -> List[str]:
 
 
 def _rich_text_cell(text: str) -> Dict[str, Any]:
-    """A ``rich_text`` table cell carrying inline-formatted content."""
+    """A ``rich_text`` table cell carrying inline-formatted content.
+
+    Empty cells are common (ragged rows are padded with ``""``); Slack rejects
+    a cell whose section is empty or carries a zero-length text element, so the
+    elements are routed through ``_nonempty_elements``.
+    """
     return {
         "type": "rich_text",
         "elements": [
-            {"type": "rich_text_section", "elements": _inline_elements(text)}
+            {"type": "rich_text_section", "elements": _nonempty_elements(_inline_elements(text))}
         ],
     }
 
@@ -409,7 +436,9 @@ def render_blocks(
             hm = _HEADER_RE.match(line)
             if hm:
                 flush_para()
-                blocks.append(_header_block(hm.group(2)))
+                header = _header_block(hm.group(2))
+                if header is not None:
+                    blocks.append(header)
                 i += 1
                 continue
 

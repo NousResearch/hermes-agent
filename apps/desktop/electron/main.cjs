@@ -2046,6 +2046,11 @@ let isQuittingForHandoff = false
 // updater isn't staged (e.g. a dev/source run that never went through the
 // installer); callers degrade gracefully.
 function resolveUpdaterBinary() {
+  if (IS_MAC) {
+    rememberLog('[updates] macOS using in-app updater; ignoring staged hermes-setup helper')
+    return null
+  }
+
   const name = IS_WINDOWS ? 'hermes-setup.exe' : 'hermes-setup'
   const candidate = path.join(HERMES_HOME, name)
   return fileExists(candidate) ? candidate : null

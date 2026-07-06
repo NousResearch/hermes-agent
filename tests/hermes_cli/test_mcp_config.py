@@ -776,6 +776,8 @@ class TestConfigHelpers:
 
         assert _env_key_for_server("ink") == "MCP_INK_API_KEY"
         assert _env_key_for_server("my-server") == "MCP_MY_SERVER_API_KEY"
+        assert _env_key_for_server("my.server") == "MCP_MY_SERVER_API_KEY"
+        assert _env_key_for_server("github/mcp") == "MCP_GITHUB_MCP_API_KEY"
 
 
 # ---------------------------------------------------------------------------

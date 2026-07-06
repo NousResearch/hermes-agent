@@ -150,6 +150,12 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - Empty-string assistant ``content`` on tool-call turns — Bedrock-backed
+          OpenAI-compatible Claude gateways translate ``content: ""`` into an
+          empty Anthropic text block and reject it with
+          ``messages: text content blocks must be non-empty``.  ``content: None``
+          is the canonical strict Chat Completions representation for an
+          assistant message that contains only ``tool_calls``.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -181,6 +187,9 @@ class ChatCompletionsTransport(ProviderTransport):
                 break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
+                if msg.get("role") == "assistant" and msg.get("content") == "":
+                    needs_sanitize = True
+                    break
                 for tc in tool_calls:
                     if isinstance(tc, dict) and (
                         "call_id" in tc
@@ -199,6 +208,12 @@ class ChatCompletionsTransport(ProviderTransport):
         for msg in sanitized:
             if not isinstance(msg, dict):
                 continue
+            if (
+                msg.get("role") == "assistant"
+                and isinstance(msg.get("tool_calls"), list)
+                and msg.get("content") == ""
+            ):
+                msg["content"] = None
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)

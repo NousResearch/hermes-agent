@@ -104,6 +104,46 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[2]["tool_name"] == "execute_code"
 
+    def test_convert_messages_normalizes_empty_tool_call_content(self, transport):
+        """Assistant tool-call turns with ``content: ""`` are legal on
+        permissive OpenAI-compatible routes, but Bedrock-backed Claude gateways
+        translate them into empty Anthropic text blocks and reject them with
+        HTTP 400 "messages: text content blocks must be non-empty".  Use
+        ``None`` for the strict Chat Completions representation of an assistant
+        message that contains only tool calls.
+        """
+        msgs = [
+            {"role": "user", "content": "run a tool"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+        result = transport.convert_messages(msgs, model="claude-sonnet-5")
+        assert result[1]["content"] is None
+        assert result[1]["tool_calls"][0]["id"] == "call_1"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[1]["content"] == ""
+
+    def test_convert_messages_keeps_empty_text_response_content(self, transport):
+        """Only tool-call assistant messages are normalized; a text-only empty
+        assistant message follows the existing no-copy behavior.
+        """
+        msgs = [{"role": "assistant", "content": ""}]
+        assert transport.convert_messages(msgs) is msgs
+        assert msgs[0]["content"] == ""
+
+    def test_build_kwargs_normalizes_empty_tool_call_content(self, transport):
+        msgs = [
+            {"role": "user", "content": "run a tool"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+        kw = transport.build_kwargs(model="claude-sonnet-5", messages=msgs)
+        assert kw["messages"][1]["content"] is None
+
     def test_convert_messages_strips_timestamp(self, transport):
         """Internal per-message ``timestamp`` metadata (stamped by
         ``_apply_persist_user_message_override`` to preserve platform event

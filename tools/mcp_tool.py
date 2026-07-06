@@ -2836,8 +2836,12 @@ def _wait_for_server_session_ready(
     different so callers do not mistake the pre-reconnect, stale session for a
     fresh one.
     """
-    deadline = time.monotonic() + max(float(timeout), 0.0)
-    while time.monotonic() < deadline:
+    # Iteration-bounded rather than deadline-bounded: several tests (and the
+    # circuit-breaker cooldown logic) monkeypatch time.monotonic to a frozen
+    # clock, which would make a monotonic-deadline loop spin forever.
+    poll_interval = 0.25
+    iterations = max(1, int(max(float(timeout), 0.0) / poll_interval))
+    for i in range(iterations):
         session = getattr(srv, "session", None)
         ready = getattr(srv, "_ready", None)
         is_ready = True
@@ -2848,7 +2852,8 @@ def _wait_for_server_session_ready(
                 is_ready = True
         if session is not None and session is not old_session and is_ready:
             return True
-        time.sleep(0.25)
+        if i < iterations - 1:
+            time.sleep(poll_interval)
     return False
 
 

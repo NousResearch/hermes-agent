@@ -15,6 +15,7 @@ Exit code conventions:
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import shutil
@@ -52,6 +53,46 @@ def _cua_child_env() -> Dict[str, str]:
         return dict(os.environ)
 
 
+def _augment_linux_desktop_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Best-effort desktop env discovery for `hermes computer-use doctor`.
+
+    Users often run the CLI from shells that did not inherit the graphical
+    session variables, which makes cua-driver report "X11 is not reachable"
+    even though the same user owns a live GNOME/Xwayland session. The runtime
+    backend already runs inside Hermes with the right env; doctor should make
+    the same safe local discovery before spawning the driver.
+    """
+    if sys.platform != "linux":
+        return env
+    out = dict(env)
+    runtime_dir = out.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    out.setdefault("XDG_RUNTIME_DIR", runtime_dir)
+    out.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus")
+
+    if not out.get("WAYLAND_DISPLAY"):
+        wayland_sockets = sorted(
+            p for p in glob.glob(os.path.join(runtime_dir, "wayland-*"))
+            if not p.endswith(".lock") and os.path.exists(p)
+        )
+        if wayland_sockets:
+            out["WAYLAND_DISPLAY"] = os.path.basename(wayland_sockets[0])
+
+    if not out.get("DISPLAY"):
+        # GNOME Wayland's Xwayland bridge is conventionally :0 and exposes its
+        # auth cookie under the runtime dir. Only set DISPLAY when the cookie is
+        # discoverable; otherwise cua-driver's existing health hint is clearer.
+        xauth_candidates = sorted(glob.glob(os.path.join(runtime_dir, ".mutter-Xwaylandauth.*")))
+        if xauth_candidates:
+            out["DISPLAY"] = ":0"
+            out.setdefault("XAUTHORITY", xauth_candidates[0])
+    elif not out.get("XAUTHORITY"):
+        xauth_candidates = sorted(glob.glob(os.path.join(runtime_dir, ".mutter-Xwaylandauth.*")))
+        if xauth_candidates:
+            out["XAUTHORITY"] = xauth_candidates[0]
+
+    return out
+
+
 def _sanitized_cua_env() -> Dict[str, str]:
     """Telemetry-policy env with Hermes provider secrets stripped.
 
@@ -64,9 +105,10 @@ def _sanitized_cua_env() -> Dict[str, str]:
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
-        return _sanitize_subprocess_env(env)
+        env = _sanitize_subprocess_env(env)
     except Exception:
-        return env
+        pass
+    return _augment_linux_desktop_env(env)
 
 
 def _drive_health_report(

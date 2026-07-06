@@ -669,6 +669,19 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
+            # When the configured name IS registered but doesn't support
+            # search (extract-only providers like crawl4ai), surface that
+            # as a typed "extract-only" error rather than silently
+            # switching backends. When the name isn't registered at all
+            # (typo / uninstalled plugin), fall through to the
+            # active-provider walk.
+            if provider is not None and not provider.supports_search():
+                return tool_error(
+                    f"{provider.display_name} is an extract-only "
+                    "backend and cannot search the web. "
+                    "Set web.search_backend to firecrawl, "
+                    "tavily, exa, parallel, searxng, brave-free, or ddgs."
+                )
             # Fall back to availability-walked active provider when the
             # configured backend isn't a registered search provider (typo,
             # uninstalled plugin, or capability mismatch).

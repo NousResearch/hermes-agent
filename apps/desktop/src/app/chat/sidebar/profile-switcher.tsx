@@ -735,7 +735,7 @@ function waitingBadgeAriaLabel(label: string, count: number): string {
     return label
   }
 
-  return `${label}, ${count} waiting for your reply`
+  return `${label}, ${count} unread`
 }
 
 function ProfileAttentionBadge({ count }: { count: number }) {

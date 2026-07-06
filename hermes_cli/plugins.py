@@ -795,6 +795,53 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- secret source registration -------------------------------------------
+
+    def register_secret_source(self, source) -> None:
+        """Register an external secret-manager backend.
+
+        ``source`` must be an instance of
+        :class:`agent.secret_sources.base.SecretSource`.  Registered
+        sources run during ``load_hermes_dotenv()`` startup — after
+        ``~/.hermes/.env`` loads, before Hermes reads credentials — when
+        their ``secrets.<source.name>`` config section is enabled.  The
+        orchestrator (``agent.secret_sources.registry.apply_all``) owns
+        ordering, mapped-vs-bulk precedence, conflict warnings, and
+        provenance; the source only fetches.
+
+        NOTE ON TIMING: plugin discovery happens later in startup than
+        the first ``load_hermes_dotenv()`` call, so a plugin-registered
+        source is not consulted by the initial env load of the process
+        that discovers it.  It IS consulted by every subsequently
+        spawned Hermes process (gateway children, cron sessions,
+        subagents), and immediately after a
+        ``reset_secret_source_cache()`` re-pull.  Plugin sources are
+        therefore best for supplying credentials to the running fleet;
+        the bundled sources cover first-process bootstrap.
+
+        Contract requirements (rejected with a warning otherwise):
+        inherit from ``SecretSource``, ``api_version`` matching
+        ``SECRET_SOURCE_API_VERSION``, lowercase unique ``name``,
+        ``shape`` of ``"mapped"`` or ``"bulk"``, unique ``scheme`` (when
+        set), and a ``fetch()`` that never raises and never prompts.
+        See the base-module docstring for the full contract.
+        """
+        from agent.secret_sources.base import SecretSource
+        from agent.secret_sources.registry import register_source
+
+        if not isinstance(source, SecretSource):
+            logger.warning(
+                "Plugin '%s' tried to register a secret source that does "
+                "not inherit from SecretSource. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        if register_source(source):
+            logger.info(
+                "Plugin '%s' registered secret source: %s",
+                self.manifest.name, source.name,
+            )
+
     # -- TTS provider registration -------------------------------------------
 
     def register_tts_provider(self, provider) -> None:

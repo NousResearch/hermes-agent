@@ -147,6 +147,16 @@ def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
+def test_configurable_toolsets_include_workflow():
+    entries = {ts_key: (label, description) for ts_key, label, description in CONFIGURABLE_TOOLSETS}
+    label, description = entries["workflow"]
+
+    assert "Workflows" in label
+    assert "validate" in description
+    assert "deploy" in description
+    assert "workflow" not in _DEFAULT_OFF_TOOLSETS
+
+
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
     config = {
         "context": {"engine": "lcm"},

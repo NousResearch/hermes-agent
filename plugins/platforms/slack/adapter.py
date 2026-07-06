@@ -446,6 +446,16 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}  # channel_id → team_id
+        # Persist channel→workspace mapping across restarts so multi-workspace
+        # installs keep routing file downloads / sends to the correct bot token
+        # even before a channel's first team-tagged event arrives post-restart.
+        from hermes_constants import get_hermes_home as _get_hermes_home
+
+        self._channel_team_path = _get_hermes_home() / "slack_channel_team.json"
+        self._load_channel_team()
+        # Channels no workspace recognized — negative cache to stop re-probing
+        # every workspace on every send (see _ensure_channel_team_resolved).
+        self._channel_team_probe_failed: set = set()
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events.
         self._dedup = MessageDeduplicator()
@@ -460,6 +470,15 @@ class SlackAdapter(BasePlatformAdapter):
         # respond to ALL subsequent messages in that thread automatically.
         self._mentioned_threads: set = set()
         self._MENTIONED_THREADS_MAX = 5000
+        # Track file ids already pulled into a thread's context so an explicit
+        # "review this" @mention ingests each thread file at most once and does
+        # not re-attach it on every later reply. Keyed by "channel:thread_ts".
+        self._thread_ingested_files: Dict[str, set] = {}
+        self._THREAD_INGESTED_MAX = 2000
+        # Pass-2 file fallback only considers files uploaded within this many
+        # seconds of the thread root (both directions), so a "review this"
+        # mention can't drag in unrelated older channel uploads. 24h default.
+        self._THREAD_FILE_WINDOW = 86400.0
         # Assistant thread metadata keyed by (channel_id, thread_ts). Slack's
         # AI Assistant lifecycle events can arrive before/alongside message
         # events, and they carry the user/thread identity needed for stable
@@ -1047,6 +1066,9 @@ class SlackAdapter(BasePlatformAdapter):
             self._bot_user_id = None
             self._team_clients = {}
             self._team_bot_user_ids = {}
+            # A reconnect may add/replace workspaces, so a channel previously
+            # unresolvable might now resolve — drop the negative cache.
+            self._channel_team_probe_failed.clear()
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
@@ -1342,12 +1364,129 @@ class SlackAdapter(BasePlatformAdapter):
 
         logger.info("[Slack] Disconnected")
 
+    def _load_channel_team(self) -> None:
+        """Load the persisted channel→workspace mapping from disk (best-effort)."""
+        try:
+            path = getattr(self, "_channel_team_path", None)
+            if path and path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self._channel_team.update(
+                        {str(k): str(v) for k, v in data.items() if k and v}
+                    )
+                    logger.info(
+                        "[Slack] Loaded %d channel→workspace mapping(s) from disk",
+                        len(self._channel_team),
+                    )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("[Slack] Failed to load channel→workspace map: %s", e)
+
+    def _remember_channel_team(self, channel_id: str, team_id: str) -> None:
+        """Record channel→workspace mapping and persist atomically when changed."""
+        if not channel_id or not team_id:
+            return
+        if self._channel_team.get(channel_id) == team_id:
+            return
+        self._channel_team[channel_id] = team_id
+        # A channel we can now map is no longer a resolution failure.
+        self._channel_team_probe_failed.discard(channel_id)
+        try:
+            path = getattr(self, "_channel_team_path", None)
+            if path:
+                # Atomic write: dump to a temp file in the same dir, then
+                # os.replace so a crash mid-write can't corrupt the map.
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                tmp.write_text(
+                    json.dumps(self._channel_team, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                os.replace(tmp, path)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("[Slack] Failed to persist channel→workspace map: %s", e)
+
     def _get_client(self, chat_id: str) -> Any:
         """Return the workspace-specific WebClient for a channel."""
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
+
+    async def _ensure_channel_team_resolved(self, chat_id: str) -> None:
+        """Make sure chat_id maps to the correct workspace before sending.
+
+        In multi-workspace installs the channel→workspace map is populated from
+        inbound events, but some channels (notably 1:1 DMs) can arrive without
+        team info, or the mapping can be empty right after a restart. When the
+        mapping is missing we probe each registered workspace client with
+        conversations.info and cache the first one that recognizes the channel.
+
+        Without this, sends fall back to the primary workspace's bot token and
+        Slack rejects them with channel_not_found — the message silently never
+        arrives (the exact symptom for CEB 1:1 DMs).
+
+        Probing is bounded: a channel that no workspace recognizes is remembered
+        in a negative cache so we don't re-probe every workspace on every send
+        (which would also mask invalid_auth/missing_scope as silent loops).
+        """
+        if not chat_id:
+            return
+        team_id = self._channel_team.get(chat_id)
+        if team_id and team_id in self._team_clients:
+            return  # already resolved
+        # Only worth probing when more than one workspace is registered.
+        if len(self._team_clients) <= 1:
+            return
+        # Skip channels we've already failed to resolve once.
+        if chat_id in self._channel_team_probe_failed:
+            return
+        transient_error = False
+        for tid, client in self._team_clients.items():
+            try:
+                resp = await client.conversations_info(channel=chat_id)
+                if resp.get("ok"):
+                    self._remember_channel_team(chat_id, tid)
+                    return
+                # A clean API error (e.g. channel_not_found) — this workspace
+                # genuinely doesn't own the channel; keep probing others.
+            except Exception as e:
+                # Include the exception CLASS name in the classified string:
+                # aiohttp / asyncio network errors (ClientConnectorError,
+                # ServerDisconnectedError, TimeoutError, ...) often carry an
+                # empty or code-less str(e), so substring matching on the
+                # message alone silently misclassifies them as permanent.
+                err = f"{type(e).__name__} {e}".lower()
+                # Genuinely broken token/scope — surface, don't mask.
+                if (
+                    "invalid_auth" in err
+                    or "missing_scope" in err
+                    or "account_inactive" in err
+                ):
+                    logger.warning(
+                        "[Slack] Workspace %s token problem while resolving %s: %s",
+                        tid, chat_id, e,
+                    )
+                # Transient failures (network blip, ratelimit, timeout) must NOT
+                # produce a permanent negative-cache entry — that would silently
+                # route this channel's sends to the primary workspace forever.
+                elif (
+                    "ratelimited" in err
+                    or "rate_limited" in err
+                    or "timeout" in err
+                    or "timed out" in err
+                    or "connection" in err
+                    or "connect" in err
+                    or "disconnect" in err
+                    or "temporarily" in err
+                ):
+                    transient_error = True
+                continue  # try the next workspace
+        # Only negative-cache when every workspace answered cleanly that it does
+        # not own the channel. If any probe hit a transient error, leave it
+        # uncached so the next send retries.
+        if not transient_error:
+            self._channel_team_probe_failed.add(chat_id)
+            if len(self._channel_team_probe_failed) > 2000:
+                self._channel_team_probe_failed.clear()
 
     async def send(
         self,
@@ -1359,6 +1498,12 @@ class SlackAdapter(BasePlatformAdapter):
         """Send a message to a Slack channel or DM."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
+
+        # Multi-workspace: make sure this channel is mapped to the right
+        # workspace bot token before we send (esp. 1:1 DMs, which can lack
+        # team info and would otherwise fall back to the primary workspace and
+        # fail with channel_not_found).
+        await self._ensure_channel_team_resolved(chat_id)
 
         try:
             # Check for a pending slash-command context.  When the user ran a
@@ -2445,7 +2590,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         team_id = merged.get("team_id", "")
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._remember_channel_team(channel_id, team_id)
 
     def _lookup_assistant_thread_metadata(
         self,
@@ -2754,7 +2899,15 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Track which workspace owns this channel
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._remember_channel_team(channel_id, team_id)
+
+        # Fall back to the channel→workspace mapping when the event itself
+        # omits team info (common on thread replies / mentions in multi-
+        # workspace installs). Without this, file downloads below default to
+        # the primary (first) workspace's bot token and Slack returns an HTML
+        # login page instead of the file bytes for a non-primary workspace.
+        if not team_id and channel_id:
+            team_id = self._channel_team.get(channel_id, "")
 
         # Determine if this is a DM or channel message
         channel_type = event.get("channel_type", "")
@@ -2909,6 +3062,85 @@ class SlackAdapter(BasePlatformAdapter):
         media_types = []
         attachment_notices: List[str] = []
         files = event.get("files", [])
+
+        # If the triggering message itself carries no files, the user may be
+        # asking the bot to review a file shared elsewhere in the thread
+        # ("@bot review the contract above"). Slack only attaches `files` to the
+        # uploading message, so we optionally pull them from the thread.
+        #
+        # Strongly gated to avoid the "thanks, looks good" failure mode where an
+        # ordinary follow-up would drag unrelated files into context:
+        #   - only when the bot is explicitly @mentioned (clear intent),
+        #   - only in a thread reply,
+        #   - and each file is ingested at most once per thread (dedup set),
+        # so a file is attached on the turn the user asks about it and never
+        # re-attached on later turns.
+        if (
+            not files
+            and is_mentioned
+            and is_thread_reply
+            and event_thread_ts
+        ):
+            try:
+                thread_files = await self._collect_thread_files(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    root_ts=event_thread_ts,
+                )
+                # Drop files already ingested earlier in this thread. Use .get
+                # (not setdefault) so a thread with nothing fresh never creates
+                # an empty entry that leaks memory.
+                thread_key = f"{channel_id}:{event_thread_ts}"
+                seen = self._thread_ingested_files.get(thread_key, set())
+                fresh = [
+                    f
+                    for f in thread_files
+                    if f.get("id") and f["id"] not in seen
+                ]
+                if fresh:
+                    for f in fresh:
+                        seen.add(f["id"])
+                    self._thread_ingested_files[thread_key] = seen
+                    # Bound growth like the _mentioned_threads sibling: when the
+                    # tracked-thread count exceeds the cap, drop the oldest half.
+                    if len(self._thread_ingested_files) > self._THREAD_INGESTED_MAX:
+                        for k in list(self._thread_ingested_files)[
+                            : self._THREAD_INGESTED_MAX // 2
+                        ]:
+                            self._thread_ingested_files.pop(k, None)
+                    files = fresh
+                    logger.info(
+                        "[Slack] No files on trigger message; pulled %d new "
+                        "file(s) from thread %s for review",
+                        len(fresh),
+                        event_thread_ts,
+                    )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "[Slack] Failed to collect thread files for %s: %s",
+                    event_thread_ts,
+                    e,
+                )
+        elif files and (event_thread_ts or ts):
+            # Files attached directly to this message: record their ids in the
+            # thread's ingested set so a later "@bot review that" doesn't
+            # re-collect them from the thread. Key on the thread ROOT ts —
+            # event_thread_ts for a reply, or this message's own ts when it is
+            # the thread root (top-level "@bot review <file>"), which is the ts
+            # a later reply's conversations_replies(inclusive) would surface.
+            thread_key = f"{channel_id}:{event_thread_ts or ts}"
+            seen = self._thread_ingested_files.get(thread_key)
+            if seen is None:
+                seen = set()
+                self._thread_ingested_files[thread_key] = seen
+                if len(self._thread_ingested_files) > self._THREAD_INGESTED_MAX:
+                    for k in list(self._thread_ingested_files)[
+                        : self._THREAD_INGESTED_MAX // 2
+                    ]:
+                        self._thread_ingested_files.pop(k, None)
+            for f in files:
+                if isinstance(f, dict) and f.get("id"):
+                    seen.add(f["id"])
         for f in files:
             # Slack Connect channels return stub file objects with
             # file_access="check_file_info" and no URL fields. We must
@@ -3683,6 +3915,118 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Thread context fetching -----
 
+    async def _collect_thread_files(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        root_ts: str = "",
+        limit: int = 30,
+    ) -> List[dict]:
+        """Return file objects relevant to the current thread context.
+
+        Called ONLY when the bot is explicitly @mentioned in a file-less thread
+        reply (see the guarded call site), i.e. the user is asking the bot to
+        look at something already shared. Two passes:
+
+        Pass 1 — conversations.replies: files attached to any message in the
+                 thread (the normal case; a reply carried the upload).
+        Pass 2 — files.list fallback for the "uploaded to the channel, not as a
+                 thread reply" pattern where the file object has no thread_ts.
+                 Tightly scoped to avoid dragging in unrelated history:
+                   * only files uploaded within ±THREAD_FILE_WINDOW of the
+                     thread root (so it's plausibly the file being discussed),
+                   * never files the bot itself uploaded,
+                 and it only runs when Pass 1 found nothing.
+
+        Returns up to 10 file objects. The caller additionally de-dupes against
+        files already ingested in this thread, so nothing is re-attached.
+        """
+        client = self._get_client(channel_id)
+        bot_uid = self._team_bot_user_ids.get(
+            self._channel_team.get(channel_id, ""), self._bot_user_id
+        )
+
+        # ------ Pass 1: thread replies ------
+        collected: List[dict] = []
+        try:
+            result = None
+            for attempt in range(3):
+                try:
+                    result = await client.conversations_replies(
+                        channel=channel_id,
+                        ts=thread_ts,
+                        limit=limit + 1,
+                        inclusive=True,
+                    )
+                    break
+                except Exception as exc:
+                    err_str = str(exc).lower()
+                    if (
+                        "ratelimited" in err_str or "429" in err_str
+                        or "rate_limited" in err_str
+                    ) and attempt < 2:
+                        await asyncio.sleep(1.0 * (2**attempt))
+                        continue
+                    raise
+
+            if result:
+                for msg in reversed(result.get("messages", [])):
+                    # Skip files the bot itself posted (don't re-ingest our own
+                    # uploaded outputs).
+                    if bot_uid and msg.get("user") == bot_uid:
+                        continue
+                    for f in msg.get("files", []) or []:
+                        if isinstance(f, dict) and f.get("id"):
+                            collected.append(f)
+                    if len(collected) >= 10:
+                        break
+        except Exception as e:
+            logger.warning("[Slack] Pass-1 thread file collection failed: %s", e)
+
+        if collected:
+            return collected
+
+        # ------ Pass 2: channel files.list fallback (tightly scoped) ------
+        # Only files uploaded near the thread root and not by the bot.
+        try:
+            root = 0.0
+            try:
+                root = float(root_ts or thread_ts or 0)
+            except (TypeError, ValueError):
+                root = 0.0
+            window = self._THREAD_FILE_WINDOW
+
+            resp = await client.files_list(channel=channel_id, count=20)
+            if resp.get("ok"):
+                for f in resp.get("files", []) or []:
+                    if not (isinstance(f, dict) and f.get("id")):
+                        continue
+                    if bot_uid and f.get("user") == bot_uid:
+                        continue  # skip bot's own uploads
+                    if root:
+                        ftime = 0.0
+                        try:
+                            ftime = float(f.get("timestamp") or f.get("created") or 0)
+                        except (TypeError, ValueError):
+                            ftime = 0.0
+                        # Only files uploaded within the window around the thread
+                        # root — plausibly the file the user is referring to.
+                        if ftime and abs(ftime - root) > window:
+                            continue
+                    collected.append(f)
+                    if len(collected) >= 10:
+                        break
+                if collected:
+                    logger.info(
+                        "[Slack] Pass-1 found no thread files; using %d recent "
+                        "channel file(s) near thread root from files.list",
+                        len(collected),
+                    )
+        except Exception as e:
+            logger.warning("[Slack] Pass-2 channel file collection failed: %s", e)
+
+        return collected
+
     async def _fetch_thread_context(
         self,
         channel_id: str,
@@ -3918,7 +4262,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Track which workspace owns this channel
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._remember_channel_team(channel_id, team_id)
 
         if slash_name in {"hermes", ""}:
             # Legacy /hermes <subcommand> [args] routing + free-form questions.
@@ -4050,11 +4394,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Download a Slack file using the bot token for auth, with retry."""
         import httpx
 
-        bot_token = (
-            self._team_clients[team_id].token
-            if team_id and team_id in self._team_clients
-            else self.config.token
-        )
+        bot_token = self._resolve_download_token(url, team_id)
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for attempt in range(3):
@@ -4102,15 +4442,36 @@ class SlackAdapter(BasePlatformAdapter):
                         continue
                     raise
 
+    def _resolve_download_token(self, url: str, team_id: str = "") -> str:
+        """Pick the correct bot token for a Slack file download.
+
+        Order of preference:
+        1. Explicit team_id that maps to a known workspace client.
+        2. team_id parsed from the file URL itself — Slack private file URLs
+           embed the workspace id as ``files-pri/<TEAM_ID>-<FILE_ID>/...`` so
+           we can route to the right workspace even when the triggering event
+           carried no team info (thread replies / mentions in multi-workspace
+           installs). This prevents defaulting to the primary workspace token,
+           which makes Slack return an HTML login page instead of file bytes.
+        3. Primary workspace token as a last resort.
+        """
+        if team_id and team_id in self._team_clients:
+            return self._team_clients[team_id].token
+        try:
+            m = re.search(r"/files-pri/(T[A-Z0-9]+)-", url or "")
+            if m:
+                url_team = m.group(1)
+                if url_team in self._team_clients:
+                    return self._team_clients[url_team].token
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return self.config.token or ""
+
     async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
         """Download a Slack file and return raw bytes, with retry."""
         import httpx
 
-        bot_token = (
-            self._team_clients[team_id].token
-            if team_id and team_id in self._team_clients
-            else self.config.token
-        )
+        bot_token = self._resolve_download_token(url, team_id)
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for attempt in range(3):

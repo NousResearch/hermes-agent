@@ -5963,6 +5963,7 @@ def test_model_options_does_not_overwrite_curated_models(monkeypatch):
     # list_authenticated_providers is the single source.
     assert listing.call_count == 1
     assert listing.call_args.kwargs["probe_custom_providers"] is False
+    assert listing.call_args.kwargs["probe_current_custom_provider"] is True
 
 
 def test_model_options_propagates_list_exception(monkeypatch):
@@ -6002,6 +6003,7 @@ def test_model_options_refresh_allows_custom_provider_probes(monkeypatch):
 
     assert "result" in resp, resp
     assert listing.call_args.kwargs["probe_custom_providers"] is True
+    assert listing.call_args.kwargs["probe_current_custom_provider"] is False
 
 
 class _ImmediateThread:

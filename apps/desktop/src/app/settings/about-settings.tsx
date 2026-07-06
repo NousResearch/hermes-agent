@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
-import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useI18n } from '@/i18n'
@@ -163,14 +162,12 @@ export function AboutSettingsBody() {
   // installers; the ENGINE update below (R5/R6) is our supported path.
   return (
     <>
-      <div className="flex flex-col items-center gap-3.5 pt-8 pb-3 text-center">
-        <BrandMark className="size-16" />
-        <div>
-          <h2 className="text-[1.375rem] font-semibold tracking-tight text-foreground">{a.heading}</h2>
-          <p className="mt-1.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {version?.appVersion ? a.version(version.appVersion) : a.versionUnavailable}
-          </p>
-        </div>
+      {/* hc: brand mark + "APEX 桌面版" heading removed per Kael — 个性化页不再顶品牌大头;
+          版本号(功能信息)保留,居中小字。 */}
+      <div className="pt-4 pb-2 text-center">
+        <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+          {version?.appVersion ? a.version(version.appVersion) : a.versionUnavailable}
+        </p>
       </div>
 
       <div className="mx-auto mt-4 w-full max-w-2xl">

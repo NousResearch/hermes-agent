@@ -651,8 +651,26 @@ class HermesACPAgent(acp.Agent):
         try:
             from hermes_cli.models import detect_provider_for_model, parse_model_input
 
+            # Track whether the caller supplied an explicit provider prefix
+            # (e.g. "anthropic:claude-sonnet-5").  When they did, we must NOT
+            # re-run detect_provider_for_model — it is a fallback for bare
+            # model names only.  Re-running it for an explicit selection can
+            # overwrite the correct provider with OpenRouter when the bare
+            # model name happens to appear in OpenRouter's live catalog.
+            # See #59089.
+            has_explicit_provider = False
+            stripped = raw_model.strip()
+            colon = stripped.find(":")
+            if colon > 0:
+                provider_part = stripped[:colon].strip().lower()
+                model_part = stripped[colon + 1:].strip()
+                if provider_part and model_part:
+                    from hermes_cli.models import _KNOWN_PROVIDER_NAMES
+                    if provider_part in _KNOWN_PROVIDER_NAMES:
+                        has_explicit_provider = True
+
             target_provider, new_model = parse_model_input(new_model, current_provider)
-            if target_provider == current_provider:
+            if target_provider == current_provider and not has_explicit_provider:
                 detected = detect_provider_for_model(new_model, current_provider)
                 if detected:
                     target_provider, new_model = detected

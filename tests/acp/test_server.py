@@ -997,6 +997,80 @@ class TestSessionConfiguration:
         assert state.agent.base_url == "https://anthropic.example/v1"
         assert runtime_calls[-1] == "anthropic"
 
+    @pytest.mark.asyncio
+    async def test_set_session_model_explicit_provider_not_overridden_by_detect(self, tmp_path, monkeypatch):
+        """Regression for #59089: explicit provider must not be overridden.
+
+        When parse_model_input resolves an explicit provider prefix (e.g.
+        "anthropic:claude-sonnet-5"), detect_provider_for_model must NOT run —
+        it is a fallback for bare model names only.  Without the guard, a bare
+        model name that happens to appear in OpenRouter's catalog silently
+        overwrites the correct provider.
+        """
+        detect_calls = []
+
+        def tracking_detect(model, current):
+            detect_calls.append((model, current))
+            # Simulate the real behaviour: OpenRouter catalog finds the model
+            return ("openrouter", f"anthropic/{model}")
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": requested or "openrouter",
+                "api_mode": "anthropic_messages" if requested == "anthropic" else "chat_completions",
+                "base_url": f"https://{requested or 'openrouter'}.example/v1",
+                "api_key": f"{requested or 'openrouter'}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("anthropic", "claude-sonnet-5"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            tracking_detect,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            result = await acp_agent.set_session_model(
+                model_id="anthropic:claude-sonnet-5",
+                session_id=state.session_id,
+            )
+
+        assert isinstance(result, SetSessionModelResponse)
+        # The explicit "anthropic" provider must be preserved, NOT overridden
+        # to "openrouter" by detect_provider_for_model.
+        assert state.agent.provider == "anthropic", (
+            f"Expected anthropic, got {state.agent.provider} — "
+            "detect_provider_for_model overrode an explicit provider"
+        )
+        assert state.model == "claude-sonnet-5"
+        # detect_provider_for_model must NOT have been called at all.
+        assert detect_calls == [], (
+            f"detect_provider_for_model should not run for explicit provider; "
+            f"but was called with {detect_calls}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # prompt

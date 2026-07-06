@@ -950,13 +950,25 @@ def load_gateway_config() -> GatewayConfig:
             from hermes_cli import managed_scope
             yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
 
+            # Shared nested-fallback source: settings meant to be top-level
+            # keys are also accepted when a user nests them under `gateway:`
+            # (e.g. via `hermes config set gateway.<key> ...`, which naturally
+            # produces that shape). Every key below mirrors the precedent
+            # already established for gateway.multiplex_profiles/streaming/
+            # write_sessions_json: top-level wins, nested gateway.* falls back.
+            gateway_section = yaml_cfg.get("gateway")
+
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
             sr = yaml_cfg.get("session_reset")
+            if not (sr and isinstance(sr, dict)) and isinstance(gateway_section, dict):
+                sr = gateway_section.get("session_reset")
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
 
             qc = yaml_cfg.get("quick_commands")
+            if qc is None and isinstance(gateway_section, dict):
+                qc = gateway_section.get("quick_commands")
             if qc is not None:
                 if isinstance(qc, dict):
                     gw_data["quick_commands"] = qc
@@ -968,16 +980,24 @@ def load_gateway_config() -> GatewayConfig:
                     )
 
             stt_cfg = yaml_cfg.get("stt")
+            if not isinstance(stt_cfg, dict) and isinstance(gateway_section, dict):
+                stt_cfg = gateway_section.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
             if "stt_echo_transcripts" in yaml_cfg:
                 gw_data["stt_echo_transcripts"] = yaml_cfg["stt_echo_transcripts"]
+            elif isinstance(gateway_section, dict) and "stt_echo_transcripts" in gateway_section:
+                gw_data["stt_echo_transcripts"] = gateway_section["stt_echo_transcripts"]
 
             if "group_sessions_per_user" in yaml_cfg:
                 gw_data["group_sessions_per_user"] = yaml_cfg["group_sessions_per_user"]
+            elif isinstance(gateway_section, dict) and "group_sessions_per_user" in gateway_section:
+                gw_data["group_sessions_per_user"] = gateway_section["group_sessions_per_user"]
 
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+            elif isinstance(gateway_section, dict) and "thread_sessions_per_user" in gateway_section:
+                gw_data["thread_sessions_per_user"] = gateway_section["thread_sessions_per_user"]
 
             # Multiplexing flag: accept both the top-level key and the nested
             # gateway.multiplex_profiles form (written by
@@ -985,7 +1005,6 @@ def load_gateway_config() -> GatewayConfig:
             if "multiplex_profiles" in yaml_cfg:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
 
-            gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict):
                 if "multiplex_profiles" in gateway_section and "multiplex_profiles" not in gw_data:
                     # gateway.multiplex_profiles written by `hermes config set gateway.multiplex_profiles true`
@@ -997,35 +1016,47 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
 
             streaming_cfg = yaml_cfg.get("streaming")
-            if not isinstance(streaming_cfg, dict):
+            if not isinstance(streaming_cfg, dict) and isinstance(gateway_section, dict):
                 # Fall back to nested gateway.streaming written by
                 # ``hermes config set gateway.streaming.*``
-                streaming_cfg = yaml_cfg.get("gateway", {}).get("streaming")
+                streaming_cfg = gateway_section.get("streaming")
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
+            elif isinstance(gateway_section, dict) and "reset_triggers" in gateway_section:
+                gw_data["reset_triggers"] = gateway_section["reset_triggers"]
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+            elif isinstance(gateway_section, dict) and "always_log_local" in gateway_section:
+                gw_data["always_log_local"] = gateway_section["always_log_local"]
 
             # write_sessions_json: top-level wins; nested gateway.* fallback
             # (matches the gateway.streaming precedence pattern).
-            _gw_section = yaml_cfg.get("gateway")
             if "write_sessions_json" in yaml_cfg:
                 gw_data["write_sessions_json"] = yaml_cfg["write_sessions_json"]
-            elif isinstance(_gw_section, dict) and "write_sessions_json" in _gw_section:
-                gw_data["write_sessions_json"] = _gw_section["write_sessions_json"]
+            elif isinstance(gateway_section, dict) and "write_sessions_json" in gateway_section:
+                gw_data["write_sessions_json"] = gateway_section["write_sessions_json"]
 
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[
+                    "filter_silence_narration"
+                ]
+            elif isinstance(gateway_section, dict) and "filter_silence_narration" in gateway_section:
+                gw_data["filter_silence_narration"] = gateway_section[
                     "filter_silence_narration"
                 ]
 
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
                     yaml_cfg.get("unauthorized_dm_behavior"),
+                    "pair",
+                )
+            elif isinstance(gateway_section, dict) and "unauthorized_dm_behavior" in gateway_section:
+                gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
+                    gateway_section.get("unauthorized_dm_behavior"),
                     "pair",
                 )
 

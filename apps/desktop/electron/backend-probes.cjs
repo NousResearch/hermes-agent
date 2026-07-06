@@ -33,6 +33,8 @@
  */
 
 const { execFileSync } = require('node:child_process')
+const fs = require('node:fs')
+const path = require('node:path')
 
 const PROBE_TIMEOUT_MS = 5000
 
@@ -45,6 +47,49 @@ const PROBE_TIMEOUT_MS = 5000
  */
 function hermesRuntimeImportProbe() {
   return 'import yaml; import dotenv; import hermes_cli.config'
+}
+
+function readPyvenvCfg(venvRoot) {
+  if (!venvRoot) return {}
+  const cfgPath = path.join(venvRoot, 'pyvenv.cfg')
+  try {
+    const raw = fs.readFileSync(cfgPath, 'utf8')
+    const parsed = {}
+    for (const line of raw.split(/\r?\n/)) {
+      const idx = line.indexOf('=')
+      if (idx === -1) continue
+      parsed[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim()
+    }
+    return parsed
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Return true when the venv's recorded base interpreter still exists.
+ *
+ * Standard CPython venvs record their base interpreter directory in
+ * `pyvenv.cfg` as `home = ...`. On Windows uv-managed venv launchers this is
+ * load-bearing: `venv\\Scripts\\python.exe` can still exist as a trampoline
+ * after the base interpreter under `home` was deleted, at which point any
+ * attempt to spawn the venv runtime fails before Python code can run.
+ *
+ * Missing `pyvenv.cfg` / `home` is treated as "unknown, don't block" so we
+ * only force the destructive repair path on a concrete broken-base signal.
+ *
+ * @param {string} venvRoot
+ * @param {object} [opts]
+ * @param {boolean} [opts.isWindows]
+ * @returns {boolean}
+ */
+function venvBaseInterpreterPresent(venvRoot, opts = {}) {
+  if (!venvRoot) return true
+  const cfg = readPyvenvCfg(venvRoot)
+  const home = cfg.home
+  if (!home) return true
+  const pythonName = opts.isWindows ? 'python.exe' : 'python'
+  return fs.existsSync(path.join(home, pythonName))
 }
 
 /**
@@ -120,6 +165,8 @@ function verifyHermesCli(hermesCommand, opts = {}) {
 module.exports = {
   canImportHermesCli,
   hermesRuntimeImportProbe,
+  readPyvenvCfg,
   verifyHermesCli,
-  PROBE_TIMEOUT_MS
+  PROBE_TIMEOUT_MS,
+  venvBaseInterpreterPresent
 }

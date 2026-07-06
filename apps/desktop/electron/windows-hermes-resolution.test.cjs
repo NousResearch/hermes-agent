@@ -54,7 +54,11 @@ test('Windows bootstrap recovery chooses --update when any real-install signal i
     /\.hermes-bootstrap-complete/,
     'recovery must accept the bootstrap-complete marker as a real-install signal'
   )
-  assert.match(source, /updaterArgs = haveRealInstall \? \['--update'/, 'updaterArgs must gate on haveRealInstall')
+  assert.match(
+    source,
+    /haveRealInstall\s*\?\s*\['--update', '--branch', branch\]/,
+    'updaterArgs must still keep the in-place update path for healthy installs'
+  )
   // The old too-narrow check (only venv\Scripts\hermes.exe) must not return.
   assert.doesNotMatch(
     source,
@@ -80,5 +84,19 @@ test('unwrapWindowsVenvHermesCommand smoke-tests the venv python before trusting
     body,
     /return null\s*\n\s*\}\s*\n\s*return \{/,
     'a failed probe must fall through (return null) so the resolver reaches the bootstrap rung'
+  )
+})
+
+test('Windows bootstrap recovery forces --repair when pyvenv.cfg points at a missing base interpreter', () => {
+  const source = readMain()
+  assert.match(
+    source,
+    /const missingVenvBase =\s*fileExists\(venvPython\) && !venvBaseInterpreterPresent\(venvRoot, \{ isWindows: IS_WINDOWS \}\)/,
+    'recovery must detect a broken uv/base-interpreter trampoline before choosing update'
+  )
+  assert.match(
+    source,
+    /const updaterArgs = missingVenvBase\s*\? \['--repair', '--branch', branch\]/,
+    'missing base interpreter must force the full repair path instead of reusing the broken venv'
   )
 })

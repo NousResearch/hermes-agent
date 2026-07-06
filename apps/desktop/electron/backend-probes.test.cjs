@@ -11,7 +11,13 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { canImportHermesCli, hermesRuntimeImportProbe, verifyHermesCli } = require('./backend-probes.cjs')
+const {
+  canImportHermesCli,
+  hermesRuntimeImportProbe,
+  readPyvenvCfg,
+  verifyHermesCli,
+  venvBaseInterpreterPresent
+} = require('./backend-probes.cjs')
 
 // Resolve the host's own Node binary -- guaranteed to be on disk and
 // runnable. We use it as both a stand-in for "a python that doesn't
@@ -48,6 +54,51 @@ test('hermes runtime import probe checks config dependencies', () => {
   // passed the old probe and produced an unrecoverable boot loop.
   assert.match(probe, /\bimport dotenv\b/)
   assert.match(probe, /\bimport hermes_cli\.config\b/)
+})
+
+test('readPyvenvCfg parses normalized keys from pyvenv.cfg', () => {
+  const venvRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-pyvenv-cfg-'))
+  try {
+    fs.writeFileSync(
+      path.join(venvRoot, 'pyvenv.cfg'),
+      'home = C:\\Users\\me\\AppData\\Roaming\\uv\\python\\cpython-3.13\nVersion_Info = 3.13.0\n'
+    )
+    assert.deepEqual(readPyvenvCfg(venvRoot), {
+      home: 'C:\\Users\\me\\AppData\\Roaming\\uv\\python\\cpython-3.13',
+      version_info: '3.13.0'
+    })
+  } finally {
+    fs.rmSync(venvRoot, { recursive: true, force: true })
+  }
+})
+
+test('venvBaseInterpreterPresent returns false when pyvenv home python is missing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-broken-venv-'))
+  try {
+    const venvRoot = path.join(root, 'venv')
+    const baseRoot = path.join(root, 'uv-base')
+    fs.mkdirSync(venvRoot, { recursive: true })
+    fs.mkdirSync(baseRoot, { recursive: true })
+    fs.writeFileSync(path.join(venvRoot, 'pyvenv.cfg'), `home = ${baseRoot}\n`)
+    assert.equal(venvBaseInterpreterPresent(venvRoot, { isWindows: true }), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('venvBaseInterpreterPresent returns true when pyvenv home python exists', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-live-venv-'))
+  try {
+    const venvRoot = path.join(root, 'venv')
+    const baseRoot = path.join(root, 'uv-base')
+    fs.mkdirSync(venvRoot, { recursive: true })
+    fs.mkdirSync(baseRoot, { recursive: true })
+    fs.writeFileSync(path.join(venvRoot, 'pyvenv.cfg'), `home = ${baseRoot}\n`)
+    fs.writeFileSync(path.join(baseRoot, 'python.exe'), '')
+    assert.equal(venvBaseInterpreterPresent(venvRoot, { isWindows: true }), true)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('verifyHermesCli returns false when command is falsy', () => {

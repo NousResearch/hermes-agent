@@ -35,7 +35,7 @@ const {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
-const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { canImportHermesCli, verifyHermesCli, venvBaseInterpreterPresent } = require('./backend-probes.cjs')
 const {
   createLinkTitleWindow,
   guardLinkTitleSession,
@@ -2364,9 +2364,22 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // this recovery exists to heal — gating on it alone forced the destructive
   // --repair (full venv recreate) and drove reinstall loops. The venv interpreter
   // and the bootstrap-complete marker are present earlier and are better signals.
+  const venvRoot = path.join(updateRoot, 'venv')
+  const missingVenvBase =
+    fileExists(venvPython) && !venvBaseInterpreterPresent(venvRoot, { isWindows: IS_WINDOWS })
   const haveRealInstall =
     fileExists(venvPython) || fileExists(venvHermes) || fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
-  const updaterArgs = haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  const updaterArgs = missingVenvBase
+    ? ['--repair', '--branch', branch]
+    : haveRealInstall
+      ? ['--update', '--branch', branch]
+      : ['--repair', '--branch', branch]
+
+  if (missingVenvBase) {
+    rememberLog(
+      `[bootstrap] ${reason} detected a venv whose pyvenv.cfg base interpreter is missing; forcing --repair rebuild`
+    )
+  }
 
   await releaseBackendLockForUpdate(updateRoot)
 

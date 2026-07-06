@@ -1814,6 +1814,8 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         if not content:
             return None
         content = _scan_context_content(content, "SOUL.md")
+        if content.startswith("[BLOCKED:"):
+            return None
         content = _truncate_content(
             content, "SOUL.md", context_length=context_length,
             read_path=str(soul_path),
@@ -1840,6 +1842,8 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
         except ValueError:
             pass
         content = _scan_context_content(content, rel)
+        if content.startswith("[BLOCKED:"):
+            return None
         result = f"## {rel}\n\n{content}"
         return _truncate_content(
             result, ".hermes.md", context_length=context_length,
@@ -1859,6 +1863,8 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, name)
+        if content.startswith("[BLOCKED:"):
+            return None
                     result = f"## {name}\n\n{content}"
                     return _truncate_content(
                         result, "AGENTS.md", context_length=context_length,
@@ -1878,6 +1884,8 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, name)
+        if content.startswith("[BLOCKED:"):
+            return None
                     result = f"## {name}\n\n{content}"
                     return _truncate_content(
                         result, "CLAUDE.md", context_length=context_length,
@@ -1897,6 +1905,8 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
             content = cursorrules_file.read_text(encoding="utf-8").strip()
             if content:
                 content = _scan_context_content(content, ".cursorrules")
+        if content.startswith("[BLOCKED:"):
+            return None
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
         except Exception as e:
             logger.debug("Could not read .cursorrules: %s", e)
@@ -1909,6 +1919,8 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
                 content = mdc_file.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
+        if content.startswith("[BLOCKED:"):
+            return None
                     cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
             except Exception as e:
                 logger.debug("Could not read %s: %s", mdc_file, e)

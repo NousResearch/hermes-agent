@@ -171,12 +171,15 @@ CONTEXT_SCHEMA = {
 CONCLUDE_SCHEMA = {
     "name": "honcho_conclude",
     "description": (
-        "Write or delete a CONCLUSION — a persistent, derived fact about a peer that "
+        "Write, delete, or list CONCLUSIONS — persistent, derived facts about a peer that "
         "feeds their long-term profile (card + representation). Use this to record "
         "something durable you've learned about the peer (a stable preference, a "
         "correction, a standing constraint) so future sessions carry it forward. "
-        "You MUST pass exactly one of `conclusion` (to create) or `delete_id` (to "
-        "delete); passing neither, or both, is an error. Deletion exists only for "
+        "You MUST pass exactly one of `conclusion` (to create), `delete_id` (to "
+        "delete), or `list` (to list/search); any other combination is an error. "
+        "A deletion ID is an opaque server-generated string: first call with `list=true` "
+        "and optionally `query`, then pass the returned ID as `delete_id`. "
+        "Deletion exists only for "
         "PII removal — for merely wrong facts, write a corrected conclusion instead; "
         "Honcho self-heals contradictions over time. This is a WRITE tool: to read "
         "the profile use honcho_profile / honcho_context, and to search what was "
@@ -187,11 +190,19 @@ CONCLUDE_SCHEMA = {
         "properties": {
             "conclusion": {
                 "type": "string",
-                "description": "A factual statement to persist. Provide this when creating a conclusion. Do not send it together with delete_id.",
+                "description": "A factual statement to persist. Provide this when creating a conclusion. Do not send it together with delete_id or list.",
             },
             "delete_id": {
                 "type": "string",
-                "description": "Conclusion ID to delete for PII removal. Provide this when deleting a conclusion. Do not send it together with conclusion.",
+                "description": "Conclusion ID to delete for PII removal. Provide this when deleting a conclusion. Do not send it together with conclusion or list. Get this id from a prior `list` call — never guess it.",
+            },
+            "list": {
+                "type": "boolean",
+                "description": "Set to true to list or search stored conclusions (with their ids) instead of creating or deleting one. Do not send together with conclusion or delete_id.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional semantic search query, used only when `list` is true. Omit to list the most recent conclusions instead of searching.",
             },
             "peer": {
                 "type": "string",
@@ -1564,13 +1575,18 @@ class HonchoMemoryProvider(MemoryProvider):
             elif tool_name == "honcho_conclude":
                 delete_id = (args.get("delete_id") or "").strip()
                 conclusion = args.get("conclusion", "").strip()
+                list_mode = bool(args.get("list"))
                 peer = args.get("peer", "user")
 
                 has_delete_id = bool(delete_id)
                 has_conclusion = bool(conclusion)
-                if has_delete_id == has_conclusion:
-                    return tool_error("Exactly one of conclusion or delete_id must be provided.")
+                if sum([has_delete_id, has_conclusion, list_mode]) != 1:
+                    return tool_error("Exactly one of conclusion, delete_id, or list must be provided.")
 
+                if list_mode:
+                    query = (args.get("query") or "").strip() or None
+                    conclusions = self._manager.list_conclusions(self._session_key, query=query, peer=peer)
+                    return json.dumps({"conclusions": conclusions})
                 if has_delete_id:
                     ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
                     if ok:

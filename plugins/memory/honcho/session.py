@@ -1199,6 +1199,23 @@ class HonchoSessionManager:
 
         return "\n\n".join(lines)
 
+    def _conclusions_scope(self, session: Any, target_peer_id: str) -> Any:
+        """Resolve the ConclusionScope for observing target_peer_id.
+
+        Shared by create/delete/list_conclusions so the observer/observed
+        routing (self-conclusions vs. AI-observes-others vs. peer-owned)
+        stays consistent across all three.
+        """
+        if target_peer_id == session.assistant_peer_id:
+            observer = self._get_or_create_peer(session.assistant_peer_id)
+            return observer.conclusions_of(session.assistant_peer_id)
+        elif self._ai_observe_others:
+            observer = self._get_or_create_peer(session.assistant_peer_id)
+            return observer.conclusions_of(target_peer_id)
+        else:
+            target_peer = self._get_or_create_peer(target_peer_id)
+            return target_peer.conclusions_of(target_peer_id)
+
     def create_conclusion(self, session_key: str, content: str, peer: str = "user") -> bool:
         """Write a conclusion about a target peer back to Honcho.
 
@@ -1228,16 +1245,7 @@ class HonchoSessionManager:
                 logger.warning("Could not resolve conclusion peer '%s' for session '%s'", peer, session_key)
                 return False
 
-            if target_peer_id == session.assistant_peer_id:
-                assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
-                conclusions_scope = assistant_peer.conclusions_of(session.assistant_peer_id)
-            elif self._ai_observe_others:
-                assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
-                conclusions_scope = assistant_peer.conclusions_of(target_peer_id)
-            else:
-                target_peer = self._get_or_create_peer(target_peer_id)
-                conclusions_scope = target_peer.conclusions_of(target_peer_id)
-
+            conclusions_scope = self._conclusions_scope(session, target_peer_id)
             conclusions_scope.create([{
                 "content": content.strip(),
                 "session_id": session.honcho_session_id,
@@ -1264,21 +1272,52 @@ class HonchoSessionManager:
             return False
         try:
             target_peer_id = self._resolve_peer_id(session, peer)
-            if target_peer_id == session.assistant_peer_id:
-                observer = self._get_or_create_peer(session.assistant_peer_id)
-                scope = observer.conclusions_of(session.assistant_peer_id)
-            elif self._ai_observe_others:
-                observer = self._get_or_create_peer(session.assistant_peer_id)
-                scope = observer.conclusions_of(target_peer_id)
-            else:
-                target_peer = self._get_or_create_peer(target_peer_id)
-                scope = target_peer.conclusions_of(target_peer_id)
+            scope = self._conclusions_scope(session, target_peer_id)
             scope.delete(conclusion_id)
             logger.info("Deleted conclusion %s for %s", conclusion_id, session_key)
             return True
         except Exception as e:
             logger.error("Failed to delete conclusion %s: %s", conclusion_id, e)
             return False
+
+    def list_conclusions(
+        self,
+        session_key: str,
+        query: str | None = None,
+        peer: str = "user",
+        limit: int = 20,
+    ) -> list[dict]:
+        """List or semantically search stored conclusions, including their ids.
+
+        This is the lookup path `honcho_conclude`'s delete action needs:
+        Conclusion.id is a server-generated nanoid that no other Honcho tool
+        surfaces (honcho_search only searches Messages, a separate resource).
+
+        Args:
+            session_key: Session key for peer resolution.
+            query: Optional semantic search query. Omit to list recent conclusions.
+            peer: Peer alias or explicit peer ID.
+            limit: Max conclusions to return.
+
+        Returns:
+            List of {"id": ..., "content": ...} dicts, or [] on failure/no session.
+        """
+        session = self._cache.get(session_key)
+        if not session:
+            return []
+        try:
+            target_peer_id = self._resolve_peer_id(session, peer)
+            if target_peer_id is None:
+                return []
+            scope = self._conclusions_scope(session, target_peer_id)
+            if query:
+                conclusions = scope.query(query, top_k=limit)
+            else:
+                conclusions = scope.list(size=limit).items
+            return [{"id": c.id, "content": c.content} for c in conclusions]
+        except Exception as e:
+            logger.debug("Honcho list_conclusions failed: %s", e)
+            return []
 
     def set_peer_card(self, session_key: str, card: list[str], peer: str = "user") -> list[str] | None:
         """Update a peer's card.

@@ -7353,9 +7353,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             dest_chat_type = "dm"
             dest_user_id = home_chat_id if is_telegram_private_chat else "system:handoff"
 
+        # For thread destinations, key on the thread's OWN id, not the parent
+        # channel's. Platform adapters build organic in-thread messages with
+        # chat_id == thread id (see the Discord adapter's on_message and
+        # _build_thread_event paths), so build_session_key yields
+        # ``…:thread:{thread}:{thread}``. If the handoff instead keys on the
+        # parent channel (``…:thread:{parent}:{thread}``) the next real user
+        # reply in the thread resolves to a DIFFERENT session_key and spawns a
+        # fresh session instead of continuing the handed-off one. Match the
+        # adapter so the synthetic turn and later replies share one key.
+        dest_chat_id = (
+            str(effective_thread_id)
+            if dest_chat_type == "thread" and effective_thread_id
+            else home_chat_id
+        )
         dest_source = SessionSource(
             platform=platform,
-            chat_id=home_chat_id,
+            chat_id=dest_chat_id,
             chat_name=home.name,
             chat_type=dest_chat_type,
             user_id=dest_user_id,

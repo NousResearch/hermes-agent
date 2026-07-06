@@ -107,6 +107,8 @@ gateway:
     no_pending:            "Geen hangende opdrag om te weier nie."
     denied_singular:       "❌ Opdrag geweier."
     denied_plural:         "❌ Opdragte geweier ({count} opdragte)."
+    denied_reason_singular: "❌ Opdrag geweier. Rede aan die agent oorgedra: \"{reason}\""
+    denied_reason_plural:  "❌ Opdragte geweier ({count} opdragte). Rede aan die agent oorgedra: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast is slegs beskikbaar vir OpenAI-modelle wat Priority Processing ondersteun."

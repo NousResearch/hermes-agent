@@ -3225,6 +3225,9 @@
     const events = props.data.events || [];
     const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
+    const workflowText = t.workflow
+      ? [t.workflow.template_id, t.workflow.current_step_key].filter(Boolean).join(" · ")
+      : "";
 
     return h("div", { className: "hermes-kanban-drawer-body" },
       h("div", { className: "hermes-kanban-drawer-title" },
@@ -3262,6 +3265,14 @@
             ? `on (max ${t.goal_max_turns} turns)`
             : "on",
         }) : null,
+        t.workflow && t.workflow.href ? h("a", {
+          className: "hermes-kanban-meta-row",
+          href: t.workflow.href,
+          title: "Open workflow execution detail",
+        },
+          h("span", { className: "hermes-kanban-meta-label" }, "Workflow execution"),
+          h("span", { className: "hermes-kanban-meta-value" }, workflowText || t.workflow.execution_id || t.workflow.href),
+        ) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
       ),
       h(StatusActions, {

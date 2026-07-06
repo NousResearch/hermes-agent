@@ -43,6 +43,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
@@ -155,6 +156,21 @@ BOARD_COLUMNS: list[str] = [
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
+def _workflow_dict(task: kanban_db.Task) -> Optional[dict[str, Any]]:
+    created_by = task.created_by or ""
+    if not created_by.startswith("workflow:"):
+        return None
+    execution_id = created_by.split(":", 1)[1]
+    if not execution_id:
+        return None
+    return {
+        "template_id": task.workflow_template_id,
+        "current_step_key": task.current_step_key,
+        "execution_id": execution_id,
+        "href": f"/workflows?execution={quote(execution_id, safe='')}",
+    }
+
+
 def _task_dict(
     task: kanban_db.Task,
     *,
@@ -172,6 +188,9 @@ def _task_dict(
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
     # ``tasks.result``. ``None`` when no run has produced a summary yet.
     d["latest_summary"] = latest_summary
+    workflow = _workflow_dict(task)
+    if workflow:
+        d["workflow"] = workflow
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 

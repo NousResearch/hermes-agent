@@ -260,6 +260,16 @@ def test_dashboard_markdown_html_is_sanitized_before_render():
     assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
 
 
+def test_dashboard_task_drawer_renders_workflow_execution_link():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "t.workflow && t.workflow.href" in js
+    assert "href: t.workflow.href" in js
+    assert "Workflow execution" in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------
@@ -288,6 +298,35 @@ def test_task_detail_includes_links_and_events(client):
 
     # Events exist from creation.
     assert len(data["events"]) >= 1
+
+
+def test_task_detail_and_board_include_workflow_link_metadata(client):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="workflow-created task",
+            created_by="workflow:exec/123",
+            workflow_template_id="wf1",
+            current_step_key="implement",
+        )
+
+    board = client.get("/api/plugins/kanban/board").json()
+    board_task = next(
+        task
+        for column in board["columns"]
+        for task in column["tasks"]
+        if task["id"] == task_id
+    )
+    expected = {
+        "template_id": "wf1",
+        "current_step_key": "implement",
+        "execution_id": "exec/123",
+        "href": "/workflows?execution=exec%2F123",
+    }
+    assert board_task["workflow"] == expected
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task_id}").json()
+    assert detail["task"]["workflow"] == expected
 
 
 def test_task_detail_404_on_unknown(client):

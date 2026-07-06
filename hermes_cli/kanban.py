@@ -410,7 +410,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Sort order for listed tasks (default: priority)",
     )
     p_list.add_argument(
+        "--workflow",
         "--workflow-template-id",
+        dest="workflow_template_id",
         default=None,
         metavar="ID",
         help="Restrict to tasks with this workflow_template_id",
@@ -1513,6 +1515,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  tenant:    {task.tenant}")
     print(f"  workspace: {task.workspace_kind}" +
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
+    if task.workflow_template_id:
+        print(f"  workflow:  {task.workflow_template_id}")
+    if task.current_step_key:
+        print(f"  step:      {task.current_step_key}")
     if task.branch_name:
         print(f"  branch:    {task.branch_name}")
     if task.skills:

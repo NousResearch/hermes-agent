@@ -219,6 +219,54 @@ def test_run_slash_session_filter(kanban_home):
     assert "from sess-1 a" not in out_2
 
 
+def test_run_slash_workflow_alias_filters_and_composes_with_step(kanban_home):
+    with kb.connect() as conn:
+        kb.create_task(
+            conn,
+            title="wf1 implement",
+            workflow_template_id="wf1",
+            current_step_key="implement",
+        )
+        kb.create_task(
+            conn,
+            title="wf1 review",
+            workflow_template_id="wf1",
+            current_step_key="review",
+        )
+        kb.create_task(
+            conn,
+            title="wf2 implement",
+            workflow_template_id="wf2",
+            current_step_key="implement",
+        )
+
+    filtered = kc.run_slash("list --workflow wf1 --step-key implement")
+    assert "wf1 implement" in filtered
+    assert "wf1 review" not in filtered
+    assert "wf2 implement" not in filtered
+
+    legacy = kc.run_slash("list --workflow-template-id wf1")
+    assert "wf1 implement" in legacy
+    assert "wf1 review" in legacy
+    assert "wf2 implement" not in legacy
+
+    assert "--workflow ID" in kc.run_slash("list -h")
+
+
+def test_run_slash_show_includes_workflow_metadata(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="workflow card",
+            workflow_template_id="wf1",
+            current_step_key="implement",
+        )
+
+    show = kc.run_slash(f"show {task_id}")
+    assert "workflow:  wf1" in show
+    assert "step:      implement" in show
+
+
 def test_kanban_list_json_includes_session_id(kanban_home):
     """JSON output exposes `session_id` so external clients (Scarf, web
     dashboards) don't need a side query to filter by chat session."""

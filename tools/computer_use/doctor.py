@@ -65,7 +65,11 @@ def _augment_linux_desktop_env(env: Dict[str, str]) -> Dict[str, str]:
     if sys.platform != "linux":
         return env
     out = dict(env)
-    runtime_dir = out.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    getuid = getattr(os, "getuid", None)
+    uid = getuid() if getuid is not None else None
+    runtime_dir = out.get("XDG_RUNTIME_DIR") or (f"/run/user/{uid}" if uid is not None else "")
+    if not runtime_dir:
+        return out
     out.setdefault("XDG_RUNTIME_DIR", runtime_dir)
     out.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus")
 

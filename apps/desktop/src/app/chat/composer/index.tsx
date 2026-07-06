@@ -121,6 +121,7 @@ export function ChatBar({
   // engine writes it — an explicit shared handle, not a back-reference.
   const queueEditRef = useRef<QueueEditState | null>(null)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  const recentCompositionRef = useRef(false) // true briefly after compositionend — catches Enter keydowns that Chromium dispatches without isComposing=true
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
@@ -363,11 +364,14 @@ export function ChatBar({
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // IME composition: Enter confirms composed text, not a message submission.
-    // We check both composingRef (set by compositionstart/compositionend, robust
-    // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
-    // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
-    // preedit fires submitDraft() and splits the message mid-word.
-    if (composingRef.current || event.nativeEvent.isComposing) {
+    // We check composingRef (set by compositionstart/compositionend, robust
+    // across browsers), nativeEvent.isComposing (Chromium fallback), and
+    // recentCompositionRef (catches Enter keydowns that Chromium dispatches
+    // *after* compositionend without isComposing=true — a known macOS Chinese
+    // IME edge case).  Without this guard, pressing Enter to finalise a
+    // Korean/Japanese/Chinese IME preedit fires submitDraft() and splits the
+    // message mid-word.
+    if (composingRef.current || event.nativeEvent.isComposing || recentCompositionRef.current) {
       return
     }
 
@@ -727,11 +731,20 @@ export function ChatBar({
         onCompositionEnd={event => {
           composingRef.current = false
 
+          // Chromium on macOS sometimes dispatches the Enter keydown event
+          // *after* compositionend, without setting isComposing=true on the
+          // native event.  The brief guard window prevents that Enter from
+          // submitting the draft instead of committing the IME candidate.
+          recentCompositionRef.current = true
+          setTimeout(() => {
+            recentCompositionRef.current = false
+          }, 100)
+
           // The input events fired *during* composition were skipped (they
           // carried uncommitted preedit text), and Chromium does NOT reliably
           // emit a trailing input event after compositionend on Windows IMEs.
           // Without flushing here, committed multi-character IME input (e.g.
-          // Chinese "你好", Japanese, Korean) never reaches composer state, so
+          // Chinese 你好, Japanese, Korean) never reaches composer state, so
           // `hasComposerPayload` stays false and the send button stays hidden
           // until an unrelated edit forces a sync (#39614).
           flushEditorToDraft(event.currentTarget)

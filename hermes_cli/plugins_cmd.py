@@ -839,10 +839,21 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     if not already_enabled:
         enabled.add(key)
         disabled.discard(key)
-        # Drop any legacy bare-name entry so the two don't drift out of sync.
+        # Drop every alias of this plugin from the disabled list so an
+        # explicit disable under a different form can't keep it off. The
+        # loader's disable check matches on BOTH the canonical key
+        # (``web/firecrawl``) AND the manifest name (``web-firecrawl``);
+        # a stale entry under either form makes "explicit disable wins"
+        # (plugins.py) silently veto this enable. Discard the key, its
+        # bare leaf, and the manifest name. (#40190 follow-up.)
         bare = key.split("/")[-1]
         if bare != key:
             disabled.discard(bare)
+        for entry in _discover_all_plugins():
+            # entry = (name, version, description, source, dir_path, key)
+            if entry[5] == key:
+                disabled.discard(entry[0])
+                break
         _save_enabled_set(enabled)
         _save_disabled_set(disabled)
         console.print(
@@ -1289,7 +1300,15 @@ def cmd_toggle() -> None:
     enabled_set = _get_enabled_set()
     disabled_set = _get_disabled_set()
 
-    plugin_names = []
+    # Track by CANONICAL KEY (``key``), not the manifest name. The loader
+    # (PluginManager) and ``cmd_enable``/``cmd_disable`` all gate on the
+    # canonical key (``web/firecrawl``), while the manifest name may differ
+    # (``web-firecrawl``). Persisting the bare name here caused the two
+    # forms to drift: the menu would write ``web-firecrawl`` to
+    # plugins.disabled, but ``hermes plugins enable web/firecrawl`` cleared
+    # only the key — so "explicit disable wins" kept a bundled backend off
+    # forever (pi314's #40190 symptom). Keys keep every surface aligned.
+    plugin_keys = []
     plugin_labels = []
     plugin_selected = set()
 
@@ -1297,10 +1316,17 @@ def cmd_toggle() -> None:
         label = f"{name} \u2014 {description}" if description else name
         if source == "bundled":
             label = f"{label} [bundled]"
-        plugin_names.append(name)
+        plugin_keys.append(key)
         plugin_labels.append(label)
-        # Selected (enabled) when in enabled-set AND not in disabled-set
-        if (name in enabled_set or key in enabled_set) and name not in disabled_set and key not in disabled_set:
+        # Selected (enabled) when in enabled-set AND not in disabled-set.
+        # Accept the legacy bare name on either side for back-compat with
+        # existing configs written before this normalization.
+        is_on = (
+            (key in enabled_set or name in enabled_set)
+            and key not in disabled_set
+            and name not in disabled_set
+        )
+        if is_on:
             plugin_selected.add(i)
 
     # -- Provider categories --
@@ -1311,7 +1337,7 @@ def cmd_toggle() -> None:
         ("Context Engine", current_context, _configure_context_engine),
     ]
 
-    has_plugins = bool(plugin_names)
+    has_plugins = bool(plugin_keys)
     has_categories = bool(categories)
 
     if not has_plugins and not has_categories:
@@ -1327,20 +1353,20 @@ def cmd_toggle() -> None:
     # Launch the composite curses UI
     try:
         import curses
-        _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
+        _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                           disabled_set, categories, console)
     except ImportError:
-        _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
+        _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected,
                                 disabled_set, categories, console)
 
 
-def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
+def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                       disabled, categories, console):
     """Custom curses screen with checkboxes + category action rows."""
     from hermes_cli.curses_ui import flush_stdin
 
     chosen = set(plugin_selected)
-    n_plugins = len(plugin_names)
+    n_plugins = len(plugin_keys)
     # Total rows: plugins + separator + categories
     # separator is not navigable
     n_categories = len(categories)
@@ -1555,18 +1581,24 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
     curses.wrapper(_draw)
     flush_stdin()
 
-    # Persist general plugin changes. The new allow-list is the set of
-    # plugin names that were checked; anything not checked is explicitly
-    # disabled (written to disabled-list) so it remains off even if the
-    # plugin code does something clever like auto-enable in the future.
+    # Persist by canonical key. Unchecked plugins are written to the
+    # disabled-list so they stay off even if a future plugin auto-enables
+    # itself — but we ONLY ever write the canonical key (never the bare
+    # manifest name), so the disabled-list can't drift out of sync with
+    # what ``cmd_enable`` clears or what PluginManager gates on (#40190).
     new_enabled: set = set()
     new_disabled: set = set(disabled)  # preserve existing disabled state for unseen plugins
-    for i, name in enumerate(plugin_names):
+    for i, key in enumerate(plugin_keys):
+        bare = key.split("/")[-1]
         if i in chosen:
-            new_enabled.add(name)
-            new_disabled.discard(name)
+            new_enabled.add(key)
+            new_disabled.discard(key)
+            # Drop any stale legacy bare-leaf disable so re-enabling here
+            # fully clears the plugin from the disabled-list.
+            if bare != key:
+                new_disabled.discard(bare)
         else:
-            new_disabled.add(name)
+            new_disabled.add(key)
 
     prev_enabled = _get_enabled_set()
     enabled_changed = new_enabled != prev_enabled
@@ -1577,7 +1609,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
         _save_disabled_set(new_disabled)
         console.print(
             f"\n[green]\u2713[/green] General plugins: {len(new_enabled)} enabled, "
-            f"{len(plugin_names) - len(new_enabled)} disabled."
+            f"{len(plugin_keys) - len(new_enabled)} disabled."
         )
     elif n_plugins > 0:
         console.print("\n[dim]General plugins unchanged.[/dim]")
@@ -1595,7 +1627,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
     console.print()
 
 
-def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
+def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected,
                             disabled, categories, console):
     """Text-based fallback for the composite plugins UI."""
     from hermes_cli.colors import Colors, color
@@ -1603,7 +1635,7 @@ def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
     print(color("\n  Plugins", Colors.YELLOW))
 
     # General plugins
-    if plugin_names:
+    if plugin_keys:
         chosen = set(plugin_selected)
         print(color("\n  General Plugins", Colors.YELLOW))
         print(color("  Toggle by number, Enter to confirm.\n", Colors.DIM))
@@ -1618,20 +1650,26 @@ def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
                 if not val:
                     break
                 idx = int(val) - 1
-                if 0 <= idx < len(plugin_names):
+                if 0 <= idx < len(plugin_keys):
                     chosen.symmetric_difference_update({idx})
             except (ValueError, KeyboardInterrupt, EOFError):
                 return
             print()
 
+        # Persist by canonical key only — never the bare manifest name — so
+        # the disabled-list stays aligned with cmd_enable / PluginManager
+        # (#40190).
         new_enabled: set = set()
         new_disabled: set = set(disabled)
-        for i, name in enumerate(plugin_names):
+        for i, key in enumerate(plugin_keys):
+            bare = key.split("/")[-1]
             if i in chosen:
-                new_enabled.add(name)
-                new_disabled.discard(name)
+                new_enabled.add(key)
+                new_disabled.discard(key)
+                if bare != key:
+                    new_disabled.discard(bare)
             else:
-                new_disabled.add(name)
+                new_disabled.add(key)
         prev_enabled = _get_enabled_set()
         if new_enabled != prev_enabled or new_disabled != disabled:
             _save_enabled_set(new_enabled)

@@ -230,6 +230,14 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // us, and wait_for_install_locks_free below force-kills any straggler — so by the
     // time `hermes update` runs there is no legitimate hermes.exe to protect,
     // and the guard would only produce a false "Hermes is still running" stop.
+    //
+    // NOTE: --force does NOT bypass the venv-python holder guard (that needs
+    // an explicit `--force-venv`, which we deliberately do not pass). Our lock
+    // probe only checks the hermes.exe shim and app.asar, so an external venv
+    // python holding a native .pyd (a user terminal, an unmanaged gateway)
+    // could still be alive here — mutating the venv under it would strand the
+    // install half-updated. If that guard fires, it exits 2 and the match arm
+    // below surfaces the correct "close all Hermes windows" message.
     update_args.push("--force".into());
     update_args.push("--branch".into());
     update_args.push(update_branch);

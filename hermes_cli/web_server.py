@@ -13931,6 +13931,26 @@ def mount_spa(application: FastAPI):
     without rebuilding the bundle.
     """
     if not WEB_DIST.exists():
+        # Auto-rebuild the frontend if the source tree is available (#59288)
+        web_src = WEB_DIST.parent / ".." / "web"
+        try:
+            web_src = web_src.resolve()
+            if (web_src / "package.json").exists():
+                import subprocess
+                _log.info("web_dist not found — auto-building frontend from %s", web_src)
+                result = subprocess.run(
+                    ["npm", "run", "build"],
+                    cwd=str(web_src),
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    _log.warning("Auto-build failed (exit %d): %s", result.returncode, result.stderr[:200])
+        except Exception as exc:
+            _log.warning("Auto-build attempt failed: %s", exc)
+
+    if not WEB_DIST.exists():
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
             return JSONResponse(

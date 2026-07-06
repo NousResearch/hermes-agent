@@ -815,6 +815,83 @@ class TestPluginHooks:
 
         assert any("on_banana" in record.message for record in caplog.records)
 
+    def test_module_level_invoke_hook_lazily_discovers_plugins(self, tmp_path, monkeypatch):
+        """``hermes_cli.plugins.invoke_hook()`` lazy-discovers plugins when the
+        PluginManager singleton has not been initialised yet.
+
+        This matches the gateway's startup sequence: the gateway uses a
+        separate ``HookRegistry`` for platform events and never explicitly
+        calls ``discover_plugins()``.  The module-level ``invoke_hook`` must
+        discover on first call so user-registered hooks (kanban lifecycle,
+        pre_verify, etc.) actually fire.
+        """
+        # Arrange: a plugin that records every hook call
+        called = []
+
+        def _cb(**kw):
+            called.append(kw)
+            return "ok"
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "lazy_discover",
+            register_body=(
+                'ctx.register_hook("kanban_task_claimed", lambda **kw: None)'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        # Reset the global singleton so get_plugin_manager() creates a fresh
+        # PluginManager with _discovered=False — this is the cold-start gate
+        # that the fix lazy-discovers through.
+        import hermes_cli.plugins as _plugins_mod
+        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+
+        # Also register a simpler side-channel hook we can observe directly
+        # without needing a real kanban DB.
+        pm = _plugins_mod.get_plugin_manager()
+        pm._hooks["test_hook"] = [_cb]
+
+        # Act — call the module-level invoke_hook (NOT pm.invoke_hook).
+        # Before the fix this would dispatch on an empty _hooks dict because
+        # discover_and_load() was never called.  After the fix it calls
+        # discover_and_load() lazily, then dispatches.
+        results = _plugins_mod.invoke_hook("test_hook", task_id="t1")
+
+        # Assert — the callback fired
+        assert len(called) == 1, (
+            f"Expected 1 callback invocation, got {len(called)}. "
+            "The lazy-discover path may not have triggered."
+        )
+        assert results == ["ok"]
+
+        # Also verify that the user plugin's kanban hook was registered
+        assert pm.has_hook("kanban_task_claimed"), (
+            "User plugin hook was not registered after lazy-discover"
+        )
+
+    def test_module_level_invoke_middleware_lazily_discovers(self, tmp_path, monkeypatch):
+        """``hermes_cli.plugins.invoke_middleware()`` lazy-discovers plugins
+        when the PluginManager singleton has not been initialised yet."""
+        import hermes_cli.plugins as _plugins_mod
+        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+
+        called = []
+
+        def _mw(**kw):
+            called.append(kw)
+            return "mw-ok"
+
+        pm = _plugins_mod.get_plugin_manager()
+        pm._middleware["test_mw"] = [_mw]
+
+        results = _plugins_mod.invoke_middleware("test_mw")
+
+        assert len(called) == 1, (
+            f"Expected 1 middleware invocation, got {len(called)}"
+        )
+        assert results == ["mw-ok"]
+
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
 

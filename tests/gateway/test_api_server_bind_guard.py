@@ -5,7 +5,7 @@ that connect() refuses to start without API_SERVER_KEY.
 """
 
 import socket
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -119,6 +119,19 @@ class TestConnectBindGuard:
         assert is_network_accessible(adapter._host) is False
         result = await adapter.connect()
         assert result is False
+        assert adapter._app is None
+        assert adapter._background_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_refuses_weak_key_without_partial_startup(self):
+        """Weak API_SERVER_KEY rejection must not create app or background tasks."""
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "key": "short"}),
+        )
+        result = await adapter.connect()
+        assert result is False
+        assert adapter._app is None
+        assert adapter._background_tasks == set()
 
     @pytest.mark.asyncio
     async def test_allows_wildcard_with_key(self):

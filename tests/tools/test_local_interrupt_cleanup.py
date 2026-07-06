@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.environments import local as local_mod
 from tools.environments.local import LocalEnvironment
 
 
@@ -96,6 +97,32 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+def test_kill_process_uses_windows_tree_kill(monkeypatch):
+    """Windows must kill the whole Bash process tree, not just the wrapper."""
+    env = object.__new__(LocalEnvironment)
+    terminate_calls = []
+    waits = []
+    killed = []
+
+    def fake_terminate(pid, *, force=False):
+        terminate_calls.append((pid, force))
+
+    proc = SimpleNamespace(
+        pid=12345,
+        kill=lambda: killed.append(True),
+        wait=lambda timeout=None: waits.append(timeout),
+    )
+
+    monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    monkeypatch.setattr("gateway.status.terminate_pid", fake_terminate)
+
+    env._kill_process(proc)
+
+    assert terminate_calls == [(12345, True)]
+    assert waits == [2.0]
+    assert killed == []
+
+
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""
@@ -161,7 +188,6 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         # way CPython's signal machinery would.  We use ctypes.PyThreadState_SetAsyncExc
         # which is how signal delivery to non-main threads is simulated.
         import ctypes
-        import sys as _sys
         # py-thread-state exception targets need the ident, not the Thread
         tid = t.ident
         assert tid is not None

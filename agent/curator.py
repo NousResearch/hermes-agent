@@ -25,7 +25,6 @@ import json
 import logging
 import os
 import re
-import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +32,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,11 @@ DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
 DEFAULT_MIN_IDLE_HOURS = 2
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_ARCHIVE_AFTER_DAYS = 90
+# Consolidation (the LLM umbrella-building fork) is OFF by default. The
+# deterministic inactivity prune (apply_automatic_transitions) still runs
+# whenever the curator is enabled; only the opinionated, aux-model-cost
+# consolidation pass is opt-in.
+DEFAULT_CONSOLIDATE = False
 
 
 # ---------------------------------------------------------------------------
@@ -97,20 +102,7 @@ def load_state() -> Dict[str, Any]:
 def save_state(data: Dict[str, Any]) -> None:
     path = _state_file()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".curator_state_", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        atomic_json_write(path, data, indent=2, sort_keys=True)
     except Exception as e:
         logger.debug("Failed to save curator state: %s", e, exc_info=True)
 
@@ -183,6 +175,34 @@ def get_archive_after_days() -> int:
         return DEFAULT_ARCHIVE_AFTER_DAYS
 
 
+def get_prune_builtins() -> bool:
+    """Whether the curator may prune (archive) bundled built-in skills too.
+
+    ON by default. When on, built-ins become curation candidates and are
+    archived after the same inactivity period as agent-created skills, with a
+    suppression list keeping them archived across `hermes update` re-seeds.
+    Hub-installed skills are never pruned regardless of this flag.
+    """
+    cfg = _load_config()
+    return bool(cfg.get("prune_builtins", True))
+
+
+def get_consolidate() -> bool:
+    """Whether the curator runs its LLM consolidation (umbrella-building) pass.
+
+    OFF by default. When off, a curator run does ONLY the deterministic
+    inactivity prune (mark stale / archive long-unused skills) and skips the
+    forked aux-model review entirely — no consolidation, no umbrella-building,
+    no aux-model cost. Set ``curator.consolidate: true`` to opt back into the
+    LLM pass that merges overlapping skills into class-level umbrellas.
+
+    The explicit ``hermes curator run --consolidate`` flag overrides this for
+    a single invocation regardless of the config value.
+    """
+    cfg = _load_config()
+    return bool(cfg.get("consolidate", DEFAULT_CONSOLIDATE))
+
+
 # ---------------------------------------------------------------------------
 # Idle / interval check
 # ---------------------------------------------------------------------------
@@ -253,10 +273,33 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 # Automatic state transitions (pure function, no LLM)
 # ---------------------------------------------------------------------------
 
+def _cron_referenced_skills() -> Set[str]:
+    """Skill names referenced by any cron job (incl. paused/disabled).
+
+    Best-effort: a cron-module import error or corrupt jobs store must never
+    break the curator, so any failure yields an empty set (no protection,
+    but no crash).
+    """
+    try:
+        from cron.jobs import referenced_skill_names as _refs
+        return _refs()
+    except Exception as e:
+        logger.debug("Curator could not read cron skill references: %s", e, exc_info=True)
+        return set()
+
+
 def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
-    """Walk every agent-created skill and move active/stale/archived based on
+    """Walk every curator-managed skill and move active/stale/archived based on
     the latest real activity timestamp. Pinned skills are never touched.
-    Returns a counter dict describing what changed."""
+
+    Built-ins (eligible only when ``curator.prune_builtins`` is on) are seeded
+    with a baseline record the first time they're seen so their inactivity
+    clock starts NOW rather than at epoch — a long-unused built-in is therefore
+    archived only after a fresh ``archive_after_days`` of non-use, not on the
+    first pass after the flag flips on.
+
+    Returns a counter dict describing what changed.
+    """
     from tools import skill_usage as _u
 
     if now is None:
@@ -264,12 +307,30 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
-    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
+    cron_referenced = _cron_referenced_skills()
+
+    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
     for row in _u.agent_created_report():
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
+            continue
+
+        # A skill referenced by any cron job (incl. paused/disabled) is in
+        # use by definition — resuming or the next fire must find it. The
+        # scheduler only bumps usage when a job actually fires, so jobs that
+        # fire less often than archive_after_days, paused jobs, and far-future
+        # one-shots would otherwise have their skills aged out from under
+        # them. Treat referenced skills like pinned: never auto-transition.
+        if name in cron_referenced:
+            continue
+
+        # First sight of a curation-eligible skill with no persisted record
+        # (e.g. a newly-eligible built-in): anchor its clock to now and defer.
+        if not row.get("_persisted", True):
+            _u.seed_record_if_missing(name)
+            counts["seeded"] += 1
             continue
 
         last_activity = _parse_iso(row.get("last_activity_at"))
@@ -280,6 +341,18 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             anchor = anchor.replace(tzinfo=timezone.utc)
 
         current = row.get("state", _u.STATE_ACTIVE)
+
+        # Never-used skills (use_count == 0) get a grace floor: don't archive
+        # one until it is at least stale_after_days old. A use=0 skill is
+        # absence of evidence, not evidence of staleness — a skill created
+        # recently may simply not have had its trigger come up yet.
+        never_used = int(row.get("use_count", 0) or 0) == 0
+        if never_used and anchor > stale_cutoff:
+            # Younger than the stale window — leave it alone entirely.
+            if current == _u.STATE_STALE:
+                _u.set_state(name, _u.STATE_ACTIVE)
+                counts["reactivated"] += 1
+            continue
 
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
             ok, _msg = _u.archive_skill(name)
@@ -342,16 +415,32 @@ CURATOR_REVIEW_PROMPT = (
     "bodies + `references/`, `templates/`, and `scripts/` subfiles for "
     "session-specific detail — not one-session-one-skill micro-entries.\n\n"
     "Hard rules — do not violate:\n"
-    "1. DO NOT touch bundled or hub-installed skills. The candidate list "
-    "below is already filtered to agent-created skills only.\n"
+    "1. DO NOT touch bundled, hub-installed, or external-dir skills "
+    "(`skills.external_dirs`). The candidate list below is already filtered "
+    "to local curator-managed skills only; external skills are externally "
+    "owned and read-only to this background curator.\n"
     "2. DO NOT delete any skill. Archiving (moving the skill's directory "
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
     "3. DO NOT touch skills shown as pinned=yes. Skip them entirely.\n"
+    "3b. DO NOT archive, delete, consolidate, move, or otherwise modify any "
+    "skill named in the protected built-ins list (currently: plan). These "
+    "back load-bearing UX (slash-command entry points referenced in docs and "
+    "tips) and are filtered out of the candidate list below — never resurrect "
+    "one as an archive or absorb target.\n"
+    "3c. DO NOT archive or prune any skill marked `cron=yes` in the candidate "
+    "list. A cron job depends on it and will fail to load it on its next "
+    "run. You MAY still consolidate it into an umbrella — but only because "
+    "the curator rewrites cron job skill references to follow consolidations; "
+    "never simply prune it.\n"
     "4. DO NOT use usage counters as a reason to skip consolidation. The "
     "counters are new and often mostly zero. Judge overlap on CONTENT, "
     "not on use_count. 'use=0' is not evidence a skill is valuable; it's "
-    "absence of evidence either way.\n"
+    "absence of evidence either way. Corollary: 'use=0' is ALSO not a "
+    "reason to PRUNE a skill. Never archive a never-used skill (use=0) "
+    "unless it is at least 30 days old (check last_activity / created date) "
+    "AND its content is genuinely obsolete or fully absorbed elsewhere — a "
+    "recently-created skill simply may not have had its trigger come up yet.\n"
     "5. DO NOT reject consolidation on the grounds that 'each skill has "
     "a distinct trigger'. Pairwise distinctness is the wrong bar. The "
     "right bar is: 'would a human maintainer write this as N separate "
@@ -429,8 +518,9 @@ CURATOR_REVIEW_PROMPT = (
     "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
     "forwarding target. This drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
-    "  - terminal                       — mv a sibling into the archive "
-    "OR move its content into a support subfile\n\n"
+    "  - terminal                       — move LOCAL candidate content into "
+    "a support subfile when package integrity requires it; never mv, cp, rm, "
+    "patch, or rewrite bundled, hub-installed, or external-dir skills\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
     "class-level umbrella and none of the proposed merges would improve "
     "discoverability. 'This is narrow but distinct from its siblings' "
@@ -1370,12 +1460,14 @@ def _render_candidate_list() -> str:
     rows = skill_usage.agent_created_report()
     if not rows:
         return "No agent-created skills to review."
+    cron_referenced = _cron_referenced_skills()
     lines = [f"Agent-created skills ({len(rows)}):\n"]
     for r in rows:
         lines.append(
             f"- {r['name']}  "
             f"state={r['state']}  "
             f"pinned={'yes' if r.get('pinned') else 'no'}  "
+            f"cron={'yes' if r['name'] in cron_referenced else 'no'}  "
             f"activity={r.get('activity_count', 0)}  "
             f"use={r.get('use_count', 0)}  "
             f"view={r.get('view_count', 0)}  "
@@ -1389,25 +1481,38 @@ def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None,
     synchronous: bool = False,
     dry_run: bool = False,
+    consolidate: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Execute a single curator review pass.
 
     Steps:
       1. Apply automatic state transitions (pure, no LLM).
-      2. If there are agent-created skills, spawn a forked AIAgent that runs
-         the LLM review prompt against the current candidate list.
+      2. If consolidation is enabled AND there are agent-created skills, spawn
+         a forked AIAgent that runs the LLM review prompt against the current
+         candidate list.
       3. Update .curator_state with last_run_at and a one-line summary.
       4. Invoke *on_summary* with a user-visible description.
 
     If *synchronous* is True, the LLM review runs in the calling thread; the
     default is to spawn a daemon thread so the caller returns immediately.
 
+    *consolidate* gates the LLM umbrella-building pass. ``None`` (the default)
+    reads ``curator.consolidate`` from config (OFF by default). Passing
+    ``True``/``False`` overrides the config for this invocation — used by the
+    ``hermes curator run --consolidate`` flag. When consolidation is off, only
+    the deterministic inactivity prune runs and the forked aux-model review is
+    skipped entirely (no aux-model cost).
+
     If *dry_run* is True, the automatic stale/archive transitions are SKIPPED
     and the LLM review pass is instructed to produce a report only — no
     skill_manage mutations, no terminal archive moves. The REPORT.md still
     gets written and ``state.last_report_path`` still records it so users
-    can read what the curator WOULD have done.
+    can read what the curator WOULD have done. A dry-run also honors
+    *consolidate*: when consolidation is off, the preview only reports the
+    deterministic prune candidates.
     """
+    if consolidate is None:
+        consolidate = get_consolidate()
     start = datetime.now(timezone.utc)
     if dry_run:
         # Count candidates without mutating state.
@@ -1470,6 +1575,53 @@ def run_curator_review(
             before_report = []
         before_names = {r.get("name") for r in before_report if isinstance(r, dict)}
 
+        # Consolidation gate. When off (the default), the curator does ONLY the
+        # deterministic inactivity prune above — no forked aux-model review, no
+        # umbrella-building, no aux-model cost. Record the run, write a report
+        # reflecting the prune-only outcome, and return without spawning a fork.
+        if not consolidate:
+            final_summary = (
+                f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
+            )
+            llm_meta = {
+                "final": "",
+                "summary": "skipped (consolidation off)",
+                "model": "",
+                "provider": "",
+                "tool_calls": [],
+                "error": None,
+            }
+            elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            state2 = load_state()
+            state2["last_run_duration_seconds"] = elapsed
+            state2["last_run_summary"] = final_summary
+            try:
+                after_report = skill_usage.agent_created_report()
+            except Exception:
+                after_report = []
+            try:
+                report_path = _write_run_report(
+                    started_at=start,
+                    elapsed_seconds=elapsed,
+                    auto_counts=counts,
+                    auto_summary=auto_summary,
+                    before_report=before_report,
+                    before_names=before_names,
+                    after_report=after_report,
+                    llm_meta=llm_meta,
+                )
+                if report_path is not None:
+                    state2["last_report_path"] = str(report_path)
+            except Exception as e:
+                logger.debug("Curator report write failed: %s", e, exc_info=True)
+            save_state(state2)
+            if on_summary:
+                try:
+                    on_summary(f"curator: {final_summary}")
+                except Exception:
+                    pass
+            return
+
         llm_meta: Dict[str, Any] = {}
         try:
             candidate_list = _render_candidate_list()
@@ -1484,14 +1636,30 @@ def run_curator_review(
                     "error": None,
                 }
             else:
+                # When pruning built-ins is enabled, the candidate list now
+                # includes bundled skills. Override the default "don't touch
+                # bundled" rule for them — but only archiving is permitted, and
+                # hub-installed skills remain strictly off-limits.
+                builtins_note = ""
+                if get_prune_builtins():
+                    builtins_note = (
+                        "\n\nPRUNE-BUILTINS MODE IS ON: bundled built-in skills "
+                        "ARE included in the candidate list below and MAY be "
+                        "archived for staleness/irrelevance, overriding hard "
+                        "rule #1 for bundled skills ONLY. Hub-installed skills "
+                        "remain strictly off-limits. Treat a stale built-in the "
+                        "same as a stale agent-created skill: archive it (never "
+                        "delete). It will be restored on `hermes update` only if "
+                        "the user explicitly restores it."
+                    )
                 if dry_run:
                     prompt = (
                         f"{CURATOR_DRY_RUN_BANNER}\n\n"
-                        f"{CURATOR_REVIEW_PROMPT}\n\n"
+                        f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n"
                         f"{candidate_list}"
                     )
                 else:
-                    prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+                    prompt = f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n{candidate_list}"
                 llm_meta = _run_llm_review(prompt)
                 final_summary = (
                     f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
@@ -1727,6 +1895,14 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0
+        # Tag this fork as autonomous background curation so skill_manage's
+        # background-review write guard fires. Without this the fork inherits
+        # the default "assistant_tool" origin, is_background_review() is False,
+        # and the external/bundled/hub-installed skill_manage guards never
+        # trigger during the curation pass they exist to protect against.
+        # turn_context.py binds this onto the write-origin ContextVar at turn
+        # start (see agent/turn_context.py).
+        review_agent._memory_write_origin = "background_review"
 
         # Redirect the forked agent's stdout/stderr to /dev/null while it
         # runs so its tool-call chatter doesn't pollute the foreground

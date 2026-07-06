@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_state import SessionDB
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
@@ -123,6 +123,10 @@ def _make_runner(session_db=None):
     runner._busy_ack_ts = {}
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
+    # Gateway holds the async facade; the slash handlers await it.
+    if session_db is not None:
+        from hermes_state import AsyncSessionDB
+        session_db = AsyncSessionDB(session_db)
     runner._session_db = session_db
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -336,6 +340,12 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
+    # /new appends a random tip from hermes_cli.tips; one tip's text contains
+    # the phrase "parallel work", which collides with the negative assertion
+    # below (observed as a 1-in-N CI flake). Pin the tip.
+    monkeypatch.setattr(
+        "hermes_cli.tips.get_random_tip", lambda: "pinned tip for test"
+    )
 
     result = await runner._handle_message(_make_group_event("/new", thread_id="555"))
 
@@ -446,6 +456,89 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
     )
     assert binding is not None
     assert binding["session_id"] == "new-topic-session"
+
+
+@pytest.mark.asyncio
+async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypatch):
+    """Stale topic bindings auto-heal to the compression child on next inbound.
+
+    Regression for #20470 / #29712 / #33414. After compression rotates the
+    session_id, the binding row still pointed at the parent. On the next
+    inbound message in that topic, the gateway used to reload the oversized
+    parent transcript and re-run preflight compression — sometimes in a loop.
+    The read path now walks ``SessionDB.get_compression_tip()`` and rewrites
+    the binding to the descendant.
+    """
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    # Build a parent -> compression child chain. end_session sets ended_at;
+    # create_session sets started_at to "now", so the child's started_at is
+    # always >= parent's ended_at on a real clock.
+    session_db.create_session(
+        session_id="parent-session", source="telegram", user_id="208214988",
+    )
+    session_db.end_session("parent-session", end_reason="compression")
+    session_db.create_session(
+        session_id="child-session",
+        source="telegram",
+        user_id="208214988",
+        parent_session_id="parent-session",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    # Pre-bug binding: topic still pointed at the pre-compression parent.
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="parent-session",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    # switch_session() returns a SessionEntry pointing at whatever id was
+    # requested; capture the requested id for assertion.
+    switched_to: dict = {}
+
+    def fake_switch(_key, new_session_id):
+        switched_to["id"] = new_session_id
+        return SessionEntry(
+            session_key=topic_key,
+            session_id=new_session_id,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            origin=topic_source,
+        )
+
+    runner.session_store.switch_session = MagicMock(side_effect=fake_switch)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "success": True,
+            "final_response": "ok",
+            "session_id": "child-session",
+            "messages": [],
+        }
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    await runner._handle_message(_make_event("follow up after compression", thread_id="17585"))
+
+    # The route was advanced to the compression tip, not the stale parent.
+    assert switched_to.get("id") == "child-session"
+    # The binding row was rewritten to point at the descendant so future
+    # inbound messages skip the tip walk and resolve directly.
+    refreshed = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert refreshed is not None
+    assert refreshed["session_id"] == "child-session"
 
 
 @pytest.mark.asyncio
@@ -714,6 +807,49 @@ async def test_first_message_inside_topic_records_topic_binding(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_path):
+    """Handoff-created Telegram DM topics must use the real DM-topic lane.
+
+    A positive Telegram chat_id is a private chat. If handoff treats the new
+    topic as generic chat_type="thread" with user_id="system:handoff", the
+    synthetic turn lands under agent:...:thread:chat:topic while real user
+    replies arrive as chat_type="dm" with user_id=chat_id. Recovery then sees
+    the topic as unbound and can rewrite it to another recent topic.
+    """
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    runner = _make_runner(session_db=session_db)
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="208214988",
+        name="Tester DM",
+    )
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.create_handoff_thread = AsyncMock(return_value="17585")
+    adapter.send.return_value = SimpleNamespace(success=True)
+    captured = {}
+
+    async def fake_handle_message(event):
+        captured["source"] = event.source
+        return "handoff ok"
+
+    runner._handle_message = AsyncMock(side_effect=fake_handle_message)
+
+    await runner._process_handoff({
+        "id": "cli-session",
+        "title": "CLI work",
+        "handoff_platform": "telegram",
+    })
+
+    expected_source = _make_source(thread_id="17585")
+    expected_key = build_session_key(expected_source)
+    runner.session_store.switch_session.assert_called_once_with(expected_key, "cli-session")
+    assert captured["source"].chat_type == "dm"
+    assert captured["source"].user_id == "208214988"
+    assert captured["source"].thread_id == "17585"
+
+
+@pytest.mark.asyncio
 async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
@@ -960,7 +1096,6 @@ def test_lobby_reminder_is_debounced_per_chat(tmp_path):
 
 def test_binding_survives_session_deletion_via_cascade(tmp_path):
     """Deleting a session with a topic binding must not raise FK errors."""
-    import sqlite3
     db = SessionDB(db_path=tmp_path / "state.db")
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     db.create_session(session_id="sess-to-delete", source="telegram", user_id="208214988")
@@ -988,7 +1123,6 @@ def test_binding_survives_session_deletion_via_cascade(tmp_path):
 
 def test_migration_rebuilds_v1_binding_table_with_cascade_fk(tmp_path):
     """v1 → v2 migration rebuilds the bindings table when FK lacks ON DELETE CASCADE."""
-    import sqlite3
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path=db_path)
 
@@ -1318,7 +1452,8 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
     )
 
     runner = object.__new__(GatewayRunner)
-    runner._session_db = db
+    from hermes_state import AsyncSessionDB
+    runner._session_db = AsyncSessionDB(db)
 
     # Build a source that looks like it came from a synthetic/recovered event:
     # platform and chat_type match a Telegram DM, but thread_id is None.
@@ -1335,7 +1470,9 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
         and runner._session_db is not None
     ):
         try:
-            _binding = runner._session_db.get_telegram_topic_binding_by_session(
+            # Mirror production: this block runs in the run_sync executor, so it
+            # uses the sync handle (self._session_db._db), not the async facade.
+            _binding = runner._session_db._db.get_telegram_topic_binding_by_session(
                 session_id="sess-split-new",
             )
             if _binding and _binding.get("thread_id"):

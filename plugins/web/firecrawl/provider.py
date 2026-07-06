@@ -51,6 +51,7 @@ import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent.web_search_provider import WebSearchProvider
+from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
@@ -121,8 +122,10 @@ Firecrawl = _FirecrawlProxy()
 
 def _get_direct_firecrawl_config() -> Optional[tuple]:
     """Return explicit direct Firecrawl kwargs + cache key, or None when unset."""
-    api_key = os.getenv("FIRECRAWL_API_KEY", "").strip()
-    api_url = os.getenv("FIRECRAWL_API_URL", "").strip().rstrip("/")
+    from hermes_cli.config import get_env_value
+
+    api_key = (get_env_value("FIRECRAWL_API_KEY") or "").strip()
+    api_url = (get_env_value("FIRECRAWL_API_URL") or "").strip().rstrip("/")
 
     if not api_key and not api_url:
         return None
@@ -146,16 +149,16 @@ def _get_firecrawl_gateway_url() -> str:
 def _is_tool_gateway_ready() -> bool:
     """Return True when gateway URL + Nous Subscriber token are available.
 
-    Reads ``read_nous_access_token`` and ``resolve_managed_tool_gateway``
+    Reads ``peek_nous_access_token`` and ``resolve_managed_tool_gateway``
     via :mod:`tools.web_tools` rather than direct imports, so unit tests
-    that ``patch("tools.web_tools._read_nous_access_token", ...)`` see
+    that ``patch("tools.web_tools._peek_nous_access_token", ...)`` see
     their patches honored. The names are re-exported on
     :mod:`tools.web_tools` for exactly this reason.
     """
     import tools.web_tools as _wt
 
     return _wt.resolve_managed_tool_gateway(
-        "firecrawl", token_reader=_wt._read_nous_access_token
+        "firecrawl", token_reader=_wt._peek_nous_access_token
     ) is not None
 
 
@@ -522,6 +525,26 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
 
                 title = metadata.get("title", "")
                 final_url = metadata.get("sourceURL", url)
+
+                # Re-check SSRF safety after any redirect reported by Firecrawl.
+                if not is_safe_url(final_url):
+                    logger.info(
+                        "Blocked redirected web_extract for unsafe final URL: %s",
+                        final_url,
+                    )
+                    results.append(
+                        {
+                            "url": final_url,
+                            "title": title,
+                            "content": "",
+                            "raw_content": "",
+                            "error": (
+                                "Blocked: URL targets a private or internal "
+                                "network address"
+                            ),
+                        }
+                    )
+                    continue
 
                 # Re-check website-access policy after any redirect
                 final_blocked = check_website_access(final_url)

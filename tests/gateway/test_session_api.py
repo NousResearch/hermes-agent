@@ -1,6 +1,5 @@
 """Focused tests for API server session-control endpoints."""
 
-import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -77,6 +76,54 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
+    """API-server request sessions should reach tools and terminal subprocess env."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")
+    observed = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, session_id: str):
+            self.session_id = session_id
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            from gateway.session_context import get_session_env
+            from tools.environments.local import _make_run_env
+
+            observed["task_id"] = task_id
+            observed["context_session_id"] = get_session_env("HERMES_SESSION_ID")
+            observed["context_platform"] = get_session_env("HERMES_SESSION_PLATFORM")
+            observed["context_session_key"] = get_session_env("HERMES_SESSION_KEY")
+            observed["child_session_id"] = _make_run_env({}).get("HERMES_SESSION_ID")
+            return {"final_response": "ok"}
+
+    def fake_create_agent(**kwargs):
+        return FakeAgent(kwargs["session_id"])
+
+    monkeypatch.setattr(adapter, "_create_agent", fake_create_agent)
+
+    result, usage = await adapter._run_agent(
+        user_message="hello",
+        conversation_history=[],
+        session_id="request-session",
+        gateway_session_key="request-key",
+    )
+
+    assert result["session_id"] == "request-session"
+    assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    assert observed == {
+        "task_id": "request-session",
+        "context_session_id": "request-session",
+        "context_platform": "api_server",
+        "context_session_key": "request-key",
+        "child_session_id": "request-session",
+    }
+
+
+@pytest.mark.asyncio
 async def test_session_crud_and_message_history(adapter, session_db):
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
@@ -120,6 +167,26 @@ async def test_session_crud_and_message_history(adapter, session_db):
         deleted = await delete_resp.json()
         assert deleted == {"object": "hermes.session.deleted", "id": session_id, "deleted": True}
         assert session_db.get_session(session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_session_messages_follow_compression_tip(adapter, session_db):
+    source_id = session_db.create_session("source-session", "api_server")
+    session_db.append_message(source_id, "user", "before compression")
+    session_db.end_session(source_id, "compression")
+    session_db.create_session("tip-session", "api_server", parent_session_id=source_id)
+    session_db.replace_messages(source_id, [])
+    session_db.append_message("tip-session", "user", "after compression")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        messages_resp = await cli.get(f"/api/sessions/{source_id}/messages")
+        assert messages_resp.status == 200
+        messages = await messages_resp.json()
+
+    assert messages["object"] == "list"
+    assert messages["session_id"] == "tip-session"
+    assert [m["content"] for m in messages["data"]] == ["after compression"]
 
 
 @pytest.mark.asyncio
@@ -174,7 +241,11 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
     assert kwargs["session_id"] == session_id
     assert kwargs["gateway_session_key"] == "client-42"
     assert kwargs["ephemeral_system_prompt"] == "stay focused"
-    assert kwargs["conversation_history"] == [
+    history = kwargs["conversation_history"]
+    assert len(history) == 2
+    assert isinstance(history[0].pop("timestamp"), (int, float))
+    assert isinstance(history[1].pop("timestamp"), (int, float))
+    assert history == [
         {"role": "user", "content": "earlier"},
         {"role": "assistant", "content": "prior answer"},
     ]
@@ -267,6 +338,75 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter, session_db):
+    """run.completed must include the full interleaved turn transcript so a
+    client that lost intermediate (pre-tool-call) assistant text from the live
+    delta stream can reconcile without a separate /messages fetch. Refs #34703.
+    """
+    import json as _json
+
+    session_id = session_db.create_session("transcript-session", "api_server")
+
+    async def fake_run(**kwargs):
+        # Stream the intermediate planning text the way a real turn would.
+        kwargs["stream_delta_callback"]("Let me search for that:")
+        kwargs["stream_delta_callback"]("Here is the summary.")
+        result = {
+            "final_response": "Here is the summary.",
+            "session_id": session_id,
+            "messages": [
+                {"role": "user", "content": "search then summarize"},
+                {
+                    "role": "assistant",
+                    "content": "Let me search for that:",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "content": "results", "tool_call_id": "call_1", "tool_name": "web_search"},
+                {"role": "assistant", "content": "Here is the summary."},
+            ],
+        }
+        return result, {"total_tokens": 6}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "search then summarize"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    # Pull the run.completed event payload out of the SSE body.
+    run_completed_payload = None
+    for block in body.split("\n\n"):
+        if "event: run.completed" in block:
+            for line in block.splitlines():
+                if line.startswith("data: "):
+                    run_completed_payload = _json.loads(line[len("data: "):])
+            break
+    assert run_completed_payload is not None, body
+    messages = run_completed_payload.get("messages")
+    assert isinstance(messages, list) and messages, run_completed_payload
+
+    # The colon-ended intermediate text that preceded the tool call must be present.
+    contents = [m.get("content") for m in messages]
+    assert "Let me search for that:" in contents
+    assert "Here is the summary." in contents
+    # No prior-turn user message should leak into the per-turn slice.
+    assert all(m.get("role") in ("assistant", "tool") for m in messages)
+    # The tool call is preserved alongside the intermediate text.
+    assert any(m.get("tool_calls") for m in messages)
+
 
 
 @pytest.mark.asyncio

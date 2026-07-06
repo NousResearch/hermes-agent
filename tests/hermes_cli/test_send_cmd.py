@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
 
 import pytest
 
@@ -173,7 +172,7 @@ def test_file_not_found_is_usage_error(fake_tool, capsys, monkeypatch):
     assert "cannot read" in err.lower()
 
 
-def test_file_decode_error_is_usage_error(fake_tool, capsys, monkeypatch, tmp_path):
+def test_file_decode_error_suggests_media_directive(fake_tool, capsys, monkeypatch, tmp_path):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     bad = tmp_path / "bad-bytes.bin"
     bad.write_bytes(b"\xff\xfe\x00")
@@ -183,7 +182,9 @@ def test_file_decode_error_is_usage_error(fake_tool, capsys, monkeypatch, tmp_pa
         send_cmd.cmd_send(args)
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert "cannot read" in err.lower()
+    assert "not a text file" in err.lower()
+    assert f"MEDIA:{bad}" in err
+    assert "[[as_document]]" in err
 
 
 def test_tool_error_returns_failure_exit(monkeypatch, capsys):

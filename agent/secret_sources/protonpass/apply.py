@@ -9,16 +9,19 @@ This module owns:
   :func:`apply_protonpass_secrets` (which applies the plan) and the CLI ``sync``
   / dry-run (which render the plan) use it, so the skip rules
   (bootstrap-token, already-set) live in exactly ONE place.
-* :func:`apply_protonpass_secrets` — the env_loader entry point.  It NEVER
-  raises: any failure returns a :class:`FetchResult` with ``error`` set.
+* :func:`apply_protonpass_secrets` — the legacy fetch-and-apply compatibility
+  entry point used by direct callers and the Proton Pass CLI.  It NEVER raises:
+  any failure returns a :class:`FetchResult` with ``error`` set.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional
+
+from agent.secret_sources.base import FetchResult
 
 from .config import ProtonPassConfig, strip_bootstrap_ref
 from .fetch import fetch_protonpass_secrets
@@ -29,22 +32,6 @@ from .session import _redact_token
 # without re-deriving the rules.
 SKIP_BOOTSTRAP_TOKEN = "bootstrap-token"
 SKIP_ALREADY_SET = "already-set"
-
-
-@dataclass
-class FetchResult:
-    """Outcome of a single Proton Pass pull."""
-
-    secrets: Dict[str, str] = field(default_factory=dict)
-    applied: List[str] = field(default_factory=list)   # set into os.environ
-    skipped: List[str] = field(default_factory=list)   # already set, not overridden
-    warnings: List[str] = field(default_factory=list)  # non-fatal issues
-    error: Optional[str] = None                        # fatal: nothing was fetched
-    binary_path: Optional[Path] = None
-
-    @property
-    def ok(self) -> bool:
-        return self.error is None
 
 
 @dataclass

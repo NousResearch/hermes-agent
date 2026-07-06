@@ -1,22 +1,5 @@
 name: Supply Chain Audit
 
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '**/*.py'
-      - '**/*.pth'
-      - '**/setup.py'
-      - '**/setup.cfg'
-      - '**/sitecustomize.py'
-      - '**/usercustomize.py'
-      - '**/__init__.pth'
-      - 'pyproject.toml'
-
-permissions:
-  pull-requests: write
-  contents: read
-
 # Narrow, high-signal scanner. Only fires on critical indicators of supply
 # chain attacks (e.g. the litellm-style payloads). Low-signal heuristics
 # (plain base64, plain exec/eval, dependency/Dockerfile/workflow edits,
@@ -25,14 +8,44 @@ permissions:
 # the scanner. Keep this file's checks ruthlessly narrow: if you find
 # yourself adding WARNING-tier patterns here again, make a separate
 # advisory-only workflow instead.
+#
+# Path-gating is handled centrally by the ``ci.yml`` orchestrator's
+# ``detect`` job. The orchestrator passes ``scan`` / ``deps`` /
+# ``mcp_catalog`` booleans as inputs; this workflow's jobs gate on those
+# inputs instead of re-computing the diff.
+
+on:
+  workflow_call:
+    inputs:
+      event_name:
+        description: The event name from the calling orchestrator.
+        type: string
+        required: true
+      scan:
+        description: Whether supply-chain-relevant files changed.
+        type: boolean
+        required: true
+      deps:
+        description: Whether pyproject.toml changed.
+        type: boolean
+        required: true
+      mcp_catalog:
+        description: Whether the MCP catalog / installer changed.
+        type: boolean
+        required: true
+
+permissions:
+  pull-requests: write
+  contents: read
 
 jobs:
   scan:
     name: Scan PR for critical supply chain risks
+    if: inputs.scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -71,7 +84,7 @@ jobs:
           fi
 
           # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---
-          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
+          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
           if [ -n "$B64_EXEC_HITS" ]; then
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: base64 decode + exec/eval combo
@@ -85,7 +98,7 @@ jobs:
           fi
 
           # --- subprocess with encoded/obfuscated command argument ---
-          PROC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
+          PROC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
           if [ -n "$PROC_HITS" ]; then
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: subprocess with encoded/obfuscated command
@@ -149,11 +162,11 @@ jobs:
 
   dep-bounds:
     name: Check PyPI dependency upper bounds
+    if: inputs.deps
     runs-on: ubuntu-latest
-    if: contains(github.event.pull_request.changed_files_url, 'pyproject.toml') || true
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -199,7 +212,7 @@ jobs:
           $(cat /tmp/unbounded.txt)
           \`\`\`
 
-          **Fix:** Add an upper bound, e.g. \`\"package>=1.2.0,<2\"\`
+          **Fix:** Add an upper bound, e.g. \`"package>=1.2.0,<2"\`
 
           ---
           *See PR #2810 and CONTRIBUTING.md for the full policy rationale.*"
@@ -210,4 +223,42 @@ jobs:
         if: steps.bounds.outputs.found == 'true'
         run: |
           echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."
+          exit 1
+
+  mcp-catalog-review:
+    name: MCP catalog security review
+    if: inputs.mcp_catalog
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Require explicit MCP catalog review label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name' || true)
+          if echo "$LABELS" | grep -Fxq 'mcp-catalog-reviewed'; then
+            echo "MCP catalog review label present."
+            exit 0
+          fi
+
+          BODY="## ⚠️ MCP catalog security review required
+
+          This PR changes the bundled MCP catalog or MCP catalog installer code. MCP entries can define local commands that users later install into \`mcp_servers\`, so this needs explicit maintainer review before merge.
+
+          A maintainer should verify:
+          - any new/changed \`optional-mcps/**/manifest.yaml\` command and args are expected,
+          - stdio transports do not use shell+egress/exfiltration payloads,
+          - git install refs are pinned and bootstrap commands are minimal,
+          - requested env vars/secrets match the upstream MCP's documented needs.
+
+          After review, add the \`mcp-catalog-reviewed\` label and re-run this check."
+
+          gh pr comment "$PR" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs)"
+          echo "::error::MCP catalog changes require the mcp-catalog-reviewed label."
           exit 1

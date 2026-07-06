@@ -14,13 +14,11 @@ prefix embedded in the cache key); the token itself is NEVER persisted.  A
 from __future__ import annotations
 
 import hashlib
-import json
-import os
-import tempfile
-import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+
+from agent.secret_sources._cache import CachedFetch as _CachedFetch
+from agent.secret_sources._cache import DiskCache
 
 from .session import _token_fingerprint
 
@@ -31,20 +29,9 @@ from .session import _token_fingerprint
 # already scoped by living under each profile's home dir; only its serialized
 # string is profile-agnostic, see :func:`_cache_key_str`).
 _CacheKey = Tuple[str, str, str, str]
-_CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
+_CACHE: Dict[_CacheKey, _CachedFetch] = {}
 
 _DISK_CACHE_BASENAME = "protonpass_cache.json"
-
-
-@dataclass
-class _CachedFetch:
-    secrets: Dict[str, str]
-    fetched_at: float
-
-    def is_fresh(self, ttl_seconds: float) -> bool:
-        if ttl_seconds <= 0:
-            return False
-        return (time.time() - self.fetched_at) < ttl_seconds
 
 
 def _refs_signature(env_refs: Dict[str, str]) -> str:
@@ -84,19 +71,14 @@ def build_cache_key(
 def _resolve_home(home_path: Optional[Path] = None) -> Path:
     """Resolve the Hermes home dir for cache scoping.
 
-    ``home_path`` is what ``load_hermes_dotenv()`` already resolved; when it is
-    omitted we defer to ``get_hermes_home()`` (the single source of truth that
-    honours the context-local profile override and ``$HERMES_HOME``) rather than
-    re-reading the env var ourselves — see the repo AGENTS.md rule, which avoids
-    import-order surprises and keeps every caller agreeing on the profile.
+    ``home_path`` is what ``load_hermes_dotenv()`` already resolved.  When it is
+    omitted, use the same fallback as the shared secret-source cache substrate.
     """
     if home_path is not None:
         return home_path
-    # Local import keeps this module import-safe (no top-level dependency on the
-    # constants module, which several hot paths import at load time).
-    from hermes_constants import get_hermes_home
+    from agent.secret_sources._cache import resolve_cache_home
 
-    return get_hermes_home()
+    return resolve_cache_home()
 
 
 def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
@@ -117,8 +99,14 @@ def _cache_key_str(cache_key: _CacheKey) -> str:
     return f"{token_fp}|{vault}|{refs_sig}"
 
 
+_DISK_CACHE: DiskCache[_CacheKey] = DiskCache(
+    _DISK_CACHE_BASENAME,
+    key_serializer=_cache_key_str,
+)
+
+
 def _read_disk_cache(cache_key: _CacheKey, ttl_seconds: float,
-                     home_path: Optional[Path] = None) -> Optional["_CachedFetch"]:
+                     home_path: Optional[Path] = None) -> Optional[_CachedFetch]:
     """Return a cached entry from disk if fresh and the key matches, else None.
 
     The persisted ``key`` embeds the token fingerprint, so a changed token
@@ -126,33 +114,10 @@ def _read_disk_cache(cache_key: _CacheKey, ttl_seconds: float,
     on token change).  Best-effort: any I/O or parse error returns None and we
     re-fetch.
     """
-    if ttl_seconds <= 0:
-        return None
-    path = _disk_cache_path(home_path)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("key") != _cache_key_str(cache_key):
-        return None
-    secrets = payload.get("secrets")
-    fetched_at = payload.get("fetched_at")
-    if not isinstance(secrets, dict) or not isinstance(fetched_at, (int, float)):
-        return None
-    # Coerce all values to strings — JSON allows numbers but env vars need strings.
-    typed_secrets: Dict[str, str] = {
-        k: v for k, v in secrets.items() if isinstance(k, str) and isinstance(v, str)
-    }
-    entry = _CachedFetch(secrets=typed_secrets, fetched_at=float(fetched_at))
-    if not entry.is_fresh(ttl_seconds):
-        return None
-    return entry
+    return _DISK_CACHE.read(cache_key, ttl_seconds, home_path)
 
 
-def _write_disk_cache(cache_key: _CacheKey, entry: "_CachedFetch",
+def _write_disk_cache(cache_key: _CacheKey, entry: _CachedFetch,
                       home_path: Optional[Path] = None) -> None:
     """Persist a cache entry to disk atomically with mode 0600.
 
@@ -161,37 +126,7 @@ def _write_disk_cache(cache_key: _CacheKey, entry: "_CachedFetch",
     (the next invocation will just re-fetch). We never want disk cache failures
     to break startup.
     """
-    path = _disk_cache_path(home_path)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Lock the cache dir down so other local users can't enumerate it.
-        try:
-            os.chmod(path.parent, 0o700)
-        except OSError:
-            pass
-        payload = {
-            "key": _cache_key_str(cache_key),
-            "secrets": entry.secrets,
-            "fetched_at": entry.fetched_at,
-        }
-        # Write to a temp file in the same directory and atomic-rename.
-        # tempfile honors os.umask, so we explicitly chmod 0600 before rename.
-        fd, tmp = tempfile.mkstemp(
-            prefix=".protonpass_cache_", suffix=".tmp", dir=str(path.parent)
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-    except OSError:
-        pass  # best-effort — disk cache miss on next invocation is fine
+    _DISK_CACHE.write(cache_key, entry, 1, home_path)
 
 
 def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
@@ -202,7 +137,4 @@ def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
     itself.
     """
     _CACHE.clear()
-    try:
-        _disk_cache_path(home_path).unlink()
-    except (FileNotFoundError, OSError):
-        pass
+    _DISK_CACHE.clear(home_path)

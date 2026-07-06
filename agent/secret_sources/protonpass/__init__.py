@@ -17,8 +17,8 @@ This package is split into focused modules:
   disk) cache of resolved secrets.
 * :mod:`~agent.secret_sources.protonpass.fetch` — MODE A/B fetch + JSON
   parsing + argument-injection validators.
-* :mod:`~agent.secret_sources.protonpass.apply` — ``FetchResult``, the
-  application planner, and the env_loader entry point.
+* :mod:`~agent.secret_sources.protonpass.apply` — the legacy application
+  planner used by the user-facing sync command.
 
 Design summary
 --------------
@@ -43,15 +43,19 @@ The user-facing setup wizard lives in :mod:`hermes_cli.protonpass_secrets_cli`.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
+
 from .apply import (
-    FetchResult,
     PlanItem,
     SKIP_ALREADY_SET,
     SKIP_BOOTSTRAP_TOKEN,
     apply_protonpass_secrets,
     plan_application,
 )
-from .config import ProtonPassConfig
+from .config import _DEFAULT_SERVICE_TOKEN_ENV, ProtonPassConfig
 from .fetch import fetch_protonpass_secrets
 from .install import (
     find_pass_cli,
@@ -70,6 +74,134 @@ from .install import (
 from .cache import _reset_cache_for_tests  # noqa: F401
 from .install import _PASS_CLI_VERSION  # noqa: F401
 
+
+class ProtonPassSource(SecretSource):
+    """Proton Pass as a registered secret source.
+
+    ``fetch()`` only resolves configured values and returns them to the
+    registry.  The registry owns precedence, protected variables,
+    ``override_existing``, conflict warnings, provenance, and all environment
+    writes.
+    """
+
+    name = "protonpass"
+    label = "Proton Pass"
+    shape = "mapped"
+    scheme = "pass"
+
+    def is_enabled(self, cfg: dict) -> bool:
+        return ProtonPassConfig.from_mapping(cfg).enabled
+
+    def override_existing(self, cfg: dict) -> bool:
+        return ProtonPassConfig.from_mapping(cfg).override_existing
+
+    def protected_env_vars(self, cfg: dict):
+        parsed = ProtonPassConfig.from_mapping(cfg)
+        return frozenset({_DEFAULT_SERVICE_TOKEN_ENV, parsed.service_token_env})
+
+    def config_schema(self) -> dict:
+        return {
+            "enabled": {"description": "Master switch", "default": False},
+            "service_token_env": {
+                "description": "Env var holding the Proton Pass service token",
+                "default": _DEFAULT_SERVICE_TOKEN_ENV,
+            },
+            "vault": {
+                "description": "Optional MODE A vault name to bulk-list",
+                "default": "",
+            },
+            "env": {
+                "description": "Map of ENV_VAR -> pass://SHARE/ITEM/FIELD reference",
+                "default": {},
+            },
+            "cache_ttl_seconds": {
+                "description": "Disk+memory cache TTL; 0 disables",
+                "default": 300,
+            },
+            "override_existing": {
+                "description": "Resolved values overwrite .env/shell values",
+                "default": False,
+            },
+            "auto_install": {
+                "description": "Auto-download the pinned pass-cli binary",
+                "default": True,
+            },
+        }
+
+    def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
+        parsed = ProtonPassConfig.from_mapping(cfg)
+        result = FetchResult()
+
+        service_token = os.environ.get(parsed.service_token_env, "").strip()
+        if not service_token:
+            result.error = (
+                f"secrets.protonpass.enabled is true but "
+                f"{parsed.service_token_env} is not set.  Run "
+                "`hermes secrets protonpass setup`."
+            )
+            result.error_kind = ErrorKind.NOT_CONFIGURED
+            return result
+
+        if not parsed.has_fetch_target():
+            result.error = (
+                "secrets.protonpass has neither a vault (MODE A) nor env refs "
+                "(MODE B).  Run `hermes secrets protonpass setup`."
+            )
+            result.error_kind = ErrorKind.NOT_CONFIGURED
+            return result
+
+        binary = find_pass_cli(install_if_missing=parsed.auto_install)
+        result.binary_path = binary
+        if binary is None:
+            result.error = (
+                "pass-cli binary not available. Run `hermes secrets "
+                "protonpass install` to download the verified pinned version, "
+                "or leave `auto_install: true` in the secrets.protonpass "
+                "config so Hermes downloads it automatically."
+            )
+            result.error_kind = ErrorKind.BINARY_MISSING
+            return result
+
+        try:
+            secrets, warnings = fetch_protonpass_secrets(
+                service_token=service_token,
+                vault=parsed.vault,
+                env_refs=dict(parsed.env_refs),
+                binary=binary,
+                cache_ttl_seconds=parsed.cache_ttl_seconds,
+                auto_install=parsed.auto_install,
+                home_path=home_path,
+                bootstrap_env=parsed.service_token_env,
+            )
+        except Exception as exc:  # noqa: BLE001 — source contract: never raise
+            from .session import _redact_token
+
+            result.error = _redact_token(str(exc), service_token)
+            result.error_kind = _classify_protonpass_error(result.error)
+            return result
+
+        result.secrets = secrets
+        result.warnings.extend(warnings)
+        return result
+
+
+def _classify_protonpass_error(message: str) -> ErrorKind:
+    lowered = message.lower()
+    if "timed out" in lowered or "timeout" in lowered:
+        return ErrorKind.TIMEOUT
+    if "binary not available" in lowered or "failed to invoke" in lowered:
+        return ErrorKind.BINARY_MISSING
+    if any(tok in lowered for tok in ("invalid", "expired", "auth", "login")):
+        return ErrorKind.AUTH_FAILED
+    if any(tok in lowered for tok in ("malformed", "not valid", "pass://")):
+        return ErrorKind.REF_INVALID
+    if "empty" in lowered:
+        return ErrorKind.EMPTY_VALUE
+    if any(tok in lowered for tok in ("network", "connection", "download", "dns")):
+        return ErrorKind.NETWORK
+    return ErrorKind.INTERNAL
+
+
 __all__ = [
     "apply_protonpass_secrets",
     "fetch_protonpass_secrets",
@@ -78,6 +210,7 @@ __all__ = [
     "install_pass_cli",
     "FetchResult",
     "PlanItem",
+    "ProtonPassSource",
     "ProtonPassConfig",
     "plan_application",
     "SKIP_ALREADY_SET",

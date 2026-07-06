@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Palette, Check } from "lucide-react";
+import { Palette, Check, Type } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
-import { BottomPickSheet } from "@/components/BottomPickSheet";
-import { Typography } from "@/components/NouiTypography";
-import { useBelowBreakpoint } from "@/hooks/useBelowBreakpoint";
-import { BUILTIN_THEMES, useTheme } from "@/themes";
-import type { DashboardTheme, ThemeListEntry } from "@/themes";
+import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
+import { BUILTIN_THEMES, THEME_DEFAULT_FONT_ID, useTheme } from "@/themes";
+import type { DashboardTheme, FontChoice, ThemeListEntry } from "@/themes";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 
@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
  * the sidebar (same idea as a responsive Drawer).
  */
 export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitcherProps) {
-  const { themeName, availableThemes, setTheme } = useTheme();
+  const { themeName, availableThemes, setTheme, fontId, fontChoices, setFont } = useTheme();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -81,7 +81,6 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
 
           {!collapsed && (
             <Typography
-              mondwest
               className="hidden sm:inline text-display tracking-wide text-xs"
             >
               {label}
@@ -91,7 +90,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
       </Button>
 
       {useMobileSheet && (
-        <BottomPickSheet
+        <BottomSheet
           backdropDismissLabel={t.common.close}
           onClose={close}
           open={open}
@@ -104,8 +103,13 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               setTheme={setTheme}
               themeName={themeName}
             />
+            <FontSection
+              fontChoices={fontChoices}
+              fontId={fontId}
+              setFont={setFont}
+            />
           </div>
-        </BottomPickSheet>
+        </BottomSheet>
       )}
 
       {open && !useMobileSheet && (() => {
@@ -116,7 +120,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
             aria-label={sheetTitle}
             className={cn(
               "min-w-[240px] max-h-[70dvh] overflow-y-auto",
-              "border border-current/20 bg-background-base/95 backdrop-blur-sm",
+              "border border-current/20 bg-background-base/95",
               "shadow-[0_12px_32px_-8px_rgba(0,0,0,0.6)]",
               dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
             )}
@@ -129,7 +133,6 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
           >
             <div className="border-b border-current/20 px-3 py-2">
               <Typography
-                mondwest
                 className="text-display text-xs tracking-[0.12em] text-text-tertiary"
               >
                 {sheetTitle}
@@ -141,6 +144,11 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               close={close}
               setTheme={setTheme}
               themeName={themeName}
+            />
+            <FontSection
+              fontChoices={fontChoices}
+              fontId={fontId}
+              setFont={setFont}
             />
           </div>
         );
@@ -182,7 +190,6 @@ function ThemeSwitcherOptions({
 
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <Typography
-                mondwest
                 className="truncate text-display text-xs tracking-wide"
               >
                 {th.label}
@@ -207,16 +214,118 @@ function ThemeSwitcherOptions({
   );
 }
 
+const FONT_CATEGORY_LABEL_KEY: Record<FontChoice["category"], "fontSans" | "fontSerif" | "fontMono"> = {
+  sans: "fontSans",
+  serif: "fontSerif",
+  mono: "fontMono",
+};
+
+/** Font-override section rendered below the theme list. Lets the user pick
+ *  any catalog font independently of the active theme, or "Theme default"
+ *  to clear the override. Each row previews itself in its own font. */
+function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
+  const { t } = useI18n();
+  const order: FontChoice["category"][] = ["sans", "serif", "mono"];
+  return (
+    <>
+      <div className="mt-1 border-t border-current/20 px-3 pb-1 pt-2">
+        <span className="inline-flex items-center gap-1.5">
+          <Type className="h-3 w-3 text-text-tertiary" />
+          <Typography
+            className="text-display text-xs tracking-[0.12em] text-text-tertiary"
+          >
+            {t.theme?.fontTitle ?? "Font"}
+          </Typography>
+        </span>
+      </div>
+
+      {/* Theme-default (clears the override). */}
+      <ListItem
+        active={fontId === THEME_DEFAULT_FONT_ID}
+        aria-selected={fontId === THEME_DEFAULT_FONT_ID}
+        className="gap-3"
+        onClick={() => setFont(THEME_DEFAULT_FONT_ID)}
+        role="option"
+      >
+        <span aria-hidden className="h-4 w-9 shrink-0" />
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <Typography className="truncate text-xs tracking-normal">
+            {t.theme?.fontDefault ?? "Theme default"}
+          </Typography>
+          <Typography className="truncate text-xs tracking-normal text-text-tertiary">
+            {t.theme?.fontDefaultHint ?? "Use the active theme's font"}
+          </Typography>
+        </div>
+        <Check
+          className={cn(
+            "h-3 w-3 shrink-0 text-midground",
+            fontId === THEME_DEFAULT_FONT_ID ? "opacity-100" : "opacity-0",
+          )}
+        />
+      </ListItem>
+
+      {order.map((cat) => {
+        const fonts = fontChoices.filter((f) => f.category === cat);
+        if (fonts.length === 0) return null;
+        const catLabel = t.theme?.[FONT_CATEGORY_LABEL_KEY[cat]] ?? cat;
+        return (
+          <div key={cat}>
+            <div className="px-3 pb-0.5 pt-1.5">
+              <Typography className="text-[0.65rem] uppercase tracking-[0.1em] text-text-tertiary">
+                {catLabel}
+              </Typography>
+            </div>
+            {fonts.map((f) => {
+              const isActive = f.id === fontId;
+              return (
+                <ListItem
+                  active={isActive}
+                  aria-selected={isActive}
+                  className="gap-3"
+                  key={f.id}
+                  onClick={() => setFont(f.id)}
+                  role="option"
+                >
+                  <span aria-hidden className="h-4 w-9 shrink-0" />
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    {/* Preview the font in its own stack. */}
+                    <span
+                      className="truncate text-sm"
+                      style={{ fontFamily: f.stack }}
+                    >
+                      {f.label}
+                    </span>
+                  </div>
+                  <Check
+                    className={cn(
+                      "h-3 w-3 shrink-0 text-midground",
+                      isActive ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                </ListItem>
+              );
+            })}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function ThemeSwatch({ theme }: { theme: DashboardTheme }) {
-  const { background, midground, warmGlow } = theme.palette;
+  const [c1, c2, c3] = theme.swatchColors ?? [
+    theme.palette.background.hex,
+    theme.palette.midground.hex,
+    theme.palette.warmGlow,
+  ];
   return (
     <div
       aria-hidden
       className="flex h-4 w-9 shrink-0 overflow-hidden border border-current/20"
     >
-      <span className="flex-1" style={{ background: background.hex }} />
-      <span className="flex-1" style={{ background: midground.hex }} />
-      <span className="flex-1" style={{ background: warmGlow }} />
+      <span className="flex-1" style={{ background: c1 }} />
+      <span className="flex-1" style={{ background: c2 }} />
+      <span className="flex-1" style={{ background: c3 }} />
     </div>
   );
 }
@@ -235,6 +344,12 @@ interface ThemeSwitcherOptionsProps {
   close: () => void;
   setTheme: (name: string) => void;
   themeName: string;
+}
+
+interface FontSectionProps {
+  fontChoices: FontChoice[];
+  fontId: string;
+  setFont: (id: string) => void;
 }
 
 interface ThemeSwitcherProps {

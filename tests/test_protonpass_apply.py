@@ -838,27 +838,32 @@ class _CompletedVersion:
 
 
 # ---------------------------------------------------------------------------
-# env_loader registry bool coercion (B9): enabled:"false" disables the source
+# SecretSource bool coercion (B9): enabled:"false" disables the source
 # ---------------------------------------------------------------------------
 
 
-def test_env_loader_coerce_enabled_string_false():
-    from hermes_cli import env_loader
-    assert env_loader._coerce_enabled("false") is False
-    assert env_loader._coerce_enabled("true") is True
-    assert env_loader._coerce_enabled("maybe") is False  # ambiguous → False
-    assert env_loader._coerce_enabled(True) is True
-    assert env_loader._coerce_enabled(0) is False
+def test_protonpass_source_coerces_enabled_string_false():
+    from agent.secret_sources.protonpass import ProtonPassSource
+
+    src = ProtonPassSource()
+    assert src.is_enabled({"enabled": "false"}) is False
+    assert src.is_enabled({"enabled": "true"}) is True
+    assert src.is_enabled({"enabled": "maybe"}) is False
+    assert src.is_enabled({"enabled": True}) is True
+    assert src.is_enabled({"enabled": 0}) is False
 
 
 def test_env_loader_string_false_disables_protonpass(tmp_path, monkeypatch):
     """B9 end-to-end: ``enabled: "false"`` (a string) must DISABLE the source so
-    the applicator is never called."""
+    the fetch layer is never called."""
     from hermes_cli import env_loader
+    from agent.secret_sources import registry as reg_module
 
     env_loader._SECRET_SOURCES.clear()
     env_loader.reset_secret_source_cache()
+    reg_module._reset_registry_for_tests()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PROTON_PASS_PERSONAL_ACCESS_TOKEN", "pst_test-token")
     (tmp_path / "config.yaml").write_text(
         "secrets:\n"
         "  protonpass:\n"
@@ -870,13 +875,13 @@ def test_env_loader_string_false_disables_protonpass(tmp_path, monkeypatch):
 
     called = {"n": 0}
 
-    def _fake_apply(**_kwargs):  # pragma: no cover - must not be called
+    def _fake_fetch(**_kwargs):  # pragma: no cover - must not be called
         called["n"] += 1
-        from agent.secret_sources.protonpass import FetchResult
-        return FetchResult()
+        return {"ANTHROPIC_API_KEY": "sk-ant"}, []
 
     import agent.secret_sources.protonpass as pp_module
-    monkeypatch.setattr(pp_module, "apply_protonpass_secrets", _fake_apply)
+    monkeypatch.setattr(pp_module, "find_pass_cli", lambda **_kw: "/fake/pass-cli")
+    monkeypatch.setattr(pp_module, "fetch_protonpass_secrets", _fake_fetch)
 
     env_loader._apply_external_secret_sources(tmp_path)
 
@@ -884,3 +889,4 @@ def test_env_loader_string_false_disables_protonpass(tmp_path, monkeypatch):
     assert env_loader.get_secret_source("ANTHROPIC_API_KEY") is None
     env_loader._SECRET_SOURCES.clear()
     env_loader.reset_secret_source_cache()
+    reg_module._reset_registry_for_tests()

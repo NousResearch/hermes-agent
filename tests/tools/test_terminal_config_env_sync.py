@@ -7,9 +7,9 @@ at startup, by THREE separate code paths:
   1. cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
   2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
                           platforms)
-  3. hermes_cli/config.py:save_config_value
-                       -> ``_config_to_env_sync`` dict (one-shot when the
-                          user runs ``hermes config set …``)
+  3. hermes_cli/config.py:set_config_value
+                       -> bridges via the canonical ``TERMINAL_CONFIG_ENV_MAP``
+                          (one-shot when the user runs ``hermes config set …``)
 
 If any one of these is missing a key, the corresponding config.yaml setting
 silently does nothing for that entry-point.  This bug already shipped once
@@ -87,14 +87,20 @@ def _gateway_env_map_keys() -> set[str]:
 
 
 def _save_config_env_sync_keys() -> set[str]:
-    """terminal config keys bridged by ``hermes config set foo bar``."""
+    """terminal config keys bridged by ``hermes config set foo bar``.
+
+    ``set_config_value`` no longer carries its own ``_config_to_env_sync``
+    dict — it bridges through the canonical ``TERMINAL_CONFIG_ENV_MAP`` via
+    ``terminal_config_env_var_for_key()`` (config.py), excluding ``cwd``
+    (handled separately).  Read the live map so this test tracks the actual
+    source of truth that the config-set path uses, rather than a string
+    literal that the consolidation removed.
+    """
     from hermes_cli import config as hc_config
-    source = inspect.getsource(hc_config.set_config_value)
-    keys = _extract_dict_keys(source, "_config_to_env_sync")
-    # set_config_value uses fully-qualified ``terminal.foo`` keys; strip the
-    # prefix so we can compare against the other two maps which use bare
-    # leaf keys.
-    return {k.split(".", 1)[1] for k in keys if k.startswith("terminal.")}
+    # set_config_value bridges every TERMINAL_CONFIG_ENV_MAP key except
+    # terminal.cwd (see the ``key != "terminal.cwd"`` guard in
+    # set_config_value); mirror that exclusion here.
+    return {k for k in hc_config.TERMINAL_CONFIG_ENV_MAP if k != "cwd"}
 
 
 # Keys present in cli.py env_mappings but intentionally absent from
@@ -156,14 +162,15 @@ def test_cli_and_gateway_env_maps_agree():
 
 def test_save_config_set_supports_critical_bridged_keys():
     """``hermes config set terminal.X true`` must propagate to .env for
-    known-critical keys.  This used to be an all-keys invariant but several
-    pre-existing terminal keys (ssh_*, docker_forward_env, docker_volumes)
-    aren't in _config_to_env_sync and are instead handled via the separate
-    api_keys TERMINAL_SSH_* fallback path or user-edits-yaml-directly.
+    known-critical keys.  This used to be an all-keys invariant but the SSH
+    terminal keys (ssh_*) aren't in _config_to_env_sync and are instead
+    handled via the separate api_keys TERMINAL_SSH_* fallback path or
+    user-edits-yaml-directly.
 
     Until those gaps are audited and fixed, pin the specific keys that are
-    load-bearing for the docker backend's ownership flag so the bug we just
-    fixed cannot silently regress.
+    load-bearing for the docker backend so the bugs we fixed cannot silently
+    regress.  (docker_volumes / docker_forward_env, previously listed here as
+    gaps, are now bridged — see the dedicated tests below.)
     """
     save_keys = _save_config_env_sync_keys()
     required = {
@@ -179,8 +186,8 @@ def test_save_config_set_supports_critical_bridged_keys():
     missing = required - save_keys
     assert not missing, (
         f"`hermes config set terminal.X` doesn't sync these load-bearing "
-        f"keys to .env: {sorted(missing)}.  Add them to _config_to_env_sync "
-        f"in hermes_cli/config.py:set_config_value."
+        f"keys to .env: {sorted(missing)}.  Add them to TERMINAL_CONFIG_ENV_MAP "
+        f"in hermes_cli/config.py (set_config_value bridges through it)."
     )
 
 
@@ -224,3 +231,94 @@ def test_docker_env_is_bridged_everywhere():
     assert "docker_env" in _gateway_env_map_keys()
     assert "docker_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
+
+
+def test_docker_extra_args_is_bridged_everywhere():
+    """Regression pin for docker_extra_args config key being silently ignored.
+
+    ``terminal.docker_extra_args`` in config.yaml passes extra flags verbatim
+    to ``docker run`` (e.g. ``--gpus=all``, ``--shm-size=16g``).  The key was
+    present in DEFAULT_CONFIG, TERMINAL_CONFIG_ENV_MAP (so ``hermes config
+    set`` bridged it), terminal_tool._get_env_config (reads
+    TERMINAL_DOCKER_EXTRA_ARGS), and DockerEnvironment (applies extra_args) --
+    but it was MISSING from cli.py's env_mappings and gateway/run.py's
+    _terminal_env_map.  So a user who hand-edited config.yaml had their GPU /
+    shm-size flags silently dropped on the CLI and gateway/desktop paths,
+    while ``image``/``volumes`` (which were in those maps) bridged fine --
+    producing the "Hermes partially reads the Docker config" symptom.  Guard
+    all four bridging points so this cannot regress.
+    """
+    assert "docker_extra_args" in _cli_env_map_keys()
+    assert "docker_extra_args" in _gateway_env_map_keys()
+    assert "docker_extra_args" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()
+
+
+def test_docker_persist_across_processes_is_bridged_everywhere():
+    """Regression pin for the cross-process container reuse toggle.
+
+    ``terminal.docker_persist_across_processes`` (issue #20561) controls
+    whether ``DockerEnvironment.__init__`` probes for and reuses an existing
+    labeled container at startup, and whether ``cleanup()`` removes the
+    container on Hermes exit or just stops it (keeping it for the next
+    process).  Same four-bridge invariant as docker_run_as_host_user /
+    docker_env / docker_mount_cwd_to_workspace — drift between any of the
+    four sites means ``terminal.docker_persist_across_processes: false`` in
+    config.yaml silently does nothing for that entry point, leaving the
+    user unable to opt out of the documented "ONE long-lived container
+    shared across sessions" behavior.
+    """
+    assert "docker_persist_across_processes" in _cli_env_map_keys()
+    assert "docker_persist_across_processes" in _gateway_env_map_keys()
+    assert "docker_persist_across_processes" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES" in _terminal_tool_env_var_names()
+
+
+def test_docker_orphan_reaper_is_bridged_everywhere():
+    """Regression pin for the startup orphan reaper toggle (issue #20561).
+
+    ``terminal.docker_orphan_reaper`` controls whether Hermes sweeps stale
+    Exited containers from prior SIGKILL'd processes at startup.  Same
+    four-site bridge invariant — drift means
+    ``terminal.docker_orphan_reaper: false`` silently does nothing for one
+    entry point, and the reaper either runs when the operator disabled it
+    or fails to run when they enabled it.
+    """
+    assert "docker_orphan_reaper" in _cli_env_map_keys()
+    assert "docker_orphan_reaper" in _gateway_env_map_keys()
+    assert "docker_orphan_reaper" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_ORPHAN_REAPER" in _terminal_tool_env_var_names()
+
+
+def test_docker_volumes_is_bridged_everywhere():
+    """Regression pin for ``terminal.docker_volumes`` being silently dropped by
+    ``hermes config set``.
+
+    The JSON list of ``host:container`` bind mounts was bridged by cli.py and
+    gateway/run.py and consumed by terminal_tool (via json.loads), but was
+    missing from set_config_value's _config_to_env_sync.  So
+    ``hermes config set terminal.docker_volumes '["/host:/workspace"]'`` wrote
+    config.yaml yet left the running process's TERMINAL_DOCKER_VOLUMES stale —
+    the mounts didn't apply until a full restart.  Same four-site bridge
+    invariant as docker_env / docker_run_as_host_user.
+    """
+    assert "docker_volumes" in _cli_env_map_keys()
+    assert "docker_volumes" in _gateway_env_map_keys()
+    assert "docker_volumes" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_VOLUMES" in _terminal_tool_env_var_names()
+
+
+def test_docker_forward_env_is_bridged_everywhere():
+    """Regression pin for ``terminal.docker_forward_env`` — the sibling gap to
+    docker_volumes.
+
+    The JSON list of host env-var names forwarded into the container was
+    bridged by cli.py and gateway/run.py and consumed by terminal_tool (via
+    json.loads), but missing from set_config_value's _config_to_env_sync, so
+    ``hermes config set terminal.docker_forward_env '["GITHUB_TOKEN"]'`` had no
+    effect on the running process until restart.
+    """
+    assert "docker_forward_env" in _cli_env_map_keys()
+    assert "docker_forward_env" in _gateway_env_map_keys()
+    assert "docker_forward_env" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()

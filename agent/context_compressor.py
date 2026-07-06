@@ -2777,6 +2777,19 @@ This compaction should PRIORITISE preserving all information related to the focu
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
             turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
+            if not turns_to_summarize:
+                self._ineffective_compression_count += 1
+                self._last_compression_savings_pct = 0.0
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression skipped: latest context summary leaves no "
+                        "new turns to summarize in window %d-%d. "
+                        "ineffective_compression_count=%d",
+                        compress_start,
+                        compress_end,
+                        self._ineffective_compression_count,
+                    )
+                return messages
         elif self._previous_summary:
             # No handoff summary found in the current messages, but
             # _previous_summary is non-empty — it was set by a different

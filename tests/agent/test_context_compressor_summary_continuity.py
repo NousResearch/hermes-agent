@@ -85,3 +85,34 @@ def test_handoff_in_protected_head_populates_previous_summary_before_update():
     assert compressor._previous_summary == old_summary
     assert seen_turns
     assert all(old_summary not in str(msg.get("content", "")) for msg in seen_turns)
+
+
+def test_empty_post_handoff_window_noops_without_summary_call():
+    """A latest handoff that consumes the window must not trigger an empty summary."""
+    compressor = _compressor()
+    old_summary = "WINDOW-END-SUMMARY durable facts already captured"
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "protected first user turn"},
+        {"role": "assistant", "content": "old assistant turn already captured"},
+        {"role": "user", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
+        {"role": "assistant", "content": "recent tail response"},
+        {"role": "user", "content": "latest tail request"},
+        {"role": "assistant", "content": "latest tail answer"},
+    ]
+
+    with (
+        patch.object(compressor, "_find_tail_cut_by_tokens", return_value=4),
+        patch.object(compressor, "_generate_summary") as mock_generate_summary,
+    ):
+        result = compressor.compress(messages, current_tokens=90_000)
+
+    mock_generate_summary.assert_not_called()
+    assert result == messages
+    assert compressor._previous_summary == old_summary
+    assert compressor.compression_count == 0
+    assert compressor._ineffective_compression_count == 1
+    assert compressor._last_compression_savings_pct == 0.0
+    assert compressor._last_summary_dropped_count == 0
+    assert compressor._last_summary_fallback_used is False
+    assert compressor._last_compress_aborted is False

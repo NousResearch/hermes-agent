@@ -26,6 +26,8 @@ class _FakeRegistry:
 
     def __init__(self, sessions):
         self._sessions = list(sessions)
+        self._consumed = set()
+        self._claimed = set()
 
     def get(self, session_id):
         if self._sessions:
@@ -33,7 +35,20 @@ class _FakeRegistry:
         return None
 
     def is_completion_consumed(self, session_id):
-        return False
+        return session_id in self._consumed
+
+    def claim_completion_delivery(self, session_id):
+        if session_id in self._consumed or session_id in self._claimed:
+            return False
+        self._claimed.add(session_id)
+        return True
+
+    def release_completion_delivery(self, session_id):
+        self._claimed.discard(session_id)
+
+    def mark_completion_consumed(self, session_id):
+        self._consumed.add(session_id)
+        self.release_completion_delivery(session_id)
 
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
@@ -321,6 +336,151 @@ async def test_agent_notification_carries_message_id_reply_anchor(monkeypatch, t
     assert synth_event.internal is True
     assert synth_event.message_id == "555"
     assert synth_event.source.thread_id == "24296"
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_watcher_marks_completion_consumed_after_success(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    session = SimpleNamespace(
+        id="proc_notify_dedup",
+        output_buffer="SMOKE_OK\n",
+        exited=True,
+        exit_code=0,
+        command="sleep 1",
+    )
+    registry = _FakeRegistry([session, session])
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = {
+        "session_id": session.id,
+        "check_interval": 0,
+        "session_key": "agent:main:telegram:dm:123:24296",
+        "platform": "telegram",
+        "chat_id": "123",
+        "thread_id": "24296",
+        "message_id": "555",
+        "notify_on_complete": True,
+    }
+
+    await runner._run_process_watcher(watcher)
+
+    handle_message = getattr(adapter, "handle_message")
+    handle_message.assert_awaited_once()
+    assert registry.is_completion_consumed(session.id)
+
+    await runner._run_process_watcher(watcher)
+
+    handle_message.assert_awaited_once()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_watcher_retries_after_injection_error(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    session = SimpleNamespace(
+        id="proc_notify_retry_after_error",
+        output_buffer="SMOKE_OK\n",
+        exited=True,
+        exit_code=0,
+        command="sleep 1",
+    )
+    registry = _FakeRegistry([session, session])
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    handle_message = getattr(adapter, "handle_message")
+    handle_message.side_effect = RuntimeError("boom")
+    watcher = {
+        "session_id": session.id,
+        "check_interval": 0,
+        "session_key": "agent:main:telegram:dm:123:24296",
+        "platform": "telegram",
+        "chat_id": "123",
+        "thread_id": "24296",
+        "message_id": "555",
+        "notify_on_complete": True,
+    }
+
+    await runner._run_process_watcher(watcher)
+
+    assert not registry.is_completion_consumed(session.id)
+
+    handle_message.side_effect = None
+    handle_message.reset_mock()
+    await runner._run_process_watcher(watcher)
+
+    handle_message.assert_awaited_once()
+    assert registry.is_completion_consumed(session.id)
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_watcher_claims_completion_before_await(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    session = SimpleNamespace(
+        id="proc_notify_concurrent_dedup",
+        output_buffer="SMOKE_OK\n",
+        exited=True,
+        exit_code=0,
+        command="sleep 1",
+    )
+    registry = _FakeRegistry([session, session])
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    entered_first_delivery = asyncio.Event()
+    release_first_delivery = asyncio.Event()
+    delivered_events = []
+
+    async def _handle_message(event):
+        delivered_events.append(event)
+        if len(delivered_events) == 1:
+            entered_first_delivery.set()
+            await release_first_delivery.wait()
+
+    adapter.handle_message.side_effect = _handle_message
+    watcher = {
+        "session_id": session.id,
+        "check_interval": 0,
+        "session_key": "agent:main:telegram:dm:123:24296",
+        "platform": "telegram",
+        "chat_id": "123",
+        "thread_id": "24296",
+        "message_id": "555",
+        "notify_on_complete": True,
+    }
+
+    first_watcher = asyncio.create_task(runner._run_process_watcher(watcher))
+    await asyncio.wait_for(entered_first_delivery.wait(), timeout=1)
+
+    await runner._run_process_watcher(watcher)
+    assert len(delivered_events) == 1
+
+    release_first_delivery.set()
+    await first_watcher
+
+    assert registry.is_completion_consumed(session.id)
+    adapter.handle_message.assert_awaited_once()
+    adapter.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

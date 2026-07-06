@@ -144,7 +144,11 @@ def test_real_inbound_after_dormancy_restores_running_status(monkeypatch):
     assert status_updates == ["running"]
 
 
-def test_bg_work_false_when_quiet():
+def test_bg_work_false_when_quiet(monkeypatch):
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr("tools.async_delegation.active_count", lambda: 0)
+    monkeypatch.setattr("tools.process_registry.process_registry", ProcessRegistry())
     r = GatewayRunner.__new__(GatewayRunner)
     r._background_tasks = set()
     # No background tasks, no active processes in this fresh process.

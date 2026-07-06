@@ -29,7 +29,8 @@ class _FakeRegistry:
 
     def __init__(self, sessions):
         self._sessions = list(sessions)
-        self._completion_consumed: set = set()
+        self._completion_consumed: set[str] = set()
+        self._completion_delivery_claimed: set[str] = set()
 
     def get(self, session_id):
         if self._sessions:
@@ -38,6 +39,22 @@ class _FakeRegistry:
 
     def is_completion_consumed(self, session_id):
         return session_id in self._completion_consumed
+
+    def claim_completion_delivery(self, session_id):
+        if (
+            session_id in self._completion_consumed
+            or session_id in self._completion_delivery_claimed
+        ):
+            return False
+        self._completion_delivery_claimed.add(session_id)
+        return True
+
+    def release_completion_delivery(self, session_id):
+        self._completion_delivery_claimed.discard(session_id)
+
+    def mark_completion_consumed(self, session_id):
+        self._completion_consumed.add(session_id)
+        self.release_completion_delivery(session_id)
 
 
 def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:

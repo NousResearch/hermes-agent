@@ -176,7 +176,8 @@ class ProcessRegistry:
         # via wait/log.  Drain loops AND gateway/tui watchers skip notifications
         # for these — a blocking wait() or a full read_log() means the agent
         # has the output in hand and is acting on it this turn.
-        self._completion_consumed: set = set()
+        self._completion_consumed: set[str] = set()
+        self._completion_delivery_claimed: set[str] = set()
 
         # Track sessions the agent merely *observed* exited via poll().  poll()
         # is a read-only status check, so it does NOT mark _completion_consumed
@@ -1099,6 +1100,34 @@ class ProcessRegistry:
         """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
 
+    def claim_completion_delivery(self, session_id: str) -> bool:
+        """Reserve one autonomous completion delivery for a session."""
+        if not session_id:
+            return False
+        with self._lock:
+            if (
+                session_id in self._completion_consumed
+                or session_id in self._completion_delivery_claimed
+            ):
+                return False
+            self._completion_delivery_claimed.add(session_id)
+            return True
+
+    def release_completion_delivery(self, session_id: str) -> None:
+        """Release a delivery reservation when notification injection fails."""
+        if not session_id:
+            return
+        with self._lock:
+            self._completion_delivery_claimed.discard(session_id)
+
+    def mark_completion_consumed(self, session_id: str) -> None:
+        """Mark a session completion as delivered by an autonomous watcher."""
+        if not session_id:
+            return
+        with self._lock:
+            self._completion_consumed.add(session_id)
+            self._completion_delivery_claimed.discard(session_id)
+
     def is_session_waiting(self, session_id: str) -> bool:
         """Whether a goal loop parked on this session should still be parked.
 
@@ -1727,6 +1756,7 @@ class ProcessRegistry:
         for sid in expired:
             del self._finished[sid]
             self._completion_consumed.discard(sid)
+            self._completion_delivery_claimed.discard(sid)
             self._poll_observed.discard(sid)
 
         # If still over limit, remove oldest finished
@@ -1735,6 +1765,7 @@ class ProcessRegistry:
             oldest_id = min(self._finished, key=lambda sid: self._finished[sid].started_at)
             del self._finished[oldest_id]
             self._completion_consumed.discard(oldest_id)
+            self._completion_delivery_claimed.discard(oldest_id)
             self._poll_observed.discard(oldest_id)
 
         # Drop any _completion_consumed / _poll_observed entries whose sessions
@@ -1745,6 +1776,9 @@ class ProcessRegistry:
         stale = self._completion_consumed - tracked
         if stale:
             self._completion_consumed -= stale
+        stale_claims = self._completion_delivery_claimed - tracked
+        if stale_claims:
+            self._completion_delivery_claimed -= stale_claims
         stale_polls = self._poll_observed - tracked
         if stale_polls:
             self._poll_observed -= stale_polls

@@ -14676,72 +14676,81 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # poll() is read-only and intentionally does NOT mark consumed
                 # (#10156) — a status check must not suppress this delivery turn.
                 from tools.process_registry import format_process_notification, process_registry as _pr_check
-                if agent_notify and not _pr_check.is_completion_consumed(session_id):
-                    from tools.ansi_strip import strip_ansi
-                    _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-                    # Truncate at line boundaries so notifications never start
-                    # mid-line (fixes #23284). Keep the last ~2000 chars but
-                    # snap to the nearest preceding newline, then prepend a
-                    # truncation marker when output was cut.
-                    _LIMIT = 2000
-                    if len(_raw) > _LIMIT:
-                        _tail = _raw[-_LIMIT:]
-                        _nl = _tail.find("\n")
-                        _tail = _tail[_nl + 1:] if _nl != -1 else _tail
-                        _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
-                    else:
-                        _out = _raw
-                    synth_text = format_process_notification({
-                        "type": "completion",
-                        "session_id": session_id,
-                        "command": session.command,
-                        "exit_code": session.exit_code,
-                        "completion_reason": getattr(session, "completion_reason", "exited"),
-                        "termination_source": getattr(session, "termination_source", ""),
-                        "output": _out,
-                    })
-                    if not synth_text:
+                if agent_notify:
+                    if not _pr_check.claim_completion_delivery(session_id):
                         break
-                    source = self._build_process_event_source({
-                        "session_id": session_id,
-                        "session_key": session_key,
-                        "platform": platform_name,
-                        "chat_id": chat_id,
-                        "thread_id": thread_id,
-                        "user_id": user_id,
-                        "user_name": user_name,
-                    })
-                    if not source:
-                        logger.warning(
-                            "Dropping completion notification with no routing metadata for process %s",
-                            session_id,
-                        )
-                        break
-
-                    adapter = None
-                    for p, a in self.adapters.items():
-                        if p == source.platform:
-                            adapter = a
+                    delivery_succeeded = False
+                    try:
+                        from tools.ansi_strip import strip_ansi
+                        _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
+                        # Truncate at line boundaries so notifications never start
+                        # mid-line (fixes #23284). Keep the last ~2000 chars but
+                        # snap to the nearest preceding newline, then prepend a
+                        # truncation marker when output was cut.
+                        _LIMIT = 2000
+                        if len(_raw) > _LIMIT:
+                            _tail = _raw[-_LIMIT:]
+                            _nl = _tail.find("\n")
+                            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+                            _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
+                        else:
+                            _out = _raw
+                        synth_text = format_process_notification({
+                            "type": "completion",
+                            "session_id": session_id,
+                            "command": session.command,
+                            "exit_code": session.exit_code,
+                            "completion_reason": getattr(session, "completion_reason", "exited"),
+                            "termination_source": getattr(session, "termination_source", ""),
+                            "output": _out,
+                        })
+                        if not synth_text:
                             break
-                    if adapter and source.chat_id:
-                        try:
-                            synth_event = MessageEvent(
-                                text=synth_text,
-                                message_type=MessageType.TEXT,
-                                source=source,
-                                internal=True,
-                                message_id=message_id,
-                            )
-                            logger.info(
-                                "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
+                        source = self._build_process_event_source({
+                            "session_id": session_id,
+                            "session_key": session_key,
+                            "platform": platform_name,
+                            "chat_id": chat_id,
+                            "thread_id": thread_id,
+                            "user_id": user_id,
+                            "user_name": user_name,
+                        })
+                        if not source:
+                            logger.warning(
+                                "Dropping completion notification with no routing metadata for process %s",
                                 session_id,
-                                session_key,
-                                source.chat_id,
-                                source.thread_id,
                             )
-                            await adapter.handle_message(synth_event)
-                        except Exception as e:
-                            logger.error("Agent notify injection error: %s", e)
+                            break
+
+                        adapter = None
+                        for p, a in self.adapters.items():
+                            if p == source.platform:
+                                adapter = a
+                                break
+                        if adapter and source.chat_id:
+                            try:
+                                synth_event = MessageEvent(
+                                    text=synth_text,
+                                    message_type=MessageType.TEXT,
+                                    source=source,
+                                    internal=True,
+                                    message_id=message_id,
+                                )
+                                logger.info(
+                                    "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
+                                    session_id,
+                                    session_key,
+                                    source.chat_id,
+                                    source.thread_id,
+                                )
+                                await adapter.handle_message(synth_event)
+                                _pr_check.mark_completion_consumed(session_id)
+                                delivery_succeeded = True
+                            except Exception as e:
+                                logger.error("Agent notify injection error: %s", e)
+                    finally:
+                        if not delivery_succeeded:
+                            _pr_check.release_completion_delivery(session_id)
                     break
 
                 # --- Normal text-only notification ---

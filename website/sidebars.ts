@@ -749,6 +749,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/image-gen-provider-plugin',
                 'developer-guide/video-gen-provider-plugin',
                 'developer-guide/web-search-provider-plugin',
+                'developer-guide/browser-provider-plugin',
               ],
             },
             'developer-guide/creating-skills',

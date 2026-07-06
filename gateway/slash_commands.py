@@ -3619,6 +3619,8 @@ class GatewaySlashCommandsMixin:
             resume_event = dataclasses.replace(event, text=f"/resume {target}")
             return await self._handle_resume_command(resume_event)
 
+        from hermes_state import _LIST_DENY_SOURCES
+
         current_entry = self.session_store.get_or_create_session(source)
         rows = await asyncio.to_thread(
             query_session_listing,
@@ -3628,7 +3630,7 @@ class GatewaySlashCommandsMixin:
             include_all_sources=include_all,
             include_unnamed=include_unnamed,
             limit=10,
-            exclude_sources=["tool"],
+            exclude_sources=list(_LIST_DENY_SOURCES),
         )
         if source.platform == Platform.MATRIX and not include_all:
             rows = [

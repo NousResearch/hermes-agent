@@ -5347,7 +5347,9 @@ def _(rid, params: dict) -> dict:
         # sources (``tool`` sub-agent runs) rather than allow-listing a
         # fixed set of platform names that goes stale whenever a new
         # platform is added or a user names their own source.
-        deny = frozenset({"tool"})
+        from hermes_state import _LIST_DENY_SOURCES
+
+        deny = frozenset(_LIST_DENY_SOURCES)
 
         limit = int(params.get("limit", 200) or 200)
         # Over-fetch modestly so per-source filtering doesn't leave us
@@ -5399,7 +5401,9 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
-        deny = frozenset({"tool"})
+        from hermes_state import _LIST_DENY_SOURCES
+
+        deny = frozenset(_LIST_DENY_SOURCES)
         # Over-fetch by a generous bounded amount so heavy sub-agent
         # users (lots of recent ``tool`` rows) don't get a false
         # "no eligible session" answer.  ``session.list`` uses a

@@ -229,7 +229,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
           {copy.noModels}
         </DropdownMenuItem>
       ) : (
-        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5">
+        <div className="max-h-[min(18rem,50dvh)] overflow-y-auto py-0.5">
           {groups.map(group => (
             <DropdownMenuGroup className="py-0.5" key={group.provider.slug}>
               <DropdownMenuLabel className={dropdownMenuSectionLabel}>{group.provider.name}</DropdownMenuLabel>

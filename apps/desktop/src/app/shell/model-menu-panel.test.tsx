@@ -100,3 +100,48 @@ describe('ModelMenuPanel MoA presets', () => {
     expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa' })
   })
 })
+
+describe('ModelMenuPanel custom providers', () => {
+  it('renders the active bare custom endpoint and each named custom provider', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      model: 'Qwen3.6-27B-NVFP4-MTP-GGUF.gguf',
+      provider: 'custom',
+      providers: [
+        {
+          api_url: 'http://192.168.50.124:8090/v1',
+          is_current: true,
+          is_user_defined: true,
+          models: ['Qwen3.6-27B-NVFP4-MTP-GGUF.gguf'],
+          name: 'Custom endpoint',
+          slug: 'custom',
+          source: 'model-config'
+        },
+        {
+          api_url: 'http://192.168.50.130:8080/v1',
+          is_user_defined: true,
+          models: ['gemma-4-12b-omni'],
+          name: '3090-gemma4-12b',
+          slug: 'custom:3090-gemma4-12b',
+          source: 'user-config'
+        },
+        {
+          api_url: 'http://192.168.50.125:8000/v1',
+          is_user_defined: true,
+          models: ['gemma-4-26b-a4b-nvfp4'],
+          name: 'spark-gemma4-26b-a4b',
+          slug: 'custom:spark-gemma4-26b-a4b',
+          source: 'user-config'
+        }
+      ]
+    })
+
+    renderPanel()
+
+    await findByText(document.body, 'Custom endpoint')
+    await findByText(document.body, '3090-gemma4-12b')
+    await findByText(document.body, 'spark-gemma4-26b-a4b')
+    expect(document.body.textContent).toContain('Qwen3.6 27B NVFP4 MTP GGUF.Gguf')
+    expect(document.body.textContent).toContain('Gemma 4 12b Omni')
+    expect(document.body.textContent).toContain('Gemma 4 26b A4b Nvfp4')
+  })
+})

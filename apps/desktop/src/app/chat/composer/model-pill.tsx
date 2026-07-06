@@ -99,7 +99,13 @@ export function ModelPill({
           </Button>
         </DropdownMenuTrigger>
       </Tip>
-      <DropdownMenuContent align="end" className="w-64 p-0" side="top" sideOffset={8}>
+      <DropdownMenuContent
+        align="end"
+        className="w-64 p-0"
+        side="top"
+        sideOffset={8}
+        style={{ maxHeight: 'min(26rem, calc(100dvh - 1rem))', overflow: 'hidden' }}
+      >
         <ModelMenuCloseContext.Provider value={() => setOpen(false)}>
           {model.modelMenuContent}
         </ModelMenuCloseContext.Provider>

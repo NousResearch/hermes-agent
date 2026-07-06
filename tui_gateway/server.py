@@ -2355,7 +2355,9 @@ def _load_provider_routing() -> dict:
 
 
 def _load_show_reasoning() -> bool:
-    return bool((_load_cfg().get("display") or {}).get("show_reasoning", False))
+    # Fallback True — keep in sync with DEFAULT_CONFIG display.show_reasoning
+    # (this loader reads the raw user YAML without the DEFAULT_CONFIG merge).
+    return bool((_load_cfg().get("display") or {}).get("show_reasoning", True))
 
 
 def _load_memory_notifications() -> str:
@@ -10691,7 +10693,7 @@ def _(rid, params: dict) -> dict:
                 effort = str(raw_effort or "medium")
         display = (
             "show"
-            if bool((cfg.get("display") or {}).get("show_reasoning", False))
+            if bool((cfg.get("display") or {}).get("show_reasoning", True))
             else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})

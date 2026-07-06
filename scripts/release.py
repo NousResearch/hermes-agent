@@ -47,6 +47,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 AUTHOR_MAP = {
     "lomliev@gmail.com": "lomliev",
     "daniel.laforce@argobox.com": "KeyArgo",
+    "jashlee+microsoft@microsoft.com": "s905060",  # PR #57943 salvage (photon: auto-reinstall stale sidecar node_modules when lockfile is newer than npm's install marker; #59169)
     "lohinth25@proton.me": "l0h1nth",  # PR #32210 salvage (mattermost: accept leading-space slash commands from mobile clients; #25184)
     "perkintahmaz50@gmail.com": "devatnull",  # PR #58704 salvage (whatsapp: native Baileys polls, clarify-as-poll, location pins, structured quoted replies, PTT/audio split, bridge_helpers extraction)
     "tim@iteachyouai.com": "tjp2021",  # PR #4097 salvage (copilot: per-turn x-initiator header so user prompts bill as premium requests; #3040)
@@ -737,6 +738,7 @@ AUTHOR_MAP = {
     "hypnus.yuan@gmail.com": "Hypnus-Yuan",
     "15558128926@qq.com": "xsfX20",
     "binhnt.ht.92@gmail.com": "binhnt92",
+    "li.long15@xydigit.com": "Alix-007",  # PR #54620 salvage (sms: bound Twilio webhook body reads)
     "johnny@Jons-MBA-M4.local": "acesjohnny",
     "1581133593@qq.com": "liu-collab",
     "haidaoe@proton.me": "haidao1919",
@@ -903,6 +905,7 @@ AUTHOR_MAP = {
     "jezzahehn@gmail.com": "JezzaHehn",
     "barnacleboy.jezzahehn@agentmail.to": "JezzaHehn",
     "254021826+dodo-reach@users.noreply.github.com": "dodo-reach",
+    "edder@example.com": "EdderTalmor",  # PR #41575 salvage (prompt-size: pass platform-resolved enabled_toolsets + agent.disabled_toolsets into the inspection agent; #41445)
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
     "123342691+banditburai@users.noreply.github.com": "banditburai",
     "9063726+Kyzcreig@users.noreply.github.com": "Kyzcreig",
@@ -1205,12 +1208,15 @@ AUTHOR_MAP = {
     "cine.dreamer.one@gmail.com": "LeonSGP43",
     "Lubrsy706@users.noreply.github.com": "Lubrsy706",
     "niyant@spicefi.xyz": "spniyant",
+    "256398740+nicha16@users.noreply.github.com": "nicha16",  # PR #54139 partial salvage (re-register tools after park revival)
     "olafthiele@gmail.com": "olafthiele",
     "oncuevtv@gmail.com": "sprmn24",
     "programming@olafthiele.com": "olafthiele",
     "r2668940489@gmail.com": "r266-tech",
     "r266-tech@users.noreply.github.com": "r266-tech",  # PR #55780 salvage (dead-target not_found blast radius)
     "s5460703@gmail.com": "BlackishGreen33",
+    "sberan@gmail.com": "sberan",  # PR #54494 salvage (--connect-timeout flag on hermes mcp add)
+    "michaelmusser@users.noreply.github.com": "labsobsidian",  # PR #56699 salvage (MCP OAuth login connect_timeout floor)
     "saul.jj.wu@gmail.com": "SaulJWu",
     "shenhaocheng19990111@gmail.com": "hcshen0111",
     "sjtuwbh@gmail.com": "Cygra",

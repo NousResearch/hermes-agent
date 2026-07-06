@@ -331,7 +331,10 @@ class HonchoClientConfig:
     # honcho_reasoning tool param (agentic). When false, always uses
     # dialecticReasoningLevel and ignores model-provided overrides.
     dialectic_dynamic: bool = True
-    # Max chars of dialectic result to inject into Hermes system prompt
+    # Max chars of the dialectic supplement auto-injected into the Hermes system
+    # prompt each turn. Applies ONLY to auto-injection — explicit honcho_reasoning
+    # tool results return in full (bounded server-side by Honcho's MAX_OUTPUT_TOKENS),
+    # via dialectic_query(apply_injection_cap=False).
     dialectic_max_chars: int = 600
     # Dialectic depth: how many .chat() calls per dialectic cycle (1-3).
     # Depth 1: single call. Depth 2: self-audit + targeted synthesis.

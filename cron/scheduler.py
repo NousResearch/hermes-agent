@@ -353,6 +353,12 @@ def _is_cron_silence_response(text: str) -> bool:
     variants the model emits when it drops the brackets (#51438, #46917).
     Whitespace-trimmed and case-insensitive.  A token buried mid-sentence is
     treated as real content and delivered.
+
+    Also tolerates the model wrapping the sentinel in markdown code formatting
+    — an inline span ``` `[SILENT]` ``` or a fenced block — which an agent cron
+    (whose reply IS its final message) routinely does out of a "format the
+    literal" reflex, and which would otherwise leak the sentinel to the channel
+    as noise.  Only *symmetric* wrapping is stripped, so real prose is untouched.
     """
     if not isinstance(text, str):
         return False
@@ -360,10 +366,27 @@ def _is_cron_silence_response(text: str) -> bool:
     if not stripped:
         return False
 
-    def _is_token(line: str) -> bool:
-        return " ".join(line.strip().upper().split()) in _CRON_SILENCE_TOKENS
+    def _strip_code_wrap(s: str) -> str:
+        # Peel a whole-value markdown code fence, then any inline backtick span.
+        t = s.strip()
+        if t.startswith("```") and t.endswith("```") and len(t) >= 6:
+            inner = t[3:-3]
+            # Drop the whole opening-fence info-string line (```, ```text,
+            # ```text block, …) — anything up to the first newline is the fence
+            # header, never sentinel content.
+            if "\n" in inner:
+                inner = inner.split("\n", 1)[1]
+            t = inner.strip()
+        # Strip symmetric runs of backticks (``[SILENT]``, ``` `x` ```, …).
+        while len(t) >= 2 and t[0] == "`" and t[-1] == "`":
+            t = t.strip("`").strip()
+        return t
 
-    # Whole response is exactly a token.
+    def _is_token(line: str) -> bool:
+        norm = _strip_code_wrap(line)
+        return " ".join(norm.strip().upper().split()) in _CRON_SILENCE_TOKENS
+
+    # Whole response is exactly a token (bare, code-spanned, or fenced).
     if _is_token(stripped):
         return True
     # Marker on its own first or last line (trailing/leading note on a
@@ -374,8 +397,15 @@ def _is_cron_silence_response(text: str) -> bool:
     # Bracketed sentinel used as a same-line prefix — the documented cron
     # pattern "[SILENT] No changes detected".  Restricted to the bracketed
     # form so a bare word like "Silent retry succeeded" is NOT swallowed.
-    upper = stripped.upper()
-    if upper.startswith("[SILENT]"):
+    # Peel a leading inline code-span (any backtick-run length) first so
+    # "`[SILENT]` note" / "``[SILENT]`` note" also count (same reflex).
+    head = stripped
+    if head.startswith("`"):
+        run = len(head) - len(head.lstrip("`"))
+        close = head.find("`" * run, run)
+        if close != -1:
+            head = head[run:close].strip()
+    if head.upper().startswith("[SILENT]"):
         return True
     return False
 

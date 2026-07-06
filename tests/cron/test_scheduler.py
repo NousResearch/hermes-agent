@@ -2446,9 +2446,24 @@ class TestSilentDelivery:
         assert sil("NO_REPLY")
         assert sil("NO REPLY")
         assert sil("Summary.\nSILENT")
+        # Suppress: the model wrapped the whole sentinel in markdown code
+        # formatting (the real leak that shipped [SILENT] to #logs as noise).
+        assert sil("`[SILENT]`")
+        assert sil("`SILENT`")
+        assert sil("```\n[SILENT]\n```")
+        assert sil("```text\n[SILENT]\n```")
+        assert sil("2 deals filtered.\n\n`[SILENT]`")
+        assert sil("`[SILENT]` No changes detected")
+        # Greptile edge cases: multi-word fence info string + multi-backtick runs.
+        assert sil("```text block\n[SILENT]\n```")
+        assert sil("``[SILENT]``")
+        assert sil("``[SILENT]`` No changes detected")
         # Deliver: real content, mid-sentence quotes, bare words, junk.
         assert not sil("Daily report: 4 PRs merged.")
         assert not sil("I stayed [SILENT] but here is the report: 3 items.")
+        # A real AAR that merely *mentions* a code-spanned token mid-body must
+        # still deliver — only a whole-value/own-line wrap is stripped.
+        assert not sil("Applied 1 note about the `[SILENT]` sentinel.\nGates: green")
         assert not sil("Silent retry succeeded after 2 attempts.")
         assert not sil("[SILENT")  # malformed open-bracket is not the sentinel
         assert not sil("")

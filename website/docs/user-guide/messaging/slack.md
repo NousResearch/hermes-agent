@@ -34,6 +34,10 @@ declares every built-in slash command (`/btw`, `/stop`, `/model`, …),
 every required OAuth scope, every event subscription, and enables Socket
 Mode — all at once.
 
+:::caution Manifest timing is critical
+Slack only grants the manifest's OAuth scopes **at install time**. If you apply (or edit) the manifest **after** installing the app, the bot token keeps the old scopes and will silently miss required permissions (e.g., bot ignores @mentions or DMs). **Always apply the manifest before Install App**, and after any manifest change, click **Reinstall to Workspace** at api.slack.com/apps → Install App.
+:::
+
 ### Option A: From a Hermes-generated manifest (recommended)
 
 1. Generate the manifest:

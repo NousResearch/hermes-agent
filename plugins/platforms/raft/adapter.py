@@ -526,20 +526,28 @@ class RaftAdapter(BasePlatformAdapter):
         logger.info("[raft] Disconnected")
 
     def _spawn_bridge(self, port: int) -> None:
+        raft_bin = shutil.which("raft")
+        if not raft_bin:
+            logger.warning("[raft] raft CLI not found in PATH; bridge not spawned — wake-only polling mode")
+            return
+
+        profile = os.environ.get("RAFT_PROFILE", "")
+        if not profile:
+            logger.warning("[raft] RAFT_PROFILE not set; bridge not spawned")
+            return
         # Check for and remove stale lock file
         try:
             from hermes_agent.hermes_state import state_manager
             agent_id = state_manager.agent_id
         except Exception:
             agent_id = None
-        
         if agent_id:
-            hermes_home = os.environ.get('HERMES_HOME', os.path.expanduser('~/.hermes'))
-            lock_dir = os.path.join(hermes_home, 'agent-comms-core', agent_id, 'default')
-            lock_file = os.path.join(lock_dir, 'bridge.lock')
+            hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+            lock_dir = os.path.join(hermes_home, "agent-comms-core", agent_id, "default")
+            lock_file = os.path.join(lock_dir, "bridge.lock")
             if os.path.exists(lock_file):
                 try:
-                    with open(lock_file, 'r') as f:
+                    with open(lock_file, "r") as f:
                         pid_str = f.read().strip()
                     if pid_str.isdigit():
                         pid = int(pid_str)
@@ -554,20 +562,10 @@ class RaftAdapter(BasePlatformAdapter):
                     else:
                         # Invalid PID in lock file, remove it
                         os.remove(lock_file)
-                            logger.warning(f"[raft] Removed lock file {lock_file} with invalid PID {pid_str}")
+                        logger.warning(f"[raft] Removed lock file {lock_file} with invalid PID {pid_str}")
                 except Exception as e:
                     logger.warning(f"[raft] Failed to check lock file {lock_file}: {e}")
-        
-        raft_bin = shutil.which("raft")
-        if not raft_bin:
-            logger.warning("[raft] raft CLI not found in PATH; bridge not spawned — wake-only polling mode")
-            return
-
-        profile = os.environ.get("RAFT_PROFILE", "")
-        if not profile:
-            logger.warning("[raft] RAFT_PROFILE not set; bridge not spawned")
-            return
-
+        endpoint = f"http://{self._host}:{port}{self._path}"
         endpoint = f"http://{self._host}:{port}{self._path}"
         cmd: List[str] = [
             raft_bin, "--profile", profile,

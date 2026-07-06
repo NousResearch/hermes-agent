@@ -4699,6 +4699,14 @@ def _apply_model_assignment_sync(
 
     if not provider:
         raise HTTPException(status_code=400, detail="provider required for auxiliary")
+    if provider.strip().lower() == "moa":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "MoA cannot be saved as an auxiliary/default model route. "
+                "Use `/moa <prompt>` for one-shot runs, or an interactive session-only `/model ... --provider moa --session` switch."
+            ),
+        )
 
     targets = [task] if task else list(_AUX_TASK_SLOTS)
     for slot in targets:

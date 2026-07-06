@@ -22,3 +22,23 @@ def test_apply_main_model_assignment_rejects_moa_persistence(monkeypatch):
 
     assert exc.value.status_code == 400
     assert "cannot be saved as the default model/provider" in str(exc.value.detail)
+
+
+def test_apply_auxiliary_model_assignment_rejects_moa_persistence(monkeypatch):
+    from hermes_cli import web_server
+
+    monkeypatch.setattr(web_server, "load_config", lambda: {"auxiliary": {}})
+    monkeypatch.setattr(web_server, "save_config", lambda cfg: None)
+
+    with pytest.raises(HTTPException) as exc:
+        web_server._apply_model_assignment_sync(
+            scope="auxiliary",
+            provider="moa",
+            model="default",
+            task="vision",
+            base_url="",
+            api_key="",
+        )
+
+    assert exc.value.status_code == 400
+    assert "cannot be saved as an auxiliary/default model route" in str(exc.value.detail)

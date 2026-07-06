@@ -122,6 +122,8 @@ gateway:
     no_pending:            "No pending command to deny."
     denied_singular:       "❌ Command denied."
     denied_plural:         "❌ Commands denied ({count} commands)."
+    denied_reason_singular: "❌ Command denied. Reason relayed to the agent: \"{reason}\""
+    denied_reason_plural:  "❌ Commands denied ({count} commands). Reason relayed to the agent: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast is only available for OpenAI models that support Priority Processing."

@@ -1272,6 +1272,33 @@ def test_resolve_requested_provider_precedence(monkeypatch):
     assert rp.resolve_requested_provider() == "auto"
 
 
+def test_resolve_runtime_provider_named_custom_with_builtin_slug(monkeypatch):
+    monkeypatch.setenv("MINIMAX_CN_PROXY_KEY", "proxy-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {"provider": "custom:minimax-cn"},
+            "providers": {
+                "minimax-cn": {
+                    "name": "MiniMax CN Proxy",
+                    "api": "https://mimimax.cn/v1",
+                    "key_env": "MINIMAX_CN_PROXY_KEY",
+                    "transport": "chat_completions",
+                    "default_model": "MiniMax-M3",
+                }
+            },
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://mimimax.cn/v1"
+    assert resolved["api_key"] == "proxy-secret"
+    assert resolved["api_mode"] == "chat_completions"
+
+
 # ── api_mode config override tests ──────────────────────────────────────
 
 
@@ -1681,6 +1708,34 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
 
     assert resolved["provider"] == "opencode-go"
     assert resolved["api_mode"] == "anthropic_messages"
+
+
+def test_opencode_go_heals_persisted_stripped_base_url(monkeypatch):
+    """A stripped base_url persisted after switching into an anthropic-routed
+    model (e.g. minimax-m2.7 on Go) must be healed back to .../v1 when the
+    target model routes via chat_completions.  Without the heal, glm/deepseek/
+    kimi POST to https://opencode.ai/zen/go/chat/completions — a 404 (the
+    marketing site).  This was the 'only minimax works on opencode-go' bug.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "glm-5.1",
+            # Stripped URL persisted by a previous anthropic_messages switch.
+            "base_url": "https://opencode.ai/zen/go",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):

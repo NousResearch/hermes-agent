@@ -926,6 +926,12 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
+        # Whether to keep writing the legacy sessions.json mirror alongside
+        # the primary gateway_routing table in state.db. Default True for
+        # backward compatibility; disable via gateway.write_sessions_json.
+        self._write_sessions_json = bool(
+            getattr(config, "write_sessions_json", True)
+        )
         
         # Initialize SQLite session database
         self._db = None
@@ -940,23 +946,72 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
 
+    def _routing_scope(self) -> str:
+        """Namespace for this store's rows in the gateway_routing table.
+
+        The resolved sessions_dir path — the same identity that used to
+        distinguish separate sessions.json files, so two stores with
+        different directories (tests, multi-profile setups sharing one
+        state.db) never see each other's routing entries.
+        """
+        try:
+            return str(Path(self.sessions_dir).resolve())
+        except Exception:
+            return str(self.sessions_dir)
+
     def _ensure_loaded_locked(self) -> None:
-        """Load sessions index from disk. Must be called with self._lock held."""
+        """Load the routing index. Must be called with self._lock held.
+
+        Read order (#9006 follow-up): the ``gateway_routing`` table in
+        state.db is the primary source; sessions.json is the legacy import
+        path for pre-migration installs (its entries are folded in for keys
+        the DB doesn't have, then persisted to the DB on the next _save).
+        """
         if self._loaded:
             return
 
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        sessions_file = self.sessions_dir / "sessions.json"
 
+        # Primary: state.db gateway_routing table. getattr: some tests build
+        # partially-initialized stores without __init__ (same pattern as
+        # _prune_stale_sessions_locked).
+        db_had_entries = False
+        _db = getattr(self, "_db", None)
+        if _db:
+            loader = getattr(_db, "load_gateway_routing_entries", None)
+            if callable(loader):
+                try:
+                    for key, entry_json in loader(scope=self._routing_scope()).items():
+                        try:
+                            entry_data = json.loads(entry_json)
+                            if isinstance(entry_data, dict):
+                                self._entries[key] = SessionEntry.from_dict(entry_data)
+                        except (ValueError, KeyError, TypeError) as e:
+                            logger.warning(
+                                "Skipping invalid routing entry %r: %s", key, e
+                            )
+                    db_had_entries = bool(self._entries)
+                except Exception as e:
+                    logger.warning(
+                        "gateway.session: state.db routing load failed: %s", e
+                    )
+
+        # Legacy import: sessions.json (pre-migration installs, or entries
+        # written by an older gateway after a downgrade). Only fills keys the
+        # DB didn't provide — DB entries win.
+        sessions_file = self.sessions_dir / "sessions.json"
         if sessions_file.exists():
             try:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                imported = 0
                 for key, entry_data in data.items():
                     # Keys starting with "_" are documentation/metadata sentinels
                     # (e.g. the "_README" note written by _save), not session
                     # entries. Skip them so they never reach SessionEntry.from_dict.
                     if key.startswith("_"):
+                        continue
+                    if key in self._entries:
                         continue
                     # Skip non-dict entries (corrupted sessions.json, e.g. a
                     # bare bool or string where a dict is expected). Without
@@ -972,8 +1027,15 @@ class SessionStore:
                         continue
                     try:
                         self._entries[key] = SessionEntry.from_dict(entry_data)
+                        imported += 1
                     except (ValueError, KeyError, TypeError) as e:
                         logger.warning("Skipping invalid session entry %r: %s", key, e)
+                if imported and db_had_entries:
+                    logger.info(
+                        "gateway.session: imported %d legacy sessions.json "
+                        "entr%s missing from state.db routing table",
+                        imported, "y" if imported == 1 else "ies",
+                    )
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
@@ -1069,12 +1131,47 @@ class SessionStore:
             self._save()
 
     def _save(self) -> None:
-        """Save sessions index to disk (kept for session key -> ID mapping)."""
+        """Persist the routing index (session key -> ID mapping).
+
+        state.db's ``gateway_routing`` table is the primary store (#9006
+        follow-up): the whole index is replaced atomically in one SQLite
+        transaction, mirroring the previous full-file JSON rewrite semantics.
+
+        sessions.json is additionally written for backward compatibility
+        (external tooling, downgrade safety) unless the user disables it via
+        ``gateway.write_sessions_json: false`` in config.yaml.
+        """
+        data = {key: entry.to_dict() for key, entry in self._entries.items()}
+
+        # Primary: durable SQLite routing table.
+        db_saved = False
+        _db = getattr(self, "_db", None)
+        if _db:
+            replacer = getattr(_db, "replace_gateway_routing_entries", None)
+            if callable(replacer):
+                try:
+                    replacer(
+                        {k: json.dumps(v) for k, v in data.items()},
+                        scope=self._routing_scope(),
+                    )
+                    db_saved = True
+                except Exception as exc:
+                    logger.warning(
+                        "gateway.session: state.db routing save failed: %s", exc
+                    )
+
+        # Legacy mirror: sessions.json. Kept on by default for compat; when
+        # disabled we still fall back to it if the DB write failed, so the
+        # index is never lost entirely.
+        if getattr(self, "_write_sessions_json", True) or not db_saved:
+            self._save_sessions_json(data)
+
+    def _save_sessions_json(self, data: Dict[str, Any]) -> None:
+        """Write the legacy sessions.json mirror of the routing index."""
         import tempfile
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
 
-        data = {key: entry.to_dict() for key, entry in self._entries.items()}
         # Self-documenting sentinel so anyone who inspects this file directly
         # understands what it is and where CLI/TUI sessions actually live. Keys
         # starting with "_" are skipped on load (see _ensure_loaded_locked), so
@@ -1082,12 +1179,14 @@ class SessionStore:
         # dict so it renders at the top of the pretty-printed JSON.
         data = {
             "_README": (
-                "Gateway routing index ONLY: maps messaging session keys "
-                "(agent:main:<platform>:...) to active session IDs. This is NOT "
-                "the session list. ALL sessions (CLI, TUI, and gateway) live in "
-                "~/.hermes/state.db and are shown by `hermes sessions list` and "
-                "`/sessions`. Seeing only gateway entries here is expected and "
-                "does not mean CLI sessions are missing."
+                "LEGACY MIRROR of the gateway routing index (the primary copy "
+                "lives in the gateway_routing table in ~/.hermes/state.db). "
+                "Maps messaging session keys (agent:main:<platform>:...) to "
+                "active session IDs. This is NOT the session list. ALL "
+                "sessions (CLI, TUI, and gateway) live in ~/.hermes/state.db "
+                "and are shown by `hermes sessions list` and `/sessions`. "
+                "Disable this file with `gateway.write_sessions_json: false` "
+                "in config.yaml."
             ),
             **data,
         }
@@ -1202,6 +1301,7 @@ class SessionStore:
         session_id: str,
         session_key: str,
         source: Optional[SessionSource],
+        display_name: Optional[str] = None,
     ) -> None:
         """Persist the routing peer for an existing gateway session row."""
         if not self._db or not source:
@@ -1210,6 +1310,11 @@ class SessionStore:
         if not callable(recorder):
             return
         try:
+            origin_json = None
+            try:
+                origin_json = json.dumps(source.to_dict())
+            except Exception:
+                pass
             recorder(
                 session_id,
                 source=source.platform.value,
@@ -1218,9 +1323,56 @@ class SessionStore:
                 chat_id=source.chat_id,
                 chat_type=source.chat_type,
                 thread_id=source.thread_id,
+                display_name=display_name or source.chat_name,
+                origin_json=origin_json,
             )
+        except TypeError:
+            # Older SessionDB without display_name/origin_json kwargs.
+            try:
+                recorder(
+                    session_id,
+                    source=source.platform.value,
+                    user_id=source.user_id,
+                    session_key=session_key,
+                    chat_id=source.chat_id,
+                    chat_type=source.chat_type,
+                    thread_id=source.thread_id,
+                )
+            except Exception as exc:
+                logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
         except Exception as exc:
             logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
+
+    def set_expiry_finalized(
+        self, entry: SessionEntry, *, clear_model_override: bool = True
+    ) -> None:
+        """Mark a session entry expiry-finalized in memory, sessions.json, AND state.db.
+
+        Single write-path for the expiry watcher (#9006): keeps the durable
+        state.db flag in sync with the JSON routing index so the flag
+        survives sessions.json pruning/loss.
+
+        ``clear_model_override=False`` preserves the give-up path's original
+        behavior (flag only, no override drop).
+        """
+        with self._lock:
+            entry.expiry_finalized = True
+            if clear_model_override:
+                # Session finalization is a conversation boundary — drop the
+                # persisted /model override too so a later message doesn't
+                # rehydrate it after the in-memory override was popped.
+                entry.model_override = None
+            self._save()
+        if self._db:
+            setter = getattr(self._db, "set_expiry_finalized", None)
+            if callable(setter):
+                try:
+                    setter(entry.session_id, True)
+                except Exception as exc:
+                    logger.debug(
+                        "Session DB expiry_finalized write failed for %s: %s",
+                        entry.session_id, exc,
+                    )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -1369,6 +1521,48 @@ class SessionStore:
         
         return None
     
+    def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
+        """Return the latest compression continuation for *session_id*.
+
+        When an agent compresses context mid-turn the transcript moves to a
+        child session, but a restart or failed send can leave the SessionStore
+        mapping pointing at the compressed parent.  Heal that on read so the
+        next inbound message resumes the child instead of reloading the parent.
+        """
+        if not session_id or self._db is None:
+            return session_id
+        try:
+            return self._db.get_compression_tip(session_id) or session_id
+        except Exception:
+            logger.debug(
+                "Compression-tip lookup failed for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return session_id
+
+    def _heal_compression_tip_locked(
+        self,
+        entry: "SessionEntry",
+        original_session_id: Optional[str],
+        canonical_session_id: Optional[str],
+    ) -> bool:
+        """Rewrite *entry* to the compression continuation if stale. Lock held."""
+        if (
+            not original_session_id
+            or not canonical_session_id
+            or entry.session_id != original_session_id
+            or canonical_session_id == original_session_id
+        ):
+            return False
+        logger.info(
+            "SessionStore healed compressed session mapping: %s -> %s",
+            entry.session_id,
+            canonical_session_id,
+        )
+        entry.session_id = canonical_session_id
+        return True
+
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
 
@@ -1409,12 +1603,30 @@ class SessionStore:
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
+        existing_session_id = None
+
+        if not force_new:
+            with self._lock:
+                self._ensure_loaded_locked()
+                entry = self._entries.get(session_key)
+                if entry is not None:
+                    existing_session_id = entry.session_id
+
+        # Look up the compression continuation outside the lock (DB I/O).
+        canonical_existing_session_id = (
+            self._compression_tip_for_session_id(existing_session_id)
+            if existing_session_id
+            else None
+        )
 
         with self._lock:
             self._ensure_loaded_locked()
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
+                self._heal_compression_tip_locked(
+                    entry, existing_session_id, canonical_existing_session_id
+                )
 
                 # Self-heal stale routing: if this session_key still points at
                 # a session that has ALREADY been ended in state.db (end_reason
@@ -1558,6 +1770,7 @@ class SessionStore:
                     session_id,
                     session_key,
                     source,
+                    display_name=entry.display_name,
                 )
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
@@ -1583,6 +1796,7 @@ class SessionStore:
                     entry.session_id,
                     session_key,
                     entry.origin,
+                    display_name=entry.display_name,
                 )
 
     def set_model_override(
@@ -1828,6 +2042,7 @@ class SessionStore:
                     session_id,
                     session_key,
                     old_entry.origin,
+                    display_name=new_entry.display_name if new_entry else None,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -1890,6 +2105,7 @@ class SessionStore:
                 target_session_id,
                 session_key,
                 new_entry.origin if new_entry else None,
+                display_name=new_entry.display_name if new_entry else None,
             )
 
         return new_entry

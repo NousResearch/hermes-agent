@@ -15,6 +15,7 @@ import type {
 } from '@/global'
 import { useI18n } from '@/i18n'
 import { ChevronDown, ChevronRight, iconSize } from '@/lib/icons'
+import { capitalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 
 /**
@@ -62,7 +63,7 @@ function formatStageName(name: string): string {
 
   return name
     .split('-')
-    .map((word, i) => (i === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word))
+    .map((word, i) => (i === 0 ? capitalize(word) : word))
     .join(' ')
 }
 
@@ -145,11 +146,7 @@ function StageRow({ descriptor, result, now }: StageRowProps) {
         {reason && state !== 'pending' && <p className="mt-0.5 truncate text-xs text-muted-foreground">{reason}</p>}
       </div>
       <span className="flex-shrink-0 text-xs tabular-nums text-muted-foreground">
-        {state === 'running'
-          ? elapsed
-            ? `${copy.stageStates[state]} · ${elapsed}`
-            : copy.stageStates[state]
-          : null}
+        {state === 'running' ? (elapsed ? `${copy.stageStates[state]} · ${elapsed}` : copy.stageStates[state]) : null}
         {state === 'succeeded' || state === 'skipped' ? formatDuration(result?.durationMs) : null}
         {state === 'failed' ? copy.stageStates[state] : null}
       </span>

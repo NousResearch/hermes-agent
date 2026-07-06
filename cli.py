@@ -627,6 +627,7 @@ def load_cli_config() -> Dict[str, Any]:
         "docker_env": "TERMINAL_DOCKER_ENV",
         "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
         "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "docker_network": "TERMINAL_DOCKER_NETWORK",
         "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
         "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
@@ -8890,7 +8891,39 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in skill_commands:
-                user_instruction = cmd_original[len(base_cmd):].strip()
+                rest = cmd_original[len(base_cmd):].strip()
+                # Stacked slash-skill invocations: `/skill-a /skill-b do XYZ`
+                # loads every leading skill (up to 5), not just the first.
+                # Inspired by Claude Code v2.1.199.
+                from agent.skill_commands import (
+                    build_stacked_skill_invocation_message,
+                    split_stacked_skill_commands,
+                )
+                extra_keys, user_instruction = split_stacked_skill_commands(rest)
+                if extra_keys:
+                    stacked_result = build_stacked_skill_invocation_message(
+                        [base_cmd, *extra_keys],
+                        user_instruction,
+                        task_id=self.session_id,
+                    )
+                    if stacked_result:
+                        msg, loaded_names, missing = stacked_result
+                        print(
+                            f"\n⚡ Loading {len(loaded_names)} stacked skills: "
+                            f"{', '.join(loaded_names)}"
+                        )
+                        if missing:
+                            ChatConsole().print(
+                                f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
+                            )
+                        if hasattr(self, '_pending_input'):
+                            self._pending_input.put(msg)
+                    else:
+                        ChatConsole().print(
+                            f"[bold red]Failed to load stacked skills for {base_cmd}[/]"
+                        )
+                    return True
+                user_instruction = rest
                 msg = build_skill_invocation_message(
                     base_cmd, user_instruction, task_id=self.session_id
                 )
@@ -10016,8 +10049,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _time.sleep(interval)
 
         # Past the cap with no terminal state = timeout (not an error).
-        print(f"  🟡 Still processing after 5 minutes — this is a timeout, not a "
-              f"failure. Check /billing or the portal shortly.")
+        print("  🟡 Still processing after 5 minutes — this is a timeout, not a "
+              "failure. Check /billing or the portal shortly.")
         self._billing_portal_hint(state)
 
     def _billing_render_charge_failed(self, state, reason):

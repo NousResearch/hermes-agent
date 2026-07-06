@@ -26,7 +26,7 @@ from hermes_cli.config import (
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
-from tools.mcp_tool import _ENV_VAR_PATTERN
+from tools.mcp_tool import _ENV_VAR_PATTERN, _env_ref_name
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,39 @@ def _remove_mcp_server(name: str) -> bool:
         config.pop("mcp_servers", None)
     save_config(config)
     return True
+
+
+def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
+    """Replace the WHOLE ``mcp_servers`` map in config.yaml.
+
+    Unlike ``_save_mcp_server`` (per-key upsert), this sets the entire map so
+    the GUI's mcp.json editor can delete servers, drop an ``enabled: false``
+    flag (re-enable), or remove nested fields and have those *removals* land on
+    disk.  A plain ``/api/config`` deep-merge can only add/override keys, never
+    delete them — which is why edits appeared to succeed but the old entry
+    survived (see MCP tab persistence bug).
+
+    Every entry is validated up front; on any suspicious command/args the whole
+    save is rejected (returns ``(False, issues)``) so a bad paste can't be
+    partially applied.  An empty map removes the key entirely.
+    """
+    issues: List[str] = []
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            issues.append(f"Server '{name}': expected an object")
+            continue
+        issues.extend(validate_mcp_server_entry(name, cfg))
+
+    if issues:
+        return False, issues
+
+    config = load_config()
+    if servers:
+        config["mcp_servers"] = dict(servers)
+    else:
+        config.pop("mcp_servers", None)
+    save_config(config)
+    return True, []
 
 
 def _env_key_for_server(name: str) -> str:
@@ -214,12 +247,16 @@ def _resolve_mcp_server_config(config: dict) -> dict:
 
 
 def _probe_single_server(
-    name: str, config: dict, connect_timeout: float = 30
+    name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None
 ) -> List[Tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
     Returns list of ``(tool_name, description)`` tuples.
     Raises on connection failure.
+
+    ``details``: optional dict the probe fills with extra capability counts
+    (``prompts``, ``resources``) — an out-param so the return shape stays
+    stable for existing CLI callers.
     """
     issues = validate_mcp_server_entry(name, config)
     if issues:
@@ -230,12 +267,18 @@ def _probe_single_server(
         _run_on_mcp_loop,
         _connect_server,
         _stop_mcp_loop_if_idle,
+        _parse_boolish,
     )
 
     config = _resolve_mcp_server_config(config)
+    if connect_timeout is None:
+        raw_timeout = config.get("connect_timeout", 30)
+        try:
+            connect_timeout = max(1.0, float(raw_timeout))
+        except (TypeError, ValueError):
+            connect_timeout = 30.0
 
     _ensure_mcp_loop()
-
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
@@ -249,6 +292,50 @@ def _probe_single_server(
                 if len(desc) > 80:
                     desc = desc[:77] + "..."
                 tools_found.append((t.name, desc))
+            if details is not None:
+                # Gate the capability probes exactly like runtime utility-tool
+                # registration (tools.mcp_tool._select_utility_schemas):
+                #   1. honour the user's tools.prompts / tools.resources config
+                #   2. only call a family the server actually advertises.
+                # Without this the "Test server" probe fired prompts/list and
+                # resources/list at every server unconditionally — so a server
+                # that rejects those methods (e.g. Unreal's MCP server, which
+                # answers "Call to unknown method 'prompts/list'") logged a hard
+                # error, and setting tools.prompts: false did NOT suppress it.
+                tools_filter = config.get("tools") or {}
+                prompts_enabled = _parse_boolish(
+                    tools_filter.get("prompts"), default=True
+                )
+                resources_enabled = _parse_boolish(
+                    tools_filter.get("resources"), default=True
+                )
+                advertised_caps = getattr(
+                    getattr(server, "initialize_result", None),
+                    "capabilities",
+                    None,
+                )
+
+                def _advertises(cap_attr: str) -> bool:
+                    # When no capability info was captured (legacy fixtures /
+                    # older servers) preserve the old always-try behaviour.
+                    if advertised_caps is None:
+                        return True
+                    return getattr(advertised_caps, cap_attr, None) is not None
+
+                # Capability probes are best-effort: servers without the
+                # capability raise, which just means "0".
+                if prompts_enabled and _advertises("prompts"):
+                    try:
+                        result = await server.session.list_prompts()
+                        details["prompts"] = len(result.prompts)
+                    except Exception:
+                        pass
+                if resources_enabled and _advertises("resources"):
+                    try:
+                        result = await server.session.list_resources()
+                        details["resources"] = len(result.resources)
+                    except Exception:
+                        pass
         finally:
             await server.shutdown()
 
@@ -310,6 +397,7 @@ def cmd_mcp_add(args):
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)
+    raw_connect_timeout = getattr(args, "connect_timeout", None)
 
     server_config: Dict[str, Any] = {}
     try:
@@ -355,6 +443,8 @@ def cmd_mcp_add(args):
             server_config["args"] = cmd_args
         if explicit_env:
             server_config["env"] = explicit_env
+    if raw_connect_timeout is not None:
+        server_config["connect_timeout"] = raw_connect_timeout
 
     issues = validate_mcp_server_entry(name, server_config)
     if issues:
@@ -632,8 +722,8 @@ def cmd_mcp_test(args):
     elif headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
-                # Mask the value
-                resolved = _ENV_VAR_PATTERN.sub(lambda m: os.getenv(m.group(1), ""), v)
+                # Mask the value (accepts ${VAR} and Cursor-style ${env:VAR})
+                resolved = _ENV_VAR_PATTERN.sub(lambda m: os.getenv(_env_ref_name(m.group(1)), ""), v)
                 if len(resolved) > 8:
                     masked = resolved[:4] + "***" + resolved[-4:]
                 else:
@@ -694,8 +784,21 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
     _info(f"Starting OAuth flow for '{name}'...")
 
     # Probe triggers the OAuth flow (browser redirect + callback capture).
+    # Honor the server's configured connect_timeout so a human has enough
+    # time to complete the browser sign-in; the 30s default is too tight for
+    # an interactive OAuth round-trip. Floor at 315s — the OAuth callback
+    # window (300s in mcp_oauth) plus headroom — matching the GUI re-auth
+    # path in web_server.py so CLI and dashboard behave identically.
     try:
-        tools = _probe_single_server(name, server_config)
+        _login_connect_timeout = server_config.get("connect_timeout")
+        try:
+            _login_connect_timeout = float(_login_connect_timeout)
+        except (TypeError, ValueError):
+            _login_connect_timeout = 0.0
+        _login_connect_timeout = max(_login_connect_timeout, 315.0)
+        tools = _probe_single_server(
+            name, server_config, connect_timeout=_login_connect_timeout
+        )
         # A clean probe is NOT proof of authentication. Some MCP servers
         # (notably Google's official Drive server) serve initialize +
         # tools/list WITHOUT auth, so the probe lists tools even when the
@@ -716,13 +819,13 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
                 "OAuth client yourself and add its credentials to config.yaml:"
             )
             print()
-            print(color(f"    mcp_servers:", Colors.DIM))
+            print(color("    mcp_servers:", Colors.DIM))
             print(color(f"      {name}:", Colors.DIM))
             print(color(f"        url: {url}", Colors.DIM))
-            print(color(f"        auth: oauth", Colors.DIM))
-            print(color(f"        oauth:", Colors.DIM))
-            print(color(f"          client_id: \"<your-oauth-client-id>\"", Colors.DIM))
-            print(color(f"          client_secret: \"<your-oauth-client-secret>\"", Colors.DIM))
+            print(color("        auth: oauth", Colors.DIM))
+            print(color("        oauth:", Colors.DIM))
+            print(color("          client_id: \"<your-oauth-client-id>\"", Colors.DIM))
+            print(color("          client_secret: \"<your-oauth-client-secret>\"", Colors.DIM))
             print()
             _info("Then re-run `hermes mcp login " + name + "`.")
             return False

@@ -61,6 +61,11 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
     mcp_add_p.add_argument("--preset", help="Known MCP preset name")
     mcp_add_p.add_argument(
+        "--connect-timeout",
+        type=float,
+        help="Timeout in seconds for initial connection and tool discovery",
+    )
+    mcp_add_p.add_argument(
         "--env",
         nargs="*",
         default=[],

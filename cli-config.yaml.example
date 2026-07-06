@@ -85,6 +85,25 @@ model:
   #
   # default_headers:
   #   User-Agent: "curl/8.7.1"
+  #
+  # extra_headers: accepted as an alias of default_headers (merged, with
+  #   extra_headers winning when both are set) — matches the per-provider
+  #   extra_headers key below.
+  #
+  # Per-provider variant: named providers / custom_providers entries accept an
+  # extra_headers dict scoped to that endpoint only — for reverse proxies,
+  # gateways, or custom auth (e.g. Cloudflare Access service tokens).
+  # Merged onto SDK/provider defaults with the entry's values winning.
+  # Header values are treated as secrets and are never logged.
+  #
+  # providers:
+  #   my-proxy:
+  #     base_url: "https://llm.internal.example.com/v1"
+  #     key_env: "MY_PROXY_API_KEY"
+  #     extra_headers:
+  #       CF-Access-Client-Id: "xxxx.access"
+  #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
+  #       X-Client-Name: "hermes-agent"
 
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
@@ -572,6 +591,41 @@ max_concurrent_sessions: null
 group_sessions_per_user: true
 
 # ─────────────────────────────────────────────────────────────────────────────
+# API Server — per-client model routing
+# ─────────────────────────────────────────────────────────────────────────────
+# Route different API clients to different models/providers on a single
+# Hermes deployment.  Clients choose a backend by sending a specific string
+# as the OpenAI ``model`` field.  Unmapped model values fall back to the
+# global model configured in the ``model:`` section above, and an explicit
+# session /model override always wins over a route.
+#
+# Configure via the ``platforms.api_server.extra.model_routes`` gateway
+# config block:
+#
+#   platforms:
+#     api_server:
+#       enabled: true
+#       extra:
+#         key: "your-api-server-secret"
+#         model_routes:
+#           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
+#           minimax-m2:
+#             model: "minimax/minimax-m1"
+#             provider: "openrouter"          # optional — overrides global provider
+#             # api_key: "sk-..."             # optional — per-route UPSTREAM provider
+#             #                                 key (NOT caller auth; never logged)
+#             # base_url: "https://..."       # optional — per-route base URL
+#           # GPT clients keep their own alias
+#           gpt-5:
+#             model: "openai/gpt-5"
+#             provider: "openrouter"
+#
+# Configured aliases are automatically listed by GET /v1/models so clients
+# can discover them without manual coordination.  Caller authentication is
+# unchanged: every request still authenticates with the global API server
+# key (``extra.key`` / API_SERVER_KEY).
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────
 # Stream tokens to messaging platforms in real-time. The bot sends a message
@@ -645,6 +699,25 @@ agent:
   # verification summary would reach a human as chat noise. Set true or false to
   # force it on or off; the HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
   # verify_on_stop: auto
+
+  # Standing operator instructions for the coding posture (when Hermes is in a
+  # code workspace). Appended to the coding brief as an extra system block, so
+  # you can pin project-wide workflow rules without editing the shipped brief.
+  # Accepts a string or a list of strings. Takes effect next session.
+  # coding_instructions:
+  #   - "For UI work, don't run tsc/lint until I approve the look."
+  #   - "Clean the diff before you commit and push."
+
+  # When verify-on-stop finds edited code without fresh verification evidence,
+  # append guidance for creative UI work (avoid broad tsc/lint/test before visual
+  # approval) and clean-diff expectations. Set false to keep that nudge terse.
+  # verify_guidance: true
+
+  # A `pre_verify` hook (plugin or shell, see Event Hooks docs) can keep the
+  # agent going one more turn to verify/clean before finishing. This caps how
+  # many times one turn may be nudged to continue, so a hook can't trap the loop.
+  # Default 3.
+  # max_verify_nudges: 3
 
   # Enable verbose logging
   verbose: false
@@ -1003,6 +1076,7 @@ display:
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
+  #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
@@ -1276,3 +1350,33 @@ updates:
 #   # default — works on Fly.io out of the box).
 #   #
 #   #   public_url: "https://example.com/hermes"
+#
+# -----------------------------------------------------------------------------
+# Self-hosted OIDC dashboard auth (generic OpenID Connect — Authentik,
+# Keycloak, Zitadel, Authelia, Auth0, Okta, Google, …). Use this INSTEAD of the
+# nous block above when gating the dashboard with your own identity provider.
+# Each setting can be overridden by an environment variable:
+#
+#   dashboard.oauth.self_hosted.issuer         <-  HERMES_DASHBOARD_OIDC_ISSUER
+#   dashboard.oauth.self_hosted.client_id      <-  HERMES_DASHBOARD_OIDC_CLIENT_ID
+#   dashboard.oauth.self_hosted.scopes         <-  HERMES_DASHBOARD_OIDC_SCOPES
+#   dashboard.oauth.self_hosted.client_secret  <-  HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#
+# dashboard:
+#   oauth:
+#     provider: self-hosted
+#     self_hosted:
+#       issuer: "https://auth.example.com/application/o/hermes/"  # required
+#       client_id: "hermes-dashboard"                             # required
+#       scopes: "openid profile email"                            # optional
+#
+#       # OPTIONAL — set ONLY if your IDP registered the client as
+#       # *confidential* (Authentik / Keycloak often default to this). When
+#       # set, Hermes authenticates the client at the token endpoint
+#       # (client_secret_basic or client_secret_post, auto-selected from the
+#       # IDP's discovery doc) IN ADDITION to PKCE. Leave unset for a public
+#       # (PKCE-only) client — the common case.
+#       #
+#       # This is a CREDENTIAL: prefer setting HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#       # in ~/.hermes/.env over putting it here in config.yaml.
+#       #   client_secret: ""

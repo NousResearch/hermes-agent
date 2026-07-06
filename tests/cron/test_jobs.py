@@ -19,6 +19,7 @@ from cron.jobs import (
     remove_job,
     mark_job_run,
     advance_next_run,
+    claim_dispatch,
     get_due_jobs,
     save_job_output,
 )
@@ -304,6 +305,26 @@ class TestJobCRUD:
         job = create_job(prompt="One-shot", schedule="1h")
         assert job["repeat"]["times"] == 1
 
+    def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        stale = (now - timedelta(minutes=5)).isoformat()
+
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            create_job(prompt="Too late", schedule=stale)
+
+        assert load_jobs() == []
+
+    def test_recent_past_one_shot_within_grace_still_creates(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        recent = (now - timedelta(seconds=30)).isoformat()
+
+        job = create_job(prompt="Still valid", schedule=recent)
+
+        assert job["next_run_at"] == recent
+        assert load_jobs()[0]["id"] == job["id"]
+
     def test_interval_no_auto_repeat(self, tmp_cron_dir):
         job = create_job(prompt="Recurring", schedule="every 1h")
         assert job["repeat"]["times"] is None
@@ -353,6 +374,33 @@ class TestUpdateJob:
         assert fetched["schedule"]["minutes"] == 120
         assert fetched["schedule_display"] == "every 120m"
 
+    def test_update_to_past_oneshot_rejected(self, tmp_cron_dir, monkeypatch):
+        """Updating a job's schedule to a one-shot >ONESHOT_GRACE_SECONDS in the
+        past must raise ValueError — otherwise the ghost-job bug (#59395) re-enters
+        through the update door (next_run_at=None stored with state='scheduled').
+        The original job must be left unchanged on disk."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Recurring", schedule="every 1h", deliver="local")
+        past = parse_schedule((now - timedelta(minutes=10)).isoformat())
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            update_job(job["id"], {"schedule": past})
+        # Original job unchanged — still the recurring interval, still scheduled.
+        fetched = get_job(job["id"])
+        assert fetched["schedule"]["kind"] == "interval"
+        assert fetched["next_run_at"] is not None
+
+    def test_update_to_future_oneshot_accepted(self, tmp_cron_dir, monkeypatch):
+        """Updating to a FUTURE one-shot still works — only past ones are rejected."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Recurring", schedule="every 1h", deliver="local")
+        future = parse_schedule((now + timedelta(hours=2)).isoformat())
+        updated = update_job(job["id"], {"schedule": future})
+        assert updated is not None
+        assert updated["schedule"]["kind"] == "once"
+        assert updated["next_run_at"] is not None
+
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")
         assert job["enabled"] is True
@@ -395,6 +443,35 @@ class TestPauseResumeJob:
         assert resumed["state"] == "scheduled"
         assert resumed["paused_at"] is None
         assert resumed["paused_reason"] is None
+
+    def test_resume_rejects_past_oneshot(self, tmp_cron_dir, monkeypatch):
+        """Resuming a paused one-shot whose time is now in the past must raise
+        ValueError — the revived job would silently never fire."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        # Create directly — bypass create_job's past-oneshot guard so we can
+        # test the resume path independently.
+        job = {
+            "id": "test-resume-past",
+            "name": "test-resume-past",
+            "prompt": "Past one-shot",
+            "schedule": {"kind": "once", "run_at": (now - timedelta(minutes=5)).isoformat(), "display": "once"},
+            "repeat": {"times": 1, "completed": 0},
+            "enabled": False,
+            "state": "paused",
+            "paused_at": now.isoformat(),
+            "paused_reason": "test",
+            "next_run_at": None,
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": (now - timedelta(hours=1)).isoformat(),
+            "deliver": "local",
+        }
+        save_jobs([job])
+        with pytest.raises(ValueError, match="in the past"):
+            resume_job("test-resume-past")
 
 
 class TestResolveJobRef:
@@ -1314,3 +1391,102 @@ class TestCronOutputRetention:
             "hermes_cli.config.load_config", lambda: {"cron": {"output_retention": "oops"}}
         )
         assert jobs._cron_output_keep() == jobs._CRON_OUTPUT_DEFAULT_KEEP
+
+
+# =========================================================================
+# claim_dispatch — pre-run one-shot crash safety (issue #38758)
+# =========================================================================
+
+class TestClaimDispatch:
+    """One-shot jobs must commit their dispatch BEFORE the side effect runs, so
+    a tick that dies mid-execution (gateway kill, OOM, hard-timeout) can re-fire
+    the job at most ``repeat.times`` times instead of infinitely."""
+
+    def _oneshot(self, times=1, completed=0):
+        return {
+            "id": "os1",
+            "name": "one-shot",
+            "enabled": True,
+            "schedule": {"kind": "once", "run_at": "2026-01-01T00:00:00+00:00"},
+            "repeat": {"times": times, "completed": completed},
+        }
+
+    def test_claim_increments_and_persists(self, tmp_cron_dir):
+        save_jobs([self._oneshot(times=1, completed=0)])
+        assert claim_dispatch("os1") is True
+        # Persisted BEFORE any side effect — survives a crash.
+        assert load_jobs()[0]["repeat"]["completed"] == 1
+
+    def test_already_dispatched_oneshot_is_removed(self, tmp_cron_dir):
+        # A prior tick claimed (completed==times) then died before mark_job_run
+        # could remove the job.  The next claim must refuse AND clean up.
+        save_jobs([self._oneshot(times=1, completed=1)])
+        assert claim_dispatch("os1") is False
+        assert load_jobs() == []  # removed, will not re-fire
+
+    def test_recurring_job_is_not_claimed(self, tmp_cron_dir):
+        job = {
+            "id": "rec",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "repeat": {"times": 3, "completed": 0},
+        }
+        save_jobs([job])
+        assert claim_dispatch("rec") is True
+        # Recurring jobs use advance_next_run(); claim must NOT touch completed.
+        assert load_jobs()[0]["repeat"]["completed"] == 0
+
+    def test_infinite_oneshot_not_claimed(self, tmp_cron_dir):
+        job = self._oneshot(times=0, completed=0)  # times<=0 means infinite
+        save_jobs([job])
+        assert claim_dispatch("os1") is True
+        assert load_jobs()[0]["repeat"]["completed"] == 0
+
+    def test_no_repeat_block_not_claimed(self, tmp_cron_dir):
+        job = {"id": "os1", "schedule": {"kind": "once", "run_at": "2026-01-01T00:00:00+00:00"}}
+        save_jobs([job])
+        assert claim_dispatch("os1") is True
+        assert "repeat" not in load_jobs()[0]
+
+    def test_missing_job_proceeds(self, tmp_cron_dir):
+        # A handed-in job dict not persisted in the store (external provider /
+        # direct caller) can't be claimed — proceed rather than suppress it.
+        save_jobs([])
+        assert claim_dispatch("ghost") is True
+
+    def test_mark_job_run_does_not_double_count_preclaimed_oneshot(self, tmp_cron_dir):
+        # Full lifecycle: claim bumps completed to times, then mark_job_run must
+        # NOT increment again — it recognizes the pre-claim and removes the job.
+        save_jobs([self._oneshot(times=1, completed=0)])
+        assert claim_dispatch("os1") is True
+        assert load_jobs()[0]["repeat"]["completed"] == 1
+        mark_job_run("os1", success=True)
+        assert load_jobs() == []  # completed once, removed — not fired twice
+
+    def test_mark_job_run_still_increments_recurring(self, tmp_cron_dir):
+        # The double-count guard is one-shot-specific; recurring jobs keep the
+        # legacy post-run increment.
+        job = {
+            "id": "rec",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "repeat": {"times": 3, "completed": 1},
+        }
+        save_jobs([job])
+        mark_job_run("rec", success=True)
+        assert load_jobs()[0]["repeat"]["completed"] == 2
+
+    def test_get_due_jobs_removes_stale_maxed_oneshot(self, tmp_cron_dir):
+        # A claimed one-shot whose tick died leaves completed>=times with
+        # last_run_at still unset, so the recovery helper re-arms it as due.
+        # get_due_jobs must drop it instead of returning it for another fire.
+        past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "os1",
+            "name": "one-shot",
+            "enabled": True,
+            "schedule": {"kind": "once", "run_at": past},
+            "repeat": {"times": 1, "completed": 1},
+            "next_run_at": None,
+        }])
+        due = get_due_jobs()
+        assert due == []
+        assert load_jobs() == []  # cleaned up

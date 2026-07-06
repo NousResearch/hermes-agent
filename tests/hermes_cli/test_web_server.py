@@ -66,6 +66,24 @@ def _install_example_plugin(_isolate_hermes_home):
         shutil.rmtree(dst)
     shutil.copytree(_EXAMPLE_PLUGIN_FIXTURE, dst)
 
+    # The dashboard now gates user-plugin asset serving + backend import
+    # behind the ``plugins.enabled`` allow-list (GHSA-mcfc-hp25-cjv7).
+    # An installed-but-not-enabled user plugin has its API mount skipped
+    # and its assets 404'd — which is the whole point of the gate. These
+    # fixtures exist to exercise the *serving* paths, so opt the example
+    # plugin in exactly as a real operator would with `hermes plugins
+    # enable example`.
+    from hermes_cli.config import load_config, save_config
+    _cfg = load_config()
+    _plugins_cfg = _cfg.setdefault("plugins", {})
+    _enabled = _plugins_cfg.get("enabled")
+    if not isinstance(_enabled, list):
+        _enabled = []
+    if "example" not in _enabled:
+        _enabled.append("example")
+    _plugins_cfg["enabled"] = _enabled
+    save_config(_cfg)
+
     # Snapshot the existing routes BEFORE mounting so we can:
     #   1. Identify the routes the mount call appends.
     #   2. Restore the original list on teardown — otherwise leftover
@@ -268,6 +286,31 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["action"] == "drain"
         assert drain_control.drain_requested() is True
+        drain_control.clear_drain_request()
+
+    def test_gateway_drain_suppress_notification_passthrough(self):
+        from gateway import drain_control
+
+        resp = self.client.post(
+            "/api/gateway/drain",
+            json={"action": "drain", "suppress_notification": True},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["suppress_notification"] is True
+        # The flag landed on the marker the gateway reads at shutdown.
+        body = drain_control.read_drain_request()
+        assert body is not None and body["suppress_notification"] is True
+        assert drain_control.drain_notification_suppressed() is True
+        drain_control.clear_drain_request()
+
+    def test_gateway_drain_suppress_defaults_false(self):
+        from gateway import drain_control
+
+        resp = self.client.post("/api/gateway/drain", json={"action": "drain"})
+        assert resp.status_code == 200
+        assert resp.json()["suppress_notification"] is False
+        assert drain_control.drain_notification_suppressed() is False
         drain_control.clear_drain_request()
 
     def test_gateway_drain_cancel_removes_marker(self):
@@ -3153,7 +3196,7 @@ class TestConfigRoundTrip:
                 mismatches.append(f"{key}: expected bool, got {type(val).__name__}")
             elif expected == "list" and not isinstance(val, list):
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
-        assert not mismatches, f"Type mismatches:\n" + "\n".join(mismatches)
+        assert not mismatches, "Type mismatches:\n" + "\n".join(mismatches)
 
 
 # ---------------------------------------------------------------------------
@@ -3508,7 +3551,7 @@ class TestNewEndpoints:
         assert spawned == [
             (
                 ["-p", "builder", "skills", "install", "someuser/some-skill", "--yes"],
-                "skills-install",
+                web_server._hub_action_name("install", "someuser/some-skill"),
             )
         ]
 
@@ -3757,12 +3800,16 @@ class TestNewEndpoints:
                 "description": "active",
                 "category": "demo",
                 "enabled": True,
+                "usage": 0,
+                "provenance": "agent",
             },
             {
                 "name": "disabled-skill",
                 "description": "disabled",
                 "category": "demo",
                 "enabled": False,
+                "usage": 0,
+                "provenance": "agent",
             },
         ]
 
@@ -3969,6 +4016,74 @@ class TestNewEndpoints:
             json={"provider": "whatever"},
         )
         assert resp.status_code == 400
+
+    def test_get_toolset_models_no_catalog_toolset(self):
+        """Toolsets without a model catalog report has_models: false."""
+        resp = self.client.get("/api/tools/toolsets/web/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["has_models"] is False
+        assert body["models"] == []
+
+    def test_get_toolset_models_fal_catalog(self):
+        """image_gen with the FAL backend returns its model catalog."""
+        resp = self.client.get(
+            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        # Behavior contract, not a snapshot: FAL always has >= 1 model and
+        # each row carries the picker columns.
+        assert body["has_models"] is True
+        assert body["plugin"] == "fal"
+        assert len(body["models"]) >= 1
+        for row in body["models"]:
+            assert "id" in row
+            assert "speed" in row
+            assert "strengths" in row
+            assert "price" in row
+        # current resolves to a real catalog entry (default when unset).
+        ids = {row["id"] for row in body["models"]}
+        assert body["current"] in ids
+        assert body["default"] in ids
+
+    def test_select_toolset_model_persists_and_validates(self):
+        """PUT .../model writes image_gen.model; bad ids/toolsets are 400."""
+        catalog = self.client.get(
+            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
+        ).json()
+        model_id = catalog["models"][0]["id"]
+
+        resp = self.client.put(
+            "/api/tools/toolsets/image_gen/model",
+            json={"model": model_id, "provider": "FAL.ai"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["image_gen"]["model"] == model_id
+
+        # The next catalog read reflects the persisted choice.
+        after = self.client.get(
+            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
+        ).json()
+        assert after["current"] == model_id
+
+        # Unknown model id → 400.
+        resp = self.client.put(
+            "/api/tools/toolsets/image_gen/model",
+            json={"model": "not-a-real-model", "provider": "FAL.ai"},
+        )
+        assert resp.status_code == 400
+
+        # Toolset without a model catalog → 400.
+        resp = self.client.put(
+            "/api/tools/toolsets/web/model", json={"model": model_id}
+        )
+        assert resp.status_code == 400
+
 
     def test_config_raw_get(self):
         resp = self.client.get("/api/config/raw")

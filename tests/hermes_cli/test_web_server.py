@@ -561,7 +561,131 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 401
 
-    # ── Dashboard font override ─────────────────────────────────────────
+    # ── Dashboard theme / font preferences ──────────────────────────────
+
+    def test_dashboard_theme_schema_lists_all_builtins(self):
+        """The config editor options must stay in sync with the picker."""
+        from hermes_cli.web_server import (
+            CONFIG_SCHEMA,
+            _BUILTIN_DASHBOARD_THEME_NAMES,
+        )
+
+        assert CONFIG_SCHEMA["dashboard.theme"]["options"] == list(
+            _BUILTIN_DASHBOARD_THEME_NAMES
+        )
+        assert "default-large" in CONFIG_SCHEMA["dashboard.theme"]["options"]
+        assert "nous-blue" in CONFIG_SCHEMA["dashboard.theme"]["options"]
+
+    def test_get_dashboard_themes_coerces_stale_active_theme(self):
+        """A removed/unknown persisted theme should read back as default."""
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        config.setdefault("dashboard", {})["theme"] = "retired-theme-id"
+        save_config(config)
+
+        resp = self.client.get("/api/dashboard/themes")
+        assert resp.status_code == 200
+        assert resp.json()["active"] == "default"
+
+    def test_set_dashboard_theme_coerces_unknown_name(self):
+        """Unknown theme ids do not become sticky invalid config values."""
+        from hermes_cli.config import load_config
+
+        resp = self.client.put(
+            "/api/dashboard/theme", json={"name": "../../etc/passwd"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "theme": "default"}
+        assert load_config()["dashboard"]["theme"] == "default"
+
+    def test_set_dashboard_theme_accepts_user_theme_name(self):
+        """Custom YAML theme names are valid active theme ids."""
+        from hermes_cli.config import load_config
+        from hermes_constants import get_hermes_home
+
+        themes_dir = get_hermes_home() / "dashboard-themes"
+        themes_dir.mkdir()
+        (themes_dir / "ocean.yaml").write_text("name: ocean\nlabel: Ocean\n")
+
+        resp = self.client.put("/api/dashboard/theme", json={"name": "ocean"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "theme": "ocean"}
+        assert load_config()["dashboard"]["theme"] == "ocean"
+
+    def test_dashboard_theme_is_profile_scoped(self):
+        """Each profile stores its own active dashboard theme."""
+        import yaml
+        from hermes_cli.config import load_config
+        from hermes_constants import get_hermes_home
+
+        profile_dir = get_hermes_home() / "profiles" / "writer"
+        profile_dir.mkdir(parents=True)
+
+        assert self.client.put("/api/dashboard/theme", json={"name": "ember"}).status_code == 200
+        resp = self.client.put(
+            "/api/dashboard/theme?profile=writer",
+            json={"name": "mono"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "theme": "mono"}
+        assert load_config()["dashboard"]["theme"] == "ember"
+        profile_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert profile_config["dashboard"]["theme"] == "mono"
+        assert self.client.get("/api/dashboard/themes").json()["active"] == "ember"
+        assert self.client.get("/api/dashboard/themes?profile=writer").json()["active"] == "mono"
+
+    def test_dashboard_font_is_profile_scoped(self):
+        """Theme font overrides must not bleed across profiles."""
+        import yaml
+        from hermes_cli.config import load_config
+        from hermes_constants import get_hermes_home
+
+        profile_dir = get_hermes_home() / "profiles" / "reader"
+        profile_dir.mkdir(parents=True)
+
+        assert self.client.put("/api/dashboard/font", json={"font": "inter"}).status_code == 200
+        resp = self.client.put(
+            "/api/dashboard/font?profile=reader",
+            json={"font": "jetbrains-mono"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "font": "jetbrains-mono"}
+        assert load_config()["dashboard"]["font"] == "inter"
+        profile_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert profile_config["dashboard"]["font"] == "jetbrains-mono"
+        assert self.client.get("/api/dashboard/font").json() == {"font": "inter"}
+        assert self.client.get("/api/dashboard/font?profile=reader").json() == {
+            "font": "jetbrains-mono"
+        }
+
+    def test_dashboard_custom_themes_are_profile_scoped(self):
+        """A custom theme file in one profile is not selectable in another."""
+        from hermes_constants import get_hermes_home
+
+        profile_dir = get_hermes_home() / "profiles" / "artist"
+        themes_dir = profile_dir / "dashboard-themes"
+        themes_dir.mkdir(parents=True)
+        (themes_dir / "ocean.yaml").write_text("name: ocean\nlabel: Ocean\n")
+
+        default_names = {
+            t["name"] for t in self.client.get("/api/dashboard/themes").json()["themes"]
+        }
+        profile_resp = self.client.get("/api/dashboard/themes?profile=artist")
+        profile_names = {t["name"] for t in profile_resp.json()["themes"]}
+
+        assert "ocean" not in default_names
+        assert "ocean" in profile_names
+
+        default_set = self.client.put("/api/dashboard/theme", json={"name": "ocean"})
+        profile_set = self.client.put(
+            "/api/dashboard/theme?profile=artist",
+            json={"name": "ocean"},
+        )
+        assert default_set.json() == {"ok": True, "theme": "default"}
+        assert profile_set.json() == {"ok": True, "theme": "ocean"}
 
     def test_get_dashboard_font_defaults_to_theme(self):
         """With no override persisted, the active font is the theme sentinel."""
@@ -5091,6 +5215,40 @@ class TestNormaliseThemeDefinition:
         from hermes_cli.web_server import _normalise_theme_definition
         result = _normalise_theme_definition({"name": "x"})
         assert "colorOverrides" not in result
+
+    def test_series_colors_filter_unknown_keys(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        result = _normalise_theme_definition({
+            "name": "series",
+            "seriesColors": {
+                "inputTokenAccent": "#111111",
+                "outputTokenAccent": "#222222",
+                "fakeSeries": "#333333",
+                "badType": 42,
+            },
+        })
+        assert result["seriesColors"] == {
+            "inputTokenAccent": "#111111",
+            "outputTokenAccent": "#222222",
+        }
+
+    def test_terminal_background_and_swatch_colors_passthrough(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        result = _normalise_theme_definition({
+            "name": "visual",
+            "terminalBackground": "#101820",
+            "swatchColors": ["#000000", "#ffffff", "rgba(1, 2, 3, 0.4)"],
+        })
+        assert result["terminalBackground"] == "#101820"
+        assert result["swatchColors"] == ["#000000", "#ffffff", "rgba(1, 2, 3, 0.4)"]
+
+    def test_invalid_swatch_colors_are_dropped(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        result = _normalise_theme_definition({
+            "name": "visual",
+            "swatchColors": ["#000000", "#ffffff"],
+        })
+        assert "swatchColors" not in result
 
     def test_alpha_clamped_to_unit_range(self):
         from hermes_cli.web_server import _normalise_theme_definition

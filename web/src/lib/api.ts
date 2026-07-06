@@ -80,6 +80,8 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  "/api/dashboard/theme",
+  "/api/dashboard/font",
 ];
 
 function withManagementProfile(url: string): string {

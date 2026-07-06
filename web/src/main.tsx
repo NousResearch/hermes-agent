@@ -3,6 +3,7 @@ import { BrowserRouter } from "react-router-dom";
 import "./index.css";
 import App from "./App";
 import { SystemActionsProvider } from "./contexts/SystemActions";
+import { ProfileProvider } from "./contexts/ProfileProvider";
 import { I18nProvider } from "./i18n";
 import { exposePluginSDK } from "./plugins";
 import { ThemeProvider } from "./themes";
@@ -15,11 +16,13 @@ exposePluginSDK();
 createRoot(document.getElementById("root")!).render(
   <BrowserRouter basename={HERMES_BASE_PATH || undefined}>
     <I18nProvider>
-      <ThemeProvider>
-        <SystemActionsProvider>
-          <App />
-        </SystemActionsProvider>
-      </ThemeProvider>
+      <ProfileProvider>
+        <ThemeProvider>
+          <SystemActionsProvider>
+            <App />
+          </SystemActionsProvider>
+        </ThemeProvider>
+      </ProfileProvider>
     </I18nProvider>
   </BrowserRouter>,
 );

@@ -604,6 +604,18 @@ async def _token_auth_seam(request: Request, call_next):
 # Config schema — auto-generated from DEFAULT_CONFIG
 # ---------------------------------------------------------------------------
 
+_BUILTIN_DASHBOARD_THEMES = [
+    {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
+    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
+    {"name": "nous-blue",     "label": "Nous Blue",           "description": "Light mode — vivid Nous-blue accents on cream canvas"},
+    {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
+    {"name": "ember",         "label": "Ember",               "description": "Warm crimson and bronze — forge vibes"},
+    {"name": "mono",          "label": "Mono",                "description": "Clean grayscale — minimal and focused"},
+    {"name": "cyberpunk",     "label": "Cyberpunk",           "description": "Neon green on black — matrix terminal"},
+    {"name": "rose",          "label": "Rosé",                "description": "Soft pink and warm ivory — easy on the eyes"},
+]
+_BUILTIN_DASHBOARD_THEME_NAMES = tuple(t["name"] for t in _BUILTIN_DASHBOARD_THEMES)
+
 # Manual overrides for fields that need select options or custom types
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "model": {
@@ -651,7 +663,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "dashboard.theme": {
         "type": "select",
         "description": "Web dashboard visual theme",
-        "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
+        "options": list(_BUILTIN_DASHBOARD_THEME_NAMES),
     },
     "display.resume_display": {
         "type": "select",
@@ -14052,20 +14064,6 @@ def mount_spa(application: FastAPI):
 # Dashboard theme endpoints
 # ---------------------------------------------------------------------------
 
-# Built-in dashboard themes — label + description only.  The actual color
-# definitions live in the frontend (web/src/themes/presets.ts).
-_BUILTIN_DASHBOARD_THEMES = [
-    {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
-    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
-    {"name": "nous-blue",     "label": "Nous Blue",           "description": "Light mode — vivid Nous-blue accents on cream canvas"},
-    {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
-    {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
-    {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
-    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
-    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
-]
-
-
 def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0) -> Optional[Dict[str, Any]]:
     """Normalise a theme layer spec from YAML into `{hex, alpha}` form.
 
@@ -14110,6 +14108,8 @@ _THEME_OVERRIDE_KEYS = {
     "destructive", "destructiveForeground", "success", "warning",
     "border", "input", "ring",
 }
+
+_THEME_SERIES_KEYS = {"inputTokenAccent", "outputTokenAccent"}
 
 # Well-known named asset slots themes can populate.  Any other keys under
 # ``assets.custom`` are exposed as ``--theme-asset-custom-<key>`` CSS vars
@@ -14197,6 +14197,14 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
             if key in _THEME_OVERRIDE_KEYS and isinstance(val, str) and val.strip():
                 color_overrides[key] = val
 
+    # Data-series colors — used by Analytics/Models token charts.
+    series_src = data.get("seriesColors", {})
+    series_colors: Dict[str, str] = {}
+    if isinstance(series_src, dict):
+        for key, val in series_src.items():
+            if key in _THEME_SERIES_KEYS and isinstance(val, str) and val.strip():
+                series_colors[key] = val
+
     # Assets — named slots + arbitrary user-defined keys.  Values must be
     # strings (URLs or CSS ``url(...)``/``linear-gradient(...)`` expressions).
     # We don't fetch remote assets here; the frontend just injects them as
@@ -14260,6 +14268,16 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
         else "standard"
     )
 
+    terminal_background = data.get("terminalBackground")
+    swatch_colors_src = data.get("swatchColors")
+    swatch_colors: Optional[List[str]] = None
+    if (
+        isinstance(swatch_colors_src, list)
+        and len(swatch_colors_src) == 3
+        and all(isinstance(v, str) and v.strip() for v in swatch_colors_src)
+    ):
+        swatch_colors = [v for v in swatch_colors_src]
+
     result: Dict[str, Any] = {
         "name": name,
         "label": data.get("label") or name,
@@ -14271,6 +14289,12 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
     }
     if color_overrides:
         result["colorOverrides"] = color_overrides
+    if series_colors:
+        result["seriesColors"] = series_colors
+    if isinstance(terminal_background, str) and terminal_background.strip():
+        result["terminalBackground"] = terminal_background
+    if swatch_colors is not None:
+        result["swatchColors"] = swatch_colors
     if assets_out:
         result["assets"] = assets_out
     if custom_css is not None:
@@ -14302,8 +14326,21 @@ def _discover_user_themes() -> list:
     return result
 
 
+def _valid_dashboard_theme_names(user_themes: Optional[list] = None) -> set:
+    names = set(_BUILTIN_DASHBOARD_THEME_NAMES)
+    for theme in user_themes if user_themes is not None else _discover_user_themes():
+        name = theme.get("name") if isinstance(theme, dict) else None
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
+
+def _coerce_dashboard_theme_name(name: Any, user_themes: Optional[list] = None) -> str:
+    return name if isinstance(name, str) and name in _valid_dashboard_theme_names(user_themes) else "default"
+
+
 @app.get("/api/dashboard/themes")
-async def get_dashboard_themes():
+async def get_dashboard_themes(profile: Optional[str] = None):
     """Return available themes and the currently active one.
 
     Built-in entries ship name/label/description only (the frontend owns
@@ -14312,9 +14349,13 @@ async def get_dashboard_themes():
     normalised definition under `definition`, so the client can apply
     them without a stub.
     """
-    config = load_config()
-    active = cfg_get(config, "dashboard", "theme", default="default")
-    user_themes = _discover_user_themes()
+    with _profile_scope(profile):
+        config = load_config()
+        user_themes = _discover_user_themes()
+        active = _coerce_dashboard_theme_name(
+            cfg_get(config, "dashboard", "theme", default="default"),
+            user_themes,
+        )
     seen = set()
     themes = []
     for t in _BUILTIN_DASHBOARD_THEMES:
@@ -14335,17 +14376,20 @@ async def get_dashboard_themes():
 
 class ThemeSetBody(BaseModel):
     name: str
+    profile: Optional[str] = None
 
 
 @app.put("/api/dashboard/theme")
-async def set_dashboard_theme(body: ThemeSetBody):
+async def set_dashboard_theme(body: ThemeSetBody, profile: Optional[str] = None):
     """Set the active dashboard theme (persists to config.yaml)."""
-    config = load_config()
-    if "dashboard" not in config:
-        config["dashboard"] = {}
-    config["dashboard"]["theme"] = body.name
-    save_config(config)
-    return {"ok": True, "theme": body.name}
+    with _profile_scope(body.profile or profile):
+        theme = _coerce_dashboard_theme_name(body.name)
+        config = load_config()
+        if "dashboard" not in config:
+            config["dashboard"] = {}
+        config["dashboard"]["theme"] = theme
+        save_config(config)
+    return {"ok": True, "theme": theme}
 
 
 # Curated font-override ids. Kept in sync with FONT_CHOICES in
@@ -14363,10 +14407,11 @@ _FONT_CHOICES = frozenset({
 
 
 @app.get("/api/dashboard/font")
-async def get_dashboard_font():
+async def get_dashboard_font(profile: Optional[str] = None):
     """Return the active font override (``"theme"`` = use the theme's font)."""
-    config = load_config()
-    font = cfg_get(config, "dashboard", "font", default=_FONT_DEFAULT_ID)
+    with _profile_scope(profile):
+        config = load_config()
+        font = cfg_get(config, "dashboard", "font", default=_FONT_DEFAULT_ID)
     if font not in _FONT_CHOICES:
         font = _FONT_DEFAULT_ID
     return {"font": font}
@@ -14374,10 +14419,11 @@ async def get_dashboard_font():
 
 class FontSetBody(BaseModel):
     font: str
+    profile: Optional[str] = None
 
 
 @app.put("/api/dashboard/font")
-async def set_dashboard_font(body: FontSetBody):
+async def set_dashboard_font(body: FontSetBody, profile: Optional[str] = None):
     """Set the dashboard font override (persists to config.yaml).
 
     Accepts any id in the curated catalog, or ``"theme"`` to clear the
@@ -14386,11 +14432,12 @@ async def set_dashboard_font(body: FontSetBody):
     the picker.
     """
     font = body.font if body.font in _FONT_CHOICES else _FONT_DEFAULT_ID
-    config = load_config()
-    if "dashboard" not in config:
-        config["dashboard"] = {}
-    config["dashboard"]["font"] = font
-    save_config(config)
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        if "dashboard" not in config:
+            config["dashboard"] = {}
+        config["dashboard"]["font"] = font
+        save_config(config)
     return {"ok": True, "font": font}
 
 

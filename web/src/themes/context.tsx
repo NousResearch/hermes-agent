@@ -29,15 +29,16 @@ import type {
   ThemeTypography,
 } from "./types";
 import { api } from "@/lib/api";
+import { useProfileScope } from "@/contexts/useProfileScope";
 
-/** LocalStorage key — pre-applied before the React tree mounts to avoid
- *  a visible flash of the default palette on theme-overridden installs. */
+/** LocalStorage key prefix for profile-scoped theme seeds. The server-side
+ *  config remains authoritative; localStorage only reduces repaint flash
+ *  while the profile-scoped preference loads. */
 const STORAGE_KEY = "hermes-dashboard-theme";
 
-/** LocalStorage key for the font override (independent of theme). Holds a
+/** LocalStorage key prefix for the font override (independent of theme). Holds a
  *  font id from the catalog in `fonts.ts`, or the `THEME_DEFAULT_FONT_ID`
- *  sentinel / absent = "use the active theme's font". Pre-applied before
- *  the React tree mounts (see `main.tsx`) to avoid a font flash. */
+ *  sentinel / absent = "use the active theme's font". */
 const FONT_STORAGE_KEY = "hermes-dashboard-font";
 
 /** Renames of built-in theme keys we've shipped previously. Without this,
@@ -53,6 +54,26 @@ const THEME_NAME_ALIASES: Record<string, string> = {
 
 function migrateThemeName(name: string): string {
   return THEME_NAME_ALIASES[name] ?? name;
+}
+
+function profileScopedStorageKey(prefix: string, profileName: string): string {
+  return `${prefix}:${profileName || "default"}`;
+}
+
+function readStoredTheme(storageKey: string): string {
+  if (typeof window === "undefined") return "default";
+  const stored = window.localStorage.getItem(storageKey) ?? "default";
+  const migrated = migrateThemeName(stored);
+  if (migrated !== stored) {
+    window.localStorage.setItem(storageKey, migrated);
+  }
+  return migrated;
+}
+
+function readStoredFont(storageKey: string): string {
+  if (typeof window === "undefined") return THEME_DEFAULT_FONT_ID;
+  const stored = window.localStorage.getItem(storageKey);
+  return stored && getFontChoice(stored) ? stored : THEME_DEFAULT_FONT_ID;
 }
 
 /** Tracks fontUrls we've already injected so multiple theme switches don't
@@ -409,18 +430,15 @@ function applyTheme(theme: DashboardTheme) {
 // ---------------------------------------------------------------------------
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  const { profile, currentProfile } = useProfileScope();
+  const profileName = profile || currentProfile || "default";
+  const themeStorageKey = profileScopedStorageKey(STORAGE_KEY, profileName);
+  const fontStorageKey = profileScopedStorageKey(FONT_STORAGE_KEY, profileName);
+
   /** Name of the currently active theme (built-in id or user YAML name). */
-  const [themeName, setThemeName] = useState<string>(() => {
-    if (typeof window === "undefined") return "default";
-    const stored = window.localStorage.getItem(STORAGE_KEY) ?? "default";
-    const migrated = migrateThemeName(stored);
-    // Write the migrated name back so future reads converge on the new
-    // key and we eventually retire the alias entry.
-    if (migrated !== stored) {
-      window.localStorage.setItem(STORAGE_KEY, migrated);
-    }
-    return migrated;
-  });
+  const [themeName, setThemeName] = useState<string>(() =>
+    readStoredTheme(themeStorageKey),
+  );
 
   /** All selectable themes (shown in the picker). Starts with just the
    *  built-ins; the API call below merges in user themes. */
@@ -441,9 +459,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   /** Active font-override id (independent of theme). `THEME_DEFAULT_FONT_ID`
    *  = no override. Seeded from localStorage so it's applied flash-free. */
   const [fontId, setFontId] = useState<string>(() => {
-    if (typeof window === "undefined") return THEME_DEFAULT_FONT_ID;
-    const stored = window.localStorage.getItem(FONT_STORAGE_KEY);
-    const valid = stored && getFontChoice(stored) ? stored : THEME_DEFAULT_FONT_ID;
+    const valid = readStoredFont(fontStorageKey);
     _ACTIVE_FONT_OVERRIDE = valid;
     return valid;
   });
@@ -470,7 +486,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyTheme(resolveTheme(themeName));
   }, [themeName, resolveTheme, fontId]);
 
-  // Load server-side themes (built-ins + user YAMLs) once on mount.
+  // Load server-side themes (built-ins + user YAMLs) for the selected profile.
   useEffect(() => {
     let cancelled = false;
     api
@@ -499,7 +515,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           const migratedActive = migrateThemeName(resp.active);
           if (migratedActive !== themeName) {
             setThemeName(migratedActive);
-            window.localStorage.setItem(STORAGE_KEY, migratedActive);
+            window.localStorage.setItem(themeStorageKey, migratedActive);
           }
           // If the server is still persisting the stale key, push the
           // migrated value back so it converges too — otherwise every
@@ -514,10 +530,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [profileName, themeStorageKey]);
 
-  // Load the server-persisted font override once on mount. The server is
-  // the source of truth across browsers; localStorage just avoids the flash.
+  // Load the server-persisted font override for the selected profile. The
+  // profile config is the source of truth; localStorage just avoids the flash.
   useEffect(() => {
     let cancelled = false;
     api
@@ -529,7 +545,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         if (serverId !== fontId) {
           setFontId(serverId);
           if (typeof window !== "undefined") {
-            window.localStorage.setItem(FONT_STORAGE_KEY, serverId);
+            window.localStorage.setItem(fontStorageKey, serverId);
           }
         }
       })
@@ -538,7 +554,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [profileName, fontStorageKey]);
 
   const setTheme = useCallback(
     (name: string) => {
@@ -551,21 +567,21 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       const next = knownNames.has(name) ? name : "default";
       setThemeName(next);
       if (typeof window !== "undefined") {
-        window.localStorage.setItem(STORAGE_KEY, next);
+        window.localStorage.setItem(themeStorageKey, next);
       }
       api.setTheme(next).catch(() => {});
     },
-    [availableThemes, userThemeDefs],
+    [availableThemes, userThemeDefs, themeStorageKey],
   );
 
   const setFont = useCallback((id: string) => {
     const next = getFontChoice(id) ? id : THEME_DEFAULT_FONT_ID;
     setFontId(next);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(FONT_STORAGE_KEY, next);
+      window.localStorage.setItem(fontStorageKey, next);
     }
     api.setFontPref(next).catch(() => {});
-  }, []);
+  }, [fontStorageKey]);
 
   const value = useMemo<ThemeContextValue>(
     () => ({

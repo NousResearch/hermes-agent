@@ -726,10 +726,11 @@ def init_agent(
         # Route reference-model outputs to the agent's tool_progress_callback so
         # every surface that already consumes it (CLI spinner/scrollback, TUI,
         # desktop, gateway) can show each reference's answer as a labelled block
-        # before the aggregator acts. The facade emits "moa.reference" and
-        # "moa.aggregating" events; we forward them through the same callback
-        # the tool lifecycle uses. Best-effort and cache-safe — these are
-        # display-only events, they never touch the message history.
+        # before the aggregator acts. The facade emits "moa.reference",
+        # "moa.progress", "moa.phase", and "moa.aggregating" events; we forward
+        # them through the same callback the tool lifecycle uses. Best-effort
+        # and cache-safe — these are display-only events, they never touch the
+        # message history.
         def _moa_reference_relay(event: str, **kwargs: Any) -> None:
             cb = getattr(agent, "tool_progress_callback", None)
             if cb is None:
@@ -747,6 +748,30 @@ def init_agent(
                         None,
                         moa_index=idx,
                         moa_count=count,
+                    )
+                elif event == "moa.progress":
+                    # Per-reference completion. Frontends render this as a
+                    # status-bar progress indicator like ``MOA: N/M refs done``.
+                    cb(
+                        "moa.progress",
+                        str(kwargs.get("label") or ""),
+                        None,
+                        None,
+                        moa_refs_done=kwargs.get("refs_done"),
+                        moa_refs_total=kwargs.get("refs_total"),
+                    )
+                elif event == "moa.phase":
+                    # Phase transition (currently only ``phase="aggregator"``
+                    # fires once the fan-out is done). Subscribers can switch
+                    # on ``moa_phase`` to know which phase is active.
+                    cb(
+                        "moa.phase",
+                        str(kwargs.get("aggregator") or ""),
+                        None,
+                        None,
+                        moa_phase=kwargs.get("phase"),
+                        moa_refs_done=kwargs.get("refs_done"),
+                        moa_refs_total=kwargs.get("refs_total"),
                     )
                 elif event == "moa.aggregating":
                     cb(

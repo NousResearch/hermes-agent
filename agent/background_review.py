@@ -760,6 +760,40 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+
+            # Active memory provider (e.g. ``mnemosyne``, ``honcho``, ``hindsight``)
+            # exposes its own write tools via ``MemoryProvider.get_tool_schemas()``;
+            # those tools are what we actually want the review fork to call so
+            # distilled memories land in the configured backend instead of the
+            # legacy MEMORY.md file. ``skip_memory=True`` above prevents the
+            # review agent's own transcript from autosaving into the provider,
+            # but it does NOT give the review LLM a path to call the provider's
+            # explicit write tools either — the toolset whitelist built here
+            # would only include the legacy ``memory`` tool at that point. Add
+            # the active provider's tool schemas (read-only schema names only;
+            # we do not re-import the schemas themselves) to the whitelist so
+            # memory reviews honour ``memory.provider`` (#59244).
+            try:
+                from plugins.memory import (
+                    _get_active_memory_provider,
+                    load_memory_provider,
+                )
+
+                _active_name = _get_active_memory_provider()
+                if _active_name:
+                    _provider = load_memory_provider(_active_name)
+                    if _provider is not None:
+                        for _schema in _provider.get_tool_schemas() or []:
+                            _name = (_schema or {}).get("name")
+                            if _name:
+                                review_whitelist.add(_name)
+            except Exception as _exc:
+                # Provider-discovery failure must not break the review fork.
+                # The legacy memory path remains the safer default fallback.
+                logger.debug(
+                    "background_review: provider-aware whitelist skip (%s)",
+                    _exc,
+                )
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(

@@ -996,6 +996,17 @@ def try_recover_primary_transport(
         agent.model = rt["model"]
         agent.provider = rt["provider"]
         agent.base_url = rt["base_url"]
+        # Defense-in-depth: if the primary snapshot carries a moa://local
+        # base_url for a non-moa provider, clear it so the real provider's
+        # default endpoint is re-resolved.  Same pattern as
+        # restore_primary_runtime() and init_agent().
+        if agent.provider != "moa" and "moa://" in (agent.base_url or ""):
+            logger.warning(
+                "Defense-in-depth: cleared moa://local base_url for provider %s "
+                "on primary recovery (moa:// URLs are only valid for "
+                "the moa virtual provider).", agent.provider,
+            )
+            agent.base_url = ""
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -1159,6 +1170,17 @@ def restore_primary_runtime(agent) -> bool:
         agent.model = rt["model"]
         agent.provider = rt["provider"]
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
+        # Defense-in-depth: if the restored primary runtime carries a
+        # moa://local base_url for a non-moa provider (e.g. from a stale
+        # config or a previous session), clear it so the real provider's
+        # default endpoint is re-resolved.
+        if agent.provider != "moa" and "moa://" in (agent.base_url or ""):
+            logger.warning(
+                "Defense-in-depth: cleared moa://local base_url for provider %s "
+                "on primary runtime restore (moa:// URLs are only valid for "
+                "the moa virtual provider).", agent.provider,
+            )
+            agent.base_url = ""
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -1792,13 +1814,25 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # ── Swap core runtime fields ──
         agent.model = new_model
         agent.provider = new_provider
-        # Use new base_url when provided; only fall back to current when the
-        # new provider genuinely has no endpoint (e.g. native SDK providers).
-        # Without this guard the old provider's URL (e.g. Ollama's localhost
-        # address) would persist silently after switching to a cloud provider
-        # that returns an empty base_url string.
-        if base_url:
-            agent.base_url = base_url
+        # Always apply the resolved base_url (even when empty) so that a
+        # stale value from a previous provider or a corrupted value like
+        # moa://local leaking into a non-moa provider is overwritten.
+        # The old `if base_url:` guard meant an empty-string result from the
+        # model switch resolver would leave the old base_url in place, letting
+        # a corrupted value (moa://local) survive across model switches and
+        # be restored from _primary_runtime on every turn.
+        agent.base_url = base_url
+        # Defense-in-depth: moa://local is a virtual endpoint used ONLY by
+        # the MoA virtual provider.  If a non-moa provider somehow ends up
+        # with this URL, clear it so the real provider's default endpoint
+        # is used.
+        if agent.provider != "moa" and "moa://" in (agent.base_url or ""):
+            logger.warning(
+                "Defense-in-depth: cleared moa://local base_url for provider %s "
+                "on model switch (moa:// URLs are only valid for the moa "
+                "virtual provider).", agent.provider,
+            )
+            agent.base_url = ""
         agent.api_mode = api_mode
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):

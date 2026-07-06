@@ -359,6 +359,21 @@ def init_agent(
     else:
         agent.api_mode = "chat_completions"
 
+    # ── Safety check: moa://local is a virtual endpoint used ONLY by the
+    # MoA virtual provider.  If a non-moa provider somehow has this URL set
+    # (e.g. leaked from a stale config or model switch), clear it so the
+    # real provider's default endpoint is used instead.  Without this guard
+    # the agent creates a real HTTP client targeting moa://local, which has
+    # no server listening and always returns APIConnectionError.
+    if agent.provider != "moa" and agent.base_url and "moa://" in agent.base_url:
+        logger.warning(
+            "Defense-in-depth: cleared moa://local base_url for provider %s "
+            "(moa:// URLs are only valid for the moa virtual provider). "
+            "Falling back to provider-default endpoint.",
+            agent.provider,
+        )
+        agent.base_url = ""
+
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
     try:

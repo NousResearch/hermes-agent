@@ -8071,8 +8071,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._explicit_base_url = result.base_url
         if result.api_key:
             self.api_key = result.api_key
-        if result.base_url:
-            self.base_url = result.base_url
+        # Always apply the resolved base_url (even when empty) so a stale
+        # value from a previous provider (e.g. moa://local leaking into
+        # opencode-go) is overwritten.  On the next turn, credential
+        # resolution re-derives the canonical URL from the provider profile.
+        self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
 

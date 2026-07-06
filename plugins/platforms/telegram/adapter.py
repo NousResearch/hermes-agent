@@ -1337,8 +1337,6 @@ class TelegramAdapter(BasePlatformAdapter):
         The legacy MarkdownV2 path renders the same text cleanly, so skip rich
         delivery up front until affected clients age out.
         """
-        if getattr(self, "_allow_cjk_rich_messages", False):
-            return False
         return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:
@@ -1407,7 +1405,10 @@ class TelegramAdapter(BasePlatformAdapter):
             and content.strip()
             and self._needs_rich_rendering(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
-            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            and (
+                getattr(self, "_allow_cjk_rich_messages", False)
+                or not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            )
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )
@@ -1755,7 +1756,10 @@ class TelegramAdapter(BasePlatformAdapter):
             and content
             and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
-            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            and (
+                getattr(self, "_allow_cjk_rich_messages", False)
+                or not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            )
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )

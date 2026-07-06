@@ -191,6 +191,17 @@ async def test_astral_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble(
 
 
 @pytest.mark.asyncio
+async def test_cjk_rich_content_explicit_opt_out_uses_legacy_send():
+    adapter = _make_adapter(extra={"allow_cjk_rich_messages": False})
+
+    result = await adapter.send("12345", CJK_RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_cjk_rich_content_opt_in_uses_rich_send():
     adapter = _make_adapter(extra={"allow_cjk_rich_messages": True})
 

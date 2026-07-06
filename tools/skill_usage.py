@@ -368,6 +368,10 @@ def list_agent_created_skill_names() -> List[str]:
             skill_md.relative_to(base)
         except ValueError:
             continue
+        # Skip skills whose directory is a symlink — the real content lives
+        # outside the local skills tree and should not be curated.
+        if skill_md.parent.is_symlink():
+            continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         # Hub-installed skills are always off-limits.
         if name in hub:
@@ -1099,6 +1103,17 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     if is_external_skill_path(skill_dir):
         return False, _external_read_only_message(skill_name)
 
+    # Symlinked skill — the real content lives outside the local skills tree.
+    # Remove the symlink itself without touching the target. The target is
+    # managed through its own external workflow (e.g. PS repo git).
+    if skill_dir.is_symlink():
+        try:
+            skill_dir.unlink()
+        except OSError as e:
+            return False, f"failed to remove symlink '{skill_dir}': {e}"
+        set_state(skill_name, STATE_ARCHIVED)
+        return True, f"symlink '{skill_name}' removed (real content preserved at {skill_dir.resolve()})"
+
     archive_root = _archive_dir()
     try:
         archive_root.mkdir(parents=True, exist_ok=True)
@@ -1255,6 +1270,10 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
 
     for skill_md in iter_skill_index_files(base, "SKILL.md"):
         if is_external_skill_path(skill_md):
+            continue
+        # Skip skills whose directory is a symlink — the real content lives
+        # outside the local skills tree and should not be curated or archived.
+        if skill_md.parent.is_symlink():
             continue
         if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:
             return skill_md.parent

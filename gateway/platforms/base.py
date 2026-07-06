@@ -3520,9 +3520,15 @@ class BasePlatformAdapter(ABC):
         for m in re.finditer(r'`[^`\n]+`', content):
             start = m.start()
             # Check if this is a backtick-quoted path after MEDIA:
+            #   MEDIA:`/path/file.png` ← backtick after MEDIA:
             prefix = content[max(0, start - 20):start]
             if re.search(r'MEDIA:\s*$', prefix):
                 continue  # This is a MEDIA path quote, not inline code
+            # Also skip if the backtick span itself contains a MEDIA: tag:
+            #   `MEDIA:/path/file.png` ← backtick wraps the whole MEDIA tag
+            body = content[start + 1 : m.end() - 1]
+            if re.match(r'MEDIA:\s*(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\'|(?:~/|/|[A-Za-z]:[/\\])\S+\.\w+)', body, re.IGNORECASE):
+                continue
             spans.append((start, m.end()))
 
         # Blockquote lines: > at line start

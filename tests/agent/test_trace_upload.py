@@ -1,9 +1,8 @@
 """Tests for agent.trace_upload — Hugging Face session-trace upload.
 
-Ported from qwibitai/nanoclaw#2648. Covers the Claude Code JSONL converter,
-HF token resolution, the no-token message path, and the upload path with a
-mocked ``HfApi`` (verifying repo id, file path, and content without touching
-the network).
+Covers the Claude Code JSONL converter, HF token resolution, the no-token
+message path, and the upload path with a mocked ``HfApi`` (verifying repo
+id, file path, and content without touching the network).
 """
 
 import json

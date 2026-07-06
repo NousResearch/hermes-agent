@@ -1,29 +1,26 @@
 """Upload a Hermes session transcript to Hugging Face as an agent trace.
 
-Ported from qwibitai/nanoclaw#2648 ("/upload-trace"), adapted to Hermes'
-architecture. NanoClaw could push its Claude Code ``.jsonl`` files as-is
-because its runner *is* Claude Code. Hermes stores sessions in its own
-SQLite store (``hermes_state.SessionDB``), so we reconstruct the
-conversation and emit it in the **Claude Code JSONL** shape — one of the
-three formats the Hugging Face Agent Trace Viewer auto-detects
-(Claude Code / Codex / Pi). No dataset-side preprocessing is needed; the
-Hub tags the dataset ``agent-traces`` and opens it in the viewer.
+Hermes stores sessions in its own SQLite store (``hermes_state.SessionDB``),
+so we reconstruct the conversation and emit it in the **Claude Code JSONL**
+shape — one of the three formats the Hugging Face Agent Trace Viewer
+auto-detects (Claude Code / Codex / Pi). No dataset-side preprocessing is
+needed; the Hub tags the dataset ``agent-traces`` and opens it in the viewer.
 
 Docs: https://huggingface.co/docs/hub/agent-traces
 
 Design notes
 ------------
-* **Zero LLM turn.** Like NanoClaw's runner-handled command, this is a
-  deterministic export — it never spends a model call. The ``hermes trace
-  upload`` subcommand calls :func:`upload_session_trace` directly.
+* **Zero LLM turn.** This is a deterministic export — it never spends a
+  model call. The ``hermes trace upload`` subcommand calls
+  :func:`upload_session_trace` directly.
 * **Private by default.** Traces can contain prompts, tool output, local
   paths, and secrets. The dataset is created private and every text body
   is passed through Hermes' secret redactor (``force=True``) unless the
   caller explicitly opts out with ``redact=False``.
-* **Never raises.** Returns a user-facing status string so the slash
-  handlers can echo it straight back to the user (matches the NanoClaw
-  contract). Programmatic callers that need the URL can use
-  :func:`build_trace_jsonl` + :func:`_do_upload` directly.
+* **Never raises.** Returns a user-facing status string so command
+  handlers can echo it straight back to the user. Programmatic callers
+  that need the URL can use :func:`build_trace_jsonl` + :func:`_do_upload`
+  directly.
 """
 
 from __future__ import annotations

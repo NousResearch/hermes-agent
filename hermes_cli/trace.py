@@ -3,8 +3,6 @@
 Thin CLI wrapper over :mod:`agent.trace_upload`. The heavy lifting (session
 load, Claude Code JSONL conversion, HF upload) lives there so the command
 handler stays small and deterministic.
-
-Ported from qwibitai/nanoclaw#2648.
 """
 
 from __future__ import annotations

@@ -13947,32 +13947,38 @@ def mount_spa(application: FastAPI):
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
         or empty string when served at root.
 
-        When the OAuth auth gate is active (``app.state.auth_required``),
-        the legacy ``_SESSION_TOKEN`` is NOT injected — the SPA reads
-        identity from ``/api/auth/me`` over cookie auth instead.  The
-        ``__HERMES_AUTH_REQUIRED__`` flag lets the SPA pick the right
-        auth scheme for /api/pty and /api/ws (ticket vs token).
+        Both branches inject ``__HERMES_SESSION_TOKEN__``: the loopback path
+        has always done so, and the gated path also needs to so the model-
+        provider OAuth helper (``hf()`` in the SPA) can read it. The token
+        is a per-process secret that already lived in the HTML for loopback
+        mode; the basic_auth cookie session is bound to the same client
+        that received the token, so exposing it under the gated path does
+        not broaden the trust model. Without this, model-OAuth login
+        initiated from the dashboard fails with "Session token not available"
+        when the dashboard is protected by the bundled ``basic_auth``
+        provider (#59274).
+
+        The ``__HERMES_AUTH_REQUIRED__`` flag tells the SPA which auth
+        scheme to use for /api/pty and /api/ws (ticket vs token).
         """
         html = _index_path.read_text(encoding="utf-8")
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
-        if gated:
-            bootstrap_script = (
-                f"<script>"
-                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-                f'window.__HERMES_BASE_PATH__="{prefix}";'
-                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
-                f"</script>"
-            )
-        else:
-            bootstrap_script = (
-                f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
-                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-                f'window.__HERMES_BASE_PATH__="{prefix}";'
-                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
-                f"</script>"
-            )
+        # The session token is always injected — both loopback and gated
+        # paths need it (the gated path for the model-OAuth flow per #59274).
+        # JSON-escape so the value can't break out of the string even if it
+        # contains a stray </script> or quote.
+        import json as _json
+        _token_js = _json.dumps(_SESSION_TOKEN)
+        bootstrap_script = (
+            f"<script>"
+            f"window.__HERMES_SESSION_TOKEN__={_token_js};"
+            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+            f'window.__HERMES_BASE_PATH__="{prefix}";'
+            f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+            f"</script>"
+        )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
             # browser fetches them through the same proxy prefix.

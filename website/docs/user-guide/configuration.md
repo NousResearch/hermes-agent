@@ -1302,6 +1302,19 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 /reasoning hide      # Hide model thinking
 ```
 
+## Text Verbosity (GPT-5+)
+
+Control the verbosity of text output from GPT-5 and later models. This injects the `text.verbosity` parameter into the OpenAI Responses API, which instructs the model to adjust its output length.
+
+```yaml
+agent:
+  text_verbosity: ""   # empty = no injection (default). Options: low, medium, high
+```
+
+When unset (default), no `text` parameter is sent and the model uses its own default verbosity. Setting `"low"` produces noticeably shorter responses - useful for agent workflows where concise output reduces token overhead.
+
+Only applies to GPT-5+ models on the `codex_responses` transport. Other models (Claude, Grok, Gemini) ignore this setting silently - no errors, no injection.
+
 ## Tool-Use Enforcement
 
 Some models occasionally describe intended actions as text instead of making tool calls ("I would run the tests..." instead of actually calling the terminal). Tool-use enforcement injects system prompt guidance that steers the model back to actually calling tools.

@@ -2792,6 +2792,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
+        self._text_verbosity = self._load_text_verbosity()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
@@ -4817,6 +4818,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "priority"
         logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
+
+    @staticmethod
+    def _load_text_verbosity() -> str:
+        """Load text.verbosity for GPT-5+ from config.yaml agent section."""
+        cfg = _load_gateway_runtime_config()
+        return str(cfg_get(cfg, "agent", "text_verbosity", default="") or "").strip()
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -12985,6 +12992,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            self._text_verbosity = self._load_text_verbosity()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions so the background
@@ -13015,6 +13023,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
+                    text_verbosity=self._text_verbosity,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -17535,6 +17544,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            self._text_verbosity = self._load_text_verbosity()
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -17788,6 +17798,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     prefill_messages=self._prefill_messages or None,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
+                    text_verbosity=self._text_verbosity,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -17877,6 +17888,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.event_callback = _event_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
+            agent.text_verbosity = self._text_verbosity
             agent.request_overrides = turn_route.get("request_overrides") or {}
 
             _bg_review_release = threading.Event()

@@ -3907,6 +3907,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
+        self.text_verbosity = str(
+            CLI_CONFIG["agent"].get("text_verbosity", "") or ""
+        ).strip()
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}

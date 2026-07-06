@@ -1359,6 +1359,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
+            text_verbosity=self._text_verbosity,
             gateway_session_key=gateway_session_key,
         )
         return agent

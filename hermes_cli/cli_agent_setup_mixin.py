@@ -360,6 +360,7 @@ class CLIAgentSetupMixin:
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
+                text_verbosity=getattr(self, "text_verbosity", ""),
                 request_overrides=request_overrides,
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,

@@ -2396,6 +2396,13 @@ def _load_service_tier() -> str | None:
     return None
 
 
+def _load_text_verbosity() -> str:
+    """Load text.verbosity for GPT-5+ from config.yaml agent section."""
+    return str(
+        (_load_cfg().get("agent") or {}).get("text_verbosity", "") or ""
+    ).strip()
+
+
 def _load_provider_routing() -> dict:
     """OpenRouter provider-routing prefs from config.yaml (``provider_routing``).
 
@@ -3983,6 +3990,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "reasoning_config": getattr(agent, "reasoning_config", None)
         or _load_reasoning_config(),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
+        "text_verbosity": getattr(agent, "text_verbosity", "") or _load_text_verbosity(),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
@@ -4415,6 +4423,7 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
+        text_verbosity=_load_text_verbosity(),
         enabled_toolsets=_load_enabled_toolsets(),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same

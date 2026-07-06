@@ -212,6 +212,7 @@ def init_agent(
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
     request_overrides: Dict[str, Any] = None,
+    text_verbosity: str = "",
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
     user_id: str = None,
@@ -500,6 +501,7 @@ def init_agent(
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
+    agent.text_verbosity = text_verbosity or ""
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
     

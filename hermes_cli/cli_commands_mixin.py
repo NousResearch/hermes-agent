@@ -1651,6 +1651,7 @@ class CLICommandsMixin:
                     session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
+                    text_verbosity=getattr(self, "text_verbosity", ""),
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=self._providers_only,
                     providers_ignored=self._providers_ignore,

@@ -158,14 +158,21 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 # them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) for back-compat;
 # the actual text lives here so future edits are one-place.
 _MEMORY_REVIEW_PROMPT = (
-    "Review the conversation above and consider saving to memory if appropriate.\n\n"
-    "Focus on:\n"
-    "1. Has the user revealed things about themselves — their persona, desires, "
-    "preferences, or personal details worth remembering?\n"
-    "2. Has the user expressed expectations about how you should behave, their work "
-    "style, or ways they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. "
-    "If nothing is worth saving, just say 'Nothing to save.' and stop."
+    "Review the conversation above AND your existing memory store.\n\n"
+    "Step 1 — Audit: use memory(action='audit') to see every current entry.\n"
+    "Step 2 — Classify each entry as one of:\n"
+    "  • durable fact: user preferences, environment conventions, core rules, "
+    "things that will matter across sessions (keep)\n"
+    "  • task residue: one-off task state, completed work, stale context, "
+    "obsolete project details (remove)\n"
+    "Step 3 — Consolidate: remove task-residue entries, replace overlapping "
+    "durable-fact entries with a single merged version.\n"
+    "Step 4 — Save: only then review the current conversation and save "
+    "new durable facts with the memory tool.\n\n"
+    "The goal is a lean memory store where every entry is a durable fact "
+    "that will still be relevant in a future session — not a growing log "
+    "of every task you've ever done. If nothing needs removal or saving, "
+    "just say 'Nothing to change.' and stop."
 )
 
 _SKILL_REVIEW_PROMPT = (

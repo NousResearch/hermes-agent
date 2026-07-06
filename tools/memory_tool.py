@@ -601,6 +601,36 @@ class MemoryStore:
 
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
 
+    def audit(self, target: str) -> Dict[str, Any]:
+        """Return a read-only inventory of all entries with indices and char counts.
+
+        Gives the model visibility into what is currently stored so it can
+        classify entries as durable facts vs task residue and consolidate
+        BEFORE hitting the char limit.  Does not write anything.
+        """
+        entries = self._entries_for(target)
+        current = self._char_count(target)
+        limit = self._char_limit(target)
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+
+        entry_list = []
+        for i, e in enumerate(entries):
+            preview = e[:120] + ("..." if len(e) > 120 else "")
+            entry_list.append({
+                "idx": i,
+                "chars": len(e),
+                "preview": preview,
+            })
+
+        return {
+            "success": True,
+            "done": True,
+            "target": target,
+            "usage": f"{pct}% — {current:,}/{limit:,} chars",
+            "entry_count": len(entries),
+            "entries": entry_list,
+        }
+
     def _batch_error(self, target: str, message: str) -> Dict[str, Any]:
         """Build a batch-abort error that reports live (uncommitted) state."""
         current = self._char_count(target)
@@ -1022,8 +1052,11 @@ def memory_tool(
     elif action == "remove":
         result = store.remove(target, old_text)
 
+    elif action == "audit":
+        result = store.audit(target)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, audit", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1084,8 +1117,8 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform (single-op shape). Omit when using 'operations'."
+                "enum": ["add", "replace", "remove", "audit"],
+                "description": "The action to perform (single-op shape). Use 'audit' for a read-only inventory of all entries. Omit when using 'operations'."
             },
             "target": {
                 "type": "string",

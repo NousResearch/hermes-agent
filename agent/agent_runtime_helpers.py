@@ -3741,6 +3741,109 @@ def repair_empty_non_final_messages(
     return messages
 
 
+def _classify_tool_call_orphans(
+    messages: List[Dict[str, Any]],
+) -> tuple:
+    """Return (surviving_call_ids, result_call_ids, orphaned_results, missing_results).
+
+    Collects tool-call IDs from both assistant ``tool_calls`` (using the
+    ``call_id || id`` resolution that ``_get_tool_call_id_static`` uses)
+    and from ``tool`` messages, then classifies orphans:
+
+    - ``orphaned_results``: tool messages whose ``tool_call_id`` has no
+      matching assistant tool_call in the window.
+    - ``missing_results``: assistant tool_calls whose results were dropped
+      (no matching ``tool`` message found).
+
+    This is the single source of truth for orphan detection. The caller
+    decides whether to insert stubs (pre-API sanitizer) or strip orphans
+    (context compressor) — but the *detection* logic is shared so dedup
+    and id-resolution rules never drift between the two sites (#58357).
+    """
+    surviving_call_ids: set = set()
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                if cid:
+                    surviving_call_ids.add(cid)
+
+    result_call_ids: set = set()
+    for msg in messages:
+        if msg.get("role") == "tool":
+            cid = (msg.get("tool_call_id") or "").strip()
+            if cid:
+                result_call_ids.add(cid)
+
+    orphaned_results = result_call_ids - surviving_call_ids
+    missing_results = surviving_call_ids - result_call_ids
+    return surviving_call_ids, result_call_ids, orphaned_results, missing_results
+
+
+
+def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
+    """Classify orphaned tool-call / tool-result pairs in *messages*.
+
+    Returns a 4-tuple ``(surviving_call_ids, result_call_ids,
+    orphaned_results, missing_tool_calls)``:
+
+    - ``surviving_call_ids``: every id variant carried by any assistant
+      ``tool_calls`` entry. A tool_call may carry SEVERAL equivalent id
+      spellings (``id`` fc_..., ``call_id`` call_..., ``response_item_id``,
+      or a composite ``call|item`` bridge id) — register EVERY variant so a
+      result matching any of them survives (#55626, #63000).
+    - ``result_call_ids``: every id variant referenced by a ``tool`` result.
+    - ``orphaned_results``: the actual ``tool`` message dicts whose complete
+      alias set matches no assistant call (compare by identity — ``id(msg)``
+      — when filtering, since dicts are unhashable).
+    - ``missing_tool_calls``: the actual tool_call entries with no matching
+      result on ANY alias (after orphaned results are excluded).
+
+    This is the single source of truth for orphan *detection*. Callers keep
+    their divergent remediation strategies — ``sanitize_api_messages``
+    inserts stubs, the context compressor strips orphans — but the
+    id-resolution and variant-expansion rules can never drift between the
+    two sites again (#58357).
+    """
+    assistant_call_variants: List[tuple[Any, frozenset[str]]] = []
+    surviving_call_ids: set[str] = set()
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            variants = tool_call_id_variants(tc)
+            if variants:
+                assistant_call_variants.append((tc, variants))
+                surviving_call_ids.update(variants)
+
+    result_entries = [
+        (msg, tool_result_id_variants(msg.get("tool_call_id")))
+        for msg in messages
+        if msg.get("role") == "tool"
+    ]
+    result_call_ids: set[str] = set()
+    for _, variants in result_entries:
+        result_call_ids.update(variants)
+
+    orphaned_results = [
+        msg
+        for msg, variants in result_entries
+        if variants and not (variants & surviving_call_ids)
+    ]
+    orphaned_ids = {id(msg) for msg in orphaned_results}
+    surviving_result_variants = [
+        variants
+        for msg, variants in result_entries
+        if variants and id(msg) not in orphaned_ids
+    ]
+    missing_tool_calls = [
+        tc
+        for tc, variants in assistant_call_variants
+        if not any(variants & rv for rv in surviving_result_variants)
+    ]
+    return surviving_call_ids, result_call_ids, orphaned_results, missing_tool_calls
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -3878,58 +3981,23 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             _pre_id_filter_count - len(messages),
         )
 
-    assistant_call_variants: List[tuple[Any, frozenset[str]]] = []
-    surviving_call_ids: set[str] = set()
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        for tc in msg.get("tool_calls") or []:
-            # A tool_call may carry SEVERAL equivalent id spellings (``id``
-            # fc_..., ``call_id`` call_..., ``response_item_id``, or a
-            # composite ``call|item`` bridge id). ``_get_tool_call_id_static``
-            # returns only the preferred one, but a tool result keyed on any
-            # OTHER spelling would then look orphaned and get dropped +
-            # replaced with a bogus "[Result unavailable]" stub — silently
-            # eating a perfectly valid tool result (#55626, #63000). Register
-            # EVERY variant so a result matching any of them survives.
-            variants = tool_call_id_variants(tc)
-            if variants:
-                assistant_call_variants.append((tc, variants))
-                surviving_call_ids.update(variants)
-
-    result_entries = [
-        (msg, tool_result_id_variants(msg.get("tool_call_id")))
-        for msg in messages
-        if msg.get("role") == "tool"
-    ]
+    (
+        surviving_call_ids,
+        result_call_ids,
+        orphaned_results,
+        missing_tool_calls,
+    ) = _classify_tool_call_orphans(messages)
 
     # 1. Drop tool results whose complete alias set matches no assistant call.
-    orphaned_result_objects = {
-        id(msg)
-        for msg, variants in result_entries
-        if variants and not (variants & surviving_call_ids)
-    }
+    orphaned_result_objects = {id(msg) for msg in orphaned_results}
     if orphaned_result_objects:
         messages = [m for m in messages if id(m) not in orphaned_result_objects]
-        result_entries = [
-            (msg, variants)
-            for msg, variants in result_entries
-            if id(msg) not in orphaned_result_objects
-        ]
         _ra().logger.debug(
             "Pre-call sanitizer: removed %d orphaned tool result(s)",
             len(orphaned_result_objects),
         )
 
     # 2. Inject one stub per assistant call with no result on ANY alias.
-    surviving_result_variants = [
-        variants for _, variants in result_entries if variants
-    ]
-    missing_tool_calls = [
-        tc
-        for tc, variants in assistant_call_variants
-        if not any(variants & result_variants for result_variants in surviving_result_variants)
-    ]
     if missing_tool_calls:
         missing_tool_call_objects = {id(tc) for tc in missing_tool_calls}
         patched: List[Dict[str, Any]] = []

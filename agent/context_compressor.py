@@ -6083,33 +6083,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         silently dropped by the repair pass, re-exposing the original orphans.
         Stripping at the source avoids this entire class of mismatch.
         """
-        surviving_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    surviving_call_ids |= self._tool_call_id_variants(tc)
+        from agent.agent_runtime_helpers import _classify_tool_call_orphans
 
-        result_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "tool":
-                cid = (msg.get("tool_call_id") or "").strip()
-                if cid:
-                    # Expand alias spellings on the RESULT side too — a
-                    # composite ``call|item`` tool_call_id must match a
-                    # tool_call registered under either half (#63000).
-                    result_call_ids |= tool_result_id_variants(cid)
+        (
+            surviving_call_ids,
+            result_call_ids,
+            orphaned_result_msgs,
+            missing_tool_calls,
+        ) = _classify_tool_call_orphans(messages)
+        orphaned_results = {id(m) for m in orphaned_result_msgs}
 
         # 1. Remove tool results whose call_id has no matching assistant tool_call
-        orphaned_results = result_call_ids - surviving_call_ids
         if orphaned_results:
-            messages = [
-                m for m in messages
-                if not (
-                    m.get("role") == "tool"
-                    and (rv := tool_result_id_variants(m.get("tool_call_id")))
-                    and not (rv & surviving_call_ids)
-                )
-            ]
+            messages = [m for m in messages if id(m) not in orphaned_results]
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
 
@@ -6121,7 +6107,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         #    matching result — checking only one variant per side is exactly
         #    the mismatch this method exists to avoid.
         stripped_count = 0
-        if surviving_call_ids - result_call_ids:
+        if missing_tool_calls:
             # --- In-flight tool chain protection (issue #79278) -------------
             # A strip here must distinguish a *pending* tool_call (the model's
             # live request whose result the executor has not yet appended) from

@@ -6434,6 +6434,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         "message_count": 1,
         "model": "model-a",
         "preview": "find docs",
+        "session_id": "sid-a",
         "session_key": "key-a",
         "started_at": 10.0,
         "status": "idle",
@@ -6493,6 +6494,73 @@ def test_session_active_list_excludes_finalized_sessions(monkeypatch):
     session_rows = resp["result"]["sessions"]
     assert [row["id"] for row in session_rows] == ["sid-live"]
 
+
+def test_session_active_list_publishes_presence(monkeypatch):
+    published = []
+
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    monkeypatch.setenv("HERMES_CLIENT_NAME", "desktop")
+    monkeypatch.setenv("HERMES_SESSION_PRESENCE_ENDPOINT", "ws://private-gateway")
+    monkeypatch.setenv("HERMES_SESSION_PRESENCE_PROFILE", "default")
+    monkeypatch.setattr(
+        server,
+        "write_session_presence",
+        lambda **kwargs: published.append(kwargs) or {"session_id": kwargs["session_id"]},
+    )
+    server._sessions["sid-live"] = _session(
+        agent=types.SimpleNamespace(model="model-live"),
+        cwd="/repo",
+        history=[{"role": "user", "content": "continue here"}],
+        presence_client="hphone",
+        presence_endpoint="tmux://taro/hermes-phone",
+        presence_profile="taro",
+        session_key="stored-live",
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.active_list", "params": {}}
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    assert resp["result"]["sessions"][0]["id"] == "sid-live"
+    assert resp["result"]["sessions"][0]["session_id"] == "sid-live"
+    assert published
+    assert published[0]["session_id"] == "sid-live"
+    assert published[0]["session_key"] == "stored-live"
+    assert published[0]["client"] == "hphone"
+    assert published[0]["endpoint"] == "tmux://taro/hermes-phone"
+    assert published[0]["profile"] == "taro"
+    assert published[0]["source"] == "tui_gateway"
+    assert published[0]["metadata"]["route_profile"] == "taro"
+    assert published[0]["metadata"]["session_key"] == "stored-live"
+
+
+def test_session_presence_list_reads_registry(monkeypatch):
+    calls = []
+
+    def _fake_list(**kwargs):
+        calls.append(kwargs)
+        return [{"session_id": "remote-sid", "status": "working"}]
+
+    monkeypatch.setattr(server, "list_session_presence", _fake_list)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.presence_list",
+            "params": {"include_expired": True},
+        }
+    )
+
+    assert resp["result"]["sessions"] == [
+        {"session_id": "remote-sid", "status": "working"}
+    ]
+    assert calls[0]["include_expired"] is True
 
 
 def test_session_activate_returns_inflight_stream_before_completion(monkeypatch):

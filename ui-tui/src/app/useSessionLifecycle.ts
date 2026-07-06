@@ -28,6 +28,27 @@ import { getUiState, patchUiState } from './uiStore.js'
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
 
+function presenceCreateParams(): Record<string, string> {
+  const params: Record<string, string> = {}
+  const client = process.env.HERMES_CLIENT_NAME?.trim()
+  const endpoint = process.env.HERMES_SESSION_PRESENCE_ENDPOINT?.trim()
+  const profile = process.env.HERMES_SESSION_PRESENCE_PROFILE?.trim()
+
+  if (client) {
+    params.presence_client = client
+  }
+
+  if (endpoint) {
+    params.presence_endpoint = endpoint
+  }
+
+  if (profile) {
+    params.presence_profile = profile
+  }
+
+  return params
+}
+
 const statusFromLiveSession = (status?: string, running = false) => {
   if (status === 'waiting') {
     return 'waiting for input…'
@@ -206,7 +227,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         await closeSession(getUiState().sid)
       }
 
-      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      const r = await rpc<SessionCreateResponse>('session.create', {
+        cols: colsRef.current,
+        ...presenceCreateParams()
+      })
 
       if (!r) {
         patchUiState({ status: 'ready' })

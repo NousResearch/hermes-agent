@@ -363,6 +363,30 @@ export interface SessionInfo {
   is_default_profile?: boolean
 }
 
+export interface SessionPresenceRecord {
+  client?: string
+  cwd?: string
+  endpoint?: string
+  expires_at?: number
+  host?: string
+  instance_id?: string
+  metadata?: Record<string, unknown>
+  model?: string
+  pid?: number
+  profile?: string
+  session_id: string
+  session_key?: string
+  source?: string
+  status?: string
+  title?: string
+  updated_at?: number
+  version?: number
+}
+
+export interface SessionPresenceListResponse {
+  sessions: SessionPresenceRecord[]
+}
+
 export interface SessionMessage {
   codex_reasoning_items?: unknown
   content: unknown
@@ -388,8 +412,9 @@ export interface SessionResumeResponse {
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
-  resumed: string
+  resumed?: string
   session_id: string
+  session_key?: string
 }
 
 export interface SessionRuntimeInfo {

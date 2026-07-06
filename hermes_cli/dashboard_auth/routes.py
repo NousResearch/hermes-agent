@@ -39,6 +39,7 @@ from hermes_cli.dashboard_auth.base import (
 from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie,
     clear_session_cookies,
+    clear_sso_attempt_cookie,
     detect_https,
     read_pkce_cookie,
     read_session_cookies,
@@ -358,6 +359,9 @@ async def auth_callback(
         prefix=_prefix(request),
     )
     clear_pkce_cookie(resp, prefix=_prefix(request))
+    # Clear the one-shot auto-SSO loop-guard marker now that login succeeded,
+    # so it never lingers to suppress a future silent attempt after logout.
+    clear_sso_attempt_cookie(resp, prefix=_prefix(request))
     return resp
 
 
@@ -604,7 +608,8 @@ async def api_auth_ws_ticket(request: Request):
 
     Browsers cannot set ``Authorization`` on a WebSocket upgrade, so in
     gated mode the SPA POSTs this endpoint to get a ``?ticket=`` value to
-    append to ``/api/pty``, ``/api/ws``, ``/api/pub``, or ``/api/events``.
+    append to ``/api/pty``, ``/api/console``, ``/api/ws``, ``/api/pub``, or
+    ``/api/events``.
 
     The ticket has a 30-second TTL and is single-use. Calling this endpoint
     multiple times in quick succession (e.g. one ticket per WS) is the

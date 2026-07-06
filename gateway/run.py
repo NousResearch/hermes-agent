@@ -229,6 +229,26 @@ def _non_conversational_metadata(
     return merged
 
 
+def _post_delivery_status_metadata(
+    metadata: Optional[Dict[str, Any]] = None,
+    *,
+    platform: Any = None,
+) -> Dict[str, Any]:
+    """Metadata for status notices sent after the main reply.
+
+    Telegram's Bot API has no explicit "stop typing" call.  The Telegram
+    adapter therefore treats metadata["notify"] as the final-send marker and
+    avoids re-arming the ~5s typing timer after that send.  Post-delivery
+    background-review notices are sent after the main reply and after the
+    typing loop has been stopped, so they must carry the same marker; otherwise
+    a small "Self-improvement review" notice can leave the chat header showing
+    "bot is typing" even though no agent work remains.
+    """
+    merged = dict(_non_conversational_metadata(metadata, platform=platform) or {})
+    merged["notify"] = True
+    return merged
+
+
 def _is_transient_network_error(exc: BaseException) -> bool:
     """Return True for transient network errors safe to log + swallow.
 
@@ -18404,7 +18424,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _status_adapter.send(
                         _status_chat_id,
                         message,
-                        metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
+                        metadata=_post_delivery_status_metadata(
+                            _status_thread_metadata,
+                            platform=source.platform,
+                        ),
                     ),
                     _loop_for_step,
                     logger=logger,

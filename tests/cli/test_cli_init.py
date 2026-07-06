@@ -102,6 +102,19 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
 
 
+class TestReasoningEffortOverride:
+    def test_config_reasoning_effort_is_used_by_default(self):
+        cli = _make_cli(config_overrides={"agent": {"reasoning_effort": "high"}})
+        assert cli.reasoning_config == {"enabled": True, "effort": "high"}
+
+    def test_constructor_reasoning_effort_overrides_config_without_persisting(self):
+        cli = _make_cli(
+            config_overrides={"agent": {"reasoning_effort": "low"}},
+            reasoning_effort="xhigh",
+        )
+        assert cli.reasoning_config == {"enabled": True, "effort": "xhigh"}
+
+
 class TestFallbackChainInit:
     def test_merges_new_and_legacy_fallback_config(self):
         cli = _make_cli(config_overrides={

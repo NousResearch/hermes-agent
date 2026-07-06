@@ -7531,6 +7531,16 @@ class TestSupportsReasoningExtraBody:
         agent.model = ""
         return agent
 
+    def test_gemini_3_models_are_treated_as_reasoning_capable(self):
+        agent = self._make_agent()
+        for model in (
+            "google/gemini-3.1-pro-preview",
+            "google/gemini-3-pro-preview",
+            "google/gemini-3-flash-preview",
+        ):
+            agent.model = model
+            assert agent._supports_reasoning_extra_body() is True, model
+
     def test_xiaomi_models_are_treated_as_reasoning_capable(self):
         agent = self._make_agent()
         for model in (

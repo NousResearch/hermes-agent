@@ -3680,6 +3680,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        reasoning_effort: str | None = None,
         ignore_rules: bool = False,
     ):
         """
@@ -3900,9 +3901,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _resolve_prefill_messages_file(CLI_CONFIG)
         )
         
-        # Reasoning config (OpenRouter reasoning effort level)
+        # Reasoning config (provider-specific reasoning effort level).  A
+        # command-line override is intentionally ephemeral: it affects this
+        # process only and does not mutate config.yaml.
         self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+            reasoning_effort if reasoning_effort is not None else CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
@@ -15687,6 +15690,7 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    reasoning_effort: str | None = None,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
 ):
@@ -15823,6 +15827,7 @@ def main(
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
+        reasoning_effort=reasoning_effort,
         ignore_rules=ignore_rules,
     )
 

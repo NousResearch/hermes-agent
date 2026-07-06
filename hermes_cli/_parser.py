@@ -286,6 +286,13 @@ def build_top_level_parser():
         help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
     )
     chat_parser.add_argument(
+        "--reasoning",
+        dest="reasoning_effort",
+        choices=("none", "minimal", "low", "medium", "high", "xhigh", "max"),
+        default=None,
+        help="Reasoning effort override for this chat invocation (does not persist to config.yaml).",
+    )
+    chat_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",

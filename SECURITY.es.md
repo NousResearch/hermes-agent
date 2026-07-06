@@ -173,9 +173,12 @@ modelo de autorización, pero las reglas a continuación se aplican uniformement
 
 **Superficies en Hermes Agent:**
 
-- **Adaptadores de plataforma del gateway.** Integraciones de mensajería en
-  `gateway/platforms/` (Telegram, Discord, Slack, email, SMS, etc.)
-  y adaptadores análogos incluidos como plugins.
+- **Adaptadores de plataforma del gateway.** La mayoría de integraciones de
+  mensajería se distribuyen como plugins en
+  `plugins/platforms/<name>/adapter.py`; los tipos compartidos y algunos
+  adaptadores heredados siguen en `gateway/platforms/` (Telegram, Discord,
+  Slack, email, SMS, etc. **no** están todos implementados como archivos
+  monolíticos en ese directorio).
 - **Superficies HTTP expuestas en red.** El adaptador del servidor API, el
   plugin del dashboard, los endpoints HTTP del plugin kanban, y cualquier
   otro plugin que vincule un socket de escucha.

@@ -3151,6 +3151,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
         "title": _session_live_title(session or {}, session_key) if session_key else "",
+        "session_key": session_key,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "",
         "release_date": "",
@@ -5761,6 +5762,7 @@ def _fallback_session_info(session: dict) -> dict:
         "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
         "lazy": True,
         "model": _resolve_model(),
+        "session_key": _session_lookup_key(session),
         "skills": {},
         "tools": {},
     }

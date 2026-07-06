@@ -273,6 +273,14 @@ _HERMES_CONFIG_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'config\.yaml\b'
 )
+_HERMES_SECURITY_CONFIG_KEY = (
+    r'(?:approvals(?:\.[^\s"\'`]+)?|'
+    r'yolo|'
+    r'command_allowlist(?:\.[^\s"\'`]+)?|'
+    r'security(?:\.[^\s"\'`]+)?)'
+)
+_HERMES_SECURITY_CONFIG_APPROVAL_KEY = "modify Hermes security config via CLI"
+_ONE_SHOT_APPROVAL_KEYS = frozenset({_HERMES_SECURITY_CONFIG_APPROVAL_KEY})
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
@@ -685,6 +693,14 @@ DANGEROUS_PATTERNS = [
     # profile flag can't slip the agent past the guard.
     (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # `~/.hermes/config.yaml` is already protected against direct shell writes
+    # above, but `hermes config set` is the documented front door to the same
+    # security policy. Gate only approval/security keys so ordinary display or
+    # UX config edits remain usable.
+    (
+        rf'\bhermes\s+(?:-{{1,2}}\S+(?:\s+\S+)?\s+)*config\s+set\s+["\']?{_HERMES_SECURITY_CONFIG_KEY}["\']?(?:\s|$)',
+        _HERMES_SECURITY_CONFIG_APPROVAL_KEY,
+    ),
     # Docker container lifecycle — any user with docker.sock mounted (a common
     # Docker Compose pattern) gives the agent the ability to restart/stop/kill
     # containers without approval.  These are agent-initiated lifecycle operations
@@ -857,6 +873,11 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
     historical regex-derived key.
     """
     return _PATTERN_KEY_ALIASES.get(pattern_key, {pattern_key})
+
+
+def _is_one_shot_approval_key(pattern_key: str) -> bool:
+    """Return whether an approval key must never be cached or persisted."""
+    return bool(_approval_key_aliases(pattern_key) & _ONE_SHOT_APPROVAL_KEYS)
 
 
 # =========================================================================
@@ -2120,6 +2141,8 @@ def submit_pending(session_key: str, approval: dict):
 
 def approve_session(session_key: str, pattern_key: str):
     """Approve a pattern for this session only."""
+    if _is_one_shot_approval_key(pattern_key):
+        return
     with _lock:
         _session_approved.setdefault(session_key, set()).add(pattern_key)
 
@@ -2175,6 +2198,8 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
     Accept both the current canonical key and the legacy regex-derived key so
     existing command_allowlist entries continue to work after key migrations.
     """
+    if _is_one_shot_approval_key(pattern_key):
+        return False
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
         if any(alias in _permanent_approved for alias in aliases):
@@ -2185,6 +2210,8 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
 
 def approve_permanent(pattern_key: str):
     """Add a pattern to the permanent allowlist."""
+    if _is_one_shot_approval_key(pattern_key):
+        return
     with _lock:
         _permanent_approved.add(pattern_key)
 
@@ -2192,7 +2219,10 @@ def approve_permanent(pattern_key: str):
 def load_permanent(patterns: set):
     """Bulk-load permanent allowlist entries from config."""
     with _lock:
-        _permanent_approved.update(patterns)
+        _permanent_approved.update(
+            pattern for pattern in patterns
+            if not _is_one_shot_approval_key(pattern)
+        )
 
 
 _ALLOWLIST_SHELL_OPERATOR_RE = re.compile(r"(?:\n|&&|\|\||[;&|<>`]|\$\()")
@@ -2693,6 +2723,7 @@ def _run_approval_gate(
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
+    one_shot_only = _is_one_shot_approval_key(pattern_key)
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
@@ -2762,8 +2793,10 @@ def _run_approval_gate(
                 "pattern_key": pattern_key,
                 "pattern_keys": [pattern_key],
                 "description": redact_sensitive_text(description),
-                "allow_permanent": True,
+                "allow_permanent": not one_shot_only,
             }
+            if one_shot_only:
+                approval_data["choices"] = ["once", "deny"]
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
@@ -2811,12 +2844,18 @@ def _run_approval_gate(
 
         # No notify callback (e.g. API server without an attached chat):
         # queue for /approve /deny review, agent sees approval_required.
-        submit_pending(session_key, {
+        pending_data = {
             "command": display_target,
             "pattern_key": pattern_key,
             "description": description,
-        })
-        return {
+        }
+        if one_shot_only:
+            pending_data.update(
+                allow_permanent=False,
+                choices=["once", "deny"],
+            )
+        submit_pending(session_key, pending_data)
+        result = {
             "approved": False,
             "pattern_key": pattern_key,
             "status": "approval_required",
@@ -2827,8 +2866,15 @@ def _run_approval_gate(
                 f"Asking the user for approval.\n\n**Target:**\n```\n{display_target}\n```"
             ),
         }
+        if one_shot_only:
+            result.update(
+                allow_permanent=False,
+                choices=["once", "deny"],
+            )
+        return result
 
     choice = prompt_dangerous_approval(display_target, description,
+                                       allow_permanent=not one_shot_only,
                                        approval_callback=approval_callback)
 
     if choice == "deny":
@@ -3417,6 +3463,7 @@ def check_all_command_guards(command: str, env_type: str,
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)
+    one_shot_only = any(_is_one_shot_approval_key(key) for key in all_keys)
 
     # Gateway/async approval — block the agent thread until the user
     # responds with /approve or /deny, mirroring the CLI's synchronous
@@ -3445,10 +3492,16 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": redact_sensitive_text(combined_desc),
-                # Smart DENY overrides are one-operation decisions, so the UI
+                # Smart DENY overrides and non-persistable security mutations
                 # must not offer a permanent scope.
-                "allow_permanent": not has_tirith and not smart_denied_for_owner,
+                "allow_permanent": (
+                    not has_tirith
+                    and not smart_denied_for_owner
+                    and not one_shot_only
+                ),
             }
+            if one_shot_only:
+                approval_data["choices"] = ["once", "deny"]
             if smart_denied_for_owner:
                 approval_data["smart_denied"] = True
             decision = _await_gateway_decision(
@@ -3503,9 +3556,9 @@ def check_all_command_guards(command: str, env_type: str,
                     "deny_reason": deny_reason,
                 }
 
-            # A smart-DENY owner override is always one operation, even if an
-            # older client returns "session" or "always". Manual and ESCALATE
-            # choices retain their existing persistence semantics.
+            # A smart-DENY owner override is always one operation. The
+            # approve_* helpers also reject one-shot keys, so an older client
+            # returning "session" or "always" cannot cache those decisions.
             if not smart_denied_for_owner:
                 for key, _, is_tirith in warnings:
                     if choice == "session" or (choice == "always" and is_tirith):
@@ -3531,6 +3584,11 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_keys": all_keys,
             "description": _disp_combined_desc,
         }
+        if one_shot_only:
+            pending_data.update(
+                allow_permanent=False,
+                choices=["once", "deny"],
+            )
         if smart_denied_for_owner:
             pending_data.update(smart_denied=True, allow_permanent=False)
         submit_pending(session_key, pending_data)
@@ -3545,6 +3603,11 @@ def check_all_command_guards(command: str, env_type: str,
                 f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```"
             ),
         }
+        if one_shot_only:
+            result.update(
+                allow_permanent=False,
+                choices=["once", "deny"],
+            )
         if smart_denied_for_owner:
             result.update(smart_denied=True, allow_permanent=False)
         return result
@@ -3563,7 +3626,11 @@ def check_all_command_guards(command: str, env_type: str,
     choice = prompt_dangerous_approval(
         command,
         combined_desc,
-        allow_permanent=not has_tirith and not smart_denied_for_owner,
+        allow_permanent=(
+            not has_tirith
+            and not smart_denied_for_owner
+            and not one_shot_only
+        ),
         smart_denied=smart_denied_for_owner,
         approval_callback=approval_callback,
     )
@@ -3595,8 +3662,9 @@ def check_all_command_guards(command: str, env_type: str,
             "user_consent": False,
         }
 
-    # Smart-DENY owner overrides are one-operation scoped. Preserve existing
-    # persistence for manual mode and smart ESCALATE.
+    # Smart-DENY owner overrides are one-operation scoped. For manual mode and
+    # smart ESCALATE, approve_* preserves normal scopes while rejecting keys
+    # declared one-shot, including legacy callbacks that return a broad scope.
     if not smart_denied_for_owner:
         for key, _, is_tirith in warnings:
             if choice == "session" or (choice == "always" and is_tirith):

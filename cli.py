@@ -3350,6 +3350,26 @@ def _estimate_tui_input_height(
     return min(max(visual_lines, 1), max(1, int(max_height or 1)))
 
 
+def _status_bar_visible_from_display_config(display_config: object) -> bool:
+    """Return the initial classic-CLI status-bar visibility from display config.
+
+    ``display.tui_statusbar`` is the persisted user-facing setting toggled by
+    the TUI/statusbar controls. YAML parses bare ``off`` as ``False``, while
+    older config snapshots or hand edits may use strings such as ``"off"`` or
+    ``"hidden"``. Treat those values consistently so a new CLI process does not
+    re-enable a status bar that the user deliberately disabled.
+    """
+    if not isinstance(display_config, dict):
+        display_config = {}
+    statusbar_config = display_config.get(
+        "statusbar",
+        display_config.get("tui_statusbar", "top"),
+    )
+    if isinstance(statusbar_config, str):
+        return statusbar_config.strip().lower() not in {"0", "false", "hidden", "no", "off"}
+    return statusbar_config is not False
+
+
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
     message = query or ""
@@ -4107,7 +4127,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._voice_tts_done.set()
 
         # Status bar visibility (toggled via /statusbar)
-        self._status_bar_visible = True
+        self._status_bar_visible = _status_bar_visible_from_display_config(
+            CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
+        )
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that

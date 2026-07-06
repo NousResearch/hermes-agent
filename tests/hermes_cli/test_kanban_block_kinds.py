@@ -130,6 +130,36 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
+def test_configured_block_recurrence_limit_defers_triage(kanban_home: Path) -> None:
+    """kanban.block_recurrence_limit lets longer human-review loops opt in."""
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  block_recurrence_limit: 3\n",
+        encoding="utf-8",
+    )
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="first", kind="needs_input")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+
+        kb.block_task(conn, tid, reason="second", kind="needs_input")
+        t = kb.get_task(conn, tid)
+        assert t is not None
+        assert t.status == "blocked"
+        assert t.block_recurrences == 2
+
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="third", kind="needs_input")
+        t = kb.get_task(conn, tid)
+        assert t is not None
+        assert t.status == "triage"
+        assert t.block_recurrences == 3
+        events = [e for e in kb.list_events(conn, tid)
+                  if e.kind == "block_loop_detected"]
+        assert (events[-1].payload or {}).get("limit") == 3
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------

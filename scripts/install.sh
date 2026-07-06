@@ -2917,12 +2917,24 @@ install_desktop() {
     # self-update. An ad-hoc bundle has no stable Designated Requirement, so a
     # later in-place rebuild (new cdhash) plus the inherited quarantine flag
     # trips Gatekeeper's tamper check ("Hermes is damaged and can't be opened").
-    # Strip quarantine + re-apply a clean deep ad-hoc signature (no
-    # hardened-runtime flag, which an ad-hoc build can't satisfy). Skipped when a
-    # real signing identity is configured so a signed build isn't clobbered.
+    # Strip quarantine + re-apply a clean ad-hoc signature (no hardened-runtime
+    # flag, which an ad-hoc build can't satisfy). Keep the desktop entitlements
+    # on the main bundle and Electron helper apps; without them macOS TCC can
+    # keep prompting for microphone / screen audio while the GUI never receives
+    # usable access. Skipped when a real signing identity is configured so a
+    # signed build isn't clobbered.
     if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
         xattr -cr "$app" 2>/dev/null || true
-        codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+        local main_entitlements="$desktop_dir/electron/entitlements.mac.plist"
+        local helper_entitlements="$desktop_dir/electron/entitlements.mac.inherit.plist"
+        if [ -f "$main_entitlements" ] && [ -f "$helper_entitlements" ]; then
+            while IFS= read -r -d '' helper_app; do
+                codesign --force --sign - --entitlements "$helper_entitlements" "$helper_app" >/dev/null 2>&1 || true
+            done < <(find "$app/Contents/Frameworks" -maxdepth 1 -name 'Hermes Helper*.app' -type d -print0 2>/dev/null)
+            codesign --force --sign - --entitlements "$main_entitlements" "$app" >/dev/null 2>&1 || true
+        else
+            codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+        fi
     fi
 
     # `npm install` + `npm run pack` rewrite lockfiles; restore them so the

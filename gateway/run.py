@@ -8365,19 +8365,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             # A secondary profile must NOT enable a port-binding platform: the
             # default profile's listener already serves every profile via the
-            # /p/<profile>/ prefix, so a second bind can only collide. This is a
-            # config error, not a transient failure — fail fast and loud.
+            # /p/<profile>/ prefix, so a second bind can only collide. Rather
+            # than crash the entire gateway (which takes down ALL profiles
+            # including the default one), skip the platform with a warning so
+            # the operator can fix config.yaml without a crash-restart loop.
             if platform.value in _PORT_BINDING_PLATFORM_VALUES:
-                raise MultiplexConfigError(
-                    f"Profile '{profile_name}' enables the port-binding platform "
-                    f"'{platform.value}', but gateway.multiplex_profiles is on. The "
-                    f"default profile owns the single shared HTTP listener and "
-                    f"serves every profile through the /p/{profile_name}/ URL "
-                    f"prefix — a secondary profile cannot bind its own port. "
-                    f"Remove platforms.{platform.value} from profile "
-                    f"'{profile_name}'s config.yaml (configure it only on the "
-                    f"default profile)."
+                logger.warning(
+                    "Profile '%s' enables the port-binding platform '%s', but "
+                    "gateway.multiplex_profiles is on. The default profile owns "
+                    "the single shared HTTP listener and serves every profile "
+                    "through the /p/%s/ URL prefix. Skipping this platform for "
+                    "this profile — remove platforms.%s from this profile's "
+                    "config.yaml (configure it only on the default profile).",
+                    profile_name,
+                    platform.value,
+                    profile_name,
+                    platform.value,
                 )
+                continue
             with _profile_runtime_scope(profile_home):
                 adapter = self._create_adapter(platform, platform_config)
             if not adapter:

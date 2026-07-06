@@ -78,12 +78,11 @@ class TestProfileMessageHandler:
         assert seen["profile"] == "writer"
 
 
-class TestPortBindingHardError:
-    """A secondary profile enabling a port-binding platform aborts startup."""
+class TestPortBindingSkip:
+    """A secondary profile enabling a port-binding platform is skipped, not fatal."""
 
     @pytest.mark.asyncio
-    async def test_secondary_webhook_raises(self, monkeypatch):
-        from gateway.run import MultiplexConfigError
+    async def test_secondary_webhook_skipped(self, monkeypatch):
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
         runner = GatewayRunner.__new__(GatewayRunner)
@@ -99,10 +98,9 @@ class TestPortBindingHardError:
             "gateway.config.load_gateway_config", lambda: reviewer_cfg
         )
 
-        with pytest.raises(MultiplexConfigError) as ei:
-            await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
-        assert "webhook" in str(ei.value)
-        assert "reviewer" in str(ei.value)
+        # Should NOT raise — the platform is skipped with a warning.
+        connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        assert connected == 0  # nothing connected, but no crash
 
     @pytest.mark.asyncio
     async def test_secondary_non_binding_platform_ok(self, monkeypatch):

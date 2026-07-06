@@ -27,6 +27,9 @@ def _check_workflow_mode() -> bool:
         return False
 
 
+setattr(_check_workflow_mode, "__hermes_no_check_fn_cache__", True)
+
+
 @contextlib.contextmanager
 def _connect_initialized():
     wfdb.init_db()

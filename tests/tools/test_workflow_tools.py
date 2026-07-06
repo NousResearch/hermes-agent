@@ -70,6 +70,16 @@ def test_workflow_tools_hidden_without_workflow_toolset():
     assert WORKFLOW_TOOL_NAMES.isdisjoint(_tool_names_for_workflow_toolset())
 
 
+def test_workflow_tool_visibility_tracks_env_without_manual_cache_invalidation(monkeypatch):
+    assert WORKFLOW_TOOL_NAMES.isdisjoint(_tool_names_for_workflow_toolset())
+
+    monkeypatch.setenv("HERMES_WORKFLOW_CONTEXT", "1")
+    assert WORKFLOW_TOOL_NAMES.issubset(_tool_names_for_workflow_toolset())
+
+    monkeypatch.delenv("HERMES_WORKFLOW_CONTEXT", raising=False)
+    assert WORKFLOW_TOOL_NAMES.isdisjoint(_tool_names_for_workflow_toolset())
+
+
 def test_workflow_tools_visible_when_config_enables_workflow_toolset(_isolated_workflow_home):
     _enable_workflow_toolset(_isolated_workflow_home)
 
@@ -131,3 +141,44 @@ def test_workflow_run_creates_execution_with_provided_input(_isolated_workflow_h
     assert execution.version == spec.version
     assert execution.status == "queued"
     assert execution.input == {"x": 1}
+
+
+@pytest.mark.parametrize("input_json", ["{", "[]"])
+def test_workflow_run_rejects_bad_input_json(_isolated_workflow_home, input_json):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    spec = _deploy_demo_workflow()
+
+    from tools.registry import registry
+
+    result = registry.dispatch(
+        "workflow_run",
+        {"workflow_id": spec.id, "input_json": input_json},
+    )
+    payload = json.loads(result)
+
+    assert "error" in payload
+    assert payload["error"].startswith("workflow_run: ")
+
+
+def test_workflow_cancel_is_idempotent(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    spec = _deploy_demo_workflow()
+
+    from hermes_cli import workflows_db as wfdb
+    from tools.registry import registry
+
+    with wfdb.connect() as conn:
+        execution_id = wfdb.start_execution(
+            conn,
+            spec.id,
+            input_data={},
+            trigger_type="manual",
+        )
+
+    first = json.loads(registry.dispatch("workflow_cancel", {"execution_id": execution_id}))
+    second = json.loads(registry.dispatch("workflow_cancel", {"execution_id": execution_id}))
+
+    assert "error" not in first
+    assert first["status"] == "cancelled"
+    assert "error" not in second
+    assert second["status"] == "cancelled"

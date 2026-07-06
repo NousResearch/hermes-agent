@@ -1,5 +1,8 @@
 """Tests for utils.atomic_yaml_write — crash-safe YAML file writes."""
 
+import os
+import stat
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -74,3 +77,50 @@ class TestAtomicYamlWrite:
         assert "(=^･ω･^=)" in text
         # And it reloads to exactly what was written.
         assert yaml.safe_load(text) == data
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="POSIX mode bits not enforced on Windows",
+)
+class TestConfigYamlModeCap:
+    """config.yaml must never round-trip wider than 0600 through this
+    function, even for call sites that write it directly without following
+    up with hermes_cli.config._secure_file() (slash commands, auth, doctor
+    migrations, onboarding all do this today).
+
+    Without the cap, a config.yaml that was ever wide (pre-hardening
+    install, a HERMES_HOME_MODE window, a manual chmod) stays wide forever
+    through those call sites, because _restore_file_mode() otherwise
+    round-trips whatever mode the file had before the write.
+    """
+
+    def _mode(self, path) -> int:
+        return stat.S_IMODE(os.stat(path).st_mode)
+
+    def test_wide_preexisting_config_yaml_is_capped_to_0600(self, tmp_path):
+        target = tmp_path / "config.yaml"
+        target.write_text("agent:\n  system_prompt: old\n", encoding="utf-8")
+        os.chmod(target, 0o666)
+
+        atomic_yaml_write(target, {"agent": {"system_prompt": "new"}})
+
+        assert self._mode(target) == 0o600
+
+    def test_new_config_yaml_is_0600(self, tmp_path):
+        target = tmp_path / "config.yaml"
+
+        atomic_yaml_write(target, {"agent": {"system_prompt": "hello"}})
+
+        assert self._mode(target) == 0o600
+
+    def test_non_config_yaml_file_mode_still_preserved(self, tmp_path):
+        """Sanity check: the cap is name-scoped to config.yaml -- it must not
+        regress the Docker/NAS mode-preservation behavior for other files."""
+        target = tmp_path / "other.yaml"
+        target.write_text("key: old\n", encoding="utf-8")
+        os.chmod(target, 0o666)
+
+        atomic_yaml_write(target, {"key": "new"})
+
+        assert self._mode(target) == 0o666

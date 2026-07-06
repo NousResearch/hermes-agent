@@ -250,6 +250,16 @@ def atomic_yaml_write(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = _preserve_file_mode(path)
+    if original_mode is not None and path.name == "config.yaml":
+        # config.yaml must never round-trip wider than 0600, even if it was
+        # ever created wider (pre-hardening install, a HERMES_HOME_MODE
+        # window, a manual chmod). save_config() enforces 0600 with a final
+        # _secure_file() chmod, but several other call sites write
+        # config.yaml through this function directly (slash commands, auth,
+        # doctor migrations, onboarding) without that follow-up -- capping
+        # here closes the gap for all of them at the source instead of
+        # relying on every call site to remember it.
+        original_mode &= 0o600
     original_owner = _preserve_file_owner(path)
 
     fd, tmp_path = tempfile.mkstemp(

@@ -18,6 +18,7 @@ import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { resolveSessionRowClick } from './session-row-gesture'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
@@ -154,29 +155,31 @@ export function SidebarSessionRow({
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
           onClick={event => {
-            if (event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
+            // Modifier-click gestures on a row (see `resolveSessionRowClick`):
+            //   ⇧          → pin / unpin
+            //   ⌘/⌃        → open the chat in its own window (web embed: resume)
+            //   ⌘/⌃ + ⇧    → archive
+            // A plain click resumes. Archive also lives in the row's ⋯ and
+            // right-click menus and as a rebindable hotkey (`session.archive`).
+            const action = resolveSessionRowClick(event, { canOpenWindow: canOpenSessionWindow() })
+
+            if (action === 'resume') {
+              onResume()
+
+              return
+            }
+
+            event.preventDefault()
+            event.stopPropagation()
+            triggerHaptic('selection')
+
+            if (action === 'archive') {
+              onArchive()
+            } else if (action === 'pin') {
               onPin()
-
-              return
-            }
-
-            // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
-            // window — the universal "open in a new window" gesture. Archive
-            // lives in the row's ⋯ and right-click menus. Falls through to a
-            // normal resume when standalone windows aren't available (web embed).
-            if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
+            } else {
               void openSessionInNewWindow(session.id)
-
-              return
             }
-
-            onResume()
           }}
         >
           {reorderable ? (

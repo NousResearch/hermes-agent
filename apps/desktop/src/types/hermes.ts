@@ -188,6 +188,8 @@ export interface MessagingPlatformUpdate {
   clear_env?: string[]
   enabled?: boolean
   env?: Record<string, string>
+  /** Target a specific profile's env instead of the dashboard's own. */
+  profile?: string
 }
 
 export interface MessagingPlatformTestResponse {
@@ -592,6 +594,7 @@ export interface ProfileCreatePayload {
 }
 
 export interface ProfileInfo {
+  gateway_running: boolean
   has_env: boolean
   is_default: boolean
   model: null | string

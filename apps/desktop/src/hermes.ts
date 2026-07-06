@@ -723,9 +723,17 @@ export function grantComputerUsePermissions(): Promise<ActionResponse> {
   })
 }
 
-export function getMessagingPlatforms(): Promise<MessagingPlatformsResponse> {
+// `profile` is baked into the query string only — deliberately NOT passed as
+// the api() call's routing field. That field triggers Electron's
+// ensureBackend() pool-spawn routing (see hermes:api in main.cjs); this
+// endpoint doesn't need that because the backend already reads any other
+// profile's on-disk state directly via _profile_scope(), so every profile's
+// status can be read from the one already-running primary backend.
+export function getMessagingPlatforms(profile?: null | string): Promise<MessagingPlatformsResponse> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
   return window.hermesDesktop.api<MessagingPlatformsResponse>({
-    path: '/api/messaging/platforms'
+    path: `/api/messaging/platforms${suffix}`
   })
 }
 

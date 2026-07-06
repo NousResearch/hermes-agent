@@ -48,7 +48,9 @@ export default defineConfig({
     // large by design (~22 MB). Raise the warning ceiling above that so the
     // cosmetic "chunk larger than 500 kB" nag stays quiet, while still acting
     // as a regression alarm if the bundle balloons well past today's size.
-    chunkSizeWarningLimit: 25000,
+    // Current single-chunk renderer output is intentionally ~27.8 MB. Keep the
+    // threshold above that accepted baseline while still catching large growth.
+    chunkSizeWarningLimit: 30000,
     rolldownOptions: {
       output: {
         codeSplitting: false

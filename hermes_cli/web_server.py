@@ -7923,12 +7923,97 @@ def _session_latest_descendant(session_id: str):
 # templated ``/api/sessions/{session_id}`` family that follows. FastAPI/
 # Starlette match routes in registration order, and the ``{session_id}``
 # pattern is unconstrained — it would otherwise swallow e.g.
-# ``DELETE /api/sessions/empty``, ``POST /api/sessions/bulk-delete``, or
-# ``GET /api/sessions/stats`` as "operate on the session with id
-# 'empty'" / "'bulk-delete'" / "'stats'", which would 404 (or worse,
-# succeed and delete the wrong row). Same story as the older
-# ``/api/sessions/search`` endpoint up at line ~1191. If you split or
-# reorder this block, move every route in it together.
+# ``DELETE /api/sessions/empty``, ``POST /api/sessions/bulk-delete``,
+# ``POST /api/sessions/bulk-archive``, or ``GET /api/sessions/stats`` as
+# "operate on the session with id 'empty'" / "'bulk-delete'" /
+# "'bulk-archive'" / "'stats'", which would 404 (or worse, succeed and
+# update the wrong row). Same story as the older ``/api/sessions/search``
+# endpoint up at line ~1191. If you split or reorder this block, move every
+# route in it together.
+
+class BulkArchiveSessions(BaseModel):
+    preserve_ids: Optional[List[str]] = None
+    min_messages: Optional[int] = 1
+    active_grace_seconds: Optional[int] = None
+    profile: Optional[str] = None
+
+
+@app.post("/api/sessions/bulk-archive")
+async def bulk_archive_sessions_endpoint(body: BulkArchiveSessions):
+    """Soft-archive all normal sessions except caller-preserved rows.
+
+    The desktop can pass pinned IDs, the selected chat, and running session
+    IDs in ``preserve_ids`` and then hide everything else from the regular
+    sidebar without deleting the underlying transcript. When the sidebar is in
+    the unified profiles view, ``profile="all"``/``"__all__"`` archives the
+    matching rows across profile DBs without spawning profile backends.
+    """
+    preserve_ids = [
+        str(sid).strip()
+        for sid in (body.preserve_ids or [])
+        if str(sid).strip()
+    ]
+    if len(preserve_ids) > 5000:
+        raise HTTPException(
+            status_code=400,
+            detail="preserve_ids must contain at most 5000 entries",
+        )
+
+    active_grace_seconds = (
+        body.active_grace_seconds
+        if body.active_grace_seconds is not None
+        else 0
+    )
+
+    profile_scope = str(body.profile or "").strip()
+    min_message_count = max(
+        0,
+        int(body.min_messages if body.min_messages is not None else 1),
+    )
+    grace_seconds = max(0, int(active_grace_seconds or 0))
+
+    from hermes_state import SessionDB
+
+    def _archive_db(db_path: Optional[Path] = None) -> int:
+        kwargs = {"db_path": db_path} if db_path is not None else {}
+        db = SessionDB(**kwargs)
+        try:
+            return db.archive_surfaced_sessions(
+                preserve_ids=preserve_ids,
+                min_message_count=min_message_count,
+                active_grace_seconds=grace_seconds,
+            )
+        finally:
+            db.close()
+
+    if profile_scope in ("all", "__all__"):
+        from hermes_cli import profiles as profiles_mod
+
+        try:
+            targets = [(info.name, info.path) for info in profiles_mod.list_profiles()]
+        except Exception:
+            _log.exception("POST /api/sessions/bulk-archive: list_profiles failed")
+            targets = []
+        if not targets:
+            targets = [("default", profiles_mod.get_profile_dir("default"))]
+
+        archived = 0
+        for _name, home in targets:
+            db_path = Path(home) / "state.db"
+            if db_path.exists():
+                archived += _archive_db(db_path)
+        return {"ok": True, "archived": archived}
+
+    if profile_scope:
+        _name, home = _cron_profile_home(profile_scope)
+        db_path = Path(home) / "state.db"
+        if not db_path.exists():
+            return {"ok": True, "archived": 0}
+        return {"ok": True, "archived": _archive_db(db_path)}
+
+    return {"ok": True, "archived": _archive_db()}
+
+
 class BulkDeleteSessions(BaseModel):
     ids: List[str]
     profile: Optional[str] = None

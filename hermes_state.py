@@ -2719,6 +2719,92 @@ class SessionDB:
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
+    def archive_sessions(self, session_ids: List[str]) -> int:
+        """Soft-archive the listed sessions in one or more bounded updates.
+
+        Unknown IDs are skipped. Returns the number of rows that actually
+        moved from active to archived.
+        """
+        unique_ids = list({sid for sid in session_ids if isinstance(sid, str) and sid})
+        if not unique_ids:
+            return 0
+
+        def _do(conn):
+            updated = 0
+            for start in range(0, len(unique_ids), 500):
+                chunk = unique_ids[start:start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = conn.execute(
+                    f"UPDATE sessions SET archived = 1 "
+                    f"WHERE archived = 0 AND id IN ({placeholders})",
+                    chunk,
+                )
+                updated += cursor.rowcount
+            return updated
+
+        return self._execute_write(_do)
+
+    def archive_surfaced_sessions(
+        self,
+        *,
+        preserve_ids: Optional[List[str]] = None,
+        min_message_count: int = 1,
+        active_grace_seconds: int = 0,
+    ) -> int:
+        """Soft-archive every surfaced, unarchived conversation not preserved.
+
+        This backs an explicit desktop "archive all" action. The caller passes
+        client-owned preserved IDs such as pins, the selected chat, and running
+        sessions. A recency grace is opt-in for callers that want extra
+        protection for open-ended sessions. Compression continuations are
+        archived by lineage root so one logical conversation moves together.
+        """
+        preserved = {
+            str(sid).strip()
+            for sid in (preserve_ids or [])
+            if str(sid).strip()
+        }
+        min_message_count = max(0, int(min_message_count or 0))
+        active_grace_seconds = max(0, int(active_grace_seconds or 0))
+        now = time.time()
+        archive_ids: List[str] = []
+        seen_targets = set()
+
+        sessions = self.list_sessions_rich(
+            limit=100000,
+            offset=0,
+            min_message_count=min_message_count,
+            include_archived=False,
+            archived_only=False,
+            order_by_last_active=True,
+        )
+        for session in sessions:
+            sid = str(session.get("id") or "").strip()
+            if not sid:
+                continue
+            root_id = str(session.get("_lineage_root_id") or sid).strip()
+            target_id = root_id or sid
+            if target_id in seen_targets:
+                continue
+            seen_targets.add(target_id)
+            if sid in preserved or target_id in preserved:
+                continue
+
+            started_at = float(session.get("started_at") or 0)
+            last_active = float(session.get("last_active") or started_at)
+            ended_at = session.get("ended_at")
+            recently_active = (
+                ended_at is None
+                and active_grace_seconds > 0
+                and now - last_active < active_grace_seconds
+            )
+            if recently_active:
+                continue
+
+            archive_ids.append(target_id)
+
+        return self.archive_sessions(archive_ids)
+
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
         with self._lock:

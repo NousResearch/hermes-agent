@@ -268,12 +268,25 @@ class _VikingClient:
 
     @staticmethod
     def _needs_trusted_identity_retry(exc: Exception) -> bool:
+        """Detect errors that indicate missing tenant-scoped identity headers.
+
+        OpenViking raises these when a ROOT or trusted-mode request lacks
+        ``X-OpenViking-Account`` / ``X-OpenViking-User``.  Instead of
+        hard-coding each server-side error string (which changes across
+        releases), match on the structural signature: the message mentions
+        one of the tenant headers **and** the error is a 400-class failure.
+
+        The 400 status guard avoids false-positives on 403 errors such as
+        ``"USER API keys cannot override X-OpenViking-User"``, which must not
+        trigger a retry.
+        """
         message = str(exc)
-        return (
-            "Trusted mode requests must include X-OpenViking-Account" in message
-            or "Trusted mode requests must include X-OpenViking-User" in message
-            or "Trusted mode requests must include X-OpenViking-Account or explicit account_id" in message
-        )
+        if "X-OpenViking-Account" not in message and "X-OpenViking-User" not in message:
+            return False
+        status_code = getattr(exc, "status_code", None)
+        if status_code is not None and status_code != 400:
+            return False
+        return True
 
     def _send_with_trusted_identity_retry(self, send, *, multipart: bool = False) -> dict:
         try:

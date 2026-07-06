@@ -38,6 +38,8 @@ class RetrySpec(BaseModel):
 
     max_attempts: int = Field(default=1, ge=1)
     delay_seconds: float = Field(default=0, ge=0)
+    backoff_seconds: float | None = Field(default=None, ge=0)
+    multiplier: float = Field(default=1, ge=0)
 
 
 class WorkspaceSpec(BaseModel):
@@ -65,6 +67,7 @@ class NodeSpec(BaseModel):
     goal_mode: bool = False
     goal_max_turns: int | None = Field(default=None, ge=1)
     retry: RetrySpec | None = None
+    catch: str | None = None
     workspace: WorkspaceSpec | None = None
     seconds: int = Field(default=0, ge=0)
 
@@ -126,6 +129,8 @@ def validate_graph(spec: WorkflowSpec) -> None:
         outgoing_sources.add(source_base)
 
     for node_id, node in spec.nodes.items():
+        if node.catch is not None and node.catch not in node_ids:
+            raise ValueError(f"unknown catch target for node {node_id}: {node.catch}")
         if node.type == "switch":
             if node.default is not None:
                 if node.default not in node_ids:

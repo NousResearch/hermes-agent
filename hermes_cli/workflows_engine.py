@@ -62,6 +62,7 @@ def next_edges(spec: WorkflowSpec, node_id: str, port: str | None = None) -> lis
 def _initial_nodes(spec: WorkflowSpec) -> list[str]:
     incoming = {edge.to for edge in spec.edges}
     incoming.update(node.default for node in spec.nodes.values() if node.default)
+    incoming.update(node.catch for node in spec.nodes.values() if node.catch)
     return [node_id for node_id in spec.nodes if node_id not in incoming]
 
 
@@ -82,10 +83,13 @@ def run_in_memory_until_waiting(
     input_data: dict[str, Any],
     completed_wait_nodes: set[str] | None = None,
     completed_node_outputs: dict[str, Any] | None = None,
+    catch_failed_nodes: set[str] | None = None,
+    error_context: dict[str, Any] | None = None,
 ) -> EngineResult:
     validate_graph(spec)
     completed_wait_nodes = completed_wait_nodes or set()
     completed_node_outputs = completed_node_outputs or {}
+    catch_failed_nodes = catch_failed_nodes or set()
     context = initial_context(input_data, spec)
     runnable = deque(_initial_nodes(spec))
     # ponytail: cheap cycle guard; real scheduler can track runs.
@@ -125,11 +129,16 @@ def run_in_memory_until_waiting(
             continue
 
         if node.type == "fail":
+            error = {"node": node_id, "type": "fail", "output": render_template(node.output, context)}
+            if node_id in catch_failed_nodes and node.catch:
+                context["error"] = error_context or error
+                runnable.append(node.catch)
+                continue
             return EngineResult(
                 status="failed",
                 context=context,
                 waiting_nodes=[],
-                error={"node": node_id, "type": "fail", "output": render_template(node.output, context)},
+                error=error,
             )
 
         if node.type == "wait" and node_id in completed_wait_nodes:

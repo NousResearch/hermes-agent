@@ -77,6 +77,25 @@ def _schedule_spec(*, version: int = 1, enabled: bool = True) -> WorkflowSpec:
     })
 
 
+def _fail_spec(*, retry=None, catch=None, recover_output=None) -> WorkflowSpec:
+    flaky = {"type": "fail", "output": {"reason": "boom"}}
+    if retry is not None:
+        flaky["retry"] = retry
+    if catch is not None:
+        flaky["catch"] = catch
+    nodes = {"flaky": flaky}
+    if catch is not None:
+        nodes[catch] = {
+            "type": "pass",
+            "output": recover_output or {"failed": "${ error.node }"},
+        }
+    return WorkflowSpec.model_validate({
+        "id": "fail_demo", "name": "Fail Demo", "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": nodes,
+    })
+
+
 def _start_execution(tmp_path, monkeypatch, input_data=None) -> str:
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     wfdb.init_db()
@@ -88,6 +107,26 @@ def _start_execution(tmp_path, monkeypatch, input_data=None) -> str:
             input_data={} if input_data is None else input_data,
             trigger_type="manual",
         )
+
+
+def _start_spec_execution(tmp_path, monkeypatch, spec: WorkflowSpec) -> str:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        return wfdb.start_execution(conn, spec.id, input_data={}, trigger_type="manual")
+
+
+def _node_runs(exec_id: str, node_id: str):
+    with wfdb.connect() as conn:
+        return [dict(row) for row in conn.execute(
+            """
+            SELECT * FROM workflow_node_runs
+             WHERE execution_id = ? AND node_id = ?
+             ORDER BY id
+            """,
+            (exec_id, node_id),
+        )]
 
 
 def _execution_state(exec_id: str):
@@ -592,6 +631,92 @@ def test_waiting_result_persists_and_is_not_retried(tmp_path, monkeypatch):
     assert workflows_dispatcher.tick(limit=1, now=101) == 0
     assert len(calls) == 1
     assert _execution_state(exec_id)[2] == events
+
+
+def test_failed_node_retry_schedules_second_attempt(tmp_path, monkeypatch):
+    exec_id = _start_spec_execution(
+        tmp_path,
+        monkeypatch,
+        _fail_spec(retry={"max_attempts": 2, "backoff_seconds": 60}),
+    )
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+
+    execution, _, _ = _execution_state(exec_id)
+    runs = _node_runs(exec_id, "flaky")
+    assert execution.status == "waiting"
+    assert execution.context["error"]["node"] == "flaky"
+    assert [(run["status"], run["wait_until"]) for run in runs] == [
+        ("failed", None),
+        ("queued", 160),
+    ]
+    assert json.loads(runs[0]["error"])["node"] == "flaky"
+
+    assert workflows_dispatcher.tick(limit=1, now=159) == 0
+    assert workflows_dispatcher.tick(limit=1, now=160) == 1
+
+    execution, _, _ = _execution_state(exec_id)
+    runs = _node_runs(exec_id, "flaky")
+    assert execution.status == "failed"
+    assert [run["status"] for run in runs] == ["failed", "failed"]
+
+
+def test_failed_node_catch_routes_after_max_attempts(tmp_path, monkeypatch):
+    exec_id = _start_spec_execution(
+        tmp_path,
+        monkeypatch,
+        _fail_spec(
+            retry={"max_attempts": 2, "backoff_seconds": 0},
+            catch="recover",
+            recover_output={"failed": "${ error.node }", "kind": "${ error.type }"},
+        ),
+    )
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+
+    execution, _, _ = _execution_state(exec_id)
+    assert execution.status == "succeeded"
+    assert execution.context["error"]["node"] == "flaky"
+    assert execution.context["node"]["recover"]["output"] == {
+        "failed": "flaky",
+        "kind": "fail",
+    }
+    assert [run["status"] for run in _node_runs(exec_id, "flaky")] == [
+        "failed",
+        "failed",
+    ]
+
+
+def test_failed_node_without_catch_fails_execution_and_records_attempt(tmp_path, monkeypatch):
+    exec_id = _start_spec_execution(tmp_path, monkeypatch, _fail_spec())
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+
+    execution, _, _ = _execution_state(exec_id)
+    runs = _node_runs(exec_id, "flaky")
+    assert execution.status == "failed"
+    assert len(runs) == 1
+    assert runs[0]["status"] == "failed"
+    assert json.loads(runs[0]["error"]) == execution.context["error"]
+
+
+def test_retry_backoff_multiplier_sets_next_wait_until(tmp_path, monkeypatch):
+    exec_id = _start_spec_execution(
+        tmp_path,
+        monkeypatch,
+        _fail_spec(retry={"max_attempts": 3, "backoff_seconds": 5, "multiplier": 2}),
+    )
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+    assert [
+        (run["status"], run["wait_until"]) for run in _node_runs(exec_id, "flaky")
+    ] == [("failed", None), ("queued", 105)]
+
+    assert workflows_dispatcher.tick(limit=1, now=105) == 1
+    assert [
+        (run["status"], run["wait_until"]) for run in _node_runs(exec_id, "flaky")
+    ] == [("failed", None), ("failed", None), ("queued", 115)]
 
 
 def test_failed_result_persists_deterministic_error_payload(tmp_path, monkeypatch):

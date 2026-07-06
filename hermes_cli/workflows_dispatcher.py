@@ -155,6 +155,32 @@ def _resume_due_waits(conn: sqlite3.Connection, *, now: int) -> None:
                 )
 
 
+def _resume_due_retries(conn: sqlite3.Connection, *, now: int) -> None:
+    with wfdb.write_txn(conn):
+        rows = conn.execute(
+            """
+            SELECT DISTINCT nr.execution_id
+              FROM workflow_node_runs nr
+              JOIN workflow_executions ex ON ex.execution_id = nr.execution_id
+             WHERE nr.status = 'queued'
+               AND (nr.wait_until IS NULL OR nr.wait_until <= ?)
+               AND ex.status = 'waiting'
+             ORDER BY nr.wait_until, nr.id
+            """,
+            (now,),
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                """
+                UPDATE workflow_executions
+                   SET status = 'queued', claim_lock = NULL,
+                       claim_expires = NULL, updated_at = ?
+                 WHERE execution_id = ? AND status = 'waiting'
+                """,
+                (now, row["execution_id"]),
+            )
+
+
 def _render_agent_prompt(node: Any, context: dict[str, Any]) -> str:
     rendered = render_template(node.prompt, context)
     if isinstance(rendered, str):
@@ -394,6 +420,119 @@ def _persist_waiting_nodes(
             )
 
 
+def _failed_node_id(result: EngineResult, spec: WorkflowSpec | None) -> str | None:
+    if result.status != "failed" or spec is None or not result.error:
+        return None
+    node_id = result.error.get("node")
+    if isinstance(node_id, str) and node_id in spec.nodes:
+        return node_id
+    return None
+
+
+def _context_with_error(context: dict[str, Any], error: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(context)
+    updated.setdefault("node", {})
+    updated["error"] = error
+    return updated
+
+
+def _persist_failed_attempt(
+    conn: sqlite3.Connection,
+    *,
+    execution_id: str,
+    node_id: str,
+    error: dict[str, Any],
+    now: int,
+) -> None:
+    queued = conn.execute(
+        """
+        SELECT id FROM workflow_node_runs
+         WHERE execution_id = ? AND node_id = ? AND status = 'queued'
+         ORDER BY id DESC LIMIT 1
+        """,
+        (execution_id, node_id),
+    ).fetchone()
+    if queued is not None:
+        conn.execute(
+            """
+            UPDATE workflow_node_runs
+               SET status = 'failed', error = ?, started_at = COALESCE(started_at, ?),
+                   completed_at = ?, wait_until = NULL
+             WHERE id = ?
+            """,
+            (_json_dumps(error), now, now, queued["id"]),
+        )
+        return
+    conn.execute(
+        """
+        INSERT INTO workflow_node_runs (
+            execution_id, node_id, status, error, started_at, completed_at
+        ) VALUES (?, ?, 'failed', ?, ?, ?)
+        """,
+        (execution_id, node_id, _json_dumps(error), now, now),
+    )
+
+
+def _failed_attempts(conn: sqlite3.Connection, execution_id: str, node_id: str) -> int:
+    return int(conn.execute(
+        """
+        SELECT count(*) FROM workflow_node_runs
+         WHERE execution_id = ? AND node_id = ? AND status = 'failed'
+        """,
+        (execution_id, node_id),
+    ).fetchone()[0])
+
+
+def _retry_due_at(node: Any, *, failed_attempts: int, now: int) -> int:
+    retry = node.retry
+    base = retry.backoff_seconds if retry.backoff_seconds is not None else retry.delay_seconds
+    return int(now + base * (retry.multiplier ** max(0, failed_attempts - 1)))
+
+
+def _emit_progress_events(
+    conn: sqlite3.Connection,
+    *,
+    execution_id: str,
+    result: EngineResult,
+    spec: WorkflowSpec | None,
+    now: int,
+    existing_events: list[sqlite3.Row],
+) -> None:
+    emitted_nodes: set[str] = set()
+    for event in existing_events:
+        if event["kind"] != "node_succeeded":
+            continue
+        try:
+            payload = json.loads(event["payload_json"])
+        except (TypeError, ValueError):
+            continue
+        node_id = payload.get("node_id")
+        if isinstance(node_id, str):
+            emitted_nodes.add(node_id)
+
+    _persist_waiting_nodes(
+        conn,
+        execution_id=execution_id,
+        result=result,
+        spec=spec,
+        now=now,
+    )
+    if not existing_events:
+        _append_event(conn, execution_id, "execution_started", {}, now)
+    for node_id, node_context in result.context.get("node", {}).items():
+        if node_id in emitted_nodes:
+            continue
+        output = node_context.get("output") if isinstance(node_context, dict) else None
+        _append_event(
+            conn,
+            execution_id,
+            "node_succeeded",
+            {"node_id": node_id, "output": output},
+            now,
+        )
+        emitted_nodes.add(node_id)
+
+
 def _finish(
     conn: sqlite3.Connection,
     *,
@@ -403,20 +542,9 @@ def _finish(
     spec: WorkflowSpec | None,
     now: int,
 ) -> bool:
-    final_event = {
-        "succeeded": "execution_succeeded",
-        "waiting": "execution_waiting",
-        "failed": "execution_failed",
-    }[result.status]
-    final_payload: dict[str, Any] = {}
-    if result.status == "waiting":
-        final_payload = {"waiting_nodes": result.waiting_nodes}
-    elif result.status == "failed":
-        final_payload = {"error": result.error or {}}
-
     with wfdb.write_txn(conn):
         row = conn.execute(
-            "SELECT claim_lock FROM workflow_executions WHERE execution_id = ?",
+            "SELECT claim_lock, input_json FROM workflow_executions WHERE execution_id = ?",
             (execution_id,),
         ).fetchone()
         if row is None or row["claim_lock"] != token:
@@ -426,42 +554,88 @@ def _finish(
             "SELECT kind, payload_json FROM workflow_events WHERE execution_id = ?",
             (execution_id,),
         ).fetchall()
-        emitted_nodes: set[str] = set()
-        for event in existing_events:
-            if event["kind"] != "node_succeeded":
-                continue
-            try:
-                payload = json.loads(event["payload_json"])
-            except (TypeError, ValueError):
-                continue
-            node_id = payload.get("node_id")
-            if isinstance(node_id, str):
-                emitted_nodes.add(node_id)
 
-        _persist_waiting_nodes(
+        node_id = _failed_node_id(result, spec)
+        if node_id is not None and spec is not None:
+            error = result.error or {}
+            result.context = _context_with_error(result.context, error)
+            _persist_failed_attempt(
+                conn,
+                execution_id=execution_id,
+                node_id=node_id,
+                error=error,
+                now=now,
+            )
+            failed_attempts = _failed_attempts(conn, execution_id, node_id)
+            node = spec.nodes[node_id]
+            if node.retry is not None and failed_attempts < node.retry.max_attempts:
+                due_at = _retry_due_at(node, failed_attempts=failed_attempts, now=now)
+                status = "waiting" if due_at > now else "queued"
+                conn.execute(
+                    """
+                    INSERT INTO workflow_node_runs (
+                        execution_id, node_id, status, started_at, wait_until
+                    ) VALUES (?, ?, 'queued', ?, ?)
+                    """,
+                    (execution_id, node_id, now, due_at),
+                )
+                _emit_progress_events(
+                    conn,
+                    execution_id=execution_id,
+                    result=result,
+                    spec=spec,
+                    now=now,
+                    existing_events=existing_events,
+                )
+                if status == "waiting":
+                    _append_event(conn, execution_id, "execution_waiting", {"waiting_nodes": []}, now)
+                conn.execute(
+                    """
+                    UPDATE workflow_executions
+                       SET status = ?, context_json = ?, claim_lock = NULL,
+                           claim_expires = NULL, updated_at = ?
+                     WHERE execution_id = ? AND claim_lock = ?
+                    """,
+                    (status, _json_dumps(result.context), now, execution_id, token),
+                )
+                return True
+            if node.catch:
+                completed_wait_nodes = _completed_wait_nodes(conn, execution_id)
+                completed_outputs = _completed_node_outputs(conn, execution_id)
+                kwargs: dict[str, Any] = {
+                    "catch_failed_nodes": {node_id},
+                    "error_context": error,
+                }
+                if completed_wait_nodes:
+                    kwargs["completed_wait_nodes"] = completed_wait_nodes
+                if completed_outputs:
+                    kwargs["completed_node_outputs"] = completed_outputs
+                result = run_in_memory_until_waiting(
+                    spec,
+                    json.loads(row["input_json"]),
+                    **kwargs,
+                )
+                result.context = _context_with_error(result.context, error)
+
+        final_event = {
+            "succeeded": "execution_succeeded",
+            "waiting": "execution_waiting",
+            "failed": "execution_failed",
+        }[result.status]
+        final_payload: dict[str, Any] = {}
+        if result.status == "waiting":
+            final_payload = {"waiting_nodes": result.waiting_nodes}
+        elif result.status == "failed":
+            final_payload = {"error": result.error or {}}
+
+        _emit_progress_events(
             conn,
             execution_id=execution_id,
             result=result,
             spec=spec,
             now=now,
+            existing_events=existing_events,
         )
-        if not existing_events:
-            _append_event(conn, execution_id, "execution_started", {}, now)
-        for node_id, node_context in result.context.get("node", {}).items():
-            if node_id in emitted_nodes:
-                continue
-            if isinstance(node_context, dict):
-                output = node_context.get("output")
-            else:
-                output = None
-            _append_event(
-                conn,
-                execution_id,
-                "node_succeeded",
-                {"node_id": node_id, "output": output},
-                now,
-            )
-            emitted_nodes.add(node_id)
         _append_event(conn, execution_id, final_event, final_payload, now)
         conn.execute(
             """
@@ -491,6 +665,7 @@ def tick(
     with wfdb.connect(db_path) as conn:
         _fire_due_schedules(conn, now=tick_now)
         _resume_due_waits(conn, now=tick_now)
+        _resume_due_retries(conn, now=tick_now)
         _resume_completed_agent_tasks(conn, now=tick_now)
         while processed < limit:
             claimed = _claim_next(conn, now=tick_now, lease_seconds=lease_seconds)

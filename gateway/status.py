@@ -289,6 +289,14 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         if i + 1 >= len(filtered):
             return "run"  # bare `hermes gateway` defaults to `run`
         return filtered[i + 1]
+    # When the remaining token is just the bare `hermes`/`hermes.exe` entry-point
+    # binary (no `gateway` subcommand visible — common for systemd-managed
+    # gateways where `--profile` is set via the service file), treat it as a
+    # gateway run process.  Callers validate the profile via
+    # ``_command_line_belongs_to_profile`` (which checks HERMES_HOME in
+    # /proc/PID/environ), preventing false positives.
+    if len(filtered) == 1 and filtered[0] in ("hermes", "hermes.exe"):
+        return "run"
     return None
 
 

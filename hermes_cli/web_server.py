@@ -4305,6 +4305,7 @@ def get_model_options(profile: Optional[str] = None, refresh: bool = False):
                 capabilities=True,
                 refresh=bool(refresh),
                 probe_custom_providers=bool(refresh),
+                probe_current_custom_provider=not bool(refresh),
             )
     except HTTPException:
         raise

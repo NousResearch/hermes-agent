@@ -11,7 +11,7 @@
     --gold-1:#E8C87B; --gold-2:#C9A227;
     /* ===== dark-first (ค่า contrast ผ่าน 22/22 จาก contrast-check.mjs) ===== */
     --bg-canvas:#0e0e11; --bg-surface:#16161a; --bg-side:#101013; --bg-inset:#1c1c21;
-    --text-default:#f4f4f6; --text-muted:#a4a4ae; --text-dim:#7c7c86;
+    --text-default:#f4f4f6; --text-muted:#a4a4ae; --text-dim:#94949e;
     --hairline:rgba(255,255,255,.07); --hairline-strong:rgba(255,255,255,.14);
     --card-bg:rgba(255,255,255,.028); --card-hi:inset 0 1px 0 rgba(255,255,255,.05);
     --action:#c9221a; --action-hover:#e02d22; --action-text:#ffffff;
@@ -30,7 +30,7 @@
     --density:1; --row-h:48px;
     --r-sm:8px; --r-md:12px; --r-lg:18px;
     /* type + spacing scale (จังหวะเดียวทั้งหน้า · แก้ตาม design review) */
-    --fs-caption:13.5px; --fs-body:16px; --fs-lead:17.5px; --fs-h3:20px; --fs-h2:24px;
+    --fs-caption:12px; --fs-body:16px; --fs-lead:18px; --fs-h3:20px; --fs-h2:24px;
     --fs-stat:28px; --fs-num:32px; --fs-h1:clamp(40px,6vw,72px); --fs-display:clamp(38px,5.6vw,84px);
     --sp-1:8px; --sp-2:16px; --sp-3:24px; --sp-4:32px; --sp-5:48px; --sp-6:72px;
     --track-label:.14em; --track-wide:.18em;
@@ -49,7 +49,7 @@
     --glow-strong:0 14px 44px -12px rgba(133,25,20,.4);
   }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg-canvas); }
+  body { margin:0; background:var(--bg-canvas); font-size:var(--fs-body); line-height:1.6; }
   .app { font-family:var(--font-sans); background:var(--bg-canvas); color:var(--text-default);
     line-height:1.55; -webkit-font-smoothing:antialiased; min-height:100vh;
     font-feature-settings:"tnum" 0; }
@@ -69,8 +69,8 @@
     border-right:1px solid var(--hairline); transition:width .24s var(--ease); overflow:hidden; }
   .side-head { display:flex; align-items:center; gap:11px; padding:20px 16px 16px; flex:none; }
   .side-logo { width:32px; height:32px; border-radius:9px; flex:none; background:var(--grad-action);
-    box-shadow:var(--glow-subtle); display:grid; place-items:center; font-weight:800; font-size:13px; color:#fff; letter-spacing:.02em; }
-  .side-name { font-weight:600; font-size:13.5px; letter-spacing:-.01em; white-space:nowrap; }
+    box-shadow:var(--glow-subtle); display:grid; place-items:center; font-weight:800; font-size:14px; color:#fff; letter-spacing:.02em; }
+  .side-name { font-weight:600; font-size:14px; letter-spacing:-.01em; white-space:nowrap; }
   .side-name small { display:block; font-weight:400; font-size:10.5px; color:#8f8f99; letter-spacing:.04em; }
   .collapse-btn { margin-left:auto; flex:none; width:28px; height:28px; border-radius:8px;
     border:1px solid rgba(255,255,255,.12); background:transparent; color:#c9c7c5; cursor:pointer;
@@ -90,14 +90,14 @@
   .menu-group { font-size:10px; font-weight:700; letter-spacing:var(--track-label); text-transform:uppercase;
     color:#a8a6a4; padding:16px 10px 7px; white-space:nowrap; }
   .menu a { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px;
-    color:#b9b7b5; text-decoration:none; font-size:14px; white-space:nowrap; position:relative;
+    color:#b9b7b5; text-decoration:none; font-size:16px; white-space:nowrap; position:relative;
     transition:background .13s, color .13s; }
   .menu a:hover { background:rgba(255,255,255,.06); color:#f0eeec; }
   .menu a:focus-visible { outline:none; box-shadow:var(--ring); }
   .menu a.on { background:rgba(255,255,255,.09); color:#fff; font-weight:600; }
   .menu a.on::before { content:""; position:absolute; left:-10px; top:7px; bottom:7px; width:2px;
     border-radius:2px; background:var(--lead-red); box-shadow:0 0 8px rgba(236,44,35,.8); }
-  .menu .ic { flex:none; width:18px; text-align:center; font-size:13px; opacity:.85; }
+  .menu .ic { flex:none; width:18px; text-align:center; font-size:14px; opacity:.85; }
 
   .app.mini .side { width:var(--sidebar-w-mini); }
   .app.mini .side-name, .app.mini .menu-group, .app.mini .menu a .lb, .app.mini .zone-switch { display:none; }
@@ -112,7 +112,7 @@
   .top { position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:8px;
     padding:13px 36px; background:color-mix(in srgb, var(--bg-canvas) 80%, transparent);
     backdrop-filter:blur(14px); border-bottom:1px solid var(--hairline); }
-  .crumb { font-size:13.5px; color:var(--text-muted); letter-spacing:.01em; }
+  .crumb { font-size:14px; color:var(--text-muted); letter-spacing:.01em; }
   .crumb b { color:var(--text-default); font-weight:600; }
   .spacer { flex:1; }
   .pill-btn { font:inherit; font-size:12px; font-weight:600; cursor:pointer; padding:6px 13px;
@@ -167,7 +167,7 @@
     padding:var(--sp-3); box-shadow:var(--card-hi); }
 
   .row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
-  .btn { font:inherit; font-weight:600; font-size:14px; cursor:pointer; display:inline-flex; align-items:center;
+  .btn { font:inherit; font-weight:600; font-size:16px; cursor:pointer; display:inline-flex; align-items:center;
     gap:8px; height:42px; padding:0 20px; border-radius:10px; border:1px solid transparent;
     transition:all .18s var(--ease); }
   .btn:focus-visible { outline:none; box-shadow:var(--ring); }
@@ -189,12 +189,12 @@
   .b-neutral { color:var(--text-muted); background:var(--bg-inset); }
 
   label.f { display:block; font-size:12.5px; font-weight:600; margin-bottom:7px; color:var(--text-muted); }
-  .input { font:inherit; font-size:14px; width:100%; height:calc(42px * var(--density)); padding:0 13px;
+  .input { font:inherit; font-size:16px; width:100%; height:calc(42px * var(--density)); padding:0 13px;
     background:var(--bg-inset); color:var(--text-default); border:1px solid var(--hairline-strong);
     border-radius:var(--r-sm); transition:border-color .15s, box-shadow .15s; }
   .input::placeholder { color:var(--text-dim); }
   .input:focus-visible { outline:none; box-shadow:var(--ring); border-color:var(--focus); }
-  .hint { font-size:13px; color:var(--text-muted); margin-top:8px; }
+  .hint { font-size:14px; color:var(--text-muted); margin-top:8px; }
 
   .type-row { display:flex; align-items:baseline; gap:18px; padding:13px 0; border-bottom:1px solid var(--hairline); }
   .type-row:last-child { border-bottom:0; }
@@ -204,7 +204,7 @@
   .state { border:1px dashed var(--hairline-strong); border-radius:var(--r-md); padding:18px 14px; text-align:center;
     font-size:12.5px; color:var(--text-muted); background:var(--card-bg); min-height:92px;
     display:grid; place-content:center; gap:7px; }
-  .state b { color:var(--text-default); font-size:13px; }
+  .state b { color:var(--text-default); font-size:14px; }
   .spin { width:18px; height:18px; border-radius:50%; margin:0 auto; border:2px solid var(--hairline-strong);
     border-top-color:var(--lead-red); animation:sp .7s linear infinite; }
   @keyframes sp { to { transform:rotate(360deg); } }
@@ -252,10 +252,10 @@
     background:linear-gradient(180deg, rgba(236,44,35,.05), transparent 45%), var(--card-bg); }
   .tier .tag { position:absolute; top:-11px; left:20px; font-size:10.5px; font-weight:700; letter-spacing:.06em;
     padding:3px 11px; border-radius:999px; background:var(--grad-action); color:#fff; box-shadow:var(--glow-subtle); }
-  .tier h4 { margin:0 0 6px; font-size:14px; font-weight:600; color:var(--text-muted); letter-spacing:.02em; }
+  .tier h4 { margin:0 0 6px; font-size:16px; font-weight:600; color:var(--text-muted); letter-spacing:.02em; }
   .tier .pr { font-size:30px; font-weight:700; letter-spacing:-.025em; font-variant-numeric:tabular-nums; }
   .tier .pr small { font-size:12px; font-weight:500; color:var(--text-muted); letter-spacing:0; }
-  .tier ul { margin:16px 0 22px; padding-left:0; list-style:none; font-size:13px; color:var(--text-muted); flex:1; }
+  .tier ul { margin:16px 0 22px; padding-left:0; list-style:none; font-size:14px; color:var(--text-muted); flex:1; }
   .tier li { padding:5px 0 5px 22px; position:relative; }
   .tier li::before { content:"✓"; position:absolute; left:0; color:var(--success-text); font-weight:700; }
 
@@ -268,7 +268,7 @@
   .kpi .tr { font-size:11px; font-weight:700; border-radius:999px; padding:2px 9px; display:inline-block; margin-top:10px; }
   .tr.up { color:var(--success-text); background:rgba(22,199,154,.12); }
   .tr.dn { color:var(--danger-text); background:rgba(236,44,35,.12); }
-  table.dt { width:100%; border-collapse:collapse; font-size:14px; background:var(--card-bg);
+  table.dt { width:100%; border-collapse:collapse; font-size:16px; background:var(--card-bg);
     border:1px solid var(--hairline); border-radius:var(--r-md); overflow:hidden; }
   .dt th { text-align:left; font-size:10.5px; letter-spacing:var(--track-label); text-transform:uppercase;
     color:var(--text-muted); padding:11px 16px; border-bottom:1px solid var(--hairline-strong); background:var(--bg-inset); }
@@ -279,7 +279,7 @@
   .roles { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; }
   .role { border:1px solid var(--hairline); border-radius:var(--r-md); padding:16px 18px;
     background:var(--card-bg); box-shadow:var(--card-hi); font-size:12.5px; }
-  .role b { display:block; margin-bottom:7px; font-size:13.5px; }
+  .role b { display:block; margin-bottom:7px; font-size:14px; }
   .role .can { color:var(--success-text); } .role .cant { color:var(--text-dim); text-decoration:line-through; }
 
   .zone { display:none; }
@@ -297,7 +297,7 @@
 
   /* ===== foundations panels ===== */
   .fnd { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); }
-  .fnd .card h5 { margin:0 0 12px; font-size:13px; font-weight:600; color:var(--text-muted); letter-spacing:.04em; text-transform:uppercase; }
+  .fnd .card h5 { margin:0 0 12px; font-size:14px; font-weight:600; color:var(--text-muted); letter-spacing:.04em; text-transform:uppercase; }
   .sp-demo { display:flex; align-items:flex-end; gap:10px; }
   .sp-demo i { display:block; background:var(--accent); opacity:.75; border-radius:3px; width:22px; }
   .sp-demo b { font-size:11px; color:var(--text-muted); font-weight:500; display:block; text-align:center; margin-top:6px; }
@@ -317,11 +317,11 @@
 
   /* ===== tabs / breadcrumb ===== */
   .tabs { display:flex; gap:4px; border-bottom:1px solid var(--hairline-strong); }
-  .tab { font:inherit; font-size:14px; font-weight:600; color:var(--text-muted); background:none; border:0; cursor:pointer;
+  .tab { font:inherit; font-size:16px; font-weight:600; color:var(--text-muted); background:none; border:0; cursor:pointer;
     padding:10px 16px; border-bottom:2px solid transparent; margin-bottom:-1px; }
   .tab[aria-selected="true"] { color:var(--text-default); border-bottom-color:var(--lead-red); }
   .tab:focus-visible { outline:none; box-shadow:var(--ring); border-radius:6px; }
-  .bc { display:flex; gap:8px; font-size:13.5px; color:var(--text-muted); align-items:center; }
+  .bc { display:flex; gap:8px; font-size:14px; color:var(--text-muted); align-items:center; }
   .bc a { color:var(--text-muted); text-decoration:none; } .bc a:hover { color:var(--text-default); }
   .bc b { color:var(--text-default); font-weight:600; }
 
@@ -332,14 +332,14 @@
   .modal { width:min(440px,90vw); background:var(--bg-surface); border:1px solid var(--hairline-strong);
     border-radius:16px; padding:26px; box-shadow:0 30px 80px rgba(0,0,0,.5); }
   .modal h4 { margin:0 0 8px; font-size:17px; }
-  .modal p { margin:0 0 20px; color:var(--text-muted); font-size:14px; }
+  .modal p { margin:0 0 20px; color:var(--text-muted); font-size:16px; }
   .drawer { position:fixed; top:0; right:-420px; bottom:0; width:min(400px,88vw); background:var(--bg-surface);
     border-left:1px solid var(--hairline-strong); z-index:61; padding:26px; transition:right .3s var(--ease); box-shadow:-20px 0 60px rgba(0,0,0,.4); }
   .drawer.open { right:0; }
   .drawer h4 { margin:0 0 14px; font-size:16px; }
   .toast-wrap { position:fixed; bottom:24px; right:24px; z-index:70; display:flex; flex-direction:column; gap:10px; }
   .toast { background:var(--bg-surface); border:1px solid var(--hairline-strong); border-left:3px solid var(--success);
-    border-radius:10px; padding:12px 18px; font-size:13.5px; box-shadow:0 10px 30px rgba(0,0,0,.4);
+    border-radius:10px; padding:12px 18px; font-size:14px; box-shadow:0 10px 30px rgba(0,0,0,.4);
     display:flex; gap:10px; align-items:center; animation:tin .3s var(--ease); }
   @keyframes tin { from { opacity:0; transform:translateY(10px); } }
 
@@ -347,26 +347,26 @@
   .funnel { display:flex; gap:6px; flex-wrap:wrap; }
   .fstep { flex:1; min-width:110px; text-align:center; padding:12px 6px; background:var(--card-bg); border:1px solid var(--hairline);
     border-radius:10px; font-size:12px; color:var(--text-muted); }
-  .fstep b { display:block; font-size:13px; color:var(--text-default); margin-bottom:2px; }
+  .fstep b { display:block; font-size:14px; color:var(--text-default); margin-bottom:2px; }
   .fstep.hot { border-color:rgba(236,44,35,.4); background:linear-gradient(180deg,rgba(236,44,35,.07),transparent); }
   .logo-strip { display:flex; gap:26px; align-items:center; flex-wrap:wrap; opacity:.75; }
-  .logo-strip span { font-weight:700; font-size:15px; letter-spacing:.02em; color:var(--text-muted); }
-  .quote { border-left:2px solid var(--gold-2); padding:4px 0 4px 18px; font-size:15px; }
+  .logo-strip span { font-weight:700; font-size:16px; letter-spacing:.02em; color:var(--text-muted); }
+  .quote { border-left:2px solid var(--gold-2); padding:4px 0 4px 18px; font-size:16px; }
   .quote footer { font-size:12.5px; color:var(--text-muted); margin-top:8px; }
   .onb { display:grid; gap:10px; }
-  .onb label { display:flex; gap:12px; align-items:center; font-size:14px; padding:12px 16px; border:1px solid var(--hairline);
+  .onb label { display:flex; gap:12px; align-items:center; font-size:16px; padding:12px 16px; border:1px solid var(--hairline);
     border-radius:10px; background:var(--card-bg); cursor:pointer; }
   .onb input { accent-color:var(--lead-red); width:16px; height:16px; }
   .onb .done { text-decoration:line-through; color:var(--text-dim); }
   .email-mock { border:1px solid var(--hairline-strong); border-radius:12px; overflow:hidden; max-width:460px; background:var(--bg-surface); }
   .email-mock .eh { padding:14px 18px; background:var(--grad-action); color:#fff; font-weight:700; }
-  .email-mock .eb { padding:18px; font-size:13.5px; color:var(--text-muted); }
+  .email-mock .eb { padding:18px; font-size:14px; color:var(--text-muted); }
   .ev-tag { font-family:ui-monospace,monospace; font-size:10.5px; color:var(--accent); background:rgba(110,168,255,.1);
     padding:2px 8px; border-radius:6px; }
 
   /* ===== microcopy / a11y ===== */
   .dodont { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
-  .dd { border-radius:12px; padding:16px 18px; border:1px solid var(--hairline); background:var(--card-bg); font-size:14px; }
+  .dd { border-radius:12px; padding:16px 18px; border:1px solid var(--hairline); background:var(--card-bg); font-size:16px; }
   .dd.good { border-left:3px solid var(--success); } .dd.bad { border-left:3px solid var(--danger); }
   .dd .lb2 { font-size:11px; font-weight:700; letter-spacing:.1em; margin-bottom:6px; }
   .dd.good .lb2 { color:var(--success-text); } .dd.bad .lb2 { color:var(--danger-text); }
@@ -376,7 +376,7 @@
   /* ===== charts ===== */
   .charts { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
   .chart-card { background:var(--card-bg); border:1px solid var(--hairline); border-radius:14px; padding:20px; box-shadow:var(--card-hi); }
-  .chart-card h5 { margin:0 0 14px; font-size:13px; color:var(--text-muted); font-weight:600; }
+  .chart-card h5 { margin:0 0 14px; font-size:14px; color:var(--text-muted); font-weight:600; }
   .cpal { display:flex; gap:10px; flex-wrap:wrap; }
   .cpal span { display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:var(--text-muted); }
   .cpal i { width:14px; height:14px; border-radius:4px; display:inline-block; }
@@ -389,7 +389,7 @@
   .dt th.sortable { cursor:pointer; user-select:none; }
   .dt th.sortable:hover { color:var(--text-default); }
   .bulk { display:none; gap:12px; align-items:center; background:rgba(110,168,255,.08); border:1px solid rgba(110,168,255,.3);
-    border-radius:10px; padding:9px 16px; margin-bottom:12px; font-size:13.5px; }
+    border-radius:10px; padding:9px 16px; margin-bottom:12px; font-size:14px; }
   .bulk.show { display:flex; }
   .pgn { display:flex; gap:6px; margin-top:14px; justify-content:flex-end; }
   .pgn button { font:inherit; font-size:12.5px; min-width:32px; height:30px; border-radius:8px; border:1px solid var(--hairline-strong);
@@ -410,24 +410,24 @@
   select.input, textarea.input { padding-top:8px; height:auto; min-height:calc(42px * var(--density)); }
   textarea.input { resize:vertical; }
   .upload { border:1.5px dashed var(--hairline-strong); border-radius:12px; padding:26px; text-align:center; color:var(--text-muted);
-    font-size:13.5px; cursor:pointer; background:var(--card-bg); }
+    font-size:14px; cursor:pointer; background:var(--card-bg); }
   .upload:hover { border-color:var(--accent); }
   .f-err { border-color:var(--danger) !important; }
   .f-err-msg { font-size:12.5px; color:var(--danger-text); margin-top:6px; }
 
   /* ===== permission matrix / pdpa / governance ===== */
-  .pm { width:100%; border-collapse:collapse; font-size:13px; background:var(--card-bg); border:1px solid var(--hairline); border-radius:12px; overflow:hidden; }
+  .pm { width:100%; border-collapse:collapse; font-size:14px; background:var(--card-bg); border:1px solid var(--hairline); border-radius:12px; overflow:hidden; }
   .pm th, .pm td { padding:10px 14px; border-bottom:1px solid var(--hairline); text-align:center; }
   .pm th { background:var(--bg-inset); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted); }
   .pm td:first-child, .pm th:first-child { text-align:left; }
   .pm .y { color:var(--success-text); font-weight:700; } .pm .n { color:var(--text-dim); }
   .pdpa { display:flex; gap:16px; align-items:center; flex-wrap:wrap; background:var(--bg-surface); border:1px solid var(--hairline-strong);
-    border-radius:14px; padding:16px 20px; font-size:13.5px; box-shadow:0 14px 40px rgba(0,0,0,.35); }
+    border-radius:14px; padding:16px 20px; font-size:14px; box-shadow:0 14px 40px rgba(0,0,0,.35); }
   .gov-grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
   .depr { font-family:ui-monospace,monospace; font-size:12px; background:var(--bg-inset); border-radius:8px; padding:12px 14px; line-height:1.9; }
   .depr s { color:var(--text-dim); } .depr em { color:var(--success-text); font-style:normal; }
   .ai-chat { display:grid; gap:10px; max-width:430px; }
-  .bub { padding:10px 15px; border-radius:14px; font-size:13.5px; max-width:85%; }
+  .bub { padding:10px 15px; border-radius:14px; font-size:14px; max-width:85%; }
   .bub.u { background:var(--grad-action); color:#fff; justify-self:end; border-bottom-right-radius:4px; }
   .bub.a { background:var(--bg-inset); border:1px solid var(--hairline); border-bottom-left-radius:4px; }
   .bub.a .src { display:block; font-size:11px; color:var(--accent); margin-top:6px; }
@@ -441,19 +441,19 @@
   .emotion-grid { grid-template-columns:1fr 1.35fr; align-items:start; }
   .emotion-list { display:grid; gap:13px; }
   .emotion-axis { display:grid; gap:6px; }
-  .emotion-head { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13.5px; font-weight:600; }
+  .emotion-head { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:14px; font-weight:600; }
   .emotion-meter { height:8px; border-radius:999px; background:var(--bg-inset); border:1px solid var(--hairline); overflow:hidden; }
   .emotion-meter i { display:block; height:100%; width:calc(var(--score) * 20%); background:var(--grad-action); border-radius:999px; }
   .token-stack, .pipe-flow { display:flex; align-items:stretch; gap:10px; flex-wrap:wrap; }
   .arch-stack { display:grid; gap:10px; max-width:520px; }
   .arch-box, .pipe-step { border:1px solid var(--hairline); border-radius:var(--r-md); background:var(--card-bg); box-shadow:var(--card-hi); padding:14px 16px; }
   .arch-box span, .pipe-step span { display:block; font-size:11px; font-weight:700; color:var(--text-muted); letter-spacing:var(--track-label); text-transform:uppercase; }
-  .arch-box code, .pipe-step code { color:var(--accent); font-family:ui-monospace,monospace; font-size:13px; }
+  .arch-box code, .pipe-step code { color:var(--accent); font-family:ui-monospace,monospace; font-size:14px; }
   .arch-arrow, .pipe-arrow { display:grid; place-items:center; color:var(--text-muted); font-weight:700; }
   .layer-row { grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); }
   .token-chip { display:inline-flex; align-items:center; border:1px solid var(--hairline-strong); border-radius:999px; padding:5px 10px; color:var(--text-muted); background:var(--bg-inset); font-size:12.5px; }
   .opacity-scale { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
-  .opacity-box { min-height:72px; border-radius:var(--r-md); border:1px solid var(--hairline); display:grid; place-items:end start; padding:10px; background:rgba(236,44,35,var(--op)); color:var(--text-default); font-size:12px; font-weight:600; }
+  .opacity-box { min-height:72px; border-radius:var(--r-md); border:1px solid var(--hairline); display:grid; place-items:end start; padding:10px; background:rgba(236,44,35,var(--op)); color:var(--text-default); font-size:19px; font-weight:700; }
   .luxe-note { margin:-8px 0 14px; color:var(--accent); }
   @media (max-width:900px) { .emotion-grid,.opacity-scale{grid-template-columns:1fr} }
 
@@ -502,27 +502,27 @@
         <div class="card" style="margin-bottom:14px">
           <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px">
             <div><div class="hint" style="margin:0 0 6px" data-th="วิสัยทัศน์ / Positioning" data-en="Vision / Positioning">วิสัยทัศน์ / Positioning</div>
-              <div style="font-weight:600;font-size:15px;line-height:1.45" data-th="เปลี่ยน AI จากของเล่น ให้เป็นระบบงานจริง มี agent มี QC มีหลักฐาน ทำซ้ำได้" data-en="Turn AI from scattered tools into governed workflows, agents, QC systems, and repeatable operating assets.">เปลี่ยน AI จากของเล่น ให้เป็นระบบงานจริง มี agent มี QC มีหลักฐาน ทำซ้ำได้</div></div>
+              <div style="font-weight:600;font-size:16px;line-height:1.45" data-th="เปลี่ยน AI จากของเล่น ให้เป็นระบบงานจริง มี agent มี QC มีหลักฐาน ทำซ้ำได้" data-en="Turn AI from scattered tools into governed workflows, agents, QC systems, and repeatable operating assets.">เปลี่ยน AI จากของเล่น ให้เป็นระบบงานจริง มี agent มี QC มีหลักฐาน ทำซ้ำได้</div></div>
             <div><div class="hint" style="margin:0 0 6px" data-th="พันธกิจ / แบรนด์" data-en="Mission / Brand">พันธกิจ / แบรนด์</div>
-              <div style="font-weight:600;font-size:15px;line-height:1.45" data-th="One Man Fleet — ห้องทดลองระบบ AI แบบไร้ใบหน้า · flagship: ViberQC · ภาษานำ EN" data-en="One Man Fleet — a faceless AI operations lab · flagship: ViberQC · EN-first">One Man Fleet — ห้องทดลองระบบ AI แบบไร้ใบหน้า · flagship: ViberQC · ภาษานำ EN</div></div>
+              <div style="font-weight:600;font-size:16px;line-height:1.45" data-th="One Man Fleet — ห้องทดลองระบบ AI แบบไร้ใบหน้า · flagship: ViberQC · ภาษานำ EN" data-en="One Man Fleet — a faceless AI operations lab · flagship: ViberQC · EN-first">One Man Fleet — ห้องทดลองระบบ AI แบบไร้ใบหน้า · flagship: ViberQC · ภาษานำ EN</div></div>
           </div>
           <p class="hint" style="margin-top:16px" data-th="ดึงจากไฟล์จริง docs/BRAND_SOURCE_OF_TRUTH.md — DS ทุกตัวต้องอ่านเอกสารโปรเจกต์ก่อน ห้ามมโน" data-en="Pulled from the project's real docs/BRAND_SOURCE_OF_TRUTH.md — every DS must read project docs first, never invent.">ดึงจากไฟล์จริง docs/BRAND_SOURCE_OF_TRUTH.md — DS ทุกตัวต้องอ่านเอกสารโปรเจกต์ก่อน ห้ามมโน</p>
         </div>
         <div class="card" style="margin-bottom:14px">
           <div class="hint" style="margin:0 0 14px" data-th="H2 · เหตุผลการเลือกสี — ทุกสีต้องตอบได้ว่าทำไม" data-en="H2 · Color rationale — every color must answer why">H2 · เหตุผลการเลือกสี — ทุกสีต้องตอบได้ว่าทำไม</div>
           <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(230px,1fr))">
-            <div class="proof"><span style="display:inline-block;width:13px;height:13px;border-radius:4px;background:#231F20;border:1px solid var(--hairline-strong);vertical-align:-2px"></span> <b style="display:inline;font-size:14px"> Ink</b><br><span data-th="ห้องแล็บ · ลึก · ไว้ใจได้ → 'ระบบจริง มีหลักฐาน'" data-en="Lab-deep, trustworthy → 'real systems, real proof'">ห้องแล็บ · ลึก · ไว้ใจได้ → "ระบบจริง มีหลักฐาน"</span></div>
-            <div class="proof"><span style="display:inline-block;width:13px;height:13px;border-radius:4px;background:var(--lead-red);vertical-align:-2px"></span> <b style="display:inline;font-size:14px"> Action Red</b><br><span data-th="พลังลงมือ → จุดที่อยากให้คนกด (CTA)" data-en="Energy to act → where we want clicks (CTA)">พลังลงมือ → จุดที่อยากให้คนกด (CTA)</span></div>
-            <div class="proof"><span style="display:inline-block;width:13px;height:13px;border-radius:4px;background:var(--emerald);vertical-align:-2px"></span> <b style="display:inline;font-size:14px"> Emerald</b><br><span data-th="ผลลัพธ์วัดได้ → สีของหลักฐานที่ 'ผ่าน'" data-en="Measurable results → the color of passing proof">ผลลัพธ์วัดได้ → สีของหลักฐานที่ "ผ่าน"</span></div>
+            <div class="proof"><span style="display:inline-block;width:13px;height:13px;border-radius:4px;background:#231F20;border:1px solid var(--hairline-strong);vertical-align:-2px"></span> <b style="display:inline;font-size:16px"> Ink</b><br><span data-th="ห้องแล็บ · ลึก · ไว้ใจได้ → 'ระบบจริง มีหลักฐาน'" data-en="Lab-deep, trustworthy → 'real systems, real proof'">ห้องแล็บ · ลึก · ไว้ใจได้ → "ระบบจริง มีหลักฐาน"</span></div>
+            <div class="proof"><span style="display:inline-block;width:13px;height:13px;border-radius:4px;background:var(--lead-red);vertical-align:-2px"></span> <b style="display:inline;font-size:16px"> Action Red</b><br><span data-th="พลังลงมือ → จุดที่อยากให้คนกด (CTA)" data-en="Energy to act → where we want clicks (CTA)">พลังลงมือ → จุดที่อยากให้คนกด (CTA)</span></div>
+            <div class="proof"><span style="display:inline-block;width:13px;height:13px;border-radius:4px;background:var(--emerald);vertical-align:-2px"></span> <b style="display:inline;font-size:16px"> Emerald</b><br><span data-th="ผลลัพธ์วัดได้ → สีของหลักฐานที่ 'ผ่าน'" data-en="Measurable results → the color of passing proof">ผลลัพธ์วัดได้ → สีของหลักฐานที่ "ผ่าน"</span></div>
           </div>
           <p class="hint" style="margin-top:14px;color:var(--warning-text)" data-th="⚠ Direction Check จับได้จริง: เอกสาร canonical ระบุ #1A1A2E + #E94560 แต่โค้ด tailwind ใช้ #231F20 + #851914 — เจ้าของต้องตัดสินก่อนย้าย token" data-en="⚠ Direction Check caught a real conflict: canonical doc says #1A1A2E + #E94560 but tailwind uses #231F20 + #851914 — owner decides before token migration.">⚠ Direction Check จับได้จริง: เอกสาร canonical ระบุ #1A1A2E + #E94560 แต่โค้ด tailwind ใช้ #231F20 + #851914 — เจ้าของต้องตัดสินก่อนย้าย token</p>
         </div>
         <div class="card">
           <div class="hint" style="margin:0 0 14px" data-th="H3 · ปัญหากลุ่มเป้าหมาย → DS ตอบด้วยอะไร" data-en="H3 · Audience pains → what the DS answers with">H3 · ปัญหากลุ่มเป้าหมาย → DS ตอบด้วยอะไร</div>
           <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(250px,1fr))">
-            <div class="proof"><b style="font-size:13.5px" data-th="ใช้ AI หลาย tool ไม่มีระบบกลาง" data-en="Many AI tools, no central system">ใช้ AI หลาย tool ไม่มีระบบกลาง</b><span data-th="→ แดชบอร์ดคือพระเอก ไม่ใช่ blog" data-en="→ dashboard-first, not a blog">→ แดชบอร์ดคือพระเอก ไม่ใช่ blog</span></div>
-            <div class="proof"><b style="font-size:13.5px" data-th="กลัว automation คุมไม่ได้" data-en="Fear of uncontrolled automation">กลัว automation คุมไม่ได้</b><span data-th="→ trust/proof + 5 สถานะชัด + สีเตือนแยก" data-en="→ trust/proof + explicit 5 states + clear alerts">→ trust/proof + 5 สถานะชัด + สีเตือนแยก</span></div>
-            <div class="proof"><b style="font-size:13.5px" data-th="อยากได้ report พิสูจน์ผล" data-en="Wants provable reports">อยากได้ report พิสูจน์ผล</b><span data-th="→ ตัวเลข tabular + KPI + before/after" data-en="→ tabular numerals + KPI + before/after">→ ตัวเลข tabular + KPI + before/after</span></div>
+            <div class="proof"><b style="font-size:14px" data-th="ใช้ AI หลาย tool ไม่มีระบบกลาง" data-en="Many AI tools, no central system">ใช้ AI หลาย tool ไม่มีระบบกลาง</b><span data-th="→ แดชบอร์ดคือพระเอก ไม่ใช่ blog" data-en="→ dashboard-first, not a blog">→ แดชบอร์ดคือพระเอก ไม่ใช่ blog</span></div>
+            <div class="proof"><b style="font-size:14px" data-th="กลัว automation คุมไม่ได้" data-en="Fear of uncontrolled automation">กลัว automation คุมไม่ได้</b><span data-th="→ trust/proof + 5 สถานะชัด + สีเตือนแยก" data-en="→ trust/proof + explicit 5 states + clear alerts">→ trust/proof + 5 สถานะชัด + สีเตือนแยก</span></div>
+            <div class="proof"><b style="font-size:14px" data-th="อยากได้ report พิสูจน์ผล" data-en="Wants provable reports">อยากได้ report พิสูจน์ผล</b><span data-th="→ ตัวเลข tabular + KPI + before/after" data-en="→ tabular numerals + KPI + before/after">→ ตัวเลข tabular + KPI + before/after</span></div>
           </div>
         </div>
       </section>
@@ -570,8 +570,8 @@
               </div>
             </div>
           </div>
-          <div class="proof"><b style="font-size:15px" data-th="แรงจูงใจหลักผู้ใช้: มั่นใจก่อนจ่าย" data-en="Core motivation: confidence before paying">แรงจูงใจหลักผู้ใช้: มั่นใจก่อนจ่าย</b><span data-th="UI ตอบด้วยหลักฐานตัวเลข + trust strip + case study" data-en="UI answers with numeric proof + trust strip + case study">UI ตอบด้วยหลักฐานตัวเลข + trust strip + case study</span></div>
-          <div class="proof"><b style="font-size:15px" data-th="Function → ชุด component: จัดการข้อมูล" data-en="Function → component set: data management">Function → ชุด component: จัดการข้อมูล</b><span data-th="ตาราง / ฟอร์ม / แดชบอร์ด อยู่ในโซน Admin เพื่อคนทำงานซ้ำทุกวัน" data-en="Tables / forms / dashboards live in Admin for repeated daily work">ตาราง / ฟอร์ม / แดชบอร์ด อยู่ในโซน Admin เพื่อคนทำงานซ้ำทุกวัน</span></div>
+          <div class="proof"><b style="font-size:16px" data-th="แรงจูงใจหลักผู้ใช้: มั่นใจก่อนจ่าย" data-en="Core motivation: confidence before paying">แรงจูงใจหลักผู้ใช้: มั่นใจก่อนจ่าย</b><span data-th="UI ตอบด้วยหลักฐานตัวเลข + trust strip + case study" data-en="UI answers with numeric proof + trust strip + case study">UI ตอบด้วยหลักฐานตัวเลข + trust strip + case study</span></div>
+          <div class="proof"><b style="font-size:16px" data-th="Function → ชุด component: จัดการข้อมูล" data-en="Function → component set: data management">Function → ชุด component: จัดการข้อมูล</b><span data-th="ตาราง / ฟอร์ม / แดชบอร์ด อยู่ในโซน Admin เพื่อคนทำงานซ้ำทุกวัน" data-en="Tables / forms / dashboards live in Admin for repeated daily work">ตาราง / ฟอร์ม / แดชบอร์ด อยู่ในโซน Admin เพื่อคนทำงานซ้ำทุกวัน</span></div>
         </div>
       </section>
 
@@ -589,8 +589,8 @@
           </div>
           <div class="grid">
             <div class="grid layer-row">
-              <div class="proof"><b style="font-size:14px" data-th="ci = ของแบรนด์ / ลูกค้า" data-en="ci = brand / client layer">ci = ของแบรนด์ / ลูกค้า</b><span data-th="สลับได้รายโปรเจกต์ เช่น สี โลโก้ น้ำเสียง" data-en="Swappable per project, e.g. colors, logo, voice">สลับได้รายโปรเจกต์ เช่น สี โลโก้ น้ำเสียง</span></div>
-              <div class="proof"><b style="font-size:14px" data-th="dna = ของระบบ" data-en="dna = system layer">dna = ของระบบ</b><span data-th="ทุกโปรเจกต์เหมือนกัน เช่น spacing, focus, state, grid" data-en="Shared across projects, e.g. spacing, focus, states, grid">ทุกโปรเจกต์เหมือนกัน เช่น spacing, focus, state, grid</span></div>
+              <div class="proof"><b style="font-size:16px" data-th="ci = ของแบรนด์ / ลูกค้า" data-en="ci = brand / client layer">ci = ของแบรนด์ / ลูกค้า</b><span data-th="สลับได้รายโปรเจกต์ เช่น สี โลโก้ น้ำเสียง" data-en="Swappable per project, e.g. colors, logo, voice">สลับได้รายโปรเจกต์ เช่น สี โลโก้ น้ำเสียง</span></div>
+              <div class="proof"><b style="font-size:16px" data-th="dna = ของระบบ" data-en="dna = system layer">dna = ของระบบ</b><span data-th="ทุกโปรเจกต์เหมือนกัน เช่น spacing, focus, state, grid" data-en="Shared across projects, e.g. spacing, focus, states, grid">ทุกโปรเจกต์เหมือนกัน เช่น spacing, focus, state, grid</span></div>
             </div>
             <div class="card">
               <div class="eyebrow" data-th="DTCG TOKEN TYPES" data-en="DTCG TOKEN TYPES">DTCG TOKEN TYPES</div>
@@ -628,10 +628,10 @@
       <section class="sec reveal" id="f-type" data-label="ตัวอักษร" data-label-en="Typography" data-ic="Aa">
         <div class="sec-h"><span class="k">TOKENS</span><h2 data-th="ตัวอักษร" data-en="Typography">ตัวอักษร</h2></div>
         <div class="card">
-          <div class="type-row"><span class="t">44 / 280</span><span style="font-size:44px;font-weight:300;letter-spacing:-.03em" data-th="รถหนึ่งคัน จัดการทั้งกองเรือ" data-en="One vehicle, an entire fleet">รถหนึ่งคัน จัดการทั้งกองเรือ</span></div>
+          <div class="type-row"><span class="t">44 / 300</span><span style="font-size:44px;font-weight:300;letter-spacing:-.03em" data-th="คนหนึ่งคน จัดการทั้งกองเรือ" data-en="One person, an entire fleet">คนหนึ่งคน จัดการทั้งกองเรือ</span></div>
           <div class="type-row"><span class="t">20 / 700</span><span style="font-size:20px;font-weight:700;letter-spacing:-.015em" data-th="หัวข้อรอง Secondary heading" data-en="Secondary heading">หัวข้อรอง Secondary heading</span></div>
-          <div class="type-row"><span class="t">15 / 400</span><span style="font-size:16px;color:var(--text-muted)" data-th="ข้อความเนื้อหาปกติ อ่านสบายกว้างราว 65 ตัวอักษร — Noto Sans Thai นำทุกน้ำหนัก" data-en="Body text at a comfortable ~65ch measure — Noto Sans Thai leads every weight.">ข้อความเนื้อหาปกติ อ่านสบายกว้างราว 65 ตัวอักษร — Noto Sans Thai นำทุกน้ำหนัก</span></div>
-          <div class="type-row"><span class="t">12.5/500</span><span style="font-size:12.5px;color:var(--text-muted);letter-spacing:.04em">CAPTION · METADATA · 2026</span></div>
+          <div class="type-row"><span class="t">16 / 400</span><span style="font-size:16px;color:var(--text-muted)" data-th="ข้อความเนื้อหาปกติ อ่านสบายกว้างราว 65 ตัวอักษร — Noto Sans Thai นำทุกน้ำหนัก" data-en="Body text at a comfortable ~65ch measure — Noto Sans Thai leads every weight.">ข้อความเนื้อหาปกติ อ่านสบายกว้างราว 65 ตัวอักษร — Noto Sans Thai นำทุกน้ำหนัก</span></div>
+          <div class="type-row"><span class="t">12.5 / 400</span><span style="font-size:12.5px;color:var(--text-muted);letter-spacing:.04em">CAPTION · METADATA · 2026</span></div>
         </div>
       </section>
 
@@ -765,7 +765,7 @@
         <p class="hint luxe-note" data-th="Luxe 4/5 → เปิด glow + gradient + display + glass" data-en="Luxe 4/5 → enables glow + gradient + display + glass">Luxe 4/5 → เปิด glow + gradient + display + glass</p>
         <div class="lux-hero">
           <span class="lux-kick"><i></i> ONE MAN FLEET · FLAGSHIP</span>
-          <h3 data-th-html="รถหนึ่งคัน<br><b>จัดการทั้งกองเรือ</b>" data-en-html="One vehicle,<br><b>an entire fleet</b>">รถหนึ่งคัน<br><b>จัดการทั้งกองเรือ</b></h3>
+          <h3 data-th-html="คนหนึ่งคน<br><b>จัดการทั้งกองเรือ</b>" data-en-html="One person,<br><b>an entire fleet</b>">คนหนึ่งคน<br><b>จัดการทั้งกองเรือ</b></h3>
           <p data-th="คุมทั้งกองรถจากแดชบอร์ดเดียว — เห็นทุกเที่ยว ทุกบาท แบบเรียลไทม์ พร้อมหลักฐานที่ตรวจย้อนได้" data-en="Run your entire fleet from one dashboard — every trip, every baht, in real time, with auditable proof.">คุมทั้งกองรถจากแดชบอร์ดเดียว — เห็นทุกเที่ยว ทุกบาท แบบเรียลไทม์ พร้อมหลักฐานที่ตรวจย้อนได้</p>
           <div class="row" style="margin-top:26px">
             <button class="btn btn-primary" data-th="เริ่มใช้งาน" data-en="Get started">เริ่มใช้งาน</button>
@@ -1010,8 +1010,8 @@
           </tbody>
         </table>
         <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
-          <div class="proof"><b style="font-size:14px" data-th="Figma ↔ code" data-en="Figma ↔ code">Figma ↔ code</b><span data-th="สถานะ: ยังไม่เชื่อม — งานถัดไป" data-en="Status: not connected yet — next work">สถานะ: ยังไม่เชื่อม — งานถัดไป</span></div>
-          <div class="proof"><b style="font-size:14px" data-th="ด่านรีวิว token ใหม่" data-en="New token review gate">ด่านรีวิว token ใหม่</b><span data-th="ใครขอ → เจ้าของอนุมัติ → เข้าคลังกลาง" data-en="Requestor → owner approval → central library">ใครขอ → เจ้าของอนุมัติ → เข้าคลังกลาง</span></div>
+          <div class="proof"><b style="font-size:16px" data-th="Figma ↔ code" data-en="Figma ↔ code">Figma ↔ code</b><span data-th="สถานะ: ยังไม่เชื่อม — งานถัดไป" data-en="Status: not connected yet — next work">สถานะ: ยังไม่เชื่อม — งานถัดไป</span></div>
+          <div class="proof"><b style="font-size:16px" data-th="ด่านรีวิว token ใหม่" data-en="New token review gate">ด่านรีวิว token ใหม่</b><span data-th="ใครขอ → เจ้าของอนุมัติ → เข้าคลังกลาง" data-en="Requestor → owner approval → central library">ใครขอ → เจ้าของอนุมัติ → เข้าคลังกลาง</span></div>
         </div>
       </section>
 
@@ -1033,12 +1033,12 @@
           <button class="btn btn-primary" style="height:36px" data-th="ยอมรับ" data-en="Accept">ยอมรับ</button>
         </div>
         <div class="gov-grid">
-          <div class="card"><h5 style="margin:0 0 12px;font-size:13px;color:var(--text-muted)" data-th="กติกาเลิกใช้ token (semver)" data-en="Token deprecation (semver)">กติกาเลิกใช้ token (semver)</h5>
+          <div class="card"><h5 style="margin:0 0 12px;font-size:14px;color:var(--text-muted)" data-th="กติกาเลิกใช้ token (semver)" data-en="Token deprecation (semver)">กติกาเลิกใช้ token (semver)</h5>
             <div class="depr"><s>--color-primary-old</s> → <em>--semantic-color-action</em><br><span style="color:var(--text-dim)">alias คงไว้ ≥ 2 รุ่น · เตือนใน build · ลบใน v3.0</span></div></div>
-          <div class="card"><h5 style="margin:0 0 12px;font-size:13px;color:var(--text-muted)" data-th="คะแนนการใช้จริง (adoption)" data-en="Adoption score">คะแนนการใช้จริง (adoption)</h5>
+          <div class="card"><h5 style="margin:0 0 12px;font-size:14px;color:var(--text-muted)" data-th="คะแนนการใช้จริง (adoption)" data-en="Adoption score">คะแนนการใช้จริง (adoption)</h5>
             <div style="font-size:30px;font-weight:700;font-variant-numeric:tabular-nums">83.7%</div>
             <p class="hint" data-th="จาก ds-check จริงของ OneManFleet · เป้า ≥95% ก่อนเปิดโหมดเข้มใน CI" data-en="From the real OneManFleet ds-check run · target ≥95% before CI strict mode">จาก ds-check จริงของ OneManFleet · เป้า ≥95% ก่อนเปิดโหมดเข้มใน CI</p></div>
-          <div class="card"><h5 style="margin:0 0 12px;font-size:13px;color:var(--text-muted)" data-th="UI งาน AI (แชท + สตรีม + อ้างอิง)" data-en="AI UI (chat + streaming + citations)">UI งาน AI (แชท + สตรีม + อ้างอิง)</h5>
+          <div class="card"><h5 style="margin:0 0 12px;font-size:14px;color:var(--text-muted)" data-th="UI งาน AI (แชท + สตรีม + อ้างอิง)" data-en="AI UI (chat + streaming + citations)">UI งาน AI (แชท + สตรีม + อ้างอิง)</h5>
             <div class="ai-chat">
               <div class="bub u" data-th="คันไหนกินน้ำมันผิดปกติเดือนนี้" data-en="Which truck burned abnormal fuel this month?">คันไหนกินน้ำมันผิดปกติเดือนนี้</div>
               <div class="bub a" data-th="3คค-9012 ใช้น้ำมันสูงกว่าค่าเฉลี่ยกลุ่ม 34% (12.8 กม./ล. → 8.4)" data-en="3KK-9012 burned 34% above its class average (12.8 km/L → 8.4)">3คค-9012 ใช้น้ำมันสูงกว่าค่าเฉลี่ยกลุ่ม 34% (12.8 กม./ล. → 8.4)<span class="src" data-th="อ้างอิง: บันทึกเที่ยว มิ.ย. · 42 รายการ" data-en="Source: June trip logs · 42 records">อ้างอิง: บันทึกเที่ยว มิ.ย. · 42 รายการ</span></div>

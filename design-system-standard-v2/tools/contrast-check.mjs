@@ -51,7 +51,11 @@ const pairs = [
   // ==== ชุด dark-first ของหน้า explorer v2 (2026-07-05) ====
   ['v2: text-default บน canvas มืด', '#f4f4f6', '#0e0e11', 4.5],
   ['v2: text-muted บน canvas มืด', '#a4a4ae', '#0e0e11', 4.5],
-  ['v2: text-dim (eyebrow/caption) บน canvas มืด', '#7c7c86', '#0e0e11', 4.5],
+  ['v2: text-dim (eyebrow/caption) บน canvas มืด', '#94949e', '#0e0e11', 4.5],
+  ['v2: text-dim บนการ์ด #131316', '#94949e', '#131316', 4.5],
+  ['v2: text-dim บนการ์ด #151517', '#94949e', '#151517', 4.5],
+  ['v2: text-dim บนการ์ด #1b1b1e', '#94949e', '#1b1b1e', 4.5],
+  ['v2: text-dim บนการ์ด #26262b', '#94949e', '#26262b', 4.5],
   ['v2: เมนู sidebar ตัวอักษร', '#b9b7b5', '#101013', 4.5],
   ['v2: หัวกลุ่มเมนู', '#a8a6a4', '#101013', 4.5],
   ['v2: gradient text ฝั่งแดง (จุดมืดสุด)', '#ff6a5e', '#0e0e11', 4.5],

@@ -179,13 +179,33 @@
         }
       },
       "type": {
-        "body": {
+        "caption": {
           "$type": "dimension",
-          "$value": "{dimension.fontSize.16}"
+          "$value": "{dimension.fontSize.12}",
+          "$description": "ป้าย/คำกำกับจิ๋ว — เล็กสุดที่อนุญาต ใช้กับ label/chip/meta เท่านั้น"
         },
         "small": {
           "$type": "dimension",
-          "$value": "{dimension.fontSize.14}"
+          "$value": "{dimension.fontSize.14}",
+          "$description": "ข้อความรอง/องค์ประกอบ UI"
+        },
+        "body": {
+          "$type": "dimension",
+          "$value": "{dimension.fontSize.16}",
+          "$description": "ตัวเนื้อความหลักที่ผู้ใช้อ่าน — ขนาดมาตรฐาน 16px (base) ห้ามต่ำกว่านี้สำหรับข้อความอ่าน"
+        },
+        "lead": {
+          "$type": "dimension",
+          "$value": "{dimension.fontSize.18}",
+          "$description": "ข้อความนำ/อารัมภบทใต้หัวเรื่อง"
+        },
+        "subtitle": {
+          "$type": "dimension",
+          "$value": "{dimension.fontSize.20}"
+        },
+        "heading": {
+          "$type": "dimension",
+          "$value": "{dimension.fontSize.24}"
         },
         "title": {
           "$type": "dimension",

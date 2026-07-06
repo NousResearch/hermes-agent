@@ -564,6 +564,7 @@ class TestConcludeToolDispatch:
             "who are you",
             reasoning_level=None,
             peer="hermes",
+            apply_injection_cap=False,
         )
 
     def test_honcho_conclude_missing_both_params_returns_error(self):
@@ -1008,6 +1009,50 @@ class TestDialecticInputGuard:
         # The query passed to chat() should be truncated
         actual_query = mock_peer.chat.call_args[0][0]
         assert len(actual_query) <= 100
+
+
+class TestDialecticInjectionCap:
+    """dialecticMaxChars must bound the auto-injected supplement but must NOT
+    clip explicit honcho_reasoning tool results, which the model asked for in
+    full (they are already bounded server-side by Honcho's MAX_OUTPUT_TOKENS)."""
+
+    def _manager_with_long_answer(self, answer):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(dialectic_max_chars=50)
+        mgr = HonchoSessionManager(config=cfg)
+        mgr._dialectic_max_chars = 50
+
+        session = HonchoSession(
+            key="test", user_peer_id="u", assistant_peer_id="a",
+            honcho_session_id="s",
+        )
+        mgr._cache["test"] = session
+
+        mock_peer = MagicMock()
+        mock_peer.chat.return_value = answer
+        mgr._get_or_create_peer = MagicMock(return_value=mock_peer)
+        return mgr
+
+    def test_injection_path_truncates(self):
+        """Default (auto-injection) path clips to dialecticMaxChars with an ellipsis."""
+        answer = "fact " * 100  # 500 chars, well over the 50-char cap
+        mgr = self._manager_with_long_answer(answer)
+
+        result = mgr.dialectic_query("test", "summarize")
+
+        assert len(result) <= 60  # cap + word-boundary slack + ellipsis
+        assert result.endswith(" …")
+
+    def test_tool_path_returns_full_answer(self):
+        """Explicit tool call (apply_injection_cap=False) returns the full answer."""
+        answer = "fact " * 100  # 500 chars, well over the 50-char cap
+        mgr = self._manager_with_long_answer(answer)
+
+        result = mgr.dialectic_query("test", "summarize", apply_injection_cap=False)
+
+        assert result == answer
+        assert not result.endswith(" …")
 
 
 # ---------------------------------------------------------------------------

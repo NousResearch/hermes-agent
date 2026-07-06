@@ -94,10 +94,36 @@ def normalise_prefix(raw: Optional[str]) -> str:
         or ".." in p
         or any(c in p for c in _REJECT_CHARS)
     ):
+        _warn_malformed_prefix(raw)
         return ""
-    if len(p) > 64:
+    if len(p) > 256:
+        _warn_malformed_prefix(raw)
         return ""
     return p
+
+
+def _warn_malformed_prefix(raw: str) -> None:
+    """Warn (once per distinct value) when a non-empty X-Forwarded-Prefix
+    was rejected by :func:`normalise_prefix`.
+
+    Mirrors the dedup pattern in :func:`_warn_if_malformed_public_url` so
+    a misconfigured proxy doesn't flood the logs.
+    """
+    p = raw.strip() if raw else ""
+    if not p:
+        return
+    key = p
+    if key in _warned_malformed_public_urls:
+        return
+    _warned_malformed_public_urls.add(key)
+    _log.warning(
+        "X-Forwarded-Prefix header value %r was ignored because it is "
+        "malformed (path traversal, control chars, or exceeds 256 chars). "
+        "Dashboard asset URLs and cookie paths will be unprefixed; SPA "
+        "will likely serve a blank page behind the proxy. Check your "
+        "reverse-proxy configuration.",
+        raw,
+    )
 
 
 def prefix_from_request(request) -> str:

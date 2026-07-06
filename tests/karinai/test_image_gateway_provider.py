@@ -470,3 +470,43 @@ def test_managed_image_gateway_provider_rejects_reference_images_before_gateway_
     assert body["error_type"] == "modality_unsupported"
     assert "text-to-image only" in body["error"]
     assert gateway.requests == []
+
+
+def test_client_timeout_prefers_task_deadline_env(monkeypatch):
+    from karinai.runtime.image_gateway_provider import _client_timeout_seconds
+
+    monkeypatch.setenv("KARINAI_IMAGE_TASK_DEADLINE_SECONDS", "900")
+    monkeypatch.setenv("KARINAI_IMAGE_GATEWAY_TIMEOUT_SECONDS", "45")
+    assert _client_timeout_seconds() == 900.0
+
+
+def test_client_timeout_falls_back_to_deprecated_gateway_timeout(monkeypatch, caplog):
+    import logging
+
+    from karinai.runtime.image_gateway_provider import _client_timeout_seconds
+
+    monkeypatch.delenv("KARINAI_IMAGE_TASK_DEADLINE_SECONDS", raising=False)
+    monkeypatch.setenv("KARINAI_IMAGE_GATEWAY_TIMEOUT_SECONDS", "45")
+    with caplog.at_level(logging.WARNING, logger="karinai.runtime.image_gateway_provider"):
+        assert _client_timeout_seconds() == 45.0
+    assert any("deprecated" in record.message for record in caplog.records)
+
+
+def test_client_timeout_defaults_to_generous_task_deadline(monkeypatch):
+    from karinai.runtime.image_gateway_provider import (
+        _DEFAULT_TASK_DEADLINE_SECONDS,
+        _client_timeout_seconds,
+    )
+
+    monkeypatch.delenv("KARINAI_IMAGE_TASK_DEADLINE_SECONDS", raising=False)
+    monkeypatch.delenv("KARINAI_IMAGE_GATEWAY_TIMEOUT_SECONDS", raising=False)
+    assert _client_timeout_seconds() == _DEFAULT_TASK_DEADLINE_SECONDS == 600.0
+
+
+def test_client_timeout_rejects_invalid_and_nonpositive_values(monkeypatch):
+    from karinai.runtime.image_gateway_provider import _client_timeout_seconds
+
+    monkeypatch.setenv("KARINAI_IMAGE_TASK_DEADLINE_SECONDS", "not-a-number")
+    assert _client_timeout_seconds() == 600.0
+    monkeypatch.setenv("KARINAI_IMAGE_TASK_DEADLINE_SECONDS", "-5")
+    assert _client_timeout_seconds() == 600.0

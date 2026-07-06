@@ -94,15 +94,33 @@ def _configured_provider_hint() -> str:
     return _clean(os.environ.get("KARINAI_IMAGE_GATEWAY_PROVIDER"))
 
 
+# Overall client-side wait for one image task. Deliberately generous: image
+# models routinely take minutes, and a client timeout here discards a
+# generation the provider already billed for (the gateway keeps working after
+# the socket closes). Becomes a poll deadline once the gateway job model lands.
+_DEFAULT_TASK_DEADLINE_SECONDS = 600.0
+
+
 def _client_timeout_seconds() -> float:
-    raw = _clean(os.environ.get("KARINAI_IMAGE_GATEWAY_TIMEOUT_SECONDS"))
+    raw = _clean(os.environ.get("KARINAI_IMAGE_TASK_DEADLINE_SECONDS"))
     if not raw:
-        return 130.0
+        legacy = _clean(os.environ.get("KARINAI_IMAGE_GATEWAY_TIMEOUT_SECONDS"))
+        if legacy:
+            # Deprecated for the agent-side bound: the same name is the
+            # gateway-side provider timeout, and the two knobs drifting apart
+            # is exactly how successful generations got discarded.
+            logger.warning(
+                "KARINAI_IMAGE_GATEWAY_TIMEOUT_SECONDS is deprecated as the agent-side "
+                "wait bound; set KARINAI_IMAGE_TASK_DEADLINE_SECONDS instead"
+            )
+            raw = legacy
+    if not raw:
+        return _DEFAULT_TASK_DEADLINE_SECONDS
     try:
         value = float(raw)
     except ValueError:
-        return 130.0
-    return value if value > 0 else 130.0
+        return _DEFAULT_TASK_DEADLINE_SECONDS
+    return value if value > 0 else _DEFAULT_TASK_DEADLINE_SECONDS
 
 
 def _generation_endpoint(base_url: str) -> str:

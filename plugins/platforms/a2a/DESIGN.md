@@ -70,15 +70,24 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   bearer token), with SSRF-guarded callback URLs.
 
 ## v1.0 wire format notes
-- Task states / roles are SCREAMING_SNAKE_CASE (`TASK_STATE_*`, `ROLE_*`).
-- Parts are member-presence discriminated (`{"text", "mediaType"}` — no
-  `kind`); `extract_text` still accepts 0.3 (`kind`) and pre-0.3 (`type`)
-  parts from older peers.
-- SSE events are `StreamResponse` objects (`statusUpdate` / `artifactUpdate`
-  members); stream closure signals the terminal state — no `final` field.
-- `contextId` lives inside the Message (legacy top-level accepted inbound).
+- Task states / roles are SCREAMING_SNAKE_CASE (TASK_STATE_*, ROLE_*).
+- Parts are member-presence discriminated — no kind field. All three
+  Part types are supported: text (text + mediaType), file
+  (url|raw + filename + mediaType), and data (data + mediaType).
+  extract_text renders file/data Parts into the text stream (URL +
+  filename for files, JSON for data) so the agent sees them; it also
+  accepts v0.3 (kind) and pre-0.3 (type) shapes from older peers.
+  Outbound replies are still text-only — the agent produces text, and
+  file/data Parts are for inbound richness.
+- Push notification config: full CRUD — create (inline in message/send
+  via configuration.taskPushNotificationConfig, or via the create
+  method), get, list, delete. Each config has a configId and createdAt.
+  One config per task (v1.0 allows multiple; we keep one).
+- SSE events are StreamResponse objects (statusUpdate / artifactUpdate
+  members); stream closure signals the terminal state — no final field.
+- contextId lives inside the Message (legacy top-level accepted inbound).
 - Timestamps are ISO 8601 with millisecond precision; Tasks carry
-  `createdAt` / `lastModified`.
+  createdAt / lastModified.
 - Error codes: A2A-reserved codes are used only with their spec semantics
   (`-32001` TaskNotFound, `-32002` TaskNotCancelable); custom errors sit at
   `-32050..-32052` (unauthorized / rate-limited / untrusted).
@@ -136,10 +145,7 @@ them (#11025 requirement). The `a2a_history` tool recalls them by context id.
 ## Deliberately out of scope (future, not this pass)
 - **a2a-sdk / gRPC + HTTP+JSON bindings.** Only the JSONRPC binding is
   served; the card advertises exactly that.
-- **File / data Parts.** Inbound non-text parts are ignored (text extracted
-  from mixed messages); outbound is text-only.
-- **`tenant` field, extended Agent Card, `stateTransitionHistory`,**
-  push-config get/list/delete methods.
+- **`tenant` field, extended Agent Card, `stateTransitionHistory`.**
 - **True task abort:** `tasks/cancel` marks the task canceled and drops the
   reply, but cannot abort the live session's in-flight turn.
 - **DID / Ed25519 identity, OAuth2 scopes, x402 micropayments** (#14559

@@ -196,11 +196,45 @@ def text_part(text: str) -> dict:
     return {"text": text, "mediaType": "text/plain"}
 
 
+def file_part(url: str = "", raw: str = "", filename: str = "",
+              media_type: str = "application/octet-stream") -> dict:
+    """Build a v1.0 file Part.
+
+    Either ``url`` (file reference) or ``raw`` (base64-encoded bytes) must be
+    provided. Discrimination is by member presence — no ``kind`` field.
+    """
+    part: dict[str, Any] = {"mediaType": media_type}
+    if filename:
+        part["filename"] = filename
+    if url:
+        part["url"] = url
+    elif raw:
+        part["raw"] = raw
+    return part
+
+
+def data_part(data: Any, media_type: str = "application/json") -> dict:
+    """Build a v1.0 data Part (structured data, no ``kind`` field)."""
+    return {"data": data, "mediaType": media_type}
+
+
 def text_message(role: str, text: str, context_id: str = "") -> dict:
     """Build an A2A v1.0 Message with a single text Part."""
     msg: dict[str, Any] = {
         "role": role,  # ROLE_USER | ROLE_AGENT
         "parts": [text_part(text)],
+        "messageId": uuid.uuid4().hex,
+    }
+    if context_id:
+        msg["contextId"] = context_id
+    return msg
+
+
+def message_with_parts(role: str, parts: list[dict], context_id: str = "") -> dict:
+    """Build an A2A v1.0 Message with arbitrary Parts (text, file, data)."""
+    msg: dict[str, Any] = {
+        "role": role,
+        "parts": parts,
         "messageId": uuid.uuid4().hex,
     }
     if context_id:
@@ -214,6 +248,11 @@ def extract_text(message_or_params: dict) -> str:
     v1.0 Parts carry a ``text`` member directly; v0.3 used ``kind: "text"``
     and some pre-0.3 peers used ``type``. All three shapes put the payload in
     ``part["text"]``, so presence of a string ``text`` member is the test.
+
+    File and data Parts are rendered into the text stream so the agent sees
+    them: file Parts with a URL include the URL and filename; data Parts
+    include their JSON-serialised content. Raw (base64) file Parts are noted
+    but not decoded (the agent can't act on binary inline).
     """
     msg = message_or_params.get("message", message_or_params)
     parts = msg.get("parts", []) if isinstance(msg, dict) else []
@@ -221,9 +260,58 @@ def extract_text(message_or_params: dict) -> str:
     for part in parts:
         if not isinstance(part, dict):
             continue
+        # v1.0 text part (member-presence discrimination)
         txt = part.get("text")
         if isinstance(txt, str):
             chunks.append(txt)
+            continue
+        # v0.3 compatibility: kind == "text"
+        if part.get("kind") == "text" and isinstance(part.get("text"), str):
+            chunks.append(part["text"])
+            continue
+        # v1.0 file part with URL
+        url = part.get("url")
+        if isinstance(url, str) and url:
+            fname = part.get("filename") or part.get("name") or ""
+            mtype = part.get("mediaType") or part.get("mimeType") or ""
+            label = f"[file: {fname}]" if fname else "[file]"
+            chunks.append(f"{label} {url}" + (f" ({mtype})" if mtype else ""))
+            continue
+        # v0.3 file part with nested file.fileWithUri
+        v03_file = part.get("file")
+        if isinstance(v03_file, dict) and isinstance(v03_file.get("fileWithUri"), str):
+            uri = v03_file["fileWithUri"]
+            fname = v03_file.get("name") or ""
+            mtype = v03_file.get("mimeType") or ""
+            label = f"[file: {fname}]" if fname else "[file]"
+            chunks.append(f"{label} {uri}" + (f" ({mtype})" if mtype else ""))
+            continue
+        # v1.0 file part with raw bytes (base64) — note but don't decode
+        if isinstance(part.get("raw"), str):
+            fname = part.get("filename") or ""
+            mtype = part.get("mediaType") or ""
+            label = f"[file: {fname}]" if fname else "[file]"
+            size_note = f"{len(part['raw'])} bytes base64-encoded"
+            chunks.append(f"{label} {size_note}" + (f" ({mtype})" if mtype else ""))
+            continue
+        # v1.0 data part — include JSON content
+        data = part.get("data")
+        if data is not None:
+            try:
+                rendered = json.dumps(data, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                rendered = str(data)
+            mtype = part.get("mediaType") or "application/json"
+            chunks.append(f"[data ({mtype})]\n{rendered}")
+            continue
+        # v0.3 data part: kind == "data"
+        if part.get("kind") == "data" and part.get("data") is not None:
+            try:
+                rendered = json.dumps(part["data"], ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                rendered = str(part["data"])
+            chunks.append(f"[data]\n{rendered}")
+            continue
     return "\n".join(chunks).strip()
 
 
@@ -472,12 +560,53 @@ class TaskStore:
                 return None
             rec["push_url"] = url
             rec["push_config_id"] = "cfg-" + uuid.uuid4().hex[:12]
-            return {
-                "configId": rec["push_config_id"],
-                "taskId": task_id,
-                "createdAt": now_iso(),
-                "pushNotificationConfig": {"url": url},
-            }
+            return self._push_config_view(rec)
+
+    @staticmethod
+    def _push_config_view(rec: dict) -> dict:
+        """Build the JSON-RPC result for a push notification config."""
+        return {
+            "configId": rec.get("push_config_id") or "",
+            "taskId": rec["task_id"],
+            "createdAt": rec.get("created_iso", ""),
+            "pushNotificationConfig": {"url": rec.get("push_url") or ""},
+        }
+
+    def get_push_config(self, task_id: str, config_id: str = "") -> Optional[dict]:
+        """Retrieve a push notification config by task (and optional config id).
+
+        Returns the matching config or None if the task doesn't exist.
+        If ``config_id`` is provided and doesn't match, returns None.
+        """
+        with self._lock:
+            rec = self._tasks.get(task_id)
+            if not rec or not rec.get("push_url"):
+                return None
+            if config_id and rec.get("push_config_id") != config_id:
+                return None
+            return self._push_config_view(rec)
+
+    def list_push_configs(self, task_id: str) -> list[dict]:
+        """List all push notification configs for a task (currently max 1
+        per task — v1.0 allows multiple but we keep one)."""
+        with self._lock:
+            rec = self._tasks.get(task_id)
+            if not rec or not rec.get("push_url"):
+                return []
+            return [self._push_config_view(rec)]
+
+    def delete_push_config(self, task_id: str, config_id: str = "") -> bool:
+        """Remove a push notification config. Returns True if deleted, False
+        if the task or config doesn't exist."""
+        with self._lock:
+            rec = self._tasks.get(task_id)
+            if not rec or not rec.get("push_url"):
+                return False
+            if config_id and rec.get("push_config_id") != config_id:
+                return False
+            rec["push_url"] = ""
+            rec["push_config_id"] = ""
+            return True
 
     def pop_push_url(self, task_id: str) -> str:
         with self._lock:

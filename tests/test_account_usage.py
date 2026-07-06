@@ -1,6 +1,8 @@
+import json
 from datetime import datetime, timezone
 
 from agent.account_usage import (
+    _ACCOUNT_USAGE_JSON_BODY_LIMIT_BYTES,
     AccountUsageSnapshot,
     AccountUsageWindow,
     fetch_account_usage,
@@ -9,21 +11,46 @@ from agent.account_usage import (
 
 
 class _Response:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, raw_body=None, chunk_size=None):
         self._payload = payload
         self.status_code = status_code
+        self._raw_body = raw_body
+        self._chunk_size = chunk_size
+        self.encoding = "utf-8"
+        self.closed = False
+        self.json_called = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
     def raise_for_status(self):
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
 
+    def iter_bytes(self):
+        body = self._raw_body
+        if body is None:
+            body = json.dumps(self._payload).encode("utf-8")
+        chunk_size = self._chunk_size or len(body) or 1
+        for start in range(0, len(body), chunk_size):
+            yield body[start : start + chunk_size]
+
     def json(self):
+        self.json_called = True
         return self._payload
+
+    def close(self):
+        self.closed = True
 
 
 class _Client:
-    def __init__(self, payload):
+    def __init__(self, payload, response=None):
         self._payload = payload
+        self._response = response
+        self.responses = []
 
     def __enter__(self):
         return self
@@ -32,7 +59,13 @@ class _Client:
         return False
 
     def get(self, url, headers=None):
-        return _Response(self._payload)
+        response = self._response or _Response(self._payload)
+        self.responses.append(response)
+        return response
+
+    def stream(self, method, url, headers=None):
+        assert method == "GET"
+        return self.get(url, headers=headers)
 
 
 class _RoutingClient:
@@ -47,6 +80,10 @@ class _RoutingClient:
 
     def get(self, url, headers=None):
         return _Response(self._payloads[url])
+
+    def stream(self, method, url, headers=None):
+        assert method == "GET"
+        return self.get(url, headers=headers)
 
 
 def test_fetch_account_usage_codex(monkeypatch):
@@ -93,6 +130,37 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_limits_streamed_usage_body(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    body = b'{"rate_limit":"' + b"A" * (_ACCOUNT_USAGE_JSON_BODY_LIMIT_BYTES + 1) + b'"}'
+    response = _Response(
+        {},
+        raw_body=body,
+        chunk_size=_ACCOUNT_USAGE_JSON_BODY_LIMIT_BYTES + 1,
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client({}, response=response),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is None
+    assert response.closed is True
+    assert response.json_called is False
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

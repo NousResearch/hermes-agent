@@ -104,6 +104,11 @@ _PHOTON_RETRYABLE_PATTERNS = (
     "upstream_unavailable",
 )
 
+# Apple inserts U+FFFC OBJECT REPLACEMENT CHARACTER into iMessage text where an
+# attachment lives. Photon forwards the real attachment metadata separately, so
+# the placeholder must not leak into the text sent to the assistant/user.
+_IMESSAGE_OBJECT_REPLACEMENT = "\uFFFC"
+
 # Minimum seconds between typing-indicator calls for the same chat.
 # iMessage is a personal channel — suppressing rapid repeats reduces
 # upstream gRPC pressure during Photon overflow events.
@@ -259,6 +264,20 @@ def _markdown_enabled() -> bool:
     return os.getenv("PHOTON_MARKDOWN", "true").strip().lower() not in {
         "false", "0", "no",
     }
+
+
+def _clean_imessage_body_text(text: str) -> str:
+    """Remove Apple's attachment placeholder from iMessage body text."""
+    if not text or _IMESSAGE_OBJECT_REPLACEMENT not in text:
+        return text
+    cleaned = text.replace(_IMESSAGE_OBJECT_REPLACEMENT, "")
+    # Removing an inline object often leaves doubled spaces or spaces dangling
+    # around line breaks. Keep this conservative and only normalize text that
+    # actually contained the placeholder.
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n[ \t]+", "\n", cleaned)
+    return cleaned.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +746,7 @@ class PhotonAdapter(BasePlatformAdapter):
             # reply_to_text comes from the sidecar (hydrated reaction target);
             # it's None for attachment/voice-only targets, and the gateway only
             # injects the pointer when both id and text are present.
+            reply_to_text = _clean_imessage_body_text(content.get("targetText") or "")
             await self.handle_message(
                 MessageEvent(
                     text=f"reaction:added:{emoji}",
@@ -734,7 +754,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     source=source,
                     message_id=event.get("messageId"),
                     reply_to_message_id=target_id,
-                    reply_to_text=content.get("targetText") or None,
+                    reply_to_text=reply_to_text or None,
                     reply_to_is_own_message=True,
                     raw_message=event,
                     timestamp=timestamp,
@@ -747,7 +767,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # mention gate: a reaction to a non-wake-word group message is valid.
         self._record_last_inbound(space_id, event.get("messageId"))
         if ctype == "text":
-            text = content.get("text") or ""
+            text = _clean_imessage_body_text(content.get("text") or "")
             mtype = MessageType.TEXT
         elif ctype in {"attachment", "voice"}:
             text, mtype, media_urls, media_types = _normalize_binary_payload(content)
@@ -762,7 +782,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     continue
                 item_type = item_content.get("type")
                 if item_type == "text":
-                    item_text = item_content.get("text") or ""
+                    item_text = _clean_imessage_body_text(item_content.get("text") or "")
                     if item_text:
                         text_parts.append(item_text)
                     continue

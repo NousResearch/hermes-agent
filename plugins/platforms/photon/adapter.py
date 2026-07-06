@@ -960,6 +960,9 @@ class PhotonAdapter(BasePlatformAdapter):
         # gateway death of ANY kind — including SIGKILL, where disconnect()
         # never runs — can't leave it orphaned on the port.
         env["PHOTON_SIDECAR_WATCH_STDIN"] = "1"
+        # Temporary opt-in safe shape logging for Photon reply-context debugging.
+        # The sidecar redacts all string values to lengths and logs only once.
+        env.setdefault("PHOTON_DEBUG_INBOUND_SHAPE", "1")
 
         try:
             patch = subprocess.run(  # noqa: S603

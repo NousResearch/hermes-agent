@@ -444,6 +444,37 @@ function parentMessageFor(message) {
   return knownMessages.get(parentId) || null;
 }
 
+let debugShapeLogged = false;
+function debugInboundShape(message) {
+  if (debugShapeLogged || process.env.PHOTON_DEBUG_INBOUND_SHAPE !== "1") return;
+  debugShapeLogged = true;
+  const seen = new WeakSet();
+  const scrub = (value, depth = 0) => {
+    if (value === null || value === undefined) return value;
+    if (typeof value === "string") return value.length > 0 ? `[string:${value.length}]` : "";
+    if (typeof value === "number" || typeof value === "boolean") return value;
+    if (typeof value === "function") return `[function:${value.name || "anonymous"}]`;
+    if (typeof value !== "object") return `[${typeof value}]`;
+    if (seen.has(value)) return "[circular]";
+    if (depth >= 3) return Array.isArray(value) ? `[array:${value.length}]` : `[object:${Object.keys(value).join(",")}]`;
+    seen.add(value);
+    if (Array.isArray(value)) return value.slice(0, 5).map((item) => scrub(item, depth + 1));
+    const out = {};
+    for (const key of Object.keys(value).sort()) {
+      out[key] = scrub(value[key], depth + 1);
+    }
+    return out;
+  };
+  try {
+    console.error(
+      "photon-sidecar: debug inbound message shape " +
+        JSON.stringify(scrub(message), null, 2)
+    );
+  } catch (e) {
+    console.error("photon-sidecar: failed to log inbound shape: " + String(e));
+  }
+}
+
 async function normalizeContent(content) {
   if (!content || typeof content !== "object") {
     return { type: "unknown" };
@@ -559,6 +590,7 @@ function inboundStreamErrorMessage(e) {
         }
         rememberInboundSpace(space, message);
         rememberKnownMessage(message);
+        debugInboundShape(message);
         const event = await normalizeEvent(space, message);
         if (!event) continue;
         await deliver(JSON.stringify(event));

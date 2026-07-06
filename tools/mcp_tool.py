@@ -4733,11 +4733,28 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     result: Dict[str, List[tuple]] = {}
     probed_servers: List[MCPServerTask] = []
 
+    # Sanitize each server's connect_timeout to a finite, positive float ONCE.
+    # YAML admits ``.nan``/``.inf``, which ``float()`` accepts silently — an
+    # earlier ``except (TypeError, ValueError)`` guard does not reject them.
+    # A non-finite value would poison both the inner ``wait_for`` (a ``nan``
+    # deadline never elapses) and ``max(connect_timeouts)`` below (making the
+    # outer probe bound non-finite, so it never times out). Fall back to the
+    # default whenever the configured value isn't a usable finite positive.
+    connect_timeouts: Dict[str, float] = {}
+    for name, cfg in enabled.items():
+        try:
+            ct = float(cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT))
+        except (TypeError, ValueError):
+            ct = float(_DEFAULT_CONNECT_TIMEOUT)
+        if not math.isfinite(ct) or ct <= 0:
+            ct = float(_DEFAULT_CONNECT_TIMEOUT)
+        connect_timeouts[name] = ct
+
     async def _probe_all():
         names = list(enabled.keys())
         coros = []
         for name, cfg in enabled.items():
-            ct = cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+            ct = connect_timeouts[name]
             coros.append(asyncio.wait_for(_connect_server(name, cfg), timeout=ct))
 
         outcomes = await asyncio.gather(*coros, return_exceptions=True)
@@ -4763,15 +4780,10 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     # budget, or a server with connect_timeout > 120 is cancelled by the outer
     # cap before its inner wait_for elapses and is silently dropped from the
     # result. Mirror _probe_single_server's `connect_timeout + 10`, keeping 120s
-    # as a floor for the common many-small-servers case. Coerce defensively so a
-    # non-numeric connect_timeout can't crash the outer bound.
-    connect_timeouts = []
-    for cfg in enabled.values():
-        try:
-            connect_timeouts.append(float(cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)))
-        except (TypeError, ValueError):
-            connect_timeouts.append(float(_DEFAULT_CONNECT_TIMEOUT))
-    outer_timeout = max(120.0, max(connect_timeouts) + 10.0)
+    # as a floor for the common many-small-servers case. Reuse the sanitized
+    # per-server values so a non-finite/non-numeric connect_timeout can't make
+    # the outer bound non-finite (which would defeat the timeout entirely).
+    outer_timeout = max(120.0, max(connect_timeouts.values()) + 10.0)
 
     try:
         _run_on_mcp_loop(_probe_all, timeout=outer_timeout)

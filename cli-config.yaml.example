@@ -1080,6 +1080,19 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # Show the full tool call payload without ellipsis truncation (#58408).
+  # When enabled, tool call preview lines (paths, commands, URLs, queries, …)
+  # render the entire argument instead of being capped to tool_preview_length.
+  # Useful for gateways/channels where you want to see every character the
+  # model emitted — at the cost of longer chat messages. Off by default to
+  # preserve the historical compact-truncation behavior. The flag overrides
+  # tool_preview_length at lookup time; flipping tool_preview_length to 0 has
+  # the same effect but show_full_tool_call is the explicit knob.
+  #   true:  Render full un-truncated tool call payload
+  #   false: Honor tool_preview_length (or unlimited when 0) — default
+  # Toggle at runtime with /showfull in the CLI.
+  show_full_tool_call: false
+
   # Per-platform defaults can be quieter than the global setting. Telegram
   # tunes for mobile: tool_progress and busy_ack_detail default off (no
   # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy

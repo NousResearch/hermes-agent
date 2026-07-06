@@ -16452,6 +16452,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+        # Apply show_full_tool_call config (default False). When True, the
+        # effective preview length is forced to unlimited so tool calls render
+        # without ellipsis truncation. Issue #58408.
+        try:
+            from agent.display import set_show_full_tool_call
+            _sftc = resolve_display_setting(user_config, platform_key, "show_full_tool_call", False)
+            set_show_full_tool_call(bool(_sftc))
+        except Exception:
+            pass
+
         # Apply friendly tool labels config (default on) — per-platform aware
         try:
             from agent.display import set_friendly_tool_labels
@@ -16742,12 +16752,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 last_was_terminal_block[0] = False
                 if args:
-                    from agent.display import get_tool_preview_max_len
-                    _pl = get_tool_preview_max_len()
+                    # Use effective preview length — honors
+                    # display.show_full_tool_call (forces unlimited) before
+                    # falling back to display.tool_preview_length. Issue #58408.
+                    from agent.display import _effective_preview_max_len
+                    _pl = _effective_preview_max_len()
                     args_str = json.dumps(args, ensure_ascii=False, default=str)
-                    # When tool_preview_length is 0 (default), don't truncate
-                    # in verbose mode — the user explicitly asked for full
-                    # detail.  Platform message-length limits handle the rest.
+                    # When the effective limit is 0 (default, or forced by
+                    # show_full_tool_call=true), don't truncate in verbose
+                    # mode — the user explicitly asked for full detail.
+                    # Platform message-length limits handle the rest.
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
                     msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"

@@ -116,6 +116,43 @@ def get_tool_preview_max_len() -> int:
 
 
 # =========================================================================
+# show_full_tool_call: when True, bypass ellipsis truncation entirely and
+# render the full tool call payload. Wired from display.show_full_tool_call
+# config (default False). Overrides tool_preview_length at lookup time.
+# Issue #58408 — opt-in toggle for un-truncated tool call rendering.
+# =========================================================================
+_show_full_tool_call: bool = False
+
+
+def set_show_full_tool_call(enabled: bool) -> None:
+    """Toggle full (un-truncated) tool call payload rendering.
+
+    When ``True`` the preview-length limit is bypassed for tool call rendering
+    — see :func:`_effective_preview_max_len`. Default is ``False`` which
+    preserves the historical ellipsis-truncated behavior.
+    """
+    global _show_full_tool_call
+    _show_full_tool_call = bool(enabled)
+
+
+def get_show_full_tool_call() -> bool:
+    """Return whether full (un-truncated) tool call rendering is enabled."""
+    return _show_full_tool_call
+
+
+def _effective_preview_max_len() -> int:
+    """Return the max preview length actually in effect.
+
+    When ``show_full_tool_call`` is enabled, force ``0`` (unlimited) so every
+    truncation site that consults this value renders the full payload instead
+    of the ellipsis-truncated form.
+    """
+    if _show_full_tool_call:
+        return 0
+    return _tool_preview_max_len
+
+
+# =========================================================================
 # Skin-aware helpers (lazy import to avoid circular deps)
 # =========================================================================
 
@@ -413,10 +450,12 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     """Build a short preview of a tool call's primary argument for display.
 
     *max_len* controls truncation.  ``None`` (default) defers to the global
-    ``_tool_preview_max_len`` set via config; ``0`` means unlimited.
+    effective preview length — which honors ``display.show_full_tool_call``
+    (forces unlimited) before falling back to ``display.tool_preview_length``.
+    ``0`` means unlimited.
     """
     if max_len is None:
-        max_len = _tool_preview_max_len
+        max_len = _effective_preview_max_len()
     if not args:
         return None
     args = redact_tool_args_for_display(tool_name, args) or args
@@ -1266,16 +1305,16 @@ def get_cute_tool_message(
 
     def _trunc(s, n=40):
         s = str(s)
-        if _tool_preview_max_len == 0:
+        limit = _effective_preview_max_len()
+        if limit == 0:
             return s  # no limit
-        limit = _tool_preview_max_len
         return (s[:limit-3] + "...") if len(s) > limit else s
 
     def _path(p, n=35):
         p = str(p)
-        if _tool_preview_max_len == 0:
+        limit = _effective_preview_max_len()
+        if limit == 0:
             return p  # no limit
-        limit = _tool_preview_max_len
         return ("..." + p[-(limit-3):]) if len(p) > limit else p
 
     def _wrap(line: str) -> str:

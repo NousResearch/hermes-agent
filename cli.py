@@ -755,6 +755,17 @@ try:
 except Exception:
     pass
 
+# Initialize show_full_tool_call toggle from config (default False — preserves
+# historical ellipsis-truncated behavior). When True, forces the effective tool
+# preview length to 0 (unlimited) so the full payload renders without ellipsis.
+# Issue #58408.
+try:
+    from agent.display import set_show_full_tool_call
+    _sftc = CLI_CONFIG.get("display", {}).get("show_full_tool_call", False)
+    set_show_full_tool_call(bool(_sftc))
+except Exception:
+    pass
+
 # Initialize friendly tool labels from config (default on)
 try:
     from agent.display import set_friendly_tool_labels

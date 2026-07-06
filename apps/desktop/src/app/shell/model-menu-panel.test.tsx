@@ -61,8 +61,8 @@ describe('ModelMenuPanel MoA presets', () => {
     fireEvent.click(row)
 
     // #54670: must route through the persistent model-switch path
-    // (config.set model="<preset> --provider moa"), i.e. onSelectModel with
-    // provider 'moa', NOT a one-shot command.dispatch that reverts after a turn.
+    // i.e. onSelectModel with provider 'moa' (which session-scopes live-session
+    // switches), NOT a one-shot command.dispatch that reverts after a turn.
     expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa' })
   })
 

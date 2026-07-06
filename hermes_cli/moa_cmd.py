@@ -111,7 +111,9 @@ def cmd_moa(args) -> None:
         idx = 0
         while True:
             base = existing[idx] if idx < len(existing) else None
-            refs.append(_pick_slot(base))
+            picked = _pick_slot(base)
+            picked["enabled"] = bool((base or {}).get("enabled", True))
+            refs.append(picked)
             idx += 1
             choice = _prompt_choice("Add another reference model?", ["Add another", "Done"], 1)
             if choice == 1:

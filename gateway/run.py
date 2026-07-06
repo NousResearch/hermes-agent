@@ -13242,23 +13242,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Skip rename when the topic is operator-declared via
         # extra.dm_topics. Those topics have fixed names chosen by the
         # operator (plus optional skill binding); auto-renaming would
-        # silently mutate operator config.
-        #
-        # Check the class, not the instance — getattr() on MagicMock
-        # auto-creates attributes, so `hasattr(adapter, "_get_dm_topic_info")`
-        # would return True for every test double.
+        # silently mutate operator config. Do not treat runtime-discovered
+        # topic-name cache entries as operator-declared though: brand-new DM
+        # topics can arrive as "New Thread" and must still be auto-renamed.
         adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
         if adapter is not None:
-            get_info = getattr(type(adapter), "_get_dm_topic_info", None)
-            if callable(get_info):
+            configured_topics = getattr(adapter, "_dm_topics_config", None)
+            if isinstance(configured_topics, list):
                 try:
-                    operator_topic = get_info(adapter, str(source.chat_id), str(source.thread_id))
+                    for chat_entry in configured_topics:
+                        if not isinstance(chat_entry, dict):
+                            continue
+                        if str(chat_entry.get("chat_id")) != str(source.chat_id):
+                            continue
+                        for topic in chat_entry.get("topics", []) or []:
+                            if (
+                                isinstance(topic, dict)
+                                and str(topic.get("thread_id") or "") == str(source.thread_id)
+                            ):
+                                return
                 except Exception:
-                    operator_topic = None
-                # Only treat dict-shaped returns as operator-declared; a
-                # bare MagicMock or other sentinel shouldn't count.
-                if isinstance(operator_topic, dict):
-                    return
+                    logger.debug("Failed to inspect configured Telegram DM topics", exc_info=True)
+            else:
+                # Compatibility fallback for adapter test doubles or older
+                # adapters that expose only _get_dm_topic_info.
+                get_info = getattr(type(adapter), "_get_dm_topic_info", None)
+                if callable(get_info):
+                    try:
+                        operator_topic = get_info(adapter, str(source.chat_id), str(source.thread_id))
+                    except Exception:
+                        operator_topic = None
+                    if isinstance(operator_topic, dict):
+                        return
 
         session_db = getattr(self, "_session_db", None)
         if session_db is not None:

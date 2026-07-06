@@ -2493,6 +2493,7 @@ def get_python_path() -> str:
 def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     """Return user-local bin dirs that exist and aren't already in *path_entries*."""
     candidates = [
+        str(home / "bin"),  # user-local bins (e.g. 1Password op CLI)
         str(home / ".local" / "bin"),  # uv, uvx, pip-installed CLIs
         str(home / ".cargo" / "bin"),  # Rust/cargo tools
         str(home / "go" / "bin"),  # Go tools

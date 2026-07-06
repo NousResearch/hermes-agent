@@ -252,6 +252,47 @@ def test_join_waits_until_all_branch_upstreams_succeed():
     assert done.context["node"]["done"]["output"] == {"ready": "r", "blocked": "b"}
 
 
+def test_join_waits_for_parallel_branch_path_paused_before_terminal_node():
+    spec = WorkflowSpec.model_validate({
+        "id": "demo", "name": "Demo", "version": 1,
+        "nodes": {
+            "fork": {"type": "parallel"},
+            "ready": {"type": "pass", "output": {"summary": "ready"}},
+            "pause": {"type": "wait"},
+            "blocked_done": {"type": "pass", "output": {"summary": "blocked"}},
+            "merge": {"type": "join"},
+            "done": {"type": "pass", "output": {
+                "ready": "${ node.merge.output.branches.ready.summary }",
+                "blocked": "${ node.merge.output.branches.blocked.summary }",
+            }},
+        },
+        "edges": [
+            {"from": "fork.ready", "to": "ready"},
+            {"from": "fork.blocked", "to": "pause"},
+            {"from": "pause", "to": "blocked_done"},
+            {"from": "ready", "to": "merge"},
+            {"from": "blocked_done", "to": "merge"},
+            {"from": "merge", "to": "done"},
+        ],
+    })
+
+    waiting = run_in_memory_until_waiting(spec, input_data={})
+
+    assert waiting.status == "waiting"
+    assert waiting.waiting_nodes == ["pause"]
+    assert "merge" not in waiting.context["node"]
+    assert "done" not in waiting.context["node"]
+
+    done = run_in_memory_until_waiting(spec, input_data={}, completed_wait_nodes={"pause"})
+
+    assert done.status == "succeeded"
+    assert done.context["node"]["merge"]["output"]["branches"] == {
+        "ready": {"summary": "ready"},
+        "blocked": {"summary": "blocked"},
+    }
+    assert done.context["node"]["done"]["output"] == {"ready": "ready", "blocked": "blocked"}
+
+
 def test_parallel_branch_failure_without_catch_fails_execution():
     spec = WorkflowSpec.model_validate({
         "id": "demo", "name": "Demo", "version": 1,

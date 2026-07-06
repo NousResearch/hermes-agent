@@ -66,6 +66,47 @@ def _flip_console_code_page_to_utf8() -> None:
         pass
 
 
+def _enable_virtual_terminal_processing() -> None:
+    """Enable VT (ANSI escape sequence) processing on the console.
+
+    On Windows 10+ (10.0.10586+) the console supports ANSI escape
+    sequences, but the mode must be explicitly enabled via
+    ``SetConsoleMode`` with ``ENABLE_VIRTUAL_TERMINAL_PROCESSING`` (0x0004).
+
+    Without this, escape codes like ``\\033[35m`` are printed as literal
+    text instead of being interpreted as colors.  This breaks ``hermes
+    setup`` and ``hermes model`` wizards which use ANSI colors and
+    box-drawing characters.
+
+    Failure is silent — older Windows versions don't support this flag,
+    and there may be no console attached.
+    """
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        STD_OUTPUT_HANDLE = -11  # STD_OUTPUT_HANDLE
+
+        # Get the current console handle
+        handle = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        if handle is None or handle == -1:
+            return
+
+        # Get current console mode
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return
+
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        # Enable VT processing (OR it in, don't overwrite other flags)
+        new_mode = mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        kernel32.SetConsoleMode(handle, new_mode)
+    except Exception:
+        # ctypes import, missing kernel32, or non-Windows — any failure here
+        # is non-fatal.
+        pass
+
+
 def _reconfigure_stream(stream, *, encoding: str = "utf-8", errors: str = "replace") -> None:
     """Reconfigure a text stream to UTF-8 in place.
 
@@ -141,6 +182,12 @@ def configure_windows_stdio() -> bool:
     # Flip the console code page first so that any subprocess that
     # inherits the console (e.g. a launched shell) also sees CP_UTF8.
     _flip_console_code_page_to_utf8()
+
+    # Enable VT (ANSI escape sequence) processing so that color codes
+    # and box-drawing characters render correctly instead of appearing
+    # as raw escape sequences (e.g. ``[35m``).  This must come after
+    # the code-page flip so the console handle is valid.
+    _enable_virtual_terminal_processing()
 
     # Reconfigure Python's own stdio wrappers so ``print()`` calls from
     # this process round-trip emoji / box-drawing / non-Latin text.

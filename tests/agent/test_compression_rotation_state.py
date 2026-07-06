@@ -130,3 +130,29 @@ class TestPlatformForwardedAtBoundary:
         kwargs = calls[-1].kwargs
         assert kwargs.get("platform") == "telegram"
         assert kwargs.get("boundary_reason") == "compression"
+
+
+class TestGatewayMetadataFollowsRotation:
+    def test_gateway_origin_metadata_is_copied_to_compression_child(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_GATEWAY_META_ROT"
+        origin = {
+            "source": "telegram",
+            "user_id": "user-123",
+            "session_key": "agent:main:telegram:dm:chat-456",
+            "chat_id": "chat-456",
+            "chat_type": "dm",
+            "thread_id": "topic-789",
+        }
+        db.create_session(parent, **origin)
+        agent = _build_agent_with_db(db, parent, platform="telegram")
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+
+        child = agent.session_id
+        assert child != parent
+        child_row = db.get_session(child)
+        assert child_row is not None
+        assert child_row["parent_session_id"] == parent
+        for key, value in origin.items():
+            assert child_row[key] == value

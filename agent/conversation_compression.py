@@ -741,6 +741,11 @@ def compress_context(
                         agent._flush_messages_to_session_db(messages)
                     except Exception:
                         pass  # best-effort — don't block compression on a flush error
+                    parent_session_row = {}
+                    try:
+                        parent_session_row = agent._session_db.get_session(agent.session_id) or {}
+                    except Exception:
+                        parent_session_row = {}
                     # Propagate title to the new session with auto-numbering
                     old_title = agent._session_db.get_session_title(agent.session_id)
                     agent._session_db.end_session(agent.session_id, "compression")
@@ -771,12 +776,28 @@ def compress_context(
                         pass
                     agent._session_db_created = False
                     try:
+                        child_session_kwargs = {
+                            key: parent_session_row.get(key)
+                            for key in (
+                                "user_id",
+                                "session_key",
+                                "chat_id",
+                                "chat_type",
+                                "thread_id",
+                            )
+                            if parent_session_row.get(key) is not None
+                        }
                         agent._session_db.create_session(
                             session_id=agent.session_id,
-                            source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                            source=(
+                                agent.platform
+                                or parent_session_row.get("source")
+                                or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+                            ),
                             model=agent.model,
                             model_config=agent._session_init_model_config,
                             parent_session_id=old_session_id,
+                            **child_session_kwargs,
                         )
                     except Exception as _cs_err:
                         # The child row could not be created (e.g. FK constraint,

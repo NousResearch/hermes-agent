@@ -149,11 +149,33 @@ Behavior:
 
 ## Upstream sync checklist
 
-1. Confirm the tree is clean or commit/stash local KarinAI work first.
-2. `git fetch upstream main`
-3. Review upstream changes before merging into the KarinAI branch.
-4. Prefer `git merge --no-edit upstream/main` on the public product branch so sync points stay explicit.
-5. Resolve conflicts in the smallest possible patches.
-6. Run targeted tests around API server `/v1/runs`, Docker/runtime startup, tool policy, cron/scheduler behavior, prompt rendering, and any touched files.
-7. Run KarinAI product tests under `tests/karinai/` once they exist.
-8. Update this file only if KarinAI patches change.
+Automated by `karinai/scripts/sync_upstream.sh` (first validated on the
+v2026.7.1 sync, PR #15). Policy decisions baked into it:
+
+- **Sync to upstream release tags** (`vYYYY.M.D`, cut roughly biweekly), not the
+  tip of `upstream/main` — reproducible target, matches upstream's own release
+  gate, and names the PR (`sync: upstream v2026.7.1`).
+- **Merge, not rebase** — `main` is published and PR-reviewed; explicit merge
+  commits keep sync points auditable. Never squash-merge a sync PR: squashing
+  flattens the upstream commits into one patch and destroys the shared history
+  the NEXT sync's merge-base depends on.
+- **Cadence: every upstream tag.** Conflict cost grows faster than linearly
+  with the gap; a 2-week/1,949-commit gap cost 3 conflicted files + one
+  renamed-API adaptation, thanks to the `karinai/`-isolation patch policy above.
+
+Cycle:
+
+1. `karinai/scripts/sync_upstream.sh start [<tag>]` — fetches upstream tags,
+   creates worktree + `sync/upstream-<tag>` branch off `origin/main`, merges.
+2. Resolve conflicts using this file as the map of intentional divergence: a
+   conflict hunk that isn't part of a documented KarinAI patch → upstream wins.
+   Commit the merge.
+3. `karinai/scripts/sync_upstream.sh gates` — `tests/karinai/`, branding audit,
+   patched-area tests per-file (CI-style isolation), import smoke.
+4. Push, open the PR, let CI run. **Merging is user-gated** (merge commit, not
+   squash). If `main` moves while the PR is open, merge `origin/main` back into
+   the sync branch (GitHub can't build a merge ref for a conflicted PR, so CI
+   silently won't start until you do).
+5. After merge: stage deploy + Tier-2 smoke journeys before calling the sync
+   landed.
+6. Update this file only if KarinAI patches changed shape during resolution.

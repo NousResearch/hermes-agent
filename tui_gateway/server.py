@@ -2690,6 +2690,11 @@ def _apply_model_switch(
         if persist_override is not None
         else resolve_persist_behavior(is_global_flag, is_session)
     )
+    if (explicit_provider or "").strip().lower() == "moa" and not is_global_flag:
+        # MoA is manual-interactive only. A plain explicit MoA switch stays
+        # session-scoped unless the caller explicitly asked for `--global` — in
+        # which case switch_model() rejects it with a clear error.
+        persist_global = False
     if not model_input:
         raise ValueError("model value required")
 

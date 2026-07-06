@@ -2,6 +2,15 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "ds-preview",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd 'design-system-standard-v2/preview' && exec python3 -m http.server 8931 --bind 127.0.0.1"
+      ],
+      "port": 8931
+    },
+    {
       "name": "knowledge-graph-3d",
       "runtimeExecutable": "bash",
       "runtimeArgs": [

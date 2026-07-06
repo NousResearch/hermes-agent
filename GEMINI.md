@@ -43,7 +43,7 @@ Read before substantial work:
 
 On VPS, replace the local Obsidian root with `/home/linux-nat/ObsidianVault/HermesAgent`.
 
-Use repo-local `.hermes/context.md`, `.hermes/active.md`, and `.hermes/decisions.md` when available.
+Use repo-local `.project/OverviewProgress.md`, `.project/plan.md`, and `.project/decisions.md` first (Memory Schema v1.2 — continuation memory lives in `.project/` only; legacy `.hermes/` memory files are pointer stubs). `.hermes/context.md` remains machine context.
 
 Do not duplicate long Obsidian knowledge here. This file points Gemini to the right context.
 

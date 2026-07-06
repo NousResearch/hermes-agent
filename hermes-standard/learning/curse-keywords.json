@@ -1,6 +1,69 @@
 {
-  "_note": "เพิ่มคำด่าเองได้ที่นี่ไฟล์เดียว (req-36) · ตัวจับอ่านไฟล์นี้",
-  "keywords": ["fuck", "fuk", "fck", "stfu", "wtf", "fuck off", "เหี้ย", "มึง", "สัส", "แม่ง", "ควย", "ฉิบหาย", "มั่ว", "โง่", "ห่า"],
-  "targets": ["hermes", "opus", "codex", "claude", "gemini", "grok", "agent", "ai"],
-  "repeat_warn_threshold": 3
+  "_help": "เพิ่มคำด่า: เติมในลิสต์แล้วบันทึก ใช้รอบถัดไปทันที · ปิดคำที่จับเกิน: ย้ายไป disabled",
+  "version": 2,
+  "updated": "2026-07-05",
+  "repeat_warn_threshold": 3,
+  "targets": {
+    "hermes": [
+      "fuck you hermes",
+      "fuck u hermes",
+      "f u hermes",
+      "hermes เหี้ย",
+      "เหี้ย hermes"
+    ],
+    "agent": [
+      "fuck you agent",
+      "fuck u agent",
+      "f u agent"
+    ],
+    "opus": [
+      "fuck you opus",
+      "fuck u opus",
+      "f u opus"
+    ],
+    "codex": [
+      "fuck you codex",
+      "fuck u codex",
+      "f u codex"
+    ],
+    "claude": [
+      "fuck you claude",
+      "fuck u claude",
+      "fuck you ai",
+      "fuck u ai",
+      "f u ai"
+    ]
+  },
+  "generic_curse": [
+    "fuck",
+    "fuk",
+    "fck",
+    "f*ck",
+    "f**k",
+    "stfu",
+    "wtf",
+    "bullshit",
+    "เหี้ย",
+    "เชี่ย",
+    "เชีย",
+    "มึง",
+    "ควย",
+    "สัส",
+    "สัด",
+    "แม่ง",
+    "ไอ้สัส",
+    "ฉิบหาย",
+    "ชิบหาย",
+    "ระยำ",
+    "ส้นตีน",
+    "พ่อง",
+    "เวรเอ๊ย"
+  ],
+  "jargon_markers": [
+    "ภาษาคน"
+  ],
+  "disabled": [
+    "ห่า",
+    "มั่ว"
+  ]
 }

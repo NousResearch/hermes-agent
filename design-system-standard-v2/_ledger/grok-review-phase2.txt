@@ -1,0 +1,11 @@
+กำลังเปิดอ่าน `spec/02-emotion-matrix.md` เพื่อตรวจตาม 3 ข้อที่ถาม
+**1) ลูกโซ่ อารมณ์→token วัดได้จริงไหม / จุดลอย**
+- วัดได้แค่ช่วงท้าย: คะแนน 1–5 → ช่วงตัวเลข token มีชัด แต่ไม่มีสูตรรวม 5 แกน (เช่น `radius` ถูกผูกทั้ง Authority และ Warmth ทิศตรงข้าม)
+- จุดลอยหลัก: archetype ยังเป็นคำบรรยาย + ±20% ไม่มีวิธีคำนวณ · ไม่มีเกณฑ์ให้คะแนน 1–5 · `gradient on/off` ไม่สเกล · ตัวอย่างโปรเจกต์ย้อนกลับได้ แต่ไม่โชว์ว่าคิดจาก A/W/E/C/D อย่างไร
+
+**2) ช่วงค่า token สมเหตุสมผลไหม**
+- โดยรวมใช้ได้: motion 120–350ms · contrast 4.5–7:1 · radius 2–16px · saturation 20–90% · density 0.75× / แถว 36–56px สอดคล้อง Material/WCAG
+- คำถามค้าง: `color.chroma` 5→50 ไม่ระบุ color space (OKLCH/HSL?) · hue 210°→30° ไม่บอกว่าควบคุมแค่ primary หรือทั้งพาเลตต์
+
+**3) ตกอะไรที่มาตรฐานสากลควรมี**
+- สูตรแปลงคะแนน→token (น้ำหนักแกน / แก้ conflict) · semantic tokens (primary/surface/error) · dark mode + `prefers-reduced-motion` · โครงสร้าง token มาตรฐาน (เช่น W3C DTCG) · elevation/shadow/typography scale · i18n/RTL · เครื่องมือ audit อัตโนมัติ · อ้างอิงกรอบอารมณ์ที่รู้จัก (PAD/Plutchik) แทนแค่ archetype 12 แบบ

@@ -16,15 +16,15 @@ tags:
   - session-memory
   - context-management
 status: active
-version: 2.1
-updated: 2026-06-28
-schema: memory-schema-v1.1
-pairs_with: use-new-chat >= 1.7
+version: 2.2
+updated: 2026-07-05
+schema: memory-schema-v1.2
+pairs_with: use-new-chat >= 1.8
 ---
 
-# Use Close Chat (v2.1 · 2026-06-28)
+# Use Close Chat (v2.2 · 2026-07-05)
 
-คู่กับ Use New Chat ≥ v1.7 · อ้าง Memory Schema v1.1 · เช็ก schema version ตอนเริ่ม ไม่ตรง = เตือนก่อน
+คู่กับ Use New Chat ≥ v1.8 · อ้าง Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
 
 ปิดแชทแบบปลอดภัย + เขียน "ความจำถาวร" ให้แชทหน้าอ่านตอนเปิด · แก้ปัญหา AI ลืมว่าทำอะไร แก้อะไร ถึงไหน + กัน AI โกหกว่าเสร็จทั้งที่ยังไม่ตรวจ
 
@@ -36,7 +36,7 @@ pairs_with: use-new-chat >= 1.7
 ```text
 Use Close Chat
 
-คู่กับ Use New Chat ≥ v1.7 · อ้าง Memory Schema v1.1 · เช็ก schema version ตอนเริ่ม ไม่ตรง = เตือนก่อน
+คู่กับ Use New Chat ≥ v1.8 · อ้าง Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
 ปิดแชทแบบปลอดภัย + เขียน "ความจำถาวร" ให้แชทหน้าอ่านตอนเปิด · แก้ปัญหา AI ลืมว่าทำอะไร แก้อะไร ถึงไหน + กัน AI โกหกว่าเสร็จทั้งที่ยังไม่ตรวจ
 บทบาทไม่ทับกัน: Close Chat = ปิดงาน+เขียน memory · Review Chat = ตรวจคุณภาพ/claim · Save Git = commit/push · Merge to Production = merge/deploy · New Chat = เปิดงาน+อ่าน memory
 Close Chat ไม่ push/merge/deploy เอง ชี้ไป Use Save Git / Use Merge to Production
@@ -65,10 +65,15 @@ Pre-Close Gate (6 ด่าน):
 ไล่ prompt ทั้งแชทของเจ้าของงาน สรุปเป็น: เป้าหมายเดิม / คำสั่งที่เปลี่ยนทิศ / decision สำคัญ / ข้อห้าม → ข้อไหนยังไม่ทำหรือตกหล่น เอามาแสดง
 
 เขียนความจำถาวร (review-before-write — เสนอก่อน รออนุมัติถ้าไม่มีคำสั่งชัด):
-เขียนตาม Memory Schema v1.1 §1 · redact secret ก่อนเขียนทุกครั้ง (§7)
+เขียนตาม Memory Schema v1.2 §1 (**ความจำทำงานต่อ = `.project/` ที่เดียว · ห้ามเขียน `.hermes/` หรือ root อีก**) · redact secret ก่อนเขียนทุกครั้ง (§7)
 
-1. `handoff.md` = สถานะล่าสุด (สั้น) + pointer ไป session log
-   - ถ้า handoff ถูกแก้หลังเริ่มแชท → อ่าน diff ก่อนเขียน · ชนกับคนอื่น = เขียนเข้า review queue ก่อน ไม่ทับทันที
+1. `.project/OverviewProgress.md` = **แหล่งจริงของสถานะ — อัปเดตทุกครั้งก่อนอย่างอื่น** (Schema §1c)
+   - เช็กบรรทัดแรก: ป้าย `> memory-schema: v1.2` + สารบัญบังคับอ่าน (ไม่มี = เติมให้)
+   - อัปเดต 4 หัวข้อบนสุด: `สถานะล่าสุด` (ขั้นไหน/SHA/gate) · `งานถัดไป` (1-3 ข้อ) · `ข้อห้าม/กติกาล็อก` · `งานค้าง/ส่งต่อ` (claimed + next_owner) + pointer ไป session log
+   - ประวัติรอบนี้ต่อท้ายส่วนล่าง · ห้ามดันสถานะปัจจุบันจมลงล่าง
+   - ถ้าไฟล์ถูกแก้หลังเริ่มแชท → อ่าน diff ก่อนเขียน · ชนกับคนอื่น = เขียนเข้า review queue ก่อน ไม่ทับทันที
+   - [Migration Schema §1b] ถ้ายังเจอ `handoff.md`/`.hermes/active.md`/`.hermes/decisions.md`/`.hermes/plan.md` ที่มีเนื้อหาจริง → ย้ายเข้า `.project/` + ทำไฟล์เก่าเป็น stub ชี้ทางใหม่ (ห้ามลบ) + แก้จุดอ้างทางเก่าในไฟล์กฎราก ก่อนปิด
+   - [ด่านไฟล์เข้า git จริง — Schema §1b เพิ่ม 2026-07-05] หลังเขียน/ย้ายไฟล์ `.project/` รัน `git check-ignore -v .project/*.md` (ต้องไม่เจอ) + `git ls-files .project/` (ต้องเห็นครบ) · โดนซ่อน → เจาะช่องอนุญาต `!.project/` + `!.project/**` ใน `.gitignore` แล้วตรวจซ้ำ · ไฟล์ความจำไม่เข้า git = ปิดแชท clean ไม่ได้
 2. session log (path ตาม Schema) เนื้อขั้นต่ำ:
    - เป้าหมายรอบนี้
    - Changed-files table: | file | owner | changed_by | reason | verification(verified/claimed+หลักฐาน) | risk | next_owner |
@@ -80,8 +85,8 @@ Pre-Close Gate (6 ด่าน):
    - next step + ข้อความเปิดแชทหน้า (พร้อมก๊อป)
 3. อัปเดต pointer + ไฟล์ประสาน (สำคัญ — New Chat อ่านพวกนี้):
    - `latest-close.md` (pointer ต่อ staff ตาม Schema §6)
-   - `.hermes/active.md` = งานที่กำลังทำ/ค้างของ staff นี้
-   - `.hermes/decisions.md` = append decision สำคัญรอบนี้ (ห้ามเขียนทับของเดิม)
+   - `.project/decisions.md` = append decision สำคัญรอบนี้ (ห้ามเขียนทับของเดิม)
+   - (งานกำลังทำ/ค้าง ไม่มีไฟล์แยกแล้ว — อยู่ในหัวข้อ `งานค้าง/ส่งต่อ` ของ OverviewProgress ข้อ 1)
 
 Business Plan Sync (capability-based — ทำเฉพาะเมื่อมี `.project/BusinessPlan.md`):
 ถามตัวเอง: รอบนี้มี feature ใหม่ / ราคาเปลี่ยน / เจอ insight ลูกค้าใหม่ / คู่แข่งเปลี่ยน ที่ขยับแผนธุรกิจไหม
@@ -101,7 +106,7 @@ Close Chat Report
 Tasks: <task> = verified(หลักฐาน) | claimed(เหตุที่ยังไม่ตรวจ)   ← ไล่ทุกอัน
 Quality Gate: <gate ที่ค้นเจอ> = ผล + output (หรือ N/A / ไม่พบ gate)
 Deploy: merge SHA / CI status / live SHA   (หรือ N/A ถ้ายังไม่ถึง merge)
-Memory written: session log path / handoff / active.md / decisions.md(+N บรรทัด)
+Memory written: session log path / OverviewProgress(4 หัวข้อบน) / decisions.md(+N บรรทัด) / migration(ถ้าย้ายไฟล์เก่า)
 Business Plan: <อัปอะไรใน .project/BusinessPlan(.md/-Full.md) หรือ "ไม่มีการเปลี่ยนด้านธุรกิจ" หรือ N/A ถ้าไม่มีไฟล์>
 Decision Token: <token> + เหตุผล
 งานค้าง: <รายการ> + เจ้าของถัดไป
@@ -116,6 +121,7 @@ Evidence: timestamp / host / cwd / commands ที่รันจริง
 
 ## Changelog
 
+- v2.2 (2026-07-05): เกาะ Memory Schema v1.2 — เลิกเขียน `handoff.md`/`.hermes/active.md`/`.hermes/decisions.md` · แหล่งจริงของสถานะ = `.project/OverviewProgress.md` (4 หัวข้อบนสุด อัปเดตทุกครั้งก่อนอย่างอื่น) + `.project/decisions.md` (append) · เพิ่มขั้นย้ายไฟล์เก่าเป็น stub ตอนปิด · schema ไม่ตรง = ห้ามเขียนความจำ (คำสั่งเจ้าของ 2026-07-05 · ตรวจข้ามค่าย Grok+Codex)
 - v2.1 (2026-06-28): เพิ่มขั้น Business Plan Sync (capability-based) · ปิดแชทแล้วถ้ามี `.project/BusinessPlan.md` ให้เช็คว่ารอบนี้มีอะไรกระทบแผนธุรกิจไหม → อัป BusinessPlan(.md/-Full.md) เฉพาะเมื่อเปลี่ยนจริง + เพิ่มบรรทัด Business Plan ใน Output · ผูกกับ Use BusinessPlan v1.0 (ชุด Project OS)
 - v2.0 (2026-06-26): เขียนใหม่ทั้งฉบับให้เกาะ Memory Schema v1.1 · เพิ่ม Pre-Close Gate เป็น 6 ด่าน (Quality Gate auto-detect ค้นเอง + Deploy verify ผ่านสถานะ CI ของ merge SHA) · ผูก verified/claimed กับบันไดหลักฐาน · ห้ามปลด claim ตอน NEED_OWNER_ACTION · เขียน memory เพิ่ม active.md + decisions.md (append) · Output format ตายตัว + Evidence footer · เช็ก schema version ตอนเริ่ม
 - v1.0 (2026-06-24): สร้างใหม่ตามโจทย์เจ้าของงาน (แก้ AI ลืมงานข้ามแชท) · Pre-Close Gate 5 ด่าน · handoff สั้น + session log แยกคน/วัน/branch + latest-close pointer · Decision token 3 แบบ · ไม่ push/merge เอง
@@ -124,7 +130,7 @@ Evidence: timestamp / host / cwd / commands ที่รันจริง
 
 - Parent hub: [[skills/prompt-shortcuts/Prompt Shortcuts|Prompt Shortcuts]]
 - Registry: [[ai-context/prompt-shortcut-registry|Prompt Shortcut Registry]]
-- Schema: [[skills/prompt-shortcuts/references/memory-schema|Memory Schema v1.1]]
+- Schema: [[skills/prompt-shortcuts/references/memory-schema|Memory Schema v1.2]]
 - Pair: [[skills/prompt-shortcuts/references/use-new-chat|Use New Chat]]
 - Related: [[skills/prompt-shortcuts/references/review-chat|Review Chat]]
 - คู่มือเจ้าของงาน: [[skills/prompt-shortcuts/references/memory-system-owner-guide-th|ระบบความจำข้ามแชท — คู่มือเจ้าของงาน]]

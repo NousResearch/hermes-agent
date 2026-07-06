@@ -1,0 +1,16 @@
+กำลังเปิดไฟล์ token ทั้ง 4 ไฟล์เพื่อตรวจโครงสร้าง การอ้างอิง alias และ OKLCH/dark
+รัน build script เพื่อยืนยันว่า alias ทั้งหมด resolve ได้และไม่มี broken ref
+**สรุปตรวจ DTCG tokens**
+
+1. **โครง 3 ชั้น — ถูก:** `core` = primitive, `front`/`admin` = semantic→component, `build-tokens.mjs` merge core+profile ถูกทิศทาง
+2. **ข้อยกเว้นเล็กน้อย:** `component.button.paddingX` ใน front ชี้ `{dimension.space.6}` ตรง ไม่ผ่าน semantic
+3. **alias `{}` — ผ่าน:** รัน `node build-tokens.mjs all` สำเร็จ ไม่พบ broken ref หรือ circular ref
+4. **OKLCH — ครบ:** primitive สีทุกตัวใช้ `{colorSpace:"oklch", components:[L,C,H]}` ตาม DTCG 2025.10
+5. **dark — มีแต่ไม่เต็ม:** ทั้ง front/admin มี `theme.dark.semantic.color` override ได้จริง (component สืบทอดผ่าน semantic)
+6. **dark ไม่ครอบ:** dimension/motion/typography ไม่เปลี่ยนโหมด (โดยทั่วไปยอมรับได้)
+7. **แก้ก่อน prod — ธีม:** CSS ออกแค่ `[data-theme="dark"]` ยังไม่มี `prefers-color-scheme` หรือ toggle มาตรฐาน
+8. **แก้ก่อน prod — สเกลสี:** green/amber/red/sky มีแค่ 100/600/800 อาจไม่พอสำหรับ hover/disabled/border
+9. **แก้ก่อน prod — ขาดชุด:** ยังไม่มี shadow/elevation, focus-ring แยก, z-index
+10. **แก้ก่อน prod — a11y:** ยังไม่มีตรวจ contrast คู่สีสำคัญ (โดยเฉพาะ primary + status บนพื้นเข้ม)
+11. **แก้ก่อน prod — pipeline:** ควรผูก `build-tokens.mjs` เข้า CI และห้ามแก้ `dist/` มือ
+12. **โดยรวม:** โครงพร้อม pilot ได้ แต่ควรเติม dark-mode wiring + สเกลสี + a11y ก่อน go-live จริง

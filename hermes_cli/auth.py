@@ -636,6 +636,16 @@ ZAI_ENDPOINTS = [
     ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
 ]
 
+# Routstr endpoint presets — the three public Routstr nodes.
+# Users pick one during setup; the TUI presents them as a numbered list
+# with an optional "Custom endpoint" fallback.
+ROUTSTR_ENDPOINTS = [
+    # (label, url)
+    ("https://api.routstr.com/v1", "Routstr official"),
+    ("https://api.nonkycai.com/v1", "Non-KYC AI"),
+    ("https://privateprovider.xyz/v1", "PrivateProvider"),
+]
+
 
 def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str, str]]:
     """Probe z.ai endpoints to find one that accepts this API key.

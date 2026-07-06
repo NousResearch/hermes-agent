@@ -2530,6 +2530,62 @@ def _select_zai_endpoint(current_base: str) -> str:
     return options[selected][1].rstrip("/")
 
 
+def _select_routstr_endpoint(current_base: str) -> str:
+    """Present a picker for Routstr endpoint selection during setup.
+
+    Offers the three public Routstr nodes (Official, Non-KYC AI,
+    PrivateProvider) plus a custom-proxy option.  The list is sourced from
+    ``ROUTSTR_ENDPOINTS`` in ``hermes_cli.auth``.
+
+    Returns the selected base URL.  Falls back to *current_base* on cancel
+    or error.
+    """
+    from hermes_cli.main import _prompt_provider_choice
+    from hermes_cli.auth import ROUTSTR_ENDPOINTS
+
+    # Build label + URL pairs.  ROUTSTR_ENDPOINTS is (url, label).
+    options = [(label, url) for url, label in ROUTSTR_ENDPOINTS]
+    normalized_current = (current_base or "").strip().rstrip("/")
+
+    # Default to the currently-active option if it matches one of the
+    # known endpoints; otherwise default to the first (Official).
+    default_idx = 0
+    for idx, (_, url) in enumerate(options):
+        if normalized_current == url.rstrip("/"):
+            default_idx = idx
+            break
+    else:
+        if normalized_current:
+            default_idx = len(options)  # Custom URL is active
+
+    choices = [f"{label} ({url})" for label, url in options]
+    choices.append("Custom endpoint")
+
+    selected = _prompt_provider_choice(
+        choices,
+        default=default_idx,
+        title="Select Base URL for this API Key:",
+    )
+    if selected is None:
+        return current_base
+
+    if selected == len(options):
+        # Custom endpoint
+        try:
+            override = input(f"Custom base URL [{current_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return current_base
+        if not override:
+            return current_base
+        if not override.startswith(("http://", "https://")):
+            print("  Invalid URL — must start with http:// or https://. Keeping current value.")
+            return current_base
+        return override.rstrip("/")
+
+    return options[selected][1].rstrip("/")
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.main import _prompt_api_key
@@ -2650,6 +2706,14 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         # a picker instead of a plain text input so users can explicitly
         # choose the endpoint that matches their key type.
         chosen_base = _select_zai_endpoint(effective_base)
+        if chosen_base and chosen_base != effective_base and base_url_env:
+            save_env_value(base_url_env, chosen_base)
+        effective_base = chosen_base
+    elif provider_id == "routstr":
+        # Routstr has multiple public nodes (Official, Non-KYC AI,
+        # PrivateProvider).  Present a picker so users can easily select
+        # the node that matches their key or preference.
+        chosen_base = _select_routstr_endpoint(effective_base)
         if chosen_base and chosen_base != effective_base and base_url_env:
             save_env_value(base_url_env, chosen_base)
         effective_base = chosen_base

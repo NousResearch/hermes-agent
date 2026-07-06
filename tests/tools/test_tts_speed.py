@@ -238,3 +238,41 @@ class TestMinimaxTtsLegacyTextToSpeech:
         _, output = self._run({}, tmp_path, monkeypatch)
         with open(output, "rb") as f:
             assert f.read() == b"\x00\x01\x02\x03"
+
+
+class TestMinimaxTtsCnEndpoint:
+    """CN endpoint auto-detection when MINIMAX_CN_API_KEY is set."""
+
+    CN_BASE_URL = "https://api.minimaxi.com/v1/t2a_v2"
+
+    def _run(self, tts_config, tmp_path, monkeypatch, response=None):
+        monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-cn-key")
+        resp = response if response is not None else _hex_response()
+        with patch("requests.post", return_value=resp) as mock_post:
+            from tools.tts_tool import _generate_minimax_tts
+            output = _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
+        return mock_post, output
+
+    def test_cn_key_uses_cn_url(self, tmp_path, monkeypatch):
+        """MINIMAX_CN_API_KEY auto-selects api.minimaxi.com."""
+        mock_post, _ = self._run({}, tmp_path, monkeypatch)
+        url = mock_post.call_args[0][0]
+        assert url == self.CN_BASE_URL
+
+    def test_explicit_url_overrides_cn_auto(self, tmp_path, monkeypatch):
+        """Explicit base_url in config overrides CN auto-detect."""
+        cfg = {"minimax": {"base_url": "https://api.minimax.io/v1/t2a_v2"}}
+        mock_post, _ = self._run(cfg, tmp_path, monkeypatch)
+        url = mock_post.call_args[0][0]
+        assert url == "https://api.minimax.io/v1/t2a_v2"
+
+    def test_global_key_uses_global_url(self, tmp_path, monkeypatch):
+        """Only MINIMAX_API_KEY set uses the global endpoint."""
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-global-key")
+        monkeypatch.delenv("MINIMAX_CN_API_KEY", raising=False)
+        resp = _hex_response()
+        with patch("requests.post", return_value=resp) as mock_post:
+            from tools.tts_tool import _generate_minimax_tts
+            _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), {})
+        url = mock_post.call_args[0][0]
+        assert "api.minimax.io" in url

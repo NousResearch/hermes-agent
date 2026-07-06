@@ -185,6 +185,7 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
+DEFAULT_MINIMAX_CN_BASE_URL = "https://api.minimaxi.com/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_XAI_VOICE_ID = "eve"
@@ -1318,14 +1319,20 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     """
     import requests
 
-    api_key = (get_env_value("MINIMAX_API_KEY") or "")
+    api_key = (get_env_value("MINIMAX_API_KEY") or get_env_value("MINIMAX_CN_API_KEY") or "")
     if not api_key:
-        raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
+        raise ValueError(
+            "MINIMAX_API_KEY or MINIMAX_CN_API_KEY not set. "
+            "Get one at https://platform.minimax.io (global) or https://platform.minimaxi.com (China)."
+        )
 
     mm_config = tts_config.get("minimax", {})
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
-    base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
+    # Auto-detect China endpoint when CN key is used and no explicit base_url.
+    has_explicit_url = "base_url" in mm_config
+    use_cn = get_env_value("MINIMAX_CN_API_KEY") and not has_explicit_url
+    base_url = mm_config.get("base_url", DEFAULT_MINIMAX_CN_BASE_URL if use_cn else DEFAULT_MINIMAX_BASE_URL)
     speed = mm_config.get("speed", 1.0)
     vol = mm_config.get("vol", 1.0)
     pitch = mm_config.get("pitch", 0)

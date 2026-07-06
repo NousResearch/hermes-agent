@@ -672,6 +672,7 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_cli.model_switch._fetch_api_models", fake_fetch_api_models)
 
     custom_providers = [
         {
@@ -726,6 +727,7 @@ def test_custom_provider_live_model_probe_uses_extra_headers(monkeypatch):
         return ["gateway-model"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_cli.model_switch._fetch_api_models", fake_fetch_api_models)
 
     providers = list_authenticated_providers(
         current_provider="openrouter",
@@ -787,6 +789,7 @@ def test_same_endpoint_different_extra_headers_not_collapsed(monkeypatch):
         return [f"model-{tenant}"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_cli.model_switch._fetch_api_models", fake_fetch_api_models)
 
     providers = list_authenticated_providers(
         current_provider="openrouter",
@@ -842,6 +845,7 @@ def test_custom_providers_discover_models_false_keeps_explicit_subset(monkeypatc
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_cli.model_switch._fetch_api_models", fake_fetch_api_models)
 
     custom_providers = [
         {
@@ -898,6 +902,7 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
         return ["live-a", "live-b"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_cli.model_switch._fetch_api_models", fake_fetch_api_models)
 
     custom_providers = [
         {
@@ -940,6 +945,7 @@ def test_custom_providers_discover_models_false_list_of_dict_ids(monkeypatch):
         return ["live-a", "live-b"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_cli.model_switch._fetch_api_models", fake_fetch_api_models)
 
     custom_providers = [
         {

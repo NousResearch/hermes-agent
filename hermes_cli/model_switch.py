@@ -43,6 +43,11 @@ from agent.models_dev import (
     get_model_info,
     list_provider_models,
 )
+# #59560: a module-level reference to the live-models probe so tests can
+# monkeypatch ``hermes_cli.models.fetch_api_models`` and the patched value
+# is honored by the call below. The previous in-function import re-bound
+# the name on every call and made the probe uncatchable from tests.
+from hermes_cli.models import fetch_api_models as _fetch_api_models
 
 # Providers whose picker model list should NOT be capped by max_models.
 # OpenCode Zen / Go are aggregators whose full catalogs (70+ models each) must
@@ -2283,16 +2288,36 @@ def list_authenticated_providers(
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
-
-                    live_models = fetch_api_models(
+                    # #59560: use the module-level reference so tests can
+                    # monkeypatch ``hermes_cli.models.fetch_api_models`` and
+                    # have the patched value honored. The previous in-function
+                    # import re-bound the name on every call and made the
+                    # probe uncatchable from tests.
+                    live_models = _fetch_api_models(
                         api_key,
                         api_url,
                         headers=grp.get("extra_headers") or None,
                     )
                     if live_models:
-                        grp["models"] = live_models
-                        grp["total_models"] = len(live_models)
+                        # #59560: when the user has configured an explicit
+                        # `models:` map (or a singular `model:` entry), that
+                        # config is the source of truth for what they want
+                        # exposed. Live discovery *adds* new models to the
+                        # list rather than replacing it — otherwise an
+                        # aggregator (e.g. 9router) that returns a partial
+                        # catalog, a transient /v1/models error, or a
+                        # client-side parse mismatch would silently wipe the
+                        # user's configuration. Configured models come
+                        # first to preserve their position in the picker.
+                        if grp["models"]:
+                            seen = {m.lower() for m in grp["models"]}
+                            for live in live_models:
+                                if live and live.lower() not in seen:
+                                    grp["models"].append(live)
+                                    seen.add(live.lower())
+                        else:
+                            grp["models"] = live_models
+                        grp["total_models"] = len(grp["models"])
                 except Exception:
                     pass
             results.append({

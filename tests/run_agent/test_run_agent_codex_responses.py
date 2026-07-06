@@ -328,6 +328,17 @@ def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatc
 
 
 
+def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["model"] == "gpt-5.4"
+    assert kwargs["store"] is False
+    assert kwargs["tool_choice"] == "auto"
+    assert kwargs["parallel_tool_calls"] is True
+    assert kwargs["reasoning"] == {"effort": "medium", "summary": "auto"}
+    assert "prompt_cache_key" not in kwargs
+    assert "include" not in kwargs
 
 
 

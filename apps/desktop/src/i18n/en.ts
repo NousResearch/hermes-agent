@@ -171,6 +171,15 @@ export const en: Translations = {
       `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
   },
 
+  sessionRestore: {
+    title: 'Restore previous sessions?',
+    body: (count: number) =>
+      `Hermes found ${count} session(s) that were open when it last quit.`,
+    restore: 'Restore',
+    discard: 'Start fresh',
+    timestamp: (when: string) => `Saved ${when}`
+  },
+
   titlebar: {
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',

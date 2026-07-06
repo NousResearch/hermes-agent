@@ -213,6 +213,14 @@ export interface Translations {
     message: (reason: string) => string
   }
 
+  sessionRestore: {
+    title: string
+    body: (count: number) => string
+    restore: string
+    discard: string
+    timestamp: (when: string) => string
+  }
+
   titlebar: {
     hideSidebar: string
     showSidebar: string

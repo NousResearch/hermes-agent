@@ -33,6 +33,14 @@ declare global {
       openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
       // Open (or focus) a compact secondary window on the new-session draft.
       openNewSessionWindow: () => Promise<{ ok: boolean; error?: string }>
+      // Session restore: check for a snapshot written by the last quit.
+      getPendingSessionRestore?: () => Promise<SessionRestoreSnapshot | null>
+      // Restore the windows recorded in the snapshot and delete the file.
+      confirmSessionRestore?: () => Promise<{ ok: boolean; restored: number }>
+      // Discard the pending snapshot without restoring anything.
+      discardSessionRestore?: () => Promise<{ ok: boolean }>
+      // Listen for a restore-available push from the main process on launch.
+      onSessionRestoreAvailable?: (callback: (snapshot: SessionRestoreSnapshot) => void) => () => void
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -681,4 +689,16 @@ export interface HermesSelectPathsOptions {
 export interface BackendExit {
   code: number | null
   signal: string | null
+}
+
+export interface SessionRestoreSnapshot {
+  schemaVersion: number
+  createdAt: number
+  entries: SessionRestoreEntry[]
+}
+
+export interface SessionRestoreEntry {
+  sessionId: string
+  watch?: boolean
+  bounds?: { x: number; y: number; width: number; height: number }
 }

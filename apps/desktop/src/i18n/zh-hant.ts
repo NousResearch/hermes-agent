@@ -166,6 +166,15 @@ export const zhHant = defineLocale({
     message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
   },
 
+  sessionRestore: {
+    title: '還原先前的會話？',
+    body: (count: number) =>
+      `Hermes 發現 ${count} 個上次結束時打開的會話。`,
+    restore: '還原',
+    discard: '重新開始',
+    timestamp: (when: string) => `儲存於 ${when}`
+  },
+
   titlebar: {
     hideSidebar: '隱藏側邊欄',
     showSidebar: '顯示側邊欄',

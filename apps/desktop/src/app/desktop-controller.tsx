@@ -9,6 +9,7 @@ import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overla
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
+import { SessionRestorePrompt } from '@/components/session-restore-prompt'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { isFocusWithin } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
@@ -49,6 +50,7 @@ import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
+import { clearSessionRestorePrompt, showSessionRestorePrompt } from '../store/session-restore'
 import {
   $activeSessionId,
   $attentionSessionIds,
@@ -352,6 +354,41 @@ export function DesktopController() {
     void window.hermesDesktop?.signalDeepLinkReady?.()
 
     return () => unsubscribe?.()
+  }, [])
+
+  // Session restore: on mount, poll for a pending snapshot from a previous
+  // quit. Only the primary window drives this — secondary windows should not
+  // duplicate the prompt or race for snapshot consumption.
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    void window.hermesDesktop?.getPendingSessionRestore?.().then(snapshot => {
+      if (snapshot) {
+        showSessionRestorePrompt(snapshot)
+      }
+    })
+
+    const unsubscribe = window.hermesDesktop?.onSessionRestoreAvailable?.(
+      (snapshot: unknown) => {
+        if (snapshot) {
+          showSessionRestorePrompt(snapshot as Parameters<typeof showSessionRestorePrompt>[0])
+        }
+      }
+    )
+
+    return () => unsubscribe?.()
+  }, [])
+
+  const handleSessionRestore = useCallback(async () => {
+    await window.hermesDesktop?.confirmSessionRestore?.()
+    clearSessionRestorePrompt()
+  }, [])
+
+  const handleSessionRestoreDiscard = useCallback(async () => {
+    await window.hermesDesktop?.discardSessionRestore?.()
+    clearSessionRestorePrompt()
   }, [])
 
   useEffect(() => {
@@ -1046,6 +1083,12 @@ export function DesktopController() {
   const overlays = (
     <>
       <RemoteDisplayBanner />
+      {!isSecondaryWindow() && (
+        <SessionRestorePrompt
+          onDiscard={handleSessionRestoreDiscard}
+          onRestore={handleSessionRestore}
+        />
+      )}
       {!isSecondaryWindow() && <DesktopInstallOverlay />}
       {!isSecondaryWindow() && (
         <DesktopOnboardingOverlay

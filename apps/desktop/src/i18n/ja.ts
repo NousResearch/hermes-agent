@@ -172,6 +172,15 @@ export const ja = defineLocale({
       `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
   },
 
+  sessionRestore: {
+    title: '前回のセッションを復元しますか？',
+    body: (count: number) =>
+      `前回の終了時に開いていた${count}個のセッションが見つかりました。`,
+    restore: '復元する',
+    discard: '新しく始める',
+    timestamp: (when: string) => `${when}に保存`
+  },
+
   titlebar: {
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',

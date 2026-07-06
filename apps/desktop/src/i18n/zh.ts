@@ -166,6 +166,15 @@ export const zh: Translations = {
     message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
   },
 
+  sessionRestore: {
+    title: '恢复之前的会话？',
+    body: (count: number) =>
+      `Hermes 发现 ${count} 个上次退出时打开的会话。`,
+    restore: '恢复',
+    discard: '重新开始',
+    timestamp: (when: string) => `保存于 ${when}`
+  },
+
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',

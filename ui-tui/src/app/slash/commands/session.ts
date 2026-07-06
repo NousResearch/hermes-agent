@@ -73,6 +73,10 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: true })
       }
 
+      if (arg.trim() === '--refresh') {
+        return patchOverlayState({ modelPicker: { refresh: true } })
+      }
+
       const switchModel = (confirmExpensiveModel = false) =>
         ctx.gateway
           .rpc<ConfigSetResponse>('config.set', {

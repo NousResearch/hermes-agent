@@ -452,6 +452,36 @@ class TestSessionManagementEndpoints:
             "/api/sessions/prune", json={"older_than_days": 0}
         ).status_code == 400
 
+    def test_prune_attr_filter_suppresses_default_cutoff(self):
+        # An attribute filter without an explicit older_than_days matches all
+        # ages (mirrors the CLI: any filter disables the implicit 90-day
+        # default). dry_run so nothing is deleted; the seeded session is
+        # recent + ended, so it would be invisible under a 90-day cutoff.
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        db.create_session(session_id="sess-recent-ended", source="cli")
+        db.end_session("sess-recent-ended", "completed")
+        db.close()
+
+        r = self.client.post(
+            "/api/sessions/prune",
+            json={"source": "cli", "dry_run": True},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["matched"] >= 1
+        assert "oldest_started_at" in body and "newest_started_at" in body
+
+    def test_prune_explicit_older_than_kept_with_attr_filter(self):
+        # Explicit older_than_days is honored even alongside attribute filters.
+        r = self.client.post(
+            "/api/sessions/prune",
+            json={"source": "cli", "older_than_days": 9999, "dry_run": True},
+        )
+        assert r.status_code == 200
+        assert r.json()["matched"] == 0
+
 
 class TestSkillsHubSearchEndpoint:
     @pytest.fixture(autouse=True)

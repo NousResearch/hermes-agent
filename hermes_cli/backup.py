@@ -427,6 +427,11 @@ def run_backup(args) -> None:
     elapsed = time.monotonic() - t0
     zip_size = out_path.stat().st_size
 
+    # The zip may contain auth.json, state.db, and config.yaml — ensure it
+    # is only readable by the owner, even when the umask is permissive or
+    # the file is copied outside $HOME.
+    os.chmod(out_path, 0o600)
+
     # Summary
     print()
     print(f"Backup complete: {out_path}")

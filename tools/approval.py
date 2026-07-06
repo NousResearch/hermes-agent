@@ -2043,6 +2043,18 @@ class _ApprovalEntry:
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+# session_key → guest-mode marker (Telegram Bot API 10.0 @mention from a chat
+# the bot isn't a member of). Guest chats can never present or resolve an
+# interactive approval prompt -- send_exec_approval's sendMessage is rejected
+# ("Forbidden: bot is not a member"), and there is no /approve path reachable
+# from a guest chat (slash commands are hard-blocked there for the same
+# reason). Marking the session lets _await_gateway_decision deny immediately,
+# the same way the adapter already declines slash commands at the front door,
+# instead of registering a queue entry and blocking the agent thread for the
+# full gateway_timeout waiting on an approval that can structurally never
+# arrive. This is independent of send_exec_approval / approval-routing
+# destination (home channel, etc.) -- the notify callback is never invoked.
+_gateway_guest_sessions: set[str] = set()
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -2068,6 +2080,30 @@ def unregister_gateway_notify(session_key: str) -> None:
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
         entry.event.set()
+
+
+def mark_session_guest(session_key: str) -> None:
+    """Mark *session_key* as a guest-mode chat for the duration of this turn.
+
+    Call once per turn dispatch, alongside :func:`register_gateway_notify`.
+    """
+    with _lock:
+        _gateway_guest_sessions.add(session_key)
+
+
+def unmark_session_guest(session_key: str) -> None:
+    """Clear the guest-mode marker for *session_key*.
+
+    Call once per turn teardown, alongside :func:`unregister_gateway_notify`.
+    """
+    with _lock:
+        _gateway_guest_sessions.discard(session_key)
+
+
+def is_session_guest(session_key: str) -> bool:
+    """Return whether *session_key* is currently marked as a guest-mode chat."""
+    with _lock:
+        return session_key in _gateway_guest_sessions
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -3067,13 +3103,28 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     Returns ``{"resolved": bool, "choice": str|None}`` on completion, or
     ``{"resolved": False, "choice": None, "notify_failed": True}`` if the
-    notify callback raised.  Persistence of an approved choice and building
-    the final tool-facing result dict remain the caller's responsibility.
+    notify callback raised, or ``{"resolved": True, "choice": None,
+    "guest_unsupported": True}`` immediately if the session is marked guest
+    (see :func:`mark_session_guest`) -- no queue entry, no notify_cb call, no
+    wait, and no approval hooks fire for that case.  Persistence of an
+    approved choice and building the final tool-facing result dict remain the
+    caller's responsibility.
     """
     command = approval_data.get("command", "")
     description = approval_data.get("description", "")
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
+
+    # Guest-mode chats can never present or resolve an interactive approval
+    # (see _gateway_guest_sessions docstring above) -- deny immediately, the
+    # same way the adapter already declines slash commands at the front door,
+    # instead of registering a queue entry and blocking the agent thread for
+    # the full gateway_timeout on an approval that can structurally never
+    # arrive. Deliberately skips notify_cb and the pre/post approval hooks:
+    # this never becomes a real approval attempt, so nothing should observe
+    # it as one.
+    if is_session_guest(session_key):
+        return {"resolved": True, "choice": None, "guest_unsupported": True}
 
     entry = _ApprovalEntry(approval_data)
     with _lock:
@@ -3454,6 +3505,15 @@ def check_all_command_guards(command: str, env_type: str,
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
+            if decision.get("guest_unsupported"):
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: this action requires running a command that isn't supported in this context (a guest chat the bot isn't a member of has no way to grant approval). Do NOT retry this command, do NOT rephrase it, and do NOT attempt the same outcome via a different command -- there is no approval path available here. Tell the user you can't do that in this context.",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                    "outcome": "guest_unsupported",
+                    "user_consent": False,
+                }
             if decision.get("notify_failed"):
                 return {
                     "approved": False,
@@ -3785,6 +3845,15 @@ def check_execute_code_guard(code: str, env_type: str,
     decision = _await_gateway_decision(
         session_key, notify_cb, approval_data, surface="gateway"
     )
+    if decision.get("guest_unsupported"):
+        return {
+            "approved": False,
+            "message": "BLOCKED: this action requires running a command that isn't supported in this context (a guest chat the bot isn't a member of has no way to grant approval). Do NOT retry this command, do NOT rephrase it, and do NOT attempt the same outcome via a different command -- there is no approval path available here. Tell the user you can't do that in this context.",
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "guest_unsupported",
+            "user_consent": False,
+        }
     if decision.get("notify_failed"):
         return {
             "approved": False,

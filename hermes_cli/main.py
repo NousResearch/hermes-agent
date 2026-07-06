@@ -2212,6 +2212,65 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+def _finalize_unclosed_kanban_worker() -> bool:
+    """Block an ordinary Kanban worker that exits without a terminal ack.
+
+    This is intentionally conservative. A process-exit fallback cannot prove
+    the deliverable is complete, so it blocks instead of auto-completing. Goal
+    mode workers are allowed to use clean exits as turn boundaries and are
+    handled by the dispatcher path.
+    """
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id:
+        return False
+    if os.environ.get("HERMES_KANBAN_GOAL_MODE"):
+        return False
+
+    raw_run_id = os.environ.get("HERMES_KANBAN_RUN_ID")
+    expected_run_id = None
+    if raw_run_id:
+        try:
+            expected_run_id = int(raw_run_id)
+        except (TypeError, ValueError):
+            return False
+
+    reason = (
+        "protocol_violation: worker process exited without calling "
+        "kanban_complete or kanban_block"
+    )
+
+    try:
+        from hermes_cli import kanban_db as kb
+
+        with kb.connect_closing() as conn:
+            task = kb.get_task(conn, task_id)
+            if task is None or task.status != "running":
+                return False
+            if getattr(task, "goal_mode", False):
+                return False
+            if (
+                expected_run_id is not None
+                and task.current_run_id != expected_run_id
+            ):
+                return False
+            return kb.block_task(
+                conn,
+                task_id,
+                reason=reason,
+                kind="capability",
+                expected_run_id=expected_run_id,
+            )
+    except Exception as exc:
+        try:
+            print(
+                f"Warning: failed to finalize Kanban worker {task_id}: {exc}",
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
+        return False
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
@@ -2407,6 +2466,8 @@ def cmd_chat(args):
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
+    finally:
+        _finalize_unclosed_kanban_worker()
 
 
 def cmd_gateway(args):

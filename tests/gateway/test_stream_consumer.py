@@ -1452,6 +1452,13 @@ class TestFilterAndAccumulate:
         c._filter_and_accumulate("<thought>Gemma style</thought>Output")
         assert c._accumulated == "Output"
 
+    def test_minimax_mm_think_tag_variant(self):
+        """MiniMax M3 emits <mm:think> blocks that must stay hidden."""
+        c = _make_consumer()
+        c._filter_and_accumulate("<mm:think>provider reasoning</mm:think>Answer")
+        assert c._accumulated == "Answer"
+        assert "provider reasoning" not in c._accumulated
+
     def test_reasoning_scratchpad_variant(self):
         c = _make_consumer()
         c._filter_and_accumulate(

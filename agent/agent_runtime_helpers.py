@@ -611,7 +611,8 @@ def strip_think_blocks(agent, content: str) -> str:
          ``<think>`` in prose aren't over-stripped.
       3. Stray orphan open/close tags that slip through.
       4. Tag variants: ``<think>``, ``<thinking>``, ``<reasoning>``,
-         ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
+         ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4),
+         ``<mm:think>`` (MiniMax M3), all
          case-insensitive.
 
     Additionally strips standalone tool-call XML blocks that some open
@@ -638,6 +639,7 @@ def strip_think_blocks(agent, content: str) -> str:
     content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r'<mm:think>.*?</mm:think>', '', content, flags=re.DOTALL | re.IGNORECASE)
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
     #     generic tag names first — they have no attribute gating since
     #     a literal <tool_call> in prose is already vanishingly rare.
@@ -667,14 +669,14 @@ def strip_think_blocks(agent, content: str) -> str:
     #    Strip from the tag to end of string.  Fixes #8878 / #9568
     #    (MiniMax M2.7 leaking raw reasoning into assistant content).
     content = re.sub(
-        r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
+        r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD|mm:think)\b[^>]*>.*$',
         '',
         content,
         flags=re.DOTALL | re.IGNORECASE,
     )
     # 3. Stray orphan open/close tags that slipped through.
     content = re.sub(
-        r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
+        r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD|mm:think)>\s*',
         '',
         content,
         flags=re.IGNORECASE,

@@ -125,6 +125,15 @@ class TestRealReasoningBlock:
         assert full == "Visible answer"
         assert "hidden reasoning" not in full
 
+    def test_minimax_mm_think_tag_suppressed(self):
+        """MiniMax M3's <mm:think> channel marker should not reach the TUI."""
+        cli = _make_cli_stub()
+        cli._stream_delta("<mm:think>provider reasoning</mm:think>Visible answer")
+        assert not cli._in_reasoning_block
+        full = "".join(cli._emitted)
+        assert full == "Visible answer"
+        assert "provider reasoning" not in full
+
 
 class TestFlushRecovery:
     """_flush_stream should recover content from false-positive reasoning blocks."""

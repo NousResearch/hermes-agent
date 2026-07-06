@@ -392,6 +392,15 @@ class TestStripThinkBlocks:
         assert "<thought>" not in result
         assert "answer" in result
 
+    def test_minimax_mm_think_block_removed(self, agent):
+        """MiniMax M3 uses <mm:think> tags for provider-side reasoning."""
+        result = agent._strip_think_blocks(
+            "<mm:think>internal reasoning</mm:think> answer"
+        )
+        assert "internal reasoning" not in result
+        assert "<mm:think>" not in result
+        assert "answer" in result
+
     def test_orphaned_thought_tag(self, agent):
         result = agent._strip_think_blocks("<thought>orphaned reasoning without close")
         assert "<thought>" not in result

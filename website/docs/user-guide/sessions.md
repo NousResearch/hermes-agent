@@ -348,8 +348,10 @@ hermes sessions prune --newer-than 5h
 # Explicit window with absolute timestamps
 hermes sessions prune --after "2026-07-05 09:00" --before "2026-07-05 14:30"
 
-# Only prune sessions from a specific platform
-hermes sessions prune --source telegram --older-than 60
+# Only prune sessions from a specific platform (all ages — any filter
+# disables the implicit 90-day default)
+hermes sessions prune --source telegram
+hermes sessions prune --source cron --older-than 60   # add a time flag to narrow
 
 # More filters — all AND together
 hermes sessions prune --newer-than 5h --title "smoke test"   # title substring
@@ -380,10 +382,12 @@ Attribute filters: `--source` (platform, exact), `--title` / `--model` /
 exact), `--end-reason`, `--user`, `--chat-id`, `--chat-type` (exact),
 `--cwd` (path prefix), plus numeric bounds `--min/--max-messages`,
 `--min/--max-tokens` (input+output), `--min/--max-cost` (USD, actual falling
-back to estimated), and `--min/--max-tool-calls`. Using any attribute filter
-(other than `--source`) disables the implicit 90-day default, so
-`hermes sessions prune --model gpt-4o` matches all ages — add a time flag to
-narrow it.
+back to estimated), and `--min/--max-tool-calls`. Using any filter disables
+the implicit 90-day default, so `hermes sessions prune --source cron` or
+`--model gpt-4o` matches all ages — add a time flag to narrow it. Only a
+completely bare `hermes sessions prune` keeps the 90-day cutoff. Every
+non-`--yes` run shows the match count plus the oldest and newest matching
+session before asking for confirmation.
 
 Archived sessions are skipped by default; pass `--include-archived` to
 delete them too.

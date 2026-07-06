@@ -24,6 +24,7 @@ import {
   modelDisplayParts,
   reasoningEffortLabel
 } from '@/lib/model-status-label'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
@@ -339,9 +340,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 }}
               >
                 <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
-                {isCurrentMoa ? (
-                  <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
-                ) : null}
+                {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
               </DropdownMenuItem>
             )
           })}
@@ -384,7 +383,7 @@ function groupModels(
   current: { model: string; provider: string },
   visible: Set<string> | null
 ): ProviderGroup[] {
-  const q = search.trim().toLowerCase()
+  const q = normalize(search)
   const groups: ProviderGroup[] = []
 
   for (const provider of providers) {

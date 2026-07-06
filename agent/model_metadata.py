@@ -2188,21 +2188,29 @@ def get_model_context_length(
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx
-    # 5e. Ollama native /api/show probe — runs for ANY provider with a
-    # base_url, not just ollama-cloud.  Ollama-compatible servers expose
+    # 5e. Ollama native /api/show probe — runs for providers whose base_url
+    # is NOT a known non-Ollama provider.  Ollama-compatible servers expose
     # this endpoint regardless of hostname (local Ollama, Ollama Cloud,
     # custom Ollama hosting).  The OpenAI-compat /v1/models endpoint
     # correctly omits context_length per the OpenAI schema, but /api/show
     # returns the authoritative GGUF model_info.context_length.
-    # For non-Ollama servers (OpenAI, Anthropic, etc.), the POST returns
-    # 404/405 quickly.  Results are cached, so the hit is per-model+URL,
-    # once per hour.
+    # Known hosted providers (OpenRouter, Anthropic, OpenAI, …) are skipped:
+    # they are definitively not Ollama, the POST always 404s, and the result
+    # is never cached for them — so every fresh process used to pay a
+    # ~300ms blocking HTTP round-trip on the first-turn critical path
+    # (measured against openrouter.ai; worse on slow DNS).
     if base_url:
-        ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
-        if ctx is not None:
-            if not _skip_persistent_context_cache(base_url, provider):
-                save_context_length(model, base_url, ctx)
-            return ctx
+        _inferred_for_probe = _infer_provider_from_url(base_url)
+        _skip_ollama_probe = (
+            _inferred_for_probe is not None
+            and "ollama" not in _inferred_for_probe
+        )
+        if not _skip_ollama_probe:
+            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+            if ctx is not None:
+                if not _skip_persistent_context_cache(base_url, provider):
+                    save_context_length(model, base_url, ctx)
+                return ctx
     # 5f. OpenRouter live /models metadata — authoritative for OpenRouter-routed
     # models. OpenRouter's catalog carries per-model context_length (e.g.
     # anthropic/claude-fable-5 -> 1M) and refreshes as new slugs ship, so it

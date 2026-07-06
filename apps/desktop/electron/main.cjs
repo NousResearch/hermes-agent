@@ -36,7 +36,11 @@ const {
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
-const { createLinkTitleWindow, guardLinkTitleSession } = require('./link-title-window.cjs')
+const {
+  createLinkTitleWindow,
+  guardLinkTitleSession,
+  readLinkTitleWindowTitle
+} = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
@@ -51,7 +55,7 @@ const {
   macTitleBarOverlayHeight
 } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
-const { readLiveUpdateMarker } = require('./update-marker.cjs')
+const { readLiveUpdateMarker, writeUpdateMarker } = require('./update-marker.cjs')
 const {
   resolveUnpackedRelease,
   decideRelaunchOutcome,
@@ -1334,6 +1338,28 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   if (!fileExists(python)) return null
 
   const root = path.dirname(venvRoot)
+
+  // Smoke-test the venv interpreter before trusting it. A venv whose update
+  // died mid-`pip install` still has python.exe + hermes.exe on disk, but the
+  // backend dies on its first import (e.g. ModuleNotFoundError: dotenv) before
+  // the gateway ever binds. Returning it here also BYPASSED the caller's
+  // `--version` probe, so Retry/"Repair install" re-resolved the same broken
+  // venv forever instead of falling through to the bootstrap installer.
+  // Mirror isActiveRuntimeUsable(): probe with the checkout on PYTHONPATH so a
+  // healthy source-tree venv passes.
+  if (
+    !canImportHermesCli(python, {
+      env: {
+        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+      }
+    })
+  ) {
+    rememberLog(
+      `Ignoring venv Hermes at ${python}: runtime import probe failed (broken/partial venv); falling through to bootstrap.`
+    )
+    return null
+  }
+
   return {
     label: `existing Hermes Python at ${python}`,
     command: python,
@@ -1371,10 +1397,7 @@ function backendSupportsServe(backend) {
   let supported = null
   if (backend.root) {
     try {
-      const src = fs.readFileSync(
-        path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'),
-        'utf8'
-      )
+      const src = fs.readFileSync(path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'), 'utf8')
       supported = sourceDeclaresServe(src)
     } catch {
       supported = null // source unreadable — fall through to the probe
@@ -2164,9 +2187,25 @@ async function releaseBackendLock(updateRoot, tag) {
       rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
       return { unlocked: true }
     }
+    // A supervised backend can respawn between kill and check (grandchildren,
+    // pool entries registered mid-teardown). Re-collect and re-kill each pass
+    // instead of trusting the initial sweep.
+    const stragglers = []
+    if (hermesProcess && Number.isInteger(hermesProcess.pid)) stragglers.push(hermesProcess.pid)
+    for (const entry of backendPool.values()) {
+      if (entry.process && Number.isInteger(entry.process.pid)) stragglers.push(entry.process.pid)
+    }
+    for (const pid of stragglers) forceKillProcessTree(pid)
     await new Promise(r => setTimeout(r, 300))
   }
-  rememberLog(`[${tag}] venv shim still locked after 15s; proceeding anyway (force)`)
+  // Do NOT proceed past a held lock: handing off to the updater while another
+  // process (a second desktop window, a user terminal, an unkillable child)
+  // still maps the venv's files guarantees a half-updated venv — the updater's
+  // dependency sync dies on access-denied partway through uninstalls, leaving
+  // imports broken (the July 2026 brotlicffi/_sodium.pyd incidents). Failing
+  // the update loudly and keeping the app running is strictly better than a
+  // bricked install that needs manual venv surgery.
+  rememberLog(`[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`)
   return { unlocked: false }
 }
 
@@ -2246,7 +2285,20 @@ async function applyUpdates(opts = {}) {
     // spawn the updater. Without this the updater races a still-locked
     // hermes.exe (held by the backend child / its grandchildren) and the update
     // bricks. See releaseBackendLockForUpdate for the full failure analysis.
-    await releaseBackendLockForUpdate(updateRoot)
+    const lock = await releaseBackendLockForUpdate(updateRoot)
+    if (!lock.unlocked) {
+      // Something OUTSIDE this app holds the venv (a second window, a user
+      // terminal running hermes, an unkillable child). Handing off anyway
+      // guarantees a half-updated venv — abort loudly instead and let the
+      // user close the holder and retry. Restart our own backend so the app
+      // keeps working after the failed attempt.
+      const message =
+        'Update aborted: another process is holding the Hermes install open ' +
+        '(a second Hermes window or a terminal running hermes?). Close it and retry.'
+      emitUpdateProgress({ stage: 'error', message, percent: null })
+      startHermes().catch(() => {})
+      return { ok: false, error: message }
+    }
 
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
@@ -2262,6 +2314,17 @@ async function applyUpdates(opts = {}) {
       windowsHide: false
     })
     child.unref()
+
+    // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
+    // quit dwell. The Tauri updater won't write its own marker for several
+    // seconds (window init + manifest), and during that gap our renderer
+    // can reconnect and spawn a fresh backend that re-locks .pyd files in
+    // the venv. By writing the marker ourselves the renderer's
+    // waitForUpdateToFinish() gate sees a live update and parks instead.
+    // The updater overwrites this with its own PID later; same format.
+    if (Number.isInteger(child.pid)) {
+      writeUpdateMarker(HERMES_HOME, child.pid)
+    }
 
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
 
@@ -2302,9 +2365,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // --repair (full venv recreate) and drove reinstall loops. The venv interpreter
   // and the bootstrap-complete marker are present earlier and are better signals.
   const haveRealInstall =
-    fileExists(venvPython) ||
-    fileExists(venvHermes) ||
-    fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
+    fileExists(venvPython) || fileExists(venvHermes) || fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
   const updaterArgs = haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 
   await releaseBackendLockForUpdate(updateRoot)
@@ -2321,6 +2382,13 @@ async function handOffWindowsBootstrapRecovery(reason) {
     windowsHide: false
   })
   child.unref()
+
+  // Same marker pre-write as applyUpdates — see comment there. The recovery
+  // hand-off has the same window where the renderer can respawn a backend
+  // before the updater writes its own marker.
+  if (Number.isInteger(child.pid)) {
+    writeUpdateMarker(HERMES_HOME, child.pid)
+  }
 
   rememberLog(
     `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
@@ -3557,13 +3625,13 @@ function runRenderTitleJob(rawUrl) {
       return finish('')
     }
 
-    const readTitle = () => window?.webContents?.getTitle?.() || ''
+    const finishWithTitle = () => finish(readLinkTitleWindowTitle(window))
     const scheduleGrace = () => {
       if (graceTimer) clearTimeout(graceTimer)
-      graceTimer = setTimeout(() => finish(readTitle()), RENDER_TITLE_GRACE_MS)
+      graceTimer = setTimeout(finishWithTitle, RENDER_TITLE_GRACE_MS)
     }
 
-    hardTimer = setTimeout(() => finish(readTitle()), RENDER_TITLE_TIMEOUT_MS)
+    hardTimer = setTimeout(finishWithTitle, RENDER_TITLE_TIMEOUT_MS)
 
     window.webContents.setUserAgent(TITLE_USER_AGENT)
     window.webContents.on('page-title-updated', scheduleGrace)

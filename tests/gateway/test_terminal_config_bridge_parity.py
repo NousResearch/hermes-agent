@@ -169,10 +169,10 @@ def test_gateway_terminal_config_overrides_stale_terminal_env(tmp_path, monkeypa
     assert os.environ["TERMINAL_HOME_MODE"] == "copy"
 
 
-def test_gateway_terminal_cwd_placeholder_falls_back_without_clobbering_backend(
+def test_gateway_terminal_cwd_placeholder_preserves_docker_sandbox_default(
     tmp_path, monkeypatch
 ):
-    """Gateway skips cwd placeholders, then falls back to MESSAGING_CWD/home."""
+    """Gateway skips cwd placeholders without clobbering docker's sandbox default."""
     home = tmp_path / "home"
     messaging_cwd = tmp_path / "messaging-cwd"
     messaging_cwd.mkdir()
@@ -191,7 +191,7 @@ def test_gateway_terminal_cwd_placeholder_falls_back_without_clobbering_backend(
     _run_gateway_bridge(home, monkeypatch)
 
     assert os.environ["TERMINAL_ENV"] == "docker"
-    assert os.environ["TERMINAL_CWD"] == str(messaging_cwd)
+    assert "TERMINAL_CWD" not in os.environ
     assert os.environ["TERMINAL_TIMEOUT"] == "99"
     assert os.environ["TERMINAL_HOME_MODE"] == "copy"
 

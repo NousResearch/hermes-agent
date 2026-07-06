@@ -18,6 +18,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+# Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
+# when running under UV's bundled Python which ships a minimal PATH (#3849).
+if os.name == "posix":
+    _sys_dirs = {"/bin", "/usr/bin", "/usr/sbin", "/sbin"}
+    _path_dirs = set(os.environ.get("PATH", "").split(os.pathsep))
+    _missing = _sys_dirs - _path_dirs
+    if _missing:
+        os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(sorted(_missing))
+
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from gateway.status import terminate_pid
@@ -3160,7 +3169,7 @@ def _require_service_installed(action: str, system: bool = False) -> None:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
         scope_flag = " --system" if system else ""
-        print(f"✗ Gateway service is not installed")
+        print("✗ Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         sys.exit(1)
 

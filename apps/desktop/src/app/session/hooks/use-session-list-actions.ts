@@ -225,6 +225,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     loadMoreSessions,
     loadMoreSessionsForProfile,
     refreshCronJobs,
+    refreshMessagingSessions,
     refreshSessions
   }
 }

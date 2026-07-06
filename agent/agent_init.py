@@ -1363,6 +1363,17 @@ def init_agent(
     # line).  Useful for users on exotic setups where the probe heuristics
     # are noisy.
     agent._environment_probe = bool(_agent_section.get("environment_probe", True))
+    # Warm the probe off-thread: it shells out to python3/pip (~0.5s of
+    # subprocess round-trips) and its result lands in the FIRST system
+    # prompt build, which sits on the time-to-first-token critical path.
+    # The warm runs during agent init (network/credential setup dominates),
+    # so by the time the first prompt is built the line is already cached.
+    if agent._environment_probe:
+        try:
+            from tools.env_probe import warm_environment_probe_async
+            warm_environment_probe_async()
+        except Exception:
+            pass
 
     # Per-platform prompt-hint overrides (config.yaml → platform_hints).
     # Lets an enterprise admin append to or replace Hermes' built-in
@@ -1403,9 +1414,14 @@ def init_agent(
     # compact at ~136K — half the usable context). Gated by an opt-out config
     # flag so the user can fall back to the global threshold; when the override
     # fires we stash a one-time notification (replayed on the first turn) that
-    # tells the user what changed and how to revert.
+    # tells the user what changed and how to revert. The notice has its own
+    # display gate so users can keep the threshold autoraise without getting
+    # the banner on gateway turns.
     _codex_gpt55_autoraise = str(
         _compression_cfg.get("codex_gpt55_autoraise", True)
+    ).lower() in {"true", "1", "yes"}
+    _codex_gpt55_autoraise_notice = str(
+        _compression_cfg.get("codex_gpt55_autoraise_notice", True)
     ).lower() in {"true", "1", "yes"}
     agent._compression_threshold_autoraised = None
     try:
@@ -1817,6 +1833,8 @@ def init_agent(
         working_dir=os.getenv("TERMINAL_CWD") or None,
     )
     agent._user_turn_count = 0
+    # Copilot x-initiator flag: first API call of a user turn sends "user" (#3040).
+    agent._is_user_initiated_turn = False
 
     # Cumulative token usage for the session
     agent.session_prompt_tokens = 0
@@ -1891,7 +1909,7 @@ def init_agent(
         # gateway users get the same text replayed via _compression_warning on
         # turn 1 (set below, after the warning slot is initialized).
         _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
+        if _autoraise and compression_enabled and _codex_gpt55_autoraise_notice:
             print(_build_codex_gpt55_autoraise_notice(_autoraise))
 
     # Check immediately so CLI users see the warning at startup.
@@ -1902,7 +1920,7 @@ def init_agent(
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
     _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
+    if _autoraise and compression_enabled and _codex_gpt55_autoraise_notice:
         agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network

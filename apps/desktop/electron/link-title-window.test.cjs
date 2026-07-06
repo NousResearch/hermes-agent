@@ -1,7 +1,12 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 
-const { createLinkTitleWindow, guardLinkTitleSession, linkTitleWindowOptions } = require('./link-title-window.cjs')
+const {
+  createLinkTitleWindow,
+  guardLinkTitleSession,
+  linkTitleWindowOptions,
+  readLinkTitleWindowTitle
+} = require('./link-title-window.cjs')
 
 function makeFakeBrowserWindow() {
   const calls = { audioMuted: [] }
@@ -58,11 +63,66 @@ test('createLinkTitleWindow still returns the window if muting throws', () => {
 test('guardLinkTitleSession cancels downloads triggered by the title-fetch window', () => {
   let cancelled = false
   const handlers = {}
-  guardLinkTitleSession({ on: (e, h) => { handlers[e] = h } })
-  handlers['will-download'](null, { cancel: () => { cancelled = true } })
+  guardLinkTitleSession({
+    on: (e, h) => {
+      handlers[e] = h
+    }
+  })
+  handlers['will-download'](null, {
+    cancel: () => {
+      cancelled = true
+    }
+  })
   assert.ok(cancelled)
 })
 
 test('guardLinkTitleSession is a no-op when session.on throws', () => {
-  assert.doesNotThrow(() => guardLinkTitleSession({ on() { throw new Error() } }))
+  assert.doesNotThrow(() =>
+    guardLinkTitleSession({
+      on() {
+        throw new Error()
+      }
+    })
+  )
+})
+
+test('readLinkTitleWindowTitle returns empty for missing or destroyed windows', () => {
+  assert.equal(readLinkTitleWindowTitle(null), '')
+  assert.equal(readLinkTitleWindowTitle(undefined), '')
+  assert.equal(readLinkTitleWindowTitle({ isDestroyed: () => true }), '')
+})
+
+test('readLinkTitleWindowTitle returns empty when webContents is destroyed', () => {
+  const window = {
+    isDestroyed: () => false,
+    webContents: { isDestroyed: () => true, getTitle: () => 'Should Not Read' }
+  }
+
+  assert.equal(readLinkTitleWindowTitle(window), '')
+})
+
+test('readLinkTitleWindowTitle swallows getTitle throws after teardown', () => {
+  const window = {
+    isDestroyed: () => false,
+    webContents: {
+      isDestroyed: () => false,
+      getTitle: () => {
+        throw new Error('Object has been destroyed')
+      }
+    }
+  }
+
+  assert.equal(readLinkTitleWindowTitle(window), '')
+})
+
+test('readLinkTitleWindowTitle returns trimmed page title', () => {
+  const window = {
+    isDestroyed: () => false,
+    webContents: {
+      isDestroyed: () => false,
+      getTitle: () => 'Example Domain'
+    }
+  }
+
+  assert.equal(readLinkTitleWindowTitle(window), 'Example Domain')
 })

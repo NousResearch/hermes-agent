@@ -39,6 +39,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     # Type checkers see ``httpx`` as the always-imported module, so every use
@@ -389,6 +390,13 @@ class PhotonAdapter(BasePlatformAdapter):
         if _native_polls is None:
             _native_polls = os.getenv("PHOTON_NATIVE_POLLS")
         self._native_polls_enabled = str(_native_polls).strip().lower() in {
+            "true", "1", "yes", "on",
+        }
+
+        _mini_apps = extra.get("mini_apps")
+        if _mini_apps is None:
+            _mini_apps = os.getenv("PHOTON_MINI_APPS")
+        self._mini_apps_enabled = str(_mini_apps).strip().lower() in {
             "true", "1", "yes", "on",
         }
 
@@ -1033,6 +1041,7 @@ class PhotonAdapter(BasePlatformAdapter):
         env["PHOTON_NATIVE_EDITS"] = "true" if self._native_edits_enabled else "false"
         env["PHOTON_NATIVE_UNSEND"] = "true" if self._native_unsend_enabled else "false"
         env["PHOTON_NATIVE_POLLS"] = "true" if self._native_polls_enabled else "false"
+        env["PHOTON_MINI_APPS"] = "true" if self._mini_apps_enabled else "false"
         # The sidecar exits when its stdin (the pipe below) hits EOF, so a
         # gateway death of ANY kind — including SIGKILL, where disconnect()
         # never runs — can't leave it orphaned on the port.
@@ -1360,6 +1369,49 @@ class PhotonAdapter(BasePlatformAdapter):
                     "options": clean_options,
                 },
             )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        self._record_sent_message(data.get("messageId"))
+        return SendResult(
+            success=True,
+            message_id=data.get("messageId"),
+            raw_response=data,
+        )
+
+    async def send_mini_app(
+        self,
+        chat_id: str,
+        url: str,
+        *,
+        app_name: Optional[str] = None,
+        extension_bundle_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+    ) -> SendResult:
+        """Send a narrow iMessage app-url card through Photon.
+
+        This intentionally exposes only the generic Spectrum ``app(url)``
+        launch path, gated behind ``PHOTON_MINI_APPS=true``. Capability tokens
+        may live in the URL, so callers and logs must treat the URL as
+        sensitive and avoid echoing it back to the model/user.
+        """
+        if not self._mini_apps_enabled:
+            return SendResult(success=False, error="Photon mini-app cards are disabled")
+
+        clean_url = str(url or "").strip()
+        parsed = urlparse(clean_url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            return SendResult(success=False, error="Photon mini-app cards require an https URL")
+
+        body: Dict[str, Any] = {"spaceId": chat_id, "url": clean_url}
+        if app_name:
+            body["appName"] = app_name.strip()
+        if extension_bundle_id:
+            body["extensionBundleId"] = extension_bundle_id.strip()
+        if team_id:
+            body["teamId"] = team_id.strip()
+
+        try:
+            data = await self._sidecar_call("/send-mini-app", body)
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))

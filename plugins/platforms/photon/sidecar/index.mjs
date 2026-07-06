@@ -33,6 +33,10 @@
 //              "reactionId": "..." | null (restart-recovery fallback)}
 //   - POST /read        -> {"ok": true}
 //       body: {"spaceId": "...", "messageId": "<target msg id>"}
+//   - POST /send-mini-app -> {"ok": true, "messageId": "..."}
+//       body: {"spaceId": "...", "url": "https://...",
+//              "appName": "..." | null,
+//              "extensionBundleId": "..." | null, "teamId": "..." | null}
 //   - POST /typing      -> {"ok": true}
 //       body: {"spaceId": "...", "state": "start" | "stop"}
 //   - POST /shutdown    -> {"ok": true}; then process exits
@@ -117,6 +121,9 @@ const nativeUnsendEnabled = /^(1|true|yes|on)$/i.test(
 );
 const nativePollsEnabled = /^(1|true|yes|on)$/i.test(
   (process.env.PHOTON_NATIVE_POLLS || "").trim()
+);
+const miniAppsEnabled = /^(1|true|yes|on)$/i.test(
+  (process.env.PHOTON_MINI_APPS || "").trim()
 );
 const EFFECTS = {
   slam: "com.apple.MobileSMS.expressivesend.impact",
@@ -303,6 +310,7 @@ let Spectrum,
   pollContent,
   replyContent,
   unsendContent,
+  appUrlContent,
   spectrumText,
   spectrumMarkdown,
   spectrumTyping,
@@ -318,6 +326,7 @@ try {
     poll: pollContent,
     reply: replyContent,
     unsend: unsendContent,
+    app: appUrlContent,
     text: spectrumText,
     markdown: spectrumMarkdown,
     typing: spectrumTyping,
@@ -1218,6 +1227,40 @@ const server = http.createServer(async (req, res) => {
           method: "advanced.messages.unsend",
         });
       }
+    }
+    if (req.url === "/send-mini-app") {
+      if (!miniAppsEnabled) {
+        return badRequest(res, "mini-app cards are disabled");
+      }
+      const { spaceId, url } = body || {};
+      if (!spaceId || typeof url !== "string" || !url.trim()) {
+        return badRequest(res, "spaceId and url are required");
+      }
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(url.trim());
+      } catch {
+        return badRequest(res, "url must be a valid https URL");
+      }
+      if (parsedUrl.protocol !== "https:") {
+        return badRequest(res, "url must be a valid https URL");
+      }
+      if (typeof appUrlContent !== "function") {
+        return badRequest(res, "mini-app cards not supported on this platform");
+      }
+      const allowedMetadata = {};
+      for (const key of ["appName", "extensionBundleId", "teamId"]) {
+        if (typeof body?.[key] === "string" && body[key].trim()) {
+          allowedMetadata[key] = body[key].trim();
+        }
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(appUrlContent(parsedUrl.toString()));
+      rememberKnownMessage(result);
+      return ok(res, {
+        messageId: result?.id || null,
+        ...allowedMetadata,
+      });
     }
     if (req.url === "/send-poll") {
       if (!nativePollsEnabled) {

@@ -22,6 +22,7 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  Bot,
   Clock,
   Code,
   Cpu,
@@ -81,6 +82,7 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
+import ControlRoomPage from "@/pages/ControlRoomPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import ProfileBuilderPage from "@/pages/ProfileBuilderPage";
 import SkillsPage from "@/pages/SkillsPage";
@@ -132,6 +134,7 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
+  "/control-room": ControlRoomPage,
   "/sessions": SessionsPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
@@ -161,6 +164,11 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/control-room",
+    label: "Control room",
+    icon: Bot,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",

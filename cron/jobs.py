@@ -87,6 +87,16 @@ _jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
+# How long a one-shot's running-claim (#59229) is honored before it is
+# considered stale and the job may be re-dispatched. The claim's real job is
+# to be cleared by mark_job_run() the moment the run completes (success or
+# failure); this TTL is only a safety valve for a claiming tick that DIED
+# mid-run (gateway kill, OOM, hard-timeout) so a one-shot is never wedged
+# forever. It must exceed the longest legitimate run: the default cron
+# inactivity timeout is 600s and a job that keeps producing output can run
+# past that, so 30 min gives generous headroom over any healthy run.
+ONESHOT_RUN_CLAIM_TTL_SECONDS = 1800
+
 
 def _jobs_lock_file() -> Path:
     """Return the advisory lock path for the current cron directory."""
@@ -1306,6 +1316,11 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None
+                # Clear the one-shot running-claim (#59229): the run is over, so
+                # a re-armed recurring job or a re-dispatched one-shot recovery
+                # is claimable again. No-op if the job never carried a claim.
+                if job.get("run_claim") is not None:
+                    job["run_claim"] = None
                 
                 # Increment completed count.  Finite one-shot jobs are
                 # pre-claimed by claim_dispatch() BEFORE the side effect runs
@@ -1559,6 +1574,24 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         if not job.get("enabled", True):
             continue
 
+        # Cross-process running-claim guard (#59229): if another scheduler
+        # process already claimed this one-shot and its run is still in flight
+        # (claim younger than the TTL), skip it — do NOT re-dispatch. The
+        # claim is stamped just before we return the job as due (below) and
+        # cleared by mark_job_run() on completion. A claim older than the TTL
+        # is treated as stale (the claiming tick died mid-run) and allowed
+        # through so the job is recovered rather than wedged forever.
+        existing_claim = job.get("run_claim")
+        if existing_claim and job.get("schedule", {}).get("kind") == "once":
+            try:
+                claimed_at = _ensure_aware(
+                    datetime.fromisoformat(existing_claim["at"])
+                )
+                if (now - claimed_at).total_seconds() < ONESHOT_RUN_CLAIM_TTL_SECONDS:
+                    continue  # a fresh claim is held by an in-flight run
+            except (KeyError, ValueError, TypeError):
+                pass  # malformed claim → fall through and (re)claim
+
         next_run = job.get("next_run_at")
         if not next_run:
             schedule = job.get("schedule", {})
@@ -1703,20 +1736,27 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 break
                         continue
 
-            # Before returning a one-shot job as due, advance its
-            # next_run_at past the next scheduler tick so other processes
-            # (gateway + desktop running concurrent schedulers) don't
-            # double-execute it (#59229).  The advance is persisted
-            # immediately under the same lock that get_due_jobs holds.
-            # mark_job_run re-anchors next_run_at on completion (success
-            # or failure), so a tick death between here and execution
-            # only delays the job by a single tick window — not lost.
+            # Durably claim a one-shot for the DURATION of its run before
+            # returning it as due, so a second scheduler process (gateway +
+            # desktop both run in-process 60s tickers on one HERMES_HOME)
+            # cannot re-dispatch it while the first run is still in flight
+            # (#59229). A plain one-shot's due-state is not resolved until
+            # mark_job_run() completes it minutes later, so advancing
+            # next_run_at by a fixed window is not enough — a job that outlives
+            # one tick (e.g. a 2.5-min research prompt) would simply re-fire on
+            # the next tick after the window. Instead we stamp a run_claim under
+            # the same lock get_due_jobs already holds; the other process reads
+            # a fresh claim on its next tick and skips (handled at the top of
+            # this loop). mark_job_run() clears the claim on completion. The TTL
+            # is only a safety valve: a claiming tick that DIES mid-run leaves a
+            # stale claim that expires after ONESHOT_RUN_CLAIM_TTL_SECONDS, so
+            # the job is re-dispatched rather than wedged forever.
             if kind == "once":
-                claimed_next = (now + timedelta(seconds=60)).isoformat()
-                job["next_run_at"] = claimed_next
+                claim = {"at": now.isoformat(), "by": _machine_id()}
+                job["run_claim"] = claim
                 for rj in raw_jobs:
                     if rj["id"] == job["id"]:
-                        rj["next_run_at"] = claimed_next
+                        rj["run_claim"] = claim
                         needs_save = True
                         break
 

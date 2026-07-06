@@ -1439,3 +1439,26 @@ updates:
 #     binary_path: ""                               # "" = resolve op via PATH; else absolute path
 #     cache_ttl_seconds: 300                        # 0 disables BOTH cache layers
 #     override_existing: true                       # resolved values win over existing env
+
+# =============================================================================
+# Tool search (progressive tool disclosure)
+# =============================================================================
+# Replaces deferrable tool schemas in the model-facing tools array with three
+# small bridge tools (tool_search / tool_describe / tool_call), cutting the
+# schema "entry tax" every session pays on its first prefill. Deferred tools
+# stay fully usable — the model finds them by search and calls them through
+# the bridge, with guardrails/approvals/hooks firing identically.
+#
+# tools:
+#   tool_search:
+#     enabled: auto            # auto | on | off. auto activates when deferrable
+#                              # schemas would consume >= threshold_pct of context
+#     threshold_pct: 10.0      # auto-activation gate, % of context window
+#     search_default_limit: 5  # tool_search results when no limit is given
+#     max_search_limit: 20     # hard cap on requested results
+#     # By default only MCP and plugin tools are deferrable — built-in
+#     # ("core") toolsets always load. defer_toolsets opts named built-in
+#     # toolsets into deferral too, for installs where the built-in schemas
+#     # themselves are the bulk of the entry tax. Trade-off: turns that use
+#     # a deferred tool pay one extra bridge round-trip to discover it.
+#     # defer_toolsets: [session_search, delegation, skills, computer_use]

@@ -138,6 +138,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
 
+    # ─── Observability plugins ─────────────────────────────────────────────
+    # The bundled Langfuse plugin is opt-in, while its SDK remains optional so
+    # base installs stay lean. Track the SDK here so `hermes update` can
+    # restore tracing after venv refreshes remove optional packages.
+    "observability.langfuse": ("langfuse==4.13.0",),
+
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),
     "memory.hindsight": ("hindsight-client==0.6.1",),
@@ -722,6 +728,43 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
 # =============================================================================
 
 
+_ENABLED_PLUGIN_LAZY_FEATURES = {
+    # Canonical bundled plugin key.
+    "observability/langfuse": "observability.langfuse",
+    # Older setup/config paths may contain the bare plugin name.
+    "langfuse": "observability.langfuse",
+}
+
+
+def _features_from_enabled_plugins() -> list[str]:
+    """Return lazy features implied by enabled bundled plugins.
+
+    Most lazy features can be rediscovered by checking whether at least one of
+    their packages is still present in the venv. Enabled bundled plugins need a
+    second signal: after an update rebuilds the venv, their SDK can be gone
+    even though ``plugins.enabled`` still says the plugin should run. Use that
+    config state as the breadcrumb so update refreshes can rehydrate the SDK.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception:
+        return []
+
+    plugins_cfg = config.get("plugins") or {}
+    enabled = plugins_cfg.get("enabled") or []
+    if not isinstance(enabled, (list, tuple, set)):
+        return []
+
+    features: list[str] = []
+    for plugin_key in enabled:
+        feature = _ENABLED_PLUGIN_LAZY_FEATURES.get(str(plugin_key))
+        if feature and feature in LAZY_DEPS and feature not in features:
+            features.append(feature)
+    return features
+
+
 def feature_specs(feature: str) -> tuple[str, ...]:
     """Return the registered specs for a feature, or raise KeyError."""
     if feature not in LAZY_DEPS:
@@ -854,11 +897,13 @@ def feature_install_command(feature: str) -> Optional[str]:
 
 
 def active_features() -> list[str]:
-    """Return the list of features the user has ever lazy-installed.
+    """Return the list of lazy features the user has activated.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
-    Features the user has never enabled stay quiet.
+    A feature usually counts as active if at least one of its declared
+    packages is currently installed in the venv (presence check, ignoring
+    version). Enabled bundled plugins also count as active via
+    ``plugins.enabled`` so update can reinstall their SDK after a venv rebuild
+    removes optional packages.
 
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
@@ -866,6 +911,9 @@ def active_features() -> list[str]:
     active = []
     for feature, specs in LAZY_DEPS.items():
         if any(_is_present(s) for s in specs):
+            active.append(feature)
+    for feature in _features_from_enabled_plugins():
+        if feature not in active:
             active.append(feature)
     return active
 

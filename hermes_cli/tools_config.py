@@ -1384,17 +1384,25 @@ def _run_post_setup(post_setup_key: str):
             _print_info("    Run manually: hermes auth spotify")
 
     elif post_setup_key == "langfuse":
-        # Install the langfuse SDK.
+        # Install the Langfuse SDK through the managed lazy-dependency path so
+        # `hermes update` can also refresh it after venv rebuilds.
+        from tools import lazy_deps
+
+        feature = "observability.langfuse"
         try:
-            __import__("langfuse")
-            _print_success("    langfuse SDK already installed")
-        except ImportError:
-            _print_info("    Installing langfuse SDK...")
-            result = _pip_install(["langfuse", "--quiet"], timeout=120)
-            if result.returncode == 0:
+            missing = lazy_deps.feature_missing(feature)
+            if missing:
+                _print_info("    Installing langfuse SDK...")
+                lazy_deps.ensure(feature, prompt=False)
                 _print_success("    langfuse SDK installed")
             else:
-                _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
+                _print_success("    langfuse SDK already installed")
+        except lazy_deps.FeatureUnavailable as exc:
+            _print_warning(f"    langfuse SDK install failed: {exc.reason}")
+            _print_info(f"    Run manually: {lazy_deps.manual_install_hint(feature)}")
+        except Exception as exc:
+            _print_warning(f"    langfuse SDK install failed: {exc}")
+            _print_info(f"    Run manually: {lazy_deps.manual_install_hint(feature)}")
         # Opt the bundled observability/langfuse plugin into plugins.enabled.
         # The plugin ships in the repo but doesn't load until the user enables
         # it (standalone plugins are opt-in).

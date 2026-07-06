@@ -147,6 +147,35 @@ def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
+def test_langfuse_post_setup_installs_managed_lazy_dependency(monkeypatch, tmp_path):
+    """The documented Langfuse setup path should install the managed pin.
+
+    This keeps ``hermes tools -> Langfuse Observability`` aligned with the
+    lazy dependency refresh path that ``hermes update`` uses, instead of
+    installing an unpinned/manual package that update cannot reason about.
+    """
+    from hermes_cli import tools_config
+    from tools import lazy_deps
+
+    calls = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(lazy_deps, "feature_missing", lambda feature: ("langfuse==4.13.0",))
+    monkeypatch.setattr(
+        lazy_deps,
+        "ensure",
+        lambda feature, *, prompt=True: calls.append((feature, prompt)),
+    )
+    monkeypatch.setattr(
+        tools_config,
+        "_pip_install",
+        lambda *args, **kwargs: pytest.fail("Langfuse setup should use tools.lazy_deps.ensure"),
+    )
+
+    tools_config._run_post_setup("langfuse")
+
+    assert calls == [("observability.langfuse", False)]
+
+
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
     config = {
         "context": {"engine": "lcm"},

@@ -304,6 +304,27 @@ class TestActiveFeatures:
         monkeypatch.setattr(ld, "_is_present", lambda spec: False)
         assert ld.active_features() == []
 
+    def test_enabled_langfuse_plugin_counts_active_when_sdk_missing(self, tmp_path, monkeypatch):
+        """An enabled bundled plugin is active state even after its SDK vanishes.
+
+        ``hermes update`` refreshes active lazy features after rebuilding the
+        venv. If it only looks for packages still present on disk, a venv
+        refresh that removes ``langfuse`` has no breadcrumb left and cannot
+        reinstall it. The durable signal is ``plugins.enabled``.
+        """
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - observability/langfuse\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(ld, "_is_present", lambda spec: False)
+
+        active = ld.active_features()
+
+        assert "observability.langfuse" in active
+
     def test_finds_features_with_at_least_one_package_installed(self, monkeypatch):
         # Pretend only honcho-ai is installed; nothing else.
         monkeypatch.setattr(

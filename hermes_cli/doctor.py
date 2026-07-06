@@ -78,6 +78,35 @@ def _safe_which(cmd: str) -> str | None:
         return None
 
 
+def _npm_global_agent_browser_installed() -> bool:
+    """Return True when ``npm list -g agent-browser`` reports a real install.
+
+    After a ``hermes update`` the global ``agent-browser`` symlink may be
+    removed (or become dangling and get cleaned up), making ``shutil.which``
+    return ``None`` even though the package is still present in npm's global
+    store.  This fallback catches that case so doctor does not falsely report
+    "not installed".
+    """
+    npm = _safe_which("npm")
+    if not npm:
+        return False
+    try:
+        result = subprocess.run(
+            [npm, "list", "-g", "agent-browser", "--depth=0"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        # npm exits 0 when the package is found.  The output contains
+        # ``agent-browser@…`` on a line when installed; ``(empty)`` or
+        # ``npm ERR! … not found`` when absent.
+        if result.returncode != 0:
+            return False
+        return "agent-browser@" in result.stdout
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -1572,7 +1601,17 @@ def run_doctor(args):
             for step in _termux_browser_setup_steps(node_installed=True):
                 check_info(step)
         else:
-            check_warn("agent-browser not installed", "(run: npm install)")
+            # Fallback: agent-browser may still be in npm's global store even
+            # when the PATH symlink is gone (e.g. after a `hermes update` that
+            # wiped node_modules — issue #59859).  Check via npm before
+            # declaring "not installed".
+            if _npm_global_agent_browser_installed():
+                check_info(
+                    "agent-browser globally installed but PATH entry missing "
+                    "(run: npm install -g agent-browser to re-link)"
+                )
+            else:
+                check_warn("agent-browser not installed", "(run: npm install)")
 
         # Chromium presence — the browser tools silently fail to register when
         # agent-browser is found but no Playwright-managed Chromium is on disk

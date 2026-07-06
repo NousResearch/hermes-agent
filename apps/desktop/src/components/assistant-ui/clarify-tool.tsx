@@ -13,7 +13,7 @@ import {
   useState
 } from 'react'
 
-import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
+import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
@@ -25,7 +25,7 @@ import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
-import { selectMessageRunning } from './tool-fallback-model'
+import { selectMessageRunning } from './tool/fallback-model'
 
 interface ClarifyArgs {
   question?: string
@@ -280,7 +280,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   if (loading) {
     return (
-      <ClarifyShell aria-label={copy.loadingQuestion} className="grid min-h-12 place-items-center px-2.5 py-3" role="status">
+      <ClarifyShell
+        aria-label={copy.loadingQuestion}
+        className="grid min-h-12 place-items-center px-2.5 py-3"
+        role="status"
+      >
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
       </ClarifyShell>
     )

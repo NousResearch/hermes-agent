@@ -3360,6 +3360,13 @@ DELEGATE_TASK_SCHEMA = {
                 # delegation.max_concurrent_children (default 3) and
                 # enforced with a clear error in delegate_task().
                 "description": "(rebuilt at get_definitions() time)",
+                # Strict OpenAI-compatible backends reject function call
+                # arguments where an array-typed parameter receives null.
+                # Models frequently emit tasks: null for single-task mode;
+                # mark nullable so the backend's JSON Schema validator passes
+                # it through.  Runtime code already treats None as "no
+                # tasks" via args.get("tasks") (#59386).
+                "nullable": True,
             },
             "role": {
                 "type": "string",

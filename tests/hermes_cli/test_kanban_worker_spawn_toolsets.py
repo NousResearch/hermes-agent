@@ -3,6 +3,15 @@ from __future__ import annotations
 import subprocess
 
 
+def _write_skill(root, name: str) -> None:
+    skill_dir = root / "skills" / name
+    skill_dir.mkdir(parents=True)
+    skill_dir.joinpath("SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Test skill\n---\n\n# {name}\n",
+        encoding="utf-8",
+    )
+
+
 def _make_task(kb, *, assignee: str):
     return kb.Task(
         id="t_spawn_tools",
@@ -116,3 +125,76 @@ toolsets:
     assert "web" in resolved
     assert "kanban" in resolved  # recovered worker lifecycle surface
     assert resolved != ["kanban"]
+
+
+def test_dispatch_blocks_card_with_skill_missing_from_worker_profile(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("", encoding="utf-8")
+    profile.joinpath("config.yaml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+
+    kb.init_db()
+    spawned = []
+
+    def fake_spawn(task, workspace):
+        spawned.append(task.id)
+        return 123
+
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(
+            conn,
+            title="needs unavailable skill",
+            assignee="elias",
+            skills=["missing-card-skill"],
+        )
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+        runs = kb.list_runs(conn, tid)
+
+    assert spawned == []
+    assert tid in result.auto_blocked
+    assert task.status == "blocked"
+    assert task.block_kind == "capability"
+    assert "missing-card-skill" in (runs[-1].summary or "")
+    assert "elias" in (runs[-1].summary or "")
+
+
+def test_dispatch_allows_card_skill_present_in_worker_profile(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("", encoding="utf-8")
+    profile.joinpath("config.yaml").write_text("", encoding="utf-8")
+    _write_skill(profile, "card-skill")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+
+    kb.init_db()
+    spawned = []
+
+    def fake_spawn(task, workspace):
+        spawned.append((task.id, task.skills))
+        return 456
+
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(
+            conn,
+            title="has profile skill",
+            assignee="elias",
+            skills=["card-skill"],
+        )
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+
+    assert spawned == [(tid, ["card-skill"])]
+    assert result.spawned and result.spawned[0][0] == tid
+    assert task.status == "running"

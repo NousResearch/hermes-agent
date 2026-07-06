@@ -310,8 +310,10 @@ class TestPostStopInterruptSwallow:
 
         assert response == ""
 
-    def test_uninterrupted_zero_api_calls_stays_silent(self):
-        """No interrupt and no work — unchanged behavior."""
+    def test_uninterrupted_zero_api_calls_surfaces_retry_hint(self):
+        """No interrupt and no work — #31884 (landed after this PR was
+        written) surfaces a retry hint instead of silence for the
+        generation-race drop."""
         from gateway.run import _normalize_empty_agent_response
 
         agent_result = {
@@ -323,7 +325,7 @@ class TestPostStopInterruptSwallow:
 
         response = _normalize_empty_agent_response(agent_result, "", history_len=10)
 
-        assert response == ""
+        assert "send it again" in response
 
     @pytest.mark.asyncio
     async def test_interrupt_and_clear_session_evicts_cached_agent(self):

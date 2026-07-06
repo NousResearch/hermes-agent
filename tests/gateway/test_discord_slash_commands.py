@@ -1047,3 +1047,64 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
 
+
+
+def test_skill_command_unknown_name_suggests_close_match(adapter):
+    """A typo'd skill name should get a 'Did you mean' hint naming the
+    closest installed skill(s), sourced from the adapter's own catalog."""
+    with patch(
+        "hermes_cli.commands.discord_skill_commands_by_category",
+        return_value=(
+            {"media": [("gif-search", "GIFs", "/gif-search")]},
+            [("humanizer", "De-AI text", "/humanizer")],
+            0,
+        ),
+    ):
+        adapter._register_slash_commands()
+
+    skill_cmd = adapter._client.tree.commands["skill"]
+
+    sent: list[dict] = []
+
+    async def fake_send(text, ephemeral=False):
+        sent.append({"text": text, "ephemeral": ephemeral})
+
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(send_message=fake_send),
+    )
+
+    import asyncio
+    asyncio.run(skill_cmd.callback(interaction, name="humanzer"))
+
+    assert len(sent) == 1
+    assert "Unknown skill" in sent[0]["text"]
+    assert "Did you mean" in sent[0]["text"]
+    assert "humanizer" in sent[0]["text"]
+    assert sent[0]["ephemeral"] is True
+
+
+def test_skill_command_unknown_name_no_match_keeps_plain_error(adapter):
+    """Garbage input keeps the plain error — no bogus 'Did you mean'."""
+    with patch(
+        "hermes_cli.commands.discord_skill_commands_by_category",
+        return_value=({"media": [("gif-search", "GIFs", "/gif-search")]}, [], 0),
+    ):
+        adapter._register_slash_commands()
+
+    skill_cmd = adapter._client.tree.commands["skill"]
+
+    sent: list[dict] = []
+
+    async def fake_send(text, ephemeral=False):
+        sent.append({"text": text, "ephemeral": ephemeral})
+
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(send_message=fake_send),
+    )
+
+    import asyncio
+    asyncio.run(skill_cmd.callback(interaction, name="zzqqxxyyvv"))
+
+    assert len(sent) == 1
+    assert "Unknown skill" in sent[0]["text"]
+    assert "Did you mean" not in sent[0]["text"]

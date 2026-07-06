@@ -4330,20 +4330,49 @@ class DiscordAdapter(BasePlatformAdapter):
                     return []
                 q = (current or "").strip().lower()
                 choices: list = []
+
+                def _label(name: str, desc: str) -> str:
+                    label = f"{name} — {desc}" if desc else name
+                    # Discord's Choice.name is capped at 100 chars.
+                    if len(label) > 100:
+                        label = label[:97] + "..."
+                    return label
+
                 for name, desc, _key in self._skill_entries:
                     if not q or q in name.lower() or (desc and q in desc.lower()):
-                        if desc:
-                            label = f"{name} — {desc}"
-                        else:
-                            label = name
-                        # Discord's Choice.name is capped at 100 chars.
-                        if len(label) > 100:
-                            label = label[:97] + "..."
                         choices.append(
-                            discord.app_commands.Choice(name=label, value=name)
+                            discord.app_commands.Choice(
+                                name=_label(name, desc), value=name,
+                            )
                         )
                         if len(choices) >= 25:
                             break
+                # Fuzzy fallback: a typo like "pfd" or "humanzer" has no
+                # substring hit, but difflib still finds the intended
+                # skill. Only fires when substring matching came up short,
+                # so exact/substring results keep their priority order.
+                if q and len(choices) < 5:
+                    try:
+                        from difflib import get_close_matches
+                        shown = {c.value for c in choices}
+                        by_name = {
+                            n.lower(): (n, d) for n, d, _k in self._skill_entries
+                        }
+                        for m in get_close_matches(
+                            q, list(by_name), n=5, cutoff=0.6,
+                        ):
+                            name, desc = by_name[m]
+                            if name in shown:
+                                continue
+                            choices.append(
+                                discord.app_commands.Choice(
+                                    name=_label(name, desc), value=name,
+                                )
+                            )
+                            if len(choices) >= 25:
+                                break
+                    except Exception:
+                        pass
                 return choices
 
             @discord.app_commands.describe(
@@ -4362,11 +4391,30 @@ class DiscordAdapter(BasePlatformAdapter):
                     return
                 entry = self._skill_lookup.get(name)
                 if not entry:
-                    await interaction.response.send_message(
-                        f"Unknown skill: `{name}`. Start typing for "
-                        f"autocomplete suggestions.",
-                        ephemeral=True,
-                    )
+                    # Fuzzy-match against the catalog so a hand-typed or
+                    # stale-autocomplete name still resolves helpfully
+                    # (prefix > substring > difflib typo match).
+                    suggestions: list[str] = []
+                    try:
+                        from agent.skill_commands import suggest_skill_commands
+                        known = {n.lower(): n for n, _d, _k in self._skill_entries}
+                        for slug in suggest_skill_commands(
+                            name, candidates=list(known),
+                        ):
+                            match = known.get(slug.lower())
+                            if match and match not in suggestions:
+                                suggestions.append(match)
+                    except Exception:
+                        pass
+                    if suggestions:
+                        hint = " or ".join(f"`{s}`" for s in suggestions[:3])
+                        msg = f"Unknown skill: `{name}`. Did you mean {hint}?"
+                    else:
+                        msg = (
+                            f"Unknown skill: `{name}`. Start typing for "
+                            f"autocomplete suggestions."
+                        )
+                    await interaction.response.send_message(msg, ephemeral=True)
                     return
                 _desc, cmd_key = entry
                 await self._run_simple_slash(

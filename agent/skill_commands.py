@@ -514,6 +514,78 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     return cmd_key if cmd_key in get_skill_commands() else None
 
 
+def suggest_skill_commands(
+    command: str,
+    limit: int = 3,
+    candidates: list[str] | None = None,
+) -> list[str]:
+    """Suggest close skill-command matches for an unresolved ``/command``.
+
+    Used by the gateway's unknown-command path (and the Discord ``/skill``
+    handler) to answer "did you mean …?" instead of a dead-end error.
+
+    Matching strategy, in priority order (mirrors the CLI's autocomplete
+    philosophy from #33822 — prefix beats substring beats fuzzy):
+
+    1. **Prefix** — ``pd`` → ``pdf`` (what the user started typing).
+    2. **Substring** — ``pdf`` → ``nano-pdf`` (they remember a fragment).
+    3. **Fuzzy** (``difflib``, cutoff 0.6) — ``pfd`` → ``pdf`` (typo).
+
+    Hyphen/underscore forms are treated interchangeably, matching
+    :func:`resolve_skill_command_key`.
+
+    Args:
+        command: The unresolved command (with or without leading slash).
+        limit: Maximum number of suggestions returned.
+        candidates: Optional explicit slug list to match against. When
+            omitted, the installed skill-command catalog from
+            :func:`get_skill_commands` is used. Callers with their own
+            (possibly narrower) catalog — e.g. the Discord ``/skill``
+            autocomplete entries — pass it here so suggestions never
+            name a skill the surface can't actually run.
+
+    Returns:
+        Up to *limit* command slugs WITHOUT the leading slash (e.g.
+        ``["nano-pdf", "brain-pdf"]``), best matches first. Empty list
+        when nothing plausible is found or *command* is empty.
+    """
+    if not command:
+        return []
+    from difflib import get_close_matches
+
+    normalized = command.lower().replace("_", "-").strip("/")
+    if not normalized:
+        return []
+
+    if candidates is None:
+        slugs = [key.lstrip("/") for key in get_skill_commands()]
+    else:
+        slugs = [c.lstrip("/") for c in candidates if c]
+    if not slugs:
+        return []
+
+    suggestions: list[str] = []
+
+    def _add(candidates: list[str]) -> None:
+        for slug in candidates:
+            if slug not in suggestions:
+                suggestions.append(slug)
+            if len(suggestions) >= limit:
+                return
+
+    # 1. Prefix matches (shortest first: the tightest completion wins).
+    _add(sorted((s for s in slugs if s.startswith(normalized)), key=len))
+    # 2. Substring matches, only for fragments long enough to be meaningful
+    #    (1–2 chars would match half the catalog).
+    if len(suggestions) < limit and len(normalized) >= 3:
+        _add(sorted((s for s in slugs if normalized in s), key=len))
+    # 3. Fuzzy typo matches.
+    if len(suggestions) < limit:
+        _add(get_close_matches(normalized, slugs, n=limit, cutoff=0.6))
+
+    return suggestions[:limit]
+
+
 def build_skill_invocation_message(
     cmd_key: str,
     user_instruction: str = "",

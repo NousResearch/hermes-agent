@@ -371,3 +371,69 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_slash_command_suggests_close_skill(monkeypatch):
+    """A near-miss of an installed skill command must include a
+    "Did you mean" hint with the correct skill slug."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError(
+            "unknown slash command leaked through to the agent"
+        )
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    import agent.skill_commands as skill_commands_mod
+
+    monkeypatch.setattr(
+        skill_commands_mod,
+        "get_skill_commands",
+        lambda: {"/humanizer": {"name": "humanizer"}},
+    )
+
+    # Typo of an installed skill: no exact resolve, fuzzy should hit.
+    result = await runner._handle_message(_make_event("/humanzer"))
+
+    assert result is not None
+    assert "Unknown command" in result
+    assert "Did you mean" in result
+    assert "/humanizer" in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unknown_slash_command_without_close_match_has_no_hint(monkeypatch):
+    """Total garbage must keep the plain unknown-command message —
+    no empty/nonsense "Did you mean" line."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError(
+            "unknown slash command leaked through to the agent"
+        )
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    import agent.skill_commands as skill_commands_mod
+
+    monkeypatch.setattr(
+        skill_commands_mod,
+        "get_skill_commands",
+        lambda: {"/humanizer": {"name": "humanizer"}},
+    )
+
+    result = await runner._handle_message(_make_event("/zzqqxxyyvv"))
+
+    assert result is not None
+    assert "Unknown command" in result
+    assert "Did you mean" not in result
+    runner._run_agent.assert_not_called()

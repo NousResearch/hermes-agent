@@ -9988,8 +9988,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             command,
                             source.platform.value if source.platform else "?",
                         )
+                        # Fuzzy-suggest close skill commands so a typo like
+                        # /nanopdf or /pfd gets a "did you mean" instead of
+                        # a dead end (mirrors CLI autocomplete, #33822).
+                        _did_you_mean = ""
+                        try:
+                            from agent.skill_commands import suggest_skill_commands
+                            _sugg = suggest_skill_commands(command)
+                            if _sugg:
+                                _did_you_mean = (
+                                    "Did you mean: "
+                                    + ", ".join(f"`/{s}`" for s in _sugg)
+                                    + "?\n"
+                                )
+                        except Exception:
+                            pass
                         return (
                             f"Unknown command `/{command}`. "
+                            f"{_did_you_mean}"
                             f"Type /commands to see what's available, "
                             f"or resend without the leading slash to send "
                             f"as a regular message."

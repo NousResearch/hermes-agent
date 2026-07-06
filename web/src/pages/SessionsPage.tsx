@@ -5,7 +5,7 @@ import {
   useCallback,
   useRef,
 } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -186,6 +186,24 @@ interface CompactionSplit {
   remainder: string;
 }
 
+function messageContentText(content: SessionMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (content == null) return "";
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (!part || typeof part !== "object") return "";
+        if (part.type === "text" && typeof part.text === "string") return part.text;
+        if (part.type === "image_url") return "[image]";
+        return `[${String(part.type ?? "attachment")}]`;
+      })
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  return String(content);
+}
+
 function splitCompactionContent(content: string): CompactionSplit | null {
   const head = content.trimStart();
   if (!COMPACTION_PREFIXES.some((p) => head.startsWith(p))) return null;
@@ -252,10 +270,8 @@ function MessageBubble({
   // + <original assistant reply>``. We split it back into two visual
   // rows here so the operator's actual answer survives as a readable
   // bubble next to the (clearly-labelled) handoff metadata (#29824).
-  const compactionSplit =
-    typeof msg.content === "string"
-      ? splitCompactionContent(msg.content)
-      : null;
+  const contentText = messageContentText(msg.content);
+  const compactionSplit = contentText ? splitCompactionContent(contentText) : null;
 
   if (compactionSplit && compactionSplit.remainder) {
     return (
@@ -292,8 +308,8 @@ function MessageBubble({
 
   // Check if any search term appears as a prefix of any word in content
   const isHit = (() => {
-    if (!highlight || !msg.content) return false;
-    const content = msg.content.toLowerCase();
+    if (!highlight || !contentText) return false;
+    const content = contentText.toLowerCase();
     const terms = highlight.toLowerCase().split(/\s+/).filter(Boolean);
     return terms.some((term) => content.includes(term));
   })();
@@ -320,13 +336,13 @@ function MessageBubble({
           </span>
         )}
       </div>
-      {msg.content &&
+      {contentText &&
         (msg.role === "system" ? (
           <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-            {msg.content}
+            {contentText}
           </div>
         ) : (
-          <Markdown content={msg.content} highlightTerms={highlightTerms} />
+          <Markdown content={contentText} highlightTerms={highlightTerms} />
         ))}
       {msg.tool_calls && msg.tool_calls.length > 0 && (
         <div className="mt-1">
@@ -343,9 +359,11 @@ function MessageBubble({
 function MessageList({
   messages,
   highlight,
+  fullHeight = false,
 }: {
   messages: SessionMessage[];
   highlight?: string;
+  fullHeight?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -364,11 +382,97 @@ function MessageList({
   return (
     <div
       ref={containerRef}
-      className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
+      className={`flex flex-col gap-3 pr-2 ${fullHeight ? "overflow-visible" : "max-h-[600px] overflow-y-auto"}`}
     >
       {messages.map((msg, i) => (
         <MessageBubble key={i} msg={msg} highlight={highlight} />
       ))}
+    </div>
+  );
+}
+
+function FullSessionHistory({ sessionId }: { sessionId: string }) {
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [messages, setMessages] = useState<SessionMessage[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  const { t } = useI18n();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    Promise.all([
+      api.getSessionDetail(sessionId),
+      api.getSessionMessages(sessionId, undefined, { includeCompacted: true }),
+    ])
+      .then(([detail, messageResp]) => {
+        if (cancelled) return;
+        setSession(detail);
+        setMessages(messageResp.messages);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  const userPromptCount = messages?.filter((m) => m.role === "user").length ?? 0;
+  const title =
+    session?.title && session.title !== "Untitled"
+      ? session.title
+      : session?.preview
+        ? session.preview.slice(0, 80)
+        : sessionId;
+
+  return (
+    <div className="flex min-w-0 w-full max-w-full flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button outlined size="sm" onClick={() => navigate("/sessions")} prefix={<ChevronLeft />}>
+          Back
+        </Button>
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-lg font-semibold">{title}</h2>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <Badge tone="outline" className="text-xs">
+              {session?.source ?? "session"}
+            </Badge>
+            <span>{sessionId}</span>
+            {messages && (
+              <>
+                <span className="text-border">&#183;</span>
+                <span>{messages.length} {t.common.msgs}</span>
+                <span className="text-border">&#183;</span>
+                <span>{userPromptCount} user prompts</span>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Full session history</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loading && (
+            <div className="flex items-center justify-center py-12">
+              <Spinner className="text-xl text-primary" />
+            </div>
+          )}
+          {error && <p className="text-sm text-destructive py-4">{error}</p>}
+          {messages && messages.length === 0 && (
+            <p className="text-sm text-muted-foreground py-4">{t.sessions.noMessages}</p>
+          )}
+          {messages && messages.length > 0 && <MessageList messages={messages} fullHeight />}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -399,7 +503,7 @@ function SessionRow({
     if (isExpanded && messages === null && !loading) {
       setLoading(true);
       api
-        .getSessionMessages(session.id)
+        .getSessionMessages(session.id, undefined, { includeCompacted: true })
         .then((resp) => setMessages(resp.messages))
         .catch((err) => setError(String(err)))
         .finally(() => setLoading(false));
@@ -432,6 +536,20 @@ function SessionRow({
       <Badge tone="outline" className="text-xs">
         {session.source ?? "local"}
       </Badge>
+
+      <Button
+        ghost
+        size="icon"
+        className="text-muted-foreground hover:text-primary"
+        aria-label="Open full session history"
+        title="Open full session history"
+        onClick={(e) => {
+          e.stopPropagation();
+          navigate(`/sessions/${encodeURIComponent(session.id)}`);
+        }}
+      >
+        <Database />
+      </Button>
 
       {resumeInChatEnabled && (
         <Button
@@ -587,15 +705,20 @@ function SessionRow({
                     </Button>
                   </div>
                 ) : (
-                  <span
-                    className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+                  <button
+                    type="button"
+                    className={`font-mondwest normal-case min-w-0 flex-1 truncate text-left text-sm hover:text-primary ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/sessions/${encodeURIComponent(session.id)}`);
+                    }}
                   >
                     {hasTitle
                       ? session.title
                       : session.preview
                         ? session.preview.slice(0, 60)
                         : t.sessions.untitledSession}
-                  </span>
+                  </button>
                 )}
                 {session.is_active && (
                   <Badge tone="success" className="shrink-0 text-xs">
@@ -713,6 +836,11 @@ function SessionsPagination({
   );
 }
 
+export function SessionDetailPage() {
+  const { sessionId = "" } = useParams();
+  return <FullSessionHistory key={sessionId} sessionId={sessionId} />;
+}
+
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
@@ -759,6 +887,7 @@ export default function SessionsPage() {
   const [pruning, setPruning] = useState(false);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const navigate = useNavigate();
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
@@ -1677,9 +1806,13 @@ export default function SessionsPage() {
                     className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
                   >
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span className="font-mondwest normal-case min-w-0 truncate text-sm font-medium">
+                      <button
+                        type="button"
+                        className="font-mondwest normal-case min-w-0 truncate text-left text-sm font-medium hover:text-primary"
+                        onClick={() => navigate(`/sessions/${encodeURIComponent(s.id)}`)}
+                      >
                         {s.title ?? t.common.untitled}
-                      </span>
+                      </button>
 
                       <span className="min-w-0 break-words text-xs text-muted-foreground">
                         <span className="font-mono-ui">
@@ -1696,13 +1829,21 @@ export default function SessionsPage() {
                       )}
                     </div>
 
-                    <Badge
-                      tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
-                    >
-                      <Database className="mr-1 h-3 w-3" />
-                      {s.source ?? "local"}
-                    </Badge>
+                    <div className="flex shrink-0 items-center gap-2 self-start sm:self-center">
+                      <Button
+                        ghost
+                        size="icon"
+                        aria-label="Open full session history"
+                        title="Open full session history"
+                        className="text-muted-foreground hover:text-primary"
+                        onClick={() => navigate(`/sessions/${encodeURIComponent(s.id)}`)}
+                      >
+                        <Database />
+                      </Button>
+                      <Badge tone="outline" className="text-xs">
+                        {s.source ?? "local"}
+                      </Badge>
+                    </div>
                   </div>
                 ))}
               </CardContent>

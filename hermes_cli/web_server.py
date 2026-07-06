@@ -8102,14 +8102,23 @@ async def get_session_latest_descendant(session_id: str):
     }
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str, profile: Optional[str] = None):
+async def get_session_messages(
+    session_id: str,
+    profile: Optional[str] = None,
+    include_compacted: bool = False,
+    include_inactive: bool = False,
+):
     db = _open_session_db_for_profile(profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
         sid = db.resolve_resume_session_id(sid)
-        messages = db.get_messages(sid)
+        messages = db.get_messages(
+            sid,
+            include_inactive=include_inactive,
+            include_compacted=include_compacted,
+        )
         return {"session_id": sid, "messages": messages}
     finally:
         db.close()

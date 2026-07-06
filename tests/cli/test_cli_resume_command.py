@@ -351,3 +351,32 @@ class TestResumeFlushesBeforeEndSession:
             [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
         )
         cli_obj._session_db.end_session.assert_called_once()
+
+
+class TestListRecentSessionsSource:
+    """_list_recent_sessions() must surface sessions from all sources."""
+
+    def test_list_recent_sessions_uses_source_none(self):
+        """Regression for #59224: /resume listing must not filter to source='cli'.
+
+        The TUI gateway already uses a deny-list (exclude 'tool') instead of
+        an allow-list. The classic CLI must match that behaviour so Desktop,
+        WebUI, and gateway sessions appear in /resume listings.
+        """
+        cli_obj = _make_cli()
+        with patch("hermes_cli.session_listing.query_session_listing") as mock_ql:
+            mock_ql.return_value = []
+            cli_obj._list_recent_sessions(limit=10)
+
+        mock_ql.assert_called_once()
+        call_kwargs = mock_ql.call_args
+        # The critical assertion: source must be None (all sources), not "cli".
+        assert call_kwargs.kwargs.get("source") is None or call_kwargs[1].get("source") is None, (
+            "source= must be None to surface Desktop/WebUI/gateway sessions; "
+            f"got {call_kwargs.kwargs.get('source')!r}"
+        )
+        # 'tool' sub-agent runs must still be excluded.
+        exclude = call_kwargs.kwargs.get("exclude_sources") or call_kwargs[1].get("exclude_sources")
+        assert "tool" in (exclude or []), (
+            "exclude_sources must include 'tool' to hide sub-agent noise"
+        )

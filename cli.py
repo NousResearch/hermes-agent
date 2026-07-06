@@ -6757,7 +6757,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             return query_session_listing(
                 self._session_db,
-                source="cli",
+                source=None,
                 current_session_id=self.session_id,
                 include_all_sources=False,
                 include_unnamed=True,

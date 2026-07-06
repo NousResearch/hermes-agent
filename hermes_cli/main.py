@@ -12642,26 +12642,9 @@ def cmd_insights(args):
         if getattr(args, "by_credential", False):
             provider = getattr(args, "provider", None)
             rows = db.get_credential_usage(days=args.days, provider=provider)
-            if rows:
-                title_provider = f" for {provider}" if provider else ""
-                print(f"Credential usage{title_provider} (last {args.days}d)")
-                for row in rows:
-                    label = row.get("credential_label") or "unknown"
-                    model = row.get("model") or "unknown"
-                    total = row.get("total_tokens") or 0
-                    in_tok = row.get("input_tokens") or 0
-                    out_tok = row.get("output_tokens") or 0
-                    calls = row.get("api_calls") or 0
-                    print(
-                        f"  {label} · {model}: {total:,} tokens "
-                        f"({in_tok:,} in, {out_tok:,} out), {calls:,} calls"
-                    )
-            else:
-                suffix = f" for {provider}" if provider else ""
-                print(
-                    f"No credential-level usage rows{suffix} in the last {args.days}d. "
-                    "New rows are recorded only after this Hermes version handles model turns."
-                )
+            from hermes_cli.codex_usage import render_credential_insights
+
+            print(render_credential_insights(rows, provider=provider, days=args.days))
         else:
             report = engine.generate(days=args.days, source=args.source)
             if getattr(args, "provider", None):

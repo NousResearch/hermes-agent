@@ -262,6 +262,63 @@ def _worst_risk(accounts: list[dict[str, Any]]) -> dict[str, str]:
     return worst
 
 
+def _window_used(window: dict[str, Any]) -> Optional[float]:
+    try:
+        value = window.get("used_percent")
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _recommendation_explanation(payload: Dict[str, Any]) -> str:
+    recommendation = payload.get("recommendation") or {}
+    rec_label = recommendation.get("label")
+    blockers: list[tuple[float, str]] = []
+    for row in payload.get("accounts") or []:
+        label = row.get("label")
+        if not row.get("ok") or label == rec_label:
+            continue
+        for display, _key, window in iter_windows(row):
+            used = _window_used(window)
+            if used is not None and used >= 80:
+                blockers.append((used, f"{label} {display} {_fmt_percent(used).strip()}"))
+    if blockers:
+        blockers.sort(reverse=True)
+        return f"사유: {blockers[0][1]}로 회복 전까지 보류"
+    reason = recommendation.get("reason")
+    return f"사유: 7d 사용률이 가장 낮음 ({reason})" if reason else ""
+
+
+def _next_reset(accounts: list[dict[str, Any]], min_used: Optional[float] = None) -> Optional[dict[str, str]]:
+    candidates: list[tuple[datetime, dict[str, str]]] = []
+    for row in accounts:
+        if not row.get("ok"):
+            continue
+        label = str(row.get("label"))
+        for display, _key, window in iter_windows(row):
+            used = _window_used(window)
+            if min_used is not None and (used is None or used < min_used):
+                continue
+            reset_at = window.get("reset_at")
+            dt = local_dt(reset_at)
+            if dt is None or dt <= datetime.now().astimezone():
+                continue
+            candidates.append(
+                (
+                    dt,
+                    {
+                        "label": label,
+                        "window": display,
+                        "reset": short_reset(reset_at),
+                        "remaining": str(window.get("remaining", "?")),
+                    },
+                )
+            )
+    return min(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
 def render_compact(payload: Dict[str, Any]) -> str:
     accounts = payload.get("accounts") or []
     worst = _worst_risk(accounts)
@@ -269,6 +326,15 @@ def render_compact(payload: Dict[str, Any]) -> str:
     recommendation = payload.get("recommendation") or {}
     if recommendation:
         lines.append(f"✅ 추천 {recommendation.get('label')} — {recommendation.get('reason')}")
+        explanation = _recommendation_explanation(payload)
+        if explanation:
+            lines.append(explanation)
+    next_reset = _next_reset(accounts)
+    if next_reset:
+        lines.append(f"⏱ 다음 회복: {next_reset['label']} {next_reset['window']} · {next_reset['remaining']} ({next_reset['reset']})")
+    risk_reset = _next_reset(accounts, min_used=95)
+    if risk_reset and risk_reset != next_reset:
+        lines.append(f"🚦 위험 회복: {risk_reset['label']} {risk_reset['window']} · {risk_reset['remaining']} ({risk_reset['reset']})")
     if not accounts:
         lines.append("계정 없음")
         return "\n".join(lines)
@@ -288,7 +354,6 @@ def render_compact(payload: Dict[str, Any]) -> str:
                 f"[{usage_bar(used)}] reset {short_reset(window.get('reset_at'))} · {window.get('remaining', '?')}"
             )
     return "\n".join(lines)
-
 
 def load_seen(path: Path) -> set[str]:
     try:
@@ -383,21 +448,62 @@ def render_alert(
         events = fresh
     if not events:
         return ""
-    lines = [f"⚠️ Codex usage alert ({payload['checked_at']})"]
+    lines = [f"🚨 Codex 한도 주의 · {short_checked_at(payload.get('checked_at'))}"]
     for event in events:
         if event.get("error"):
             row = event["row"]
-            lines.append(f"{row.get('label')}: ERROR {row.get('http', '')} {row.get('error', '')}".rstrip())
+            lines.append(f"\n❌ {row.get('label')}")
+            lines.append(f"└ ERROR {row.get('http', '')} {row.get('error', '')}".rstrip())
             continue
         r = event.get("risk") or {}
-        lines.append(
-            f"{r.get('icon', '⚠️')} {event.get('label')} {event.get('window')} "
-            f"{event.get('used'):g}% >= {event.get('threshold'):g}% — "
-            f"reset {event.get('reset_at')} ({event.get('remaining')})"
-        )
+        lines.append(f"\n{r.get('icon', '⚠️')} {event.get('label')} · {event.get('window')} {event.get('used'):g}% [{usage_bar(event.get('used'))}]")
+        lines.append(f"└ 기준 {event.get('threshold'):g}% · reset {short_reset(event.get('reset_at'))} · {event.get('remaining')}")
     recommendation = payload.get("recommendation") or {}
     if recommendation:
-        lines.append(f"추천: {recommendation.get('label')} — {recommendation.get('reason')}")
+        lines.append(f"\n✅ 추천 {recommendation.get('label')} — {recommendation.get('reason')}")
+        explanation = _recommendation_explanation(payload)
+        if explanation:
+            lines.append(explanation)
+    return "\n".join(lines)
+
+
+def _fmt_tokens(value: Any) -> str:
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.2f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def render_credential_insights(rows: list[dict[str, Any]], *, provider: Optional[str], days: int) -> str:
+    title = "Codex credential" if provider == "openai-codex" else "Credential"
+    lines = [f"📊 {title} 사용량 · {days}d"]
+    if not rows:
+        suffix = f" ({provider})" if provider else ""
+        lines.append(f"아직 credential별 사용 기록 없음{suffix}")
+        lines.append("새 모델 턴부터 쌓임")
+        return "\n".join(lines)
+    total_all = sum(int(row.get("total_tokens") or 0) for row in rows) or 1
+    for row in rows:
+        label = row.get("credential_label") or "unknown"
+        model = row.get("model") or "unknown"
+        total = int(row.get("total_tokens") or 0)
+        calls = int(row.get("api_calls") or row.get("api_call_count") or 0)
+        avg = total / calls if calls else 0
+        share = total / total_all * 100
+        lines.append(f"\n• {label} · {model}")
+        lines.append(f"  {_fmt_tokens(total)} tokens · {calls} calls · avg {_fmt_tokens(avg)}/call · {share:.0f}%")
+        breakdown = [f"in {_fmt_tokens(row.get('input_tokens'))}", f"out {_fmt_tokens(row.get('output_tokens'))}"]
+        if int(row.get("cache_read_tokens") or 0) or int(row.get("cache_write_tokens") or 0):
+            cache_total = int(row.get("cache_read_tokens") or 0) + int(row.get("cache_write_tokens") or 0)
+            breakdown.append(f"cache {_fmt_tokens(cache_total)}")
+        if int(row.get("reasoning_tokens") or 0):
+            breakdown.append(f"reason {_fmt_tokens(row.get('reasoning_tokens'))}")
+        lines.append("  " + " · ".join(breakdown))
     return "\n".join(lines)
 
 

@@ -23,9 +23,11 @@ move-and-name refactor with no semantic change.
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.conversation_compression import conversation_history_after_compression
@@ -87,6 +89,63 @@ def _should_run_preflight_estimate(
     if len(messages) > protect_first_n + protect_last_n + 1:
         return True
     return estimate_messages_tokens_rough(messages) >= threshold_tokens
+
+
+def _load_local_srl_context(agent, query: str) -> str:
+    """Retrieve local SRL context for this turn when explicitly enabled."""
+    if not query or not getattr(agent, "_srl_auto_inject_enabled", False):
+        return ""
+    max_chars = int(getattr(agent, "_srl_auto_inject_char_limit", 6000) or 6000)
+    if max_chars <= 0:
+        return ""
+    try:
+        here = Path(__file__).resolve()
+        candidate_dirs = []
+        try:
+            from hermes_constants import get_hermes_home
+
+            candidate_dirs.append(get_hermes_home() / "skills" / "infinite-context")
+        except Exception:
+            pass
+        candidate_dirs.extend([
+            here.parents[1] / "skills" / "infinite-context",
+            here.parents[2] / "skills" / "infinite-context",
+        ])
+        seen = set()
+        srl_dir = None
+        for candidate in candidate_dirs:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if (candidate / "srl_engine.py").exists():
+                srl_dir = candidate
+                break
+        if srl_dir is None:
+            return ""
+        if not (srl_dir / "srl_engine.py").exists():
+            return ""
+        srl_path = str(srl_dir)
+        if srl_path not in sys.path:
+            sys.path.insert(0, srl_path)
+        import srl_engine  # type: ignore
+
+        try:
+            from hermes_constants import get_hermes_home
+
+            state_db = get_hermes_home() / "state.db"
+            if state_db.exists():
+                srl_engine.STATE_DB = str(state_db)
+        except Exception:
+            pass
+
+        context = srl_engine.retrieve_context(query, max_chars=max_chars)
+        if not context or "Sources: 0 items" in context:
+            return ""
+        return context[:max_chars]
+    except Exception:
+        logger.debug("local SRL context injection skipped", exc_info=True)
+        return ""
 
 
 @dataclass
@@ -529,6 +588,20 @@ def build_turn_context(
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass
+
+    # Local SRL: retrieve from Hermes state.db without mutating the transcript or
+    # cached system prompt. Reuses the same fenced user-message injection path as
+    # external memory providers.
+    try:
+        _query = original_user_message if isinstance(original_user_message, str) else ""
+        _srl_context = _load_local_srl_context(agent, _query)
+        if _srl_context:
+            ext_prefetch_cache = (
+                f"{ext_prefetch_cache}\n\n{_srl_context}"
+                if ext_prefetch_cache else _srl_context
+            )
+    except Exception:
+        logger.debug("local SRL prefetch failed", exc_info=True)
 
     return TurnContext(
         user_message=user_message,

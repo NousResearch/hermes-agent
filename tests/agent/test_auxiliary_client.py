@@ -2308,9 +2308,12 @@ class TestAuxiliaryFallbackLayering:
             )
 
         assert main_chain_client.chat.completions.create.called
+        # Payment errors are provider-wide, so the configured chain is
+        # asked to skip the whole provider (failed_model=None), not just
+        # the failed model — a sibling model can't recover from a 402.
         mock_task_chain.assert_called_once_with(
             "title_generation", "auto", reason="payment error",
-            failed_model="qwen/qwen3.5-122b-a10b")
+            failed_model=None)
         mock_main_chain.assert_called_once_with(
             "title_generation", "auto", reason="payment error")
         mock_builtin_chain.assert_not_called()
@@ -2747,6 +2750,44 @@ class TestTransientTransportRetry:
         # Primary tried ONCE only — no same-provider timeout retry — then fallback.
         assert primary.chat.completions.create.call_count == 1
         assert fb_client.chat.completions.create.call_count == 1
+
+    def test_timeout_forwards_failed_model_to_configured_chain(self):
+        """A timeout is model-specific, so call_llm must forward the failed
+        model to the configured chain (failed_model=<model>, not None). This
+        lets a same-provider sibling in the chain be tried instead of the
+        whole provider being skipped — the exact NVIDIA NIM bug's trigger.
+        """
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://integrate.api.nvidia.com/v1"
+        primary.chat.completions.create.side_effect = _Timeout("Request timed out.")
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://integrate.api.nvidia.com/v1"
+        fb_client.chat.completions.create.return_value = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(fb_client, "sibling-model", "fallback_chain[0](openrouter)"),
+            ) as mock_chain,
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(None, None, ""),
+            ),
+        ):
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"fallback": True}
+        _, kwargs = mock_chain.call_args
+        assert kwargs.get("failed_model") == "some-model", (
+            "A timeout is model-specific — the failed model must be forwarded "
+            "so a same-provider sibling can be tried, not skipped wholesale."
+        )
 
     def test_non_compression_still_retries_same_provider_on_timeout(self):
         """The timeout skip is scoped to compression only; other auxiliary

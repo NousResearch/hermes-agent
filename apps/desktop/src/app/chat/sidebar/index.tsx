@@ -76,7 +76,7 @@ import {
   sessionPinId
 } from '@/store/session'
 
-import { type AppView, ARTIFACTS_ROUTE, CRON_ROUTE, SEARCH_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { type AppView, ARTIFACTS_ROUTE, CRON_ROUTE, SEARCH_ROUTE, SKILLS_ROUTE, TASKS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
@@ -114,6 +114,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     label: '',
     icon: props => <Codicon name="calendar" {...props} />,
     route: CRON_ROUTE
+  },
+  {
+    id: 'tasks',
+    label: '',
+    icon: props => <Codicon name="rocket" {...props} />,
+    route: TASKS_ROUTE
   },
   {
     id: 'skills',
@@ -561,6 +567,7 @@ export function ChatSidebar({
                 const active =
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'cron' && currentView === 'cron') ||
+                  (item.id === 'tasks' && currentView === 'tasks') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
                   (item.id === 'search' && currentView === 'search')
 

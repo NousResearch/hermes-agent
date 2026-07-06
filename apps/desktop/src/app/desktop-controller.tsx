@@ -19,6 +19,7 @@ import { isMessagingSource, LOCAL_SESSION_SOURCE_IDS, MESSAGING_SESSION_SOURCE_I
 import { latestSessionTodos } from '../lib/todos'
 import { $authState } from '../store/auth'
 import { setCronJobs } from '../store/cron'
+import { startTaskNotifier } from '../store/tasks'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -134,6 +135,7 @@ const ProfileStatsView = lazy(async () => ({ default: (await import('./profile')
 const SearchView = lazy(async () => ({ default: (await import('./search')).SearchView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
+const TasksView = lazy(async () => ({ default: (await import('./tasks')).TasksView }))
 
 // Cron jobs are written by a background scheduler tick (the desktop backend),
 // so no user action signals the UI. Poll the bounded job list on this cadence
@@ -863,6 +865,12 @@ export function DesktopController() {
     }
   }, [gatewayState, refreshCronJobs])
 
+  // Fire native "task finished / failed" notifications for one-shot (Goal-mode)
+  // tasks. Subscribes to the shared cron atom (fed by the poll above) and
+  // watches phase transitions — independent of which page is open, since the
+  // whole point of a background task is to walk away from it.
+  useEffect(() => startTaskNotifier(), [])
+
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {
       void refreshCurrentModel()
@@ -1172,6 +1180,17 @@ export function DesktopController() {
               </Suspense>
             }
             path="cron"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <TasksView
+                  onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+                  setStatusbarItemGroup={setStatusbarItemGroup}
+                />
+              </Suspense>
+            }
+            path="tasks"
           />
           <Route
             element={

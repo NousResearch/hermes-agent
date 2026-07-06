@@ -32,6 +32,7 @@ import {
   RefreshCw,
   Settings,
   Settings2,
+  Sparkles,
   Sun,
   Terminal,
   Users,
@@ -56,7 +57,8 @@ import {
   PROFILES_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
-  SKILLS_ROUTE
+  SKILLS_ROUTE,
+  TASKS_ROUTE
 } from '../routes'
 import { FIELD_LABELS, isConsumerHiddenSection, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
@@ -351,6 +353,14 @@ export function CommandPalette() {
             keywords: ['schedule', 'scheduled', 'jobs', 'cron'],
             label: t.sidebar.nav.cron,
             run: go(CRON_ROUTE)
+          },
+          {
+            action: 'nav.tasks',
+            icon: Sparkles,
+            id: 'nav-tasks',
+            keywords: ['task', 'tasks', 'goal', 'background', 'long', 'run'],
+            label: t.sidebar.nav.tasks,
+            run: go(TASKS_ROUTE)
           },
           { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
           { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) }

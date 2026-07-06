@@ -1417,6 +1417,60 @@ export const zh: Translations = {
     createAction: '创建定时任务'
   },
 
+  tasks: {
+    loading: '正在加载任务…',
+    newTask: '新任务',
+    tabRunning: '进行中',
+    tabDone: '已完成',
+    emptyRunning: '暂无进行中的任务。把耗时的活交出去，它会在后台一直跑。',
+    emptyDone: '还没有已完成的任务。',
+    emptyDetail: '发起一个长任务，在这里跟进它的进度。',
+    pending: '等待开始',
+    started: '开始于',
+    runAgain: '再跑一次',
+    goalLabel: '目标',
+    goalPlaceholder: '调研 5 家头部竞品，写一份对比报告…',
+    stuckHint: '较久没有动静',
+    stuckDetail: '这个任务已较久没有动静，可能卡住了。打开运行记录看看，或重新发起一次。',
+    waitingToStart: '等待任务启动…',
+    progressLabel: '进度',
+    stepsOf: (completed, total) => `${completed} / ${total} 步`,
+    currentStepLabel: '当前：',
+    latestOutputLabel: '最新输出',
+    runHistory: '运行记录',
+    noRuns: '还没有运行记录。',
+    phases: {
+      running: '进行中',
+      done: '已完成',
+      failed: '失败'
+    },
+    newTaskTitle: '新任务',
+    newTaskDesc: '描述目标，智能体会在后台执行，完成后通知你。',
+    goalRequired: '先描述一下目标。',
+    timeRequired: '先选择开始时间。',
+    whenLabel: '开始',
+    whenNow: '立即',
+    whenIn: '延后',
+    whenAt: '指定时间',
+    delayLabel: '延后时长',
+    atLabel: '开始时间',
+    persistNote: '任务在后端运行，应用重启后仍会继续；也可以在「已安排」页看到。',
+    startTask: '开始任务',
+    created: '任务已创建',
+    startedNow: '任务已开始',
+    failedStart: '任务启动失败',
+    deleted: '任务已删除',
+    failedDelete: '删除任务失败',
+    deleting: '删除中…',
+    deleteTitle: '删除这个任务？',
+    deleteDescPrefix: '将永久移除 ',
+    deleteDescSuffix: ' 及其排程；已产生的运行会话仍保留在历史中。',
+    notify: {
+      doneTitle: '任务完成',
+      failedTitle: '任务失败'
+    }
+  },
+
   artifacts: {
     search: '搜索产物…',
     refresh: '刷新产物',
@@ -1457,6 +1511,7 @@ export const zh: Translations = {
       'new-session': '新对话',
       search: '搜索',
       cron: '已安排',
+      tasks: '任务',
       skills: '插件',
       artifacts: '产物'
     },

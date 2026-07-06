@@ -1234,6 +1234,61 @@ export const en: Translations = {
     createAction: 'Create cron'
   },
 
+  tasks: {
+    loading: 'Loading tasks…',
+    newTask: 'New task',
+    tabRunning: 'Running',
+    tabDone: 'Done',
+    emptyRunning: 'No running tasks. Hand off a long job — it keeps working in the background.',
+    emptyDone: 'No finished tasks yet.',
+    emptyDetail: 'Kick off a long-running task and follow its progress here.',
+    pending: 'Waiting to start',
+    started: 'Started',
+    runAgain: 'Run again',
+    goalLabel: 'Goal',
+    goalPlaceholder: 'Research the top 5 competitors and write a comparison report…',
+    stuckHint: 'No recent activity',
+    stuckDetail:
+      'This task has shown no activity for a while and may be stuck. Open its run to check, or start it again.',
+    waitingToStart: 'Waiting for the task to start…',
+    progressLabel: 'Progress',
+    stepsOf: (completed, total) => `${completed} / ${total} steps`,
+    currentStepLabel: 'Now:',
+    latestOutputLabel: 'Latest output',
+    runHistory: 'Runs',
+    noRuns: 'No runs yet.',
+    phases: {
+      running: 'Running',
+      done: 'Done',
+      failed: 'Failed'
+    },
+    newTaskTitle: 'New task',
+    newTaskDesc: 'Describe the goal. The agent runs it in the background and notifies you when it finishes.',
+    goalRequired: 'Describe the goal first.',
+    timeRequired: 'Pick a start time first.',
+    whenLabel: 'Start',
+    whenNow: 'Now',
+    whenIn: 'After a delay',
+    whenAt: 'At a specific time',
+    delayLabel: 'Delay',
+    atLabel: 'Start time',
+    persistNote: 'Tasks run in the backend and survive app restarts. They also appear on the Scheduled page.',
+    startTask: 'Start task',
+    created: 'Task created',
+    startedNow: 'Task started',
+    failedStart: 'Could not start the task',
+    deleted: 'Task deleted',
+    failedDelete: 'Could not delete the task',
+    deleting: 'Deleting…',
+    deleteTitle: 'Delete this task?',
+    deleteDescPrefix: 'This permanently removes ',
+    deleteDescSuffix: ' and its schedule. Runs already recorded stay in your session history.',
+    notify: {
+      doneTitle: 'Task finished',
+      failedTitle: 'Task failed'
+    }
+  },
+
   artifacts: {
     search: 'Search artifacts...',
     refresh: 'Refresh artifacts',
@@ -1274,6 +1329,7 @@ export const en: Translations = {
       'new-session': 'New chat',
       search: 'Search',
       cron: 'Scheduled',
+      tasks: 'Tasks',
       skills: 'Plugins',
       artifacts: 'Artifacts'
     },

@@ -6,6 +6,7 @@ export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
+export const TASKS_ROUTE = '/tasks'
 export const PROFILES_ROUTE = '/profiles'
 // 个人资料 — the account/usage-stats page (avatar header + token heatmap).
 // Distinct from PROFILES_ROUTE, which is the multi-profile (配置档案) manager.
@@ -25,6 +26,7 @@ export type AppView =
   | 'search'
   | 'settings'
   | 'skills'
+  | 'tasks'
 
 export type AppRouteId =
   | 'agents'
@@ -38,6 +40,7 @@ export type AppRouteId =
   | 'search'
   | 'settings'
   | 'skills'
+  | 'tasks'
 
 export interface AppRoute {
   id: AppRouteId
@@ -53,6 +56,7 @@ export const APP_ROUTES = [
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
+  { id: 'tasks', path: TASKS_ROUTE, view: 'tasks' },
   { id: 'search', path: SEARCH_ROUTE, view: 'search' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'profile', path: PROFILE_STATS_ROUTE, view: 'profile' },

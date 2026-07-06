@@ -972,6 +972,58 @@ export interface Translations {
     createAction: string
   }
 
+  // Goal-mode long-running tasks (one-shot cron jobs surfaced on /tasks).
+  tasks: {
+    loading: string
+    newTask: string
+    tabRunning: string
+    tabDone: string
+    emptyRunning: string
+    emptyDone: string
+    emptyDetail: string
+    pending: string
+    started: string
+    runAgain: string
+    goalLabel: string
+    goalPlaceholder: string
+    stuckHint: string
+    stuckDetail: string
+    waitingToStart: string
+    progressLabel: string
+    stepsOf: (completed: number, total: number) => string
+    currentStepLabel: string
+    latestOutputLabel: string
+    runHistory: string
+    noRuns: string
+    phases: Record<'done' | 'failed' | 'running', string>
+    newTaskTitle: string
+    newTaskDesc: string
+    goalRequired: string
+    timeRequired: string
+    whenLabel: string
+    whenNow: string
+    whenIn: string
+    whenAt: string
+    delayLabel: string
+    atLabel: string
+    persistNote: string
+    startTask: string
+    created: string
+    startedNow: string
+    failedStart: string
+    deleted: string
+    failedDelete: string
+    deleting: string
+    deleteTitle: string
+    deleteDescPrefix: string
+    deleteDescSuffix: string
+    // Native OS notification copy fired by the task notifier (store/tasks.ts).
+    notify: {
+      doneTitle: string
+      failedTitle: string
+    }
+  }
+
   artifacts: {
     search: string
     refresh: string

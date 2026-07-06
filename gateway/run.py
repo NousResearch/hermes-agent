@@ -12381,12 +12381,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         db_total_tokens = 0
         if self._session_db:
             try:
-                title = self._session_db.get_session_title(session_entry.session_id)
+                title = await self._session_db.get_session_title(session_entry.session_id)
             except Exception:
                 title = None
             try:
-                row = self._session_db.get_session(session_entry.session_id)
-                if row:
+                row = await self._session_db.get_session(session_entry.session_id)
+                if isinstance(row, dict):
                     db_total_tokens = (
                         (row.get("input_tokens") or 0)
                         + (row.get("output_tokens") or 0)

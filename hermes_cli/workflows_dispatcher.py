@@ -508,6 +508,32 @@ def _failed_attempts(conn: sqlite3.Connection, execution_id: str, node_id: str) 
     ).fetchone()[0])
 
 
+def _catch_resume_kwargs(
+    conn: sqlite3.Connection,
+    *,
+    execution_id: str,
+    context: dict[str, Any],
+    spec: WorkflowSpec,
+) -> dict[str, Any]:
+    error = context.get("error")
+    if not isinstance(error, dict):
+        return {}
+    node_id = error.get("node")
+    if not isinstance(node_id, str) or node_id not in spec.nodes or not spec.nodes[node_id].catch:
+        return {}
+    queued_retry = conn.execute(
+        """
+        SELECT 1 FROM workflow_node_runs
+         WHERE execution_id = ? AND node_id = ? AND status = 'queued'
+         LIMIT 1
+        """,
+        (execution_id, node_id),
+    ).fetchone()
+    if queued_retry is not None:
+        return {}
+    return {"catch_failed_nodes": {node_id}, "error_context": error}
+
+
 def _retry_due_at(node: Any, *, failed_attempts: int, now: int) -> int:
     retry = node.retry
     base = retry.backoff_seconds if retry.backoff_seconds is not None else retry.delay_seconds
@@ -710,7 +736,12 @@ def tick(
                 spec = wfdb.get_definition(conn, execution.workflow_id, execution.version)
                 completed_wait_nodes = _completed_wait_nodes(conn, execution_id)
                 completed_outputs = _completed_node_outputs(conn, execution_id)
-                kwargs: dict[str, Any] = {}
+                kwargs: dict[str, Any] = _catch_resume_kwargs(
+                    conn,
+                    execution_id=execution_id,
+                    context=execution.context,
+                    spec=spec,
+                )
                 if completed_wait_nodes:
                     kwargs["completed_wait_nodes"] = completed_wait_nodes
                 if completed_outputs:

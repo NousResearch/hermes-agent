@@ -267,6 +267,38 @@ def test_wait_node_persists_wait_until_then_resumes_when_due(tmp_path, monkeypat
         ).fetchone()[0] == 1
 
 
+def test_catch_path_wait_resume_does_not_rerun_failed_node(tmp_path, monkeypatch):
+    spec = WorkflowSpec.model_validate({
+        "id": "catch_wait_demo", "name": "Catch Wait Demo", "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "flaky": {"type": "fail", "output": {"reason": "boom"}, "catch": "pause"},
+            "pause": {"type": "wait", "seconds": 5},
+            "done": {
+                "type": "pass",
+                "output": {"after": "${ node.pause.output.waited }", "failed": "${ error.node }"},
+            },
+        },
+        "edges": [{"from": "pause", "to": "done"}],
+    })
+    exec_id = _start_spec_execution(tmp_path, monkeypatch, spec)
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+
+    execution, _, _ = _execution_state(exec_id)
+    assert execution.status == "waiting"
+    assert [run["status"] for run in _node_runs(exec_id, "flaky")] == ["failed"]
+    assert [run["status"] for run in _node_runs(exec_id, "pause")] == ["waiting"]
+
+    assert workflows_dispatcher.tick(limit=1, now=105) == 1
+
+    execution, _, _ = _execution_state(exec_id)
+    assert execution.status == "succeeded"
+    assert [run["status"] for run in _node_runs(exec_id, "flaky")] == ["failed"]
+    assert [run["status"] for run in _node_runs(exec_id, "pause")] == ["succeeded"]
+    assert execution.context["node"]["done"]["output"] == {"after": True, "failed": "flaky"}
+
+
 def test_agent_task_creates_kanban_card_and_resumes_after_completion(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()

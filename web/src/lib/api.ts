@@ -2333,6 +2333,7 @@ export interface MoaModelSlot {
   model: string;
   /** Optional per-slot reasoning effort — round-tripped, not edited here. */
   reasoning_effort?: string;
+  enabled?: boolean;
 }
 
 export interface MoaConfigResponse {

@@ -41,7 +41,7 @@
 
 สถานะตอนนี้: local และ VPS ใช้ Shortcut ชุดเดียวกันแล้ว 100% จากหลักฐานไฟล์และ test ข้างบน
 
-ความเสี่ยงที่ยังเหลือ: ยังไม่ได้ commit/push ดังนั้นพนักงานที่ `git pull` จาก GitHub ยังไม่ได้ชุดล่าสุดจนกว่าจะส่งขึ้น remote
+ความเสี่ยงที่ยังเหลือ: คำสั่งแจกทีมต้องไม่สมมติว่าพนักงานมี repo Hermes Agent ในเครื่อง
 
 ## สรุปสำหรับรีวิว
 
@@ -250,7 +250,7 @@ repo เครื่องเจ้าของยังมีไฟล์ที
 
 ผลกระทบ:
 
-- พนักงานที่ `git pull` จาก GitHub จะยังไม่ได้ Shortcut/AI Relay รุ่นล่าสุด
+- พนักงานต้องใช้ตัวติดตั้งจาก GitHub โดยตรง เพราะเครื่องพนักงานไม่มี repo Hermes Agent
 - เครื่องเจ้าของและ VPS ที่ผมคัดไฟล์ตรงไว้จะใหม่กว่า GitHub
 
 สาเหตุ:
@@ -314,18 +314,16 @@ repo เครื่องเจ้าของยังมีไฟล์ที
 
 ### พนักงานที่ใช้เครื่องตัวเอง
 
-หลังเจ้าของ push ชุดใหม่แล้ว ให้ทำ:
+หลังเจ้าของ push ชุดใหม่แล้ว ให้พนักงานรันจากเครื่องตัวเองได้เลย โดยไม่ต้องมี repo Hermes Agent:
 
 ```bash
-git pull
-cd team-shortcuts
-bash install-shortcuts.sh
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/install-from-github.sh | bash
 ```
 
 ถ้าใช้ Cursor เพิ่ม:
 
 ```bash
-bash install-shortcuts.sh --cursor
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/install-from-github.sh | bash -s -- --cursor
 ```
 
 จากนั้นปิดแล้วเปิดโปรแกรม AI ใหม่ 1 รอบ แล้วลอง:
@@ -346,7 +344,7 @@ Use OverviewProgress
 ทำเพิ่มเฉพาะเครื่องที่จะให้ AI ตัวอื่นเขียนโค้ด:
 
 ```bash
-bash scripts/ai-relay/relay-setup.sh
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/scripts/ai-relay/relay-setup.sh | bash
 grok login --oauth
 relay-doctor
 ```

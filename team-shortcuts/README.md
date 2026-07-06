@@ -12,15 +12,35 @@
 
 ## วิธีติดตั้ง (พนักงานทำครั้งเดียวต่อเครื่อง)
 
+พนักงานไม่ต้องมี repo Hermes Agent ในเครื่อง ให้รันคำสั่งเดียวนี้:
+
 ```bash
-# 1. ดึงรีโปนี้ (หรือ git pull ถ้ามีอยู่แล้ว)
-# 2. เข้าโฟลเดอร์นี้ แล้วรัน:
-cd team-shortcuts
-bash install-shortcuts.sh           # ต่อ Claude Code + Codex (ไม่ต้องใช้สิทธิ์ผู้ดูแล)
-bash install-shortcuts.sh --cursor  # ถ้าใช้ Cursor ด้วย (อาจขอรหัสผู้ดูแล 1 ครั้ง)
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/install-from-github.sh | bash
+```
+
+ถ้าใช้ Cursor ด้วย ให้รัน:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/install-from-github.sh | bash -s -- --cursor
 ```
 
 เสร็จแล้วปิด-เปิดโปรแกรม AI ใหม่ 1 รอบ แล้วลองพิมพ์ `Use Comply` ดู
+
+## วิธีตรวจเครื่องพนักงาน
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/check-shortcuts.sh | bash
+```
+
+ผลที่ถูกต้อง:
+
+```text
+PASS registry_count               28
+PASS skill_map_count              28
+PASS index_count                  28
+PASS prompt_md_count              32
+RESULT: PASS
+```
 
 ## ตัวติดตั้งทำอะไรบ้าง
 
@@ -53,5 +73,5 @@ git add team-shortcuts/payload && git commit -m "sync shortcuts" && git push
 
 แล้วทำ 2 จุด:
 
-1. บอกพนักงาน `git pull` + รัน `install-shortcuts.sh` อีกครั้ง
+1. บอกพนักงานให้รันคำสั่ง `curl ... install-from-github.sh | bash` อีกครั้ง
 2. รัน `install-shortcuts.sh` บน VPS หนึ่งครั้ง เพื่อให้เครื่องกลางเท่ากับ payload

@@ -12,6 +12,9 @@
 #   bash install-shortcuts.sh          # ติดตั้ง Claude Code + Codex (ไม่ต้องใช้สิทธิ์ผู้ดูแล)
 #   bash install-shortcuts.sh --cursor # ติดตั้งเพิ่มทางลัดให้ Cursor ด้วย (อาจขอรหัสผู้ดูแล 1 ครั้ง)
 #
+# หมายเหตุสำหรับพนักงาน:
+#   พนักงานไม่ต้องมี repo Hermes Agent ในเครื่อง ให้ใช้ install-from-github.sh แทน
+#
 set -euo pipefail
 
 # --- ที่อยู่มาตรฐานบนเครื่องพนักงาน (อิงโฟลเดอร์บ้าน ใช้ได้ทุกชื่อบัญชี) ---
@@ -89,7 +92,8 @@ fi
 # --- 4) ต่อ Cursor (ทางลัดชดเชยที่อยู่เดิมของเจ้าของระบบ) ---
 say "[4/4] ต่อ Cursor"
 if [ "$WANT_CURSOR" -eq 0 ]; then
-  say "      ข้าม (ไม่ได้ใส่ --cursor) — ถ้าพนักงานใช้ Cursor ให้รันใหม่ด้วย: bash install-shortcuts.sh --cursor"
+  say "      ข้าม (ไม่ได้ใส่ --cursor) — ถ้าพนักงานใช้ Cursor ให้รันตัวติดตั้งจาก GitHub พร้อม --cursor"
+  say "      curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/install-from-github.sh | bash -s -- --cursor"
 elif [ -e "$OWNER_PATH" ]; then
   say "      ที่อยู่ $OWNER_PATH มีอยู่แล้วบนเครื่องนี้ — ไม่ต้องทำทางลัด (น่าจะเป็นเครื่องเจ้าของระบบ)"
 else
@@ -104,3 +108,8 @@ fi
 
 say ""
 say "เสร็จสิ้น. ปิดแล้วเปิดโปรแกรม AI ใหม่ 1 รอบ แล้วลองพิมพ์ Shortcut เช่น  Use Comply"
+
+if [ -f "$SCRIPT_DIR/check-shortcuts.sh" ]; then
+  say ""
+  bash "$SCRIPT_DIR/check-shortcuts.sh"
+fi

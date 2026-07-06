@@ -1,6 +1,6 @@
 # Use AI Relay — พรอมป์สำหรับพนักงาน (โหลดไปวางในเครื่องตัวเอง)
 
-> ไฟล์นี้อยู่ใน repo → พนักงานทุกคน clone แล้วได้พรอมป์ล่าสุด ไม่ต้องพึ่ง Obsidian ของเจ้าของ
+> พนักงานไม่ต้องมี repo Hermes Agent ในเครื่อง · ตัวติดตั้งจะโหลดเฉพาะเครื่องมือที่จำเป็นไปไว้ใต้ `~/.hermes/ai-relay-tools`
 > วิธีใช้: ก๊อปหัวข้อ "พรอมป์ที่วางให้ AI" ด้านล่าง ไปวางในเครื่องมือ AI ที่ใช้ (Claude Code / Cursor / Codex ฯลฯ)
 > อัปเดตล่าสุด 2026-07-06 · **สมองหลัก = Opus 4.8 · Fable ถอดออกแล้ว**
 
@@ -11,9 +11,7 @@
 รันในเทอร์มินัลบนเครื่องตัวเอง (ก๊อปวางได้เลย):
 
 ```bash
-git clone https://github.com/rattanasak-ops/hermes-agent.git
-cd hermes-agent
-bash scripts/ai-relay/install-local.sh
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/scripts/ai-relay/relay-setup.sh | bash
 relay-doctor
 ```
 
@@ -23,7 +21,7 @@ relay-doctor
 
 ### ล็อกอิน AI (งานที่พนักงานต้องทำเอง · ผมทำแทนไม่ได้)
 
-- **Grok** (คนเขียนโค้ดเร็ว): `grok login --device-auth` → ได้โค้ดสั้น ๆ ไปกรอกในเบราว์เซอร์
+- **Grok** (คนเขียนโค้ดเร็ว): `grok login --oauth` → เลือก Continue with Google ในเบราว์เซอร์
 - **Codex** (คนเขียนโค้ดหลังบ้าน/ตรวจ): `codex login`
 - **Gemini** (งานไฟล์เยอะ): `gemini auth login` หรือใส่ `GEMINI_API_KEY` ใน `.hermes/.env`
 - **Claude/Opus** (สมองหลัก): ล็อกอินผ่าน Claude Code ตามปกติ

@@ -8,7 +8,7 @@
 
 | จุดตรวจ | ผล |
 |---|---:|
-| GitHub ของเจ้าของ (`rattanasak-ops/hermes-agent`) | มีไฟล์แผนนี้แล้ว · ชุด Shortcut `79fbd139f` |
+| GitHub ของเจ้าของ (`rattanasak-ops/hermes-agent`) | มีไฟล์แผนนี้แล้ว · พนักงานติดตั้งผ่าน GitHub โดยไม่ต้องมี repo |
 | local repo เทียบ GitHub | 0 ahead / 0 behind |
 | จำลองเครื่องพนักงานจาก GitHub สด | ผ่าน |
 | Shortcut ในเครื่องพนักงานจำลอง | 28/28 |
@@ -33,21 +33,19 @@
 คำสั่งพนักงาน:
 
 ```bash
-git pull
-cd team-shortcuts
-bash install-shortcuts.sh
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/install-from-github.sh | bash
 ```
 
 ถ้าใช้ Cursor:
 
 ```bash
-bash install-shortcuts.sh --cursor
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/install-from-github.sh | bash -s -- --cursor
 ```
 
 ถ้าใช้ AI Relay:
 
 ```bash
-bash scripts/ai-relay/relay-setup.sh
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/scripts/ai-relay/relay-setup.sh | bash
 relay-doctor
 ```
 
@@ -92,7 +90,7 @@ branch: main
 dirty files: 62
 remote origin: https://github.com/NousResearch/hermes-agent.git
 remote fork: git@github.com:rattanasak-ops/hermes-agent.git
-Shortcut release: 79fbd139f
+Shortcut release: ใช้ `main` ของ `rattanasak-ops/hermes-agent`
 ```
 
 ผลกระทบ:
@@ -150,14 +148,14 @@ searched_roots=/home/linux-nat/projects, /srv/projects, /home/linux-nat/.worktre
 
 หลักฐาน:
 
-- GitHub: มีไฟล์แผนนี้แล้ว · ชุด Shortcut `79fbd139f`
-- จำลองเครื่องพนักงาน: Shortcut 28/28
+- GitHub: มีไฟล์แผนนี้แล้ว · พนักงานติดตั้งผ่าน GitHub โดยไม่ต้องมี repo
+- จำลองเครื่องพนักงานที่ไม่มี repo Hermes Agent: Shortcut 28/28
 - local/VPS: vault, payload, Codex ตรงกัน
 - test local/VPS: 45/45
 
 สิ่งที่ต้องทำต่อ:
 
-- แจ้งพนักงานใช้คำสั่งติดตั้งด้านบน
+- แจ้งพนักงานใช้คำสั่ง `curl ... install-from-github.sh | bash` ด้านบน
 
 ### เฟส 2 · ปิดความสะอาด local repo
 

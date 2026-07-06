@@ -20,10 +20,10 @@ status: tooling-ready
 version: "2.7"
 updated: 2026-07-06
 schema: memory-schema-v1.1
-note: v2.7 ถอด Fable/Faber/Fiber 5 ออกจากเส้นทางใช้งานแล้ว · สมองหลัก = Opus 4.8 ตัวเดียว · ก้อน B เป็นโค้ดจริงที่ Hermes Agent repo `scripts/ai-relay/` (relay-call + gate-run + relay-report) · project ไม่มี config ให้รัน relay-doctor สร้างค่าเริ่มต้น ไม่ต้องหยุด
+note: v2.8 ถอด Fable/Faber/Fiber 5 ออกจากเส้นทางใช้งานแล้ว · สมองหลัก = Opus 4.8 ตัวเดียว · ก้อน B เป็นโค้ดจริงใน GitHub ของเจ้าของ และพนักงานติดตั้งผ่าน `relay-setup.sh` โดยไม่ต้องมี repo Hermes Agent · project ไม่มี config ให้รัน relay-doctor สร้างค่าเริ่มต้น ไม่ต้องหยุด
 ---
 
-# Use AI Relay (v2.7 · 2026-07-06)
+# Use AI Relay (v2.8 · 2026-07-06)
 
 คู่กับ Memory Schema v1.1 + AI Relay Catalog + ตัวห่อ relay-call + ตัวรัน gate-run · เช็ก schema version ตอนเริ่ม ไม่ตรง = เตือน
 
@@ -56,7 +56,7 @@ Use AI Relay
 
 [ขั้น 0 — อ่านก่อนเริ่ม]
 - อ่าน ai-relay-catalog.md (อยู่โฟลเดอร์เดียวกับไฟล์นี้) + handoff/plan/token (Schema §2)
-- ตรวจเครื่องมือ: `command -v relay-call gate-run` · ไม่พบ = หยุด บอกเจ้าของรันตัวติดตั้งครั้งเดียวต่อเครื่อง `bash scripts/ai-relay/install-local.sh` (จาก repo Hermes Agent) · ติดตั้งแล้วเรียกได้จากทุก project บนเครื่องนั้น
+- ตรวจเครื่องมือ: `command -v relay-call gate-run` · ไม่พบ = หยุด แล้วให้พนักงานรันตัวติดตั้งจาก GitHub ครั้งเดียวต่อเครื่อง: `curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/scripts/ai-relay/relay-setup.sh | bash` · คำสั่งนี้โหลดเฉพาะเครื่องมือไปไว้ใต้ `~/.hermes/ai-relay-tools` ไม่ต้องมี repo Hermes Agent ในเครื่องพนักงาน · ติดตั้งแล้วเรียกได้จากทุก project บนเครื่องนั้น
 - project ยังไม่มี `.hermes/ai-relay/accounts.yaml` → **ไม่ต้องหยุด**: รัน `relay-doctor` 1 ครั้งในโฟลเดอร์ project (สร้างไฟล์ตั้งค่าเริ่มต้นให้เอง) · relay-call มีค่าเริ่มต้นฝังในโค้ดครบอยู่แล้ว (สมอง=opus + coder + เพดานทุกตัว) · อยากตั้งบัญชี/สายสำรองเฉพาะ project ค่อยแก้ YAML ทีหลัง · ห้ามเดา ID/host/บัญชี
 - token/บัญชีจริงอยู่ในตัวโค้ดเท่านั้น — ห้ามเข้า context ของ LLM สักตัว
 
@@ -106,7 +106,7 @@ Use AI Relay
 ทุก Phase รายงาน comply เป็นตัวเลข + ระบุ: AI ตัวไหน / ID ไหน / สลับกี่ครั้ง / รอบแก้ / งบที่ตัวห่อนับ (ไม่ใช่ Opus ประมาณ)
 ```
 
-## เครื่องมือที่ต้องมี (ก้อน B — เป็นโค้ดจริงแล้วที่ Hermes Agent repo `scripts/ai-relay/` · ติดตั้งด้วย `bash scripts/ai-relay/install-local.sh` · ตรวจเครื่องด้วย `relay-doctor`)
+## เครื่องมือที่ต้องมี (ก้อน B — เป็นโค้ดจริงใน GitHub ของเจ้าของ · พนักงานติดตั้งด้วย `curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/scripts/ai-relay/relay-setup.sh | bash` · ตรวจเครื่องด้วย `relay-doctor`)
 
 ### relay-call (ตัวห่อเรียก AI)
 - **หน้าที่:** ครอบการเรียก AI 1 ครั้ง · จับผลตายตัว · สลับบัญชีตามสาย · นับงบ/เพดาน · กัน token รั่ว · เขียน ledger
@@ -140,7 +140,7 @@ Use AI Relay
 | ส่วน | สถานะ |
 |---|---|
 | Claude วางแผน + ตรวจ · Grok/Gemini เขียนไฟล์ headless · Codex รีวิวผ่าน cross-check | พิสูจน์แล้ว (v1.x) |
-| relay-call + gate-run + relay-report เป็นโค้ดจริง | ✅ อยู่ที่ Hermes Agent repo `scripts/ai-relay/` · ทดสอบผ่านบน notebook: อ่าน YAML ไม่มี PyYAML · เรียก coder + ledger · เพดานรอบต่อ issue · สลับตัวสำรอง + cooldown · gate-run pass/fail + SHA จริง · relay-report สรุปถูก · doctor/installer |
+| relay-call + gate-run + relay-report เป็นโค้ดจริง | ✅ อยู่ใน GitHub ของเจ้าของ และหลังติดตั้งจะอยู่ใต้ `~/.hermes/ai-relay-tools` บนเครื่องพนักงาน · ทดสอบผ่านบน notebook: อ่าน YAML ไม่มี PyYAML · เรียก coder + ledger · เพดานรอบต่อ issue · สลับตัวสำรอง + cooldown · gate-run pass/fail + SHA จริง · relay-report สรุปถูก · doctor/installer |
 | Fable/Faber/Fiber 5 | ถอดออกจากเส้นทางใช้งานแล้ว · ไม่มี adapter ปริยาย · ไม่มีบัญชีตัวอย่าง · ไม่มีช่องรายงานสมองพิเศษ |
 | ทั้งชุดบน VPS | ✅ พิสูจน์แล้ว (2026-07-04 เย็น): pull `f7a25c150` + install-local.sh + `relay-doctor` ผ่าน 9 เตือน 1 (แค่ไม่มีคำสั่ง hermes) + `relay-call --tool codex` จากโฟลเดอร์นอก project (`/tmp/relay-vps-test`) → status ok · codex ตอบจริง · ledger จริง `calls-nobranch.md` |
 | รุ่น Opus 4.7/4.6 ยังเรียกได้ไหม | ⏳ ยังไม่ยืนยัน · ต้องทดสอบจริงก่อนใช้ |
@@ -152,6 +152,7 @@ Use AI Relay
 
 ## Changelog
 
+- v2.8 (2026-07-06): **แก้กติกาติดตั้งพนักงาน** · พนักงานไม่มี repo Hermes Agent ในเครื่อง จึงต้องใช้ `relay-setup.sh` ผ่าน GitHub raw URL และโหลดเครื่องมือไปไว้ใต้ `~/.hermes/ai-relay-tools` แทนแนวทางเก่าที่สมมติว่าพนักงานมี repo local
 - v2.7 (2026-07-06): **ถอด Fable/Faber/Fiber 5 ออกจากเส้นทางใช้งานทั้งหมด · สมองหลัก = Opus 4.8 ตัวเดียว** (เจ้าของสั่ง · ประหยัดโควต้า) — ลบ adapter `fable` + ด่านกันเครื่องเก่า + logic premium เก่าออกจาก `relay-call.py` · ลบ fable จาก sample-config (adapters/accounts) · เอา fable ออกจาก registry sample · RELAY-RULES.md + prompt/catalog: สมอง = Opus 4.8 เดียว ไม่มีด่านคะแนนความยาก/บันไดยกงานให้ Fable (งานยากใช้ Opus + ตรวจข้ามค่าย Grok/Codex แทน) · เพิ่ม prompt สำหรับพนักงานโหลดไปใช้ (`scripts/ai-relay/EMPLOYEE-PROMPT.md`) · pytest ผ่านครบด้วยเทสต์ยืนยัน opus เป็นสมองเดียว
 - v2.6 (2026-07-05): แก้ปัญหา coder ค้าง/แฮงก์แบบไม่มีใครรู้ — เพิ่ม "นาฬิกาปลุกกันค้าง" ใน relay-call · ผ่าน GPT-5.5 (Codex) review (fix-then-proceed → แก้ 2/3): (1) coder `call_timeout_seconds`=900 วิ (15 นาที ลดจาก 1800) · สมอง `brain_call_timeout_seconds`=1800 วิ (30 นาที แยก ไม่ตัดงานคิดยาวเร็วเกิน) · ตั้งต่อเครื่อง/ต่อ tool ได้ (2) จับ timeout ด้วยป้ายเฉพาะ `TIMEOUT_MARK` ไม่ใช่เดาจาก exit 124 ล้วน (CLI ที่ exit 124 เอง → crash ไม่ใช่ timeout) · classify แยกสถานะ `timeout` → ledger/relay-report เห็น "ค้าง" ชัด · timeout เข้า cooldown + สลับ coder ตัวถัดไปอัตโนมัติ · แก้ `relay-call.py` · pytest 16/16 (เพิ่ม 3 เทสต์ รวมกัน exit-124-ปลอม) · ค้างเฟสหน้า (จุด 3 จาก GPT-5): ปิดโปรเซสลูกที่ค้างต่อหลัง timeout ต้องรื้อเป็น Popen แบบสตรีม
 - v2.5-v2.4 (2026-07-04): ประวัติการทดลองสมองพิเศษและกติกาเครื่องเจ้าของ ถูกยุติและแทนที่ด้วย v2.7 แล้ว · ห้ามใช้เป็นคำสั่งตั้งค่าปัจจุบัน

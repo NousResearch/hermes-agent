@@ -1,25 +1,49 @@
 #!/usr/bin/env bash
-# relay-setup.sh — พนักงานรันตัวเดียวจบ: โหลด(ครั้งแรก) / อัปเดต + ติดตั้ง + ตรวจ AI Relay
-# ปลอดภัย: ไม่ฝัง token/รหัสลับ · ใช้สิทธิ์ git ที่พนักงานตั้งไว้เองบนเครื่อง
-# ปรับได้ด้วย env:  RELAY_REPO_URL (ที่อยู่ repo)  ·  RELAY_DIR (โฟลเดอร์ปลายทาง)
+# relay-setup.sh — พนักงานรันตัวเดียวจบ: โหลดเครื่องมือ + ติดตั้ง + ตรวจ AI Relay
+# ปลอดภัย: ไม่ฝัง token/รหัสลับ · ไม่ต้องมี repo Hermes Agent ในเครื่อง
+# ปรับได้ด้วย env: RELAY_ARCHIVE_URL (ไฟล์ GitHub archive) · RELAY_DIR (โฟลเดอร์ cache)
 set -euo pipefail
 
-REPO_URL="${RELAY_REPO_URL:-git@github.com:rattanasak-ops/hermes-agent.git}"
-TARGET_DIR="${RELAY_DIR:-$HOME/hermes-agent}"
+ARCHIVE_URL="${RELAY_ARCHIVE_URL:-https://github.com/rattanasak-ops/hermes-agent/archive/refs/heads/main.tar.gz}"
+TARGET_DIR="${RELAY_DIR:-$HOME/.hermes/ai-relay-tools}"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-relay-setup.XXXXXX")"
+
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
 
 echo "══ AI Relay setup ══"
-echo "repo:    $REPO_URL"
-echo "โฟลเดอร์: $TARGET_DIR"
+echo "source:  $ARCHIVE_URL"
+echo "cache:   $TARGET_DIR"
 echo ""
 
-# 1) โหลดครั้งแรก หรือ อัปเดตของเดิม (ff-only = ไม่ทับงานค้าง ไม่สร้าง merge มั่ว)
-if [ -d "$TARGET_DIR/.git" ]; then
-  echo "→ อัปเดตของเดิม (git pull) ..."
-  git -C "$TARGET_DIR" pull --ff-only
-else
-  echo "→ โหลดครั้งแรก (git clone) ..."
-  git clone "$REPO_URL" "$TARGET_DIR"
+if ! command -v curl >/dev/null 2>&1; then
+  echo "ผิดพลาด: ไม่พบ curl — ต้องมี curl เพื่อโหลด AI Relay จาก GitHub"
+  exit 1
 fi
+if ! command -v tar >/dev/null 2>&1; then
+  echo "ผิดพลาด: ไม่พบ tar — ต้องมี tar เพื่อแตกไฟล์ชุดติดตั้ง"
+  exit 1
+fi
+if ! command -v rsync >/dev/null 2>&1; then
+  echo "ผิดพลาด: ไม่พบ rsync — ต้องมี rsync เพื่อคัดไฟล์เครื่องมือให้ตรงกัน"
+  exit 1
+fi
+
+# 1) โหลดเฉพาะชุดเครื่องมือจาก GitHub archive
+echo "→ โหลด AI Relay จาก GitHub ..."
+curl -fsSL "$ARCHIVE_URL" -o "$TMP_DIR/hermes-agent.tar.gz"
+tar -xzf "$TMP_DIR/hermes-agent.tar.gz" -C "$TMP_DIR"
+
+SRC_DIR="$(find "$TMP_DIR" -maxdepth 3 -type d -path '*/scripts/ai-relay' | head -n 1)"
+if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/install-local.sh" ]; then
+  echo "ผิดพลาด: โหลดแล้ว แต่ไม่พบ scripts/ai-relay/install-local.sh"
+  exit 1
+fi
+
+mkdir -p "$TARGET_DIR/scripts/ai-relay"
+rsync -a --delete "$SRC_DIR/" "$TARGET_DIR/scripts/ai-relay/"
 
 # 2) ติดตั้งคำสั่ง relay (สร้าง symlink ที่ ~/.local/bin · ไม่ล็อกอินแทน ไม่แตะรหัสลับ)
 echo "→ ติดตั้งคำสั่ง relay ..."
@@ -27,7 +51,10 @@ bash "$TARGET_DIR/scripts/ai-relay/install-local.sh"
 
 # 3) ตรวจความพร้อมเครื่อง
 echo "→ ตรวจความพร้อม (relay-doctor) ..."
-if command -v relay-doctor >/dev/null 2>&1; then
+NEW_RELAY_DOCTOR="$HOME/.local/bin/relay-doctor"
+if [ -x "$NEW_RELAY_DOCTOR" ]; then
+  "$NEW_RELAY_DOCTOR" || true
+elif command -v relay-doctor >/dev/null 2>&1; then
   relay-doctor || true
 else
   echo "  (ยังเรียก relay-doctor ไม่ได้ — เพิ่ม ~/.local/bin เข้า PATH ก่อน)"
@@ -45,6 +72,6 @@ cat <<MSG
   3) ถามว่างานแบบนี้ควรใช้ AI ตัวไหน:
        relay-suggest --task-type backend --cwd "$TARGET_DIR"
 
-คราวหน้าจะอัปเดต = รัน relay-setup.sh ซ้ำได้เลย (มันจะ git pull + ติดตั้งใหม่ให้เอง)
+คราวหน้าจะอัปเดต = รันคำสั่ง curl relay-setup.sh ซ้ำได้เลย
 กติกาการทำงานทั้งหมดอ่านได้ที่: $TARGET_DIR/scripts/ai-relay/RELAY-RULES.md
 MSG

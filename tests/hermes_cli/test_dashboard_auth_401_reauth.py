@@ -406,6 +406,29 @@ class TestAutoSsoRedirect:
         assert r.headers["location"].startswith("/login")
         assert "/auth/login" not in r.headers["location"]
 
+    def test_single_password_provider_renders_login_not_auto_sso(
+        self, gated_app
+    ):
+        """Password-only providers do not have an OAuth redirect flow, so a
+        basic-auth-only deployment must render /login instead of auto-starting
+        /auth/login for the single registered provider."""
+        from hermes_cli.dashboard_auth import clear_providers, register_provider
+        from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
+
+        clear_providers()
+        register_provider(
+            BasicAuthProvider(
+                username="admin",
+                password_hash=hash_password("hunter2"),
+                secret=b"test-secret-for-basic-auth-provider",
+            )
+        )
+
+        r = gated_app.get("/sessions", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
+
 
 # ---------------------------------------------------------------------------
 # Gate middleware: same-origin next= validation

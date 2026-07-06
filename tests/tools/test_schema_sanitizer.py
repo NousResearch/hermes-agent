@@ -130,6 +130,36 @@ def test_required_all_missing_is_dropped():
     assert "required" not in out[0]["function"]["parameters"]
 
 
+def test_required_null_is_dropped():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": None,
+    })]
+
+    out = sanitize_tool_schemas(tools)
+
+    assert "required" not in out[0]["function"]["parameters"]
+
+
+def test_nested_required_null_is_dropped():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "object",
+                "properties": {"goal": {"type": "string"}},
+                "required": None,
+            },
+        },
+    })]
+
+    out = sanitize_tool_schemas(tools)
+
+    task_schema = out[0]["function"]["parameters"]["properties"]["task"]
+    assert "required" not in task_schema
+
+
 def test_well_formed_schema_unchanged():
     schema = {
         "type": "object",

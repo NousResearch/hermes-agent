@@ -2051,9 +2051,17 @@ def discover_plugins(force: bool = False) -> None:
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a lifecycle hook on all loaded plugins.
 
+    Ensures plugins are discovered on first invocation so callers in
+    processes that never explicitly call ``discover_plugins()`` (e.g. the
+    gateway, which uses its own ``HookRegistry`` for platform events)
+    still fire callbacks registered by user plugins.
+
     Returns a list of non-``None`` return values from plugin callbacks.
     """
-    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+    pm = get_plugin_manager()
+    if not pm._discovered:
+        pm.discover_and_load()
+    return pm.invoke_hook(hook_name, **kwargs)
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

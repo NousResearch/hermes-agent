@@ -549,6 +549,39 @@ def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
     return True
 
 
+def _should_warn_delivery_lost_origin_thread(job: dict, origin: dict, target: dict) -> bool:
+    """Return True only when a missing target thread is an origin-lane bug.
+
+    Cron jobs can legitimately deliver to a flat home channel or an explicit
+    ``platform:chat_id`` target even when they were created from a threaded
+    origin. Those deliveries are broadcasts, not replies to the origin thread,
+    so logging them as WARNING pollutes error logs. Keep the warning for the
+    paths that semantically promise origin-thread preservation: ``origin`` and
+    the platform shorthand when it resolves to the origin conversation.
+    """
+    if not origin or not origin.get("thread_id") or target.get("thread_id"):
+        return False
+    if str(origin.get("platform", "")).lower() != str(target.get("platform", "")).lower():
+        return False
+    if str(origin.get("chat_id", "")) != str(target.get("chat_id", "")):
+        return False
+
+    deliver = _normalize_deliver_value(job.get("deliver", "local"))
+    parts = [p.strip() for p in deliver.split(",") if p.strip()]
+    origin_platform = str(origin.get("platform", "")).lower()
+    for part in parts:
+        part_lower = part.lower()
+        if part_lower == "origin":
+            return True
+        # The shorthand ``deliver=discord`` means "the same platform as the
+        # origin" when the job has a Discord origin; it should carry the origin
+        # thread. Explicit ``discord:<chat_id>`` and fan-out tokens intentionally
+        # target delivery surfaces, so they are not warned here.
+        if ":" not in part and part_lower == origin_platform:
+            return True
+    return False
+
+
 def _maybe_mirror_cron_delivery(
     job: dict,
     platform_name: str,
@@ -1397,15 +1430,24 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
 
-        # Diagnostic: log thread_id for topic-aware delivery debugging
+        # Diagnostic: log thread_id for topic-aware delivery debugging. Only
+        # warn when the route semantically promised the origin thread; explicit
+        # home-channel/broadcast targets may intentionally be flat.
         origin = _resolve_origin(job) or {}
         origin_thread = origin.get("thread_id")
         if origin_thread and not thread_id:
-            logger.warning(
-                "Job '%s': origin has thread_id=%s but delivery target lost it "
-                "(deliver=%s, target=%s)",
-                job["id"], origin_thread, job.get("deliver", "local"), target,
-            )
+            if _should_warn_delivery_lost_origin_thread(job, origin, target):
+                logger.warning(
+                    "Job '%s': origin has thread_id=%s but delivery target lost it "
+                    "(deliver=%s, target=%s)",
+                    job["id"], origin_thread, job.get("deliver", "local"), target,
+                )
+            else:
+                logger.debug(
+                    "Job '%s': origin has thread_id=%s but explicit/broadcast "
+                    "delivery target is flat (deliver=%s, target=%s)",
+                    job["id"], origin_thread, job.get("deliver", "local"), target,
+                )
         elif thread_id:
             logger.debug(
                 "Job '%s': delivering to %s:%s thread_id=%s",

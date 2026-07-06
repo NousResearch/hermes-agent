@@ -4268,6 +4268,49 @@ class TestCronDeliveryMirror:
         assert _target_matches_origin(origin, "telegram", "123", None) is False
         assert _target_matches_origin(origin, "telegram", "123", "99") is False
 
+    def test_lost_thread_warning_is_only_for_origin_lane(self):
+        from cron.scheduler import _should_warn_delivery_lost_origin_thread
+
+        origin = {"platform": "discord", "chat_id": "1516650875387514911", "thread_id": "1518758438702944498"}
+        flat_origin_chat = {"platform": "discord", "chat_id": "1516650875387514911", "thread_id": None}
+
+        assert _should_warn_delivery_lost_origin_thread(
+            {"deliver": "origin"}, origin, flat_origin_chat,
+        ) is True
+        assert _should_warn_delivery_lost_origin_thread(
+            {"deliver": "discord"}, origin, flat_origin_chat,
+        ) is True
+        assert _should_warn_delivery_lost_origin_thread(
+            {"deliver": "discord:1516650875387514911"}, origin, flat_origin_chat,
+        ) is False
+        assert _should_warn_delivery_lost_origin_thread(
+            {"deliver": "all"}, origin, flat_origin_chat,
+        ) is False
+
+    def test_explicit_discord_target_from_threaded_origin_does_not_warn(self, caplog):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+        job = {
+            "id": "threaded-origin-flat-home",
+            "deliver": "discord:1516650875387514911",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "1516650875387514911",
+                "thread_id": "1518758438702944498",
+            },
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            _deliver_result(job, "Here is today's summary.")
+
+        assert not any("delivery target lost it" in r.message for r in caplog.records)
+
     def test_delivery_does_not_mirror_fanout_non_origin_target(self):
         """Even with the gate ON, a delivery to a chat that is NOT the job's
         origin (explicit fan-out target) must not be mirrored — the mirror is

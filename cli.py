@@ -7917,12 +7917,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
           /model                              — show current model + usage hints
           /model <name>                       — switch model (persists by default)
           /model <name> --session             — switch for this session only
+          /model <name> --session-only        — alias of --session (issue #58290)
+          /model <name> --no-save             — alias of --session
           /model <name> --global              — switch and persist (explicit)
+          /model <name> --persist             — alias of --global
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
 
         Persistence defaults to on (``model.persist_switch_by_default`` in
-        config.yaml, default True). Use ``--session`` for a one-off switch.
+        config.yaml, default True). Use ``--session`` / ``--session-only``
+        for a one-off switch.
         """
         from hermes_cli.model_switch import (
             switch_model,

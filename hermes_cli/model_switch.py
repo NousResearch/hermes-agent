@@ -353,7 +353,7 @@ class ModelSwitchResult:
 # ---------------------------------------------------------------------------
 
 def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
-    """Parse --provider, --global, --session, and --refresh flags from /model command args.
+    """Parse --provider, --global/--persist, --session/--session-only, and --refresh flags.
 
     Returns ``(model_input, explicit_provider, is_global, force_refresh, is_session)``.
 
@@ -362,14 +362,22 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
     :func:`resolve_persist_behavior` so the config-gated default
     (``model.persist_switch_by_default``) is applied in one place.
 
+    Both naming conventions are accepted, so the issue #58290 reporter's
+    expected ``--session-only`` and the existing ``--session`` work
+    identically. ``--persist`` is an alias for ``--global`` and ``--no-save``
+    is an alias for ``--session`` / ``--session-only``.
+
     Examples::
 
-        "sonnet"                         -> ("sonnet", "", False, False, False)
-        "sonnet --global"                -> ("sonnet", "", True, False, False)
-        "sonnet --session"               -> ("sonnet", "", False, False, True)
-        "sonnet --provider anthropic"    -> ("sonnet", "anthropic", False, False, False)
-        "--provider my-ollama"           -> ("", "my-ollama", False, False, False)
-        "--refresh"                      -> ("", "", False, True, False)
+        "sonnet"                          -> ("sonnet", "", False, False, False)
+        "sonnet --global"                 -> ("sonnet", "", True, False, False)
+        "sonnet --persist"                -> ("sonnet", "", True, False, False)
+        "sonnet --session"                -> ("sonnet", "", False, False, True)
+        "sonnet --session-only"           -> ("sonnet", "", False, False, True)
+        "sonnet --no-save"                -> ("sonnet", "", False, False, True)
+        "sonnet --provider anthropic"     -> ("sonnet", "anthropic", False, False, False)
+        "--provider my-ollama"            -> ("", "my-ollama", False, False, False)
+        "--refresh"                       -> ("", "", False, True, False)
         "sonnet --provider anthropic --global" -> ("sonnet", "anthropic", True, False, False)
     """
     is_global = False
@@ -378,19 +386,37 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
     is_session = False
 
     # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
-    # A single Unicode dash before a flag keyword becomes "--"
+    # A single Unicode dash before a flag keyword becomes "--".
+    # Match the canonical flag names plus their aliases (--persist, --session-only,
+    # --no-save) so the same auto-correction works for the alternate spellings.
     import re as _re
-    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh)', r'--\1', raw_args)
+    raw_args = _re.sub(
+        r'[\u2012\u2013\u2014\u2015]'
+        r'(provider|global|persist|session|session-only|no-save|refresh)',
+        r'--\1',
+        raw_args,
+    )
 
-    # Extract --global
-    if "--global" in raw_args:
+    # Extract --global / --persist (explicit persist)
+    if "--global" in raw_args or "--persist" in raw_args:
         is_global = True
-        raw_args = raw_args.replace("--global", "").strip()
+        raw_args = raw_args.replace("--global", "").replace("--persist", "").strip()
 
-    # Extract --session (explicit session-only; overrides the persist default)
-    if "--session" in raw_args:
+    # Extract --session / --session-only / --no-save (explicit session-only;
+    # overrides the persist default)
+    if (
+        "--session-only" in raw_args
+        or "--session" in raw_args
+        or "--no-save" in raw_args
+    ):
         is_session = True
-        raw_args = raw_args.replace("--session", "").strip()
+        raw_args = (
+            raw_args
+            .replace("--session-only", "")
+            .replace("--session", "")
+            .replace("--no-save", "")
+            .strip()
+        )
 
     # Extract --refresh (bust the model picker disk cache before listing)
     if "--refresh" in raw_args:

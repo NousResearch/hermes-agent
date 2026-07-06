@@ -19,6 +19,8 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
+from gateway.reply_policy import ReplyPolicy
+
 logger = logging.getLogger(__name__)
 
 
@@ -168,6 +170,18 @@ class SessionSource:
     # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
     # forge it across the wire or have it restored from persistence.
     delivered_via_upstream_relay: bool = False
+
+    # Reply-gate metadata (wire-INVISIBLE; deliberately excluded from
+    # to_dict/from_dict). `reply_policy` is stamped once per inbound event by
+    # the platform adapter (default DM = the safe value for unstamped events /
+    # partial platform rollout) and read by the post-turn delivery block to
+    # decide whether the tool-gated delivery inversion applies.
+    # `reply_gate_tool_sends` is a turn-scoped counter incremented when the
+    # agent delivers to THIS chat via send_message(target="current"); the
+    # post-turn block reads it to dedup the free-text tail. Both are per-turn
+    # runtime state, never persisted or sent across the wire.
+    reply_policy: ReplyPolicy = ReplyPolicy.DM
+    reply_gate_tool_sends: int = 0
 
     def __post_init__(self) -> None:
         # D-Q2.5 dual-field reconciliation: `scope_id` is canonical, `guild_id`

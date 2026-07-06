@@ -1419,7 +1419,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
             )
-            
+            # Stamp the reply policy for the delivery layer (read-only classification
+            # mirroring the ingestion gate's mention/free-response knobs).
+            source.reply_policy = self._resolve_whatsapp_reply_policy(data)
+
             # Download media URLs to the local cache so agent tools
             # can access them reliably regardless of URL expiration.
             raw_urls = data.get("mediaUrls", [])

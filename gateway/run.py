@@ -961,7 +961,11 @@ def _resume_reason_phrase(reason: Optional[str]) -> str:
     return "a gateway interruption"
 
 
-def _build_interruption_system_note(reason: Optional[str], has_new_message: bool) -> str:
+def _build_interruption_system_note(
+    reason: Optional[str],
+    has_new_message: bool,
+    group_mode: bool = False,
+) -> str:
     """Build the ``[System note: ...]`` resume/recovery text.
 
     Centralizes the two near-duplicate resume-note construction sites (the
@@ -970,10 +974,24 @@ def _build_interruption_system_note(reason: Optional[str], has_new_message: bool
     ``reason`` is the session's ``resume_reason`` marker; ``has_new_message``
     selects the guidance clause — address the user's new message, or (for the
     synthesized empty auto-resume turn) report recovery and ask what's next.
+
+    ``group_mode`` (True when the turn's reply policy is not ``dm``) swaps the
+    recovery guidance for owner-routing guidance: the model must NOT narrate the
+    restart/interruption into a shared group; any recovery/status report goes to
+    the owner's private channel via ``send_message``. Defaults to False so DM
+    output is byte-identical to before this variant existed.
+
     Returns only the bracketed note; the caller appends any real message.
     """
     phrase = _resume_reason_phrase(reason)
-    if has_new_message:
+    if group_mode:
+        guidance = (
+            "Recovery context only — do NOT narrate this restart/interruption "
+            "into the group. If the new message below needs a substantive "
+            "reply, answer it normally; send any recovery/status report to the "
+            "owner's private channel via send_message if needed."
+        )
+    elif has_new_message:
         guidance = (
             "Address the user's NEW message below FIRST and focus "
             "on what the user is asking now."
@@ -11369,12 +11387,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 _intentional_silence = False
 
+            # Reply-gate (tool mode): in free-response GROUP turns under
+            # reply_gate_mode="tool", the agent's free-text tail is NOT
+            # auto-delivered — delivery happens only via a
+            # send_message(target="current") tool call during the turn (see
+            # gateway/reply_policy.py + the reply-gate redesign). Computed once
+            # here; consumed by the delivery-suppression branch below and by the
+            # `and not tool_gated` guards on the normalizer/footer/voice paths.
+            # DMs, mention-gated groups, and prompt mode all leave `tool_gated`
+            # False, so the entire branch is inert (default-OFF, byte-identical
+            # to today) for anyone who has not opted in.
+            _reply_policy = getattr(source, "reply_policy", None)
+            tool_gated = self._is_reply_tool_gated(source)
+            # Turn-scoped count of current-chat tool deliveries (send_message
+            # target="current"); read back off the shared source object the tool
+            # mutated during the turn. Drives dedup regardless of tool_gated.
+            _tool_send_count = int(getattr(source, "reply_gate_tool_sends", 0) or 0)
+            _delivered_via_tool = _tool_send_count > 0
+            # Was the RAW final text (before empty-normalization) a substantive
+            # answer? Gates the fallback ratchet so it never rescues an empty
+            # tail into a manufactured placeholder.
+            _had_substantive_tail = bool(response.strip()) and not _intentional_silence
+
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
             # produce visible content after exhausting all retries (nudge,
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
-            if response == "(empty)" and not _intentional_silence:
+            if response == "(empty)" and not _intentional_silence and not tool_gated:
                 response = (
                     "⚠️ The model returned no response after processing tool "
                     "results. This can happen with some models — try again or "
@@ -11418,9 +11458,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
             if not _intentional_silence:
-                response = _normalize_empty_agent_response(
-                    agent_result, response, history_len=len(history),
-                )
+                # Skip the empty→placeholder normalizer for tool-gated turns so a
+                # suppressed tail is never turned into a visible "no response"
+                # message; sanitization still runs so any fallback-delivered tail
+                # is cleaned exactly as in prompt mode.
+                if not tool_gated:
+                    response = _normalize_empty_agent_response(
+                        agent_result, response, history_len=len(history),
+                    )
                 response = _sanitize_gateway_final_response(source.platform, response)
 
             # Ordering contract: the agent thread already updated the contextvar
@@ -11522,7 +11567,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence and not tool_gated:
                 response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
@@ -11842,9 +11887,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 response = ""
 
+            # Reply-gate tool-mode delivery decision. Fires only for
+            # free-response group turns under reply_gate_mode="tool"
+            # (`tool_gated`), OR whenever a current-chat tool send already
+            # delivered this turn (`_delivered_via_tool` — the dedup guard, which
+            # applies independently of the mode). This runs AFTER transcript
+            # persistence (above) and only suppresses platform delivery, never
+            # the transcript — mirroring the intentional-silence contract.
+            if tool_gated or _delivered_via_tool:
+                if _delivered_via_tool:
+                    # Dedup (defense in depth): a tool-driven send already
+                    # delivered to this chat, so the free-text tail must never
+                    # ALSO auto-deliver — a duplicate is always wrong.
+                    _reply_gate_suppress = True
+                    _reply_gate_fallback = False
+                elif not _had_substantive_tail:
+                    # Empty or silence-marker tail with no tool send — nothing to
+                    # deliver (a marker was already wiped just above).
+                    _reply_gate_suppress = True
+                    _reply_gate_fallback = False
+                elif getattr(self.config, "reply_gate_tool_fallback", True):
+                    # Fallback ratchet (Phase-1 safety): a substantive answer was
+                    # produced but no tool send happened — still deliver it
+                    # (today's behavior) so the feature can only remove duplicate/
+                    # leaked text, never silently swallow a real reply.
+                    _reply_gate_suppress = False
+                    _reply_gate_fallback = True
+                else:
+                    _reply_gate_suppress = True
+                    _reply_gate_fallback = False
+                logger.info(
+                    "reply_gate: tool-mode session=%s policy=%s chars=%d "
+                    "tool_sends=%d suppressed=%s fallback=%d",
+                    session_entry.session_id,
+                    getattr(_reply_policy, "value", _reply_policy),
+                    len(response),
+                    _tool_send_count,
+                    _reply_gate_suppress,
+                    int(_reply_gate_fallback),
+                )
+                if _reply_gate_suppress:
+                    response = ""
+
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
-            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
+            if not tool_gated and self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, extract and
@@ -12746,6 +12833,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         await adapter.handle_message(event)
+
+    def _is_reply_tool_gated(self, source) -> bool:
+        """True when the tool-gated delivery inversion applies to this turn.
+
+        The single predicate: ``reply_gate_mode == "tool"`` AND the turn is a
+        free-response group (``source.reply_policy == FREE_RESPONSE``). In that
+        case the agent's free-text tail is NOT auto-delivered — delivery happens
+        only via ``send_message(target="current")``. False for DMs, mention-gated
+        groups, and prompt mode (the default), so the mechanism is inert unless a
+        deployment opts in. Consumed by both the post-turn delivery block and the
+        streaming-eligibility gate (streamed text IS delivery).
+        """
+        if getattr(self.config, "reply_gate_mode", "prompt") != "tool":
+            return False
+        from gateway.reply_policy import ReplyPolicy
+        return getattr(source, "reply_policy", None) == ReplyPolicy.FREE_RESPONSE
 
     def _should_send_voice_reply(
         self,
@@ -16289,6 +16392,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _plat_streaming is None
             else bool(_plat_streaming)
         )
+        # Tool-gated free-response group turns must not stream (streamed text IS
+        # delivery, bypassing the reply gate).
+        if _streaming_enabled and self._is_reply_tool_gated(source):
+            _streaming_enabled = False
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
 
@@ -17612,6 +17719,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
+            # Tool-gated free-response group turns must not stream the final text
+            # — streamed text IS delivery, which would bypass the reply gate.
+            if _streaming_enabled and self._is_reply_tool_gated(source):
+                _streaming_enabled = False
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages
@@ -18131,7 +18242,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # to the user immediately.
             from tools.approval import (
                 register_gateway_notify,
+                reset_current_message_source,
                 reset_current_session_key,
+                set_current_message_source,
                 set_current_session_key,
                 unregister_gateway_notify,
             )
@@ -18306,6 +18419,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 has_fresh_tool_tail=_has_fresh_tool_tail,
                 message_is_empty=not (isinstance(message, str) and message.strip()),
             )
+            # Group turns (reply policy != dm) must not narrate recovery into the
+            # shared chat — route the recovery report to the owner instead.
+            from gateway.reply_policy import ReplyPolicy as _ReplyPolicy
+            _group_recovery = (
+                getattr(source, "reply_policy", _ReplyPolicy.DM) != _ReplyPolicy.DM
+            )
             if _note_kind == "resume":
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 _persist_user_message_override = message
@@ -18314,7 +18433,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # no NEW user message to address, so tell the model to report
                 # recovery instead of the (nonexistent) "new message".
                 message = _build_interruption_system_note(
-                    _reason, has_new_message=bool(message)
+                    _reason, has_new_message=bool(message), group_mode=_group_recovery,
                 ) + (f"\n\n{message}" if message else "")
             elif _note_kind == "tool_tail":
                 _persist_user_message_override = message
@@ -18350,11 +18469,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 )
                 message = _build_interruption_system_note(
-                    _sn_reason, has_new_message=False
+                    _sn_reason, has_new_message=False, group_mode=_group_recovery,
                 )
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
+            # Bind the inbound source for this turn so send_message(target="current")
+            # can resolve the originating chat. Same lifetime + crash-safety as the
+            # session-key registration (reset in the finally below). Zero the
+            # per-turn tool-send counter first so a reused source object never
+            # carries a stale count into a new turn.
+            try:
+                source.reply_gate_tool_sends = 0
+            except Exception:
+                pass
+            _message_source_token = set_current_message_source(source)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
@@ -18416,6 +18545,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
                 reset_current_session_key(_approval_session_token)
+                reset_current_message_source(_message_source_token)
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

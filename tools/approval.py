@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import unicodedata
-from typing import Optional
+from typing import Any, Optional
 from hermes_cli.config import cfg_get
 
 from tools.interrupt import is_interrupted
@@ -148,6 +148,62 @@ def reset_current_observability_context(
     turn_token, tool_token = tokens
     _approval_tool_call_id.reset(tool_token)
     _approval_turn_id.reset(turn_token)
+
+
+# Turn-scoped "current message source" — the inbound SessionSource-like object
+# for the gateway turn currently executing in this context. Mirrors the
+# session-key contextvar lifecycle (set at turn start, reset in the same
+# try/finally) so tools running inside the turn can resolve
+# send_message(target="current") back to the originating chat without knowing
+# platform/chat_id plumbing. Lives here beside the other turn-scoped gateway
+# contextvars because it shares their exact lifecycle and crash-safety story.
+_current_message_source: contextvars.ContextVar[Optional[Any]] = contextvars.ContextVar(
+    "current_message_source",
+    default=None,
+)
+
+
+def set_current_message_source(source: Any) -> contextvars.Token:
+    """Bind the current gateway turn's inbound message source to this context."""
+    return _current_message_source.set(source)
+
+
+def get_current_message_source() -> Optional[Any]:
+    """Return the current gateway turn's inbound message source, or None.
+
+    None outside a live gateway turn (CLI, cron, subagent) — callers that need
+    a message source (e.g. send_message(target="current")) must surface a clear
+    error rather than guess.
+    """
+    return _current_message_source.get()
+
+
+def reset_current_message_source(token: contextvars.Token) -> None:
+    """Restore the prior message-source context."""
+    _current_message_source.reset(token)
+
+
+def note_current_message_delivered() -> None:
+    """Record that the current turn delivered to its originating chat via a tool.
+
+    Increments a turn-scoped counter ON the current message source object (the
+    same object the async post-turn delivery block holds a reference to), so the
+    post-turn block can dedup — a tool-driven send to the current chat means the
+    free-text tail must never also auto-deliver. The counter rides the source
+    object rather than a contextvar because the tool runs in the agent's
+    executor-thread context (a copy) while the post-turn block reads it back on
+    the asyncio loop; mutating the shared object crosses that boundary, a
+    contextvar reset would not. No-op outside a gateway turn.
+    """
+    src = _current_message_source.get()
+    if src is None:
+        return
+    try:
+        src.reply_gate_tool_sends = int(getattr(src, "reply_gate_tool_sends", 0) or 0) + 1
+    except Exception:
+        # Source object may be an unexpected shape (defensive: never let a
+        # bookkeeping write break a successful delivery).
+        pass
 
 
 def get_current_session_key(default: str = "default") -> str:

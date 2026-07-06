@@ -102,6 +102,21 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
     return default
 
 
+def _normalize_reply_gate_mode(value: Any, default: str = "prompt") -> str:
+    """Normalize the reply-gate mode to a supported value.
+
+    ``"prompt"`` (default) preserves today's deliver-by-default behavior;
+    ``"tool"`` opts a deployment into tool-gated delivery for free-response
+    group turns. Any unrecognized value falls back to ``"prompt"`` so a bad
+    config edit can never silently break delivery.
+    """
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"prompt", "tool"}:
+            return normalized
+    return default
+
+
 def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
     """Normalize notice delivery mode to a supported value."""
     if isinstance(value, str):
@@ -642,6 +657,23 @@ class GatewayConfig:
     # raw passthrough.
     filter_silence_narration: bool = True
 
+    # Reply-gate mode for free-response GROUP turns (see gateway/reply_policy.py
+    # + the reply-gate redesign). "prompt" (default) is today's behavior,
+    # byte-identical: the agent's final free text is delivered unless it matches
+    # a silence marker. "tool" inverts the contract for free-response groups —
+    # the free-text tail is NOT auto-delivered; delivery happens only when the
+    # model calls send_message(target="current"). DMs and mention-gated groups
+    # are unaffected in either mode. config.yaml-only; no HERMES_* env var.
+    reply_gate_mode: str = "prompt"  # "prompt" | "tool"
+    # Fallback ratchet for "tool" mode: while True (default during burn-in), a
+    # tool-mode turn that made zero current-chat tool sends AND whose final text
+    # is a substantive (non-silence-marker) answer still delivers that text —
+    # today's behavior as a safety net so the feature can only remove duplicate/
+    # leaked text, never silently swallow a real answer. Flipping to False (a
+    # deliberate operator decision, out of scope for this change) makes
+    # silence-by-default real.
+    reply_gate_tool_fallback: bool = True
+
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Whether to echo raw STT transcripts back to the user
@@ -768,6 +800,8 @@ class GatewayConfig:
             "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
+            "reply_gate_mode": self.reply_gate_mode,
+            "reply_gate_tool_fallback": self.reply_gate_tool_fallback,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
             "group_sessions_per_user": self.group_sessions_per_user,
@@ -865,6 +899,12 @@ class GatewayConfig:
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
+            ),
+            reply_gate_mode=_normalize_reply_gate_mode(
+                data.get("reply_gate_mode"), "prompt"
+            ),
+            reply_gate_tool_fallback=_coerce_bool(
+                data.get("reply_gate_tool_fallback"), True
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
@@ -1021,6 +1061,13 @@ def load_gateway_config() -> GatewayConfig:
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[
                     "filter_silence_narration"
+                ]
+
+            if "reply_gate_mode" in yaml_cfg:
+                gw_data["reply_gate_mode"] = yaml_cfg["reply_gate_mode"]
+            if "reply_gate_tool_fallback" in yaml_cfg:
+                gw_data["reply_gate_tool_fallback"] = yaml_cfg[
+                    "reply_gate_tool_fallback"
                 ]
 
             if "unauthorized_dm_behavior" in yaml_cfg:

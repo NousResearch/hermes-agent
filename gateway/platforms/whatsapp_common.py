@@ -125,6 +125,26 @@ class WhatsAppBehaviorMixin:
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _resolve_whatsapp_reply_policy(self, data: Dict[str, Any]):
+        """Classify the inbound event's reply policy (read-only, for delivery).
+
+        Reads the SAME two config knobs the group branch of
+        ``_should_process_message`` consults — ``free_response_chats`` membership
+        and ``require_mention`` — and returns a :class:`ReplyPolicy`. Does not
+        affect ingestion; the ingestion gate is untouched. Stamped onto the
+        outbound event's ``SessionSource`` so the post-turn delivery block can
+        decide whether the tool-gated inversion applies.
+        """
+        from gateway.reply_policy import resolve_reply_policy
+
+        is_group = bool(data.get("isGroup", False))
+        chat_id = str(data.get("chatId") or "")
+        return resolve_reply_policy(
+            is_group=is_group,
+            in_free_response_set=chat_id in self._whatsapp_free_response_chats(),
+            require_mention=self._whatsapp_require_mention(),
+        )
+
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
         """Parse allow_from / group_allow_from from config or env var."""

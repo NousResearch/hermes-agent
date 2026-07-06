@@ -158,7 +158,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Use 'current' (or omit target) to reply in the chat this turn came from — the current conversation. Cross-channel format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'current', 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -297,39 +297,67 @@ def _handle_react(args, remove=False):
 
 def _handle_send(args):
     """Send a message to a platform target."""
-    target = args.get("target", "")
+    target = (args.get("target") or "").strip()
     message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    if not message:
+        return tool_error("'message' is required when action='send'")
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
-    chat_id = None
-    thread_id = None
-
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
-    else:
-        is_explicit = False
-
-    # Resolve human-friendly channel names to numeric IDs
-    if target_ref and not is_explicit:
+    # target="current" (or an omitted target during a live gateway turn) means
+    # "reply in the chat this turn came from" — resolved via the turn-scoped
+    # message-source registered by the gateway runner (tools/approval.py).
+    # Outside any gateway turn (CLI, cron, subagent) no source is registered, so
+    # this is a CLEAR tool error rather than a silent guess.
+    _current_source = None
+    if target in ("", "current"):
+        from tools.approval import get_current_message_source
+        _current_source = get_current_message_source()
+        if _current_source is None:
+            return tool_error(
+                "target='current' is only valid during a live gateway turn "
+                "(the chat this message came from). No inbound message source is "
+                "registered in this context — specify an explicit target such as "
+                "'platform:chat_id' instead."
+            )
         try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, target_ref)
-            if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
-            else:
+            platform_name = _current_source.platform.value
+        except Exception:
+            platform_name = str(getattr(_current_source, "platform", "")).strip().lower()
+        chat_id = str(getattr(_current_source, "chat_id", "") or "")
+        thread_id = getattr(_current_source, "thread_id", None) or None
+        if not platform_name or not chat_id:
+            return tool_error(
+                "target='current' could not resolve the originating chat "
+                "(missing platform/chat id on the message source)."
+            )
+    else:
+        parts = target.split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+        chat_id = None
+        thread_id = None
+
+        if target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+        else:
+            is_explicit = False
+
+        # Resolve human-friendly channel names to numeric IDs
+        if target_ref and not is_explicit:
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_name, target_ref)
+                if resolved:
+                    chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+                else:
+                    return json.dumps({
+                        "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                        f"Use send_message(action='list') to see available targets."
+                    })
+            except Exception:
                 return json.dumps({
                     "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
+                    f"Try using a numeric channel ID instead."
                 })
-        except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            })
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -467,6 +495,19 @@ def _handle_send(args):
 
         if isinstance(result, dict) and "error" in result:
             result["error"] = _sanitize_error_text(result["error"])
+        # Record a successful current-chat delivery so the post-turn block can
+        # dedup the free-text tail (and, under reply_gate_mode="tool", know a
+        # tool-driven delivery happened this turn).
+        if (
+            _current_source is not None
+            and isinstance(result, dict)
+            and result.get("success")
+        ):
+            try:
+                from tools.approval import note_current_message_delivered
+                note_current_message_delivered()
+            except Exception:
+                pass
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))

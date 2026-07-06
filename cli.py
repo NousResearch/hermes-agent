@@ -1054,6 +1054,51 @@ def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
         pass  # best-effort — never block shutdown on watchdog setup
 
 
+def _cli_is_transient_terminal_error(exc, *, _stdin=None, _fstat=None) -> bool:
+    """Classify whether *exc* is a recoverable hosted-terminal I/O blip.
+
+    Hosted web terminals (Lightning.ai cloudspaces, Codespaces, ttyd/gotty
+    proxies, flaky SSH PTYs) briefly drop the pseudo-terminal backing fd 0/1
+    when a browser tab reconnects or a proxy recycles a websocket. During that
+    window a stdout write raises ``OSError(EIO)`` (or ``EAGAIN``), which
+    prompt_toolkit's renderer turns into a fatal teardown. These are TRANSIENT:
+    seconds later the same fd is a healthy TTY again, so the CLI can re-enter
+    its prompt loop instead of exiting and forcing a full restart.
+
+    Returns True only when BOTH of the following hold:
+      1. The error looks like a transient I/O blip (EIO / EAGAIN / EWOULDBLOCK,
+         or the ``aclose(): asynchronous generator is already running``
+         RuntimeError that cascades from the same renderer crash), AND
+      2. The terminal has actually come back — stdin is still a live tty and
+         fds 0/1 are still fstat-able. This gate prevents a busy-loop when the
+         terminal is genuinely gone (returns False → caller exits normally).
+
+    ``_stdin`` / ``_fstat`` are injection points for testing only; production
+    callers use the real ``sys.stdin`` / ``os.fstat``.
+    """
+    _en = getattr(exc, "errno", None) if isinstance(exc, OSError) else None
+    _transient_errnos = {errno.EIO, errno.EAGAIN}
+    if hasattr(errno, "EWOULDBLOCK"):
+        _transient_errnos.add(errno.EWOULDBLOCK)
+    _looks_transient = (
+        _en in _transient_errnos
+        or (isinstance(exc, RuntimeError)
+            and "asynchronous generator is already running" in str(exc))
+    )
+    if not _looks_transient:
+        return False
+    _stdin = _stdin if _stdin is not None else sys.stdin
+    _fstat = _fstat if _fstat is not None else os.fstat
+    try:
+        if not _stdin or not _stdin.isatty():
+            return False
+        _fstat(0)
+        _fstat(1)
+    except Exception:
+        return False
+    return True
+
+
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
     global _cleanup_done
@@ -15424,50 +15469,153 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
                 _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
 
-        # Run the application with patch_stdout for proper output handling
-        try:
-            with patch_stdout():
-                # Set the custom handler on prompt_toolkit's event loop
-                try:
-                    import asyncio as _aio
-                    # Use get_running_loop() to avoid DeprecationWarning on
-                    # Python 3.10+ when called outside an async context.
-                    _loop = _aio.get_running_loop()
-                    _loop.set_exception_handler(_suppress_closed_loop_errors)
-                except RuntimeError:
-                    pass  # No running loop -- nothing to patch
-                except Exception:
-                    pass
-                # The app enables focus reporting + mouse tracking; record that
-                # so _run_cleanup resets them on exit (#36823).
-                _mark_tui_input_modes_active()
-                # Drive the petdex mascot animation (no-op when no pet enabled).
-                self._pet_start_anim()
-                app.run()
-        except (EOFError, KeyboardInterrupt, BrokenPipeError):
-            pass
-        except (KeyError, OSError) as _stdin_err:
-            # Catch selector registration failures from broken stdin (#6393)
-            # and I/O errors from broken stdout during interrupt (#13710).
-            _errno = getattr(_stdin_err, "errno", None) if isinstance(_stdin_err, OSError) else None
-            _msg = str(_stdin_err)
-            if _errno == errno.EIO:
-                pass  # suppress broken-stdout I/O errors on interrupt (#13710)
-            elif (
-                _errno in {errno.EINVAL, errno.EBADF}
-                or "is not registered" in _msg
-                or "Bad file descriptor" in _msg
-                or "Invalid argument" in _msg
-            ):
-                print(
-                    f"\nError: stdin is not usable ({_stdin_err}).\n"
-                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS)\n"
-                    "where kqueue cannot register fd 0.\n"
-                    "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
-                )
-            else:
-                raise
-        finally:
+        # ── Transient-terminal-death resurrection loop (#16xxx) ──────────
+        # On hosted web terminals (Lightning.ai cloudspaces, Codespaces,
+        # ttyd/gotty proxies, flaky SSH PTYs) the pseudo-terminal that backs
+        # fd 0/1 briefly disconnects when the browser tab reconnects, the
+        # proxy recycles a websocket, or the network blips. During that
+        # window a write to stdout raises OSError(EIO) (or EAGAIN), which
+        # explodes inside prompt_toolkit's renderer flush and tears down the
+        # whole Application — the traceback we already suppress lower down,
+        # but the process still *exits*, dumping the user back to a shell and
+        # forcing a full `hermes` relaunch (losing the live in-memory session).
+        #
+        # The critical observation: these errors are TRANSIENT. Seconds later
+        # the same fd is a perfectly healthy TTY again. So instead of exiting
+        # on the first I/O hiccup, we detect "the terminal blipped but is
+        # alive again" and re-enter app.run() with the SAME Application (and
+        # therefore the same session, history, and agent state). Genuine exits
+        # — Ctrl-D (EOFError), Ctrl-C (KeyboardInterrupt), a truly dead/
+        # unregisterable fd — still fall through to shutdown exactly as before.
+        #
+        # Bounded so a persistently-dead terminal can't hot-spin: we allow a
+        # small number of CONSECUTIVE transient recoveries, and reset that
+        # counter whenever the app runs cleanly for a while (a healthy session
+        # that blips once an hour should recover forever).
+        import time as _time
+
+        # Classifier lives at module scope (`_is_transient_terminal_error`) so
+        # it can be unit-tested without constructing the full CLI/Application.
+        # Local alias keeps the loop body below readable.
+        _is_transient_terminal_error = _cli_is_transient_terminal_error
+
+        _max_consecutive_resurrects = 20
+        _resurrect_count = 0
+        _deferred_reraise = None  # non-transient error to re-raise post-teardown
+
+        while True:
+            _run_started = _time.monotonic()
+            try:
+                with patch_stdout():
+                    # Set the custom handler on prompt_toolkit's event loop
+                    try:
+                        import asyncio as _aio
+                        # Use get_running_loop() to avoid DeprecationWarning on
+                        # Python 3.10+ when called outside an async context.
+                        _loop = _aio.get_running_loop()
+                        _loop.set_exception_handler(_suppress_closed_loop_errors)
+                    except RuntimeError:
+                        pass  # No running loop -- nothing to patch
+                    except Exception:
+                        pass
+                    # The app enables focus reporting + mouse tracking; record
+                    # that so _run_cleanup resets them on exit (#36823).
+                    _mark_tui_input_modes_active()
+                    # Drive the petdex mascot animation (no-op when no pet).
+                    self._pet_start_anim()
+                    app.run()
+                # Clean return from app.run() → user asked to exit. Done.
+                break
+            except (EOFError, KeyboardInterrupt, BrokenPipeError):
+                # Genuine exit intents (Ctrl-D / Ctrl-C / dead pipe). Do not
+                # resurrect — the user (or a closed pipe) wants out.
+                break
+            except (KeyError, OSError, RuntimeError) as _stdin_err:
+                # First, is this a recoverable hosted-terminal blip? If so,
+                # rebuild the renderer state and re-enter the prompt loop
+                # instead of dying — the session stays alive.
+                if self._should_exit:
+                    # An exit was already requested elsewhere (e.g. /quit or a
+                    # SIGTERM handler). Honor it; don't fight the shutdown.
+                    break
+                if _is_transient_terminal_error(_stdin_err):
+                    # If the app ran cleanly for a decent stretch before this
+                    # blip, it's a healthy session that just hiccuped — reset
+                    # the consecutive-failure budget so we don't eventually
+                    # give up on a long-lived session that blips periodically.
+                    if (_time.monotonic() - _run_started) > 30:
+                        _resurrect_count = 0  # ran a while → not a hot loop
+                    _resurrect_count += 1
+                    if _resurrect_count > _max_consecutive_resurrects:
+                        # Terminal is persistently broken — stop retrying so we
+                        # don't spin forever. Fall through to normal shutdown.
+                        try:
+                            sys.__stderr__.write(
+                                "\n[hermes] terminal I/O kept failing "
+                                f"({_resurrect_count} times); giving up and exiting. "
+                                "Reconnect and run `hermes --continue` to resume.\n"
+                            )
+                        except Exception:
+                            pass
+                        break
+                    # Stop the mascot animation before we pause + reset — it
+                    # writes to the same renderer we're about to rebuild.
+                    try:
+                        self._pet_stop_anim()
+                    except Exception:
+                        pass
+                    # Brief backoff to let the PTY / proxy finish reconnecting,
+                    # then reset the Application's renderer so the next run()
+                    # paints from a clean slate on the recovered terminal.
+                    _time.sleep(min(0.4 * _resurrect_count, 2.0))
+                    try:
+                        app.renderer.reset()
+                    except Exception:
+                        pass
+                    try:
+                        # Clear any half-set exit state so run() starts fresh.
+                        app.future = None
+                        app._is_running = False
+                    except Exception:
+                        pass
+                    try:
+                        sys.__stderr__.write(
+                            "\r[hermes] terminal reconnected — resuming session...\n"
+                        )
+                    except Exception:
+                        pass
+                    continue  # resurrect: re-enter app.run() with same session
+
+                # Not transient → original behavior: selector registration
+                # failures from broken stdin (#6393) and I/O errors from
+                # broken stdout during interrupt (#13710).
+                _errno = getattr(_stdin_err, "errno", None) if isinstance(_stdin_err, OSError) else None
+                _msg = str(_stdin_err)
+                if _errno == errno.EIO:
+                    pass  # suppress broken-stdout I/O errors on interrupt (#13710)
+                elif (
+                    _errno in {errno.EINVAL, errno.EBADF}
+                    or "is not registered" in _msg
+                    or "Bad file descriptor" in _msg
+                    or "Invalid argument" in _msg
+                ):
+                    print(
+                        f"\nError: stdin is not usable ({_stdin_err}).\n"
+                        "This can happen with certain Python installations (e.g. uv-managed cPython on macOS)\n"
+                        "where kqueue cannot register fd 0.\n"
+                        "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+                    )
+                elif isinstance(_stdin_err, RuntimeError):
+                    # A RuntimeError that wasn't the transient async-generator
+                    # case and isn't a stdin problem — defer re-raise until
+                    # AFTER teardown so cleanup still runs (matches the old
+                    # try/finally semantics).
+                    _deferred_reraise = _stdin_err
+                else:
+                    _deferred_reraise = _stdin_err
+                break
+        # Ensure downstream teardown always sees the exit flag set.
+        if True:
             self._should_exit = True
             self._pet_stop_anim()
             # Immediate feedback: prompt_toolkit has just torn down the input
@@ -15569,6 +15717,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if getattr(self, '_pending_relaunch', None):
             from hermes_cli.relaunch import relaunch
             relaunch(self._pending_relaunch, preserve_inherited=False)
+
+        # Teardown has run — now surface any non-transient error that broke the
+        # run loop (preserves the old try/finally "cleanup then propagate"
+        # contract while the resurrection loop above handles transient blips).
+        if _deferred_reraise is not None:
+            raise _deferred_reraise
 
 
 # ============================================================================

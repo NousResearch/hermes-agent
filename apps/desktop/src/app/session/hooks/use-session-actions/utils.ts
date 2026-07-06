@@ -205,11 +205,35 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
+function withResolvedProfile(session: SessionInfo, profile: string | null | undefined): SessionInfo {
+  const key = normalizeProfileKey(profile)
+
+  return session.profile ? session : { ...session, profile: key }
+}
+
+export async function resolveStoredSession(
+  storedSessionId: string,
+  profileHint?: string | null
+): Promise<SessionInfo | undefined> {
   const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
   if (cached) {
     return cached
+  }
+
+  const hintedProfile = profileHint?.trim()
+
+  if (hintedProfile) {
+    try {
+      const session = withResolvedProfile(await getSession(storedSessionId, hintedProfile), hintedProfile)
+
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      // Stale or invalid hint — fall through to the legacy active/cross-profile
+      // lookup so old windows and copied URLs remain recoverable.
+    }
   }
 
   // Direct by-id on the live backend — one row lookup, no list scan. Covers
@@ -237,7 +261,7 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
 
   for (const profile of otherProfiles) {
     try {
-      const session = await getSession(storedSessionId, profile)
+      const session = withResolvedProfile(await getSession(storedSessionId, profile), profile)
 
       upsertResolvedSession(session, storedSessionId)
 

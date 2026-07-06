@@ -86,6 +86,13 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
 })
 
+test('buildSessionWindowUrl carries a profile hint before the hash route', () => {
+  const url = buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', profile: 'mission control' })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&profile=mission+control#/abc')
+  assert.ok(url.indexOf('profile=mission+control') < url.indexOf('#'))
+})
+
 test('buildSessionWindowUrl routes new-session windows to the draft (#/)', () => {
   const url = buildSessionWindowUrl(null, { devServer: 'http://localhost:5173', newSession: true })
 

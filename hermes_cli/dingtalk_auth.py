@@ -257,7 +257,7 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
     print()
 
     if not render_qr_to_terminal(url):
-        print_warning(f"  QR code render failed, please open the link below to authorize:")
+        print_warning("  QR code render failed, please open the link below to authorize:")
 
     print()
     print_info(f"  Or open this link manually: {url}")

@@ -23,6 +23,10 @@ Security:
   - Rate limiting per route (fixed-window, configurable)
   - Idempotency cache prevents duplicate agent runs on webhook retries
   - Body size limits checked before reading payload
+  - Generic HMAC supports a V2 signature (X-Webhook-Signature-V2) that
+    binds a timestamp into the signed data for replay protection; the
+    legacy body-only V1 (X-Webhook-Signature) is deprecated but still
+    accepted with a warning, since it has no replay protection
   - Set secret to "INSECURE_NO_AUTH" to skip validation (testing only)
 """
 
@@ -117,6 +121,9 @@ class WebhookAdapter(BasePlatformAdapter):
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
+        # Routes already warned about legacy V1 body-only signatures
+        # (once-per-route so a busy sender doesn't spam the log).
+        self._v1_signature_warned: set[str] = set()
 
         # Delivery info keyed by session chat_id.
         #
@@ -191,7 +198,10 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
 
-        app = web.Application()
+        # client_max_size makes aiohttp enforce the cap on every read path,
+        # including Transfer-Encoding: chunked bodies that carry no
+        # Content-Length and would otherwise bypass the header check below.
+        app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # Multi-profile multiplexing: a /p/<profile>/webhooks/<route> prefix
@@ -479,9 +489,21 @@ class WebhookAdapter(BasePlatformAdapter):
         # Read body (must be done before any validation)
         try:
             raw_body = await request.read()
+        except web.HTTPRequestEntityTooLarge:
+            # aiohttp's client_max_size tripped — chunked or lying
+            # Content-Length. Same 413 as the header check above.
+            return web.json_response(
+                {"error": "Payload too large"}, status=413
+            )
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
+        if len(raw_body) > self._max_body_bytes:
+            # Defense in depth: enforce the cap on the actual bytes read even
+            # if the server-level limit was bypassed or misconfigured.
+            return web.json_response(
+                {"error": "Payload too large"}, status=413
+            )
 
         # Validate HMAC signature FIRST (skip only for the explicit local-test
         # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
@@ -861,12 +883,71 @@ class WebhookAdapter(BasePlatformAdapter):
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
 
-        # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
+        # Generic V2: X-Webhook-Signature-V2 = <hex HMAC-SHA256 of "<timestamp>.<body>">
+        #             X-Webhook-Timestamp = <unix seconds> (required for V2)
+        # Checked independently of (and before) legacy V1 below — a sender
+        # that only ever sends V2 headers must still validate here; nesting
+        # this inside `if generic_sig:` would silently skip V2-only senders.
+        #
+        # The presence of X-Webhook-Signature-V2 alone selects V2 mode and
+        # commits to it — it must NOT fall through to the V1 branch just
+        # because the timestamp is missing/malformed/expired. A sender
+        # migrating to V2 typically sends both V1 and V2 headers together
+        # for compatibility; if incomplete V2 fell through to V1, an
+        # attacker who captured one such mixed request could strip the
+        # X-Webhook-Timestamp header from a replay and have it validate
+        # against the still-present, still-unprotected V1 signature instead
+        # — silently downgrading a V2-protected request back to the replay
+        # hole V2 exists to close.
+        v2_sig = request.headers.get("X-Webhook-Signature-V2", "")
+        if v2_sig:
+            v2_timestamp = request.headers.get("X-Webhook-Timestamp", "")
+            if not v2_timestamp:
+                logger.warning(
+                    "[webhook] Route '%s' sent X-Webhook-Signature-V2 with "
+                    "no X-Webhook-Timestamp — rejecting rather than "
+                    "falling back to legacy V1",
+                    request.match_info.get("route_name", ""),
+                )
+                return False
+            try:
+                ts = int(v2_timestamp)
+            except (TypeError, ValueError):
+                return False
+            if abs(int(time.time()) - ts) > 300:
+                logger.warning(
+                    "[webhook] Route '%s' generic HMAC V2 timestamp outside replay window",
+                    request.match_info.get("route_name", ""),
+                )
+                return False
+            signed_content = v2_timestamp.encode() + b"." + body
+            expected_v2 = hmac.new(
+                secret.encode(), signed_content, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(v2_sig, expected_v2)
+
+        # Generic V1 (legacy): X-Webhook-Signature = <hex HMAC-SHA256 of body>
+        # (deprecated — no replay protection, since the signature only
+        # covers the body: a captured (body, signature) pair replays
+        # indefinitely with no timestamp binding it to a specific delivery.)
+        # Only reachable when X-Webhook-Signature-V2 was not sent at all —
+        # see the guard above.
         generic_sig = request.headers.get("X-Webhook-Signature", "")
         if generic_sig:
             expected = hmac.new(
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
+            route_name = request.match_info.get("route_name", "")
+            if route_name not in self._v1_signature_warned:
+                self._v1_signature_warned.add(route_name)
+                logger.warning(
+                    "[webhook] Route '%s' uses legacy body-only HMAC (no "
+                    "timestamp), which is vulnerable to replay attacks. Add "
+                    "an 'X-Webhook-Timestamp' header and switch to "
+                    "'X-Webhook-Signature-V2' (HMAC-SHA256 of "
+                    "'<timestamp>.<body>').",
+                    route_name,
+                )
             return hmac.compare_digest(generic_sig, expected)
 
         # No recognised signature header but secret is configured → reject

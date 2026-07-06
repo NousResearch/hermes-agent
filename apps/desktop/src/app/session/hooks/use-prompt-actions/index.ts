@@ -9,6 +9,7 @@ import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from 
 import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { normalize } from '@/lib/text'
 import { clearClarifyRequest } from '@/store/clarify'
 import {
   $composerAttachments,
@@ -374,7 +375,7 @@ export function usePromptActions({
         return { error: copy.sessionUnavailable, ok: false }
       }
 
-      const target = platform.trim().toLowerCase()
+      const target = normalize(platform)
 
       if (!target) {
         return { error: copy.handoff.failed(''), ok: false }

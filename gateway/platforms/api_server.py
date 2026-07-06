@@ -125,6 +125,18 @@ ATTACHMENT_INLINE_ROOT = (
 )
 # Cap on sessions tracked for inline dedup.
 MAX_ATTACHMENT_DEDUP_SESSIONS = 2048
+# Native image attachment (vision models): bound the COUNT per run; images past
+# the cap get a path note and stay eligible for a later run. Like text inlining,
+# pixels attach once per session per file.
+MAX_ATTACHMENT_NATIVE_IMAGES_PER_RUN = 3
+# Per-image byte gate: the read + base64 encode happen synchronously in the
+# request handler and the payload rides every subsequent model call of the run,
+# so oversized images degrade to a path note (the agent's vision tool applies
+# its own proactive embed capping when it goes to look). 5 MB also matches the
+# strictest known provider ceiling, avoiding a guaranteed shrink-retry cycle.
+MAX_ATTACHMENT_NATIVE_IMAGE_BYTES = 5 * 1024 * 1024
+
+_IMAGE_ATTACHMENT_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -166,6 +178,55 @@ def _is_text_attachment(safe_name: str, mime: str) -> bool:
     return ext in _TEXT_INJECT_EXTENSIONS or (mime or "").startswith("text/")
 
 
+def _is_image_attachment(safe_name: str, mime: str) -> bool:
+    ext = os.path.splitext(safe_name)[1].lower()
+    return (mime or "").startswith("image/") or ext in _IMAGE_ATTACHMENT_EXTENSIONS
+
+
+def _build_image_attachment_note(display_name: str, agent_path: str) -> str:
+    """Context note for an image whose pixels are NOT attached to this turn
+    (text-mode model, per-run cap reached, or already attached in an earlier
+    run). Instructs tool-based viewing instead of punting back to the user —
+    the same lesson as the platforms' binary-document wording."""
+    return (
+        f"[The user sent an image: '{display_name}'. It is saved at: {agent_path}. "
+        f"Its pixels are not attached to this message. If the request involves "
+        f"what the image shows, view or analyze it yourself with your available "
+        f"image/vision tools instead of asking the user to describe it.]"
+    )
+
+
+_IMAGE_MODE_CACHE: Dict[str, Tuple[str, float]] = {}
+_IMAGE_MODE_CACHE_TTL_SECONDS = 300.0
+
+
+def _decide_run_image_mode() -> str:
+    """"native" (attach pixels on the user turn) or "text" (path note only) for
+    the active model — same resolution the gateway runner uses (config +
+    model-capability lookup); any failure degrades to "text".
+
+    Cached (5 min TTL): the capability lookup can hit a cold models.dev fetch
+    (up to ~15s) and this runs synchronously in the request handler; the model
+    config effectively never changes within a container's lifetime. (Managed
+    runs short-circuit on the explicit supports_vision override and never
+    fetch.)"""
+    cached = _IMAGE_MODE_CACHE.get("mode")
+    now = time.monotonic()
+    if cached is not None and now - cached[1] < _IMAGE_MODE_CACHE_TTL_SECONDS:
+        return cached[0]
+    try:
+        from agent.auxiliary_client import _read_main_model, _read_main_provider
+        from agent.image_routing import decide_image_input_mode
+        from hermes_cli.config import load_config
+
+        mode = decide_image_input_mode(_read_main_provider(), _read_main_model(), load_config())
+    except Exception as exc:  # noqa: BLE001 — degraded mode, never a crash
+        logger.debug("run attachments: image mode decision failed, using text — %s", exc)
+        mode = "text"
+    _IMAGE_MODE_CACHE["mode"] = (mode, now)
+    return mode
+
+
 def _workspace_relative_path(local_path: str) -> str:
     """Render a workspace-rooted path relative to the workspace root, for the
     attachment note. The agent's tools run with the workspace as cwd, so a
@@ -183,16 +244,29 @@ def _workspace_relative_path(local_path: str) -> str:
     return local_path
 
 
+def _resolve_under_inline_root(local_path: str) -> Optional[Path]:
+    """Resolve a path iff it is contained under the workspace inline root.
+    Reading file bytes into the prompt (text inlining, image pixels) is gated on
+    this; anything else degrades to a path note."""
+    try:
+        resolved = Path(local_path).resolve()
+        root = Path(ATTACHMENT_INLINE_ROOT).resolve()
+        if root in resolved.parents:
+            return resolved
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def _read_inline_attachment_text(local_path: str) -> Optional[str]:
     """Read a text attachment for prompt inlining, or None when it must degrade
     to a path note: outside the workspace inline root, missing, over the 100 KB
     all-or-nothing cap (matching platform adapters — no truncation), or not
     valid UTF-8."""
+    resolved = _resolve_under_inline_root(local_path)
+    if resolved is None:
+        return None
     try:
-        resolved = Path(local_path).resolve()
-        root = Path(ATTACHMENT_INLINE_ROOT).resolve()
-        if root not in resolved.parents:
-            return None
         if resolved.stat().st_size > MAX_ATTACHMENT_INLINE_BYTES:
             return None
         return resolved.read_bytes().decode("utf-8")
@@ -203,7 +277,8 @@ def _read_inline_attachment_text(local_path: str) -> Optional[str]:
 def _prepare_run_attachment_blocks(
     attachments: List[Dict[str, Any]],
     already_inlined: Set[str],
-) -> Tuple[List[str], Set[str]]:
+    image_mode: str = "text",
+) -> Tuple[List[str], Set[str], List[Tuple[str, str]]]:
     """Map the backend's materialized-attachment manifest to prompt context blocks.
 
     EVERY file gets a context note on EVERY run (reusing the platforms' document
@@ -221,15 +296,26 @@ def _prepare_run_attachment_blocks(
     instruction the platforms use so the model reads the file with its tools
     instead of punting back to the user).
 
-    Returns (blocks, newly_inlined_keys). The CALLER must commit newly_inlined
-    into the session's dedup set only after the run actually executes — marking
-    at request time would let a pre-flight failure permanently swallow the
-    content (the backend retries with the same manifest).
+    IMAGES (image_mode="native", i.e. the active model has vision): pixels are
+    attached to the user turn as OpenAI-style image parts — once per session per
+    file, at most MAX_ATTACHMENT_NATIVE_IMAGES_PER_RUN per run, and only for
+    files under the inline root. Every other case (text-mode model, cap reached,
+    already attached earlier, outside root) gets an image path note instructing
+    tool-based viewing. Natively attached images get NO note block here —
+    build_native_content_parts appends its own "[Image attached at: ...]" hint.
+
+    Returns (blocks, newly_inlined_keys, native_images) where native_images is
+    [(dedup_key, absolute_path)] for the caller to hand to
+    build_native_content_parts. The CALLER must commit newly_inlined into the
+    session's dedup set only after the run actually executes — marking at
+    request time would let a pre-flight failure permanently swallow the content
+    (the backend retries with the same manifest).
     """
     from gateway.run import _build_document_context_note
 
     blocks: List[str] = []
     newly_inlined: Set[str] = set()
+    native_images: List[Tuple[str, str]] = []
     seen_this_run: Set[str] = set()
     inline_budget = MAX_ATTACHMENT_INLINE_TOTAL_BYTES
     for entry in attachments:
@@ -248,6 +334,27 @@ def _prepare_run_attachment_blocks(
         # rightly flags '/workspace/...' in public payloads). Paths outside the
         # root (non-managed callers) stay as sent.
         note_path = _workspace_relative_path(local_path)
+
+        if _is_image_attachment(safe_name, mime):
+            resolved = _resolve_under_inline_root(local_path)
+            try:
+                size_ok = resolved is not None and resolved.is_file() and resolved.stat().st_size <= MAX_ATTACHMENT_NATIVE_IMAGE_BYTES
+            except OSError:
+                size_ok = False
+            if (
+                image_mode == "native"
+                and key not in already_inlined
+                and len(native_images) < MAX_ATTACHMENT_NATIVE_IMAGES_PER_RUN
+                and size_ok
+            ):
+                # The RESOLVED path: containment was checked on it, so the read
+                # must use the same object (no symlink-swap window), matching how
+                # text inlining reads.
+                native_images.append((key, str(resolved)))
+                newly_inlined.add(key)
+            else:
+                blocks.append(_build_image_attachment_note(display_name, note_path))
+            continue
 
         inline_text: Optional[str] = None
         if key not in already_inlined and inline_budget > 0 and _is_text_attachment(safe_name, mime):
@@ -278,7 +385,7 @@ def _prepare_run_attachment_blocks(
             # files whose content was inlined in an earlier run (the note must
             # never claim content was included when it wasn't — in THIS message).
             blocks.append(_build_document_context_note(display_name, note_path, "application/octet-stream"))
-    return blocks, newly_inlined
+    return blocks, newly_inlined, native_images
 
 
 _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -3960,6 +4067,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_key: str = "",
         session_id: str = "",
         product_run_id: str = "",
+        app_tool_gateway: Optional[Dict[str, Any]] = None,
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
@@ -3978,12 +4086,16 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from gateway.session_context import set_session_vars
 
+        app_gateway = app_tool_gateway if isinstance(app_tool_gateway, dict) else {}
         return set_session_vars(
             platform="api_server",
             chat_id=chat_id,
             session_key=session_key,
             session_id=session_id,
             product_run_id=product_run_id,
+            app_tool_gateway_url=str(app_gateway.get("url") or ""),
+            app_tool_gateway_token=str(app_gateway.get("token") or ""),
+            app_tool_gateway_expires_at=str(app_gateway.get("expires_at") or ""),
             async_delivery=False,
         )
 
@@ -4170,6 +4282,24 @@ class APIServerAdapter(BasePlatformAdapter):
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
+        app_tool_gateway = None
+        raw_app_tool_gateway = body.get("app_tool_gateway")
+        if raw_app_tool_gateway is not None:
+            if not isinstance(raw_app_tool_gateway, dict):
+                return web.json_response(_openai_error("'app_tool_gateway' must be an object"), status=400)
+            gateway_url = str(raw_app_tool_gateway.get("url") or "").strip()
+            gateway_token = str(raw_app_tool_gateway.get("token") or "").strip()
+            gateway_expires_at = str(raw_app_tool_gateway.get("expires_at") or "").strip()
+            if not gateway_url or not gateway_token:
+                return web.json_response(
+                    _openai_error("'app_tool_gateway' requires url and token fields"),
+                    status=400,
+                )
+            app_tool_gateway = {
+                "url": gateway_url,
+                "token": gateway_token,
+                "expires_at": gateway_expires_at,
+            }
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
@@ -4230,8 +4360,14 @@ class APIServerAdapter(BasePlatformAdapter):
             attachments_error = _validate_run_attachments(raw_attachments)
             if attachments_error:
                 return web.json_response(_openai_error(attachments_error), status=400)
-            attachment_blocks, newly_inlined_attachments = _prepare_run_attachment_blocks(
-                raw_attachments, self._inlined_attachments_for_session(session_id)
+            has_images = any(
+                _is_image_attachment(str(entry.get("safe_name", "")), str(entry.get("mime") or ""))
+                for entry in raw_attachments
+            )
+            attachment_blocks, newly_inlined_attachments, native_images = _prepare_run_attachment_blocks(
+                raw_attachments,
+                self._inlined_attachments_for_session(session_id),
+                image_mode=_decide_run_image_mode() if has_images else "text",
             )
             if attachment_blocks:
                 context_block = "\n\n".join(attachment_blocks)
@@ -4240,6 +4376,36 @@ class APIServerAdapter(BasePlatformAdapter):
                     user_message = [{"type": "text", "text": context_block}, *user_message]
                 else:
                     user_message = f"{context_block}\n\n{user_message}"
+            if native_images:
+                # Vision model: attach the pixels to the user turn as OpenAI-style
+                # image parts, plus a "[Image attached at: <relative path>]" hint
+                # per image (same handle the platforms' native path provides, so
+                # tools can be invoked on the file without a round-trip). Parts
+                # are built directly — build_native_content_parts fabricates a
+                # default caption for empty text, which must not be injected into
+                # a content-parts user turn.
+                from agent.image_routing import _file_to_data_url
+
+                image_parts: List[Dict[str, Any]] = []
+                hint_lines: List[str] = []
+                for img_key, img_path in native_images:
+                    data_url = _file_to_data_url(Path(img_path))
+                    if data_url is None:
+                        # Neither pixels nor a note this run; un-mark so a later
+                        # run re-surfaces the file (self-healing).
+                        newly_inlined_attachments.discard(img_key)
+                        continue
+                    image_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                    hint_lines.append(f"[Image attached at: {_workspace_relative_path(img_path)}]")
+                if image_parts:
+                    hints = "\n".join(hint_lines)
+                    if isinstance(user_message, list):
+                        user_message = [*user_message, {"type": "text", "text": hints}, *image_parts]
+                    else:
+                        user_message = [
+                            {"type": "text", "text": f"{user_message}\n\n{hints}"},
+                            *image_parts,
+                        ]
 
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
@@ -4337,6 +4503,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_tokens = self._bind_api_server_session(
                             session_key=approval_session_key,
                             product_run_id=product_run_id,
+                            app_tool_gateway=app_tool_gateway,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(

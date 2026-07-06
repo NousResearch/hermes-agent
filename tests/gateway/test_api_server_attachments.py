@@ -109,7 +109,7 @@ class TestPrepareBlocks:
     def test_text_file_gets_note_plus_inlined_content(self, workspace):
         f = workspace / "a.csv"
         f.write_text("k,v\n1,2\n", encoding="utf-8")
-        blocks, noted = _prepare_run_attachment_blocks([_manifest_entry(f)], set())
+        blocks, noted, _imgs = _prepare_run_attachment_blocks([_manifest_entry(f)], set())
 
         assert len(blocks) == 2
         assert "text document: 'a.csv'" in blocks[0]
@@ -124,7 +124,7 @@ class TestPrepareBlocks:
     def test_binary_file_gets_self_extraction_note_only(self, workspace):
         f = workspace / "report.pdf"
         f.write_bytes(b"%PDF-1.4 ...")
-        blocks, _ = _prepare_run_attachment_blocks(
+        blocks, _, _imgs = _prepare_run_attachment_blocks(
             [_manifest_entry(f, name="report.pdf", mime="application/pdf")], set()
         )
 
@@ -137,7 +137,7 @@ class TestPrepareBlocks:
         monkeypatch.setattr(api_server_mod, "MAX_ATTACHMENT_INLINE_BYTES", 4)
         f = workspace / "big.csv"
         f.write_text("too big to inline", encoding="utf-8")
-        blocks, _ = _prepare_run_attachment_blocks([_manifest_entry(f)], set())
+        blocks, _, _imgs = _prepare_run_attachment_blocks([_manifest_entry(f)], set())
 
         # Never claim content was included when it wasn't.
         assert len(blocks) == 1
@@ -150,7 +150,7 @@ class TestPrepareBlocks:
         # content inlining is deduped.
         f = workspace / "a.csv"
         f.write_text("k,v\n", encoding="utf-8")
-        blocks, inlined = _prepare_run_attachment_blocks([_manifest_entry(f)], {"file_1"})
+        blocks, inlined, _imgs = _prepare_run_attachment_blocks([_manifest_entry(f)], {"file_1"})
 
         assert len(blocks) == 1
         assert "a.csv" in blocks[0]
@@ -162,7 +162,7 @@ class TestPrepareBlocks:
         f = workspace / "a.csv"
         f.write_text("k,v\n", encoding="utf-8")
         entry = _manifest_entry(f)
-        blocks, inlined = _prepare_run_attachment_blocks([entry, dict(entry)], set())
+        blocks, inlined, _imgs = _prepare_run_attachment_blocks([entry, dict(entry)], set())
         assert len(blocks) == 2  # one note + one content block
         assert inlined == {"file_1"}
 
@@ -173,7 +173,7 @@ class TestPrepareBlocks:
         f2 = workspace / "b.csv"
         f2.write_text("123456", encoding="utf-8")  # 6 bytes: would exceed 10 total
 
-        blocks, inlined = _prepare_run_attachment_blocks(
+        blocks, inlined, _imgs = _prepare_run_attachment_blocks(
             [_manifest_entry(f1), _manifest_entry(f2, file_id="file_2")], set()
         )
 
@@ -186,7 +186,7 @@ class TestPrepareBlocks:
     def test_display_name_is_sanitized(self, workspace):
         f = workspace / "a.csv"
         f.write_text("k,v\n", encoding="utf-8")
-        blocks, _ = _prepare_run_attachment_blocks(
+        blocks, _, _imgs = _prepare_run_attachment_blocks(
             [_manifest_entry(f, name="we`ird$na;me.csv")], set()
         )
         assert "we_ird_na_me.csv" in blocks[0]
@@ -200,7 +200,7 @@ class TestPrepareBlocks:
         f = workspace / "inputs" / "cnv_1" / "file_1" / "sales.csv"
         f.parent.mkdir(parents=True)
         f.write_text("k,v\n", encoding="utf-8")
-        blocks, _ = _prepare_run_attachment_blocks([_manifest_entry(f, name="sales.csv")], set())
+        blocks, _, _imgs = _prepare_run_attachment_blocks([_manifest_entry(f, name="sales.csv")], set())
 
         assert "saved at: inputs/cnv_1/file_1/sales.csv" in blocks[0]
         assert str(workspace) not in blocks[0]  # absolute sandbox path never appears
@@ -208,7 +208,7 @@ class TestPrepareBlocks:
     def test_note_path_outside_root_stays_as_sent(self, workspace, tmp_path_factory):
         outside = tmp_path_factory.mktemp("elsewhere") / "doc.pdf"
         outside.write_bytes(b"%PDF")
-        blocks, _ = _prepare_run_attachment_blocks(
+        blocks, _, _imgs = _prepare_run_attachment_blocks(
             [_manifest_entry(outside, name="doc.pdf", mime="application/pdf")], set()
         )
         assert str(outside) in blocks[0]  # non-managed caller: path passed through
@@ -443,3 +443,224 @@ class TestDedupSessionCap:
         adapter._inlined_attachments_for_session("s3")
         assert "s0" not in adapter._inlined_run_attachments
         assert "s3" in adapter._inlined_run_attachments
+
+
+# ---------------------------------------------------------------------------
+# B3: native image attachments (vision models)
+# ---------------------------------------------------------------------------
+
+# A valid 1x1 red PNG.
+_PNG_1PX = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108020000009077"
+    "53de0000000c4944415408d763f8cfc000000301010018dd8db00000000049"
+    "454e44ae426082"
+)
+
+
+def _png_entry(workspace, name="chart.png", file_id="img_1"):
+    f = workspace / "inputs" / "cnv_1" / file_id / name
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(_PNG_1PX)
+    return f, {
+        "file_id": file_id,
+        "safe_name": name,
+        "mime": "image/png",
+        "size": len(_PNG_1PX),
+        "local_path": str(f),
+        "purpose": "attachment",
+    }
+
+
+class TestImageAttachments:
+    def test_native_mode_selects_pixels_and_no_note(self, workspace):
+        _, entry = _png_entry(workspace)
+        blocks, inlined, native = _prepare_run_attachment_blocks([entry], set(), image_mode="native")
+
+        assert blocks == []  # the build_native hint replaces the note
+        assert inlined == {"img_1"}
+        assert [k for k, _ in native] == ["img_1"]
+
+    def test_text_mode_gets_a_viewing_note_and_no_pixels(self, workspace):
+        _, entry = _png_entry(workspace)
+        blocks, inlined, native = _prepare_run_attachment_blocks([entry], set(), image_mode="text")
+
+        assert native == [] and inlined == set()
+        assert len(blocks) == 1
+        assert "image: 'chart.png'" in blocks[0]
+        assert "view or analyze it yourself" in blocks[0]
+        assert "inputs/cnv_1/img_1/chart.png" in blocks[0]  # relative path
+
+    def test_already_attached_image_degrades_to_note(self, workspace):
+        _, entry = _png_entry(workspace)
+        blocks, inlined, native = _prepare_run_attachment_blocks([entry], {"img_1"}, image_mode="native")
+
+        assert native == [] and inlined == set()
+        assert len(blocks) == 1 and "view or analyze it yourself" in blocks[0]
+
+    def test_per_run_image_cap(self, workspace, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "MAX_ATTACHMENT_NATIVE_IMAGES_PER_RUN", 1)
+        _, e1 = _png_entry(workspace, name="a.png", file_id="img_a")
+        _, e2 = _png_entry(workspace, name="b.png", file_id="img_b")
+        blocks, inlined, native = _prepare_run_attachment_blocks([e1, e2], set(), image_mode="native")
+
+        assert [k for k, _ in native] == ["img_a"]
+        assert inlined == {"img_a"}  # b stays eligible for a later run
+        assert len(blocks) == 1 and "b.png" in blocks[0]
+
+    def test_image_outside_root_gets_note_only(self, workspace, tmp_path_factory):
+        outside = tmp_path_factory.mktemp("elsewhere") / "x.png"
+        outside.write_bytes(_PNG_1PX)
+        entry = {"file_id": "img_x", "safe_name": "x.png", "mime": "image/png", "size": 1, "local_path": str(outside)}
+        blocks, inlined, native = _prepare_run_attachment_blocks([entry], set(), image_mode="native")
+
+        assert native == [] and inlined == set()
+        assert len(blocks) == 1  # pixels are never read outside the root
+
+    @pytest.mark.asyncio
+    async def test_http_native_image_becomes_content_parts(self, workspace, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "_decide_run_image_mode", lambda: "native")
+        _, entry = _png_entry(workspace)
+
+        adapter = _make_adapter()
+        agent = _make_capturing_agent()
+        app = _create_runs_app(adapter)
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "what color is the chart?", "session_id": "cnv_img", "attachments": [entry]},
+                )
+                assert resp.status == 202
+                await _wait_for_run_completion(cli, (await resp.json())["run_id"])
+
+                # Second run, same manifest: pixels NOT re-attached; note instead.
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "and again?", "session_id": "cnv_img", "attachments": [entry]},
+                )
+                await _wait_for_run_completion(cli, (await resp.json())["run_id"])
+
+        first = agent.run_conversation.call_args_list[0].kwargs["user_message"]
+        assert isinstance(first, list)
+        image_parts = [p for p in first if p.get("type") == "image_url"]
+        assert len(image_parts) == 1
+        assert image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        text_part = next(p for p in first if p.get("type") == "text")
+        assert "what color is the chart?" in text_part["text"]
+        # Hint path is workspace-relative; the absolute sandbox path never appears.
+        assert "inputs/cnv_1/img_1/chart.png" in text_part["text"]
+        assert str(workspace) not in text_part["text"]
+
+        second = agent.run_conversation.call_args_list[1].kwargs["user_message"]
+        assert isinstance(second, str)
+        assert "view or analyze it yourself" in second
+        assert second.endswith("and again?")
+
+    @pytest.mark.asyncio
+    async def test_http_text_mode_image_gets_note_only(self, workspace, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "_decide_run_image_mode", lambda: "text")
+        _, entry = _png_entry(workspace)
+
+        adapter = _make_adapter()
+        agent = _make_capturing_agent()
+        app = _create_runs_app(adapter)
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "describe it", "session_id": "s_txt", "attachments": [entry]},
+                )
+                assert resp.status == 202
+                await _wait_for_run_completion(cli, (await resp.json())["run_id"])
+
+        sent = agent.run_conversation.call_args.kwargs["user_message"]
+        assert isinstance(sent, str)
+        assert "view or analyze it yourself" in sent
+        assert "image_url" not in str(sent)
+
+    @pytest.mark.asyncio
+    async def test_http_mixed_csv_and_image_native(self, workspace, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "_decide_run_image_mode", lambda: "native")
+        csv = workspace / "data.csv"
+        csv.write_text("k,v\n1,2\n", encoding="utf-8")
+        _, img = _png_entry(workspace)
+
+        adapter = _make_adapter()
+        agent = _make_capturing_agent()
+        app = _create_runs_app(adapter)
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "use both files",
+                        "session_id": "s_mix",
+                        "attachments": [_manifest_entry(csv), img],
+                    },
+                )
+                assert resp.status == 202
+                await _wait_for_run_completion(cli, (await resp.json())["run_id"])
+
+        sent = agent.run_conversation.call_args.kwargs["user_message"]
+        assert isinstance(sent, list)
+        text_part = next(p for p in sent if p.get("type") == "text")
+        assert "[Content of data.csv]" in text_part["text"]  # CSV inlined
+        assert "use both files" in text_part["text"]
+        assert any(p.get("type") == "image_url" for p in sent)  # pixels attached
+
+    @pytest.mark.asyncio
+    async def test_http_list_input_image_adds_no_synthetic_caption(self, workspace, monkeypatch):
+        # Regression (review): building parts via build_native_content_parts("")
+        # fabricated a default "What do you see in this image?" caption that was
+        # appended to content-parts turns, hijacking the user's actual request.
+        monkeypatch.setattr(api_server_mod, "_decide_run_image_mode", lambda: "native")
+        _, entry = _png_entry(workspace)
+
+        adapter = _make_adapter()
+        agent = _make_capturing_agent()
+        app = _create_runs_app(adapter)
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": [
+                            {"role": "user", "content": [{"type": "text", "text": "summarize the doc"}]}
+                        ],
+                        "session_id": "s_parts_img",
+                        "attachments": [entry],
+                    },
+                )
+                assert resp.status == 202
+                await _wait_for_run_completion(cli, (await resp.json())["run_id"])
+
+        sent = agent.run_conversation.call_args.kwargs["user_message"]
+        assert isinstance(sent, list)
+        assert sent[0] == {"type": "text", "text": "summarize the doc"}
+        texts = " ".join(str(p.get("text", "")) for p in sent if p.get("type") == "text")
+        assert "What do you see in this image?" not in texts
+        assert "[Image attached at: inputs/cnv_1/img_1/chart.png]" in texts
+        assert any(p.get("type") == "image_url" for p in sent)
+
+    def test_oversized_image_degrades_to_note_and_stays_unmarked(self, workspace, monkeypatch):
+        # Regression (review): no byte gate meant the handler could read+base64
+        # hundreds of MB on the event loop. Oversized images note-degrade.
+        monkeypatch.setattr(api_server_mod, "MAX_ATTACHMENT_NATIVE_IMAGE_BYTES", 10)
+        _, entry = _png_entry(workspace)  # 168 bytes > 10
+        blocks, inlined, native = _prepare_run_attachment_blocks([entry], set(), image_mode="native")
+
+        assert native == [] and inlined == set()
+        assert len(blocks) == 1 and "view or analyze it yourself" in blocks[0]
+
+    def test_native_image_path_is_resolved_before_read(self, workspace):
+        # The helper hands the caller the RESOLVED path (containment was checked
+        # on it), so a symlink swap between check and read has no window.
+        real = workspace / "inputs" / "cnv_1" / "img_r" / "real.png"
+        real.parent.mkdir(parents=True)
+        real.write_bytes(_PNG_1PX)
+        link = workspace / "inputs" / "cnv_1" / "img_r" / "link.png"
+        link.symlink_to(real)
+        entry = {"file_id": "img_r", "safe_name": "link.png", "mime": "image/png", "size": 1, "local_path": str(link)}
+        _, _, native = _prepare_run_attachment_blocks([entry], set(), image_mode="native")
+
+        assert native == [("img_r", str(real.resolve()))]

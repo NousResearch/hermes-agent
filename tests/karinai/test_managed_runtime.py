@@ -534,3 +534,37 @@ def test_karinai_runtime_is_packaged_for_installed_entrypoint():
         encoding="utf-8"
     )
     assert "recursive-include plugins *.py plugin.yaml plugin.yml" in manifest
+
+
+def test_write_managed_gateway_config_supports_vision_flag(tmp_path):
+    """KARINAI_MODEL_SUPPORTS_VISION=true writes model.supports_vision so image
+    routing can go native — the custom gateway provider has no models.dev
+    capability entry, so without the explicit override every managed run
+    degrades to text mode and native image attachment never activates."""
+    yaml = pytest.importorskip("yaml")
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+
+    def _cfg(**extra):
+        return ManagedRuntimeConfig.from_env(
+            managed_env(
+                KARINAI_WORKSPACE_DIR=str(workspace),
+                KARINAI_RUNTIME_STATE_DIR=str(state),
+                KARINAI_MODEL_GATEWAY_URL="http://model-gateway.internal",
+                KARINAI_MODEL_GATEWAY_MODEL="karinai/test-model",
+                KARINAI_RUNTIME_TOKEN="scoped-runtime-token",
+                **extra,
+            )
+        )
+
+    cfg = _cfg(KARINAI_MODEL_SUPPORTS_VISION="true")
+    prepare_managed_runtime_filesystem(cfg)
+    path = write_managed_model_gateway_config(cfg)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert data["model"]["supports_vision"] is True
+
+    # Default (unset): conservative — no vision claim written.
+    cfg_off = _cfg()
+    path = write_managed_model_gateway_config(cfg_off)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert "supports_vision" not in data["model"]

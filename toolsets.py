@@ -59,6 +59,8 @@ _HERMES_CORE_TOOLS = [
     # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
+    # Backend-owned connected app tools (Gmail/Drive/Calendar, etc.).
+    "karinai_app_tools_list", "karinai_app_tool",
     # Clarifying questions
     "clarify",
     # Code execution + delegation

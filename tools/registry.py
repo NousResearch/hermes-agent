@@ -150,7 +150,19 @@ def _check_fn_cached(fn: Callable) -> bool:
     last-good True is returned and the failure is NOT cached, so the next call
     re-probes) to keep flaky external checks (Docker daemon busy, socket
     contention, probe timeout) from silently stripping tools mid-session.
+
+    A check_fn may opt out of caching (including the failure-grace window) by
+    setting ``fn._hermes_no_ttl_cache = True``. This is required for checks
+    whose result depends on per-request context (e.g. a run-scoped gateway
+    token bound via contextvar): the TTL cache keys purely on function
+    identity and assumes process-stable availability, so caching a per-request
+    result would leak one request's state onto another.
     """
+    if getattr(fn, "_hermes_no_ttl_cache", False):
+        try:
+            return bool(fn())
+        except Exception:
+            return False
     now = time.monotonic()
     with _check_fn_cache_lock:
         cached = _check_fn_cache.get(fn)

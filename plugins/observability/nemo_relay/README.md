@@ -84,14 +84,15 @@ wheel from this checkout, then install the official NeMo Relay runtime extra:
 ```bash
 uv build --wheel
 python -m pip install --force-reinstall dist/hermes_agent-*.whl
-python -m pip install "nemo-relay==0.3"
+python -m pip install "nemo-relay>=0.5,<0.7"
 hermes plugins enable observability/nemo_relay
 ```
 
-The plugin fails open when `nemo-relay` is not installed. Install and test it against the official NeMo Relay 0.3 PyPI distribution:
+The plugin fails open when `nemo-relay` is not installed. Install a supported
+NeMo Relay 0.5 or 0.6 distribution:
 
 ```bash
-pip install "nemo-relay==0.3"
+pip install "nemo-relay>=0.5,<0.7"
 ```
 
 ## Export Configuration
@@ -189,16 +190,46 @@ session, turn, approval, and subagent marks; the plugin skips its manual
 NeMo Relay. `tool_parallelism.mode = "observe_only"` keeps tool scheduling
 observational while still wrapping the real execution boundary.
 
+### Dynamic Plugins (NeMo Relay 0.6)
+
+Hermes can activate explicit native or worker plugins through the NeMo Relay
+0.6 binding. Add `dynamic_plugins` entries to the same file; each entry uses
+the binding's `plugin_id`, `kind`, `manifest_ref`, optional `environment_ref`,
+and component `config` fields:
+
+```toml
+[[dynamic_plugins]]
+plugin_id = "example-plugin"
+kind = "rust_dynamic"
+manifest_ref = "/absolute/path/to/example-plugin/relay-plugin.toml"
+
+[dynamic_plugins.config]
+mode = "enabled"
+```
+
+Hermes activates these plugins before registering its managed LLM and tool
+execution middleware and retains the activation for the runtime lifetime.
+During shutdown it closes session exporters, flushes Relay subscribers, and
+then closes the activation so callbacks are removed before plugin code is
+unloaded.
+
+NeMo Relay 0.5 does not expose dynamic activation through its Python binding.
+When `dynamic_plugins` is present with a 0.5 runtime, Hermes logs an actionable
+warning and continues with the ordinary static component configuration, so
+ATOF and ATIF observability remain available. No dynamic plugin is loaded in
+that degraded mode.
+
 For the full generic Hermes middleware contract, see
 [`docs/middleware/README.md`](../../../docs/middleware/README.md).
 
 ## Canonical Local Examples
 
-The observe-only examples in this section use the official `nemo-relay==0.3`
-distribution and a local Ollama model served through the OpenAI-compatible API.
+The observe-only examples in this section use a supported NeMo Relay 0.5 or
+0.6 distribution and a local Ollama model served through the OpenAI-compatible
+API.
 
 ```bash
-pip install "nemo-relay==0.3"
+pip install "nemo-relay>=0.5,<0.7"
 
 export HERMES_HOME=/tmp/hermes-nemo-relay-docs/hermes-home
 mkdir -p "$HERMES_HOME"
@@ -444,9 +475,8 @@ for the same execution.
 
 This example enables both NeMo Relay observability export and adaptive execution
 middleware for a local Hermes run. This path requires a NeMo Relay runtime that
-supports `[components.config.tool_parallelism]`; the `nemo-relay==0.3`
-install used by the earlier observability-only examples does not support this
-adaptive config.
+supports `[components.config.tool_parallelism]`, as provided by the supported
+0.5 and 0.6 releases.
 
 ```bash
 export HERMES_HOME=/tmp/hermes-middleware-test/hermes-home

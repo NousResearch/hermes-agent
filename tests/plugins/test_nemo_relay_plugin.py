@@ -41,7 +41,12 @@ class _FakeNemoRelay:
             call_end=self._tool_call_end,
             execute=self._tool_execute,
         )
-        self.plugin = SimpleNamespace(initialize=self._plugin_initialize, clear=self._plugin_clear)
+        self.plugin = SimpleNamespace(
+            initialize=self._plugin_initialize,
+            clear=self._plugin_clear,
+            activate_dynamic_plugins=self._plugin_activate_dynamic,
+        )
+        self.subscribers = SimpleNamespace(flush=self._flush_subscribers)
         self.LLMRequest = _FakeLLMRequest
         self.AtofExporterConfig = _FakeAtofExporterConfig
         self.AtofExporterMode = SimpleNamespace(Append="append", Overwrite="overwrite")
@@ -100,6 +105,22 @@ class _FakeNemoRelay:
     async def _plugin_clear(self):
         self.events.append(("plugin.clear",))
 
+    async def _plugin_activate_dynamic(self, config, dynamic_plugins):
+        self.events.append(("plugin.activate_dynamic", config, dynamic_plugins))
+        return _FakePluginActivation(self.events)
+
+    def _flush_subscribers(self):
+        self.events.append(("subscribers.flush",))
+
+
+class _FakePluginActivation:
+    def __init__(self, events):
+        self.events = events
+        self.report = {"diagnostics": []}
+
+    async def close(self):
+        self.events.append(("plugin.activation.close",))
+
 
 class _FakeLLMRequest:
     def __init__(self, headers, content):
@@ -143,6 +164,7 @@ class _FakeAtifExporter:
         return True
 
     def export_json(self):
+        self.events.append(("atif.export", self.session_id))
         return json.dumps({"session_id": self.session_id, "agent_name": self.agent_name})
 
 
@@ -179,6 +201,26 @@ mode = "observe_only"
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+
+def _enable_dynamic_plugin(tmp_path, monkeypatch) -> Path:
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        f"""
+version = 1
+
+[[dynamic_plugins]]
+plugin_id = "fixture"
+kind = "rust_dynamic"
+manifest_ref = "{(tmp_path / "fixture" / "relay-plugin.toml").as_posix()}"
+
+[dynamic_plugins.config]
+mode = "test"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+    return plugins_toml
 
 
 def test_manifest_fields():
@@ -506,6 +548,151 @@ enabled = true
     event_names = [event[0] for event in fake.events]
     assert event_names.count("plugin.initialize") == 2
     assert event_names.count("plugin.clear") == 1
+
+
+def test_nemo_relay_plugin_activates_and_owns_dynamic_plugins(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_ENABLED", "1")
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY", str(tmp_path / "atif"))
+
+    plugin.on_session_start(session_id="s1")
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+    assert runtime._plugin_activation is not None
+    llm_result = plugin.on_llm_execution_middleware(
+        session_id="s1",
+        provider="openai",
+        model="fixture",
+        request={"messages": []},
+        next_call=lambda request: {"request": request},
+    )
+    tool_result = plugin.on_tool_execution_middleware(
+        session_id="s1",
+        tool_name="fixture-tool",
+        args={"value": 1},
+        next_call=lambda args: {"args": args},
+    )
+    assert llm_result["request"]["intercepted"] is True
+    assert tool_result["args"]["intercepted"] is True
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")
+    assert runtime._plugin_activation is not None
+    assert not any(event[0] == "plugin.activation.close" for event in fake.events)
+    plugin.on_session_start(session_id="s2")
+    plugin.on_session_finalize(session_id="s2", reason="shutdown")
+    assert sum(event[0] == "plugin.activate_dynamic" for event in fake.events) == 1
+
+    activation = next(event for event in fake.events if event[0] == "plugin.activate_dynamic")
+    assert "dynamic_plugins" not in activation[1]
+    assert activation[2] == [
+        {
+            "plugin_id": "fixture",
+            "kind": "rust_dynamic",
+            "manifest_ref": str(tmp_path / "fixture" / "relay-plugin.toml"),
+            "config": {"mode": "test"},
+        }
+    ]
+    event_names = [event[0] for event in fake.events]
+    assert "plugin.clear" not in event_names
+    assert event_names.index("subscribers.flush") < event_names.index("atif.export")
+    assert event_names.index("atif.export") < event_names.index("atif.deregister")
+
+    runtime.shutdown()
+    event_names = [event[0] for event in fake.events]
+    assert event_names.index("atif.deregister") < event_names.index("plugin.activation.close")
+
+
+def test_nemo_relay_plugin_activates_before_registering_managed_middleware(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+
+    class _Context:
+        def register_hook(self, name, callback):
+            del name, callback
+
+        def register_middleware(self, name, callback):
+            del callback
+            fake.events.append(("hermes.register_middleware", name))
+
+    plugin.register(_Context())
+
+    event_names = [event[0] for event in fake.events]
+    assert event_names.index("plugin.activate_dynamic") < event_names.index(
+        "hermes.register_middleware"
+    )
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+    runtime.shutdown()
+
+
+def test_nemo_relay_plugin_degrades_to_static_config_on_relay_0_5(
+    tmp_path, monkeypatch, caplog
+):
+    fake = _FakeNemoRelay()
+    delattr(fake.plugin, "activate_dynamic_plugins")
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+
+    with caplog.at_level("WARNING"):
+        plugin.on_session_start(session_id="s1")
+
+    initialize = next(event for event in fake.events if event[0] == "plugin.initialize")
+    assert "dynamic_plugins" not in initialize[1]
+    assert not any(event[0] == "plugin.activate_dynamic" for event in fake.events)
+    assert "require nemo-relay>=0.6,<0.7" in caplog.text
+
+
+def test_nemo_relay_plugin_ignores_invalid_dynamic_specs(tmp_path, monkeypatch, caplog):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        """
+version = 1
+dynamic_plugins = [{ kind = "rust_dynamic", manifest_ref = "missing-id" }]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    with caplog.at_level("WARNING"):
+        plugin.on_session_start(session_id="s1")
+
+    assert not any(event[0] == "plugin.activate_dynamic" for event in fake.events)
+    assert "plugin_id is required" in caplog.text
+
+
+def test_nemo_relay_plugin_registers_shutdown_after_dynamic_retry(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    activation_attempts = 0
+
+    async def _flaky_activate(config, dynamic_plugins):
+        nonlocal activation_attempts
+        activation_attempts += 1
+        fake.events.append(
+            ("plugin.activate_dynamic.attempt", activation_attempts, config, dynamic_plugins)
+        )
+        if activation_attempts == 1:
+            raise RuntimeError("temporary activation failure")
+        return _FakePluginActivation(fake.events)
+
+    fake.plugin.activate_dynamic_plugins = _flaky_activate
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_session_finalize(session_id="s1")
+    plugin.on_session_start(session_id="s2")
+
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+    assert runtime._plugin_activation is not None
+    assert runtime._shutdown_registered is True
+    assert activation_attempts == 2
+    runtime.shutdown()
+    assert any(event[0] == "plugin.activation.close" for event in fake.events)
 
 
 def test_nemo_relay_plugin_keeps_plugins_toml_active_while_other_sessions_remain(tmp_path, monkeypatch):

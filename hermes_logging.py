@@ -189,6 +189,17 @@ def _redact_log_record_text(text: str) -> str:
         return text
 
 
+_LOG_PRIMITIVE_TYPES = (type(None), bool, int, float, complex)
+
+
+def _safe_log_value_text(value: Any, fallback: str) -> str:
+    """Stringify a log value for redaction without letting ``__str__`` escape."""
+    try:
+        return _redact_log_record_text(str(value))
+    except Exception:
+        return fallback
+
+
 def _redact_log_record_value(value: Any) -> Any:
     """Redact string values inside common logging payload containers."""
     if isinstance(value, str):
@@ -199,21 +210,99 @@ def _redact_log_record_value(value: Any) -> Any:
         return [_redact_log_record_value(item) for item in value]
     if isinstance(value, dict):
         return {
-            key: _redact_log_record_value(item)
+            _redact_log_record_value(key): _redact_log_record_value(item)
             for key, item in value.items()
         }
-    return value
+    if isinstance(value, _LOG_PRIMITIVE_TYPES):
+        return value
+    return _safe_log_value_text(value, "<unprintable log value>")
+
+
+def _render_log_record_message(record: logging.LogRecord) -> str:
+    """Render ``record.getMessage()`` or return a safe fallback on bad format."""
+    try:
+        return record.getMessage()
+    except Exception:
+        # A malformed logging call would normally fail later in Handler.emit(),
+        # where stdlib's logging-error report prints the raw args to stderr.
+        # Drop args entirely here; the template is already the useful context.
+        template = _safe_log_value_text(record.msg, "<unprintable log message>")
+        return f"{template} [log message formatting failed]"
+
+
+def _sanitize_log_record_extra(record: logging.LogRecord, extra: object) -> None:
+    """Redact caller-supplied ``extra`` attributes after Logger merges them."""
+    if not extra:
+        return
+    try:
+        keys = list(extra.keys())  # type: ignore[union-attr]
+    except Exception:
+        return
+    for key in keys:
+        if not isinstance(key, str) or key not in record.__dict__:
+            continue
+        try:
+            record.__dict__[key] = _redact_log_record_value(record.__dict__[key])
+        except Exception:
+            record.__dict__[key] = "<unprintable log value>"
+
+
+def _sanitize_exception_value(exc: BaseException) -> BaseException:
+    """Return a shallow sanitized copy of an exception for ``record.exc_info``."""
+    try:
+        sanitized = exc.__class__.__new__(exc.__class__)
+    except Exception:
+        sanitized = Exception(_safe_log_value_text(exc, "<unprintable exception>"))
+
+    if not isinstance(sanitized, BaseException):
+        sanitized = Exception(_safe_log_value_text(exc, "<unprintable exception>"))
+
+    try:
+        sanitized.args = tuple(_redact_log_record_value(arg) for arg in exc.args)
+    except Exception:
+        sanitized.args = (_safe_log_value_text(exc, "<unprintable exception>"),)
+
+    try:
+        attrs = getattr(exc, "__dict__", None)
+        if attrs:
+            sanitized.__dict__.update(_redact_log_record_value(attrs))
+    except Exception:
+        pass
+
+    try:
+        sanitized.__cause__ = None
+        sanitized.__context__ = None
+        sanitized.__suppress_context__ = True
+    except Exception:
+        pass
+
+    return sanitized
+
+
+def _sanitize_exc_info(exc_info: object) -> object:
+    """Preserve ``exc_info`` presence while removing raw secret-bearing parts."""
+    try:
+        exc_type, exc_value, _exc_tb = exc_info  # type: ignore[misc]
+    except Exception:
+        return None
+    if not isinstance(exc_value, BaseException):
+        return None
+    sanitized_value = _sanitize_exception_value(exc_value)
+    return (type(sanitized_value) or exc_type, sanitized_value, None)
 
 
 def _sanitize_log_record(record: logging.LogRecord) -> None:
     """Redact rendered message and exception fields on a LogRecord in place."""
     try:
-        record.msg = _redact_log_record_text(record.getMessage())
+        record.msg = _redact_log_record_text(_render_log_record_message(record))
         record.args = ()
     except Exception:
         try:
-            record.msg = _redact_log_record_value(record.msg)
-            record.args = _redact_log_record_value(record.args)
+            record.msg = _safe_log_value_text(
+                record.msg,
+                "<unprintable log message>",
+            )
+            record.args = ()
         except Exception:
             pass
 
@@ -222,9 +311,12 @@ def _sanitize_log_record(record: logging.LogRecord) -> None:
             record.exc_text = _redact_log_record_text(
                 logging.Formatter().formatException(record.exc_info)
             )
+            record.exc_info = _sanitize_exc_info(record.exc_info)
         elif record.exc_text:
             record.exc_text = _redact_log_record_text(record.exc_text)
     except Exception:
+        record.exc_text = "exception traceback unavailable after redaction failure"
+        record.exc_info = _sanitize_exc_info(record.exc_info)
         pass
 
     try:
@@ -242,7 +334,7 @@ def _install_session_record_factory() -> None:
     from child loggers and records handled by third-party handlers.  This
     guarantees ``%(session_tag)s`` is always available in format strings and
     ensures plain non-Hermes formatters receive already-sanitized messages,
-    traceback text, and stack text.
+    traceback text, stack text, and caller-provided ``extra`` fields.
 
     Idempotent — checks for a marker attribute to avoid double-wrapping if
     the module is reloaded.
@@ -263,9 +355,49 @@ def _install_session_record_factory() -> None:
     logging.setLogRecordFactory(_session_record_factory)
 
 
+def _install_logger_make_record_sanitizer() -> None:
+    """Wrap ``Logger.makeRecord`` so caller-provided ``extra`` is sanitized."""
+    current_make_record = logging.Logger.makeRecord
+    if getattr(current_make_record, "_hermes_extra_sanitizer", False):
+        return
+
+    def _hermes_make_record(
+        self,
+        name,
+        level,
+        fn,
+        lno,
+        msg,
+        args,
+        exc_info,
+        func=None,
+        extra=None,
+        sinfo=None,
+    ):
+        record = current_make_record(
+            self,
+            name,
+            level,
+            fn,
+            lno,
+            msg,
+            args,
+            exc_info,
+            func=func,
+            extra=extra,
+            sinfo=sinfo,
+        )
+        _sanitize_log_record_extra(record, extra)
+        return record
+
+    _hermes_make_record._hermes_extra_sanitizer = True  # type: ignore[attr-defined]
+    logging.Logger.makeRecord = _hermes_make_record
+
+
 # Install immediately on import — session_tag is available on all records
 # from this point forward, even before setup_logging() is called.
 _install_session_record_factory()
+_install_logger_make_record_sanitizer()
 
 
 # ---------------------------------------------------------------------------

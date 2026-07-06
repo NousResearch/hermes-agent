@@ -216,23 +216,77 @@ def short_reset(reset_at: Any) -> str:
         return reset_at
 
 
-def render_compact(payload: Dict[str, Any]) -> str:
-    lines = [f"Codex usage {payload['checked_at']}"]
-    for row in payload.get("accounts") or []:
+def short_checked_at(checked_at: Any) -> str:
+    if not isinstance(checked_at, str):
+        return "?"
+    try:
+        return datetime.fromisoformat(checked_at).strftime("%m/%d %H:%M")
+    except ValueError:
+        return checked_at
+
+
+def usage_bar(used_percent: Any, width: int = 10) -> str:
+    """Return a compact text progress bar for Telegram/CLI scanning."""
+    try:
+        value = max(0.0, min(100.0, float(used_percent)))
+    except (TypeError, ValueError):
+        return "?" * max(1, width)
+    filled = int(value / 100 * width)
+    if value > 0 and filled == 0:
+        filled = 1
+    if value >= 95:
+        filled = width
+    return "█" * filled + "░" * (width - filled)
+
+
+def _fmt_percent(value: Any) -> str:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return " ?%"
+    if f.is_integer():
+        return f"{int(f):>2}%"
+    return f"{f:>4.1f}%"
+
+
+def _worst_risk(accounts: list[dict[str, Any]]) -> dict[str, str]:
+    order = {"critical": 3, "warning": 2, "ok": 1, "unknown": 0}
+    worst = {"level": "unknown", "icon": "⚪", "label": "unknown"}
+    for row in accounts:
         if not row.get("ok"):
-            lines.append(f"{row.get('label')}: ERROR {row.get('http', '')} {row.get('error', '')}".rstrip())
-            continue
-        parts = []
-        for display, _key, window in iter_windows(row):
+            return {"level": "error", "icon": "❌", "label": "조회 실패"}
+        for _display, _key, window in iter_windows(row):
             r = window.get("risk") or risk(window.get("used_percent"))
-            parts.append(
-                f"{display} {window.get('used_percent', '?')}% {r.get('icon')} "
-                f"reset {short_reset(window.get('reset_at'))} ({window.get('remaining', '?')})"
-            )
-        lines.append(f"{row.get('label')}: " + "; ".join(parts))
+            if order.get(r.get("level", "unknown"), 0) > order.get(worst.get("level", "unknown"), 0):
+                worst = r
+    return worst
+
+
+def render_compact(payload: Dict[str, Any]) -> str:
+    accounts = payload.get("accounts") or []
+    worst = _worst_risk(accounts)
+    lines = [f"🧭 Codex 사용량 · {short_checked_at(payload.get('checked_at'))} · {worst.get('icon')} {worst.get('label')}"]
     recommendation = payload.get("recommendation") or {}
     if recommendation:
-        lines.append(f"추천: {recommendation.get('label')} — {recommendation.get('reason')}")
+        lines.append(f"✅ 추천 {recommendation.get('label')} — {recommendation.get('reason')}")
+    if not accounts:
+        lines.append("계정 없음")
+        return "\n".join(lines)
+    for row in accounts:
+        label = row.get("label")
+        plan = row.get("plan_type") or "unknown"
+        if not row.get("ok"):
+            lines.append(f"\n❌ {label} · {plan}")
+            lines.append(f"└ ERROR {row.get('http', '')} {row.get('error', '')}".rstrip())
+            continue
+        lines.append(f"\n• {label} · {plan}")
+        for display, _key, window in iter_windows(row):
+            r = window.get("risk") or risk(window.get("used_percent"))
+            used = window.get("used_percent")
+            lines.append(
+                f"  {display:>2} {_fmt_percent(used)} {r.get('icon')} "
+                f"[{usage_bar(used)}] reset {short_reset(window.get('reset_at'))} · {window.get('remaining', '?')}"
+            )
     return "\n".join(lines)
 
 
@@ -350,7 +404,8 @@ def render_alert(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Show Hermes OpenAI Codex quota usage by credential")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
-    parser.add_argument("--compact", action="store_true", help="print Telegram-friendly compact output")
+    parser.add_argument("--compact", action="store_true", help="print Telegram-friendly compact output (default)")
+    parser.add_argument("--verbose", action="store_true", help="print detailed per-account text output")
     parser.add_argument("--alert-threshold", type=float, help="legacy: print only accounts/windows at or above this percent")
     parser.add_argument("--primary-threshold", type=float, help="5h window alert threshold percent")
     parser.add_argument("--secondary-threshold", type=float, help="7d window alert threshold percent")
@@ -389,10 +444,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             primary = args.primary_threshold if args.primary_threshold is not None else args.alert_threshold or 90
             secondary = args.secondary_threshold if args.secondary_threshold is not None else args.alert_threshold or 90
             print(f"Codex usage OK: 5h below {primary:g}%, 7d below {secondary:g}%")
-    elif args.compact:
-        print(render_compact(payload))
-    else:
+    elif args.verbose:
         print(render_text(payload))
+    else:
+        print(render_compact(payload))
     return 0
 
 

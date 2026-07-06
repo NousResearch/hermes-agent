@@ -1667,6 +1667,7 @@ export interface Translations {
     unknown: string
     search: string
     noModels: string
+    refreshModels: string
     addProvider: string
     loadFailed: string
     noAuthenticatedProviders: string

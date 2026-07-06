@@ -420,6 +420,54 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
 
 
+def test_stream_event_translation_separates_distinct_calls_across_events():
+    # Regression test: two DIFFERENT calls to the same tool, delivered in
+    # separate SSE events, both land at part_index 0 (each event carries one
+    # part). Before the fix, the second call's full arguments were appended
+    # to the first call's buffer instead of starting a new slot, producing
+    # concatenated/invalid JSON args (e.g. two discord_read_messages calls
+    # for different channel IDs in one turn).
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    first_event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "discord_read_messages", "args": {"channelId": "111", "limit": 15}}}
+                    ]
+                },
+            }
+        ]
+    }
+    second_event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "discord_read_messages", "args": {"channelId": "222", "limit": 5}}}
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    first = translate_stream_event(first_event, model="gemini-3.1-pro-preview", tool_call_indices=tool_call_indices)
+    second = translate_stream_event(second_event, model="gemini-3.1-pro-preview", tool_call_indices=tool_call_indices)
+
+    first_call = first[0].choices[0].delta.tool_calls[0]
+    second_call = second[0].choices[0].delta.tool_calls[0]
+
+    assert first_call.index != second_call.index
+    assert first_call.id != second_call.id
+    assert json.loads(first_call.function.arguments) == {"channelId": "111", "limit": 15}
+    # The second call must be its own complete, valid JSON object — not a
+    # suffix concatenated onto the first call's arguments.
+    assert json.loads(second_call.function.arguments) == {"channelId": "222", "limit": 5}
+
+
 def test_system_instruction_includes_role_field_and_stays_out_of_contents():
     from agent.gemini_native_adapter import build_gemini_request
 

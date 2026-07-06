@@ -661,7 +661,7 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
                 yield payload
 
 
-def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
+def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, List[Dict[str, Any]]]) -> List[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
     if not candidates:
         return []
@@ -693,16 +693,31 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 },
                 sort_keys=True,
             )
-            slot = tool_call_indices.get(call_key)
-            if slot is None:
+            # part_index resets to 0 on every SSE event (each event usually
+            # carries a single part), so (part_index, name, thought_signature)
+            # collides when the model issues two calls to the same tool in
+            # one turn — e.g. discord_read_messages for two channel IDs.
+            # tool_call_indices maps call_key -> the chain of call slots that
+            # have shared that key over the stream, most recent last, so a
+            # non-continuing args_str starts a fresh slot instead of being
+            # appended to the previous call's buffer (which produced
+            # concatenated/invalid JSON args downstream).
+            slots = tool_call_indices.setdefault(call_key, [])
+            slot = slots[-1] if slots else None
+            last_arguments = str(slot.get("last_arguments") or "") if slot else ""
+            is_continuation = slot is not None and (
+                args_str == last_arguments or args_str.startswith(last_arguments)
+            )
+            if not is_continuation:
+                total_slots = sum(len(v) for v in tool_call_indices.values())
                 slot = {
-                    "index": len(tool_call_indices),
+                    "index": total_slots,
                     "id": f"call_{uuid.uuid4().hex[:12]}",
                     "last_arguments": "",
                 }
-                tool_call_indices[call_key] = slot
+                slots.append(slot)
+                last_arguments = ""
             emitted_arguments = args_str
-            last_arguments = str(slot.get("last_arguments") or "")
             if last_arguments:
                 if args_str == last_arguments:
                     emitted_arguments = ""
@@ -974,7 +989,7 @@ class GeminiNativeClient:
                     if response.status_code != 200:
                         body_text = read_streaming_error_body(response)
                         raise gemini_http_error(response, body_text=body_text)
-                    tool_call_indices: Dict[str, Dict[str, Any]] = {}
+                    tool_call_indices: Dict[str, List[Dict[str, Any]]] = {}
                     for event in _iter_sse_events(response):
                         for chunk in translate_stream_event(event, model, tool_call_indices):
                             yield chunk

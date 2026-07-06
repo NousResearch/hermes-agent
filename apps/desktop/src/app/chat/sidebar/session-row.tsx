@@ -10,7 +10,7 @@ import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
-import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
+import { sessionOriginBadgeSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
@@ -69,11 +69,11 @@ export function SidebarSessionRow({
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
-  // A handed-off session's live source is local, but it originated on a
-  // messaging platform — surface that origin as a small badge so e.g. a
-  // Telegram thread continued here still reads as Telegram.
-  const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
-  const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
+  // Surface the platform origin as a small badge. Handoffs keep their preserved
+  // origin; direct non-local sessions like Photon stay in Recents but still read
+  // as iMessage/Photon instead of anonymous local chats.
+  const originSource = sessionOriginBadgeSource(session.source, session.handoff_state, session.handoff_platform)
+  const originLabel = originSource ? (sessionSourceLabel(originSource) ?? originSource) : null
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
@@ -198,12 +198,12 @@ export function SidebarSessionRow({
               <SessionRowLeadDot branchStem={branchStem} isWorking={isWorking} needsInput={needsInput} />
             </SidebarRowLead>
           )}
-          {handoffSource && handoffLabel ? (
-            <Tip label={r.handoffOrigin(handoffLabel)}>
+          {originSource && originLabel ? (
+            <Tip label={originLabel}>
               <PlatformAvatar
                 className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
-                platformId={handoffSource}
-                platformName={handoffLabel}
+                platformId={originSource}
+                platformName={originLabel}
               />
             </Tip>
           ) : null}

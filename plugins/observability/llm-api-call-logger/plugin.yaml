@@ -1,0 +1,6 @@
+name: llm-api-call-logger
+version: 1.3.0
+description: "Log every LLM API call with full details — input/output tokens, tool calls, raw response, profile, workspace, worker, task. Data dir configurable via observability.data_dir in Hermes config.yaml (default ~/.hermes/)."
+author: "Hauzer S. Lee"
+hooks:
+  - post_api_request

@@ -31,7 +31,7 @@ import { slug } from '@/lib/sanitize'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors, $profiles as $cachedProfiles, refreshProfiles } from '@/store/profile'
+import { $profiles as $cachedProfiles, $profileColors, refreshProfiles } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {

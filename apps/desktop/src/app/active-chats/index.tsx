@@ -371,7 +371,7 @@ export function ActiveChatsView({
       onSearchChange={setQuery}
       searchPlaceholder={copy.search}
       searchValue={query}
-      tabs={<h2 className="truncate text-[0.9375rem] font-semibold tracking-tight text-foreground">{copy.title}</h2>}
+      tabs={[{ id: 'active', label: copy.title }]}
     >
       {sessionsLoading && activeRows.length === 0 ? (
         <PageLoader label={t.common.loading} />

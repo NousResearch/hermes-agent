@@ -653,10 +653,15 @@ describe('usePromptActions submit / queue drain semantics', () => {
     await vi.advanceTimersByTimeAsync(6_500)
 
     expect(await submitted).toBe(false)
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'still running'
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'still running'
+      },
+      1_800_000
+    )
+    expect(requestGateway).toHaveBeenCalledTimes(41)
 
     const finalState = seeds.at(-1)
     const finalMessages = (finalState?.messages ?? []) as { error?: string; role?: string }[]

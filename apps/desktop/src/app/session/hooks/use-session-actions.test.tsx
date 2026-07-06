@@ -534,7 +534,10 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     vi.mocked(getSessionMessages).mockResolvedValue({ messages: [], session_id: 'tip-1' } as never)
 
-    await runResume(requestGateway, { storedSessionId: 'tip-1' })
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('tip-1', true)
 
     expect($replyReadySessionIds.get()).toEqual([])
     expect($replyReadySessionProfiles.get()).toEqual({})

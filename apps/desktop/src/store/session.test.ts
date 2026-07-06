@@ -184,7 +184,7 @@ describe('setSessionReplyReady', () => {
     expect(localStorage.getItem('hermes.desktop.replyReadySessionProfiles')).toBeNull()
   })
 
-  it('does not show a rail badge for a finished turn until its row is visible', () => {
+  it('shows a rail badge for a finished turn using its profile hint before its row is visible', () => {
     $sessions.set([])
     $cronSessions.set([])
     $messagingSessions.set([])
@@ -196,7 +196,7 @@ describe('setSessionReplyReady', () => {
     setSessionWorking('bg-session', false)
 
     expect($replyReadySessionIds.get()).toEqual(['bg-session'])
-    expect($attentionProfileCounts.get()).toEqual({})
+    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
   })
 
   it('clears reply-ready markers by live id, stored id, or lineage root', () => {

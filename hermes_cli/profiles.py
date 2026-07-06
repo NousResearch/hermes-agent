@@ -1028,11 +1028,27 @@ def _ensure_noam_obsidian_guardrails(profile_dir: Path) -> None:
     This is intentionally status-free and non-secret-printing. It keeps newly
     created profiles aligned with the canonical visible Obsidian vault.
     """
+    default_home = _get_default_hermes_home()
+    default_plugin_dir = default_home / "plugins" / _NOAM_OBSIDIAN_PLUGIN
+
+    if not default_plugin_dir.is_dir():
+        try:
+            default_env = (default_home / ".env").read_text(encoding="utf-8")
+        except OSError:
+            default_env = ""
+        try:
+            default_config = (default_home / "config.yaml").read_text(encoding="utf-8")
+        except OSError:
+            default_config = ""
+
+        if _NOAM_OBSIDIAN_VAULT_PATH not in default_env and _NOAM_OBSIDIAN_VAULT_PATH not in default_config:
+            return
+
     # Ensure the profile has the Obsidian source-of-truth plugin when the
     # default profile has it installed. Fresh profile creation otherwise seeds
     # directories/config but not local plugins.
     try:
-        src = _get_default_hermes_home() / "plugins" / _NOAM_OBSIDIAN_PLUGIN
+        src = default_plugin_dir
         dst = profile_dir / "plugins" / _NOAM_OBSIDIAN_PLUGIN
         if src.is_dir() and not dst.exists():
             shutil.copytree(src, dst)

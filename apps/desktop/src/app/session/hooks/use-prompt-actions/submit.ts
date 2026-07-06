@@ -347,6 +347,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // report "not accepted" so the composer restores the draft or keeps the
         // queued entry for the next idle drain.
         if (isSessionBusyError(err)) {
+          releaseBusy()
           dropOptimistic(sessionId)
 
           return false

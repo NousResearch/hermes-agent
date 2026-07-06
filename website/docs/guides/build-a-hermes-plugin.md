@@ -905,6 +905,43 @@ def register(ctx):
 
 This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
 
+### Register Telegram (PTB) handlers
+
+Plugins that need to receive Telegram updates the core adapter doesn't route — inline button callbacks with their own prefix, Business API updates, chat-member events, etc. — can register a handler factory that the Telegram adapter invokes at connect time.
+
+```python
+def register(ctx):
+    def _wire(application, adapter):
+        # Called with the PTB Application right after it is built,
+        # BEFORE the core handlers are added. Import telegram here so
+        # register() works even when PTB isn't installed.
+        from telegram.ext import CallbackQueryHandler
+
+        async def _on_button(update, context):
+            query = update.callback_query
+            await query.answer()
+            # ...handle "myplugin:*" callbacks
+
+        application.add_handler(
+            CallbackQueryHandler(_on_button, pattern=r"^myplugin:")
+        )
+
+    ctx.register_telegram_handler(_wire)
+```
+
+**Signature:** `ctx.register_telegram_handler(factory) -> None`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `factory` | callable | Receives `(application, adapter)` — the PTB `Application` and the `TelegramAdapter` instance (`adapter.bot`, `adapter.config`; treat it as read-only) |
+
+**Runtime behavior:**
+
+- The factory is queued at plugin-load time and invoked when the Telegram platform connects, before the core handlers register. PTB dispatches only the first matching handler per group, so plugin handlers take precedence for the updates they scope to; everything else falls through to core.
+- **Always scope `CallbackQueryHandler` with a `pattern=` prefix** (e.g. `r"^myplugin:"`). An unscoped handler would swallow the core button flows (exec approvals, model picker, clarify prompts).
+- The factory is isolated: if it raises, the error is logged and Telegram still connects.
+- The adapter polls with `allowed_updates=Update.ALL_TYPES`, so non-message update types (e.g. `business_connection`, `chat_member`) already arrive without extra configuration.
+
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::

@@ -1781,7 +1781,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
             result_dict = result.to_dict()
             if stale_warnings:
-                result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
+                combined = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
+                # If the patch "succeeded" (wrote to disk), but the agent had a
+                # stale view of the file (partial read, external edit, or sibling
+                # write), surface the staleness as a failure so the agent knows to
+                # re-read before retrying.  A _warning hidden in a success
+                # response is easy to miss — silent data loss.
+                if result_dict.get("success"):
+                    result_dict["success"] = False
+                    result_dict["error"] = combined
+                else:
+                    result_dict["_warning"] = combined
             # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
             # mismatch (e.g. a worktree session editing the main checkout) is
             # visible in the response instead of silently landing elsewhere.

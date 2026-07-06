@@ -265,15 +265,17 @@ class FileToolsIntegrationTests(unittest.TestCase):
                 task_id="agentA",
             )
         )
+        # After the staleness guard fix, a successful patch against a stale
+        # view (sibling write) reports success=false and surfaces the warning
+        # as the error message.  A patch that genuinely fails (old_string not
+        # found) will have a different error.  Check both paths.
+        err = r.get("error", "")
         warn = r.get("_warning", "")
-        # Patch may fail (sibling changed the content so old_string may not
-        # match) or succeed — either way, the cross-agent warning should be
-        # present when old_string still happens to match.  What matters is
-        # that if the patch succeeded or the warning was reported, it names
-        # the sibling.  When old_string doesn't match, the patch itself
-        # returns an error but the warning is still set from the pre-check.
-        if warn:
-            self.assertIn("agentB", warn)
+        stale_signal = err or warn
+        self.assertTrue(
+            stale_signal and "agentB" in stale_signal,
+            f"expected sibling warning in error or _warning, got error={err!r} _warning={warn!r}",
+        )
 
     def test_net_new_file_no_warning(self):
         p = os.path.join(self._tmpdir, "brand_new.txt")

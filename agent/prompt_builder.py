@@ -88,12 +88,15 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     stop_at = _find_git_root(cwd)
     current = cwd.resolve()
 
-    for directory in [current, *current.parents]:
+    # When there is no git root, only check cwd itself – walking parents
+    # could pick up a .hermes.md planted in /tmp, /home, etc.
+    search_dirs = [current, *current.parents] if stop_at else [current]
+
+    for directory in search_dirs:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
             if candidate.is_file():
                 return candidate
-        # Stop walking at the git root (or filesystem root).
         if stop_at and directory == stop_at:
             break
     return None
@@ -926,8 +929,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.
-        from tools.terminal_tool import _get_env_config  # type: ignore
-        from tools.environments import get_environment  # type: ignore
+        from tools.terminal_tool import _create_environment, _get_env_config  # type: ignore
     except Exception as e:
         logger.debug("Backend probe unavailable (import failed): %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
@@ -935,7 +937,59 @@ def _probe_remote_backend(env_type: str) -> str | None:
 
     try:
         config = _get_env_config()
-        env = get_environment(config)
+        # Build the environment the same way tools/terminal_tool.py does for a
+        # live command: select the backend image, then assemble ssh/container
+        # config from the env-derived dict. (There is no `get_environment`
+        # factory — the real entry point is `_create_environment`.)
+        if env_type == "docker":
+            image = config.get("docker_image", "")
+        elif env_type == "singularity":
+            image = config.get("singularity_image", "")
+        elif env_type == "modal":
+            image = config.get("modal_image", "")
+        elif env_type == "daytona":
+            image = config.get("daytona_image", "")
+        else:
+            image = ""
+
+        ssh_config = None
+        if env_type == "ssh":
+            ssh_config = {
+                "host": config.get("ssh_host", ""),
+                "user": config.get("ssh_user", ""),
+                "port": config.get("ssh_port", 22),
+                "key": config.get("ssh_key", ""),
+                "persistent": config.get("ssh_persistent", False),
+            }
+
+        container_config = None
+        if env_type in {"docker", "singularity", "modal", "daytona"}:
+            container_config = {
+                "container_cpu": config.get("container_cpu", 1),
+                "container_memory": config.get("container_memory", 5120),
+                "container_disk": config.get("container_disk", 51200),
+                "container_persistent": config.get("container_persistent", True),
+                "modal_mode": config.get("modal_mode", "auto"),
+                "docker_volumes": config.get("docker_volumes", []),
+                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                "docker_forward_env": config.get("docker_forward_env", []),
+                "docker_env": config.get("docker_env", {}),
+                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "docker_extra_args": config.get("docker_extra_args", []),
+                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+            }
+
+        env = _create_environment(
+            env_type=env_type,
+            image=image,
+            cwd=config.get("cwd", ""),
+            timeout=config.get("timeout", 180),
+            ssh_config=ssh_config,
+            container_config=container_config,
+            task_id="prompt-backend-probe",
+            host_cwd=config.get("host_cwd"),
+        )
         # Single-line POSIX probe — works on any Unixy backend. Wrapped in
         # `2>/dev/null` so a missing binary doesn't pollute the output.
         probe_cmd = (

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
@@ -164,6 +165,17 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.toggleReview': toggleReview,
     'view.showFiles': showFiles,
     'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
+    // Create first so the pane's open-effect ensure sees a non-empty set and
+    // doesn't also spawn one — net effect is exactly one fresh terminal.
+    'view.newTerminal': () => {
+      createTerminal()
+      setTerminalTakeover(true)
+    },
+    // Switch / close only act while the pane is open (no focus-scoping here, so
+    // this stands in for "terminal is showing").
+    'view.nextTerminal': () => $terminalTakeover.get() && cycleTerminal(1),
+    'view.prevTerminal': () => $terminalTakeover.get() && cycleTerminal(-1),
+    'view.closeTerminal': () => $terminalTakeover.get() && closeActiveTerminal(),
     'view.flipPanes': togglePanesFlipped,
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),

@@ -15699,13 +15699,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _progress_adapter = None
             if (
                 getattr(_progress_adapter, "supports_code_blocks", False)
-                and tool_name == "terminal"
+                and tool_name in ("terminal", "execute_code")
                 and isinstance(args, dict)
-                and isinstance(args.get("command"), str)
-                and args["command"].strip()
+                and isinstance(args.get("command") or args.get("code"), str)
+                and (args.get("command") or args.get("code")).strip()
             ):
                 from agent.display import get_tool_preview_max_len
-                _cmd_full = args["command"].rstrip()
+                _cmd_full = (args.get("command") or args.get("code", "")).rstrip()
                 # Consecutive terminal calls: drop the repeated
                 # "💻 terminal" header so back-to-back commands render as
                 # adjacent code blocks under a single header.

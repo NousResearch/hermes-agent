@@ -828,6 +828,74 @@ function defaultModelPath(state) {
   return state && state.enabled && typeof state.key === 'string' && state.key.trim() ? 'managed' : 'byok'
 }
 
+// ── Relay-key self-heal (401 → auto re-provision) ───────────────────────────
+// provision-key ROTATES the relay key on every sign-in; the server marks the
+// prior key `rotated` and only the newest is relay-valid. If the cloud rotates
+// the active key out from under a signed-in desktop (e.g. a re-provision from
+// another surface, or a background rotation), the on-disk key silently goes
+// dead: the model picker's live `GET /v1/models` listing 401s and collapses to
+// the single configured model — the "过几天列表缩水到只剩一个" bug. Manual
+// re-login fixes it (provision re-mints + syncs), but the user shouldn't have
+// to. These pure helpers back the auto-heal: main.cjs probes /v1/models at
+// boot, and on a 401 re-runs the existing provision chain with the STORED login
+// JWT (persisted encrypted alongside the relay key), then re-syncs the
+// custom_providers entry. If the stored JWT is itself expired, provision-key
+// 401s too → we stop and log (re-login UX is the existing sign-in flow's job).
+
+/**
+ * A relay HTTP status that means "this key is not accepted" — the trigger for a
+ * re-provision. 401 (Invalid Agent API key) is the observed failure; 403 is
+ * folded in defensively (a revoked/forbidden key is equally un-healable without
+ * a fresh mint). Every other status (2xx, 5xx, network error) is NOT an auth
+ * failure and must not trigger a re-provision — a flaky relay or an outage would
+ * otherwise burn the (single) re-provision attempt on a key that is actually
+ * fine.
+ *
+ * @param {number} statusCode
+ * @returns {boolean}
+ */
+function isRelayUnauthorized(statusCode) {
+  const code = Number(statusCode)
+  return code === 401 || code === 403
+}
+
+// Default minimum gap between two self-heal re-provision attempts. A 401 at boot
+// re-provisions once; if that fails (expired JWT, provision-key down) we must not
+// retry on a tight loop (a 401 storm against the auth backend). 10 min is long
+// enough that a transient failure clears by the next natural boot/probe, short
+// enough that a genuine rotation heals within one session.
+const REPROVISION_COOLDOWN_MS = 10 * 60 * 1000
+
+/**
+ * Decide whether a relay-401 should trigger an auto re-provision right now.
+ * Pure so the gate (managed enabled + signed-in + holds a reusable login JWT)
+ * and the anti-storm cooldown are unit-testable without the electron/net layer.
+ *
+ * Gate — ALL must hold, else 'byok'/manual is the correct outcome and we do
+ * nothing (zero behavior change for BYOK / signed-out):
+ *   - enabled:   managed-LLM path is on (isManagedEnabled)
+ *   - hasKey:    a relay key is actually stored (a 401 only matters if we have a
+ *                key that the relay rejected; no key → not our concern)
+ *   - hasToken:  a login JWT is on disk to authenticate provision-key with
+ *                (without it we CANNOT re-mint — the user must re-login)
+ * Cooldown — even when gated in, only attempt if `cooldownMs` has elapsed since
+ *   the last attempt (lastAttemptAt = 0/undefined ⇒ never tried ⇒ allowed).
+ *
+ * @param {{
+ *   enabled?: boolean, hasKey?: boolean, hasToken?: boolean,
+ *   lastAttemptAt?: number, now?: number, cooldownMs?: number
+ * }} state
+ * @returns {boolean}
+ */
+function shouldAttemptReprovision(state = {}) {
+  if (!state.enabled || !state.hasKey || !state.hasToken) return false
+  const now = Number.isFinite(state.now) ? state.now : Date.now()
+  const last = Number.isFinite(state.lastAttemptAt) ? state.lastAttemptAt : 0
+  const cooldown = Number.isFinite(state.cooldownMs) ? state.cooldownMs : REPROVISION_COOLDOWN_MS
+  if (last <= 0) return true
+  return now - last >= cooldown
+}
+
 /**
  * Keep the registered relay `custom_providers:` entry's api_key in lockstep
  * with the freshly provisioned relay key — pure YAML line surgery, no yaml dep.
@@ -992,6 +1060,7 @@ module.exports = {
   MODEL_DISABLED_PROVIDERS,
   SEED_DISABLED_SKILLS,
   MANAGED_PLUGIN_NAMES,
+  REPROVISION_COOLDOWN_MS,
   modelDisabledProvidersYaml,
   seedSkillsBlockYaml,
   seedPluginsBlockYaml,
@@ -1011,10 +1080,12 @@ module.exports = {
   googleStartUrl,
   isLoopbackUrl,
   isManagedEnabled,
+  isRelayUnauthorized,
   managedModelConfigYaml,
   parseLoopbackCallback,
   parseProvisionResponse,
   relayKeyFromResponse,
   resolveApexEndpoints,
+  shouldAttemptReprovision,
   syncCustomProviderKeyYaml
 }

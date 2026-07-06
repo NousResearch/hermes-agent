@@ -91,6 +91,7 @@ const {
   defaultModelPath,
   googleStartUrl,
   isManagedEnabled,
+  isRelayUnauthorized,
   managedModelConfigYaml,
   ensurePluginsEnabledYaml,
   ensureSkillsDisabledYaml,
@@ -101,6 +102,7 @@ const {
   MODEL_DISABLED_PROVIDERS,
   parseProvisionResponse,
   resolveApexEndpoints,
+  shouldAttemptReprovision,
   syncCustomProviderKeyYaml
 } = require('./apex-managed.cjs')
 const { startLoopbackLogin } = require('./apex-loopback.cjs')
@@ -4691,30 +4693,36 @@ function readManagedAccount(stored) {
   return { email: str(account.email), name: str(account.name), plan: str(account.plan) }
 }
 
-// The stored managed config: { key, baseUrl, model, account }. key is '' when
-// none is stored / managed is disabled. Centralizes the "do we have a managed
-// credential?" question for the boot seed, onboarding gate, and IPC status. The
-// server is the source of truth for baseUrl/model (from provision-key); env
-// defaults only fill gaps. `account` is display-only identity (email/name/plan),
-// never a secret.
+// The stored managed config: { key, baseUrl, model, account, accessToken }. key
+// is '' when none is stored / managed is disabled. Centralizes the "do we have a
+// managed credential?" question for the boot seed, onboarding gate, and IPC
+// status. The server is the source of truth for baseUrl/model (from
+// provision-key); env defaults only fill gaps. `account` is display-only
+// identity (email/name/plan), never a secret. `accessToken` is the login JWT
+// (decrypted), kept ONLY so the boot 401-self-heal can re-provision a rotated
+// relay key without a re-login — it is never used for authorization here beyond
+// re-calling provision-key (server-validated). '' when none stored / env key.
 function resolveManagedConfig() {
   if (!isManagedEnabled(process.env)) {
-    return { key: '', baseUrl: '', model: '', account: { email: '', name: '', plan: '' } }
+    return { key: '', baseUrl: '', model: '', account: { email: '', name: '', plan: '' }, accessToken: '' }
   }
   const endpoints = resolveApexEndpoints(process.env)
   const stored = readManagedConfig()
   const account = readManagedAccount(stored)
   // An explicit env key (e.g. a CI/dev/admin-provisioned key for real-machine
-  // testing) wins over stored state, using env/default base_url + model.
+  // testing) wins over stored state, using env/default base_url + model. No JWT
+  // in this path — an env key is managed out-of-band, so self-heal stays off
+  // (shouldAttemptReprovision gates on hasToken).
   const fromEnv = String(process.env.APEXNODES_RELAY_KEY || '').trim()
   if (fromEnv) {
-    return { key: fromEnv, baseUrl: endpoints.relayBaseUrl, model: endpoints.model, account }
+    return { key: fromEnv, baseUrl: endpoints.relayBaseUrl, model: endpoints.model, account, accessToken: '' }
   }
   return {
     key: decryptDesktopSecret(stored.relayKey),
     baseUrl: String(stored.baseUrl || '').trim() || endpoints.relayBaseUrl,
     model: String(stored.model || '').trim() || endpoints.model,
-    account
+    account,
+    accessToken: decryptDesktopSecret(stored.accessToken)
   }
 }
 
@@ -4727,17 +4735,26 @@ function resolveManagedRelayCredential() {
 // Persist the provision-key result. Pass null/empty to clear. `provisioned` may
 // carry an optional display-only `account` ({ email, name, plan }) captured from
 // the login response / JWT claims — stored in clear (it is not a secret) so the
-// account panel can render who is signed in.
+// account panel can render who is signed in. It may also carry the login JWT as
+// `accessToken` — persisted ENCRYPTED (same safeStorage as relayKey) so the boot
+// 401-self-heal can re-provision a rotated relay key without a re-login. The JWT
+// lives 7 days server-side (ACCESS_TOKEN_EXPIRE_DAYS); once it expires,
+// provision-key 401s and the self-heal stops (the user re-logs in via the normal
+// flow). This rewrites the WHOLE record on every write (each follows a fresh
+// provision), so a provision that carries no token simply stores none — we never
+// resurrect a stale token, and clearing (no key) wipes the token too.
 function writeManagedConfig(provisioned) {
   fs.mkdirSync(path.dirname(DESKTOP_MANAGED_CONFIG_PATH), { recursive: true })
   const key = provisioned && typeof provisioned.apiKey === 'string' ? provisioned.apiKey.trim() : ''
   const account = provisioned && provisioned.account ? readManagedAccount({ account: provisioned.account }) : null
+  const accessToken = provisioned && typeof provisioned.accessToken === 'string' ? provisioned.accessToken.trim() : ''
   const next = key
     ? {
         relayKey: encryptDesktopSecret(key),
         baseUrl: String(provisioned.baseUrl || '').trim(),
         model: String(provisioned.model || '').trim(),
         ...(account && (account.email || account.name || account.plan) ? { account } : {}),
+        ...(accessToken ? { accessToken: encryptDesktopSecret(accessToken) } : {}),
         savedAt: Date.now()
       }
     : {}
@@ -5041,6 +5058,142 @@ function apexAuthPostJson(url, { body, bearer, timeoutMs = 12_000 } = {}) {
   })
 }
 
+// Probe the relay's OpenAI-compatible model listing with a Bearer relay key —
+// the SAME `GET {base_url}/v1/models` the runtime's model picker calls to build
+// its live "APEX-NODES.COM" model group. We only need the status code: 401/403
+// means the stored relay key is dead (rotated out) and the picker list has
+// collapsed; that is the self-heal trigger. Returns { ok, statusCode }; on a
+// timeout / network error resolves { ok:false, statusCode:0 } (NOT an auth
+// failure — we must not re-provision on a transient outage). Mirrors
+// apexAuthPostJson's transport (electronNet + explicit timeout), GET + no body.
+//
+// base_url already ends at the relay `/v1` segment (see DEFAULT_RELAY_BASE_URL),
+// so the listing path is `${base_url}/models`.
+function apexRelayGetModels(baseUrl, key, { timeoutMs = 10_000 } = {}) {
+  return new Promise(resolve => {
+    const base = String(baseUrl || '').trim().replace(/\/+$/, '')
+    const relayKey = String(key || '').trim()
+    if (!base || !relayKey) {
+      resolve({ ok: false, statusCode: 0 })
+      return
+    }
+    const url = `${base}/models`
+    let parsed
+    try {
+      parsed = new URL(url)
+    } catch {
+      resolve({ ok: false, statusCode: 0 })
+      return
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      resolve({ ok: false, statusCode: 0 })
+      return
+    }
+
+    let settled = false
+    const done = result => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    const request = electronNet.request({ method: 'GET', url, redirect: 'follow' })
+    request.setHeader('Authorization', `Bearer ${relayKey}`)
+    request.setHeader('Accept', 'application/json')
+
+    const timer = setTimeout(() => {
+      try {
+        request.abort()
+      } catch {
+        // already finished
+      }
+      done({ ok: false, statusCode: 0 })
+    }, timeoutMs)
+
+    request.on('response', res => {
+      const statusCode = res.statusCode || 0
+      // Drain so the socket can be reused/closed cleanly; body is irrelevant.
+      res.on('data', () => {})
+      res.on('end', () => done({ ok: statusCode >= 200 && statusCode < 400, statusCode }))
+    })
+    request.on('error', () => done({ ok: false, statusCode: 0 }))
+    request.end()
+  })
+}
+
+// Timestamp (ms) of the last self-heal re-provision ATTEMPT — module-level so the
+// anti-storm cooldown (shouldAttemptReprovision) survives across boot probes
+// within one app run. Reset only by restarting the app; a genuine rotation heals
+// on the first attempt, so the cooldown only matters when re-provision keeps
+// failing (expired JWT / provision-key down), which must not loop.
+let lastManagedReprovisionAttemptAt = 0
+
+// Boot self-heal: if the stored relay key is dead (relay /v1/models → 401/403),
+// re-provision it in place using the stored login JWT, then re-sync the
+// custom_providers entry so the model picker's live listing recovers THIS launch
+// — fixing the "过几天列表缩水到只剩一个" bug without a manual re-login.
+//
+// Gated + rate-limited via the pure shouldAttemptReprovision (managed enabled +
+// relay key present + login JWT present + cooldown elapsed), so BYOK / signed-out
+// / env-key installs are strict no-ops. A probe that is anything other than a
+// clean 401/403 (2xx, 5xx, timeout, offline) does NOTHING — we never burn the
+// re-provision on a key that is actually fine or a relay that is merely down.
+// If provision-key itself 401s (the stored JWT has also expired), we stop and
+// log; re-login UX is the existing sign-in flow's job, not a popup storm.
+//
+// Fire-and-forget from the boot path (app.whenReady, alongside the client-config
+// boot sync); never blocks the gateway spawn and only ever logs on failure.
+async function selfHealManagedKeyOn401() {
+  try {
+    const managed = resolveManagedConfig()
+    if (!isManagedEnabled(process.env)) return
+    if (!managed.key || !managed.baseUrl) return
+
+    // Cheap probe of the exact listing the picker uses. Only a hard auth
+    // rejection is actionable.
+    const probe = await apexRelayGetModels(managed.baseUrl, managed.key)
+    if (!isRelayUnauthorized(probe.statusCode)) return
+
+    if (
+      !shouldAttemptReprovision({
+        enabled: true,
+        hasKey: Boolean(managed.key),
+        hasToken: Boolean(managed.accessToken),
+        lastAttemptAt: lastManagedReprovisionAttemptAt,
+        now: Date.now()
+      })
+    ) {
+      if (!managed.accessToken) {
+        rememberLog(
+          '[apexnodes] relay key rejected (401) but no stored login token to re-provision with; ' +
+            'sign in again to refresh (self-heal skipped).'
+        )
+      }
+      return
+    }
+
+    lastManagedReprovisionAttemptAt = Date.now()
+    rememberLog('[apexnodes] relay key rejected (401); auto re-provisioning with stored login token…')
+    // Re-run the SAME provision chain the sign-in routes use: mints a fresh relay
+    // key (server rotates), persists it (+ the — possibly unchanged — JWT), and
+    // syncs the custom_providers entry. A stored account keeps the panel intact.
+    const result = await provisionManagedFromAccessToken(managed.accessToken, managed.account || null)
+    if (result && result.hasRelayKey) {
+      rememberLog('[apexnodes] relay key self-heal succeeded; model picker list restored.')
+    } else {
+      // provision-key returned no key: JWT expired (401) or endpoint unavailable.
+      // Stop here — the cooldown prevents a retry storm; the user re-logs in via
+      // the normal flow when the token is truly dead.
+      rememberLog(
+        '[apexnodes] relay key self-heal could not re-provision (login token likely expired); ' +
+          'sign in again to refresh.'
+      )
+    }
+  } catch (error) {
+    rememberLog(`[apexnodes] relay key self-heal skipped: ${error && error.message ? error.message : error}`)
+  }
+}
+
 // Shared post-auth path for EVERY managed sign-in route (email/password,
 // Google, APEX-web). Given a platform access-token JWT, provision a relay-valid
 // key for this user and persist it. Tolerates "provision-key not deployed yet"
@@ -5087,7 +5240,9 @@ async function provisionManagedFromAccessToken(accessToken, account = null) {
       name: provisioned.name || resolvedAccount.name,
       plan: provisioned.plan || resolvedAccount.plan
     }
-    writeManagedConfig({ ...provisioned, account: account2 })
+    // Persist the login JWT (encrypted) alongside the fresh relay key so the boot
+    // 401-self-heal can silently re-provision if this key is later rotated out.
+    writeManagedConfig({ ...provisioned, account: account2, accessToken: token })
     // A re-login just ROTATED the relay key — refresh the registered custom
     // provider entry immediately so the model picker's live listing doesn't
     // run on the dead key until the next app restart.
@@ -7884,6 +8039,16 @@ app.whenReady().then(() => {
   // + after every successful sign-in). Bounded at ~5s and strictly fail-soft —
   // an offline user boots exactly as before, on the cached state.
   void refreshClientConfigFromPlatform('boot')
+
+  // Managed relay-key self-heal: non-blocking boot probe of the relay's
+  // /v1/models. If the stored key was rotated out (401), auto re-provision with
+  // the stored login JWT and re-sync config.yaml so the model picker's live
+  // listing recovers without a manual re-login (the "list shrinks to one model
+  // after a few days" bug). Gated to signed-in managed installs; strict no-op
+  // for BYOK / signed-out / offline. Fire-and-forget, same as the boot config
+  // sync above — the picker reads config.yaml fresh per open, so a heal that
+  // lands after the gateway is up still takes effect on the next picker open.
+  void selfHealManagedKeyOn401()
 
   // 壳自更新:首查本身就延迟 60s(shell-updater.cjs),不和启动高峰抢资源。
   initShellUpdater()

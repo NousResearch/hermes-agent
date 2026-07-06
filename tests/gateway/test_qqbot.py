@@ -97,6 +97,49 @@ class TestQQAdapterInit:
 
 
 # ---------------------------------------------------------------------------
+# QQAdapter.connect signature — must accept base-class is_reconnect kwarg
+# (regression for #57671: connect() got an unexpected keyword argument
+# 'is_reconnect' when the reconnect watcher re-establishes the platform)
+# ---------------------------------------------------------------------------
+
+class TestQQConnectSignature:
+    def test_connect_accepts_is_reconnect_keyword(self):
+        import inspect
+        from gateway.platforms.qqbot import QQAdapter
+
+        sig = inspect.signature(QQAdapter.connect)
+        assert "is_reconnect" in sig.parameters, (
+            "QQAdapter.connect must accept is_reconnect to match "
+            "BasePlatformAdapter.connect (see #57671)"
+        )
+        param = sig.parameters["is_reconnect"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is False
+
+    def test_connect_signature_matches_base(self):
+        import inspect
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.platforms.qqbot import QQAdapter
+
+        base_kw = {
+            name for name, p in inspect.signature(
+                BasePlatformAdapter.connect
+            ).parameters.items()
+            if p.kind is inspect.Parameter.KEYWORD_ONLY
+        }
+        qq_kw = {
+            name for name, p in inspect.signature(
+                QQAdapter.connect
+            ).parameters.items()
+            if p.kind is inspect.Parameter.KEYWORD_ONLY
+        }
+        assert base_kw <= qq_kw, (
+            f"QQAdapter.connect missing base keyword-only params: "
+            f"{base_kw - qq_kw}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # _coerce_list
 # ---------------------------------------------------------------------------
 

@@ -278,8 +278,15 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
-        """Authenticate, obtain gateway URL, and open the WebSocket."""
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Authenticate, obtain gateway URL, and open the WebSocket.
+
+        Accepts the base-class ``is_reconnect`` keyword so the gateway's
+        reconnect watcher can re-establish this platform without raising
+        ``TypeError: connect() got an unexpected keyword argument
+        'is_reconnect'``. QQ has no server-side update queue to preserve
+        across an outage, so the flag is accepted and ignored.
+        """
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
             self._set_fatal_error("qq_missing_dependency", message, retryable=True)

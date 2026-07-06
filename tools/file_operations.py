@@ -1481,14 +1481,19 @@ class ShellFileOperations(FileOperations):
 
         # Block writes to sensitive paths
         if _is_write_denied(path):
-            return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+            # Explicit success=False so a future change to the dataclass
+            # default can't silently flip a hard precondition failure into
+            # a "success" response (issue #59600).
+            return PatchResult(success=False, error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
         read_result = self._exec(read_cmd)
         
         if read_result.exit_code != 0:
-            return PatchResult(error=f"Failed to read file: {path}")
+            # Explicit success=False — see issue #59600 (no-op patches
+            # must not be reported as success).
+            return PatchResult(success=False, error=f"Failed to read file: {path}")
         
         content = read_result.stdout
         # Strip a leading UTF-8 BOM before matching so the fuzzy matcher and
@@ -1512,7 +1517,9 @@ class ShellFileOperations(FileOperations):
                 err_msg += format_no_match_hint(err_msg, match_count, old_string, content)
             except Exception:
                 pass
-            return PatchResult(error=err_msg)
+            # Explicit success=False — a fuzzy match that hits zero times
+            # is a no-op write, not a successful patch (issue #59600).
+            return PatchResult(success=False, error=err_msg)
 
         # ── Line-ending preservation ──────────────────────────────────
         # Models nearly always send old_string/new_string with bare LF
@@ -1529,7 +1536,9 @@ class ShellFileOperations(FileOperations):
         # Write back
         write_result = self.write_file(path, new_content)
         if write_result.error:
-            return PatchResult(error=f"Failed to write changes: {write_result.error}")
+            # Explicit success=False — the patch did NOT land; reporting
+            # success would silently lose data (issue #59600).
+            return PatchResult(success=False, error=f"Failed to write changes: {write_result.error}")
 
         # Post-write verification — re-read the file and confirm the bytes we
         # intended to write actually landed. Catches silent persistence
@@ -1539,7 +1548,9 @@ class ShellFileOperations(FileOperations):
         verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
         verify_result = self._exec(verify_cmd)
         if verify_result.exit_code != 0:
-            return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
+            # Explicit success=False — verification failed; the on-disk
+            # state is unknown, so don't claim success (issue #59600).
+            return PatchResult(success=False, error=f"Post-write verification failed: could not re-read {path}")
         # Normalize line endings before comparing.  On Windows, Python's
         # default text-mode ``open()`` translates ``\n`` → ``\r\n`` on
         # write, so the file on disk legitimately holds CRLFs while our
@@ -1555,7 +1566,10 @@ class ShellFileOperations(FileOperations):
         _verify_stdout_normalized = _verify_bomless.replace("\r\n", "\n").replace("\r", "\n")
         _new_content_normalized = new_content.replace("\r\n", "\n").replace("\r", "\n")
         if _verify_stdout_normalized != _new_content_normalized:
-            return PatchResult(error=(
+            # Explicit success=False — verification mismatch means the
+            # bytes we wrote aren't what we find on disk; the patch did
+            # NOT land as intended (issue #59600).
+            return PatchResult(success=False, error=(
                 f"Post-write verification failed for {path}: on-disk content "
                 f"differs from intended write "
                 f"(wrote {len(_new_content_normalized)} chars, read back "
@@ -1609,7 +1623,9 @@ class ShellFileOperations(FileOperations):
         
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
-            return PatchResult(error=f"Failed to parse patch: {parse_error}")
+            # Explicit success=False — patch never parsed, nothing was
+            # applied (issue #59600).
+            return PatchResult(success=False, error=f"Failed to parse patch: {parse_error}")
         
         # Apply operations
         result = apply_v4a_operations(operations, self)

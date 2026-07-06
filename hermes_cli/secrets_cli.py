@@ -23,6 +23,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agent.secret_sources import bitwarden as bw
+from agent.secret_sources import keepassxc as kp
 from hermes_cli.config import (
     get_env_path,
     load_config,
@@ -598,3 +599,326 @@ def _resolve_server_url(
                 )
             return custom
         console.print(f"  [red]Out of range — pick 1-{custom_idx}.[/red]")
+
+
+# ---------------------------------------------------------------------------
+# KeePassXC CLI handlers
+# ---------------------------------------------------------------------------
+
+
+def register_keepassxc_cli(parent_parser: argparse.ArgumentParser) -> None:
+    """Attach the ``keepassxc`` subcommand tree to a parent parser."""
+    sub = parent_parser.add_subparsers(dest="secrets_kp_command")
+
+    setup = sub.add_parser(
+        "setup",
+        help="Interactive wizard: locate database, configure mappings",
+    )
+    setup.add_argument("--db-path", help="Path to the .kdbx database file")
+    setup.add_argument("--password", help="Database master password (stored in .env as KEEPASSXC_PASSWORD)")
+    setup.add_argument("--key-file", help="Path to a key file for database authentication")
+    setup.add_argument("--no-password", action="store_true", help="Database has no password")
+    setup.set_defaults(func=cmd_kp_setup)
+
+    status = sub.add_parser("status", help="Show config + binary + last fetch")
+    status.set_defaults(func=cmd_kp_status)
+
+    sync = sub.add_parser("sync", help="Fetch secrets now and report what changed")
+    sync.add_argument("--apply", action="store_true", help="Export secrets into current shell env (default: dry-run)")
+    sync.set_defaults(func=cmd_kp_sync)
+
+    disable = sub.add_parser("disable", help="Turn off the KeePassXC integration")
+    disable.set_defaults(func=cmd_kp_disable)
+
+
+def cmd_kp_setup(args: argparse.Namespace) -> int:
+    """Interactive KeePassXC setup wizard."""
+    console = Console()
+    console.print(Panel.fit(
+        "[bold]KeePassXC Secret Source setup[/bold]\n\n"
+        "Hermes will read API keys from your KeePassXC database at startup.\n"
+        "You'll need:\n"
+        "  • The path to your .kdbx database file\n"
+        "  • The master password (stored in .env as KEEPASSXC_PASSWORD)\n"
+        "  • Entry paths to map to env var names (e.g. Dev/OpenAI → OPENAI_API_KEY)",
+        border_style="green",
+    ))
+
+    # Step 1: Locate binary
+    console.print()
+    console.print("[bold]Step 1[/bold]  Locate keepassxc-cli")
+    binary = kp.find_keepassxc_cli()
+    if binary is None:
+        console.print("  [red]✗ keepassxc-cli not found.[/red]\n"
+                      "  Install KeePassXC from https://keepassxc.org or set\n"
+                      "  KEEPASSXC_CLI_PATH to the binary location.")
+        return 1
+    console.print(f"  [green]✓[/green] {binary}")
+
+    # Non-interactive guard
+    if not sys.stdin.isatty():
+        missing = []
+        if not (args.db_path and args.db_path.strip()):
+            missing.append("--db-path")
+        if not args.no_password:
+            if not (args.password and args.password.strip()):
+                if not os.environ.get("KEEPASSXC_PASSWORD", "").strip():
+                    missing.append("--password")
+        if missing:
+            console.print(f"  [red]Non-interactive mode (no TTY) requires all setup flags.[/red]\n"
+                          f"  Missing: {', '.join(missing)}")
+            return 1
+
+    # Step 2: Database path
+    console.print()
+    console.print("[bold]Step 2[/bold]  Database path")
+    db_path = (args.db_path or "").strip()
+    if not db_path:
+        db_path = console.input("  Path to .kdbx file: ").strip()
+    if not db_path:
+        console.print("  [red]Empty path, aborting.[/red]")
+        return 1
+    db = Path(db_path).expanduser().resolve()
+    if not db.exists():
+        console.print(f"  [red]✗ {db} does not exist.[/red]")
+        return 1
+    console.print(f"  [green]✓[/green] {db}")
+
+    # Step 3: Authentication
+    console.print()
+    console.print("[bold]Step 3[/bold]  Authentication method")
+    no_password = args.no_password
+    key_file = (args.key_file or "").strip()
+    password = (args.password or "").strip()
+
+    if not no_password and not key_file and not password:
+        console.print("  How is your database protected?")
+        console.print("    [1] Master password only")
+        console.print("    [2] Key file only")
+        console.print("    [3] Master password + key file")
+        console.print("    [4] No password (unprotected)")
+        choice = console.input("  Choice [1-4]: ").strip()
+        if choice == "2":
+            key_file = console.input("  Path to key file: ").strip()
+        elif choice == "3":
+            password = masked_secret_prompt("  Master password: ").strip()
+            key_file = console.input("  Path to key file: ").strip()
+        elif choice == "4":
+            no_password = True
+        else:
+            password = masked_secret_prompt("  Master password: ").strip()
+
+    cfg = load_config()
+    secrets_cfg = cfg.setdefault("secrets", {}).setdefault("keepassxc", {})
+    password_env = secrets_cfg.get("password_env", "KEEPASSXC_PASSWORD")
+
+    if password:
+        save_env_value(password_env, password)
+        os.environ[password_env] = password
+        console.print(f"  [green]✓[/green] stored in .env as {password_env}")
+    if key_file:
+        console.print(f"  [green]✓[/green] using key file: {key_file}")
+    if no_password:
+        console.print("  [green]✓[/green] no password mode")
+
+    # Step 4: Test database access
+    console.print()
+    console.print("[bold]Step 4[/bold]  Test database access")
+    try:
+        _test_kp_db_access(binary, str(db), password, key_file, no_password)
+        console.print("  [green]✓[/green] Database unlocked successfully")
+    except Exception as exc:
+        console.print(f"  [red]✗ Failed to unlock database: {exc}[/red]")
+        return 1
+
+    # Step 5: Mappings
+    console.print()
+    console.print("[bold]Step 5[/bold]  Configure entry mappings")
+    console.print("  Map KeePassXC entries to environment variable names.\n"
+                  "  Format: [cyan]Entry/Path[/cyan] → [cyan]ENV_VAR_NAME[/cyan]\n"
+                  "  Example: [cyan]Dev/OpenAI[/cyan] → [cyan]OPENAI_API_KEY[/cyan]\n"
+                  "  Leave entry path empty to finish.")
+
+    mappings: dict[str, str] = {}
+    while True:
+        entry = console.input("  Entry path (or empty to finish): ").strip()
+        if not entry:
+            break
+        env_var = console.input(f"    → env var name: ").strip().upper()
+        if not env_var:
+            console.print("    [red]Env var name required.[/red]")
+            continue
+        if not kp._is_valid_env_name(env_var):
+            console.print(f"    [red]{env_var!r} is not a valid env var name.[/red]")
+            continue
+        mappings[env_var] = entry
+        console.print(f"    [green]✓[/green] {entry} → {env_var}")
+
+    if not mappings:
+        console.print("  [yellow]No mappings configured — nothing to fetch.[/yellow]")
+    else:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Entry", style="cyan")
+        table.add_column("Env Var", style="green")
+        for env_var, entry in sorted(mappings.items()):
+            table.add_row(entry, env_var)
+        console.print()
+        console.print(table)
+
+    # Save
+    secrets_cfg["enabled"] = True
+    secrets_cfg["db_path"] = str(db)
+    secrets_cfg["password_env"] = password_env
+    if key_file:
+        secrets_cfg["key_file"] = key_file
+    if no_password:
+        secrets_cfg["no_password"] = True
+    secrets_cfg["mappings"] = mappings
+    secrets_cfg.setdefault("cache_ttl_seconds", 300)
+    secrets_cfg.setdefault("override_existing", True)
+    save_config(cfg)
+
+    console.print()
+    console.print("[green]✓ KeePassXC secret source is enabled.[/green]  "
+                  "Secrets will be pulled at the start of every Hermes process.")
+    console.print("  Status:  [cyan]hermes secrets keepassxc status[/cyan]\n"
+                  "  Refresh: [cyan]hermes secrets keepassxc sync[/cyan]\n"
+                  "  Disable: [cyan]hermes secrets keepassxc disable[/cyan]")
+    return 0
+
+
+def cmd_kp_status(args: argparse.Namespace) -> int:
+    console = Console()
+    cfg = load_config()
+    kp_cfg = (cfg.get("secrets") or {}).get("keepassxc") or {}
+
+    enabled = bool(kp_cfg.get("enabled"))
+    db_path = kp_cfg.get("db_path", "")
+    password_env = kp_cfg.get("password_env", "KEEPASSXC_PASSWORD")
+    key_file = kp_cfg.get("key_file", "")
+    no_password = bool(kp_cfg.get("no_password", False))
+    password_set = bool(os.environ.get(password_env))
+    mappings = kp_cfg.get("mappings") or {}
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("", style="bold")
+    table.add_column("")
+    table.add_row("Enabled", _yn(enabled))
+    table.add_row("Database", db_path or "[dim](unset)[/dim]")
+    table.add_row("Password env", password_env)
+    table.add_row("Password set", _yn(password_set))
+    table.add_row("Key file", key_file or "[dim](none)[/dim]")
+    table.add_row("No password", _yn(no_password))
+    table.add_row("Mappings", str(len(mappings)) if mappings else "[dim]none[/dim]")
+    table.add_row("Override existing", _yn(bool(kp_cfg.get("override_existing", False))))
+    table.add_row("Cache TTL (s)", str(kp_cfg.get("cache_ttl_seconds", 300)))
+
+    binary = kp.find_keepassxc_cli()
+    if binary:
+        table.add_row("keepassxc-cli", str(binary))
+    else:
+        table.add_row("keepassxc-cli", "[yellow]not found[/yellow]")
+
+    console.print(Panel(table, title="KeePassXC Secret Source", border_style="green"))
+
+    if not enabled:
+        console.print("\n  Run [cyan]hermes secrets keepassxc setup[/cyan] to enable.")
+    elif not db_path:
+        console.print("\n  [yellow]Enabled but no db_path — nothing to fetch.[/yellow]")
+    elif not password_set and not key_file and not no_password:
+        console.print(f"\n  [yellow]Enabled but {password_env} is not set and no key_file configured.[/yellow]")
+    elif not mappings:
+        console.print("\n  [yellow]No mappings configured — nothing to fetch.[/yellow]")
+    return 0
+
+
+def cmd_kp_sync(args: argparse.Namespace) -> int:
+    console = Console()
+    cfg = load_config()
+    kp_cfg = (cfg.get("secrets") or {}).get("keepassxc") or {}
+    if not kp_cfg.get("enabled"):
+        console.print("[yellow]KeePassXC integration is disabled. Run `hermes secrets keepassxc setup` first.[/yellow]")
+        return 1
+
+    db_path = kp_cfg.get("db_path", "")
+    if not db_path:
+        console.print("[red]No db_path configured.[/red]")
+        return 1
+
+    password_env = kp_cfg.get("password_env", "KEEPASSXC_PASSWORD")
+    password = os.environ.get(password_env, "").strip() if not kp_cfg.get("no_password") else ""
+    key_file = kp_cfg.get("key_file", "") or ""
+    no_password = bool(kp_cfg.get("no_password", False))
+    mappings = kp_cfg.get("mappings") or {}
+
+    if not mappings:
+        console.print("[yellow]No mappings configured.[/yellow]")
+        return 0
+
+    try:
+        secrets, warnings = kp.fetch_keepassxc_secrets(
+            db_path=db_path, password=password, key_file=key_file,
+            no_password=no_password, mappings=mappings, use_cache=False,
+        )
+    except Exception as exc:
+        console.print(f"[red]Fetch failed: {exc}[/red]")
+        return 1
+
+    if not secrets:
+        console.print("[yellow]No secrets fetched.[/yellow]")
+        return 0
+
+    override = bool(kp_cfg.get("override_existing", False)) or args.apply
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Name", style="cyan")
+    table.add_column("Action")
+    applied = 0
+    for key in sorted(secrets):
+        already = bool(os.environ.get(key))
+        if already and not override:
+            table.add_row(key, "[dim]skip (already set)[/dim]")
+            continue
+        if args.apply:
+            os.environ[key] = secrets[key]
+            applied += 1
+            table.add_row(key, "[green]exported[/green]" + (" (overrode)" if already else ""))
+        else:
+            table.add_row(key, "[green]would export[/green]" + (" (overrides)" if already else ""))
+
+    console.print(table)
+    for w in warnings:
+        console.print(f"[yellow]warning:[/yellow] {w}")
+
+    if not args.apply:
+        console.print("\n  This was a dry-run. Re-run with [cyan]--apply[/cyan] to export into the current shell.")
+    else:
+        console.print(f"\n  [green]Exported {applied} secret(s) into current process.[/green]")
+    return 0
+
+
+def cmd_kp_disable(args: argparse.Namespace) -> int:
+    console = Console()
+    cfg = load_config()
+    kp_cfg = cfg.setdefault("secrets", {}).setdefault("keepassxc", {})
+    kp_cfg["enabled"] = False
+    save_config(cfg)
+    console.print("[green]Disabled.[/green]  KeePassXC secrets will NOT be pulled on the next Hermes invocation.\n"
+                  "  Your database password is left in .env — remove it manually if desired.")
+    return 0
+
+
+def _test_kp_db_access(binary: Path, db_path: str, password: Optional[str], key_file: Optional[str], no_password: bool) -> None:
+    """Test that we can unlock the database by listing root entries."""
+    cmd = [str(binary), "ls", "-q", "-R", "-f", db_path, "/"]
+    if no_password:
+        cmd.insert(2, "--no-password")
+    if key_file:
+        cmd.insert(2, "-k")
+        cmd.insert(3, key_file)
+
+    proc = subprocess.run(
+        cmd, input=password, capture_output=True, text=True, timeout=15,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(err[:300])

@@ -12791,12 +12791,12 @@ def main():
     # =========================================================================
     secrets_parser = subparsers.add_parser(
         "secrets",
-        help="Manage external secret sources (Bitwarden Secrets Manager)",
+        help="Manage external secret sources (Bitwarden Secrets Manager, KeePassXC)",
         description=(
             "Pull API keys from an external secret manager at process startup "
             "instead of storing them in ~/.hermes/.env.  Currently supports "
-            "Bitwarden Secrets Manager.  See: "
-            "https://hermes-agent.nousresearch.com/docs/user-guide/secrets/bitwarden"
+            "Bitwarden Secrets Manager and KeePassXC.  See: "
+            "https://hermes-agent.nousresearch.com/docs/user-guide/secrets"
         ),
     )
     secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command")
@@ -12807,15 +12807,26 @@ def main():
         help="Bitwarden Secrets Manager integration",
     )
 
+    # KeePassXC
+    secrets_kp = secrets_subparsers.add_parser(
+        "keepassxc",
+        aliases=["kp"],
+        help="KeePassXC password manager integration",
+    )
+
     # Lazy import — only pays for itself when this subcommand is actually used.
     from hermes_cli import secrets_cli as _secrets_cli
 
     _secrets_cli.register_cli(secrets_bw)
+    _secrets_cli.register_keepassxc_cli(secrets_kp)
 
     def _dispatch_secrets(args):  # noqa: ANN001
         sub = getattr(args, "secrets_command", None)
         bw_sub = getattr(args, "secrets_bw_command", None)
+        kp_sub = getattr(args, "secrets_kp_command", None)
         if sub in ("bitwarden", "bw") and bw_sub is not None:
+            return args.func(args)
+        if sub in ("keepassxc", "kp") and kp_sub is not None:
             return args.func(args)
         secrets_parser.print_help()
         return 0

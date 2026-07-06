@@ -685,6 +685,58 @@ class TestAdvanceNextRun:
         updated = get_job(job["id"])
         assert updated["next_run_at"] == original_next, "one-shot next_run_at should be unchanged"
 
+    def test_persists_last_run_at_for_no_agent_oneshot(self, tmp_cron_dir):
+        """no_agent one-shot jobs should have last_run_at set BEFORE execution.
+
+        LLM-backed one-shots retain their retry-on-restart semantics (the
+        LLM may have been mid-response).  But no_agent script jobs have
+        no intermediate state to retry, and a script that restarts the
+        gateway (e.g. reboot-gw.sh calling ``systemctl restart``) must
+        NOT re-fire on restart — that creates an infinite restart loop
+        (#30719).
+        """
+        job = create_job(
+            prompt="Restart gateway", schedule="30m",
+            no_agent=True, script="reboot-gw.sh",
+        )
+
+        result = advance_next_run(job["id"])
+        assert result is True
+
+        updated = get_job(job["id"])
+        assert updated["last_run_at"] is not None, (
+            "no_agent one-shot must have last_run_at set before execution "
+            "to prevent re-fire on gateway restart"
+        )
+
+        # After advance, the job should NOT be due (simulates restart)
+        due_after = get_due_jobs()
+        assert len(due_after) == 0, (
+            "no_agent one-shot should not be due after advance_next_run"
+        )
+
+    def test_llm_oneshot_still_retries(self, tmp_cron_dir):
+        """LLM-backed one-shots must still retry on restart (unchanged)."""
+        job = create_job(prompt="LLM task", schedule="30m")
+
+        result = advance_next_run(job["id"])
+        assert result is False
+
+        updated = get_job(job["id"])
+        assert updated["last_run_at"] is None, (
+            "LLM one-shot must retain None last_run_at for retry-on-restart"
+        )
+
+        # Force next_run_at to the past so it's due
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=1)).isoformat()
+        save_jobs(jobs)
+
+        # LLM one-shot should still be due (for retry)
+        due = get_due_jobs()
+        assert len(due) == 1
+        assert due[0]["id"] == job["id"]
+
     def test_nonexistent_job_returns_false(self, tmp_cron_dir):
         result = advance_next_run("nonexistent-id")
         assert result is False

@@ -1254,9 +1254,17 @@ def advance_next_run(job_id: str) -> bool:
     scheduler from at-least-once to at-most-once for recurring jobs — missing
     one run is far better than firing dozens of times in a crash loop.
 
-    One-shot jobs are left unchanged so they can still retry on restart.
+    One-shot LLM-backed jobs are left unchanged so they can still retry on
+    restart (the LLM may have been mid-response).  One-shot no_agent script
+    jobs are treated like recurring jobs: ``last_run_at`` is persisted BEFORE
+    the script runs so a script that restarts the gateway (e.g. reboot-gw.sh
+    calling ``systemctl restart hermes-gateway``) does not re-fire on restart.
+    The script has no intermediate LLM state to retry — it either runs or it
+    doesn't — and the retry guarantee is actively harmful when the script is a
+    gateway lifecycle action (#30719).
 
-    Returns True if next_run_at was advanced, False otherwise.
+    Returns True if next_run_at was advanced (or last_run_at was pre-set for a
+    no_agent one-shot), False otherwise.
     """
     with _jobs_lock():
         jobs = load_jobs()
@@ -1264,6 +1272,13 @@ def advance_next_run(job_id: str) -> bool:
             if job["id"] == job_id:
                 kind = job.get("schedule", {}).get("kind")
                 if kind not in {"cron", "interval"}:
+                    # One-shot job: persist execution marker for no_agent
+                    # scripts so they cannot re-fire on gateway restart.
+                    if kind == "once" and job.get("no_agent"):
+                        now = _hermes_now().isoformat()
+                        job["last_run_at"] = now
+                        save_jobs(jobs)
+                        return True
                     return False
                 now = _hermes_now().isoformat()
                 new_next = compute_next_run(job["schedule"], now)

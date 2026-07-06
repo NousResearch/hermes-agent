@@ -191,6 +191,51 @@ class TestVoiceAttachmentSSRFProtection:
         assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 
 
+class TestQQConnectSignature:
+    """Regression for issue #59272 — QQAdapter.connect() must accept is_reconnect kwarg.
+
+    After commit 43b8ba418 (fix telemetry), the base class signature became
+    ``async def connect(self, *, is_reconnect: bool = False) -> bool:``.
+    Every other adapter was updated to match — QQAdapter was missed,
+    causing a TypeError on every first connect and an exponential-backoff
+    reconnect loop for QQ.
+    """
+
+    def _make(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_connect_accepts_is_reconnect_true(self):
+        """Reconnect path — is_reconnect=True must not raise TypeError."""
+        adapter = self._make()
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop"))
+        try:
+            asyncio.run(adapter.connect(is_reconnect=True))
+        except RuntimeError:
+            pass
+        assert adapter._ensure_token.call_count == 1
+
+    def test_connect_accepts_is_reconnect_false(self):
+        """Cold-boot path — is_reconnect=False must not raise TypeError."""
+        adapter = self._make()
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop"))
+        try:
+            asyncio.run(adapter.connect(is_reconnect=False))
+        except RuntimeError:
+            pass
+        assert adapter._ensure_token.call_count == 1
+
+    def test_connect_no_keyword_still_works(self):
+        """Position-only call with no kwargs must still work (default is_reconnect=False)."""
+        adapter = self._make()
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop"))
+        try:
+            asyncio.run(adapter.connect())
+        except RuntimeError:
+            pass
+        assert adapter._ensure_token.call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # WebSocket proxy handling
 # ---------------------------------------------------------------------------

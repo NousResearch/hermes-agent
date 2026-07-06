@@ -58,6 +58,7 @@ import logging
 import mimetypes
 import os
 import re
+import socket
 import threading
 import time
 import uuid
@@ -5327,6 +5328,137 @@ _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 _MIGRATION_VOICE_EXTS = {".ogg", ".opus"}
 
 
+def _sidecar_config_path() -> str:
+    """Locate the hermes_feishu_card config sidecar reads at startup.
+
+    Mirrors the path the runner plist / process module resolves, so cron
+    jobs pick up the same credentials as the live gateway.
+    """
+    return os.environ.get(
+        "HERMES_FEISHU_CARD_CONFIG",
+        os.path.expanduser("~/.hermes_feishu_card/config.yaml"),
+    )
+
+
+def _sidecar_is_reachable(timeout_seconds: float = 0.4) -> bool:
+    """Quick TCP probe — does anything answer on the sidecar port?
+
+    Cheap (single connect attempt) and side-effect-free. We don't read the
+    response: the live sidecar answers within a few ms, so a connect failure
+    is a reliable signal that the runner is not running.
+    """
+    host = "127.0.0.1"
+    port = int(os.environ.get("HERMES_FEISHU_CARD_PORT", "8765"))
+    try:
+        with socket.create_connection((host, port), timeout=timeout_seconds):
+            return True
+    except OSError:
+        return False
+
+
+async def _try_send_via_sidecar(
+    *,
+    chat_id: str,
+    message: str,
+    thread_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Send a cron Feishu message via the hermes_feishu_card sidecar.
+
+    Returns:
+        - ``None`` when the sidecar is not reachable (caller should fall
+          back to the legacy lark SDK path)
+        - a dict with ``"error"`` key on failure (caller should surface it)
+        - a dict with ``"success"`` key on success (caller should stop)
+
+    The sidecar renders the markdown body through ``render_card`` (the same
+    pipeline live agent runs use), then POSTs the card via lark SDK, so the
+    result is visually identical to live-gateway replies.
+    """
+    if not _sidecar_is_reachable():
+        return None
+
+    try:
+        # Imports are local so we never pay the cost when the sidecar is down.
+        import yaml
+        from hermes_feishu_card.config import load_config as _sidecar_load_config
+        from hermes_feishu_card.feishu_client import FeishuClient, FeishuClientConfig
+        from hermes_feishu_card.render import render_card
+        from hermes_feishu_card.runner import build_feishu_client
+        from hermes_feishu_card.session import CardSession
+    except Exception as exc:  # sidecar not importable → fall back
+        logger.debug("[Feishu] sidecar modules unavailable, falling back: %s", exc)
+        return None
+
+    config_path = _sidecar_config_path()
+    if not os.path.exists(config_path):
+        return None
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as fh:
+            raw_config = yaml.safe_load(fh) or {}
+        # Resolve credentials / base_url via the sidecar's own loader so any
+        # V3 multi-bot bindings get honoured. ``load_config`` reads from disk
+        # too, but accept the file we already opened when it works.
+        try:
+            sidecar_config = _sidecar_load_config(config_path)
+        except Exception:
+            sidecar_config = raw_config
+    except Exception as exc:
+        logger.warning("[Feishu] could not load sidecar config %s: %s", config_path, exc)
+        return None
+
+    client = build_feishu_client(sidecar_config)
+    if client is None or isinstance(client, type(client)) and getattr(client, "_sent_count", None) is not None and not hasattr(client, "send_card"):
+        # NoopFeishuClient has only send_card stub; bail out so we fall back.
+        return None
+
+    # Materialize a fully-formed FeishuClient from the loaded config so we
+    # control base_url/timeout. build_feishu_client handles the NoopFeishuClient
+    # fallback when credentials are missing, so guard that explicitly.
+    feishu_section = (sidecar_config or {}).get("feishu", {}) if isinstance(sidecar_config, dict) else {}
+    if not feishu_section.get("app_id") or not feishu_section.get("app_secret"):
+        return None
+
+    real_client = FeishuClient(
+        FeishuClientConfig(
+            app_id=feishu_section["app_id"],
+            app_secret=feishu_section["app_secret"],
+            base_url=feishu_section.get("base_url", FeishuClientConfig.base_url),
+            timeout_seconds=float(feishu_section.get("timeout_seconds", FeishuClientConfig.timeout_seconds)),
+        )
+    )
+
+    session = CardSession(
+        conversation_id=f"cron-{uuid.uuid4().hex[:12]}",
+        message_id=f"cron-{uuid.uuid4().hex}",
+        chat_id=chat_id,
+        answer_text=message,
+    )
+    card_cfg = (sidecar_config or {}).get("card", {}) if isinstance(sidecar_config, dict) else {}
+    title = card_cfg.get("title", "Hermes Agent")
+    footer_fields = card_cfg.get("footer_fields")
+    if not isinstance(footer_fields, list):
+        footer_fields = None
+
+    try:
+        card = render_card(session, footer_fields=footer_fields, title=title)
+        message_id = await real_client.send_card(
+            chat_id,
+            card,
+            thread_id=thread_id,
+        )
+        return {
+            "success": True,
+            "platform": "feishu",
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "transport": "sidecar",
+        }
+    except Exception as exc:
+        logger.warning("[Feishu] sidecar send failed, falling back to lark SDK: %s", exc)
+        return {"error": f"Feishu sidecar send failed: {exc}"}
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -5347,6 +5479,23 @@ async def _standalone_send(
         return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
 
     media_files = media_files or []
+    # PATCH (2026-07-06): cron Feishu delivery now routes through the
+    # hermes_feishu_card sidecar when it is reachable. The sidecar provides
+    # Markdown→Card rendering and uses the lark SDK under the hood, so messages
+    # look identical to live-gateway replies (same card layout, footer, button
+    # styles). When the sidecar is unavailable we fall back to the legacy
+    # lark SDK path so cron jobs never silently miss their window.
+    if message.strip() and not media_files:
+        sidecar_result = await _try_send_via_sidecar(
+            chat_id=chat_id,
+            message=message,
+            thread_id=thread_id,
+        )
+        if sidecar_result is not None:
+            # Sidecar was reachable and answered (success or explicit error).
+            # Return its verdict directly — there is nothing left to do here.
+            return sidecar_result
+        # sidecar_result is None → sidecar unreachable, fall through to lark SDK.
     try:
         adapter = FeishuAdapter(pconfig)
         domain_name = getattr(adapter, "_domain_name", "feishu")

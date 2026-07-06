@@ -17997,6 +17997,97 @@ def _cron_ticker_supervisor(
     logger.info("Cron ticker supervisor stopped")
 
 
+def _handle_duplicate_gateway_runtimes(replace: bool) -> bool:
+    """Reap or report ``gateway run`` processes the PID file can't see.
+
+    The duplicate-instance guard in ``start_gateway`` only knows about the
+    single PID recorded in gateway.pid/gateway.lock. If that metadata is
+    ever lost while a gateway keeps running (the flock is inode-based —
+    deleting and recreating gateway.lock orphans the holder), ``--replace``
+    kills the tracked instance and the orphan survives, stacking gateways
+    that all poll platforms and race the cron scheduler (observed as a
+    frozen scheduler with three concurrent gateways, 2026-07-04).
+
+    Must be called AFTER this process has won the pid-file claim so that
+    concurrent ``--replace`` racers cannot sweep each other: the O_EXCL
+    loser exits before reaching this point.
+
+    Returns True when startup may proceed. With ``replace=True``,
+    terminates every other same-profile ``gateway run`` process (TERM,
+    ≤10s wait, then KILL). With ``replace=False``, refuses startup when
+    duplicates exist so a bare ``gateway run`` never silently stacks
+    another instance. Scan failures fail open — a broken scan must not
+    keep the gateway down.
+    """
+    try:
+        # Lazy import mirrors the hermes_cli lazy imports elsewhere in
+        # this module (circular-import avoidance). Strict `gateway run`
+        # matching only: restart-manager command lines are transient
+        # management CLIs, not runtimes to kill.
+        from hermes_cli.gateway import _scan_gateway_pids
+
+        orphans = [
+            pid
+            for pid in _scan_gateway_pids(
+                {os.getpid()},
+                all_profiles=False,
+                include_restart_managers=False,
+            )
+            if pid and pid > 0
+        ]
+    except Exception as e:
+        logger.debug("Duplicate-gateway scan failed (skipping sweep): %s", e)
+        return True
+    if not orphans:
+        return True
+
+    pid_list = ", ".join(str(p) for p in orphans)
+    if not replace:
+        logger.error(
+            "Found %d other gateway run process(es) not tracked by the PID "
+            "file: %s. Refusing to stack another instance.",
+            len(orphans), pid_list,
+        )
+        print(
+            f"\n❌ Another gateway run process is alive but untracked "
+            f"(PID(s): {pid_list}).\n"
+            f"   Use 'hermes gateway run --replace' to take over cleanly.\n"
+        )
+        return False
+
+    from gateway.status import _pid_exists, terminate_pid, write_planned_stop_marker
+
+    logger.warning(
+        "Sweeping %d orphan gateway process(es) left behind by earlier "
+        "replace cycles: %s", len(orphans), pid_list,
+    )
+    for pid in orphans:
+        try:
+            write_planned_stop_marker(pid)
+        except Exception:
+            pass
+        try:
+            terminate_pid(pid, force=False)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+
+    deadline = time.monotonic() + 10.0
+    survivors = list(orphans)
+    while survivors and time.monotonic() < deadline:
+        survivors = [p for p in survivors if _pid_exists(p)]
+        if survivors:
+            time.sleep(0.25)
+    for pid in survivors:
+        logger.warning(
+            "Orphan gateway PID %d ignored SIGTERM, sending SIGKILL.", pid
+        )
+        try:
+            terminate_pid(pid, force=True)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    return True
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -18322,6 +18413,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
+
+    # The duplicate-instance guard above only sees the single PID tracked
+    # by gateway.pid/gateway.lock. Sweep (or, without --replace, refuse to
+    # stack on) any orphan gateway runtimes that metadata lost track of.
+    # Runs after the pid-file claim so exactly one concurrent starter
+    # performs the sweep.
+    if not _handle_duplicate_gateway_runtimes(replace):
+        remove_pid_file()
+        release_gateway_runtime_lock()
+        return False
 
     # MCP tool discovery — run in an executor so the asyncio event loop
     # stays responsive even when a configured MCP server is slow or

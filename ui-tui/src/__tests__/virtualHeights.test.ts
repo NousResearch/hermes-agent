@@ -17,6 +17,17 @@ describe('virtual height estimates', () => {
     expect(estimatedMsgHeight(msg, 35, { compact: false, details: false })).toBeGreaterThan(5)
   })
 
+  it('counts full-width (CJK) characters as 2 columns when estimating wrap rows', () => {
+    // 40 zenkaku (full-width) characters at 2 cols each = 80 columns, which
+    // needs 4 rows at width 20 — a code-unit count would (wrongly) treat
+    // this as 40 "cells" needing only 2 rows, undercounting by ~2x and
+    // under-reserving space in the virtualized transcript (clipped text /
+    // a scrollHeight short of the real rendered bottom).
+    const text = 'あ'.repeat(40)
+
+    expect(wrappedLines(text, 20)).toBe(4)
+  })
+
   it('uses compound user prompt width when estimating user message wrapping', () => {
     const msg: Msg = { role: 'user', text: 'x'.repeat(21) }
 

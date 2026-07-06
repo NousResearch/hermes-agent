@@ -3209,18 +3209,48 @@ class TelegramAdapter(BasePlatformAdapter):
                 from urllib.parse import urlparse
                 webhook_path = urlparse(webhook_url).path or "/telegram"
 
-                await self._app.updater.start_webhook(
-                    listen="0.0.0.0",
-                    port=webhook_port,
-                    url_path=webhook_path,
-                    webhook_url=webhook_url,
-                    secret_token=webhook_secret,
-                    allowed_updates=Update.ALL_TYPES,
-                    # Webhooks are push-based — Telegram does not hold a
-                    # server-side getUpdates queue, so this flag is a no-op
-                    # in practice. Mirror the polling path's reconnect
-                    # semantics for consistency.
-                    drop_pending_updates=not is_reconnect,
+                async def _cleanup_abandoned_webhook_start(app=self._app):
+                    try:
+                        updater = getattr(app, "updater", None) if app else None
+                        if updater and getattr(updater, "running", False):
+                            try:
+                                await asyncio.wait_for(
+                                    updater.stop(), timeout=_UPDATER_STOP_TIMEOUT
+                                )
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "[%s] updater.stop() timed out during webhook "
+                                    "startup cleanup; forcing app shutdown",
+                                    self.name,
+                                )
+                            except Exception as stop_error:
+                                logger.warning(
+                                    "[%s] updater.stop() failed during webhook "
+                                    "startup cleanup: %s",
+                                    self.name,
+                                    _redact_telegram_error_text(stop_error),
+                                )
+                        if app and getattr(app, "running", False):
+                            await app.stop()
+                    finally:
+                        await _shutdown_abandoned_app(app)
+
+                await _await_with_thread_deadline(
+                    self._app.updater.start_webhook(
+                        listen="0.0.0.0",
+                        port=webhook_port,
+                        url_path=webhook_path,
+                        webhook_url=webhook_url,
+                        secret_token=webhook_secret,
+                        allowed_updates=Update.ALL_TYPES,
+                        # Webhooks are push-based — Telegram does not hold a
+                        # server-side getUpdates queue, so this flag is a no-op
+                        # in practice. Mirror the polling path's reconnect
+                        # semantics for consistency.
+                        drop_pending_updates=not is_reconnect,
+                    ),
+                    timeout=_init_timeout,
+                    on_abandon=_cleanup_abandoned_webhook_start,
                 )
                 self._webhook_mode = True
                 logger.info(

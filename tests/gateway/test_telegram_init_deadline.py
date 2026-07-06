@@ -82,6 +82,99 @@ async def test_connect_retries_when_initialize_wall_deadline_expires(monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stop_failure", [None, "timeout", "error"])
+async def test_connect_bounds_webhook_start_with_wall_deadline(
+    monkeypatch, caplog, stop_failure
+):
+    """Webhook bootstrap must not wedge connect() after app.start() succeeds."""
+    lifecycle = []
+    stop_timeouts = []
+
+    async def _stop_updater():
+        lifecycle.append("updater.stop")
+        if stop_failure == "error":
+            raise RuntimeError("updater stop failed")
+
+    async def _stop_app():
+        lifecycle.append("app.stop")
+
+    async def _shutdown_app():
+        lifecycle.append("app.shutdown")
+
+    real_wait_for = tg_adapter.asyncio.wait_for
+
+    async def _recording_wait_for(awaitable, timeout):
+        stop_timeouts.append(timeout)
+        result = await real_wait_for(awaitable, timeout)
+        if stop_failure == "timeout":
+            raise tg_adapter.asyncio.TimeoutError()
+        return result
+
+    fake_updater = MagicMock()
+    fake_updater.start_webhook = AsyncMock(return_value=None)
+    fake_updater.stop = AsyncMock(side_effect=_stop_updater)
+    fake_updater.running = True
+    fake_app = MagicMock()
+    fake_app.bot = MagicMock()
+    fake_app.initialize = AsyncMock(return_value=None)
+    fake_app.start = AsyncMock(return_value=None)
+    fake_app.stop = AsyncMock(side_effect=_stop_app)
+    fake_app.shutdown = AsyncMock(side_effect=_shutdown_app)
+    fake_app.add_handler = MagicMock()
+    fake_app.running = True
+    fake_app.updater = fake_updater
+
+    chainable = MagicMock()
+    chainable.token.return_value = chainable
+    chainable.request.return_value = chainable
+    chainable.get_updates_request.return_value = chainable
+    chainable.build.return_value = fake_app
+
+    builder_root = MagicMock()
+    builder_root.builder.return_value = chainable
+    monkeypatch.setattr(tg_adapter, "Application", builder_root)
+    monkeypatch.setattr(tg_adapter, "HTTPXRequest", MagicMock)
+    monkeypatch.setattr(tg_adapter, "discover_fallback_ips", AsyncMock(return_value=[]))
+    monkeypatch.setattr(tg_adapter, "resolve_proxy_url", lambda *a, **k: None)
+    monkeypatch.setattr(tg_adapter.asyncio, "wait_for", _recording_wait_for)
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "https://example.com/telegram")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
+
+    deadline_calls = 0
+
+    async def _fake_deadline(awaitable, timeout, *, on_abandon=None):
+        nonlocal deadline_calls
+        deadline_calls += 1
+        if deadline_calls == 1:
+            return await awaitable
+        awaitable.close()
+        assert on_abandon is not None
+        await on_abandon()
+        raise tg_adapter.asyncio.TimeoutError()
+
+    monkeypatch.setattr(tg_adapter, "_await_with_thread_deadline", _fake_deadline)
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *a, **k: True)
+    monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
+    monkeypatch.setattr(adapter, "_start_post_connect_housekeeping", MagicMock())
+
+    assert await adapter.connect() is False
+
+    assert deadline_calls == 2
+    fake_app.initialize.assert_awaited_once()
+    fake_app.start.assert_awaited_once()
+    fake_updater.start_webhook.assert_called_once()
+    fake_updater.stop.assert_awaited_once()
+    fake_app.stop.assert_awaited_once()
+    fake_app.shutdown.assert_awaited_once()
+    assert stop_timeouts == [tg_adapter._UPDATER_STOP_TIMEOUT]
+    assert lifecycle == ["updater.stop", "app.stop", "app.shutdown"]
+    if stop_failure:
+        assert "webhook startup cleanup" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_await_with_thread_deadline_returns_value_on_happy_path():
     """The real helper returns the awaited result and raises no timeout."""
     async def _ok():

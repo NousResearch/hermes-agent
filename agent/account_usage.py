@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth import resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 if TYPE_CHECKING:
@@ -436,22 +436,7 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return normalized + "/api/codex/usage"
 
 
-def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
-    creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
-    headers = {
-        "Authorization": f"Bearer {creds['api_key']}",
-        "Accept": "application/json",
-        "User-Agent": "codex-cli",
-    }
-    if account_id:
-        headers["ChatGPT-Account-Id"] = account_id
-    with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+def _codex_usage_snapshot_from_payload(payload: dict) -> AccountUsageSnapshot:
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
     for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
@@ -481,6 +466,42 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
         plan=_title_case_slug(payload.get("plan_type")),
         windows=tuple(windows),
         details=tuple(details),
+    )
+
+
+def fetch_codex_usage_for_token(
+    access_token: str,
+    base_url: Optional[str],
+    *,
+    timeout: float = 15.0,
+) -> Optional[AccountUsageSnapshot]:
+    """Fetch Codex account-usage telemetry for a bearer token.
+
+    This read-only helper intentionally does not resolve or refresh credentials
+    and does not pass ``ChatGPT-Account-Id``.  The usage endpoint keys the
+    response off the bearer token; callers that use pooled credentials can ask
+    for per-entry telemetry without mutating auth.json.
+    """
+    token = str(access_token or "").strip()
+    if not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+    }
+    with httpx.Client(timeout=timeout) as client:
+        response = client.get(_resolve_codex_usage_url(base_url or ""), headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    return _codex_usage_snapshot_from_payload(payload)
+
+
+def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
+    creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+    return fetch_codex_usage_for_token(
+        str(creds.get("api_key", "") or ""),
+        creds.get("base_url", ""),
     )
 
 

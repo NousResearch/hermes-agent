@@ -159,7 +159,7 @@ class TestPoolRotationCycle:
         # mark_exhausted_and_rotate returns next entry until exhausted
         self._rotation_index = 0
 
-        def rotate(status_code=None, error_context=None):
+        def rotate(status_code=None, error_context=None, api_key_hint=None):
             self._rotation_index += 1
             if self._rotation_index < pool_entries:
                 return entries[self._rotation_index]
@@ -191,7 +191,9 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False  # reset after rotation
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None)
+        pool.mark_exhausted_and_rotate.assert_called_once_with(
+            status_code=429, error_context=None, api_key_hint=None
+        )
         agent._swap_credential.assert_called_once_with(entries[1])
 
     def test_pool_exhaustion_returns_false(self):
@@ -217,7 +219,9 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None)
+        pool.mark_exhausted_and_rotate.assert_called_once_with(
+            status_code=402, error_context=None, api_key_hint=None
+        )
 
     def test_no_pool_returns_false(self):
         """No pool should return (False, unchanged)."""
@@ -232,3 +236,97 @@ class TestPoolRotationCycle:
         )
         assert recovered is False
         assert has_retried is False
+
+
+def test_quota_aware_codex_selects_healthy_then_429_rotates(tmp_path, monkeypatch):
+    """Quota-aware selection still preserves existing exhausted+rotate recovery."""
+    import json
+    from datetime import datetime, timezone
+
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_env",
+        lambda provider, entries: (False, set()),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_access_token_is_expiring",
+        lambda *_args, **_kwargs: False,
+    )
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "credential_pool": {
+                    "openai-codex": [
+                        {
+                            "id": "low",
+                            "label": "low",
+                            "auth_type": "oauth",
+                            "priority": 0,
+                            "source": "manual:device_code",
+                            "access_token": "tok-low",
+                            "base_url": "https://chatgpt.com/backend-api/codex",
+                        },
+                        {
+                            "id": "healthy",
+                            "label": "healthy",
+                            "auth_type": "oauth",
+                            "priority": 1,
+                            "source": "manual:device_code",
+                            "access_token": "tok-healthy",
+                            "base_url": "https://chatgpt.com/backend-api/codex",
+                        },
+                    ]
+                },
+            }
+        )
+    )
+    (hermes_home / "config.yaml").write_text(
+        "credential_pool_strategies:\n  openai-codex: quota_aware\n"
+    )
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    cp._CODEX_QUOTA_CACHE.clear()
+
+    def snapshot(used):
+        return AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime.now(timezone.utc),
+            windows=(
+                AccountUsageWindow(label="Session", used_percent=used, reset_at=None),
+                AccountUsageWindow(label="Weekly", used_percent=used, reset_at=None),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_codex_usage_for_token",
+        lambda token, _base_url, *, timeout: {
+            "tok-low": snapshot(92),
+            "tok-healthy": snapshot(25),
+        }[token],
+    )
+
+    pool = load_pool("openai-codex")
+    first = pool.select()
+    assert first is not None
+    assert first.id == "healthy"
+
+    rotated = pool.mark_exhausted_and_rotate(status_code=429)
+    assert rotated is not None
+    assert rotated.id == "low"
+
+    persisted = json.loads((hermes_home / "auth.json").read_text())
+    by_id = {entry["id"]: entry for entry in persisted["credential_pool"]["openai-codex"]}
+    assert by_id["healthy"]["last_status"] == "exhausted"
+    assert by_id["healthy"]["last_error_code"] == 429

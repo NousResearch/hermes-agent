@@ -23,7 +23,7 @@ Credential pools are mainly for API-key providers (OpenRouter, Anthropic). A sin
 
 ```
 Your request
-  → Pick key from pool (round_robin / least_used / fill_first / random)
+  → Pick key from pool (round_robin / least_used / fill_first / random / quota_aware)
   → Send to provider
   → 429 rate limit?
       → Plan/usage limit reached (e.g. ChatGPT/Codex "usage limit reached")?
@@ -125,6 +125,7 @@ Configure via `hermes auth` → "Set rotation strategy" or in `config.yaml`:
 credential_pool_strategies:
   openrouter: round_robin
   anthropic: least_used
+  openai-codex: quota_aware
 ```
 
 | Strategy | Behavior |
@@ -133,6 +134,14 @@ credential_pool_strategies:
 | `round_robin` | Cycle through keys evenly, rotating after each selection |
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |
+| `quota_aware` | Codex-specific: uses Codex session/weekly usage telemetry with sticky low-watermark routing. Hermes keeps the current `openai-codex` OAuth credential while remaining quota is at or above `avoid_below_fraction` (default `0.20`), then switches to the valid credential with the most remaining quota above that same threshold. Ties go to lower `request_count`, then priority/id. If all known credentials are below `avoid_below_fraction`, Hermes picks the highest remaining quota instead of failing; if telemetry is unavailable, it falls back to `least_used`. |
+
+Optional low-watermark threshold:
+
+```yaml
+credential_pool_quota_aware:
+  avoid_below_fraction: 0.20   # keep current credential until it drops below this; avoid switching to candidates below it unless all are low
+```
 
 ## Error Recovery
 

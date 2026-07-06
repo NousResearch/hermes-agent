@@ -562,6 +562,56 @@ def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
     assert persisted["last_error_code"] == 429
 
 
+def test_mark_exhausted_and_rotate_api_key_hint_parks_failed_key_not_next_entry(tmp_path, monkeypatch):
+    """api_key_hint prevents false sibling exhaustion when no current entry is set."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "failed",
+                        "label": "failed",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "failed-token",
+                    },
+                    {
+                        "id": "healthy",
+                        "label": "healthy",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "healthy-token",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    pool = load_pool("openai-codex")
+    assert pool.current() is None
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"reason": "usage_limit_reached"},
+        api_key_hint="failed-token",
+    )
+
+    assert next_entry is not None
+    assert next_entry.id == "healthy"
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    by_id = {entry["id"]: entry for entry in auth_payload["credential_pool"]["openai-codex"]}
+    assert by_id["failed"]["last_status"] == STATUS_EXHAUSTED
+    assert by_id["failed"]["last_error_code"] == 429
+    assert by_id["healthy"].get("last_status") in (None, "ok")
+
+
 def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monkeypatch):
     """A 401 with no specific code/reason should keep TTL semantics.
 
@@ -3282,3 +3332,662 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     assert synced.last_error_reason is None
     assert synced.last_error_message is None
     assert synced.last_error_reset_at is None
+
+
+def _codex_usage_snapshot(used_values):
+    from datetime import datetime, timezone
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+    return AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=tuple(
+            AccountUsageWindow(label=label, used_percent=used, reset_at=None)
+            for label, used in used_values
+        ),
+    )
+
+
+def _write_quota_aware_pool(tmp_path, monkeypatch, *, provider="openai-codex", entries=None):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_env",
+        lambda provider, entries: (False, set()),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_access_token_is_expiring",
+        lambda *_args, **_kwargs: False,
+    )
+    default_entries = [
+        {
+            "id": "low",
+            "label": "low",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "tok-low",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "request_count": 0,
+        },
+        {
+            "id": "healthy",
+            "label": "healthy",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-healthy",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "request_count": 0,
+        },
+    ]
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {provider: entries or default_entries},
+        },
+    )
+    (tmp_path / "hermes" / "config.yaml").write_text(
+        f"credential_pool_strategies:\n  {provider}: quota_aware\n"
+    )
+
+
+def test_quota_aware_strategy_routes_around_recently_exhausted_codex_entry(tmp_path, monkeypatch):
+    """A falsely parked Codex sibling is skipped if any credential remains healthy."""
+    _write_quota_aware_pool(
+        tmp_path,
+        monkeypatch,
+        entries=[
+            {
+                "id": "falsely-parked",
+                "label": "falsely-parked",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:device_code",
+                "access_token": "tok-parked",
+                "last_status": "exhausted",
+                "last_status_at": time.time(),
+                "last_error_code": 429,
+            },
+            {
+                "id": "healthy",
+                "label": "healthy",
+                "auth_type": "oauth",
+                "priority": 1,
+                "source": "manual:device_code",
+                "access_token": "tok-healthy",
+            },
+        ],
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "healthy"
+
+
+def test_quota_aware_strategy_selects_higher_remaining_codex_entry(tmp_path, monkeypatch):
+    _write_quota_aware_pool(tmp_path, monkeypatch)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    cp._CODEX_QUOTA_CACHE.clear()
+    snapshots = {
+        "tok-low": _codex_usage_snapshot((("Session", 80), ("Weekly", 60))),
+        "tok-healthy": _codex_usage_snapshot((("Session", 30), ("Weekly", 40))),
+    }
+    seen_tokens = []
+
+    def fake_fetch(token, base_url, *, timeout):
+        seen_tokens.append(token)
+        assert timeout == cp.CODEX_QUOTA_USAGE_TIMEOUT_SECONDS
+        return snapshots[token]
+
+    monkeypatch.setattr("agent.account_usage.fetch_codex_usage_for_token", fake_fetch)
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "healthy"
+    assert selected.request_count == 1
+    assert seen_tokens == ["tok-low", "tok-healthy"]
+
+
+def test_quota_aware_sticks_with_current_above_avoid_threshold(tmp_path, monkeypatch):
+    entries = [
+        {
+            "id": "current",
+            "label": "current",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "tok-current",
+            "request_count": 0,
+        },
+        {
+            "id": "healthier",
+            "label": "healthier",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-healthier",
+            "request_count": 0,
+        },
+    ]
+    _write_quota_aware_pool(tmp_path, monkeypatch, entries=entries)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    snapshots = {
+        "tok-current": _codex_usage_snapshot((("Session", 20),)),
+        "tok-healthier": _codex_usage_snapshot((("Session", 40),)),
+    }
+    cp._CODEX_QUOTA_CACHE.clear()
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_codex_usage_for_token",
+        lambda token, _base_url, *, timeout: snapshots[token],
+    )
+
+    pool = load_pool("openai-codex")
+    first = pool.select()
+    assert first is not None and first.id == "current"
+
+    snapshots.update(
+        {
+            "tok-current": _codex_usage_snapshot((("Session", 45),)),  # 55% left
+            "tok-healthier": _codex_usage_snapshot((("Session", 5),)),  # 95% left
+        }
+    )
+    cp._CODEX_QUOTA_CACHE.clear()
+    second = pool.select()
+
+    assert second is not None
+    assert second.id == "current"
+
+
+def test_quota_aware_sticks_in_working_band_without_ping_pong(tmp_path, monkeypatch):
+    entries = [
+        {
+            "id": "a",
+            "label": "a",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "tok-a",
+            "request_count": 0,
+        },
+        {
+            "id": "b",
+            "label": "b",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-b",
+            "request_count": 0,
+        },
+    ]
+    _write_quota_aware_pool(tmp_path, monkeypatch, entries=entries)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    snapshots = {
+        "tok-a": _codex_usage_snapshot((("Session", 55),)),  # 45% remaining
+        "tok-b": _codex_usage_snapshot((("Session", 56),)),  # 44% remaining
+    }
+    cp._CODEX_QUOTA_CACHE.clear()
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_codex_usage_for_token",
+        lambda token, _base_url, *, timeout: snapshots[token],
+    )
+
+    pool = load_pool("openai-codex")
+    selected_ids = []
+    for _ in range(8):
+        selected = pool.select()
+        assert selected is not None
+        selected_ids.append(selected.id)
+
+    assert selected_ids == ["a"] * 8
+
+
+def test_quota_aware_switches_current_below_avoid_threshold(tmp_path, monkeypatch):
+    entries = [
+        {
+            "id": "current",
+            "label": "current",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "tok-current",
+        },
+        {
+            "id": "candidate",
+            "label": "candidate",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-candidate",
+        },
+    ]
+    _write_quota_aware_pool(tmp_path, monkeypatch, entries=entries)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    snapshots = {
+        "tok-current": _codex_usage_snapshot((("Session", 20),)),
+        "tok-candidate": _codex_usage_snapshot((("Session", 30),)),
+    }
+    cp._CODEX_QUOTA_CACHE.clear()
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_codex_usage_for_token",
+        lambda token, _base_url, *, timeout: snapshots[token],
+    )
+
+    pool = load_pool("openai-codex")
+    first = pool.select()
+    assert first is not None and first.id == "current"
+
+    snapshots.update(
+        {
+            "tok-current": _codex_usage_snapshot((("Session", 85),)),  # 15% left
+            "tok-candidate": _codex_usage_snapshot((("Session", 30),)),
+        }
+    )
+    cp._CODEX_QUOTA_CACHE.clear()
+    second = pool.select()
+
+    assert second is not None
+    assert second.id == "candidate"
+
+
+def test_quota_aware_switch_avoids_candidates_below_avoid_threshold(tmp_path, monkeypatch):
+    entries = [
+        {
+            "id": "current",
+            "label": "current",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "tok-current",
+        },
+        {
+            "id": "too-low",
+            "label": "too-low",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-too-low",
+        },
+        {
+            "id": "acceptable",
+            "label": "acceptable",
+            "auth_type": "oauth",
+            "priority": 2,
+            "source": "manual:device_code",
+            "access_token": "tok-acceptable",
+        },
+    ]
+    _write_quota_aware_pool(tmp_path, monkeypatch, entries=entries)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    snapshots = {
+        "tok-current": _codex_usage_snapshot((("Session", 85),)),  # 15% left, switch away
+        "tok-too-low": _codex_usage_snapshot((("Session", 90),)),  # 10% left, avoid
+        "tok-acceptable": _codex_usage_snapshot((("Session", 75),)),  # 25% left
+    }
+    cp._CODEX_QUOTA_CACHE.clear()
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_codex_usage_for_token",
+        lambda token, _base_url, *, timeout: snapshots[token],
+    )
+
+    pool = load_pool("openai-codex")
+    pool._current_id = "current"
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "acceptable"
+
+
+def test_quota_aware_all_low_falls_back_to_highest_remaining(tmp_path, monkeypatch):
+    entries = [
+        {
+            "id": "lowest",
+            "label": "lowest",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "tok-lowest",
+        },
+        {
+            "id": "highest-low",
+            "label": "highest-low",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-highest-low",
+        },
+    ]
+    _write_quota_aware_pool(tmp_path, monkeypatch, entries=entries)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    snapshots = {
+        "tok-lowest": _codex_usage_snapshot((("Session", 95),)),  # 5% left
+        "tok-highest-low": _codex_usage_snapshot((("Session", 85),)),  # 15% left
+    }
+    cp._CODEX_QUOTA_CACHE.clear()
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_codex_usage_for_token",
+        lambda token, _base_url, *, timeout: snapshots[token],
+    )
+
+    selected = load_pool("openai-codex").select()
+
+    assert selected is not None
+    assert selected.id == "highest-low"
+
+
+def test_quota_aware_ties_break_by_request_count_priority_then_id(tmp_path, monkeypatch):
+    entries = [
+        {
+            "id": "z-id",
+            "label": "z-id",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-z",
+            "request_count": 3,
+        },
+        {
+            "id": "a-id",
+            "label": "a-id",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-a",
+            "request_count": 3,
+        },
+        {
+            "id": "lower-request-count",
+            "label": "lower-request-count",
+            "auth_type": "oauth",
+            "priority": 2,
+            "source": "manual:device_code",
+            "access_token": "tok-low-count",
+            "request_count": 2,
+        },
+    ]
+    _write_quota_aware_pool(tmp_path, monkeypatch, entries=entries)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    snapshots = {
+        "tok-z": _codex_usage_snapshot((("Session", 30),)),
+        "tok-a": _codex_usage_snapshot((("Session", 30),)),
+        "tok-low-count": _codex_usage_snapshot((("Session", 30),)),
+    }
+    cp._CODEX_QUOTA_CACHE.clear()
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_codex_usage_for_token",
+        lambda token, _base_url, *, timeout: snapshots[token],
+    )
+
+    selected = load_pool("openai-codex").select()
+
+    assert selected is not None
+    assert selected.id == "lower-request-count"
+
+
+def test_quota_aware_strategy_avoids_near_threshold_entry(tmp_path, monkeypatch):
+    _write_quota_aware_pool(tmp_path, monkeypatch)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    cp._CODEX_QUOTA_CACHE.clear()
+    snapshots = {
+        "tok-low": _codex_usage_snapshot((("Session", 85), ("Weekly", 95))),
+        "tok-healthy": _codex_usage_snapshot((("Session", 40), ("Weekly", 50))),
+    }
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_codex_usage_for_token",
+        lambda token, _base_url, *, timeout: snapshots[token],
+    )
+
+    selected = load_pool("openai-codex").select()
+
+    assert selected is not None
+    assert selected.id == "healthy"
+
+
+def test_quota_aware_unknown_telemetry_falls_back_to_least_used(tmp_path, monkeypatch):
+    entries = [
+        {
+            "id": "heavy",
+            "label": "heavy",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "tok-heavy",
+            "request_count": 50,
+        },
+        {
+            "id": "light",
+            "label": "light",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-light",
+            "request_count": 3,
+        },
+    ]
+    _write_quota_aware_pool(tmp_path, monkeypatch, entries=entries)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    cp._CODEX_QUOTA_CACHE.clear()
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_codex_usage_for_token",
+        lambda *_args, **_kwargs: None,
+    )
+
+    selected = load_pool("openai-codex").select()
+
+    assert selected is not None
+    assert selected.id == "light"
+    assert selected.request_count == 4
+
+
+def test_quota_aware_excludes_exhausted_and_dead_entries_before_scoring(tmp_path, monkeypatch):
+    now = time.time()
+    entries = [
+        {
+            "id": "exhausted",
+            "label": "exhausted",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "tok-exhausted",
+            "last_status": "exhausted",
+            "last_status_at": now,
+            "last_error_code": 429,
+            "last_error_reset_at": now + 3600,
+        },
+        {
+            "id": "dead",
+            "label": "dead",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-dead",
+            "last_status": "dead",
+            "last_status_at": now,
+            "last_error_code": 401,
+        },
+        {
+            "id": "healthy",
+            "label": "healthy",
+            "auth_type": "oauth",
+            "priority": 2,
+            "source": "manual:device_code",
+            "access_token": "tok-healthy",
+        },
+        {
+            "id": "other",
+            "label": "other",
+            "auth_type": "oauth",
+            "priority": 3,
+            "source": "manual:device_code",
+            "access_token": "tok-other",
+        },
+    ]
+    _write_quota_aware_pool(tmp_path, monkeypatch, entries=entries)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    cp._CODEX_QUOTA_CACHE.clear()
+    called = []
+
+    def fake_fetch(token, _base_url, *, timeout):
+        called.append(token)
+        return _codex_usage_snapshot((("Session", 10), ("Weekly", 10)))
+
+    monkeypatch.setattr("agent.account_usage.fetch_codex_usage_for_token", fake_fetch)
+
+    selected = load_pool("openai-codex").select()
+
+    assert selected is not None
+    assert selected.id == "healthy"
+    assert called == ["tok-healthy", "tok-other"]
+
+
+def test_quota_aware_non_codex_provider_degrades_to_least_used(tmp_path, monkeypatch):
+    entries = [
+        {
+            "id": "heavy",
+            "label": "heavy",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "manual",
+            "access_token": "sk-heavy",
+            "request_count": 12,
+        },
+        {
+            "id": "light",
+            "label": "light",
+            "auth_type": "api_key",
+            "priority": 1,
+            "source": "manual",
+            "access_token": "sk-light",
+            "request_count": 1,
+        },
+    ]
+    _write_quota_aware_pool(tmp_path, monkeypatch, provider="openrouter", entries=entries)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    cp._CODEX_QUOTA_CACHE.clear()
+    selected = load_pool("openrouter").select()
+
+    assert selected is not None
+    assert selected.id == "light"
+    assert selected.request_count == 2
+
+
+def test_quota_aware_cache_key_uses_fingerprint_not_raw_token(tmp_path, monkeypatch):
+    secret_token = "tok-secret-never-cache"
+    entries = [
+        {
+            "id": "only",
+            "label": "only",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": secret_token,
+            "request_count": 0,
+        },
+        {
+            "id": "other",
+            "label": "other",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-other",
+            "request_count": 1,
+        },
+    ]
+    _write_quota_aware_pool(tmp_path, monkeypatch, entries=entries)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    cp._CODEX_QUOTA_CACHE.clear()
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_codex_usage_for_token",
+        lambda token, _base_url, *, timeout: _codex_usage_snapshot((("Session", 10),)),
+    )
+
+    pool = load_pool("openai-codex")
+    pool.select()
+
+    cache_dump = repr(cp._CODEX_QUOTA_CACHE)
+    assert secret_token not in cache_dump
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert secret_token in json.dumps(persisted)  # credential itself is unchanged
+    assert "usage_api" not in json.dumps(persisted)
+
+
+def test_quota_aware_is_supported_pool_strategy():
+    from agent.credential_pool import STRATEGY_QUOTA_AWARE, SUPPORTED_POOL_STRATEGIES
+
+    assert STRATEGY_QUOTA_AWARE == "quota_aware"
+    assert STRATEGY_QUOTA_AWARE in SUPPORTED_POOL_STRATEGIES
+
+
+def test_quota_aware_uses_ttl_cache_for_repeated_selects(tmp_path, monkeypatch):
+    _write_quota_aware_pool(tmp_path, monkeypatch)
+
+    from agent import credential_pool as cp
+    from agent.credential_pool import load_pool
+
+    cp._CODEX_QUOTA_CACHE.clear()
+    calls = []
+    snapshots = {
+        "tok-low": _codex_usage_snapshot((("Session", 70), ("Weekly", 70))),
+        "tok-healthy": _codex_usage_snapshot((("Session", 20), ("Weekly", 20))),
+    }
+
+    def fake_fetch(token, _base_url, *, timeout):
+        calls.append(token)
+        return snapshots[token]
+
+    monkeypatch.setattr("agent.account_usage.fetch_codex_usage_for_token", fake_fetch)
+
+    pool = load_pool("openai-codex")
+    first = pool.select()
+    second = pool.select()
+
+    assert first is not None and first.id == "healthy"
+    assert second is not None and second.id == "healthy"
+    assert calls == ["tok-low", "tok-healthy"]

@@ -908,6 +908,9 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "credential_pool_quota_aware": {
+        "avoid_below_fraction": 0.20,
+    },
     "toolsets": ["hermes-cli"],
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.

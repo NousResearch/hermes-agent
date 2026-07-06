@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.session_context import clear_session_vars, set_session_vars
+from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tools.register_artifact_tool import _handle_register_artifact
 
 
@@ -26,8 +26,13 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("TERMINAL_CWD", str(ws))
     monkeypatch.delenv("HERMES_PRODUCT_RUN_ID", raising=False)
     yield ws
-    # Reset any contextvar bound during a test so state never leaks.
-    clear_session_vars([])
+    # Restore the _UNSET sentinel so state never leaks into later tests.
+    # NOT clear_session_vars([]): that pins every var to "" ("explicitly
+    # cleared"), which suppresses the os.environ fallback in get_session_env
+    # for the REST OF THE PYTEST PROCESS — breaking any later test in this
+    # process that binds session env via monkeypatch.setenv (e.g.
+    # tests/karinai/test_image_gateway_provider.py).
+    reset_session_vars()
 
 
 def _call(path=None, name=None, description=None):
@@ -215,5 +220,10 @@ def test_session_context_product_run_id_roundtrip(monkeypatch: pytest.MonkeyPatc
         assert get_session_env("HERMES_PRODUCT_RUN_ID") == "run_zzz"
     finally:
         clear_session_vars(tokens)
-    # Cleared context returns "" (no os.environ fallback), per the documented contract.
-    assert get_session_env("HERMES_PRODUCT_RUN_ID") == ""
+    try:
+        # Cleared context returns "" (no os.environ fallback), per the documented contract.
+        assert get_session_env("HERMES_PRODUCT_RUN_ID") == ""
+    finally:
+        # This test doesn't use the workspace fixture, so restore _UNSET itself
+        # rather than leaving the vars pinned to "" for later tests.
+        reset_session_vars()

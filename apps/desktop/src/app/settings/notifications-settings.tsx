@@ -9,7 +9,11 @@ import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/complet
 import { triggerHaptic } from '@/lib/haptics'
 import { Bell, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
+import {
+  $completionSoundVariantId,
+  OFF_COMPLETION_SOUND_VARIANT_ID,
+  setCompletionSoundVariantId
+} from '@/store/completion-sound'
 import {
   $nativeNotifyPrefs,
   NATIVE_NOTIFICATION_KINDS,
@@ -101,7 +105,9 @@ export function NotificationsSettings() {
                 const variantId = Number.parseInt(value, 10)
 
                 setCompletionSoundVariantId(variantId)
-                previewCompletionSound(variantId)
+                if (variantId !== OFF_COMPLETION_SOUND_VARIANT_ID) {
+                  previewCompletionSound(variantId)
+                }
                 triggerHaptic('selection')
               }}
               value={String(completionSoundVariantId)}
@@ -111,6 +117,7 @@ export function NotificationsSettings() {
               </SelectTrigger>
 
               <SelectContent>
+                <SelectItem value={String(OFF_COMPLETION_SOUND_VARIANT_ID)}>{copy.completionSoundOff}</SelectItem>
                 {COMPLETION_SOUND_VARIANTS.map(variant => (
                   <SelectItem key={variant.id} value={String(variant.id)}>
                     {variant.name}
@@ -121,6 +128,7 @@ export function NotificationsSettings() {
 
             <Button
               className="gap-1.5"
+              disabled={completionSoundVariantId === OFF_COMPLETION_SOUND_VARIANT_ID}
               onClick={() => {
                 previewCompletionSound()
                 triggerHaptic('crisp')

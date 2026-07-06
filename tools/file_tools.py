@@ -1691,10 +1691,19 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
+
+            # Block write on strict staleness (partial read, sibling write, external mod)
+            # These conditions indicate the write would overwrite unknown content.
+            if cross_warning:
+                return tool_error(
+                    f"{cross_warning} Write blocked to prevent silent data loss. "
+                    "Re-read the file and retry."
+                )
+
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
-            effective_warning = cross_warning or stale_warning or cwd_warning
+            effective_warning = stale_warning or cwd_warning
             if effective_warning:
                 result_dict["_warning"] = effective_warning
             # Always report the ABSOLUTE path actually written, so a wrong-cwd
@@ -1807,7 +1816,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
             # Collect warnings — cross-agent registry first (names sibling),
             # then per-task tracker as a fallback.
-            stale_warnings: list[str] = []
+            strict_warnings: list[str] = []  # From check_stale(): partial read, sibling write, external mod
+            soft_warnings: list[str] = []    # From _check_file_staleness() and _path_resolution_warning()
             _path_to_resolved: dict[str, str] = {}
             for _p in _paths_to_check:
                 try:
@@ -1816,13 +1826,24 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     _r = None
                 _path_to_resolved[_p] = _r
                 _cross = file_state.check_stale(task_id, _r) if _r else None
-                _sw = _cross or _check_file_staleness(_p, task_id)
-                if not _sw and _r:
-                    # Workspace-divergence warning (worktree-cwd bug): relative
-                    # path resolving outside the terminal's cwd.
-                    _sw = _path_resolution_warning(_p, Path(_r), task_id)
-                if _sw:
-                    stale_warnings.append(_sw)
+                if _cross:
+                    strict_warnings.append(_cross)
+                else:
+                    _sw = _check_file_staleness(_p, task_id)
+                    if not _sw and _r:
+                        # Workspace-divergence warning (worktree-cwd bug): relative
+                        # path resolving outside the terminal's cwd.
+                        _sw = _path_resolution_warning(_p, Path(_r), task_id)
+                    if _sw:
+                        soft_warnings.append(_sw)
+
+            # Block patch on strict staleness (partial read, sibling write, external mod)
+            if strict_warnings:
+                msg = strict_warnings[0] if len(strict_warnings) == 1 else " | ".join(strict_warnings)
+                return tool_error(
+                    f"{msg} Write blocked to prevent silent data loss. "
+                    "Re-read the file and retry."
+                )
 
             file_ops = _get_file_ops(task_id)
 
@@ -1846,8 +1867,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return tool_error(f"Unknown mode: {mode}")
 
             result_dict = result.to_dict()
-            if stale_warnings:
-                result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
+            if soft_warnings:
+                result_dict["_warning"] = soft_warnings[0] if len(soft_warnings) == 1 else " | ".join(soft_warnings)
             # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
             # mismatch (e.g. a worktree session editing the main checkout) is
             # visible in the response instead of silently landing elsewhere.

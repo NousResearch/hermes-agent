@@ -926,6 +926,14 @@ _COMMAND_WRAPPER_WORDS = {
     "time",
     "command",
     "builtin",
+    # Scheduling / buffering wrappers added in #58642 so the hardline floor
+    # sees the destructive verb behind them. The tokenizer already listed
+    # ``command`` / ``builtin`` here; this widens it to the rest of the
+    # ordinary exec-wrapping family too.
+    "nice",
+    "ionice",
+    "stdbuf",
+    "timeout",
 }
 _SUDO_OPTIONS_WITH_ARG = {
     "-c", "--close-from",
@@ -934,6 +942,272 @@ _SUDO_OPTIONS_WITH_ARG = {
     "-p", "--prompt",
     "-u", "--user",
 }
+
+# ---------------------------------------------------------------------------
+# Wrapper unwrapping for hardline command detection (GH #58642)
+# ---------------------------------------------------------------------------
+# ``_CMDPOS`` consumes only ``sudo`` / ``env`` / ``exec`` / ``nohup`` /
+# ``setsid`` / ``time`` as leading wrappers and does not accept a path segment
+# before the binary. That left a hardline bypass open behind ``nice``,
+# ``command``, ``builtin``, ``ionice``, ``stdbuf``, ``timeout``, and the
+# binary path (``/bin/reboot``, ``./reboot``, ``../sbin/halt``). The shutdown
+# / reboot / init / systemctl / telinit rules and the rm-root rules both
+# anchor on ``_CMDPOS``, so without widening the anchor all of those wrap
+# spellings slipped past the floor:
+#
+#   * shutdown/reboot/halt family -> no DANGEROUS_PATTERNS backstop, so
+#     ``nice reboot`` / ``/bin/reboot`` got ``approved=True`` in every mode
+#     (no prompt at all -- yolo, mode=off, cron approve, default).
+#   * rm -rf / form -> DANGEROUS_PATTERNS catches it for default/manual
+#     modes, but yolo / mode=off / cron approve skip the dangerous layer
+#     by design and only the hardline floor remains. ``command rm -rf /``
+#     and ``timeout 5 rm -rf /`` defeat it -- irreversible root wipe under
+#     the floor-anchored approval modes.
+#
+# The cleanest fix is a one-pass recursive unwrapper: peel off an
+# exec-wrapper with its flags and optional positional arg, then recurse on
+# what's left until we reach a verb at command position (or hit a token
+# that isn't a wrapper). The unwrapped form is yielded as an additional
+# detection variant by ``_command_detection_variants``, so the existing
+# anchored patterns reuse verbatim -- one change closes both families.
+#
+# Each entry is a regex fragment matching the wrapper NAME plus its flag
+# block and any positional arg it requires, leaving the rest of the command
+# (the inner command + args) for the next pass. Constructed below as
+# ``WRAPPER_PATTERNS`` rather than inlined into one giant regex so that
+# (a) each wrapper's flag grammar can live close to its docs and (b) the
+# recursion can match one layer at a time without ambiguity.
+#
+# Why a recursive function instead of a giant nested regex: the optional
+# flag lists per wrapper are deeply overlapping (``nice -n 5``,
+# ``timeout --preserve-status 10``) and a single-pass regex with all
+# wrappers in one alternation can greedily consume the inner command's
+# flags too (e.g. absorbing ``-rf`` from a wrapped ``rm`` because ``r`` is
+# a short-flag character). Peeling one wrapper at a time keeps each
+# ``\s+`` boundary anchored to a real wrapper keyword.
+_SUDO_FLAG_RE = r'(?:\s+-\S+)*'               # ``sudo`` accepts any short/long flags
+# ``nice``: ``[-n adjustment] [-adjustment]`` then the command.
+_NICE_FLAG_RE = r'(?:\s+-(?:n|--adjustment(?:=\S+)?)(?:\s+\S+)?)*'
+# ``ionice``: ``-c CLASS`` (-c 3 or -c idle/best-effort/rt), ``-n LEVEL`` (0-7),
+# ``-p PID`` (targets existing pid, no command), ``-t``. Without ``-p`` the
+# next positional argument is the command.
+_IONICE_FLAG_RE = r'(?:\s+-(?:c|n|t)\s*\S*)*'
+# ``stdbuf``: ``-i MODE``, ``-o MODE``, ``-e MODE``. MODE values are short
+# letters (L, N, U defaults) -- no inline args. Match flags with optional
+# glued values.
+_STDBUF_FLAG_RE = r'(?:\s+-(?:i|o|e)\s*\S*)*'
+# ``timeout`` long flags that take a value (--signal/--kill-after). When
+# glued (``--signal=SIG``) the value follows the ``=`` in the same token;
+# as a separate token we need to consume exactly one extra token here.
+_TIMEOUT_LONG_FLAGS_WITH_ARG = {
+    "--signal", "--kill-after",
+}
+
+
+def _unwrap_one_wrapper(command: str) -> str | None:
+    """If ``command`` starts with a recognized wrapper, return the unwrapped
+    inner command (everything after the wrapper + its flags + positional arg
+    + trailing whitespace). Otherwise return ``None``.
+
+    Used recursively by ``_unwrap_command_wrappers`` so nested wrappers
+    (``nice command rm -rf /tmp/x``, ``/bin/nice -n 5 /bin/rm -rf /tmp/x``)
+    are peeled all the way down to the destructive verb.
+
+    Notes on the prefix path segment: a real binary path (``/bin/reboot``,
+    ``./reboot``, ``../sbin/halt``) can appear in front of the wrapper OR
+    in front of the wrapped binary itself (``nice /bin/reboot``). The same
+    lstrip-prefix stripping applies at every recursion layer.
+    """
+    if not command:
+        return None
+    s = command.lstrip()
+    # Optional relative or absolute path prefix for the wrapper itself.
+    # Limit to a single well-formed segment so we don't accidentally eat
+    # arbitrary prose after the wrapper tokens.
+    rel_prefix_only_re = re.compile(r'^(?:[/\.][^\s/]+)+[/\.]?')
+    prefix_match = rel_prefix_only_re.match(s)
+    prefix_end = prefix_match.end() if prefix_match else 0
+    head = s[prefix_end:]
+    lower = head.lower()
+    if lower.startswith("sudo ") or lower == "sudo":
+        body = re.match(r'sudo\b(?:\s+-\S+)*\s*', head, re.IGNORECASE)
+        if body and body.end() < len(head):
+            return s[prefix_end + body.end():].lstrip()
+    if lower.startswith("env "):
+        # Distinguish ``env VAR=val cmd`` (handled by the existing
+        # ``_CMDPOS`` branch) from bare ``env [-opts] cmd``. If the next
+        # token after ``env`` + flags is a VAR=VAL assignment, leave the
+        # string alone so the older branch can take it.
+        env_match = re.match(r'env\b(?:\s+-\S+)*\s+', head, re.IGNORECASE)
+        if env_match and env_match.end() < len(head):
+            tail = head[env_match.end():]
+            head_tokens = tail.split(None, 1)
+            first_token = head_tokens[0] if head_tokens else ""
+            if not _ENV_ASSIGNMENT_RE.fullmatch(first_token):
+                return s[prefix_end + env_match.end():].lstrip()
+            # Else: ``env VAR=val ...`` -- the existing _CMDPOS branch in
+            # _CMDPOS already handles ``(?:env\s+(?:\w+=\S*\s+)*)?``, so
+            # the patterns will fire on the original string. Return None to
+            # preserve that.
+    if lower.startswith("nice") and (len(lower) == 4 or not lower[4].isalnum()):
+        # ``nice [-n N|--adjustment=N] [--] COMMAND``. Match the name, an
+        # optional ``--`` separator, and any number of ``-n N`` /
+        # ``--adjustment N`` pairs (with glued ``=`` values also OK).
+        body = re.match(
+            r'nice\b'                                  # word boundary so we don't match ``nicepath``
+            r'(?:\s+--)?'
+            + _NICE_FLAG_RE
+            + r'\s*',
+            head,
+            re.IGNORECASE,
+        )
+        if body and body.end() < len(head):
+            return s[prefix_end + body.end():].lstrip()
+    if lower.startswith("ionice") and (len(lower) == 6 or not lower[6].isalnum()):
+        body = re.match(r'ionice\b' + _IONICE_FLAG_RE + r'\s*', head, re.IGNORECASE)
+        if body and body.end() < len(head):
+            return s[prefix_end + body.end():].lstrip()
+    if lower.startswith("stdbuf") and (len(lower) == 6 or not lower[6].isalnum()):
+        body = re.match(r'stdbuf\b' + _STDBUF_FLAG_RE + r'\s*', head, re.IGNORECASE)
+        if body and body.end() < len(head):
+            return s[prefix_end + body.end():].lstrip()
+    if lower.startswith("timeout") and (len(lower) == 7 or not lower[7].isalnum()):
+        # ``timeout [OPT]... DURATION COMMAND``. Consume optional flag tokens
+        # (some take a separate value), then exactly one duration token,
+        # then return what's left.
+        body = re.match(r'timeout\b\s*', head, re.IGNORECASE)
+        if not body:
+            return None
+        consumed_after_name = body.end()
+        # If the input is just ``timeout`` with no whitespace or args,
+        # there's nothing to unwrap; let the caller see the original.
+        if consumed_after_name >= len(head) or head[consumed_after_name:].strip() == "":
+            return None
+        while True:
+            flag_match = re.match(
+                r'\s*(?:--[a-z][a-z\-]*|-[a-zA-Z]\S*)\s*',
+                head[consumed_after_name:],
+                re.IGNORECASE,
+            )
+            if not flag_match:
+                break
+            # Pick out the flag word itself so we can detect "long-flag
+            # takes a separate value" cases.
+            flag_token_match = re.match(r'(\s*)(--[a-z][a-z\-]*|-[a-zA-Z]\S*)',
+                                        flag_match.group(0), re.IGNORECASE)
+            if not flag_token_match:
+                break
+            flag_text = flag_token_match.group(2)
+            consumed_after_name += flag_match.end()
+            if (flag_text.startswith("--")
+                    and flag_text in _TIMEOUT_LONG_FLAGS_WITH_ARG
+                    and "=" not in flag_text):
+                # Next token is the value -- consume the next \S+ too.
+                value_match = re.match(r'\s*\S+\s*', head[consumed_after_name:])
+                if value_match:
+                    consumed_after_name += value_match.end()
+                continue
+            # Otherwise it's a valueless flag (--preserve-status,
+            # --foreground) -- loop to find more.
+        # After flags, exactly one duration token. ``re.match`` already
+        # anchors at the current offset, so we don't need leading ``\s+``.
+        dur_match = re.match(r'\d+(?:\.\d+)?[smhd]?\s*', head[consumed_after_name:])
+        if dur_match:
+            consumed_after_name += dur_match.end()
+        return s[prefix_end + consumed_after_name:].lstrip()
+    # Plain wrappers (exec/nohup/setsid/time/command/builtin). Word-boundary
+    # so ``builtinGet`` or ``setTimeout`` (JS) don't accidentally peel.
+    plain_match = re.match(
+        r'(?:exec|nohup|setsid|time|command|builtin)\b(?:\s+--)?\s*',
+        head,
+        re.IGNORECASE,
+    )
+    if plain_match and plain_match.end() < len(head):
+        return s[prefix_end + plain_match.end():].lstrip()
+    return None
+
+
+_WRAPPER_UNWRAP_LIMIT = 8  # safety: protect against pathological input loops
+
+
+def _unwrap_command_wrappers(command: str) -> list[str]:
+    """Return all prefix-unwrap variants of ``command`` for hardline detection.
+
+    GH #58642: the anchored ``_CMDPOS`` only consumes a small wrapper set
+    (``sudo`` / ``env`` / ``exec`` / ``nohup`` / ``setsid`` / ``time``) and
+    no leading path, so commands like ``nice reboot``, ``/bin/reboot``,
+    ``command systemctl poweroff``, ``timeout 5 rm -rf /`` and
+    ``nice command rm -rf /tmp/x`` slipped past the hardline floor even
+    though the shell still executes the wrapped destructive verb. This
+    returns the inner command at each peel-step (original first, then up to
+    one variant per recursion level) so the anchored patterns can fire on
+    it.
+
+    Returns an ordered list of unique strings. The first entry is the input
+    itself (after lstrip) so callers can treat the result as a simple
+    variant list -- an empty list means there was no command to classify.
+    """
+    if not command:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    current = command.lstrip()
+    # Path-prefixed bare binary (e.g. ``/bin/reboot``, ``../sbin/halt``,
+    # ``/usr/bin/systemctl``): the path is opaque to the regex anchor
+    # (every pattern begins with ``_CMDPOS`` matching start-of-string, a
+    # separator, or a wrapper keyword), so the destructive verb two path
+    # segments in never matches. Strip the leading directory segments and
+    # yield the bare binary as its own variant.
+    #
+    # The path-strip is "anchored to a directory separator at the end of
+    # the prefix" -- we keep stripping path segments until we hit one that
+    # ends in ``/`` (i.e. a directory, not a regular file). For ``/bin/reboot``
+    # the path is ``/bin/`` (the trailing slash is the directory marker) and
+    # the binary is ``reboot``. For ``/usr/bin/systemctl`` the path is
+    # ``/usr/bin/`` and the binary is ``systemctl``. A bare ``/bin`` (no
+    # trailing component) is intentionally NOT stripped because ``/bin`` is
+    # also a directory whose name could collide with prose; the recursion
+    # below (if any wrapper is next) handles that case differently.
+    #
+    # ``_PATH_DIR_SEGMENT_RE`` matches one leading path segment ending with
+    # ``/`` (a directory, not a leaf filename). Consuming one match at a
+    # time lets ``/usr/bin/systemctl`` peel as ``/usr/bin/`` + ``systemctl``
+    # (one match) and ``/bin/reboot`` peel as ``/bin/`` + ``reboot``.
+    #
+    # The ``++`` is possessive so backtracking cannot shorten group(1) --
+    # ``/usr/bin/nice -n 5 reboot`` keeps ``/usr/bin/`` as group(1) and
+    # ``nice -n 5 reboot`` as group(2), instead of backtracking to ``/usr/``
+    # + ``bin/nice ...`` when the trailing ``nice`` segment has no ``/``
+    # after it. (Python's ``re`` supports ``++`` since 3.11.)
+    _PATH_DIR_SEGMENT_RE = re.compile(r'^((?:[/\.][^\s/]+/)++)([^/\s].*)$')
+    while True:
+        m = _PATH_DIR_SEGMENT_RE.match(current)
+        if not m:
+            break
+        # ``m.group(1)`` always ends with ``/`` because the inner class
+        # ends there; never empty here.
+        bare_match = re.match(r'^([^\s/]+)(.*)$', m.group(2))
+        if not bare_match:
+            break
+        bare_name = bare_match.group(1)
+        if not bare_name or _ENV_ASSIGNMENT_RE.fullmatch(bare_name):
+            break
+        if bare_name in seen:
+            break
+        seen.add(bare_name)
+        out.append(bare_name)
+        current = bare_match.group(2).lstrip() or bare_name
+        # Stop if we've consumed all of the rest into a single bare word.
+        if not current.strip():
+            break
+    while current and current not in seen and len(out) < _WRAPPER_UNWRAP_LIMIT:
+        seen.add(current)
+        out.append(current)
+        next_cmd = _unwrap_one_wrapper(current)
+        if next_cmd is None or next_cmd == current:
+            break
+        current = next_cmd
+    return out
 
 
 def _skip_shell_whitespace(command: str, pos: int) -> int:
@@ -1321,6 +1595,22 @@ def _command_detection_variants(command: str):
     if marked != normalized and marked not in seen:
         seen.add(marked)
         yield marked
+    # Wrapper unwrapping for the hardline floor (GH #58642).
+    #
+    # ``_CMDPOS`` anchors on a small wrapper set (sudo/env/exec/nohup/
+    # setsid/time) and a bare binary name. ``nice``, ``command``,
+    # ``builtin``, ``ionice``, ``stdbuf``, ``timeout``, and any leading
+    # binary path (``/bin/reboot``, ``./reboot``) shift the destructive
+    # verb off the anchor, so the hardline patterns miss the wrapped form
+    # even though the shell still executes it. Yield the peel-step variants
+    # -- original first (already yielded), then each level's inner command
+    # -- so the anchored patterns reuse verbatim to fire on the unwrapped
+    # verb. The recursion is bounded by ``_WRAPPER_UNWRAP_LIMIT`` in
+    # ``_unwrap_command_wrappers`` so pathological inputs cannot loop.
+    for unwrapped in _unwrap_command_wrappers(normalized):
+        if unwrapped and unwrapped != normalized and unwrapped not in seen:
+            seen.add(unwrapped)
+            yield unwrapped
     # Shell quoting/escaping can spell a dangerous executable name in pieces
     # (for example r\m or r''m). Keep that deobfuscation scoped to command
     # words so similarly shaped arguments do not become false positives.

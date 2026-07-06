@@ -318,6 +318,15 @@ _MCP_LOG_LEVEL_MAP = {
 
 _DEFAULT_TOOL_TIMEOUT = 300      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
+# Hard cap on the time we give a freshly-spawned stdio MCP subprocess to
+# complete its JSON-RPC ``initialize`` handshake before we tear it down.
+# Without this, a server that prints a malformed frame and then blocks on
+# ``read(stdin)`` (e.g. scenario in issue #59349) leaks its pidfd + pipes
+# every discovery cycle until the gateway hits ``EMFILE``. Applied via
+# ``asyncio.wait_for`` around ``session.initialize()``; on expiry the
+# spawned child + its pgroup is force-terminated via psutil before the
+# exception is surfaced (see ``_run_stdio``).
+_INITIALIZE_TIMEOUT_DEFAULT = 10
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
@@ -1936,6 +1945,13 @@ class MCPServerTask:
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()
         new_pids: set = set()
+        # Track whether ``session.initialize()`` ever ran past the
+        # ``asyncio.wait_for`` gate. If it didn't, the SDK opened the
+        # stdin pipe + validated the first frame + tore back down before
+        # we ever recorded a PID — the classic #59349 race. In that case
+        # the finally block falls back to a psutil cmdline scan against
+        # ``command``/``args`` so any surviving child is still reaped.
+        initialize_completed = False
         # Redirect subprocess stderr into a shared log file so MCP servers
         # (FastMCP banners, slack-mcp startup JSON, etc.) don't dump onto
         # the user's TTY and corrupt the TUI.  Preserves debuggability via
@@ -1977,7 +1993,36 @@ class MCPServerTask:
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
-                    self.initialize_result = await session.initialize()
+                    # Hard cap on the JSON-RPC handshake: a server that
+                    # never returns a valid frame (e.g. broken MCP from
+                    # #59349) would otherwise sit blocked on stdin/stdout
+                    # forever, leaking its pidfd + pipe FDs every
+                    # discovery cycle until the gateway hits ``EMFILE``.
+                    # ``wait_for`` raises ``TimeoutError`` on expiry; the
+                    # finally block below force-terminates the spawned
+                    # child(ren) via psutil so the leak is bounded.
+                    initialize_timeout = float(
+                        config.get("initialize_timeout", _INITIALIZE_TIMEOUT_DEFAULT)
+                    )
+                    try:
+                        self.initialize_result = await asyncio.wait_for(
+                            session.initialize(),
+                            timeout=initialize_timeout,
+                        )
+                        initialize_completed = True
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "MCP server '%s' failed to handshake within %.0fs — "
+                            "force-terminating spawned subprocess(es) (#59349)",
+                            self.name, initialize_timeout,
+                        )
+                        # Re-raise as a clearer, recognisable error so
+                        # callers / tests can distinguish a startup-timeout
+                        # failure from a malformed-frame failure.
+                        raise TimeoutError(
+                            f"MCP server '{self.name}' failed to complete "
+                            f"initialize() within {initialize_timeout}s"
+                        )
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
@@ -1995,34 +2040,64 @@ class MCPServerTask:
             # teardown failed (common when the task is cancelled mid-way
             # on Linux, where setsid() children escape the parent cgroup).
             # Mark them as orphans so the next cleanup sweep can reap them.
-            if new_pids:
-                from gateway.status import _pid_exists
-                _killpg = getattr(os, "killpg", None)
-                with _lock:
-                    for _pid in new_pids:
-                        _stdio_pids.pop(_pid, None)
-                    for pid in new_pids:
-                        # ``os.kill(pid, 0)`` is NOT a no-op on Windows
-                        # (bpo-14484). Use the cross-platform check.
-                        pid_alive = _pid_exists(pid)
-                        pgroup_alive = False
-                        pgid = _stdio_pgids.get(pid)
-                        if not pid_alive and pgid is not None and _killpg is not None:
-                            # Direct child exited but descendants may still be
-                            # in its pgroup (e.g. ``claude mcp serve`` spawned
-                            # by an MCP wrapper that exited first).  Probe with
-                            # signal 0 — succeeds iff any pgroup member is alive.
-                            try:
-                                _killpg(pgid, 0)
-                                pgroup_alive = True
-                            except (ProcessLookupError, PermissionError, OSError):
-                                pgroup_alive = False
-                        if pid_alive or pgroup_alive:
-                            _orphan_stdio_pids.add(pid)
-                        else:
-                            # Nothing left to reap — drop the pgid entry so
-                            # PID-reuse can't surface stale pgroup state later.
-                            _stdio_pgids.pop(pid, None)
+            #
+            # Issue #59349 path: ``initialize_completed`` is False AND
+            # ``new_pids`` was either empty (race window) or all-snapshotted
+            # processes raced away — do a psutil-by-cmdline fallback against
+            # ``command``/``args`` so any leaked child is still reaped.
+            from gateway.status import _pid_exists
+            _killpg = getattr(os, "killpg", None)
+            reaped_pids: set = set()
+
+            # 1) Force-terminate anything still in ``new_pids`` via psutil
+            #    process tree. ``_kill_orphaned_mcp_children`` only ADDS to
+            #    the orphan set (it's deferred); here we want immediate
+            #    termination because we're already on the failure path.
+            for pid in list(new_pids):
+                if _pid_exists(pid):
+                    _terminate_process_tree(pid, timeout=2.0)
+                    reaped_pids.add(pid)
+
+            # 2) Fallback scan for any descendent of the gateway whose
+            #    cmdline tail matches the configured ``command`` + ``args``
+            #    — the classic case where ``session.initialize()`` failed
+            #    before we ever recorded a PID. Skip PIDs already covered
+            #    by step 1.
+            if not initialize_completed:
+                leaked = _find_mcp_children_by_cmdline(command, args)
+                leaked -= reaped_pids
+                for pid in leaked:
+                    if not _pid_exists(pid):
+                        continue
+                    logger.warning(
+                        "Reaping un-tracked MCP child pid=%d for '%s' "
+                        "(initialize never completed; #59349)",
+                        pid, self.name,
+                    )
+                    _terminate_process_tree(pid, timeout=2.0)
+                    reaped_pids.add(pid)
+
+            # 3) Update the global tracking maps: drop reaped PIDs and
+            #    record anything still alive as an orphan for the next
+            #    sweep. ``_pid_exists`` is the cross-platform check —
+            #    ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484).
+            with _lock:
+                for pid in reaped_pids:
+                    _stdio_pids.pop(pid, None)
+                for pid in new_pids | reaped_pids:
+                    pgid = _stdio_pgids.get(pid)
+                    # Drop stale pgid so PID-reuse can't surface it later.
+                    if pid in _stdio_pgids and not _pid_exists(pid):
+                        _stdio_pgids.pop(pid, None)
+                    # If ``new_pids`` contained PID(s) we didn't manage to
+                    # reap synchronously (process tree refused SIGTERM in
+                    # the 2s window), surface them to the next sweep.
+                    if pgid is not None and _killpg is not None:
+                        try:
+                            _killpg(pgid, 0)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            continue
+                        _orphan_stdio_pids.add(pid)
 
     # Content types a real MCP Streamable-HTTP endpoint may return on the
     # initial POST/GET. Anything else on a 2xx response means the URL is not
@@ -5085,3 +5160,206 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         # since the loop is gone and no session can still be in flight.
         _kill_orphaned_mcp_children(include_active=True)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Startup-timeout / process-tree kill helpers (issue #59349)
+# ---------------------------------------------------------------------------
+#
+# A stdio MCP server that fails its JSON-RPC ``initialize`` handshake
+# (e.g. emits a non-conforming frame and then blocks on ``read(stdin)``)
+# was leaking its pidfd + pipe FDs on every ``discover_mcp_tools()`` retry
+# cycle, accumulating until the gateway hit its nofile soft limit and threw
+# ``EMFILE`` (#59349). The earlier ``_kill_orphaned_mcp_children`` /
+# ``_stdio_pids`` machinery only knew about PIDs that were successfully
+# tracked during ``async with stdio_client(...)``; children that escaped
+# the snapshot (e.g. the SDK started a session then validated-and-rejected
+# the first frame before we ever observed its pid) were invisible to it.
+#
+# The helpers below close that gap with a psutil-based fallback that
+# matches an MCP server by its command + argv prefix (the only stable
+# identity available when no PID was tracked). Use them from
+# ``_run_stdio``'s new startup-timeout branch AND from the module-level
+# ``atexit`` hook so an interrupted gateway still reaps its children.
+
+
+import atexit as _atexit
+
+
+def _mcp_command_matches(pid: int, command: str, args):
+    """Return ``True`` if ``pid`` looks like an invocation of ``command + args``.
+
+    Used by the psutil fallback to find MCP server children that escaped
+    the ``_snapshot_child_pids`` race window. Compares against the full
+    ``cmdline()`` join so wrappers like ``/usr/bin/env python3 broken.py``
+    still match a config that says ``command=python3 args=[broken.py]``.
+
+    Args:
+        pid: candidate child PID to inspect.
+        command: configured executable (e.g. ``python3``).
+        args: configured argv list (e.g. ``[broken_mcp.py]``).
+
+    Returns:
+        ``True`` if psutil could inspect the process and the joined
+        cmdline ends with ``command + args``. ``False`` if psutil is
+        unavailable, the pid is gone, or access is denied.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        proc = psutil.Process(int(pid))
+        cmdline = proc.cmdline()
+    except Exception:
+        return False
+    if not cmdline:
+        return False
+    expected_tail = [command, *list(args or ())]
+    # Compare the suffix so leading env / wrapper prefixes don't disqualify
+    # otherwise-matching processes. ``len(expected_tail) <= len(cmdline)``
+    # guards against a shorter real cmdline that would otherwise match by
+    # virtue of ``cmdline[-N:] == expected_tail`` for any N.
+    if len(cmdline) < len(expected_tail):
+        return False
+    return cmdline[-len(expected_tail):] == expected_tail
+
+
+def _find_mcp_children_by_cmdline(command: str, args) -> set:
+    """Return descendant PIDs whose cmdline tail matches ``command + args``.
+
+    Walks the entire process tree under the current PID via
+    :func:`psutil.Process.children` (``recursive=True``) so a stdio MCP
+    wrapper that itself spawns ``claude mcp serve`` (or any other helper)
+    still surfaces for cleanup. Used as the fallback when the
+    ``_snapshot_child_pids()`` delta at finally-time was empty — the
+    classic #59349 race where the SDK opened the stdin pipe, validated
+    the first frame as invalid, and tore the process down before we ever
+    recorded its pid.
+
+    Args:
+        command: configured executable (e.g. ``python3``).
+        args: configured argv list.
+
+    Returns:
+        Set of matching PIDs. Empty on psutil unavailable / no matches.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return set()
+    try:
+        root = psutil.Process(os.getpid())
+        descendants = root.children(recursive=True)
+    except Exception:
+        return set()
+    return {
+        p.pid for p in descendants
+        if _mcp_command_matches(p.pid, command, args)
+    }
+
+
+def _terminate_process_tree(pid: int, *, timeout: float = 2.0) -> None:
+    """SIGTERM-then-SIGKILL an entire process tree rooted at ``pid``.
+
+    Cross-platform / psutil-only — never uses ``os.kill(pid, 0)`` which
+    is a known footgun on Windows (``bpo-14484``: ``sig=0`` collides with
+    ``CTRL_C_EVENT`` and Ctrl+Cs the entire console group).
+
+    Walks children recursively via ``psutil.Process.children(recursive=True)``
+    so an MCP server that itself spawns helpers (e.g. ``claude mcp serve``
+    from inside a wrapper) is reaped alongside its descendants, matching
+    the pgroup-based reach of the POSIX reaper.
+
+    On timeout / access error during SIGTERM, escalates to SIGKILL after
+    a short wait. Best-effort: any error that prevents termination is
+    logged and swallowed.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return
+
+    try:
+        root = psutil.Process(int(pid))
+    except Exception:
+        return  # already gone or inaccessible
+
+    # Walk the full tree so wrappers that spawn helpers (e.g. `claude mcp
+    # serve` from inside an MCP wrapper that itself blocks on stdin) are
+    # included; mirror what ``killpg`` reaches on POSIX.
+    try:
+        tree = [root, *root.children(recursive=True)]
+    except Exception:
+        tree = [root]
+
+    for proc in tree:
+        try:
+            proc.terminate()  # SIGTERM
+        except Exception:
+            pass
+
+    # Wait up to ``timeout``s for graceful exit; escalate to SIGKILL for
+    # any survivor. Keeps shutdown bounded even when a child refuses SIGTERM.
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while time.monotonic() < deadline:
+        if all(
+            (not _proc_alive(p)) for p in tree
+            if hasattr(p, "pid") and p.pid is not None
+        ):
+            break
+        time.sleep(0.05)
+    else:
+        for proc in tree:
+            try:
+                proc.kill()  # SIGKILL
+            except Exception:
+                pass
+
+
+def _proc_alive(proc) -> bool:
+    """Cross-platform psutil ``is_running`` check.
+
+    psutil's ``Process.is_running()`` returns ``True`` for zombies
+    (which are still in the process table until their parent reaps
+    them). We treat zombies as dead so SIGKILL doesn't get sent to a
+    reaped-but-not-waited-on child — sending SIGKILL to a zombie has no
+    effect anyway, and logging it as a "force kill" muddies forensics.
+    """
+    try:
+        if proc.status() == getattr(proc, "STATUS_ZOMBIE", "zombie"):
+            return False
+    except Exception:
+        pass
+    try:
+        return bool(proc.is_running())
+    except Exception:
+        return False
+
+
+def _atexit_reap_mcp_children() -> None:
+    """Final-safety net: reap whatever survived normal shutdown.
+
+    Registered as a module-level ``atexit`` handler so a SIGTERM to the
+    gateway (which doesn't run ``_stop_mcp_loop`` when the signal kills
+    ``python`` outright) still cleans up its stdio MCP children. Also
+    runs on every other normal interpreter shutdown. Idempotent: safe to
+    invoke concurrently with ``_kill_orphaned_mcp_children``.
+    """
+    try:
+        _kill_orphaned_mcp_children(include_active=True)
+    except Exception as exc:  # noqa: BLE001 — final-safety net, never raise
+        try:
+            logger.debug("atexit: MCP child reap raised %r", exc)
+        except Exception:
+            pass
+
+
+# Register exactly once, even if this module is re-imported (e.g. by a
+# test harness that imports it from multiple worktrees). Python imports
+# are idempotent so the atexit set is process-global; we still guard on
+# a module attribute for tests that monkey-patch ``_atexit`` to count
+# registrations.
+if not getattr(_atexit_reap_mcp_children, "_registered", False):
+    _atexit.register(_atexit_reap_mcp_children)
+    _atexit_reap_mcp_children._registered = True

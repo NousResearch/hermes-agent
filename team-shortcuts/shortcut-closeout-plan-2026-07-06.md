@@ -8,7 +8,7 @@
 
 | จุดตรวจ | ผล |
 |---|---:|
-| GitHub ของเจ้าของ (`rattanasak-ops/hermes-agent`) | อยู่ที่ `79fbd139f` |
+| GitHub ของเจ้าของ (`rattanasak-ops/hermes-agent`) | มีไฟล์แผนนี้แล้ว · ชุด Shortcut `79fbd139f` |
 | local repo เทียบ GitHub | 0 ahead / 0 behind |
 | จำลองเครื่องพนักงานจาก GitHub สด | ผ่าน |
 | Shortcut ในเครื่องพนักงานจำลอง | 28/28 |
@@ -92,7 +92,7 @@ branch: main
 dirty files: 62
 remote origin: https://github.com/NousResearch/hermes-agent.git
 remote fork: git@github.com:rattanasak-ops/hermes-agent.git
-fork/main: 79fbd139f
+Shortcut release: 79fbd139f
 ```
 
 ผลกระทบ:
@@ -150,7 +150,7 @@ searched_roots=/home/linux-nat/projects, /srv/projects, /home/linux-nat/.worktre
 
 หลักฐาน:
 
-- GitHub: `79fbd139f`
+- GitHub: มีไฟล์แผนนี้แล้ว · ชุด Shortcut `79fbd139f`
 - จำลองเครื่องพนักงาน: Shortcut 28/28
 - local/VPS: vault, payload, Codex ตรงกัน
 - test local/VPS: 45/45

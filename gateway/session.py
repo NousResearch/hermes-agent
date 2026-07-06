@@ -111,10 +111,35 @@ def _is_path_unsafe(value: object) -> bool:
     s = str(value)
     if ".." in s or "/" in s or "\\" in s:
         return True
-    # Leading Windows drive path, e.g. "C:\..." or "d:/...". A bare "x:"
+    # Leading Windows drive path, e.g. "C:\\..." or "d:/...". A bare "x:"
     # with no following separator isn't a usable absolute path, and the
     # separator forms are already caught above — but keep an explicit guard
     # for the drive-letter prefix in case a separator was normalized away.
+    return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
+
+
+def _is_session_key_unsafe(value: object) -> bool:
+    """Return True if ``value`` could be a real traversal vector in a session_key.
+
+    ``session_key`` is a *logical* routing key (e.g.
+    ``agent:main:google_chat:group:spaces/<id>``) — it never touches the
+    filesystem, so the strict separator-rejecting guard from
+    ``_is_path_unsafe`` is over-broad: it falsely rejects Google Chat
+    resource names (``spaces/<id>``, ``spaces/<id>/threads/<id>``) and any
+    other platform whose native IDs legitimately contain ``/``.
+
+    The relaxed check only blocks genuine traversal: parent-dir ``..``,
+    a *leading* path separator (``/``/``\\``, which would make the key
+    absolute on disk if it ever were written), and a leading Windows
+    drive letter. Interior ``/`` is allowed.
+    """
+    if not value:
+        return False
+    s = str(value)
+    if ".." in s:
+        return True
+    if s.startswith("/") or s.startswith("\\"):
+        return True
     return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
 
 
@@ -741,12 +766,21 @@ class SessionEntry:
         session_key = data["session_key"]
         session_id = data["session_id"]
 
-        # Validate path-sensitive fields to prevent directory traversal (CWE-22)
-        for _field, _val in (("session_key", session_key), ("session_id", session_id)):
-            if _is_path_unsafe(_val):
-                raise ValueError(
-                    f"Invalid {_field}: potential directory traversal detected"
-                )
+        # Validate path-sensitive fields to prevent directory traversal (CWE-22).
+        # ``session_id`` is the value used as a filename
+        # (``sessions_dir / f"{session_id}.json"``), so it must pass the strict
+        # guard. ``session_key`` is a *logical* routing key that never touches
+        # the filesystem — interior ``/`` is legitimate (Google Chat resource
+        # names are ``spaces/<id>`` and ``spaces/<id>/threads/<id>``), so it
+        # only needs the relaxed guard against genuine traversal vectors.
+        if _is_path_unsafe(session_id):
+            raise ValueError(
+                "Invalid session_id: potential directory traversal detected"
+            )
+        if _is_session_key_unsafe(session_key):
+            raise ValueError(
+                "Invalid session_key: potential directory traversal detected"
+            )
 
         return cls(
             session_key=session_key,

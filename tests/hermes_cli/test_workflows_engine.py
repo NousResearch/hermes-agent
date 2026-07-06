@@ -210,6 +210,45 @@ def test_join_accepts_only_chosen_switch_path_inside_parallel_branch():
     assert result.context["node"]["done"]["output"] == {"work": "left", "review": "review"}
 
 
+def test_join_does_not_wait_for_untaken_branch_switch_path():
+    spec = WorkflowSpec.model_validate({
+        "id": "demo", "name": "Demo", "version": 1,
+        "nodes": {
+            "fork": {"type": "parallel"},
+            "route": {"type": "switch", "cases": [
+                {"name": "left", "when": {"op": "eq", "left": {"path": "$.input.side"}, "right": "left"}}
+            ]},
+            "left": {"type": "pass", "output": {"choice": "left"}},
+            "skip": {"type": "pass", "output": {"choice": "skip"}},
+            "review": {"type": "pass", "output": {"summary": "review"}},
+            "merge": {"type": "join"},
+            "done": {"type": "pass", "output": {
+                "review": "${ node.merge.output.branches.review.summary }",
+            }},
+        },
+        "edges": [
+            {"from": "fork.work", "to": "route"},
+            {"from": "fork.review", "to": "review"},
+            {"from": "route.left", "to": "left"},
+            {"from": "route.default", "to": "skip"},
+            {"from": "left", "to": "merge"},
+            {"from": "review", "to": "merge"},
+            {"from": "merge", "to": "done"},
+        ],
+    })
+
+    result = run_in_memory_until_waiting(spec, input_data={"side": "other"})
+
+    assert result.status == "succeeded"
+    assert result.waiting_nodes == []
+    assert result.context["node"]["merge"]["output"]["branches"] == {
+        "review": {"summary": "review"},
+    }
+    assert result.context["branches"]["fork"]["work"] == {"choice": "skip"}
+    assert "left" not in result.context["node"]
+    assert result.context["node"]["done"]["output"] == {"review": "review"}
+
+
 def test_join_waits_until_all_branch_upstreams_succeed():
     spec = WorkflowSpec.model_validate({
         "id": "demo", "name": "Demo", "version": 1,

@@ -97,19 +97,6 @@ def _can_reach(spec: WorkflowSpec, start_id: str, target_id: str) -> bool:
     return False
 
 
-def _parallel_branches_reaching_join(
-    spec: WorkflowSpec,
-    parallel_id: str,
-    join_id: str,
-) -> set[str]:
-    branches: set[str] = set()
-    for edge in spec.edges:
-        source_base, _, branch = edge.from_.partition(".")
-        if source_base == parallel_id and branch and _can_reach(spec, edge.to, join_id):
-            branches.add(branch)
-    return branches
-
-
 def _record_branch_output(
     context: dict[str, Any],
     completed_branch_by_node: dict[str, tuple[str, str]],
@@ -143,11 +130,13 @@ def run_in_memory_until_waiting(
     waiting_nodes: list[str] = []
     scheduled_branch_by_node: dict[str, tuple[str, str] | None] = {}
     completed_branch_by_node: dict[str, tuple[str, str]] = {}
-    join_branch_cache: dict[tuple[str, str], set[str]] = {}
+    active_branch_by_node: dict[str, tuple[str, str]] = {}
 
     def enqueue(node_id: str, branch_key: tuple[str, str] | None) -> None:
         queued_branch = None if spec.nodes[node_id].type == "join" else branch_key
         scheduled_branch_by_node.setdefault(node_id, queued_branch)
+        if queued_branch is not None:
+            active_branch_by_node[node_id] = queued_branch
         runnable.append((node_id, queued_branch))
 
     for node_id in _initial_nodes(spec):
@@ -174,6 +163,7 @@ def run_in_memory_until_waiting(
             _record_branch_output(context, completed_branch_by_node, node_id, branch_key)
             for edge in next_edges(spec, node_id):
                 enqueue(edge.to, branch_key)
+            active_branch_by_node.pop(node_id, None)
             continue
 
         if node.type == "pass":
@@ -181,6 +171,7 @@ def run_in_memory_until_waiting(
             _record_branch_output(context, completed_branch_by_node, node_id, branch_key)
             for edge in next_edges(spec, node_id):
                 enqueue(edge.to, branch_key)
+            active_branch_by_node.pop(node_id, None)
             continue
 
         if node.type == "switch":
@@ -191,6 +182,7 @@ def run_in_memory_until_waiting(
                     enqueue(edge.to, branch_key)
             elif port == "default" and node.default:
                 enqueue(node.default, branch_key)
+            active_branch_by_node.pop(node_id, None)
             continue
 
         if node.type == "parallel":
@@ -203,13 +195,13 @@ def run_in_memory_until_waiting(
             context["node"][node_id] = {"output": {"branches": [branch for branch, _ in branch_edges]}}
             for branch, edge in branch_edges:
                 enqueue(edge.to, (node_id, branch))
+            active_branch_by_node.pop(node_id, None)
             continue
 
         if node.type == "join":
             incoming = [edge for edge in spec.edges if edge.to == node_id]
             branches = {}
             expected_labels: set[str] = set()
-            active_parallel_ids: set[str] = set()
             for edge in incoming:
                 source_base, _, port = edge.from_.partition(".")
                 if source_base not in scheduled_branch_by_node and source_base not in context["node"]:
@@ -217,21 +209,15 @@ def run_in_memory_until_waiting(
                 owner = completed_branch_by_node.get(source_base)
                 if owner is None:
                     owner = scheduled_branch_by_node.get(source_base)
-                if owner:
-                    active_parallel_ids.add(owner[0])
                 label = owner[1] if owner else (port or source_base)
                 expected_labels.add(label)
                 node_context = context["node"].get(source_base, {})
                 if source_base in context["node"]:
                     output = node_context.get("output") if isinstance(node_context, dict) else None
                     branches[label] = output
-            for parallel_id in active_parallel_ids:
-                cache_key = (parallel_id, node_id)
-                if cache_key not in join_branch_cache:
-                    join_branch_cache[cache_key] = _parallel_branches_reaching_join(
-                        spec, parallel_id, node_id
-                    )
-                expected_labels.update(join_branch_cache[cache_key])
+            for active_node_id, owner in active_branch_by_node.items():
+                if _can_reach(spec, active_node_id, node_id):
+                    expected_labels.add(owner[1])
             if expected_labels - branches.keys():
                 if runnable:
                     enqueue(node_id, branch_key)
@@ -248,6 +234,7 @@ def run_in_memory_until_waiting(
             if node_id in catch_failed_nodes and node.catch:
                 context["error"] = error_context or error
                 enqueue(node.catch, branch_key)
+                active_branch_by_node.pop(node_id, None)
                 continue
             return EngineResult(
                 status="failed",
@@ -261,6 +248,7 @@ def run_in_memory_until_waiting(
             _record_branch_output(context, completed_branch_by_node, node_id, branch_key)
             for edge in next_edges(spec, node_id):
                 enqueue(edge.to, branch_key)
+            active_branch_by_node.pop(node_id, None)
             continue
 
         if node.type in _WAITING_NODE_TYPES:

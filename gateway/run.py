@@ -9952,6 +9952,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _unavail_msg = _check_unavailable_skill(command)
                     if _unavail_msg:
                         return _unavail_msg
+                    # Model-alias shortcut: /<alias> -> /model <alias>
+                    try:
+                        from hermes_cli.model_switch import _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES
+                        _ensure_direct_aliases()
+                        _key = command.strip().lower()
+                        if _key in DIRECT_ALIASES or _key in MODEL_ALIASES:
+                            user_args = event.get_command_args().strip()
+                            event.text = f"/model {command} {user_args}".strip()
+                            return await self._handle_model_command(event)
+                    except Exception:
+                        pass
                     # Genuinely unrecognized /command: not a built-in, not a
                     # plugin, not a skill, not a known-inactive skill. Warn
                     # the user instead of silently forwarding it to the LLM

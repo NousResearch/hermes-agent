@@ -8935,6 +8935,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 else:
                     ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
+                # Model-alias shortcut: /<alias> -> /model <alias>
+                try:
+                    from hermes_cli.model_switch import _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES
+                    _ensure_direct_aliases()
+                    _key = base_cmd.lstrip("/").strip().lower()
+                    if _key in DIRECT_ALIASES or _key in MODEL_ALIASES:
+                        user_args = cmd_original[len(base_cmd):].strip()
+                        aliased_command = f"/model {_key} {user_args}".strip()
+                        return self.process_command(aliased_command)
+                except Exception:
+                    pass
                 # Prefix matching: if input uniquely identifies one command, execute it.
                 # Matches against both built-in COMMANDS and installed skill commands so
                 # that execution-time resolution agrees with tab-completion.

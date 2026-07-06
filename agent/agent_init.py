@@ -1961,6 +1961,14 @@ def init_agent(
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
 
+    # Smart-model routing per-turn state. See agent/smart_model_routing.py
+    # — these mirror the fallback machinery but are scoped to a single turn
+    # (cheap model for the duration of one simple turn, primary restored at
+    # the start of the next).
+    agent._pre_smart_state = None
+    agent._smart_routed_active = False
+    agent._smart_routing_cfg = None  # cached on first read
+
 
 
 __all__ = ["init_agent"]

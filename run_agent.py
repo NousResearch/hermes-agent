@@ -4762,6 +4762,18 @@ class AIAgent:
         from agent.agent_runtime_helpers import restore_primary_runtime
         return restore_primary_runtime(self)
 
+    # ── Smart-model routing (cheap-model swap for simple turns) ──────
+
+    def _apply_smart_routing(self, user_message: str) -> bool:
+        """Forwarder — see ``agent.smart_model_routing.apply_smart_routing``."""
+        from agent.smart_model_routing import apply_smart_routing
+        return apply_smart_routing(self, user_message)
+
+    def _restore_smart_routing(self) -> bool:
+        """Forwarder — see ``agent.smart_model_routing.restore_smart_routing``."""
+        from agent.smart_model_routing import restore_smart_routing
+        return restore_smart_routing(self)
+
     def _try_recover_primary_transport(
         self, api_error: Exception, *, retry_count: int, max_retries: int,
     ) -> bool:

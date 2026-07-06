@@ -173,6 +173,25 @@ def build_turn_context(
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()
 
+    # Smart-model routing: if the previous turn activated the cheap-model
+    # swap, restore the primary runtime BEFORE this turn decides again.
+    # Cheap routing is per-turn scoped (mirrors fallback's turn-scoped
+    # behavior in restore_primary_runtime).
+    try:
+        from agent.smart_model_routing import restore_smart_routing
+        restore_smart_routing(agent)
+    except Exception:
+        logger.debug("smart_model_routing restore skipped", exc_info=True)
+
+    # Apply smart-model routing for the incoming message: short, simple
+    # queries swap to ``smart_model_routing.cheap_model`` for the duration
+    # of this turn; complex queries stay on the primary.
+    try:
+        from agent.smart_model_routing import apply_smart_routing
+        apply_smart_routing(agent, user_message)
+    except Exception:
+        logger.debug("smart_model_routing apply skipped", exc_info=True)
+
     # Between-turns MCP refresh: an MCP server that finished connecting since
     # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold
     # connect, missing the bounded startup wait) lands in THIS turn's tool

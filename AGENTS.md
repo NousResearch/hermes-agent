@@ -601,6 +601,16 @@ embedding, title generation, session_search, etc.) — each task can pin
 its own provider/model/base_url/max_tokens/reasoning_effort. See
 `agent/auxiliary_client.py::_resolve_auto` for resolution order.
 
+`smart_model_routing` opts the main agent's own turn into a per-turn cheap
+model: short, low-word-count user messages (≤`max_simple_chars` chars AND
+≤`max_simple_words` words) swap the agent's `provider/model/base_url/api_key`
+to `cheap_model` for the duration of that turn only. The primary runtime is
+restored at the start of the next turn. The block is inert by default —
+`enabled: true` and a populated `cheap_model.{provider,model}` are both
+required. See `agent/smart_model_routing.py` for the implementation;
+`tests/agent/test_smart_model_routing.py` for the contract. Separate from
+`auxiliary.*.model` (side-tasks) and `delegation.model` (subagents).
+
 `curator` holds the background skill-maintenance config —
 `enabled`, `interval_hours`, `min_idle_hours`, `stale_after_days`,
 `archive_after_days`, `backup` (nested).

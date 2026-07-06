@@ -444,6 +444,35 @@ class TestPauseResumeJob:
         assert resumed["paused_at"] is None
         assert resumed["paused_reason"] is None
 
+    def test_resume_rejects_past_oneshot(self, tmp_cron_dir, monkeypatch):
+        """Resuming a paused one-shot whose time is now in the past must raise
+        ValueError — the revived job would silently never fire."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        # Create directly — bypass create_job's past-oneshot guard so we can
+        # test the resume path independently.
+        job = {
+            "id": "test-resume-past",
+            "name": "test-resume-past",
+            "prompt": "Past one-shot",
+            "schedule": {"kind": "once", "run_at": (now - timedelta(minutes=5)).isoformat(), "display": "once"},
+            "repeat": {"times": 1, "completed": 0},
+            "enabled": False,
+            "state": "paused",
+            "paused_at": now.isoformat(),
+            "paused_reason": "test",
+            "next_run_at": None,
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": (now - timedelta(hours=1)).isoformat(),
+            "deliver": "local",
+        }
+        save_jobs([job])
+        with pytest.raises(ValueError, match="in the past"):
+            resume_job("test-resume-past")
+
 
 class TestResolveJobRef:
     """Name-based job lookup for CLI/tool callers (PR #2627, @buntingszn)."""

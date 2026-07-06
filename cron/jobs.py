@@ -1186,7 +1186,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updated["model_snapshot"] = model_snapshot
 
             if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-                updated["next_run_at"] = compute_next_run(updated["schedule"])
+                next_run = compute_next_run(updated["schedule"])
+                if next_run is None and updated["schedule"].get("kind") == "once":
+                    run_at = updated["schedule"].get("run_at", "unknown")
+                    raise ValueError(
+                        f"Requested one-shot time {run_at} is in the past "
+                        f"(grace window: {ONESHOT_GRACE_SECONDS}s) and cannot be scheduled."
+                    )
+                updated["next_run_at"] = next_run
 
             jobs[i] = updated
             save_jobs(jobs)
@@ -1217,6 +1224,12 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     next_run_at = compute_next_run(job["schedule"])
+    if next_run_at is None and job["schedule"].get("kind") == "once":
+        run_at = job["schedule"].get("run_at", "unknown")
+        raise ValueError(
+            f"Cannot resume: one-shot time {run_at} is in the past "
+            f"(grace window: {ONESHOT_GRACE_SECONDS}s) and will never fire."
+        )
     return update_job(
         job["id"],
         {

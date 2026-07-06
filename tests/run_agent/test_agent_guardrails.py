@@ -132,6 +132,53 @@ class TestSanitizeApiMessages:
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["tool_call_id"] == "c_valid"
 
+    def test_empty_content_dropped_on_tool_call_turn(self):
+        """Assistant tool-call turns with empty text content lose the content
+        key so strict validators (Bedrock Sonnet) don't 400 (#59593)."""
+        msgs = [
+            {"role": "user", "content": "run it"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [assistant_dict_call("c1")]},
+            tool_result("c1"),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        asst = [m for m in out if m.get("role") == "assistant"][0]
+        assert "content" not in asst
+        assert asst["tool_calls"]  # tool_calls preserved
+
+    def test_whitespace_only_content_dropped_on_tool_call_turn(self):
+        msgs = [
+            {"role": "assistant", "content": "   \n",
+             "tool_calls": [assistant_dict_call("c2")]},
+            tool_result("c2"),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        asst = [m for m in out if m.get("role") == "assistant"][0]
+        assert "content" not in asst
+
+    def test_nonempty_content_on_tool_call_turn_preserved(self):
+        """A tool-call turn WITH real text keeps its content."""
+        msgs = [
+            {"role": "assistant", "content": "Let me check.",
+             "tool_calls": [assistant_dict_call("c3")]},
+            tool_result("c3"),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        asst = [m for m in out if m.get("role") == "assistant"][0]
+        assert asst["content"] == "Let me check."
+
+    def test_empty_content_without_tool_calls_untouched(self):
+        """Empty content on a plain assistant turn (no tool_calls) is left as-is
+        for the downstream thinking-only drop — this sanitizer only touches
+        tool-call turns."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": ""},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        asst = [m for m in out if m.get("role") == "assistant"][0]
+        assert "content" in asst  # not this sanitizer's job
+
 
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls

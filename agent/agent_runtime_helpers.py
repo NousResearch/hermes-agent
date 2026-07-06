@@ -2423,6 +2423,43 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             dropped_empty_tool_calls,
         )
 
+    # --- Drop empty/whitespace-only text content on assistant tool-call turns ---
+    # An assistant turn that emitted only ``tool_calls`` carries ``content=""``
+    # (empty string) in Hermes' stored history. Most providers accept that, but
+    # strict validators reject it: AWS Bedrock's Converse API returns a
+    # ``ValidationException`` — "messages: text content blocks must contain
+    # non-whitespace text" — and fails the entire request. This is deterministic
+    # on a model fallback (e.g. Opus 4.6 -> Sonnet 4.6 on Bedrock), where the
+    # history built by the lenient primary is replayed verbatim to the stricter
+    # fallback and the user is left with a silent zero-response (#59593). A
+    # tool-calls-only assistant turn does not need a text block, so drop the
+    # empty ``content`` key on a per-call shallow copy (keeping stored history
+    # and prompt caching byte-stable, per the #56980 review). Only touch turns
+    # that still carry tool_calls — a content-less, tool-call-less assistant
+    # turn is handled by the thinking-only drop downstream.
+    stripped_empty_content = 0
+    rebuilt: List[Dict[str, Any]] = []
+    for msg in messages:
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and isinstance(msg.get("tool_calls"), list)
+            and msg["tool_calls"]
+            and "content" in msg
+            and isinstance(msg.get("content"), str)
+            and not msg["content"].strip()
+        ):
+            msg = {k: v for k, v in msg.items() if k != "content"}
+            stripped_empty_content += 1
+        rebuilt.append(msg)
+    if stripped_empty_content:
+        messages = rebuilt
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped empty text content on %d assistant "
+            "tool-call turn(s)",
+            stripped_empty_content,
+        )
+
     # --- Repair tool_calls whose function.name is empty/missing ---
     # Some providers (and partially-streamed responses) emit a tool_call with
     # id="call_xxx" but function.name="". Downstream Responses-API adapters

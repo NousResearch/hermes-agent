@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: spotify
+description: Music and podcast recommendations, just for you.
+source: https://claude.com/connectors/spotify
+ui:
+  display_name: Spotify
+  category: Business tools
+  icon: spotify
+  tags:
+  - connector
+  capabilities:
+  - Music and podcast recommendations, just for you.
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp-gateway-external-pilot.spotify.net/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Spotify.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure spotify\n"

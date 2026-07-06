@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: dropbox
+description: Search, organize, and take action on your Dropbox content
+source: https://claude.com/connectors/dropbox
+ui:
+  display_name: Dropbox
+  category: Business tools
+  icon: dropbox
+  tags:
+  - connector
+  capabilities:
+  - Search, organize, and take action on your Dropbox content
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.dropbox.com/claude_app_mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Dropbox.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure dropbox\n"

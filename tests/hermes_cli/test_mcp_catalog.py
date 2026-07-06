@@ -180,6 +180,24 @@ class TestManifestParsing:
         assert e.ui.setup_steps == []
         assert e.ui.danger_notes == []
 
+    def test_sse_transport_writes_sse_config(self, catalog_dir):
+        body = _basic_manifest(
+            transport={"type": "sse", "url": "https://example.com/sse"},
+            auth={"type": "oauth"},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import install_entry, list_catalog
+        from hermes_cli.config import load_config
+
+        e = list_catalog()[0]
+        assert e.transport.type == "sse"
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://example.com/sse"
+        assert server["transport"] == "sse"
+        assert server["auth"] == "oauth"
+
     def test_install_block(self, catalog_dir):
         body = _basic_manifest(
             install={
@@ -848,4 +866,4 @@ class TestShippedCatalog:
             entry = _parse_manifest(m)
             assert entry.name
             assert entry.description
-            assert entry.transport.type in ("stdio", "http")
+            assert entry.transport.type in ("stdio", "http", "sse")

@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: splice
+description: Search Splice's sounds catalog, build stacks & more!
+source: https://claude.com/connectors/splice
+ui:
+  display_name: Splice
+  category: Business tools
+  icon: splice
+  tags:
+  - connector
+  capabilities:
+  - Search Splice's sounds catalog, build stacks & more!
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.splice.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Splice.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure splice\n"

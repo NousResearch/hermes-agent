@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: tomtom-maps
+description: TomTom maps, routing, geocoding & traffic data
+source: https://claude.com/connectors/tomtom-maps
+ui:
+  display_name: TomTom Maps
+  category: Analytics
+  icon: tomtom-maps
+  tags:
+  - analytics
+  capabilities:
+  - TomTom maps, routing, geocoding & traffic data
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.tomtom.com/maps
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with TomTom Maps.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure tomtom-maps\n"

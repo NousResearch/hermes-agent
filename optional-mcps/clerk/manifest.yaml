@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: clerk
+description: Add authentication, organizations, and billing
+source: https://claude.com/connectors/clerk
+ui:
+  display_name: Clerk
+  category: Business tools
+  icon: clerk
+  tags:
+  - connector
+  capabilities:
+  - Add authentication, organizations, and billing
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.clerk.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Clerk.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure clerk\n"

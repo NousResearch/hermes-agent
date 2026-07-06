@@ -27,7 +27,7 @@ export function connectorPrimaryActionKind(
     return 'installed'
   }
 
-  return entry.auth_type === 'oauth' && entry.transport === 'http' ? 'connect' : 'install'
+  return entry.auth_type === 'oauth' && ['http', 'sse'].includes(entry.transport) ? 'connect' : 'install'
 }
 
 export function connectorSetupSummary(

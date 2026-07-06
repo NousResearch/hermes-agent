@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: euler
+description: Manage your partner program and access your Partner Data Lake with Claude.
+source: https://claude.com/connectors/euler
+ui:
+  display_name: EULER
+  category: Analytics
+  icon: euler
+  tags:
+  - analytics
+  capabilities:
+  - Manage your partner program and access your Partner Data Lake with Claude.
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.eulerapp.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with EULER.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure euler\n"

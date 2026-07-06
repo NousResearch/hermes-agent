@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: eden-basecamp-research
+description: Design antibiotics and prioritise vaccine targets against drug-resistant pathogens using EDEN, Basecamp Research's biological foundation model.
+source: https://claude.com/connectors/eden-basecamp-research
+ui:
+  display_name: EDEN by Basecamp Research
+  category: Business tools
+  icon: eden-basecamp-research
+  tags:
+  - connector
+  capabilities:
+  - Design antibiotics and prioritise vaccine targets against drug-resistant pathogens using EDEN, Basecamp Research's biolo
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp-public.basecamp-research.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with EDEN by Basecamp Research.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure eden-basecamp-research\n"

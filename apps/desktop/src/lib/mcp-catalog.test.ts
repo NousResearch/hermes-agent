@@ -55,6 +55,10 @@ describe('connectorPrimaryActionKind', () => {
     expect(connectorPrimaryActionKind(entry())).toBe('connect')
   })
 
+  it('treats uninstalled OAuth SSE catalog entries as connect actions', () => {
+    expect(connectorPrimaryActionKind(entry({ transport: 'sse' }))).toBe('connect')
+  })
+
   it('keeps local stdio catalog entries as install actions', () => {
     expect(connectorPrimaryActionKind(entry({ transport: 'stdio', auth_type: 'none', command: 'npx', url: null }))).toBe(
       'install'

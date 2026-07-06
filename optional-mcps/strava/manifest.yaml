@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: strava
+description: Analyze, summarize, and explore your Strava data
+source: https://claude.com/connectors/strava
+ui:
+  display_name: Strava
+  category: Analytics
+  icon: strava
+  tags:
+  - analytics
+  capabilities:
+  - Analyze, summarize, and explore your Strava data
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.strava.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Strava.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure strava\n"

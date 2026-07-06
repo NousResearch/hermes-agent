@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: chronograph
+description: Interact with your Chronograph data directly in Claude
+source: https://claude.com/connectors/chronograph
+ui:
+  display_name: Chronograph
+  category: Analytics
+  icon: chronograph
+  tags:
+  - analytics
+  capabilities:
+  - Interact with your Chronograph data directly in Claude
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://ai.chronograph.pe/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Chronograph.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure chronograph\n"

@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: replit
+description: Turn ideas into apps and websites instantly
+source: https://claude.com/connectors/replit
+ui:
+  display_name: Replit
+  category: Business tools
+  icon: replit
+  tags:
+  - connector
+  capabilities:
+  - Turn ideas into apps and websites instantly
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://replit-mcp.com/anthropic/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Replit.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure replit\n"

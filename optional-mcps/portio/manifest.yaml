@@ -1,0 +1,26 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: portio
+description: Build and query your developer portal and trigger developer workflows
+source: https://claude.com/connectors/port-io
+ui:
+  display_name: Port IO
+  category: Developer tools
+  icon: portio
+  tags:
+  - project-management
+  - developer-tools
+  capabilities:
+  - Build and query your developer portal and trigger developer workflows
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.port.io/v1
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Port IO.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure portio\n"

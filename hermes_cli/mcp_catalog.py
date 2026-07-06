@@ -72,7 +72,7 @@ class AuthSpec:
 
 @dataclass
 class TransportSpec:
-    type: str  # "stdio" | "http"
+    type: str  # "stdio" | "http" | "sse"
     command: Optional[str] = None
     args: List[str] = field(default_factory=list)
     url: Optional[str] = None
@@ -230,8 +230,8 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     if not isinstance(transport_raw, dict):
         raise CatalogError(f"{path}: 'transport' must be a mapping")
     t_type = transport_raw.get("type")
-    if t_type not in ("stdio", "http"):
-        raise CatalogError(f"{path}: transport.type must be 'stdio' or 'http'")
+    if t_type not in ("stdio", "http", "sse"):
+        raise CatalogError(f"{path}: transport.type must be 'stdio', 'http', or 'sse'")
     args = transport_raw.get("args") or []
     if not isinstance(args, list):
         raise CatalogError(f"{path}: transport.args must be a list")
@@ -244,8 +244,8 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     )
     if t_type == "stdio" and not transport.command:
         raise CatalogError(f"{path}: stdio transport requires 'command'")
-    if t_type == "http" and not transport.url:
-        raise CatalogError(f"{path}: http transport requires 'url'")
+    if t_type in ("http", "sse") and not transport.url:
+        raise CatalogError(f"{path}: {t_type} transport requires 'url'")
 
     auth_raw = data.get("auth") or {"type": "none"}
     if not isinstance(auth_raw, dict):
@@ -521,8 +521,10 @@ def _build_server_config(
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
-    elif t.type == "http":
+    elif t.type in ("http", "sse"):
         cfg["url"] = t.url
+        if t.type == "sse":
+            cfg["transport"] = "sse"
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
     return cfg

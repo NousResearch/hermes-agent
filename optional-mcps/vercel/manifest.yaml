@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: vercel
+description: Analyze, debug, and manage projects and deployments
+source: https://claude.com/connectors/vercel
+ui:
+  display_name: Vercel
+  category: Business tools
+  icon: vercel
+  tags:
+  - project-management
+  capabilities:
+  - Analyze, debug, and manage projects and deployments
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.vercel.com
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Vercel.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure vercel\n"

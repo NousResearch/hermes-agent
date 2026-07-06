@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: alma
+description: Your nutrition data, inside every Claude conversation.
+source: https://claude.com/connectors/alma
+ui:
+  display_name: Alma
+  category: Analytics
+  icon: alma
+  tags:
+  - analytics
+  capabilities:
+  - Your nutrition data, inside every Claude conversation.
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.alma.food
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Alma.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure alma\n"

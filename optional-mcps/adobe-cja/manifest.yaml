@@ -1,0 +1,26 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: adobe-cja
+description: Run reports using your metrics, dimensions, and segments
+source: https://claude.com/connectors/adobe-cja
+ui:
+  display_name: Adobe Customer Journey Analytics
+  category: Analytics
+  icon: adobe-cja
+  tags:
+  - crm
+  - analytics
+  capabilities:
+  - Run reports using your metrics, dimensions, and segments
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://cja-mcp.adobe.io/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Adobe Customer Journey Analytics.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure adobe-cja\n"

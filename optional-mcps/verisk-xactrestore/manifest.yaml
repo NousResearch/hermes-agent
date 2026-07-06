@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: verisk-xactrestore
+description: Natural-language estimating for XactRestore
+source: https://claude.com/connectors/verisk-xactrestore
+ui:
+  display_name: Verisk XactRestore
+  category: Business tools
+  icon: verisk-xactrestore
+  tags:
+  - connector
+  capabilities:
+  - Natural-language estimating for XactRestore
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://xactrestore-xactremodelserver-usw2-prod.propsol.io/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Verisk XactRestore.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure verisk-xactrestore\n"

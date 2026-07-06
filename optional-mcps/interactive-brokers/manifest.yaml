@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: interactive-brokers
+description: Trade, invest, analyze, and manage global markets
+source: https://claude.com/connectors/interactive-brokers
+ui:
+  display_name: Interactive Brokers (IBKR)
+  category: Business tools
+  icon: interactive-brokers
+  tags:
+  - connector
+  capabilities:
+  - Trade, invest, analyze, and manage global markets
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://api.ibkr.com/v1/api/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Interactive Brokers (IBKR).\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure interactive-brokers\n"

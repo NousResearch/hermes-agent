@@ -7981,7 +7981,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # model.persist_switch_by_default (defaults to True so /model survives
         # across sessions).
         persist_global = resolve_persist_behavior(is_global_flag, is_session)
-        if explicit_provider.strip().lower() == "moa" and not is_global_flag:
+        if (explicit_provider or "").strip().lower() == "moa" and not is_global_flag:
             # MoA is allowed only as a manual interactive mode, not as the
             # unattended/default route. Plain `/model ... --provider moa`
             # therefore becomes session-only by default; `--global` is rejected

@@ -998,7 +998,10 @@ class TestGetDueJobs:
     def test_one_shot_run_claim_expires_after_ttl(self, tmp_cron_dir, monkeypatch):
         """A claiming tick that DIED mid-run must not wedge the one-shot forever:
         once the run_claim is older than the TTL it is re-dispatched (recovered)."""
-        from cron.jobs import _hermes_now, ONESHOT_RUN_CLAIM_TTL_SECONDS
+        # Pin the inactivity timeout unset so the derived TTL is deterministic.
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+        ttl = _oneshot_run_claim_ttl_seconds()
         t0 = _hermes_now()
         run_at = (t0 - timedelta(seconds=5)).isoformat()
         save_jobs([{
@@ -1010,14 +1013,43 @@ class TestGetDueJobs:
 
         # Just inside the TTL: still claimed → skipped.
         monkeypatch.setattr("cron.jobs._hermes_now",
-                            lambda: t0 + timedelta(seconds=ONESHOT_RUN_CLAIM_TTL_SECONDS - 10))
+                            lambda: t0 + timedelta(seconds=ttl - 10))
         assert get_due_jobs() == []
 
         # Just past the TTL: stale claim → re-dispatched (recovered), re-claimed.
         monkeypatch.setattr("cron.jobs._hermes_now",
-                            lambda: t0 + timedelta(seconds=ONESHOT_RUN_CLAIM_TTL_SECONDS + 10))
+                            lambda: t0 + timedelta(seconds=ttl + 10))
         recovered = get_due_jobs()
         assert [j["id"] for j in recovered] == ["wedged"]
+
+    def test_run_claim_ttl_derived_from_cron_timeout(self, tmp_cron_dir, monkeypatch):
+        """The stale-recovery TTL tracks HERMES_CRON_TIMEOUT (3x headroom), with
+        the fixed constant as a floor, and falls back to the constant when runs
+        are unbounded (timeout=0)."""
+        from cron.jobs import (
+            _oneshot_run_claim_ttl_seconds as ttl,
+            ONESHOT_RUN_CLAIM_TTL_SECONDS as FLOOR,
+        )
+        # Unset → default 600s inactivity → 1800s (== the historical constant).
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        assert ttl() == 1800.0
+
+        # A large custom timeout scales the TTL up (3x headroom).
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1200")
+        assert ttl() == 3600.0
+
+        # A tiny timeout is floored so a claim can never expire mid-run.
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "30")
+        assert ttl() == float(FLOOR)
+
+        # Unlimited runs (0) → no finite bound → fall back to the floor.
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+        assert ttl() == float(FLOOR)
+
+        # Invalid value → treated as the default 600s → 1800s.
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "not-a-number")
+        assert ttl() == 1800.0
+
 
     def test_mark_job_run_clears_one_shot_run_claim(self, tmp_cron_dir, monkeypatch):
         """mark_job_run() clears the run_claim on completion so a re-dispatched

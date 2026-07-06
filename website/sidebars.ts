@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/secrets/index',
             'user-guide/secrets/bitwarden',
+            'user-guide/secrets/onepassword',
           ],
         },
         'user-guide/sessions',
@@ -738,6 +739,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/adding-platform-adapters',
             'developer-guide/memory-provider-plugin',
             'developer-guide/context-engine-plugin',
+            'developer-guide/secret-source-plugin',
             'developer-guide/model-provider-plugin',
             'developer-guide/image-gen-provider-plugin',
             'developer-guide/video-gen-provider-plugin',

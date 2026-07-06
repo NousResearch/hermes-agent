@@ -951,6 +951,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // follow up with the authoritative measurement — at worst Ink
       // reflows once after the PTY boots, which is imperceptible.
       ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      // When resuming an existing session the PTY backend replays the
+      // scrollback immediately over the WebSocket. xterm.js writes all
+      // those bytes to its buffer but keeps the viewport pinned at
+      // wherever it was (e.g. top of a fresh terminal). Without an
+      // explicit scroll the transcript appears incomplete until something
+      // else forces a re-render (e.g. the theme-change workaround in
+      // #59591).  Two rAFs let the replay bytes land and layout settle
+      // before we call scrollToBottom(), matching the settle window used
+      // for the authoritative fit call below.
+      if (resumeParam) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            termRef.current?.scrollToBottom();
+          });
+        });
+      }
       // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
       // skill" panel) is typed into the composer as a /learn command once the
       // PTY is up. /learn resolves via command.dispatch → a normal agent turn,

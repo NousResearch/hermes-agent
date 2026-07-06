@@ -399,6 +399,7 @@ def _apply_profile_override() -> None:
         "-t", "--toolsets",
         "-r", "--resume",
         "-s", "--skills",
+        "--usage-file",
     }
     optional_value_flags = {"-c", "--continue"}
     i = 0
@@ -12240,6 +12241,7 @@ _TOP_LEVEL_VALUE_FLAGS = frozenset(
         "-t", "--toolsets",
         "-r", "--resume",
         "-s", "--skills",
+        "--usage-file",
         # ``-c / --continue`` is nargs='?' (optional value). Treat it as
         # value-taking: if the next token is a subcommand-looking word
         # the user almost certainly meant it as the session name, and
@@ -12463,6 +12465,7 @@ def _try_termux_fast_cli_launch() -> bool:
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                usage_file=getattr(args, "usage_file", None),
             )
         )
 
@@ -14112,6 +14115,7 @@ def main():
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                usage_file=getattr(args, "usage_file", None),
             )
         )
 

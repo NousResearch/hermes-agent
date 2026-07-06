@@ -45,12 +45,12 @@ export function StatusSection({
               <p className="mono-label">M13 / CAPABILITIES</p>
               <h2>Что разрешено сейчас</h2>
             </div>
-            <span className="lock-pill">backend says</span>
+            <span className="lock-pill">по данным сервера</span>
           </div>
           <div className="capability-grid">
             {capabilities.map((capability) => (
               <article className="capability-item" data-enabled={capability.enabled} key={capability.id}>
-                <span>{capability.enabled ? "enabled" : "blocked"}</span>
+                <span>{capability.enabled ? "разрешено" : "заблокировано"}</span>
                 <strong>{capability.label}</strong>
                 <p>{capability.reason}</p>
                 <em>{capability.mode}</em>
@@ -60,19 +60,19 @@ export function StatusSection({
         </section>
       ) : null}
 
-      <section className="endpoint-health-card glass-card" aria-label="Состояние read-only snapshots">
+      <section className="endpoint-health-card glass-card" aria-label="Состояние снимков данных">
         <div className="section-heading">
           <div>
             <p className="mono-label">M14 / ENDPOINT HEALTH</p>
             <h2>Снимки данных</h2>
           </div>
-          <span className="lock-pill">без payload</span>
+          <span className="lock-pill">только статус</span>
         </div>
         <div className="endpoint-health-list">
           {endpointHealth.map((item) => (
             <article className="endpoint-health-row" data-state={item.state} key={item.key}>
               <span>{item.label}</span>
-              <strong>{item.state === "ok" ? "ok" : item.state === "checking" ? "check" : item.state === "degraded" ? "degraded" : "preview"}</strong>
+              <strong>{item.state === "ok" ? "готов" : item.state === "checking" ? "проверка" : item.state === "degraded" ? "деградация" : "превью"}</strong>
               <small>{item.detail}</small>
             </article>
           ))}
@@ -90,7 +90,9 @@ export function StatusSection({
 
         <div className="quick-grid">
           {quickActions.map((action, index) => (
-            <article className="quick-tile tap" key={action.id} style={{ "--delay": `${index * 45}ms` } as CSSProperties}>
+            // Informational tiles: no onClick, no tap affordance (they are not
+            // controls — see styles.css .quick-tile which drops pointer/hover).
+            <article className="quick-tile" key={action.id} style={{ "--delay": `${index * 45}ms` } as CSSProperties}>
               <div className="action-title">
                 <strong>{action.label}</strong>
                 <RiskBadge action={action} />

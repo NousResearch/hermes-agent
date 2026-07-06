@@ -205,7 +205,10 @@ def test_me_and_status_require_auth_then_return_safe_schema():
     assert status.status_code == 200
     # The sidecar authoritatively owns the miniapp block; with actions disabled
     # it must report actions_enabled False so status and the gate agree.
-    expected = {**snapshot, "miniapp": {"mode": "read-only", "actions_enabled": False, "public_exposure": False}}
+    expected = {**snapshot, "miniapp": {
+        "mode": "read-only", "actions_enabled": False, "public_exposure": False,
+        "gateway_resolver_active": False, "action_application": "not-wired",
+    }}
     assert status.json() == expected
     serialized = status.text
     assert "/Volumes/Diver Pro/hermes" not in serialized
@@ -656,10 +659,12 @@ def test_action_gate_enabled_flow_and_leak_safety(tmp_path):
     assert ok.status_code == 200
     body = ok.json()
     assert body["ok"] and body["status"] == "accepted" and body["decision_id"]
+    assert body["message"] == "Решение записано в Mini App bridge. Gateway пока не применяет его автоматически."
     assert "rm -rf" not in ok.text and BOT_TOKEN not in ok.text
     assert ok.headers["cache-control"] == "no-store"
 
-    # A signed decision file was written for the gateway to pick up.
+    # A signed decision file was recorded in the Mini App bridge. Phase 1 does
+    # not imply a live gateway resolver consumes or applies it.
     decision_files = list((tmp_path / "miniapp" / "decisions").glob("*.json"))
     assert len(decision_files) == 1
 
@@ -846,6 +851,20 @@ def test_status_reports_actions_enabled_when_gate_is_on(tmp_path):
     status = client.get("/api/status").json()
     assert status["miniapp"]["actions_enabled"] is True
     assert status["miniapp"]["public_exposure"] is False
+    # Honest application state: the sidecar records decisions but no gateway
+    # resolver applies them, so it is "record-only", never live.
+    assert status["miniapp"]["gateway_resolver_active"] is False
+    assert status["miniapp"]["action_application"] == "record-only"
+
+
+def test_status_action_application_is_not_wired_without_gate():
+    # With the gate off (default), application is honestly "not-wired".
+    client = make_client()
+    auth_client(client)
+    mini = client.get("/api/status").json()["miniapp"]
+    assert mini["actions_enabled"] is False
+    assert mini["gateway_resolver_active"] is False
+    assert mini["action_application"] == "not-wired"
 
 
 def test_action_gate_rejects_stale_snapshot(tmp_path):
@@ -915,3 +934,170 @@ def test_idempotency_key_scoped_to_target(tmp_path):
     # Distinct decisions produced distinct signed files (not a replayed cache).
     assert approve.json()["decision_id"] != reject.json()["decision_id"]
     assert len(list((tmp_path / "miniapp" / "decisions").glob("*.json"))) == 2
+
+
+# ── static SPA serving (single origin so the WebView shares cookies) ──────────
+
+def _static_settings(tmp_path, **overrides):
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>Hermes Deck</title>", encoding="utf-8")
+    (dist / "assets" / "app.js").write_text("console.log('deck')", encoding="utf-8")
+    values = dict(bot_token=BOT_TOKEN, allowed_users={"777"}, static_dir=str(dist), now=lambda: 1_700_000_100)
+    values.update(overrides)
+    return MiniAppSettings(**values), dist
+
+
+def test_static_spa_is_served_on_same_origin(tmp_path):
+    settings, _ = _static_settings(tmp_path)
+    client = make_client(settings)
+
+    root = client.get("/", headers={"host": "127.0.0.1:9120"})
+    assert root.status_code == 200
+    assert "Hermes Deck" in root.text
+    assert root.headers["x-content-type-options"] == "nosniff"
+    assert root.headers["referrer-policy"] == "no-referrer"
+    assert "camera=()" in root.headers["permissions-policy"]
+    assert "default-src 'self'" in root.headers["content-security-policy"]
+    assert "connect-src 'self'" in root.headers["content-security-policy"]
+
+    # SPA fallback: unknown client-side route still returns the shell.
+    deep = client.get("/sessions", headers={"host": "127.0.0.1:9120"})
+    assert deep.status_code == 200 and "Hermes Deck" in deep.text
+    assert deep.headers["x-content-type-options"] == "nosniff"
+    assert "default-src 'self'" in deep.headers["content-security-policy"]
+
+    asset = client.get("/assets/app.js", headers={"host": "127.0.0.1:9120"})
+    assert asset.status_code == 200 and "console.log('deck')" in asset.text
+    assert asset.headers["x-content-type-options"] == "nosniff"
+    assert "default-src 'self'" in asset.headers["content-security-policy"]
+
+
+def test_static_serving_never_shadows_the_api(tmp_path):
+    settings, _ = _static_settings(tmp_path)
+    client = make_client(settings)
+
+    # /api/* keeps its real behavior (auth-gated), NOT the SPA shell.
+    status = client.get("/api/status", headers={"host": "127.0.0.1:9120"})
+    assert status.status_code == 401
+    assert "Hermes Deck" not in status.text
+    # Unknown /api paths 404 rather than leaking the HTML shell — including the
+    # EXACT "/api" root (no trailing slash), which the catch-all sees as
+    # spa_path == "api".
+    for probe in ("/api", "/api/", "/api/nope"):
+        resp = client.get(probe, headers={"host": "127.0.0.1:9120"})
+        assert resp.status_code == 404, probe
+        assert "Hermes Deck" not in resp.text, probe
+    # Health routes stay JSON.
+    assert client.get("/healthz", headers={"host": "127.0.0.1:9120"}).json()["ok"] is True
+    # Unknown /api paths on NON-GET methods 404 (not 405 from the GET-only SPA
+    # fallback). Actions are disabled here, so the decision route is absent.
+    # Includes the EXACT "/api" root for every method.
+    for method, path in [
+        ("post", "/api/approvals/abc/decision"), ("post", "/api/nope"), ("put", "/api/x"),
+        ("post", "/api"), ("put", "/api"), ("head", "/api"),
+    ]:
+        resp = getattr(client, method)(path, headers={"host": "127.0.0.1:9120"})
+        assert resp.status_code == 404, (method, path)
+        assert "Hermes Deck" not in resp.text
+
+
+def test_same_origin_request_from_served_spa_is_allowed(tmp_path):
+    # The SPA served BY the sidecar makes credentialed calls whose Origin equals
+    # the sidecar's own (Host-validated) origin. That is same-origin and must be
+    # allowed even though the sidecar origin is not in the cross-origin dev
+    # allowlist — otherwise auth from the served shell 403s before it can start.
+    settings, _ = _static_settings(tmp_path)
+    client = make_client(settings)
+    same_origin = {"host": "127.0.0.1:9120", "origin": "http://127.0.0.1:9120"}
+
+    # A same-origin POST to auth reaches the handler (401/400 for the dummy body),
+    # NOT a 403 origin rejection.
+    resp = client.post("/api/auth/telegram", json={"initData": "x"}, headers=same_origin)
+    assert resp.status_code != 403
+    # A cross-origin caller not in the allowlist is still rejected.
+    evil = client.post("/api/auth/telegram", json={"initData": "x"},
+                       headers={"host": "127.0.0.1:9120", "origin": "http://evil.example"})
+    assert evil.status_code == 403
+
+
+def test_static_index_symlink_escape_is_blocked(tmp_path):
+    import os
+    settings, dist = _static_settings(tmp_path)
+    outside = tmp_path / "outside_secret.html"
+    outside.write_text("OUTSIDE SECRET", encoding="utf-8")
+    # Replace index.html with a symlink pointing OUTSIDE the static dir.
+    (dist / "index.html").unlink()
+    os.symlink(outside, dist / "index.html")
+    client = make_client(settings)
+
+    resp = client.get("/sessions", headers={"host": "127.0.0.1:9120"})
+    assert "OUTSIDE SECRET" not in resp.text
+    assert resp.status_code == 404
+
+
+def test_static_asset_path_traversal_is_blocked(tmp_path):
+    settings, dist = _static_settings(tmp_path)
+    (tmp_path / "secret.txt").write_text("TOP SECRET", encoding="utf-8")
+    client = make_client(settings)
+
+    # The security property: no traversal variant ever serves a file OUTSIDE the
+    # static dir. (URL normalization may rewrite ../ to a different path that
+    # lands on the SPA shell — that is fine; it must never be the secret.)
+    for attack in ["/assets/../secret.txt", "/assets/..%2f..%2fsecret.txt", "/assets/../../secret.txt"]:
+        resp = client.get(attack, headers={"host": "127.0.0.1:9120"})
+        assert "TOP SECRET" not in resp.text
+
+    # A traversal that actually reaches the asset route is rejected by the
+    # containment guard, not served.
+    reached = client.get("/assets/..%2fsecret.txt", headers={"host": "127.0.0.1:9120"})
+    assert "TOP SECRET" not in reached.text
+
+
+def test_no_spa_route_when_static_dir_unset(tmp_path):
+    # Default sidecar (no static_dir) serves API only: root is not a SPA shell.
+    client = make_client()
+    resp = client.get("/", headers={"host": "127.0.0.1:9120"})
+    assert resp.status_code == 404
+
+
+def test_static_serving_does_not_shadow_real_action_routes(tmp_path):
+    # With BOTH actions enabled AND static serving on, the real /api/approvals
+    # and the decision route must still win (registered before the /api 404
+    # sink), while / serves the SPA shell.
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>Deck Shell</title>", encoding="utf-8")
+    key = _bridge.derive_bridge_key(BOT_TOKEN)
+    _bridge.MiniAppBridge(tmp_path, key).export(
+        [{"session_key": "sess-a", "command": "rm -rf /data", "description": "Удалить данные",
+          "pattern_key": "rm-rf", "risk_tier": "critical",
+          "requested_at": 1_700_000_050, "expires_at": 1_700_000_400}],
+        now=1_700_000_090,
+    )
+    settings = MiniAppSettings(
+        bot_token=BOT_TOKEN,
+        allowed_users={"777"},
+        action_owners={"777"},
+        enable_actions=True,
+        hermes_home=str(tmp_path),
+        static_dir=str(dist),
+        now=lambda: 1_700_000_100,
+    )
+    client = TestClient(create_app(settings=settings, status_provider=lambda: {"ok": True, "gateway": {}}),
+                        base_url="http://127.0.0.1:9120")
+    auth_client(client)
+
+    approvals = client.get("/api/approvals")
+    assert approvals.status_code == 200 and approvals.json()["items"]  # real route, not the sink
+
+    approval_id = approvals.json()["items"][0]["id"]
+    decision = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "approve_once", "client_request_id": "uuid-x", "snapshot_version": "stale"},
+        headers={"x-telegram-init-data": build_init_data(auth_date=1_700_000_099)},
+    )
+    assert decision.status_code != 404  # reached the real handler, not the /api 404 sink
+
+    root = client.get("/", headers={"host": "127.0.0.1:9120"})
+    assert root.status_code == 200 and "Deck Shell" in root.text

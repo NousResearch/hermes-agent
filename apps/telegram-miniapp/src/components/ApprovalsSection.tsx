@@ -10,27 +10,29 @@ const DECISION_LABEL: Record<ApprovalDecisionValue, string> = {
   reject_once: "Отклонить один раз",
 };
 
-function DecisionReadiness({ approval, live }: { approval: ApprovalPreview; live: boolean }) {
+function DecisionReadiness({ approval, canSubmit, applicationEnabled }: { approval: ApprovalPreview; canSubmit: boolean; applicationEnabled: boolean }) {
   const guardrails = [
     {
-      label: "Действия сервера",
-      value: live ? "подключены" : "не подключены",
-      ready: live,
-      detail: live
-        ? "Approve/reject once доступны только владельцу через отдельное подтверждение."
-        : "В Mini App нет endpoint для approve/reject/restart. Их добавление требует отдельного approved design.",
+      label: "Контур решений",
+      value: canSubmit ? "можно записать" : applicationEnabled ? "ждёт свежий снимок" : "не подключён",
+      ready: canSubmit,
+      detail: canSubmit
+        ? "Sidecar примет решение владельца и запишет его в record-only bridge."
+        : applicationEnabled
+          ? "Кнопки закрыты, пока нет свежей версии очереди и подтверждённого владельца."
+          : "Нет live-применения gateway; без отдельного resolver loop решения не исполняются.",
     },
     {
       label: "Контекст владельца",
-      value: live ? "подтверждён" : approval.risk === "critical" ? "требуется" : "ожидает",
-      ready: live,
+      value: canSubmit ? "подтверждён" : approval.risk === "critical" ? "требуется" : "ожидает",
+      ready: canSubmit,
       detail: "Решение требует свежего Telegram-подтверждения владельца и второго шага.",
     },
     {
       label: "Проверки запроса",
       value: `${approval.checks.length} видно`,
       ready: approval.checks.length > 0,
-      detail: "Список отображается как read-only preflight; сырая команда не раскрывается.",
+      detail: "Список только для чтения; сырая команда не раскрывается.",
     },
   ] as const;
 
@@ -38,15 +40,15 @@ function DecisionReadiness({ approval, live }: { approval: ApprovalPreview; live
     <section className="decision-readiness" aria-label="Готовность решения">
       <div className="decision-readiness-head">
         <div>
-          <p className="mono-label">{live ? "M18 / ACTION GATE" : "M12 / PREFLIGHT LOCK"}</p>
-          <h3>{live ? "Решение владельца в два шага" : "Решение требует отдельного design approval"}</h3>
+          <p className="mono-label">{canSubmit ? "M18 / RECORD-ONLY GATE" : "M12 / PREFLIGHT LOCK"}</p>
+          <h3>{canSubmit ? "Решение владельца записывается в два шага" : "Решение пока недоступно"}</h3>
         </div>
-        <span className="lock-pill">{live ? "owner" : "read-only"}</span>
+        <span className="lock-pill">{canSubmit ? "владелец" : "закрыто"}</span>
       </div>
       <p>
-        {live
-          ? "Approve/reject once отправляется только после подтверждения. Сырая команда в Mini App не показывается; gateway перепроверяет решение."
-          : "Этот блок заранее показывает, что должно быть проверено перед будущим approve/reject. Сейчас он ничего не отправляет, не меняет и не создаёт action route."}
+        {canSubmit
+          ? "Решение «одобрить/отклонить один раз» записывается только после подтверждения. Сырая команда в мини-аппе не показывается. Это record-only: gateway пока не применяет решение автоматически."
+          : "Этот блок показывает, что должно быть свежим перед решением. Пока кнопки закрыты: без свежего снимка, владельца и record-only gate ничего не отправляется."}
       </p>
       <div className="readiness-grid">
         {guardrails.map((item) => (
@@ -65,12 +67,14 @@ function ConfirmSheet({
   approval,
   decision,
   pending,
+  error,
   onConfirm,
   onCancel,
 }: {
   approval: ApprovalPreview;
   decision: ApprovalDecisionValue;
   pending: boolean;
+  error?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -98,8 +102,9 @@ function ConfirmSheet({
         <p className="muted">{approval.title}</p>
         <div className="readonly-note">
           <strong>Сырая команда не раскрывается</strong>
-          <small>Mini App показывает только редактированное описание; полную команду видит и исполняет gateway после проверки.</small>
+          <small>Mini App показывает только редактированное описание; gateway не применяет это решение автоматически, пока resolver loop не подключён.</small>
         </div>
+        {error ? <p className="decision-feedback error" role="alert">{error}</p> : null}
         <div className="decision-strip" aria-label="Подтвердить или отменить">
           <button type="button" className="tap" onClick={onCancel} disabled={pending}>
             Отмена
@@ -118,6 +123,10 @@ export function ApprovalsSection({
   selectedId,
   onSelect,
   actionsEnabled = false,
+  canSubmitDecision = false,
+  decisionBlockReason = "",
+  decisionError = "",
+  onClearDecisionError,
   isOwner = false,
   isConnected = false,
   onDecision,
@@ -126,6 +135,10 @@ export function ApprovalsSection({
   selectedId: string;
   onSelect: (approval: ApprovalPreview) => void;
   actionsEnabled?: boolean;
+  canSubmitDecision?: boolean;
+  decisionBlockReason?: string;
+  decisionError?: string;
+  onClearDecisionError?: () => void;
   isOwner?: boolean;
   isConnected?: boolean;
   onDecision?: (approvalId: string, decision: ApprovalDecision) => Promise<boolean>;
@@ -142,9 +155,10 @@ export function ApprovalsSection({
 
   const selected = approvals.find((approval) => approval.id === selectedId) ?? approvals[0];
   const allowed = selected.allowedDecisions ?? [];
-  // A decision is actionable only when the backend capability is live, the user
-  // is the authenticated owner, and this approval advertises the decision.
-  const canDecide = actionsEnabled && isOwner && Boolean(onDecision);
+  // A decision is actionable only when hook-level readiness includes capability,
+  // owner proof, connected state, record-only/live-honest application state and
+  // a fresh approvals snapshot_version.
+  const canDecide = canSubmitDecision && Boolean(onDecision);
   // Distinguish WHY a decision is unavailable so the button copy tells the
   // truth instead of a generic "позже": a non-owner on a live connection can
   // never decide (stable), whereas an owner whose gate is off/degraded may be
@@ -165,11 +179,17 @@ export function ApprovalsSection({
     triggerTelegramImpact("rigid");
     setPending(true);
     try {
-      await onDecision(target.id, decision);
+      const ok = await onDecision(target.id, decision);
+      if (ok) setConfirm(null);
     } finally {
       setPending(false);
-      setConfirm(null);
     }
+  }
+
+  function openConfirm(decision: ApprovalDecisionValue) {
+    if (!canDecide) return;
+    onClearDecisionError?.();
+    setConfirm({ approval: selected, decision });
   }
 
   return (
@@ -204,13 +224,19 @@ export function ApprovalsSection({
             <li key={check}>{check}</li>
           ))}
         </ul>
-        <DecisionReadiness approval={selected} live={canDecide} />
+        <DecisionReadiness approval={selected} canSubmit={canDecide} applicationEnabled={actionsEnabled} />
+        {!canDecide && decisionBlockReason ? (
+          <p className="decision-feedback" role="status">{decisionBlockReason}</p>
+        ) : null}
+        {decisionError ? (
+          <p className="decision-feedback error" role="alert">{decisionError}</p>
+        ) : null}
         <div className="decision-strip" aria-label="Решения">
           <button
             type="button"
             className="tap"
             disabled={!canDecide || pending || !allowed.includes("approve_once")}
-            onClick={() => setConfirm({ approval: selected, decision: "approve_once" })}
+            onClick={() => openConfirm("approve_once")}
           >
             {approveLabel}
           </button>
@@ -218,7 +244,7 @@ export function ApprovalsSection({
             type="button"
             className="tap"
             disabled={!canDecide || pending || !allowed.includes("reject_once")}
-            onClick={() => setConfirm({ approval: selected, decision: "reject_once" })}
+            onClick={() => openConfirm("reject_once")}
           >
             {rejectLabel}
           </button>
@@ -230,6 +256,7 @@ export function ApprovalsSection({
           approval={confirm.approval}
           decision={confirm.decision}
           pending={pending}
+          error={decisionError}
           onConfirm={() => void runDecision(confirm.approval, confirm.decision)}
           onCancel={() => setConfirm(null)}
         />

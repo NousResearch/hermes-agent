@@ -52,6 +52,9 @@ class MiniAppSettings:
     auth_rate_limit_per_minute: int = 10
     auth_global_limit: int = 50
     status_rate_limit_per_minute: int = 60
+    # Absolute path to the built SPA (dist/) to serve on the SAME origin as the
+    # API, so auth cookies work in the Telegram WebView. None = serve API only.
+    static_dir: str | None = None
     now: Callable[[], int | float] = time.time
 
     def resolved_bot_token(self) -> str:
@@ -242,7 +245,17 @@ def _host_header_allowed(host_header: str, settings: MiniAppSettings) -> bool:
 
 def _origin_allowed_for_request(request: Request, origin: str, settings: MiniAppSettings) -> bool:
     if not settings.public_smoke:
-        return not origin or origin in settings.cors_allowed_origins
+        if not origin:
+            return True
+        # Genuine same-origin (the SPA served BY the sidecar makes credentialed
+        # calls whose Origin equals this request's own, already Host-validated,
+        # origin) is never CSRF and must be allowed even though the sidecar's own
+        # origin is not in the cross-origin dev allowlist. A cross-origin caller
+        # (evil site, or the Vite dev server) still goes through the allowlist.
+        host = request.headers.get("host", "")
+        if host and origin == f"http://{host}":
+            return True
+        return origin in settings.cors_allowed_origins
     if origin == "null":
         return False
     if origin:
@@ -274,6 +287,28 @@ def _apply_public_headers(response: Response, settings: MiniAppSettings) -> Resp
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
+
+
+def _apply_static_headers(response: Response) -> Response:
+    """Security headers for the same-origin SPA shell/assets.
+
+    Static shell is intentionally unauthenticated; API remains session-gated. Keep
+    the shell constrained so a future public/static smoke does not ship a naked
+    HTML surface.
+    """
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' https://telegram.org; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "frame-ancestors https://web.telegram.org https://*.telegram.org"
+    )
     return response
 
 
@@ -467,6 +502,14 @@ def create_app(
             "mode": "https-smoke" if settings.public_smoke else ("owner-action" if actions_ready else "read-only"),
             "actions_enabled": actions_ready,
             "public_exposure": settings.public_smoke,
+            # Honest action-application state, separate from actions_enabled.
+            # `actions_enabled` means only that the sidecar MAY accept/record owner
+            # decisions; it never implies a live gateway applies them. No gateway
+            # resolver loop is wired, so gateway_resolver_active is always False and
+            # application is at most "record-only". Never "live" without a proven
+            # resolver heartbeat.
+            "gateway_resolver_active": False,
+            "action_application": "record-only" if actions_ready else "not-wired",
         }
         return _apply_api_no_store(JSONResponse(snapshot), settings)
 
@@ -608,17 +651,76 @@ def create_app(
                     },
                 )
                 decision_id = bridge.submit_decision(envelope)
-                # "accepted" == queued for the gateway; execution is confirmed by
-                # the gateway receipt, surfaced on the next approvals refresh.
+                # "accepted" == recorded in the Mini App bridge only. The gateway
+                # resolver loop is not wired in Phase 1, so this response must not
+                # imply live gateway consumption or execution.
                 body = {
                     "ok": True,
                     "decision_id": decision_id or "",
                     "status": "accepted",
-                    "message": "Решение отправлено на подтверждение gateway.",
+                    "message": "Решение записано в Mini App bridge. Gateway пока не применяет его автоматически.",
                 }
                 action_idempotency[idem_key] = body
                 while len(action_idempotency) > _ACTION_IDEMPOTENCY_CAP:
                     action_idempotency.pop(next(iter(action_idempotency)))
             return _apply_api_no_store(JSONResponse(body), settings)
+
+    # ── static SPA (single origin so auth cookies work in the WebView) ──────
+    # Registered LAST so it never shadows the API / health routes above. Only the
+    # built shell + hashed assets are served; there is no auth on the public SPA
+    # shell (the API stays session-gated), and paths are confined to static_dir.
+    if settings.static_dir:
+        from pathlib import Path as _Path
+        from fastapi.responses import FileResponse
+
+        _static_root = _Path(settings.static_dir).resolve()
+        _index = _static_root / "index.html"
+        _assets = _static_root / "assets"
+
+        def _safe_under(root: _Path, candidate: _Path) -> bool:
+            try:
+                candidate.relative_to(root)
+                return True
+            except ValueError:
+                return False
+
+        @app.get("/assets/{asset_path:path}")
+        def serve_asset(asset_path: str):
+            target = (_assets / asset_path).resolve()
+            if not _safe_under(_assets, target) or not target.is_file():
+                raise HTTPException(status_code=404, detail="Not found")
+            return _apply_static_headers(FileResponse(target))
+
+        _api_sink_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
+
+        @app.api_route("/api", methods=_api_sink_methods)
+        def api_root_not_found():
+            # The EXACT "/api" root (no trailing slash) is not caught by the
+            # /api/{path} sink below, so without this it would hit the GET-only
+            # SPA fallback and 405 on non-GET methods.
+            raise HTTPException(status_code=404, detail="Not found")
+
+        @app.api_route("/api/{_rest:path}", methods=_api_sink_methods)
+        def api_not_found(_rest: str):
+            # Real API routes are registered earlier and win by specificity; this
+            # only catches UNMATCHED /api/* paths. Without it, the GET-only SPA
+            # fallback below would turn an unknown /api POST into a 405 (Allow:
+            # GET) — keep unknown API paths a clean 404 for every method.
+            raise HTTPException(status_code=404, detail="Not found")
+
+        @app.get("/{spa_path:path}")
+        def serve_spa(spa_path: str):
+            # SPA fallback for client-side routing. API / health paths are matched
+            # by their specific routes above and never reach here; guard anyway so
+            # an unknown API path (including the exact "/api" root) or health path
+            # 404s instead of returning the HTML shell.
+            if spa_path == "api" or spa_path.startswith("api/") or spa_path in {"healthz", "readyz"}:
+                raise HTTPException(status_code=404, detail="Not found")
+            # Resolve index.html and confirm it is still contained in static_dir,
+            # so a symlinked shell cannot serve a file from outside the tree.
+            resolved_index = _index.resolve()
+            if not _safe_under(_static_root, resolved_index) or not resolved_index.is_file():
+                raise HTTPException(status_code=404, detail="Not found")
+            return _apply_static_headers(FileResponse(resolved_index))
 
     return app

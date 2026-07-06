@@ -36,8 +36,27 @@ def _ensure_port_available(host: str, port: int) -> None:
         probe.close()
 
 
+def _detect_static_dir() -> str | None:
+    """Locate the built SPA (apps/telegram-miniapp/dist) relative to the repo so
+    the sidecar can serve it on the same origin as the API. None if not built."""
+    from pathlib import Path
+
+    dist = Path(__file__).resolve().parents[2] / "apps" / "telegram-miniapp" / "dist"
+    return str(dist) if (dist / "index.html").is_file() else None
+
+
 def run_foreground(*, https_smoke: bool = False, public_base_url: str | None = None, enable_actions: bool = False) -> None:
     settings = settings_from_config()
+    if settings.static_dir is None:
+        settings.static_dir = _detect_static_dir()
+    if settings.static_dir:
+        print(f"[miniapp] Serving built SPA from {settings.static_dir}", file=sys.stderr)
+    else:
+        print(
+            "[miniapp] No built SPA found (apps/telegram-miniapp/dist). Serving API "
+            "only; run `npm run build` in apps/telegram-miniapp to serve the UI too.",
+            file=sys.stderr,
+        )
     if https_smoke:
         if not public_base_url:
             raise SystemExit("--https-smoke requires --public-base-url https://<smoke-host>")

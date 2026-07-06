@@ -16,6 +16,34 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
+@pytest.fixture(autouse=True)
+def _restore_session_key_context():
+    """Keep this file's session-key ContextVar mutations from leaking out.
+
+    Prompt-submit (and similar) tests drive ``server.handle_request`` with a
+    synchronous ``Thread`` stand-in (``_ImmediateThread``), which runs the agent
+    worker in the *main* context rather than an isolated one. The worker binds
+    the gateway session-context vars via ``_set_session_context`` and, in its
+    ``finally``, calls ``clear_session_vars`` — which sets ``_SESSION_KEY`` (and
+    its siblings) to the ``""`` ("explicitly cleared") sentinel, not the
+    ``_UNSET`` ("never bound") one. In a real worker thread that context is
+    discarded; run synchronously it persists in the main context and
+    ``get_session_env("HERMES_SESSION_KEY")`` then returns ``""`` and suppresses
+    the os.environ fallback, so a later test's ``get_current_session_key()``
+    resolves to the wrong key — notably
+    ``tests/tools/test_approval.py::TestApprovalTimeoutIsNotConsent``, whose
+    gateway approval routing then misses its registered notify callback. Reset
+    to ``_UNSET`` (plus the approval ContextVar) after every test so this file's
+    global-state mutations stay contained.
+    """
+    from gateway.session_context import reset_session_vars
+    from tools.approval import _approval_session_key
+
+    yield
+    reset_session_vars()
+    _approval_session_key.set("")
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

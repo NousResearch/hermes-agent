@@ -164,6 +164,9 @@ def test_public_smoke_cli_forces_loopback_bind(monkeypatch):
     settings = public_settings(host="0.0.0.0")
     monkeypatch.setattr(cli, "settings_from_config", lambda: settings)
     monkeypatch.setattr(cli, "create_app", lambda *, settings: object())
+    # This test only asserts host-forcing; stub the real port probe so it does
+    # not depend on 9120 being free.
+    monkeypatch.setattr(cli, "_ensure_port_available", lambda host, port: None)
     monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=lambda app, **kwargs: captured.update(kwargs)))
 
     cli.run_foreground(https_smoke=True, public_base_url=SMOKE_ORIGIN)
@@ -273,7 +276,7 @@ def test_public_smoke_cookie_security_headers_and_status_shape():
     status = client.get("/api/status", headers={"origin": SMOKE_ORIGIN, "host": "hermes-smoke.example"})
     assert status.status_code == 200
     body = status.json()
-    assert body["miniapp"] == {"mode": "https-smoke", "actions_enabled": False, "public_exposure": True}
+    assert body["miniapp"] == {"mode": "https-smoke", "actions_enabled": False, "public_exposure": True, "gateway_resolver_active": False, "action_application": "not-wired"}
     assert SMOKE_ORIGIN not in status.text
     assert BOT_TOKEN not in status.text
     assert status.headers["cache-control"] == "no-store"
@@ -347,7 +350,7 @@ def test_public_smoke_default_status_provider_overlays_authoritative_public_mode
     status = client.get("/api/status", headers={"origin": SMOKE_ORIGIN, "host": "hermes-smoke.example"})
 
     assert status.status_code == 200
-    assert status.json()["miniapp"] == {"mode": "https-smoke", "actions_enabled": False, "public_exposure": True}
+    assert status.json()["miniapp"] == {"mode": "https-smoke", "actions_enabled": False, "public_exposure": True, "gateway_resolver_active": False, "action_application": "not-wired"}
     assert SMOKE_ORIGIN not in status.text
 
 

@@ -7,6 +7,7 @@ import {
   fetchSessionsSnapshot,
   fetchStatusSnapshot,
   postApprovalDecision,
+  MiniAppApiError,
   type ApprovalDecision,
   type CapabilityItem,
   type SnapshotMeta,
@@ -22,6 +23,7 @@ import {
 } from "./mockData";
 import {
   POLL_INTERVAL_MS,
+  STALE_AFTER_MS,
   STORAGE_KEYS,
   approveActionEnabled,
   createEndpointHealth,
@@ -55,6 +57,7 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
   const [serverCapabilities, setServerCapabilities] = useState<CapabilityItem[]>([]);
   const [approvalsVersion, setApprovalsVersion] = useState("");
   const [isActionOwner, setIsActionOwner] = useState(false);
+  const [decisionError, setDecisionError] = useState("");
   const [endpointHealth, setEndpointHealth] = useState<Record<EndpointKey, EndpointHealthItem>>(() => createEndpointHealth("preview"));
   // Per-endpoint time of that endpoint's OWN last successful read, so a
   // degraded section can be dated (or marked never-loaded) truthfully instead
@@ -303,9 +306,46 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
   const actionsEnabled =
     approveActionEnabled(serverCapabilities) && isActionOwner && snapshot?.miniapp.actions_enabled === true;
 
+  const actionApplication = snapshot?.miniapp.action_application ?? (snapshot?.miniapp.actions_enabled ? "record-only" : "not-wired");
+  const snapshotFresh = lastSuccessAt !== null && now - lastSuccessAt <= STALE_AFTER_MS;
+  const applicationCanRecord =
+    actionApplication === "record-only" ||
+    (actionApplication === "live" && snapshot?.miniapp.gateway_resolver_active === true);
+  const canSubmitDecision = actionsEnabled && apiState === "connected" && snapshotFresh && applicationCanRecord && approvalsVersion.length > 0;
+  const decisionBlockReason = canSubmitDecision
+    ? ""
+    : !isActionOwner
+      ? "Только владелец может записывать решения."
+      : !actionsEnabled
+        ? "Контур решений выключен сервером."
+        : apiState !== "connected"
+          ? "Нет свежего соединения с Mini App API."
+          : !snapshotFresh
+            ? "Снимок данных устарел. Обнови очередь перед решением."
+            : !applicationCanRecord
+              ? "Применение gateway не подключено."
+              : "Нет свежей версии очереди одобрений. Обнови снимок данных.";
+
+  function decisionErrorMessage(error: unknown): string {
+    if (error instanceof MiniAppApiError) {
+      if (error.status === 401) return "Сессия Mini App истекла. Открой приложение заново или обнови данные.";
+      if (error.status === 403) return "Сервер не подтвердил права владельца для этого решения.";
+      if (error.status === 409) return "Очередь одобрений устарела. Я обновил снимок — проверь запрос и попробуй снова.";
+      if (error.status === 429) return "Слишком много попыток. Подожди немного и попробуй снова.";
+      return `Сервер отклонил решение (${error.status}). ${error.message}`.trim();
+    }
+    return "Не удалось записать решение. Проверь соединение и попробуй снова.";
+  }
+
+  const clearDecisionError = useCallback(() => setDecisionError(""), []);
+
   const submitApprovalDecision = useCallback(
     async (approvalId: string, decision: ApprovalDecision): Promise<boolean> => {
-      if (!actionsEnabled || !telegram.initData || !approvalsVersion) return false;
+      setDecisionError("");
+      if (!canSubmitDecision || !telegram.initData || !approvalsVersion) {
+        setDecisionError(decisionBlockReason || "Нет свежей версии очереди одобрений. Обнови снимок данных.");
+        return false;
+      }
       try {
         await postApprovalDecision({
           approvalId,
@@ -319,17 +359,22 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
         triggerTelegramRefreshHaptic("success");
         await refreshSnapshots();
         return true;
-      } catch {
+      } catch (error) {
+        setDecisionError(decisionErrorMessage(error));
         triggerTelegramRefreshHaptic("warning");
         await refreshSnapshots();
         return false;
       }
     },
-    [actionsEnabled, approvalsVersion, refreshSnapshots, telegram.initData],
+    [approvalsVersion, canSubmitDecision, decisionBlockReason, refreshSnapshots, telegram.initData],
   );
 
   return {
     actionsEnabled,
+    canSubmitDecision,
+    decisionBlockReason,
+    decisionError,
+    clearDecisionError,
     isActionOwner,
     submitApprovalDecision,
     snapshot,

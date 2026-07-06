@@ -1,9 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { approveActionEnabled, freshnessState, gatewayValue } from "./appModel";
+import { actionFooterLabel, actionValue, approveActionEnabled, freshnessState, gatewayValue } from "./appModel";
 import { type CapabilityItem, type StatusSnapshot } from "./api";
 
 function cap(over: Partial<CapabilityItem> = {}): CapabilityItem {
   return { id: "approve-action", label: "x", enabled: true, mode: "owner-confirmed-action", reason: "", ...over };
+}
+
+function statusSnapshot(miniapp: Partial<StatusSnapshot["miniapp"]>): StatusSnapshot {
+  return {
+    ok: true,
+    updated_at: "now",
+    hermes_home: "configured",
+    gateway: { running: true, state: "ok", busy: false, drainable: true, active_agents: 0, restart_requested: false },
+    miniapp: { mode: "read-only", actions_enabled: false, public_exposure: false, ...miniapp },
+  };
 }
 
 describe("approveActionEnabled", () => {
@@ -38,5 +48,19 @@ describe("gatewayValue", () => {
     expect(gatewayValue(base)).toBe("Готов");
     expect(gatewayValue({ ...base, gateway: { running: false } } as StatusSnapshot)).toBe("Офлайн");
     expect(gatewayValue(null)).toBe("Готов");
+  });
+});
+
+describe("action state copy", () => {
+  it("does not report actions as just on when decisions are record-only", () => {
+    const recordOnly = statusSnapshot({ actions_enabled: true, gateway_resolver_active: false, action_application: "record-only" });
+    expect(actionValue(recordOnly)).toBe("Запись");
+    expect(actionFooterLabel(recordOnly)).toContain("решения записываются");
+    expect(actionFooterLabel(recordOnly)).toContain("применение не подключено");
+  });
+
+  it("reports live only with an active resolver heartbeat", () => {
+    expect(actionValue(statusSnapshot({ actions_enabled: true, gateway_resolver_active: false, action_application: "live" }))).toBe("Блок");
+    expect(actionValue(statusSnapshot({ actions_enabled: true, gateway_resolver_active: true, action_application: "live" }))).toBe("Live");
   });
 });

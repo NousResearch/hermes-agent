@@ -7,10 +7,16 @@ export type GatewayStatus = {
   restart_requested: boolean;
 };
 
+export type ActionApplication = "not-wired" | "record-only" | "live";
+
 export type MiniAppRuntimeStatus = {
   mode: string;
   actions_enabled: boolean;
   public_exposure: boolean;
+  // Honest application state, separate from actions_enabled. Optional for
+  // backward compatibility with older sidecars that omit them.
+  gateway_resolver_active?: boolean;
+  action_application?: ActionApplication;
 };
 
 export type StatusSnapshot = {
@@ -146,6 +152,16 @@ export function hasMiniAppApi(isTelegramRuntime = false): boolean {
   return API_URL.length > 0 || (import.meta.env.PROD && isTelegramRuntime);
 }
 
+export class MiniAppApiError extends Error {
+  status: number;
+
+  constructor(status: number, message?: string) {
+    super(message || `Mini App API request failed with ${status}`);
+    this.name = "MiniAppApiError";
+    this.status = status;
+  }
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   if (!isAllowedApiPath(path)) {
     throw new Error(`Mini App API path is not allowlisted: ${path}`);
@@ -159,7 +175,14 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
-    throw new Error(`Mini App API request failed with ${response.status}`);
+    let detail = "";
+    try {
+      const body = (await response.json()) as { detail?: string; message?: string };
+      detail = body.detail || body.message || "";
+    } catch {
+      detail = "";
+    }
+    throw new MiniAppApiError(response.status, detail || `Mini App API request failed with ${response.status}`);
   }
   return (await response.json()) as T;
 }

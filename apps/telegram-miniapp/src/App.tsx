@@ -4,6 +4,7 @@ import { navItems, statusCards, type NavKey } from "./mockData";
 import {
   DECK_VERSION,
   STORAGE_KEYS,
+  actionFooterLabel,
   actionValue,
   endpointKeys,
   formatRefreshTime,
@@ -62,6 +63,10 @@ export function App() {
     now,
     refreshSnapshots,
     actionsEnabled,
+    canSubmitDecision,
+    decisionBlockReason,
+    decisionError,
+    clearDecisionError,
     isActionOwner,
     submitApprovalDecision,
     selectedApprovalId,
@@ -237,6 +242,10 @@ export function App() {
           selectedId={selectedApprovalId}
           onSelect={(approval) => setSelectedApprovalId(approval.id)}
           actionsEnabled={actionsEnabled}
+          canSubmitDecision={canSubmitDecision}
+          decisionBlockReason={decisionBlockReason}
+          decisionError={decisionError}
+          onClearDecisionError={clearDecisionError}
           isOwner={isActionOwner}
           isConnected={isConnected}
           onDecision={submitApprovalDecision}
@@ -254,7 +263,7 @@ export function App() {
 
       <footer className="deck-footer" aria-label="Версия и режим">
         <span>{DECK_VERSION}</span>
-        <span>{actionsEnabled ? "Действия: включены для владельца" : "Действия: выключены"}</span>
+        <span>{actionFooterLabel(snapshot)}</span>
       </footer>
 
       <nav className="bottom-nav" aria-label="Навигация">

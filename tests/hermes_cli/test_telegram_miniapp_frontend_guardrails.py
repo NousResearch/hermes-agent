@@ -179,22 +179,45 @@ def test_api_client_contains_single_guarded_fetch_sink():
 
 def test_decision_buttons_are_gated_and_go_through_confirm():
     approvals_text = read_frontend(APPROVALS_SECTION_TSX)
+    hook_text = read_frontend(SNAPSHOTS_HOOK_TS)
+    app_text = read_frontend(APP_TSX)
 
-    # Decisions are actionable only when the backend capability is live, the
-    # user is the authenticated owner, and the approval advertises the decision.
-    assert "actionsEnabled && isOwner && Boolean(onDecision)" in approvals_text
+    # Hook-level readiness is the only prop allowed to open decision buttons. It
+    # includes capability, authenticated owner, connected API, fresh snapshot age,
+    # record-only/live-honest application state, and non-empty snapshot_version.
+    assert "const canSubmitDecision =" in hook_text
+    for invariant in (
+        "actionsEnabled",
+        'apiState === "connected"',
+        "snapshotFresh",
+        "applicationCanRecord",
+        "approvalsVersion.length > 0",
+    ):
+        assert invariant in hook_text
+    assert "lastSuccessAt !== null && now - lastSuccessAt <= STALE_AFTER_MS" in hook_text
+    assert "canSubmitDecision={canSubmitDecision}" in app_text
+
+    # ApprovalsSection must not rebuild readiness from raw actionsEnabled/isOwner.
+    assert "actionsEnabled && isOwner && Boolean(onDecision)" not in approvals_text
+    assert "const canDecide = canSubmitDecision && Boolean(onDecision)" in approvals_text
     # Buttons are disabled unless canDecide (and while a decision is pending),
     # AND unless the approval advertises that specific decision.
     assert 'disabled={!canDecide || pending || !allowed.includes("approve_once")}' in approvals_text
     assert 'disabled={!canDecide || pending || !allowed.includes("reject_once")}' in approvals_text
-    # canDecide requires the server-authenticated owner flag, not just initData.
-    assert "actionsEnabled && isOwner && Boolean(onDecision)" in approvals_text
     # The confirm freezes the exact target approval (no redirect on refresh).
     assert "confirm.approval" in approvals_text and "runDecision(confirm.approval" in approvals_text
-    # Tapping a decision opens the two-step confirm sheet with a FROZEN target
-    # (approval + decision); it does NOT fetch or call the handler directly.
-    assert 'setConfirm({ approval: selected, decision: "approve_once" })' in approvals_text
-    assert 'setConfirm({ approval: selected, decision: "reject_once" })' in approvals_text
+    # Tapping a decision goes through openConfirm, which refuses when canDecide is
+    # false; it does NOT fetch or call the handler directly.
+    assert "function openConfirm" in approvals_text
+    assert "if (!canDecide) return;" in approvals_text
+    assert 'onClick={() => openConfirm("approve_once")}' in approvals_text
+    assert 'onClick={() => openConfirm("reject_once")}' in approvals_text
+    # Failed POSTs keep visible error state and do not silently close the sheet.
+    assert "decisionError" in approvals_text and 'role="alert"' in approvals_text
+    assert "if (ok) setConfirm(null)" in approvals_text
+    run_decision_match = re.search(r"async function runDecision[\s\S]*?\n  \}", approvals_text)
+    assert run_decision_match, "runDecision must exist"
+    assert "setConfirm(null)" not in run_decision_match.group(0).replace("if (ok) setConfirm(null)", "")
     # The network call only happens from the confirm step, via the injected
     # onDecision prop (which routes through api.ts) — never a direct fetch here.
     assert "fetch" not in approvals_text

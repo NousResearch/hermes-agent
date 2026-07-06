@@ -25,7 +25,7 @@ export const STALE_AFTER_MS = 45_000;
 
 // Human-facing build/stage tag shown in the footer so the owner always knows
 // which build they are looking at.
-export const DECK_VERSION = "Control Deck · v0.3 · read-only";
+export const DECK_VERSION = "Control Deck · v0.3 · только чтение";
 
 export type FreshnessState = "mock" | "fresh" | "refreshing" | "stale" | "offline";
 export type LogLevelFilter = LogLine["level"] | "all";
@@ -74,9 +74,9 @@ export const endpointLabels: Record<EndpointKey, string> = {
 
 export const endpointDetails: Record<EndpointState, string> = {
   preview: "локальное превью",
-  checking: "проверяю read-only snapshot",
-  ok: "read-only snapshot получен",
-  degraded: "snapshot временно недоступен",
+  checking: "проверяю снимок данных",
+  ok: "снимок данных получен",
+  degraded: "снимок временно недоступен",
 };
 
 export const STORAGE_KEYS = {
@@ -212,7 +212,10 @@ export function freshnessState(apiState: ApiState, isRefreshing: boolean, lastSu
 
 export function actionValue(snapshot: StatusSnapshot | null) {
   if (!snapshot) return "Блок";
-  return snapshot.miniapp.actions_enabled ? "Вкл" : "Блок";
+  const mini = snapshot.miniapp;
+  if (mini.action_application === "live" && mini.gateway_resolver_active === true) return "Live";
+  if (mini.action_application === "record-only") return "Запись";
+  return "Блок";
 }
 
 export function mapServerApproval(item: ApprovalItem): ApprovalPreview {
@@ -232,6 +235,21 @@ export function mapServerApproval(item: ApprovalItem): ApprovalPreview {
 export function approveActionEnabled(capabilities: CapabilityItem[]): boolean {
   const item = capabilities.find((c) => c.id === "approve-action");
   return Boolean(item && item.enabled && item.mode === "owner-confirmed-action");
+}
+
+// Honest footer copy for the action-application contour. It reflects the
+// SYSTEM's application state, never the mere fact that the sidecar accepts
+// decisions: "live" requires a proven gateway resolver, "record-only" says
+// decisions are recorded but not applied, and anything else is "выключены".
+export function actionFooterLabel(snapshot: StatusSnapshot | null): string {
+  const mini = snapshot?.miniapp;
+  if (mini?.action_application === "live" && mini?.gateway_resolver_active === true) {
+    return "Действия: применяются gateway";
+  }
+  if (mini?.action_application === "record-only") {
+    return "Действия: решения записываются · применение не подключено";
+  }
+  return "Действия: выключены";
 }
 
 export function mapServerSession(item: SessionPreviewItem): SessionPreview {

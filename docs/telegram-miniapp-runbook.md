@@ -25,9 +25,11 @@ systemd / autostart on purpose:
 python -m hermes_cli.telegram_miniapp.cli serve
 ```
 
-It binds `127.0.0.1:9120` by default and serves the status panel. It requires
-the dashboard extras (FastAPI + `uvicorn`). A missing `uvicorn` exits with a
-friendly install message; a missing FastAPI surfaces earlier as a
+It binds `127.0.0.1:9120` by default and serves the status panel. When a built
+Mini App SPA is available, the same sidecar can serve it from the same origin;
+otherwise the sidecar stays API-only and the CLI prints the build command to
+run. It requires the dashboard extras (FastAPI + `uvicorn`). A missing `uvicorn`
+exits with a friendly install message; a missing FastAPI surfaces earlier as a
 `ModuleNotFoundError` at import (FastAPI is imported before that check), so
 install both.
 
@@ -40,6 +42,25 @@ Flags (all defined in `hermes_cli/telegram_miniapp/cli.py`):
 
 If the port is already in use, the CLI exits with an actionable message naming
 the port to change (`telegram_miniapp.port`) rather than a raw traceback.
+
+### Same-origin SPA serving
+
+M31 adds optional same-origin static serving for the built frontend. The
+foreground CLI auto-detects `apps/telegram-miniapp/dist` relative to the repo
+when `index.html` exists. The sidecar registers static routes last, so `/api/*`,
+`/healthz`, and action routes keep priority; unknown `/api` paths return `404`
+instead of SPA HTML. Static responses get the same defensive headers/CSP as the
+API surface, and path traversal / symlink escapes are rejected.
+
+Generated frontend artifacts are not part of source control. Build locally when
+needed:
+
+```sh
+npm run build --workspace @hermes/telegram-miniapp
+```
+
+If no valid `static_dir/index.html` exists, the sidecar remains API-only and the
+CLI says exactly that.
 
 ---
 
@@ -157,7 +178,13 @@ HERMES_HOME/miniapp/
 Read the `miniapp` block of `GET /api/status`:
 
 ```json
-"miniapp": { "mode": "read-only", "actions_enabled": false, "public_exposure": false }
+"miniapp": {
+  "mode": "read-only",
+  "actions_enabled": false,
+  "public_exposure": false,
+  "gateway_resolver_active": false,
+  "action_application": "not-wired"
+}
 ```
 
 - `mode`: `read-only` (default), `owner-action` (sidecar action route live), or
@@ -165,11 +192,21 @@ Read the `miniapp` block of `GET /api/status`:
 - `actions_enabled`: `true` when the **sidecar** is ready this run
   (`--enable-actions` + `action_owners` + a bot token + a configured
   `HERMES_HOME`). It does **not** assert that a gateway-side resolver is running
-  (none is wired yet).
+  or that decisions will be applied.
+- `gateway_resolver_active`: resolver heartbeat. It is `false` today because no
+  resolver loop is wired.
+- `action_application`: `not-wired` when decisions cannot be submitted,
+  `record-only` when the sidecar can validate and record owner decisions, and
+  future `live` only when a proven resolver heartbeat exists. M32 deliberately
+  keeps this separate from `actions_enabled`.
 - `public_exposure`: `true` only under `--https-smoke`.
 
-The frontend requires `actions_enabled === true` in addition to its own
-capability check, so a stale/false status fails the action UI closed.
+The frontend action buttons require all of these before opening the confirm
+sheet: owner capability, server-authenticated owner, connected API, a fresh
+status/snapshot poll, a non-empty `snapshot_version`, and `record-only` (or
+future heartbeat-proven `live`) application state. A stale/missing
+`snapshot_version` disables the buttons and asks the operator to refresh instead
+of sending a blind decision.
 
 ---
 
@@ -181,4 +218,5 @@ capability check, so a stale/false status fails the action UI closed.
 | `could not bind 127.0.0.1:9120 …` | Another process holds the port — stop it or set `telegram_miniapp.port` to a free port. |
 | `sidecar is loopback-only unless --https-smoke is used` | You set a non-loopback `host` without `--https-smoke`. Use `--https-smoke` + `--public-base-url`, or keep `host: 127.0.0.1`. |
 | `--enable-actions requires telegram_miniapp.action_owners` | Add the owner user id (`704305405`) to `action_owners`. |
-| Actions submitted in the panel do nothing | Expected today: the gateway-side resolver is not yet wired, so decisions are validated and recorded but not applied. `--enable-actions` only enables submission. |
+| CLI says `API-only mode` / no built SPA found | Expected unless `apps/telegram-miniapp/dist/index.html` exists in the repo checkout used by the foreground CLI. Run the Vite build locally; do not stage `dist/`. |
+| Actions submitted in the panel do nothing | Expected today: the gateway-side resolver is not yet wired, so decisions are validated and recorded but not applied. `--enable-actions` only enables submission. The success message says it was recorded in the Mini App bridge, not consumed by gateway. |

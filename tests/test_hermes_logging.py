@@ -617,6 +617,32 @@ class TestRecordFactory:
         assert secret not in output
         assert "..." in output
 
+    def test_plain_formatter_redacts_secret_assembled_by_mapping_format(self):
+        """Mapping-style %-formatting gets the same rendered-message redaction."""
+        secret = "sk-" + "n" * 32
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("_test_plain_mapping_token_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            logger.info("token %(prefix)s%(body)s", {"prefix": "sk-", "body": "n" * 32})
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        output = stream.getvalue()
+        assert "token" in output
+        assert secret not in output
+        assert "..." in output
+
     def test_plain_formatter_redacts_non_string_message(self):
         """Object messages are stringified and redacted for plain handlers."""
         secret = "sk-" + "e" * 32
@@ -676,6 +702,227 @@ class TestRecordFactory:
         assert "provider request failed" in output
         assert "RuntimeError" in output
         assert secret not in output
+        assert "..." in output
+
+    def test_plain_formatter_redacts_extra_fields(self):
+        """Plain formatters that include extra fields still receive redacted data."""
+        api_key = "sk-" + "g" * 32
+        github_token = "ghp_" + "h" * 36
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s %(api_key)s %(payload)s"))
+
+        logger = logging.getLogger("_test_plain_extra_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            logger.info(
+                "extra fields",
+                extra={
+                    "api_key": api_key,
+                    "payload": {"Authorization": f"Bearer {github_token}"},
+                },
+            )
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        output = stream.getvalue()
+        assert "extra fields" in output
+        assert api_key not in output
+        assert github_token not in output
+        assert "..." in output
+
+    def test_plain_formatter_redacts_object_extra_fields(self):
+        """Object extras are stringified and redacted before plain formatting."""
+        secret = "sk-" + "i" * 32
+
+        class SecretExtra:
+            def __str__(self):
+                return f"extra carried {secret}"
+
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s %(secret_extra)s"))
+
+        logger = logging.getLogger("_test_plain_object_extra_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            logger.info("object extra", extra={"secret_extra": SecretExtra()})
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        output = stream.getvalue()
+        assert "object extra" in output
+        assert "extra carried" in output
+        assert secret not in output
+        assert "..." in output
+
+    def test_bad_percent_format_does_not_leak_split_secret(self, capsys):
+        """Invalid logging templates fail closed instead of leaking arguments."""
+        secret_body = "j" * 32
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("_test_bad_percent_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            logger.info("token %s %s", "sk-", secret_body, "unexpected-extra")
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        captured = capsys.readouterr()
+        combined = stream.getvalue() + captured.err
+        assert "--- Logging error ---" not in captured.err
+        assert "unexpected-extra" not in combined
+        assert secret_body not in combined
+        assert "log message formatting failed" in combined
+
+    def test_plain_formatter_cannot_reformat_raw_exception_info(self):
+        """exc_info stays present but no longer carries raw secret payloads."""
+        secret = "sk-" + "k" * 32
+        records = []
+
+        class CapturingHandler(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = CapturingHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("_test_raw_exc_info_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.ERROR)
+        logger.addHandler(handler)
+        try:
+            try:
+                raise RuntimeError(f"provider returned {secret}")
+            except RuntimeError:
+                logger.exception("provider request failed")
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        assert len(records) == 1
+        record = records[0]
+        assert record.exc_info is not None
+        assert record.exc_info[0] is RuntimeError
+        assert record.exc_info[2] is None
+        assert secret not in str(record.exc_info[1])
+        assert "..." in str(record.exc_info[1])
+        assert record.exc_text
+        assert secret not in record.exc_text
+        assert "..." in record.exc_text
+
+    def test_sanitized_exception_info_preserves_custom_exception_attributes(self):
+        """Filters can still inspect exception type/metadata after sanitization."""
+        secret = "sk-" + "o" * 32
+        records = []
+
+        class ProbeError(Exception):
+            def __init__(self, code, data, message):
+                super().__init__(message)
+                self.code = code
+                self.data = data
+
+        class CapturingHandler(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = CapturingHandler()
+
+        logger = logging.getLogger("_test_custom_exception_metadata_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.ERROR)
+        logger.addHandler(handler)
+        try:
+            try:
+                raise ProbeError(-32601, {"token": secret}, f"probe carried {secret}")
+            except ProbeError:
+                logger.exception("probe failed")
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        assert len(records) == 1
+        record = records[0]
+        assert record.exc_info is not None
+        exc = record.exc_info[1]
+        assert isinstance(exc, ProbeError)
+        assert exc.code == -32601
+        assert secret not in str(exc)
+        assert secret not in str(exc.data)
+        assert "..." in str(exc)
+        assert "..." in str(exc.data)
+
+    def test_plain_formatter_redacts_preexisting_exception_and_stack_text(self):
+        """Pre-rendered exc_text and stack_info are sanitized on records."""
+        exc_secret = "sk-" + "l" * 32
+        stack_secret = "sk-" + "m" * 32
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("_test_existing_exc_stack_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            record = logger.makeRecord(
+                logger.name,
+                logging.INFO,
+                __file__,
+                0,
+                "existing exception and stack",
+                (),
+                None,
+                sinfo=f"Stack with {stack_secret}",
+            )
+            record.exc_text = f"Exception carried {exc_secret}"
+            hermes_logging._sanitize_log_record(record)
+            handler.handle(record)
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        output = stream.getvalue()
+        assert "existing exception and stack" in output
+        assert "Exception carried" in output
+        assert "Stack with" in output
+        assert exc_secret not in output
+        assert stack_secret not in output
         assert "..." in output
 
 

@@ -60,14 +60,6 @@ def _suggest_reg():
             "cost_tier": 2,
             "login_hint": "gemini auth login",
         },
-        "fable": {
-            "enabled": True,
-            "vendor": "anthropic",
-            "roles": ["brain"],
-            "good_for": ["hard-design"],
-            "cost_tier": 5,
-            "login_hint": "claude login",
-        },
     }
 
 
@@ -77,7 +69,6 @@ def test_relay_suggest_backend_picks_codex_and_cross_vendor_reviewer():
         "codex": {"ready": True},
         "grok": {"ready": True},
         "gemini": {"ready": False},
-        "fable": {"ready": True},
     }
 
     out = relay_suggest.suggest("backend", _suggest_reg(), status_map)
@@ -192,32 +183,34 @@ def load_relay_report():
 
 def test_relay_report_compute_cost_in_baht():
     relay_report = load_relay_report()
-    calls = {"fable": 3, "codex": 10, "grok": 20, "ollama": 5, "mystery": 4}
-    prices = {"fable": 12, "codex": 3, "grok": 2, "ollama": 0}
+    calls = {"opus": 3, "codex": 10, "grok": 20, "ollama": 5, "mystery": 4, "fable": 1}
+    prices = {"opus": 8, "codex": 3, "grok": 2, "ollama": 0}
     out = relay_report.compute_cost(calls, prices)
-    assert out["cost_by_tool"]["fable"] == 36.0     # 3 × 12
+    assert out["cost_by_tool"]["opus"] == 24.0      # 3 × 8
     assert out["cost_by_tool"]["codex"] == 30.0     # 10 × 3
     assert out["cost_by_tool"]["grok"] == 40.0      # 20 × 2
     assert out["cost_by_tool"]["ollama"] == 0.0     # ฟรี
-    assert out["total_thb"] == 106.0
-    assert out["fable_thb"] == 36.0
+    assert out["total_thb"] == 94.0
+    assert "fable_thb" not in out
     # tool ที่ไม่มีราคา + มีการเรียก → ไม่นับเงิน แต่รายงานแยกไว้ (ไม่เดา)
     assert out["no_price_tools"] == ["mystery"]
+    # เครื่องมือที่ถอดแล้วอาจยังมีใน ledger เก่า แต่ไม่ถือเป็น AI ปัจจุบันที่ราคาหาย
+    assert out["legacy_removed_tools"] == ["fable"]
 
 
 def test_relay_report_registry_has_prices():
     # ทะเบียนตัวอย่างต้องมี price_per_call_thb เพื่อให้ relay-report คิดเงินได้
     reg = relay_call.load_registry(Path("/tmp/no-local-registry"))
-    assert reg["fable"]["price_per_call_thb"] == 12
+    assert reg["opus"]["price_per_call_thb"] == 8
     assert reg["ollama"]["price_per_call_thb"] == 0
 
 
 def test_load_registry_example_has_expected_ai_metadata():
     reg = relay_call.load_registry(Path("/tmp/no-local-registry"))
 
-    assert len(reg) == 10
+    assert len(reg) == 9
     assert reg["opus"]["roles"] == ["brain"]
-    assert reg["fable"]["roles"] == ["brain"]
+    assert "fable" not in reg
     assert reg["codex"]["vendor"] == "openai"
 
 
@@ -244,7 +237,6 @@ def test_relay_status_bin_for_uses_registry_bin_or_vendor_default():
     relay_status = load_relay_status()
 
     assert relay_status.bin_for("opus", {"vendor": "anthropic"}) == "claude"
-    assert relay_status.bin_for("fable", {"vendor": "anthropic"}) == "claude"
     assert relay_status.bin_for("ollama", {"vendor": "local"}) == "ollama"
     assert relay_status.bin_for("grok", {"vendor": "xai"}) == "grok"
     assert relay_status.bin_for("custom", {"bin": "custom-ai", "vendor": "other"}) == "custom-ai"
@@ -359,6 +351,21 @@ def test_classify_exit0_short_stdout_with_stderr_login_is_auth():
     assert relay_call.classify(0, "", "please login") == "auth"
 
 
+def test_classify_exit0_stdout_hit_limit_is_quota():
+    assert relay_call.classify(0, "You've hit your limit · resets 1:10pm (Asia/Bangkok)", "") == "quota"
+
+
+def test_classify_stdout_session_limit_is_quota():
+    assert relay_call.classify(1, "You've hit your session limit · resets 6:10am (UTC)", "") == "quota"
+
+
+def test_summarize_final_failure_preserves_all_quota_result():
+    status, reason, exit_code = relay_call.summarize_final_failure(["opus:quota"])
+    assert status == "quota"
+    assert "โควต้า" in reason
+    assert exit_code == 30
+
+
 def test_classify_exit0_long_stdout_with_stderr_not_found_is_ok():
     stdout = "Codex completed the requested work and produced a normal detailed task summary."
 
@@ -384,9 +391,9 @@ def test_bump_counter_counts_expires_and_reads_legacy_number(tmp_path):
     counter.write_text(json.dumps({"count": 7, "started": old_started}), encoding="utf-8")
     assert relay_call.bump_counter(tmp_path, ".session-calls", session_hours=12) == 1
 
-    legacy = tmp_path / ".hermes" / "ai-relay" / ".session-fable-calls"
+    legacy = tmp_path / ".hermes" / "ai-relay" / ".session-legacy-calls"
     legacy.write_text("4", encoding="utf-8")
-    assert relay_call.bump_counter(tmp_path, ".session-fable-calls", session_hours=12) == 5
+    assert relay_call.bump_counter(tmp_path, ".session-legacy-calls", session_hours=12) == 5
 
 
 def test_is_tool_missing_matches_only_gate_tools():
@@ -528,7 +535,7 @@ def test_resolve_timeout_coder_and_brain():
     # coder: ค่ากลาง → ปริยาย 900
     assert relay_call.resolve_timeout({}, {"call_timeout_seconds": 600}) == 600
     assert relay_call.resolve_timeout({}, {}) == 900
-    # brain (fable/opus): ค่ากลางสมองแยก → ปริยาย 1800 (คิดนานกว่า ไม่โดนตัดเร็ว)
+    # brain (opus): ค่ากลางสมองแยก → ปริยาย 1800 (คิดนานกว่า ไม่โดนตัดเร็ว)
     assert relay_call.resolve_timeout({"brain": True}, {}) == 1800
     assert relay_call.resolve_timeout({"brain": True}, {"brain_call_timeout_seconds": 2400}) == 2400
     # ค่าพัง (0/ติดลบ/ไม่ใช่ตัวเลข) → ตกไปค่าปริยายของชนิดนั้น

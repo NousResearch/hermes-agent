@@ -19,11 +19,14 @@ tags:
   - code-review
   - gitlab
 status: active
-version: 1.2
-updated: 2026-06-07
+superseded_by: use-ai-relay
+version: 1.3
+updated: 2026-07-04
 ---
 
 # Use AI Pair
+
+> ⚠️ **ถูกแทนที่แล้ว (2026-07-04):** งานใหม่ให้ใช้ [[skills/prompt-shortcuts/references/use-ai-relay|Use AI Relay]] (v2.7+) ที่พัฒนาต่อจากตัวนี้ — มีตัวโค้ดจริง relay-call/gate-run บังคับเพดานงบและหลักฐาน · ไฟล์นี้เก็บเป็น fallback สำหรับเครื่องที่ยังไม่ติดตั้ง relay เท่านั้น · ทีมค่าเริ่มต้นในไฟล์นี้ (Planner=Claude · Coder=Codex · Reviewer=Qwen) ล้าหลังแล้ว ให้ยึดตารางเลือก AI จาก [[skills/prompt-shortcuts/references/ai-relay-catalog|AI Relay Catalog]] §7
 
 ## Shortcut
 
@@ -134,6 +137,7 @@ Use AI Pair กับงานนี้
 
 ## Changelog
 
+- v1.3 (2026-07-04): ติดป้าย superseded_by use-ai-relay (คง status active กัน shortcut หาย) · เก็บเป็น fallback เครื่องไม่มี relay
 - v1.2 (2026-06-07): แก้พฤติกรรมถามซ้ำ/หยุดเร็ว ให้ default ทำ brief, handoff, และ review packet ทันทีเมื่อข้อมูลพอ; ถามเฉพาะเมื่อทำต่อไม่ได้จริง
 - v1.1 (2026-06-07): เพิ่มโหมด 3 ตัวสายพาน (Planner → Coder → Reviewer), กฎความหลากหลายผู้ตรวจ, กฎกันทำงานทับกัน, หมายเหตุการเชื่อมต่อจริง
 - v1.0 (2026-06-07): โหมด 2 ตัว (coder + reviewer)

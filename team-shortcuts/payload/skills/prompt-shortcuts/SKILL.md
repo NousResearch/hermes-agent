@@ -1,6 +1,6 @@
 ---
 name: prompt-shortcuts
-description: Use this skill when the user invokes a reusable prompt shortcut, especially "Use Act-As", "Use Comply", "Use Summary", "Use Scan Feature", "Use Opus Plan", "Use AI Pair", "Use Pair AI", "Use Business Plan", "Use SaaS Opus Master Prompt", "Use Viber Structure", "Use Viber Audit", "Use Impeccable", "Use Blog Auto", "Use WOW Resource", "Use Flow Guardian", "Use New Chat", "Use Save Git", "Use Continue", "Use Move Folder", "Review Chat", "use-act-as", "use-comply", "use-summary", "use-scan-feature", "use-opus-plan", "use-ai-pair", "pair-ai", "use-business-plan", "use-saas-opus-master-prompt", "use-viber-structure", "use-viber-audit", "use-impeccable", "use-blog-auto", "use-wow-resource", "use-flow-guardian", "use-new-chat", "use-save-git", "save-git", "use-continue", "use-move-folder", "go-to-sleep", "review-chat", "Act-As", "Comply", "Summary", "Scan Feature", "Opus Plan", "AI Pair", "Pair AI", "Business Plan", "SaaS Opus Prompt", "Opus SaaS Plan", "Opus SaaS Master Prompt", "ส่ง prompt SaaS Opus", "prompt วางแผน SaaS", "prompt ธุรกิจ SaaS", "prompt pitch SaaS", "prompt SaaS แบบละเอียดที่สุด", "Viber Structure", "Viber Audit", "Viber Enterprise Standard", "Impeccable", "ใช้ Impeccable", "ตรวจ UI Slop", "แก้ AI Slop", "Blog Auto", "ใช้ Blog Auto", "เขียนบล็อกอัตโนมัติ", "ทำบล็อกจากงานนี้", "ส่งเข้า Hi Logic Labs", "WOW Resource", "WOW Layout", "WOW Menu", "WOW Script", "WOW Design", "WOW Web Engine", "Flow Guardian", "Safe Flow", "New Chat Gate", "Start New Chat", "Initialize Hermes Agent chat", "เริ่ม New Chat", "เปิด New Chat", "เริ่มแชทใหม่", "เปิดแชทใหม่", "Save Git", "เซฟ Git", "ก่อน push", "ก่อน merge", "ก่อน deploy", "Git Safe Flow", "GitLab Deploy Safe Flow", "Use Ship Gate", "ตรวจ worktree", "กัน AI แก้งานทับกัน", "ใช้ Pair AI", "จับคู่ AI เขียนตรวจ", "Continue", "ทำต่อ", "ทำต่อเอง", "ทำงานต่อ", "ไม่ต้องรอผม", "Move Folder", "move-folder", "movefolder", "ใช้ Move Folder", "ย้ายโฟลเดอร์", "จัดเรียง Folder", "จัดเรียงโฟลเดอร์", "Go to Sleep", "Sleep Mode", "Chat Review", or asks to load a standard prompt from HermesNous instead of pasting it manually.
+description: Use this skill when the user invokes any reusable prompt shortcut from HermesAgent, including "Use Act-As", "Use Comply", "Use Summary", "Use Scan Feature", "Use AI Relay", "Use Viber Structure", "Use Viber Audit", "Use Impeccable", "Use Blog Auto", "Use WOW Resource", "Use Flow Guardian", "Use New Chat", "Use Close Chat", "Use Save Git", "Use Merge to Production", "Use Continue", "Use Move Folder", "Review Chat", "Use AI Pair", "Use Business Plan", "Use SaaS Opus Master Prompt", "Use BusinessPlan", "Use OverviewProgress", "Use FeatureSpec", "Use DesignSystem", "Use Create Design System", "Use Hermes Structure", "Use Create Content", or Thai/alias variants such as "ใช้ AI Relay", "ปิดแชท", "เซฟ Git", "ทำต่อ", "รีวิวแชท", "สร้างคอนเทนต์จากแชท", and "สร้างไฟล์ภาพรวมงาน".
 metadata:
   short-description: Reusable prompt shortcut loader
 ---
@@ -17,9 +17,7 @@ This skill loads standard reusable prompts from HermesAgent. The v2 prompt files
 | `Use Comply` | `use-comply`, `Comply`, `comply`, `ใช้ Comply`, `ทำ Comply`, `แตกเฟส`, `ทำตารางเปอร์เซ็นต์` | `references/use-comply.md` |
 | `Use Summary` | `use-summary`, `Summary`, `summary`, `ใช้ Summary`, `สรุป`, `สรุปลิงก์`, `วิเคราะห์บทความ`, `สรุปข้อมูล` | `references/use-summary.md` |
 | `Use Scan Feature` | `use-scan-feature`, `Scan Feature`, `scan-feature`, `สแกนฟีเจอร์`, `ตรวจฟีเจอร์`, `บัญชีฟีเจอร์` | `references/use-scan-feature.md` |
-| `Use AI Pair` | `use-ai-pair`, `AI Pair`, `ai-pair`, `Use Pair AI`, `Pair AI`, `pair-ai`, `ใช้ AI Pair`, `ใช้ Pair AI`, `จับคู่ AI เขียนตรวจ` | `references/use-ai-pair.md` |
-| `Use Business Plan` | `use-business-plan`, `Business Plan`, `business-plan`, `ใช้ Business Plan`, `รีวิวโจทย์ธุรกิจ`, `วางแผนธุรกิจ`, `วางแผนการตลาด`, `วางแผน Pitch`, `งานประมูล` | `references/use-business-plan.md` |
-| `Use SaaS Opus Master Prompt` | `use-saas-opus-master-prompt`, `SaaS Opus Prompt`, `Opus SaaS Plan`, `Opus SaaS Master Prompt`, `ส่ง prompt SaaS Opus`, `prompt วางแผน SaaS`, `prompt ธุรกิจ SaaS`, `prompt pitch SaaS`, `prompt SaaS แบบละเอียดที่สุด` | `references/use-saas-opus-master-prompt.md` |
+| `Use AI Relay` | `use-ai-relay`, `AI Relay`, `ai-relay`, `ใช้ AI Relay`, `สายพาน AI`, `สายพานส่งต่องาน AI`, `Claude วางแผน Grok โค้ด`, `ให้ AI ตัวอื่นโค้ดแล้ว Claude ตรวจ` | `references/use-ai-relay.md` |
 | `Use Viber Structure` | `use-viber-structure`, `Viber Structure`, `viber-structure`, `ใช้ Viber Structure`, `โครงสร้าง Viber`, `วางโครงสร้าง Viber Code`, `วางแผน Viber Code`, `Vibe Code Enterprise` | `references/use-viber-structure.md` |
 | `Use Viber Audit` | `use-viber-audit`, `Viber Audit`, `viber-audit`, `Use Viber Standard Audit`, `Use Viber Compliance`, `ใช้ Viber Audit`, `ตรวจ Viber Standard`, `ตรวจ Viber Enterprise`, `ตรวจมาตรฐาน Viber`, `Viber Enterprise Standard` | `references/use-viber-audit.md` |
 | `Use Impeccable` | `use-impeccable`, `Impeccable`, `ใช้ Impeccable`, `ตรวจ UI Slop`, `แก้ AI Slop` | `references/use-impeccable.md` |
@@ -27,10 +25,22 @@ This skill loads standard reusable prompts from HermesAgent. The v2 prompt files
 | `Use WOW Resource` | `use-wow-resource`, `WOW Resource`, `wow-resource`, `ใช้ WOW Resource`, `ใช้ WOW`, `WOW Layout`, `WOW Menu`, `WOW Script`, `WOW Design`, `WOW Web Engine` | `references/use-wow-resource.md` |
 | `Use Flow Guardian` | `use-flow-guardian`, `Flow Guardian`, `Safe Flow`, `New Chat Gate`, `ใช้ Flow Guardian`, `ใช้ Safe Flow`, `เปิด Flow Guardian`, `ตรวจ worktree`, `กัน AI แก้งานทับกัน` | `references/use-flow-guardian.md` |
 | `Use New Chat` | `use-new-chat`, `Start New Chat`, `New Chat Startup`, `Initialize Hermes Agent chat`, `เริ่ม New Chat`, `เปิด New Chat`, `เริ่มแชทใหม่`, `เปิดแชทใหม่` | `references/use-new-chat.md` |
+| `Use Close Chat` | `use-close-chat`, `Close Chat`, `close-chat`, `ใช้ Close Chat`, `ปิดแชท`, `ปิดงานแชท`, `จบแชท` | `references/use-close-chat.md` |
 | `Use Save Git` | `use-save-git`, `Save Git`, `save-git`, `ใช้ Save Git`, `เซฟ Git`, `ก่อน push`, `ก่อน merge`, `ก่อน deploy`, `Git Safe Flow`, `GitLab Deploy Safe Flow`, `Use GitLab Deploy Safe Flow`, `Use Ship Gate` | `references/use-save-git.md` |
+| `Use Merge to Production` | `use-merge-to-production`, `Merge to Production`, `merge-to-production`, `ใช้ Merge to Production`, `ขึ้น production`, `deploy production`, `Ship to Production` | `references/use-merge-to-production.md` |
 | `Use Continue` | `use-continue`, `Continue`, `continue`, `ทำต่อ`, `ทำต่อเอง`, `ทำงานต่อ`, `ทำต่ออัตโนมัติ`, `ไม่ต้องรอผม`, legacy: `Go to Sleep`, `go-to-sleep`, `Sleep Mode`, `sleep-mode`, `เข้าโหมดนอน`, `โหมดนอน` | `references/use-continue.md` |
 | `Use Move Folder` | `use-move-folder`, `Move Folder`, `move-folder`, `movefolder`, `ใช้ Move Folder`, `ย้ายโฟลเดอร์`, `จัดเรียง Folder`, `จัดเรียงโฟลเดอร์` | `references/use-move-folder.md` |
 | `Review Chat` | `review-chat`, `Chat Review`, `chat-review`, `รีวิวแชท`, `ตรวจแชท`, `สรุปส่งต่อ`, `สรุปเปิดแชทใหม่` | `references/review-chat.md` |
+| `Use AI Pair` | `use-ai-pair`, `AI Pair`, `ai-pair`, `Use Pair AI`, `Pair AI`, `pair-ai`, `ใช้ AI Pair`, `ใช้ Pair AI`, `จับคู่ AI เขียนตรวจ`, `ทีม AI สามตัว` | `references/use-ai-pair.md` |
+| `Use Business Plan` | `use-business-plan`, `Business Plan`, `business-plan`, `ใช้ Business Plan`, `รีวิวโจทย์ธุรกิจ`, `วางแผนธุรกิจ`, `วางแผนการตลาด`, `วางแผน Pitch`, `งานประมูล` | `references/use-business-plan.md` |
+| `Use SaaS Opus Master Prompt` | `use-saas-opus-master-prompt`, `SaaS Opus Prompt`, `Opus SaaS Plan`, `Opus SaaS Master Prompt`, `ส่ง prompt SaaS Opus`, `prompt วางแผน SaaS`, `prompt ธุรกิจ SaaS`, `prompt pitch SaaS`, `prompt SaaS แบบละเอียดที่สุด` | `references/use-saas-opus-master-prompt.md` |
+| `Use BusinessPlan` | `use-businessplan`, `Use BusinessPlan File`, `Use Project BusinessPlan`, `BusinessPlan File`, `ใช้ BusinessPlan`, `สร้างไฟล์แผนธุรกิจ`, `สแกนแผนธุรกิจ project`, `อัปเดตแผนธุรกิจ project` | `references/use-businessplan.md` |
+| `Use OverviewProgress` | `use-overviewprogress`, `Use Overview Progress`, `ใช้ OverviewProgress`, `สร้างไฟล์ภาพรวมงาน`, `อัปเดตภาพรวม project`, `ภาพรวมความคืบหน้า` | `references/use-overviewprogress.md` |
+| `Use FeatureSpec` | `use-featurespec`, `Use Feature Spec`, `ใช้ FeatureSpec`, `สแกนฟีเจอร์ project`, `บัญชีฟีเจอร์`, `อัปเดตรายการฟีเจอร์` | `references/use-featurespec.md` |
+| `Use DesignSystem` | `use-designsystem`, `Use Design System File`, `ใช้ DesignSystem`, `สร้างไฟล์ Design System`, `อัปเดต Design System project`, `ตรวจดีไซน์ตามมาตรฐาน` | `references/use-designsystem.md` |
+| `Use Create Design System` / `Use Design System` | `use-create-design-system`, `Create Design System`, `create-design-system`, `Use Design System`, `use-design-system`, `ใช้ Design System`, `ใช้ Create Design System`, `สร้าง Design System`, `ทำ Design System มาตรฐาน`, `วาง Design System ให้โปรเจกต์` | `references/use-create-design-system.md` |
+| `Use Hermes Structure` | `use-hermes-structure`, `Hermes Structure`, `ใช้ Hermes Structure`, `มาตรฐานกลาง Hermes` | `references/use-hermes-structure.md` |
+| `Use Create Content` | `use-create-content`, `Create Content`, `create-content`, `ใช้ Create Content`, `สร้างคอนเทนต์จากแชท`, `แปลงแชทเป็นคอนเทนต์`, `ทำ Content Master` | `references/use-create-content.md` |
 
 ## How To Use
 
@@ -54,6 +64,8 @@ For `Use Scan Feature`, scan the real repository phase by phase, refuse to claim
 
 For `Use AI Pair`, default to the 3-AI pilot when context is sufficient: Claude plans/final-reviews, Codex writes, and Qwen reviews read-only. Do not stop by asking whether to create a brief or whether to proceed when the next safe step is obvious; create the coder brief, reviewer packet, and handoff immediately when file writes are allowed, or print them in chat when they are not. Ask only when the target repo/task/branch is unknowable, a risky write/deploy lacks approval, or a required secret/account/runtime is unavailable. Keep the reviewer read-only by default, route review through controlled diff/brief/evidence, and use GitLab Merge Request/CI as the final gate.
 
+For `Use AI Relay`, load `references/use-ai-relay.md` and `references/ai-relay-catalog.md`. Treat Opus 4.8 as the only brain. Fable/Faber/Fiber 5 is removed from the active path. Use `relay-call` for AI calls and `gate-run` for real verification; never treat an AI claim as verified without a gate row. If relay commands are missing, tell the owner to run `bash scripts/ai-relay/install-local.sh`; if project config is missing, run `relay-doctor` instead of stopping.
+
 For `Use Business Plan`, review the owner's raw business/marketing/pitch/tender/website question before execution, choose the right business modules and expert roles, build phase and issue checklists, ask for missing inputs first, and do not create files or durable writes until approved.
 
 For `Use SaaS Opus Master Prompt`, send the owner-approved detailed one-file Opus 4.8 master prompt for SaaS business, product, marketing, pricing, pitch, WOW proof, and portfolio decision work. Do not replace it with a short summary.
@@ -72,13 +84,31 @@ For `Use Flow Guardian`, apply Home OS Agent safe workflow before project work: 
 
 For `Use New Chat`, run the startup checklist before any readiness response: inspect project path, worktree, branch, dirty status, local/remote/VPS equality, service/endpoint when applicable, and return a New Chat Startup Report. Do not answer only "ready for commands".
 
+For `Use Close Chat`, close the chat by checking real work status, quality gate evidence, commit/push/merge handoff, and memory writes before returning CLOSED_CLEAN, CLOSED_WITH_PENDING, or NEED_OWNER_ACTION_BEFORE_CLOSE. It does not push, merge, or deploy by itself.
+
 For `Use Save Git`, enforce the safe Git/GitLab/VPS shipping gate before push, merge, deploy, or final readiness claims: inspect project path, branch, dirty files, worktrees, remote, Local/GitLab/VPS SHA, health endpoint, and return a SAFE/STOP decision. Do not read or reveal `.env` or secrets. Stop on dirty worktree, wrong branch, wrong remote, missing registry, SHA mismatch, deploy-not-allowed, route missing, secret risk, or unknown state.
+
+For `Use Merge to Production`, treat it as a merger-only production path. Confirm the caller and target are allowed, run the Save Git merge gate and ship gate, deploy only from the approved remote/branch, and stop on any unknown state.
 
 For `Use Continue`, continue autonomously through phases, make best-judgment choices when selection is needed, require each phase to reach 100%, and provide a final phase percentage table for review. Treat `Go to Sleep` and sleep-related names only as legacy aliases for this same behavior.
 
 For `Use Move Folder`, load `references/use-move-folder.md`, then read the live VPS registry under `/home/linux-nat/.codex/use-move-folder/project-registry` before doing any cleanup, folder move, retention review, or disk-space work. Do not claim the shortcut is missing just because it is stored in Codex runtime state. Do not scan protected/no-touch roots or mutate anything unless the owner gives exact approval.
 
 For `Review Chat`, review the current conversation for pending work, update the relevant HermesNous status files when appropriate, provide a clean new-chat starter message, and warn that exact context-window percentage may be unavailable unless the UI exposes it.
+
+For `Use BusinessPlan`, create or update the per-project business memory files under `.project/` after reading the real repo and the existing business files. Keep it separate from `Use Business Plan`, which is the raw business-planning prompt.
+
+For `Use OverviewProgress`, create or update `.project/OverviewProgress.md` using the Memory Schema v1.2 top sections and prove the file is not hidden by git ignore rules.
+
+For `Use FeatureSpec`, scan the real code and record feature status as real, partial, mock, planned, blocked, or unknown with path evidence.
+
+For `Use DesignSystem`, create or update the per-project design-system memory file. Do not confuse it with `Use Create Design System`, which builds or migrates a project-wide design system.
+
+For `Use Create Design System`, read the project first, then apply the approved design-system standard with owner color approval and measured adoption gates before code changes.
+
+For `Use Hermes Structure`, route the owner to the Hermes standard workflow and use the safe apply tools from the central standard set. Do not edit VPS/global files directly unless the owner approves that exact action.
+
+For `Use Create Content`, convert the current chat or source material into a privacy-reviewed Content Master draft, then hand off to Blog Auto or the content factory without publishing.
 
 ## Source Files
 
@@ -89,6 +119,8 @@ For `Review Chat`, review the current conversation for pending work, update the 
 - `references/use-summary.md`: full prompt for `Use Summary`.
 - `references/use-scan-feature.md`: full prompt for `Use Scan Feature`.
 - `references/use-ai-pair.md`: full prompt for `Use AI Pair`.
+- `references/use-ai-relay.md`: full prompt for `Use AI Relay`.
+- `references/ai-relay-catalog.md`: AI Relay catalog and routing rules.
 - `references/use-business-plan.md`: full prompt for `Use Business Plan`.
 - `references/use-saas-opus-master-prompt.md`: full prompt for `Use SaaS Opus Master Prompt`.
 - `references/use-viber-structure.md`: full prompt for `Use Viber Structure`.
@@ -98,11 +130,20 @@ For `Review Chat`, review the current conversation for pending work, update the 
 - `references/use-wow-resource.md`: full prompt for `Use WOW Resource`.
 - `references/use-flow-guardian.md`: full prompt for `Use Flow Guardian`.
 - `references/use-new-chat.md`: full prompt for `Use New Chat`.
+- `references/use-close-chat.md`: full prompt for `Use Close Chat`.
 - `references/use-save-git.md`: full prompt for `Use Save Git`.
+- `references/use-merge-to-production.md`: full prompt for `Use Merge to Production`.
 - `references/use-continue.md`: full prompt for `Use Continue`.
 - `references/use-move-folder.md`: full prompt for `Use Move Folder`.
 - `references/go-to-sleep.md`: legacy alias note for old `Go to Sleep` invocations.
 - `references/review-chat.md`: full prompt for `Review Chat`.
+- `references/use-businessplan.md`: full prompt for `Use BusinessPlan`.
+- `references/use-overviewprogress.md`: full prompt for `Use OverviewProgress`.
+- `references/use-featurespec.md`: full prompt for `Use FeatureSpec`.
+- `references/use-designsystem.md`: full prompt for `Use DesignSystem`.
+- `references/use-create-design-system.md`: full prompt for `Use Create Design System`.
+- `references/use-hermes-structure.md`: full prompt for `Use Hermes Structure`.
+- `references/use-create-content.md`: full prompt for `Use Create Content`.
 
 ## Graph Links
 

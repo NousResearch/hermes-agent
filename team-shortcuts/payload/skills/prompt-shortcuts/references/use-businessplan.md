@@ -19,7 +19,7 @@ tags:
 status: active
 version: "1.0"
 created: 2026-06-28
-updated: 2026-06-28
+updated: 2026-07-04
 schema: memory-schema-v1.1
 pairs_with: use-close-chat >= 2.1
 uses_engine:
@@ -28,6 +28,8 @@ uses_engine:
 ---
 
 # Use BusinessPlan (v1.0 · 2026-06-28)
+
+> 📌 **กันสับสนชื่อคล้าย:** ตัวนี้ (เขียนติดกัน) = ไฟล์ความจำธุรกิจประจำโปรเจกต์ · [[skills/prompt-shortcuts/references/use-business-plan|Use Business Plan]] (เว้นวรรค) = เครื่องวางแผนรับโจทย์ดิบ — "วิเคราะห์โจทย์ใหม่ในแชท" ใช้ตัวเว้นวรรค · "สร้าง/อัปเดตไฟล์แผนธุรกิจของ repo นี้" ใช้ตัวนี้
 
 ไฟล์แผนธุรกิจมาตรฐานต่อ project — เป็น 1 ใน 4 ไฟล์ของชุด Project OS
 (BusinessPlan · OverviewProgress · FeatureSpec · DesignSystem)
@@ -70,6 +72,7 @@ project นั้นทันที · ใช้ได้กับทุก proj
 1. สแกน project อ่านของจริง: README, โค้ดหลัก, หน้าเว็บ/หน้าจอ, เอกสารธุรกิจ/การตลาด,
    .hermes/context.md /active.md /decisions.md, AGENTS.md/CLAUDE.md ถ้ามี
 2. เรียก "เครื่องวางแผนธุรกิจ" ที่มีอยู่ (Use Business Plan · ถ้าเป็น SaaS ใช้โหมด SaaS)
+- [กฎเลือกเครื่องยนต์ · 2026-07-04] โปรเจกต์เป็น SaaS/subscription → เครื่องยนต์ = Use SaaS Opus Master Prompt · โปรเจกต์อื่น → เครื่องยนต์ = Use Business Plan (เว้นวรรค) · 1 งาน 1 เครื่องยนต์ ห้ามรันซ้อน · ผลเต็มลง BusinessPlan-Full.md แล้วกลั่นสั้นลง BusinessPlan.md
    มาวิเคราะห์เต็ม → ผลเต็มลง BusinessPlan-Full.md (ตามเทมเพลตเต็มด้านล่าง)
 3. กลั่นเหลือแก่นสั้นลง BusinessPlan.md (ตามเทมเพลตสั้นด้านล่าง) — คุมให้ ~1 หน้า
    เหตุผล: ไฟล์ที่ยาวเกิน AI จะไม่อ่าน (อ่าน/ทำตามได้จริงราว 150-200 บรรทัด)
@@ -147,6 +150,7 @@ project นั้นทันที · ใช้ได้กับทุก proj
 
 ## Changelog
 
+- docs (2026-07-04): เพิ่มป้ายกันสับสนชื่อคล้าย + กฎเลือกเครื่องยนต์ SaaS/ทั่วไป
 - v1.0 (2026-06-28): ตัวแรกของชุด Project OS · ไฟล์แผนธุรกิจมาตรฐาน 2 ชั้น (สั้น/ลึก) · เช็ค→สร้าง/อัปเดต · พกพาได้ทุก project (หา root จาก git ไม่ฝัง path) · เรียกเครื่องวางแผนเดิม (Use Business Plan / SaaS Opus) เป็นเครื่องยนต์ · ผูก Business Plan Sync เข้า Use Close Chat v2.1 · แยกชื่อชัดจาก `Use Business Plan` (เครื่องวางแผน)
 
 ## Graph Links

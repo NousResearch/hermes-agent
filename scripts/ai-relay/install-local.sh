@@ -15,20 +15,25 @@ mkdir -p "${HOME_RELAY_DIR}"
 chmod +x "${ROOT}/scripts/ai-relay/relay-call.py"
 chmod +x "${ROOT}/scripts/ai-relay/gate-run.py"
 chmod +x "${ROOT}/scripts/ai-relay/relay-report.py"
+chmod +x "${ROOT}/scripts/ai-relay/relay-status.py"
+chmod +x "${ROOT}/scripts/ai-relay/relay-suggest.py"
 chmod +x "${ROOT}/scripts/ai-relay/relay-doctor.sh"
 chmod +x "${ROOT}/scripts/ai-relay/relay-status.sh"
 chmod +x "${ROOT}/scripts/ai-relay/relay-now.sh"
 chmod +x "${ROOT}/scripts/ai-relay/relay-add-grok.py"
+chmod +x "${ROOT}/scripts/ai-relay/relay-setup.sh"
 chmod +x "${ROOT}/scripts/ai-relay/relay-grok.sh"
 chmod +x "${ROOT}/scripts/ai-relay/install-gemini-vps.sh"
 
 ln -sf "${ROOT}/scripts/ai-relay/relay-call.py" "${BIN_DIR}/relay-call"
 ln -sf "${ROOT}/scripts/ai-relay/gate-run.py" "${BIN_DIR}/gate-run"
 ln -sf "${ROOT}/scripts/ai-relay/relay-report.py" "${BIN_DIR}/relay-report"
+ln -sf "${ROOT}/scripts/ai-relay/relay-suggest.py" "${BIN_DIR}/relay-suggest"
 ln -sf "${ROOT}/scripts/ai-relay/relay-doctor.sh" "${BIN_DIR}/relay-doctor"
 ln -sf "${ROOT}/scripts/ai-relay/relay-status.sh" "${BIN_DIR}/relay-status"
 ln -sf "${ROOT}/scripts/ai-relay/relay-now.sh" "${BIN_DIR}/relay-now"
 ln -sf "${ROOT}/scripts/ai-relay/relay-add-grok.py" "${BIN_DIR}/relay-add-grok"
+ln -sf "${ROOT}/scripts/ai-relay/relay-setup.sh" "${BIN_DIR}/relay-setup"
 ln -sf "${ROOT}/scripts/ai-relay/relay-grok.sh" "${BIN_DIR}/relay-grok"
 ln -sf "${ROOT}/scripts/ai-relay/install-gemini-vps.sh" "${BIN_DIR}/install-gemini-vps"
 
@@ -58,8 +63,9 @@ AI Relay ติดตั้งคำสั่งให้เครื่อง�
   relay-call
   gate-run
   relay-report
-  relay-doctor
   relay-status
+  relay-suggest
+  relay-doctor
   relay-now
   relay-add-grok
   relay-grok

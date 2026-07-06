@@ -15,11 +15,16 @@ tags:
   - compliance
   - phase-tracking
 status: active
-version: 2.1
-updated: 2026-06-24
+version: "3.1"
+updated: 2026-07-05
+schema: memory-schema-v1.2
 ---
 
-# Use Comply
+# Use Comply (v3.1 · 2026-07-05)
+
+คู่กับ Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
+
+> เปลี่ยนจาก v2.1: อ่าน plan/ความจำก่อน · ค้น gate เอง · ใช้ id ร่วม · กฎเหล็ก "ไม่มี output = claimed" · CI = ตัววัด deploy · redact
 
 ## Shortcut
 
@@ -32,76 +37,62 @@ Use Comply
 ```text
 Use Comply กับงานนี้
 
-แตกงานเป็น phase และ issue ย่อยละเอียด กัน AI ลืม ข้ามขั้น ทำไม่ครบ
-หรือรายงานเสร็จทั้งที่ยังไม่ได้ตรวจจริง
+แตกงานเป็น phase และ issue ย่อยละเอียด กัน AI ลืม/ข้ามขั้น/ทำไม่ครบ/รายงานเสร็จทั้งที่ยังไม่ตรวจจริง
 
-[เกณฑ์ "งานใหญ่" — ตัดสินก่อนว่าต้องทยอยส่งไหม]
-ถือเป็นงานใหญ่เมื่อเข้าข้อใดข้อหนึ่ง: เกิน 3 เฟส / เกิน 8 issue /
-แตะหลายโมดูลหรือไฟล์ข้าม ownership / มี deploy หรือ migration /
-มีข้อมูลสำคัญ-เงิน-ความปลอดภัย
-งานใหญ่ = ทยอยส่งทีละเฟส (เว้นแต่เจ้าของสั่งให้ทำต่ออัตโนมัติ)
-งานเล็กกว่านี้ส่งรวดเดียวได้ แต่ยังต้องมีหลักฐานตรวจ
+[กฎ non-dev] อธิบายภาษาคน · ห้ามถามว่าใช้ test ตัวไหน — ค้นเอง (Schema §5) · หลักฐานก๊อปวางได้
 
-[สถานะมาตรฐาน — ทุก issue ใช้คำเดียวกัน]
-not_started / in_progress / blocked / failed / verified / unknown
-- verified = รันตรวจจริงแล้วผ่าน (ใช้คำนี้ได้เฉพาะมีหลักฐาน)
-- failed = ตรวจแล้วไม่ผ่าน
-- blocked = ยังตรวจไม่ได้เพราะติดเงื่อนไข (เช่น ไม่มีสิทธิ์/dependency)
-- unknown = ไม่มีข้อมูลพอ
-ไม่แน่ใจให้ใส่ blocked หรือ unknown ห้ามเดาว่า verified
+[ขั้น 0 — อ่านก่อนแตกงาน]
+- ถ้ามี `.project/plan.md` (จาก Act-As · Schema v1.2) → แตก issue ใต้ phase_id เดิม ไม่ตั้งเฟสใหม่ซ้ำ · เจอแต่ `.hermes/plan.md` เก่า = ทำ Migration ตาม Schema §1b ก่อน (ย้าย + stub ห้ามลบ)
+- อ่าน `.project/OverviewProgress.md` (4 หัวข้อบนสุด) + decision token (Schema §2) · `NEED_OWNER_ACTION_BEFORE_CLOSE` = เตือนก่อนลุย
 
-[สูตร %]
-- % ราย issue: verified = 100% เท่านั้น นอกนั้น = 0%
-- % เฟส = (issue ที่ verified ÷ issue ทั้งหมดในเฟส) × 100
-- % รวมทั้งงาน = (issue verified ทั้งหมด ÷ issue ทั้งหมด) × 100
-- ปัดเป็นจำนวนเต็ม · ห้ามใส่ % จากความรู้สึก
+[เกณฑ์ "งานใหญ่"] เข้าข้อใดข้อหนึ่ง: เกิน 3 เฟส / เกิน 8 issue / แตะหลายโมดูลหรือข้าม ownership / มี deploy หรือ migration / มีข้อมูลสำคัญ-เงิน-ความปลอดภัย → ทยอยส่งทีละเฟส (เว้นแต่สั่งให้ทำต่ออัตโนมัติ) · เล็กกว่านี้ส่งรวดเดียวได้ แต่ยังต้องมีหลักฐาน
 
-ให้ทำตามลำดับนี้:
+[สถานะมาตรฐาน — ใช้ 6 คำ] not_started / in_progress / blocked / failed / verified / unknown
+- verified = รันตรวจจริงแล้วผ่าน (ใช้ได้เฉพาะมีหลักฐาน) · failed = ตรวจแล้วไม่ผ่าน · blocked = ติดเงื่อนไข · unknown = ข้อมูลไม่พอ
+- ไม่แน่ใจ = blocked/unknown · ห้ามเดาว่า verified
+- [กฎเหล็ก Schema §3] ไม่มี output จริงแปะ = ถือเป็น claimed (ไม่ใช่ verified) อัตโนมัติ
+- [Schema §11] ตอนคิด % และตอนส่งให้ Close: verified เท่านั้น = เสร็จ · 5 สถานะที่เหลือ = งานค้าง
 
-1. แยกเป้าหมายงาน
-- ผลลัพธ์สุดท้าย / scope / out of scope / ถ้าเสร็จผู้ใช้ได้อะไร
+[สูตร %] ราย issue: verified=100% นอกนั้น=0% · % เฟส = verified÷ทั้งหมดในเฟส ×100 · % รวม = verified÷ทั้งหมด ×100 · ปัดจำนวนเต็ม · ห้าม % จากความรู้สึก
 
-2. แตก phase
-แต่ละ phase ต้องมี:
-- phase_id / ชื่อ / เป้าหมาย / รายการ issue / เกณฑ์ผ่าน / วิธีตรวจ / output
+ลำดับการทำ:
 
-3. แตก issue ย่อย
-แต่ละ issue ต้องมี:
-- issue_id / ชื่อ / รายละเอียด / ไฟล์ที่เกี่ยวข้อง / เงื่อนไขที่ถือว่าเสร็จ /
-  วิธีตรวจ / สถานะ (ตามคำมาตรฐาน) / blocker ถ้ามี
+1. แยกเป้าหมาย — ผลสุดท้าย / scope / out of scope / ถ้าเสร็จผู้ใช้ได้อะไร
 
-4. ตาราง comply (สรุปทุก issue · แนบหลักฐานละเอียดเฉพาะ verified/blocked/failed):
+2. แตก phase — แต่ละเฟส: `phase_id` (จาก plan.md ถ้ามี) / ชื่อ / เป้าหมาย / รายการ issue / เกณฑ์ผ่าน / วิธีตรวจ / output
 
-| Phase | Issue | สถานะ | % | หลักฐาน |
+3. แตก issue — แต่ละ issue: `issue_id` (P1-I1…) / ชื่อ / รายละเอียด / ไฟล์เกี่ยวข้อง / เงื่อนไขเสร็จ / วิธีตรวจ / สถานะ / blocker
 
-[แบบฟอร์มหลักฐาน — ทุก issue ที่ verified ต้องมีครบ]
-คำสั่งที่รัน / ผลลัพธ์ / ไฟล์หรือ URL / วันเวลาที่ตรวจ / ข้อจำกัด
-ถ้าตรวจไม่ได้ ให้เขียนเหตุผล (เช่น ไม่มี dependency / ไม่มีสิทธิ์ VPS / ไม่มี env)
-ห้ามใส่ว่า "ผ่าน" ถ้าไม่ได้ตรวจจริง
+4. ตาราง comply — | phase_id | issue_id | สถานะ | % | หลักฐาน | (หลักฐานละเอียดเฉพาะ verified/blocked/failed)
 
-5. Verification
-- งานเว็บหรือระบบ: build / lint / test ตามที่ project มี + localhost เปิดได้จริง +
-  VPS หรือ production endpoint ถ้าเกี่ยวข้อง
-- งานเอกสารหรือความรู้: ไฟล์มีอยู่จริง / ลิงก์ภายในถูกต้อง / เนื้อหาครบตาม issue /
-  ไม่มีศัพท์เทคนิคที่ไม่แปล / มีส่วนให้เจ้าของงานรีวิว
+5. Verification — ค้น gate เอง (ใหม่)
+   - งานโค้ด: ค้น quality gate จาก repo เอง (Schema §5: package.json/Makefile/CI) แล้วรันจริง + แปะ output · localhost เปิดได้จริง
+   - deploy = ดูสถานะ CI run ของ SHA ที่ merge (ไม่ใช่ endpoint ลอย ๆ) + health 200 + live SHA ตรง (Schema §4)
+   - งานเอกสาร/ความรู้: ไฟล์มีจริง / ลิงก์ถูก / เนื้อครบตาม issue / ไม่มีศัพท์ไม่แปล / มีส่วนให้รีวิว
+   - ไม่พบ gate เลย = รายงานตรง ๆ ว่าไม่มีตัวตรวจอัตโนมัติ ไม่เดาว่าผ่าน
 
-6. การรายงานท้ายเฟส
-ทุกเฟสต้องส่ง:
-- สรุปว่าทำอะไร / issue ที่ verified กี่ตัว / ค้างกี่ตัว / % ของเฟส /
-  หลักฐานการตรวจ / ความเสี่ยง / สิ่งที่ต้องทำต่อ
+[แบบฟอร์มหลักฐาน — ทุก issue verified ต้องครบ · redact secret §7]
+คำสั่งที่รัน / ผลลัพธ์ / ไฟล์หรือ URL / วันเวลา / ข้อจำกัด
+ตรวจไม่ได้ → เขียนเหตุผล (ไม่มี dependency/สิทธิ์/env) · ห้ามใส่ "ผ่าน" ถ้าไม่ได้ตรวจจริง
 
-ห้ามบอกว่า 100% ถ้ายังมี issue ที่สถานะไม่ใช่ verified
-ห้ามส่งงานรวมก้อนเดียวถ้าเป็นงานใหญ่ ให้ทยอยส่งทีละเฟส
-และแต่ละเฟสต้องตรวจครบก่อนบอกว่าเสร็จ
+6. รายงานท้ายเฟส — สรุปทำอะไร / verified กี่ตัว / ค้างกี่ตัว / % เฟส / หลักฐาน / ความเสี่ยง / ทำต่ออะไร
+   - ห้ามบอก 100% ถ้ายังมี issue ที่สถานะไม่ใช่ verified
+   - งานใหญ่ห้ามส่งก้อนเดียว ทยอยทีละเฟส ตรวจครบก่อนบอกเสร็จ
+
+ข้อห้าม: เดา verified · % จากความรู้สึก · เขียน secret ลงหลักฐาน · ถามเจ้าของว่าใช้ test ตัวไหน · ตั้ง phase ใหม่ทับ id จาก plan.md · ศัพท์เทคนิคไม่แปล
 ```
 
 ## Changelog
 
-- v2.1 (2026-06-24): ผ่านการตรวจ 2 AI (Claude ร่าง · Codex cross-check) · เพิ่มสูตร % (นับเฉพาะ verified · มีระดับ issue/เฟส/รวมทั้งงาน · ปัดจำนวนเต็ม) · เพิ่มสถานะมาตรฐาน 6 ค่า + แยก failed กับ blocked · เพิ่มเกณฑ์ "งานใหญ่" ที่วัดได้ · เพิ่มแบบฟอร์มหลักฐาน + รองรับเคสตรวจไม่ได้
+- v3.1 (2026-07-05): เกาะ Memory Schema v1.2 — อ่านแผนจาก `.project/plan.md` (เดิม `.hermes/plan.md`) + อ่านสถานะจาก `.project/OverviewProgress.md` · เจอไฟล์เก่า = Migration §1b ก่อน · schema ไม่ตรง = ห้ามเขียนความจำ (คำสั่งเจ้าของ 2026-07-05)
+- v3.0 (2026-06-26): เกาะ Memory Schema v1.1 · เพิ่มขั้น 0 อ่าน plan.md + handoff + token ก่อนแตกงาน (แตก issue ใต้ phase_id เดิม) · ค้น quality gate เอง (§5) · ใช้ issue_id ร่วม (P1-I1 ตาม §10) · กฎเหล็ก "ไม่มี output = claimed" (§3) · จับคู่สถานะ §11 · deploy วัดจาก CI run ของ merge SHA (§4) · redact secret (§7) · กฎ non-dev
+- v2.1 (2026-06-24): เพิ่มสูตร % (นับเฉพาะ verified) · สถานะมาตรฐาน 6 ค่า + แยก failed กับ blocked · เกณฑ์ "งานใหญ่" · แบบฟอร์มหลักฐาน
 - v2.0 (2026-05-28): อัปเกรดเป็น prompt v2
 
 ## Graph Links
 
-- Parent hub: [[skills/README|skills]]
-- Router: [[00-Center/docs/AI_SKILL_ROUTER|AI Skill Router]]
-- Graph: [[00-Center/docs/SKILL_GRAPH|Skill Graph]]
+- Parent hub: [[skills/prompt-shortcuts/Prompt Shortcuts|Prompt Shortcuts]]
+- Registry: [[ai-context/prompt-shortcut-registry|Prompt Shortcut Registry]]
+- Schema: [[skills/prompt-shortcuts/references/memory-schema|Memory Schema v1.1]]
+- Prev in lifecycle: [[skills/prompt-shortcuts/references/use-act-as|Use Act-As]]
+- Next in lifecycle: [[skills/prompt-shortcuts/references/use-continue|Use Continue]]

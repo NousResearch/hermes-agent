@@ -2,13 +2,16 @@
 """relay-report — สรุปรายจ่าย/การใช้งาน AI Relay จาก ledger จริง (อ่านอย่างเดียว)
 
 ให้เจ้าของเห็นในตารางเดียวว่า: วันไหนเรียก AI ตัวไหนกี่ครั้ง · สำเร็จ/พังเท่าไร ·
-สมองพิเศษ (fable) ถูกเรียกกี่ครั้ง · สลับตัวสำรองกี่ครั้ง · gate ผ่าน/ตกเท่าไร
+สลับตัวสำรองกี่ครั้ง · gate ผ่าน/ตกเท่าไร · ใช้งบประมาณเท่าไร
 ใช้:  python relay-report.py --cwd <โฟลเดอร์โปรเจกต์> [--days 30] [--json]
 อ่านจาก: .hermes/ai-relay/calls-*.md (ฝั่งเรียก AI) + .hermes/ledger/*.md (ฝั่งรัน gate)
 """
 import argparse, json, os, sys
 from collections import defaultdict
 from pathlib import Path
+
+
+REMOVED_TOOLS = {"fable"}
 
 
 def parse_md_table(path: Path):
@@ -59,11 +62,15 @@ def load_prices(cwd):
 
 
 def compute_cost(calls_by_tool, prices):
-    # ฟังก์ชันบริสุทธิ์ (เทสต์ง่าย): เรียกกี่ครั้ง × ราคาต่อครั้ง = บาท ต่อ tool + รวม + fable
+    # ฟังก์ชันบริสุทธิ์ (เทสต์ง่าย): เรียกกี่ครั้ง × ราคาต่อครั้ง = บาท ต่อ tool + รวม
     # ตัวที่ไม่มีราคาในทะเบียน = ไม่นับเงิน (ไม่เดา) แต่รายงานแยกว่า "ไม่มีราคา"
-    cost_by_tool, unknown = {}, []
+    cost_by_tool, unknown, legacy_removed = {}, [], []
     raw_total = 0.0
     for tool, calls in (calls_by_tool or {}).items():
+        if tool in REMOVED_TOOLS:
+            if calls:
+                legacy_removed.append(tool)
+            continue
         if tool in prices:
             raw = calls * prices[tool]
             raw_total += raw                       # รวมยอดดิบก่อน แล้วค่อยปัด (กันเศษเพี้ยนสะสม)
@@ -71,9 +78,9 @@ def compute_cost(calls_by_tool, prices):
         elif calls:
             unknown.append(tool)
     total = round(raw_total, 2)
-    fable = cost_by_tool.get("fable", 0.0)
     return {"cost_by_tool": cost_by_tool, "total_thb": total,
-            "fable_thb": fable, "no_price_tools": sorted(set(unknown)),
+            "no_price_tools": sorted(set(unknown)),
+            "legacy_removed_tools": sorted(set(legacy_removed)),
             # total_thb = ยอดเฉพาะ tool ที่มีราคา · ถ้ามี no_price_tools แปลว่ายังไม่ครบทั้งหมด
             "total_is_partial": bool(unknown)}
 
@@ -101,18 +108,14 @@ def main():
 
     # จัดกลุ่ม วัน × tool
     days = defaultdict(lambda: defaultdict(lambda: {"calls": 0, "ok": 0, "fail": 0, "rotated": 0, "skipped": 0}))
-    fable_total = 0          # เฉพาะ fable ที่ "เรียกจริง" (ไม่นับที่ถูกข้ามเพราะเกินเพดาน)
-    fable_skipped_total = 0   # fable ที่ถูกข้ามไป opus เพราะชนเพดาน
     for r in call_rows:
         day = (r.get("timestamp") or "")[:10] or "ไม่ทราบวัน"
         tool = r.get("tool") or "?"
         status = (r.get("status") or "").strip()
         e = days[day][tool]
         if status in ("skipped_by_cap", "skipped_not_owner_machine"):
-            # ไม่ใช่การเรียกจริง · fable ถูกข้ามไปสมองสำรอง (เกินเพดาน หรือเครื่องไม่อยู่ในรายชื่ออนุญาต)
+            # ไม่ใช่การเรียกจริง · tool ถูกข้ามตามกฎเพดานหรือกฎเครื่อง
             e["skipped"] += 1
-            if tool == "fable":
-                fable_skipped_total += 1
             continue
         e["calls"] += 1
         if status == "ok":
@@ -121,8 +124,6 @@ def main():
             e["fail"] += 1
         if (r.get("rotated_from") or "").strip():
             e["rotated"] += 1
-        if tool == "fable":
-            fable_total += 1
 
     gates = defaultdict(lambda: {"pass": 0, "fail": 0, "no_gate": 0, "error": 0})
     for r in gate_rows:
@@ -141,7 +142,7 @@ def main():
     cost = compute_cost(calls_by_tool, load_prices(cwd))
 
     if a.json:
-        out = {"root": str(cwd), "fable_total": fable_total, "cost": cost,
+        out = {"root": str(cwd), "cost": cost,
                "days": {d: {"calls": {t: v for t, v in days[d].items()}, "gate": gates.get(d, {})}
                         for d in all_days}}
         print(json.dumps(out, ensure_ascii=False, indent=1))
@@ -149,8 +150,7 @@ def main():
 
     print(f"═══ AI Relay · สรุปการใช้งานจาก ledger จริง ═══")
     print(f"โปรเจกต์: {cwd}")
-    print(f"สมองพิเศษ (fable) ถูกเรียกจริงทั้งหมด: {fable_total} ครั้ง"
-          + (f" · ถูกข้ามไป opus เพราะชนเพดาน: {fable_skipped_total} ครั้ง" if fable_skipped_total else ""))
+    print("สมองหลัก: Opus 4.8 ตัวเดียว · ไม่มี Fable/Faber/Fiber ในเส้นทางเรียกงาน")
     no_gate_total = sum(g.get("no_gate", 0) for g in gates.values())
     gate_err_total = sum(g.get("error", 0) for g in gates.values())
     if no_gate_total or gate_err_total:
@@ -168,19 +168,22 @@ def main():
             gf = g.get("fail", 0) if i == 0 else ""
             gn = g.get("no_gate", 0) if i == 0 else ""
             ge = g.get("error", 0) if i == 0 else ""
-            print(f"| {d} | {tool} | {e['calls']} | {e['ok']} | {e['fail']} | {e['rotated']} | {gp} | {gf} | {gn} | {ge} |")
+            tool_label = f"{tool} (ถอดแล้ว)" if tool in REMOVED_TOOLS else tool
+            print(f"| {d} | {tool_label} | {e['calls']} | {e['ok']} | {e['fail']} | {e['rotated']} | {gp} | {gf} | {gn} | {ge} |")
     print()
-    # ── ค่าใช้จ่าย (บาท) ── ตอบคำถามเจ้าของ "เดือนนี้ Fable กี่บาท คุ้มไหม"
+    # ── ค่าใช้จ่าย (บาท) ── ตอบคำถามเจ้าของว่าเดือนนี้ใช้ AI ตัวไหนเท่าไร
     if cost["cost_by_tool"]:
         print("═══ ค่าใช้จ่ายประมาณ (บาท · ราคาต่อครั้งเป็นค่า [สมมติ] แก้ได้ในทะเบียน registry) ═══")
         for tool, thb in sorted(cost["cost_by_tool"].items(), key=lambda x: -x[1]):
             print(f"  {tool}: {thb:,.2f} บาท ({calls_by_tool[tool]} ครั้ง)")
         total_label = "รวมเฉพาะที่มีราคา" if cost.get("total_is_partial") else "รวมทั้งหมด"
-        print(f"  {total_label}: {cost['total_thb']:,.2f} บาท · สมองพิเศษ (fable): {cost['fable_thb']:,.2f} บาท ({fable_total} ครั้ง)")
+        print(f"  {total_label}: {cost['total_thb']:,.2f} บาท")
     else:
         print("ค่าใช้จ่าย: ยังไม่มีราคาในทะเบียน (ใส่ price_per_call_thb ต่อ AI ใน registry เพื่อให้คิดเงินได้)")
     if cost["no_price_tools"]:
         print(f"  (ยังไม่ได้ตั้งราคา จึงไม่นับเงิน: {', '.join(cost['no_price_tools'])})")
+    if cost.get("legacy_removed_tools"):
+        print(f"  (ประวัติจากเครื่องมือที่ถอดแล้ว ไม่นับเป็นเส้นทางใช้งานปัจจุบัน: {', '.join(cost['legacy_removed_tools'])})")
     print()
     print("อ่านยังไง: 'สลับมา' = จำนวนครั้งที่งานถูกโยนมาจากตัวที่พัง · gate ผ่าน/ตก/no_gate/พัง มาจาก gate-run จริง")
 

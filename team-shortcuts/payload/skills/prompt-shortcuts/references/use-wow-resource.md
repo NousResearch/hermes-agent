@@ -19,10 +19,20 @@ tags:
   - resource-selection
 status: active
 version: 1.1
-updated: 2026-06-24
+updated: 2026-07-04
 ---
 
 # Use WOW Resource
+
+## เลือกตัวไหนในกลุ่มงานดีไซน์ (ป้ายบอกทาง · 2026-07-04)
+
+| โจทย์ | ใช้ตัวไหน |
+|---|---|
+| ตรวจ/ซ่อมหน้าที่มีอยู่ (งานลวก AI slop, responsive พัง, ความสวยไม่ผ่าน) | `Use Impeccable` |
+| วางหรือรื้อระบบดีไซน์ทั้งโปรเจกต์ (token, สี, component มาตรฐาน) | `Use Create Design System` |
+| หาไอเดีย/แพทเทิร์น layout-เอฟเฟกต์ระดับพรีเมียมก่อนลงมือสร้าง | `Use WOW Resource` |
+
+ลำดับที่ถูกเมื่อทำเว็บใหม่: WOW Resource (หาไอเดีย) → Create Design System (วางระบบ) → Impeccable (ตรวจก่อนส่ง)
 
 ## Invocation
 
@@ -169,6 +179,7 @@ WOW Layout:
 
 ## Changelog
 
+- docs (2026-07-04): เพิ่มตารางป้ายบอกทางกลุ่มงานดีไซน์ · ลบ orphan code fence ท้ายไฟล์
 - v1.1 (2026-06-24): ผ่านตรวจ 2 AI (Claude+Codex) · เปลี่ยน path ฝังเครื่องเป็นตัวแปร $HERMES_OBSIDIAN_ROOT (พนักงาน/VPS ใช้ได้) · แก้ Decision Rule แยก "โจทย์ไม่พอ" กับ "อ่านคลังไม่ได้" (กันเดาว่าอ่านแล้ว) · เพิ่มเกณฑ์คะแนนคัด resource 1-5 (ต้นทุนต่ำ=คะแนนสูง) · เพิ่ม Source Access Status ใน brief · อ่านคลังไม่ได้ห้ามเรียก "resource ที่เลือก"
 - v1.0 (2026-05-31): เวอร์ชันแรก
 
@@ -176,4 +187,3 @@ WOW Layout:
 
 - Parent hub: [[skills/prompt-shortcuts/Prompt Shortcuts|Prompt Shortcuts]]
 - Registry: [[ai-context/prompt-shortcut-registry|Prompt Shortcut Registry]]
-```

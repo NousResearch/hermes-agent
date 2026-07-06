@@ -14,18 +14,20 @@ aliases:
 tags:
   - prompt-shortcuts
   - saas
-  - opus-plan
+  - saas-opus-master-prompt
   - business-plan
   - marketing-strategy
   - pitch
 status: active
 version: 1.0
 created: 2026-06-07
-updated: 2026-06-07
+updated: 2026-07-06
 source: "Owner instruction in Codex chat, 2026-06-07: remember and resend this detailed SaaS Opus master prompt when requested."
 ---
 
 # Use SaaS Opus Master Prompt
+
+> 📌 **บทบาทปัจจุบัน (2026-07-04):** ไฟล์นี้ = "เครื่องยนต์โหมด SaaS" ของ [[skills/prompt-shortcuts/references/use-businessplan|Use BusinessPlan]] · ใช้เมื่อโปรเจกต์เป็น SaaS เท่านั้น — โจทย์ธุรกิจทั่วไปใช้ [[skills/prompt-shortcuts/references/use-business-plan|Use Business Plan]] · ห้ามรันสองเครื่องยนต์ซ้อนในงานเดียว · เนื้อ prompt ด้านล่างคงเต็มทุกตัวอักษรตามคำสั่งเจ้าของ ห้ามย่อ
 
 > ยุบรวมแล้ว (2026-06-28): prompt นี้กลายเป็น "เครื่องยนต์โหมด SaaS" ของชุด Project OS
 > เนื้อหาเต็มยังอยู่ครบที่นี่ ไม่ถูกลบ · เรียกชื่อเดิมก็ยังได้ผลเหมือนเดิม
@@ -69,7 +71,7 @@ When the owner asks for the SaaS / Opus / business / marketing / pitch master pr
 
 - README.md
 - AGENTS.md / CLAUDE.md / QWEN.md / GEMINI.md ถ้ามี
-- `.hermes/context.md`, `.hermes/active.md`, `.hermes/decisions.md` ถ้ามี
+- `.project/OverviewProgress.md`, `.project/plan.md`, `.project/decisions.md` (Memory Schema v1.2) · ไฟล์เก่า `.hermes/*` = fallback ถ้ามี
 - Docs หรือ BP-MKT ทั้งหมด
 - business plan
 - marketing plan

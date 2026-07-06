@@ -15,8 +15,9 @@ tags:
   - handoff
   - context-management
 status: active
-version: 2.1
-updated: 2026-06-24
+version: 2.3
+updated: 2026-07-05
+schema: memory-schema-v1.2
 ---
 
 # Review Chat
@@ -33,6 +34,8 @@ Review Chat
 Review Chat
 
 ให้รีวิวแชทนี้ทั้งหมดเพื่อปิดงานอย่างเป็นระบบ และเตรียมให้เปิดแชทใหม่ต่อได้โดยไม่หลุดบริบท
+
+อ้าง Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำ · ไฟล์ความจำที่เสนออัปเดต = `.project/OverviewProgress.md` (4 หัวข้อบนสุด) + `.project/decisions.md` ตามโครง Schema v1.2 §1 (เลิกใช้ handoff/active แยกไฟล์แล้ว)
 
 กฎพื้นฐาน (บังคับ):
 - default = review-before-write · ทุก action ที่เป็นการเขียน (update handoff/registry/memory/review-queue, ปลด claim)
@@ -51,7 +54,7 @@ Review Chat
 3. เสนออัปเดตไฟล์ประสานงาน (review-before-write — เสนอก่อน รออนุมัติ)
 เลือกเฉพาะไฟล์ที่ "เกี่ยวกับงานในแชทนี้จริง" · path มาตรฐาน:
 - Hermes Agent project: `projects/hermes-agent-dev/handoff.md`, `active-memory.md`, `review-queue/`
-- Coding repo: repo-local `handoff.md`, `.hermes/active.md`, `decisions.md` (เฉพาะที่มีจริง)
+- Coding repo (Schema v1.2): `.project/OverviewProgress.md` + `.project/decisions.md` · เจอไฟล์เก่า (`handoff.md`/`.hermes/active.md`/`.hermes/decisions.md`) = เสนอย้ายตาม Schema §1b (ย้าย + stub ห้ามลบ)
 - งาน Shortcut: `prompt-shortcut-registry.md` หรือ report เฉพาะเมื่อเจ้าของสั่งชัด
 - ไม่พบไฟล์มาตรฐาน → บอกว่าไม่พบ ห้ามสร้างใหม่เอง เว้นแต่เจ้าของงานอนุมัติ
 
@@ -94,6 +97,7 @@ Review Chat
 
 ## Changelog
 
+- v2.2 (2026-07-04): ผูก Memory Schema v1.1 (เพิ่ม schema field + เช็ก version) — เป็นคู่ขนาน Close Chat ไม่ใช่สมาชิกโซ่ lifecycle · ลบ orphan code fence ท้ายไฟล์
 - v2.1 (2026-06-24): ผ่านตรวจ 2 AI (Claude+Codex) · เปลี่ยนขั้น "อัปเดตไฟล์ถ้าควร" เป็น review-before-write (เสนอก่อน รออนุมัติ ห้ามเขียนอัตโนมัติ) · ใส่ path ไฟล์ประสานงานมาตรฐานชัดเจน · เพิ่มช่อง "หลักฐานที่ยังขาด" + "ไฟล์ที่เสนอจะอัปเดต" · แยก "ตรวจจากหลักฐานจริง" กับ "สรุปจากบทสนทนา" · เชื่อม Team-Safe (ปลด claim/handoff) แต่อยู่ใต้ review-before-write · แก้ code fence ที่เพี้ยน
 - v2.0 (2026-05-28): เวอร์ชันก่อนหน้า
 
@@ -102,4 +106,4 @@ Review Chat
 - Parent hub: [[skills/README|skills]]
 - Router: [[00-Center/docs/AI_SKILL_ROUTER|AI Skill Router]]
 - Graph: [[00-Center/docs/SKILL_GRAPH|Skill Graph]]
-```
+- Schema: [[skills/prompt-shortcuts/references/memory-schema|Memory Schema v1.1]]

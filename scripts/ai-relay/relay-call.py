@@ -32,9 +32,8 @@ def allowed_bins():
     extra = os.environ.get("RELAY_EXTRA_BINS", "")
     return ALLOWED_BINS | {b for b in extra.split(":") if b}
 
-# หมายเหตุ: Fable 5 ถูกถอดออกจาก Use AI Relay แล้ว (เจ้าของสั่ง 2026-07-06) เพื่อประหยัดโควต้า Fable
-# สมองหลัก (คิด/วิเคราะห์/วางแผน/ตรวจ) = Opus 4.8 ตัวเดียว · ถ้าอนาคตจะเปิด Fable อีก
-# ให้เติม adapter "fable" กลับใน adapters.yaml + ทะเบียน registry (enabled: true)
+# หมายเหตุ: สมองพิเศษเดิมถูกถอดออกจาก Use AI Relay แล้ว (เจ้าของสั่ง 2026-07-06) เพื่อประหยัดโควต้า
+# สมองหลัก (คิด/วิเคราะห์/วางแผน/ตรวจ) = Opus 4.8 ตัวเดียว
 
 # ---- ค่าปริยาย (ใช้เมื่อไม่มีไฟล์ตั้งค่า) ----
 DEFAULT_ADAPTERS = {
@@ -235,7 +234,7 @@ def load_relay_env(cwd: Path):
     load_env_file(cwd/".hermes"/".env")
 
 AUTH_RE = re.compile(r"unauthor|\b401\b|\b403\b|not logged|please login|sign ?in|credential|invalid api key|auth method|gemini_api_key|google_api_key|environment variables|not authenticated|disabled .*access|subscription access|use an anthropic api key|organization has disabled", re.I)
-QUOTA_RE = re.compile(r"\b429\b|rate.?limit|quota|too many request|usage limit|insufficient", re.I)
+QUOTA_RE = re.compile(r"\b429\b|rate.?limit|quota|too many request|usage limit|session limit|insufficient|hit your limit", re.I)
 # ข้อความ auth ที่ชัดเจนมาก (คำตอบปกติไม่มีทางพูด) · ถือเป็นล็อกอินพัง แม้ CLI จะ exit 0 · กันเอา error มาเป็นคำตอบ
 STRONG_AUTH_RE = re.compile(r"you are not authenticated|organization has disabled|subscription access for claude|use an anthropic api key instead", re.I)
 
@@ -252,6 +251,8 @@ def classify(exit_code, stdout, stderr):
         # บาง CLI (เช่น claude เมื่อ org ปิดสิทธิ์) พิมพ์ error ยาวแต่ exit 0 · กันเอา error มาเป็นคำตอบ
         if STRONG_AUTH_RE.search(out) or STRONG_AUTH_RE.search(err):
             return "auth"
+        if QUOTA_RE.search(out) or QUOTA_RE.search(err):
+            return "quota"
         if len(out.strip()) < 40 and AUTH_RE.search(err):
             return "auth"
         return "ok"
@@ -274,6 +275,14 @@ REASON = {
     "quota": "บัญชีนี้เกินโควต้า สลับบัญชีถัดไป",
     "crash": "AI ตอบไม่ได้/พัง ลองซ้ำหรือสลับตัวสำรอง",
 }
+
+def summarize_final_failure(tried):
+    statuses = [item.rsplit(":", 1)[-1] for item in tried if ":" in item]
+    if statuses and all(s in {"quota", "not_found", "cooldown-skip"} for s in statuses) and "quota" in statuses:
+        return "quota", REASON["quota"], 30
+    if statuses and all(s in {"not_found", "cooldown-skip"} for s in statuses):
+        return "not_found", REASON["not_found"], 10
+    return "crash", "ลองครบทุกตัวในสายแล้วยังไม่สำเร็จ", 40
 
 # กฎบังรหัสลับชุดเดียวกับ gate-run (URL ฝัง user:pass · key=value · รหัสขึ้นต้น sk-)
 _SECRET_RE = [
@@ -632,9 +641,10 @@ def main():
             continue   # ไม่มีตัวนี้ → ลองตัวถัดไป
 
     relay_now("clear")
-    print(json.dumps({"status":"crash","reason_human":"ลองครบทุกตัวในสายแล้วยังไม่สำเร็จ","tried":tried},
+    status, reason, exit_code = summarize_final_failure(tried)
+    print(json.dumps({"status":status,"reason_human":reason,"tried":tried},
                      ensure_ascii=False))
-    sys.exit(40)
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()

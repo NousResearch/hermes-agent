@@ -13,13 +13,23 @@ tags:
 status: active
 version: 1.2
 created: 2026-06-01
-updated: 2026-06-24
+updated: 2026-07-04
 related:
   - "[[50-Playbooks/ai-design-team-without-ui-execution-bottleneck|AI Design Team Without UI Execution Bottleneck]]"
   - "[[00-Center/docs/Synerry_Design_System|Synerry Design System]]"
 ---
 
 # Use Impeccable
+
+## เลือกตัวไหนในกลุ่มงานดีไซน์ (ป้ายบอกทาง · 2026-07-04)
+
+| โจทย์ | ใช้ตัวไหน |
+|---|---|
+| ตรวจ/ซ่อมหน้าที่มีอยู่ (งานลวก AI slop, responsive พัง, ความสวยไม่ผ่าน) | `Use Impeccable` |
+| วางหรือรื้อระบบดีไซน์ทั้งโปรเจกต์ (token, สี, component มาตรฐาน) | `Use Create Design System` |
+| หาไอเดีย/แพทเทิร์น layout-เอฟเฟกต์ระดับพรีเมียมก่อนลงมือสร้าง | `Use WOW Resource` |
+
+ลำดับที่ถูกเมื่อทำเว็บใหม่: WOW Resource (หาไอเดีย) → Create Design System (วางระบบ) → Impeccable (ตรวจก่อนส่ง)
 
 Shortcut หลัก: `Use Impeccable` · Aliases: `use-impeccable`, `Impeccable`, `ใช้ Impeccable`, `ตรวจ UI Slop`, `แก้ AI Slop`
 
@@ -97,6 +107,7 @@ repo-local design system ก่อน → ถ้าไม่มี ใช้ `$H
 
 ## Changelog
 
+- docs (2026-07-04): เพิ่มตารางป้ายบอกทางกลุ่มงานดีไซน์ · ลบ orphan code fence ท้ายไฟล์
 - v1.2 (2026-06-24): ผ่านตรวจ 2 AI (Claude+Codex) · เพิ่ม Decision Tree + manual audit fallback เมื่อเครื่องมือใช้ไม่ได้/ไม่ใช่ frontend · Install Safety (devDependency + ขออนุมัติก่อนเพิ่ม dependency · npx ก็ต้องขออนุมัติ) · Scoring Rubric 100 คะแนนแทน "80%" ลอย ๆ (หมวดตรวจไม่ได้ = unverified) · Design System ค้น repo-local ก่อน แล้ว $HERMES_OBSIDIAN_ROOT · บังคับรูปแบบ output กันแต่งคะแนน
 - v1.1 (2026-06-06): เวอร์ชันก่อนหน้า
 
@@ -104,4 +115,3 @@ repo-local design system ก่อน → ถ้าไม่มี ใช้ `$H
 
 - Parent hub: [[skills/prompt-shortcuts/Prompt Shortcuts|Prompt Shortcuts]]
 - Registry: [[ai-context/prompt-shortcut-registry|Prompt Shortcut Registry]]
-```

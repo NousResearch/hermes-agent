@@ -1,0 +1,38 @@
+# ตัวอย่างโครงไฟล์บัญชี + สายสลับ + เพดาน
+# ⚠️ ค่าจริงเก็บที่ .hermes/ai-relay/accounts.yaml (local-only · ต้องอยู่ใน .gitignore)
+# ⚠️ ห้ามใส่ token/รหัสจริงในไฟล์นี้ · id เป็นแค่ "ป้ายชื่อ" · การล็อกอินจริงทำผ่าน CLI ของแต่ละตัวเอง
+
+# บัญชี (ID) ต่อ AI หนึ่งตัว — relay-call สลับ id ถัดไปเมื่อชนขีดจำกัด
+accounts:
+  claude_code:
+    - id: ccode-1      # เจ้าของแจ้งว่ามี ~3 ID (2026-06-26)
+    - id: ccode-2
+    - id: ccode-3
+  codex:               # เจ้าของแจ้งว่ามีหลาย ID (ตัวทดสอบจริง คู่กับ claude_code)
+    - id: codex-1
+    - id: codex-2
+    - id: codex-3
+  grok:
+    - id: grok-1       # เติมเมื่อมี
+  gemini:
+    - id: gemini-1     # เติมเมื่อมี
+  # เพิ่ม AI/ID ใหม่ = เติมบรรทัดใต้นี้ ไม่ต้องแก้ prompt
+
+# สายสลับเมื่อชนขีดจำกัด/พัง (ตามชนิดงาน) — คลาวด์หมด → ตก ollama ในเครื่อง (ฟรี)
+fallback:
+  code_writing: [grok, codex, gemini, ollama]
+  planning: [opus]        # งานคิดไม่ตกไปตัวเล็ก · opus หมด = แจ้งเจ้าของ ไม่ตกอัตโนมัติ
+
+# กฎผู้ตรวจ — บังคับคนละค่ายกับคนเขียนเสมอ (แม้สลับบัญชีแล้ว)
+reviewer_rule: "reviewer ต้องคนละค่ายกับ coder เสมอ"
+
+# เพดานกันไหม้เงิน (relay-call นับเองและบังคับ · ระดับ session)
+limits:
+  max_rounds_per_issue: 3      # นับข้ามทุก coder ไม่รีเซ็ตตอนสลับ
+  max_calls_per_session: 50
+  budget: null                 # ใส่ตัวเลขถ้าจะจำกัดงบเป็นเงิน
+
+# โมเดล ollama ที่ใช้เป็นตัวสำรอง (จากที่มีในเครื่อง notebook · VPS ต้องโหลดเพิ่มก่อน)
+ollama_models:
+  default: qwen3:8b
+  code: deepseek-r1:7b

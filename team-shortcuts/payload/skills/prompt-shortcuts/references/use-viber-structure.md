@@ -125,11 +125,13 @@ docs/security/
 docs/testing/
 docs/release/
 .github/pull_request_template.md
-.hermes/context.md
-.hermes/active.md
-.hermes/decisions.md
+.project/OverviewProgress.md
+.project/plan.md
+.project/decisions.md
 .hermes/tracking/
 ```
+
+> ที่อยู่ไฟล์ความจำเปลี่ยนตาม Memory Schema v1.2 (2026-07-05): ความจำทำงานต่ออยู่ `.project/` ที่เดียว · `.hermes/` เหลือไฟล์เครื่องจักร (`ai-relay/`, `ledger/`, `tracking/`)
 
 ถ้าโปรเจกต์มีโครงเดิมอยู่แล้ว ให้ merge-first คือปรับเข้ากับโครงเดิมก่อน ไม่สร้างของซ้ำ
 

@@ -1,0 +1,32 @@
+# ตัวอย่างวิธีเรียก coder แต่ละตัวแบบสั่งงานอัตโนมัติ (headless)
+# ไฟล์นี้ไม่ลับ (ไม่มี token/ID จริง) · ก๊อปไป .hermes/ai-relay/adapters.yaml ต่อโปรเจกต์
+# เก็บคำสั่งเป็น "array ของ argument" ไม่ใช่ string เดียว (กันการแฝงคำสั่ง · Schema §7)
+# {prompt} {cwd} {model} = ช่องที่ relay-call เติมค่าจริงตอนรัน
+#
+# คำสั่งทดสอบจริงจาก help บน notebook (Rattanasaks-MacBook-Pro) 2026-06-26
+# ยืนยันแล้วว่า flag มีจริง · ยังไม่ได้รันงานจริง (กันเปลืองเครดิต)
+
+tools:
+  grok:
+    # grok -p <prompt> --cwd <worktree> --output-format json --always-approve
+    cmd: ["grok", "-p", "{prompt}", "--cwd", "{cwd}", "--output-format", "json", "--always-approve"]
+    note: "-p/--single = โหมด headless · --output-format = รูปแบบผลลัพธ์ · --always-approve = ไม่ถามยืนยันทีละขั้น"
+
+  gemini:
+    # gemini ไม่มี --cwd → relay-call ต้อง cd เข้า {cwd} ก่อนรัน
+    cmd: ["gemini", "-p", "{prompt}", "-m", "{model}", "--approval-mode", "yolo"]
+    run_in_cwd: true
+    note: "-p/--prompt = โหมด headless · --approval-mode yolo = อนุมัติอัตโนมัติ"
+
+  ollama:
+    # AI ในเครื่อง (ฟรี) · ตัวสำรอง
+    cmd: ["ollama", "run", "{model}", "{prompt}", "--format", "json"]
+    run_in_cwd: true
+    note: "รันในเครื่อง ไม่ใช้เครดิต · ใช้โมเดลตาม ollama_models ใน accounts.yaml"
+
+  codex:
+    # PLACEHOLDER — ไม่มี CLI บน notebook · ต้องทดสอบ flag จริงบน VPS ก่อนใช้
+    # คาดว่าเป็น: codex exec <prompt>  (ยังไม่ยืนยัน · ห้ามใช้จนกว่าทดสอบบน VPS)
+    cmd: ["codex", "exec", "{prompt}"]
+    verified: false
+    note: "ยังไม่ยืนยันคำสั่งจริง — relay-call ต้อง preflight (which codex + ทดสอบ) ก่อนเรียก"

@@ -8,19 +8,28 @@ aliases:
   - ใช้ Blog Auto
   - เขียนบล็อกอัตโนมัติ
   - ทำบล็อกจากงานนี้
-  - ส่งเข้า Hi Logic Labs
+  - ส่งเข้า One Man Fleet
 tags:
   - prompt-shortcuts
-  - hilogiclabs
+  - onemanfleet
   - blog
   - content-factory
   - obsidian-index
 status: active
 version: 1.1
-updated: 2026-06-24
+updated: 2026-07-04
 ---
 
 # Use Blog Auto
+
+## ลำดับสายพานคอนเทนต์ (ป้ายบอกทาง · 2026-07-04)
+
+| สถานการณ์ | เริ่มที่ |
+|---|---|
+| มีแชทงาน/ความรู้ดิบ อยากแปลงเป็นคอนเทนต์ | `Use Create Content` (ต้นน้ำ: ขุดแชท → Content Master) → ปลายทางเป็นบล็อก OMF ต่อด้วย `Use Blog Auto` |
+| มีเนื้อหาพร้อมแล้ว แค่จะลงบล็อก One Man Fleet | `Use Blog Auto` ตรงได้เลย |
+
+กติกา: ทั้งคู่ใช้ด่านกันความลับชุดเดียวกัน · draft-first เสมอ ห้าม publish ก่อนเจ้าของอนุมัติ
 
 ## Shortcut
 
@@ -33,15 +42,15 @@ Use Blog Auto
 ```text
 Use Blog Auto กับงานนี้
 
-ให้ Hermes ทำหน้าที่เป็น Blog Orchestrator ของ Hi Logic Labs โดยสกัดองค์ความรู้จากงานที่กำลังทำอยู่ แล้วแปลงเป็นระบบผลิตบทความและ asset ต่อเนื่องแบบ draft-first เท่านั้น
+ให้ Hermes ทำหน้าที่เป็น Blog Orchestrator ของ One Man Fleet โดยสกัดองค์ความรู้จากงานที่กำลังทำอยู่ แล้วแปลงเป็นระบบผลิตบทความและ asset ต่อเนื่องแบบ draft-first เท่านั้น
 
 หลักการสำคัญ:
-- Public brand หลักคือ Hi Logic Labs
+- Public brand หลักคือ One Man Fleet
 - Public English เป็นค่าเริ่มต้นสำหรับเว็บสาธารณะ
 - Thai ใช้เป็น member/internal หรือ draft review เท่านั้น เว้นแต่เจ้าของงานสั่งให้ public Thai ชัดเจน
 - ห้ามใช้ชื่อบุคคล ชื่อลูกค้า โปรเจกต์จริง IP token key URL ภายใน หรือข้อมูลที่ระบุตัวตนได้ใน public draft
-- ห้ามใช้ I/my/me/ผม ใน public draft; ให้ใช้ lab voice เช่น we, the lab, ทีมทดลอง, ห้องแล็บ
-- ต้องอ่าน Blog Skill ของ Hi Logic Labs ก่อนเขียนเสมอ · ลำดับหา: path ที่ registry ระบุ → repo-local → `$HERMES_OBSIDIAN_ROOT/skills/hilogiclabs-blog/SKILL.md`
+- ห้ามใช้ I/my/me/ผม ใน public draft; ให้ใช้ lab voice เช่น we, the fleet, the captain, กองเรือ
+- ต้องอ่าน Blog Skill ของ One Man Fleet ก่อนเขียนเสมอ · ลำดับหา: path ที่ registry ระบุ → repo-local → `$HERMES_OBSIDIAN_ROOT/skills/onemanfleet-blog/SKILL.md`
   ($HERMES_OBSIDIAN_ROOT: local = `/Users/rattanasak/ObsidianVault/HermesAgent` · VPS = `/home/linux-nat/ObsidianVault/HermesAgent`)
   หา skill ไม่เจอ = บอกว่าไม่พบ ห้ามเขียนว่าอ่าน skill แล้ว ห้ามเดาเกณฑ์ · compliance = unverified
 - compliance รายงานเป็น N/M ข้อ + เช็กลิสต์รายข้อจาก skill (brand voice / faceless / English public / privacy clean / image license / draft-first)
@@ -65,11 +74,11 @@ Use Blog Auto กับงานนี้
 - สร้าง knowledge card สั้นสำหรับ Obsidian index ที่ `$HERMES_OBSIDIAN_ROOT/95-Inbox-Lab/review/` ตั้งชื่อไฟล์ `YYYY-MM-DD-topic-slug.md`
   frontmatter: topic / source_context / privacy_level / audience / language_route / related_posts / draft_status
 - เขียน card นี้เฉพาะเมื่อ shortcut ถูกสั่งให้ทำงานจริง · เก็บใน review/ เท่านั้น ไม่ถือเป็นความจำถาวรจนกว่าเจ้าของอนุมัติ (review-before-write) · ไม่พบ path = รายงาน ไม่สร้างมั่ว
-- วาง outline ตาม Blog Skill ล่าสุดของ Hi Logic Labs
+- วาง outline ตาม Blog Skill ล่าสุดของ One Man Fleet
 - สำหรับ public blog ให้ใช้ English draft เป็นหลัก และมี Thai internal summary คู่กัน
 
 4. Draft Production
-- เขียน draft เป็น Hi Logic Labs faceless lab voice
+- เขียน draft เป็น One Man Fleet faceless fleet voice
 - ใช้ภาพจาก screenshot จริงแบบปิดข้อมูล หรือ stock/API image ที่ผ่าน skill แล้วเท่านั้น
 - ถ้าใช้ Freepik API หรือ image API ให้เก็บ attribution/license/source id ใน draft metadata
 - ห้าม publish เอง ต้องส่งเป็น draft URL หรือ draft artifact ให้ owner ตรวจ
@@ -93,7 +102,7 @@ Use Blog Auto กับงานนี้
 
 - Blog Orchestrator: คุม flow ตั้งแต่ intake ถึง draft URL
 - Privacy Editor: ตัดข้อมูลลับและทำ redaction
-- Hi Logic Labs Editor: ตรวจ brand voice, English public, Thai internal
+- One Man Fleet Editor: ตรวจ brand voice, English public, Thai internal
 - Knowledge Librarian: ทำ Obsidian index และ traceability = ร่องรอยว่าองค์ความรู้นี้ถูกใช้ที่ไหนแล้ว
 - Content Factory Producer: แปลง blog เป็น draft สำหรับแต่ละ platform
 - QA/Comply Auditor: ตรวจ skill compliance, draft-first, localhost/VPS, และตัวเลข completion
@@ -120,6 +129,7 @@ Every `Use Blog Auto` response must include:
 
 ## Changelog
 
+- docs (2026-07-04): เพิ่มลำดับสายพานคอนเทนต์คู่ Use Create Content / Use Blog Auto
 - v1.1 (2026-06-24): ผ่านตรวจ 2 AI (Claude+Codex) · ระบุลำดับหา Blog Skill (registry→repo→$HERMES_OBSIDIAN_ROOT) + fallback root · หา skill ไม่เจอ = unverified ห้ามอ้างว่าอ่านแล้ว · compliance เป็น N/M + เช็กลิสต์ + แยก hard gate (privacy/publish เอง = BLOCKED) · Obsidian index ระบุ path + filename rule + อยู่ใต้ review-before-write · localhost/VPS เป็น capability-based (ไม่มี endpoint = N/A)
 - v1.0 (2026-06-07): เวอร์ชันแรก
 

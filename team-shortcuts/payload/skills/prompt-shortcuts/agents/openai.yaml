@@ -2,4 +2,4 @@ interface:
   display_name: "Prompt Shortcuts"
   short_description: "Load reusable standard prompts"
   brand_color: "#0F766E"
-  default_prompt: "Use $prompt-shortcuts Use New Chat, Use Flow Guardian, Use Save Git, Use AI Pair, Use Impeccable, Use Blog Auto, Use Viber Audit, Use Viber Structure, Use Business Plan, Review Chat, Use Comply, Use Act-As, Use Scan Feature, or Use Continue to apply a standard working prompt to this task."
+  default_prompt: "Use $prompt-shortcuts with any registered shortcut, including Use New Chat, Use Close Chat, Use Flow Guardian, Use Save Git, Use Merge to Production, Use AI Relay, Use AI Pair, Use Impeccable, Use Blog Auto, Use Create Content, Use Viber Audit, Use Viber Structure, Use Business Plan, Use BusinessPlan, Use OverviewProgress, Use FeatureSpec, Use DesignSystem, Use Create Design System, Use Hermes Structure, Review Chat, Use Comply, Use Act-As, Use Scan Feature, Use Summary, Use Move Folder, or Use Continue."

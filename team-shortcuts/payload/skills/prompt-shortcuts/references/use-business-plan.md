@@ -20,11 +20,13 @@ tags:
   - website-strategy
 status: active
 version: 2.0
-updated: 2026-06-24
+updated: 2026-07-04
 source: "กู้โมดูลกลยุทธ์จากต้นฉบับ Prompt_Biz_SaaS + ตรวจ 2 AI (Claude+Codex)"
 ---
 
 # Use Business Plan
+
+> 📌 **กันสับสนชื่อคล้าย:** ตัวนี้ = "เครื่องวางแผนธุรกิจ" รับโจทย์ดิบมาวิเคราะห์ในแชท · [[skills/prompt-shortcuts/references/use-businessplan|Use BusinessPlan]] (เขียนติดกัน) = "ไฟล์ความจำธุรกิจประจำโปรเจกต์" (.project/BusinessPlan.md) คนละหน้าที่ · [[skills/prompt-shortcuts/references/use-saas-opus-master-prompt|Use SaaS Opus Master Prompt]] = เครื่องยนต์โหมด SaaS ของระบบเดียวกัน (โปรเจกต์ SaaS ใช้ตัวนั้น ไม่ต้องรันสองเครื่องยนต์ซ้อน)
 
 ## Shortcut
 
@@ -199,6 +201,7 @@ Feature/UX/Sitemap · Technical/Data/Security · Campaign/Content(pillar/KPI/cha
 
 ## Changelog
 
+- docs (2026-07-04): เพิ่มป้ายกันสับสน Use Business Plan / Use BusinessPlan / Use SaaS Opus Master Prompt
 - v2.0 (2026-06-24): กู้ 4 โมดูลกลยุทธ์ที่หล่นจากต้นฉบับกลับมา (Outlier Strategy Lens · New Venture Screening · WOW Pitching System เต็ม · Storytelling Canvas inline) · เพิ่ม Module Router เลือกโมดูลอัตโนมัติตามชนิดงาน (กันบวม) · เพิ่ม Verdict ปิดท้าย · เพิ่มกฎ evidence (แหล่ง/ความมั่นใจ/วิธีตรวจ) · ผ่านตรวจ 2 AI (Claude+Codex)
 - v1.1 (2026-06-01): เวอร์ชันย่อ (STEP 1-8)
 

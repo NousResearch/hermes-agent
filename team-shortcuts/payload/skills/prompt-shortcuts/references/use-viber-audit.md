@@ -69,7 +69,7 @@ Use Viber Audit กับโปรเจกต์นี้ หรือกับ
 1. ตรวจโปรเจกต์เดียว
 - ใช้ path ปัจจุบันหรือ path ที่ผู้ใช้ระบุ
 - อ่าน repo adapter เช่น `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `QWEN.md`, `.cursor/rules/*.mdc`
-- อ่าน `.hermes/context.md`, `.hermes/active.md`, `.hermes/decisions.md` ถ้ามี
+- อ่าน `.project/OverviewProgress.md`, `.project/plan.md`, `.project/decisions.md` (Memory Schema v1.2) · ไฟล์เก่า `.hermes/context.md`/`active.md`/`decisions.md` = fallback อ่านได้ถ้ามี
 - ตรวจไฟล์จริง เอกสารจริง test จริง และสถานะ runtime จริงเท่าที่เข้าถึงได้
 
 2. ตรวจทุกโปรเจกต์ใน Viber Project

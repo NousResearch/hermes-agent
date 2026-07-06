@@ -15,11 +15,15 @@ if [ ! -f "$VAULT/ai-context/prompt-shortcut-registry.md" ]; then
   echo "ผิดพลาด: ไม่พบ vault ที่ $VAULT (ตั้ง HERMES_VAULT ชี้ vault ได้)"
   exit 1
 fi
+if ! command -v rsync >/dev/null 2>&1; then
+  echo "ผิดพลาด: ไม่พบ rsync — ต้องติดตั้ง rsync ก่อนเพื่ออัปเดต payload ให้ตรงกับ vault"
+  exit 1
+fi
 
 mkdir -p "$PAYLOAD/ai-context" "$PAYLOAD/skills"
 cp "$VAULT/ai-context/prompt-shortcut-registry.md" "$PAYLOAD/ai-context/"
-rm -rf "$PAYLOAD/skills/prompt-shortcuts"
-cp -R "$VAULT/skills/prompt-shortcuts" "$PAYLOAD/skills/"
+mkdir -p "$PAYLOAD/skills/prompt-shortcuts"
+rsync -a --delete "$VAULT/skills/prompt-shortcuts/" "$PAYLOAD/skills/prompt-shortcuts/"
 
 REF_COUNT="$(ls -1 "$PAYLOAD/skills/prompt-shortcuts/references/"*.md 2>/dev/null | wc -l | tr -d ' ')"
 echo "อัปเดต payload แล้ว: ทะเบียน 1 ไฟล์ + prompt $REF_COUNT ไฟล์"

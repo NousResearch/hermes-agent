@@ -22,12 +22,17 @@ tags:
   - phase-tracking
   - completion
 status: active
-version: 3.1
-updated: 2026-06-24
+version: "4.1"
+updated: 2026-07-05
+schema: memory-schema-v1.2
 replaces: go-to-sleep
 ---
 
-# Use Continue
+# Use Continue (v4.1 · 2026-07-05)
+
+คู่กับ Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
+
+> เปลี่ยนจาก v3.1: prod merge/deploy ออกจาก auto (ต้องขอคน · flag ALLOW_AUTO_PROD=OFF) · อ่าน memory+token ก่อนลุย · ledger ผูกเข้า memory · ค้น gate เอง · เคารพ claim/worktree · redact
 
 ## Shortcut
 
@@ -40,71 +45,60 @@ Use Continue
 ```text
 Use Continue
 
-ทำงานต่อเองโดยไม่ต้องรอผม ทำเป็นระบบทีละเฟส ปิดแต่ละเฟสให้ครบตามนิยาม 100%
-ก่อนข้ามเฟส · งานรอบนี้ยึด 1 เป้าหมายหลักเท่านั้น
+ทำงานต่อเองโดยไม่ต้องรอผม ทีละเฟส ปิดแต่ละเฟสให้ครบ 100% ก่อนข้าม · งานรอบนี้ยึด 1 เป้าหมายหลักเท่านั้น
 
-[ระดับอิสระ 3 ชั้น — ตัดสินก่อนทำทุกอย่าง]
+[กฎ non-dev] เจ้าของเป็น non-dev → อธิบายภาษาคน · ค้น gate เอง · ทุกครั้งที่ต้องขอคน เสนอคำสั่ง/ทางเลือกก๊อปวางได้
 
-ชั้น 1 ทำเองได้เลย:
-อ่านไฟล์ / แก้โค้ดใน scope รอบนี้ / รันเทส / เขียนไฟล์ทดสอบ / เขียน doc
+[ขั้น 0 — อ่านก่อนลงมือ]
+- อ่าน `.project/plan.md` (เฟส+id) + `.project/OverviewProgress.md` (4 หัวข้อบนสุด: สถานะ/งานถัดไป/ข้อห้าม/งานค้าง) + `.project/decisions.md` + decision token (Schema §2)
+- เจอไฟล์ความจำเก่าใน `.hermes/` หรือ root ที่ยังมีเนื้อหาจริง → Migration ตาม Schema §1b ก่อนลุย (ย้าย + stub ห้ามลบ + แก้จุดอ้าง)
+- `NEED_OWNER_ACTION_BEFORE_CLOSE` รอบก่อน = หยุด เตือนเจ้าของ ห้ามลุยต่อ จนกว่าเคลียร์
+- เคารพ claim/worktree: route ไป worktree ตัวเอง · path ซ้อน claim คนอื่น = STOP · ไม่แตะ worktree คนอื่น
+- อ้าง phase_id/issue_id เดิมจาก plan/comply ตลอด ไม่ตั้งใหม่
 
-ชั้น 2 รายงานในแชทแล้วทำต่อได้ (ไม่ต้องรอ) แต่ต้องแนบหลักฐานก่อนทำ:
-- ลง dependency → แนบ lockfile diff + ผลตรวจ license/security
-- ลบไฟล์จำนวนมาก → แนบรายการ dry-run (ไฟล์ที่จะลบ) ก่อน
-- แตะไฟล์ข้าม ownership → แนบสรุปผลกระทบต่อเจ้าของเดิม
-- แก้ config ที่ไม่ใช่ production
+[ระดับอิสระ 3 ชั้น — ตัดสินก่อนทำทุกอย่าง · อิง Schema §12]
+ชั้น 1 ทำเองได้เลย: อ่านไฟล์ / แก้โค้ดใน scope รอบนี้ / รันเทส / เขียนไฟล์ทดสอบ / เขียน doc
+ชั้น 2 รายงานแล้วทำต่อได้ (แนบหลักฐานก่อน): ลง dependency (+ lockfile diff + license/security) / ลบหลายไฟล์ (+ dry-run list) / แตะไฟล์ข้าม ownership (+ สรุปผลกระทบ) / แก้ config ที่ไม่ใช่ production
+ชั้น 3A auto ผ่านด่านอัตโนมัติได้: push ขึ้น branch ตัวเอง / tag / deploy staging / แก้ CI ที่ไม่กระทบ prod / external API บน sandbox
 
-ชั้น 3A auto ผ่านด่านอัตโนมัติ (ทำต่อได้เองไม่ต้องรอคน ถ้าด่านผ่าน):
-รายการ: git commit/push/merge/tag/release / deploy production / แก้ CI/CD /
-แก้ auth-security policy / production config / migration ข้อมูล / เรียก external API จริง
-กติกาด่าน (บังคับทุกข้อ ห้ามข้าม):
-1. ด่านที่ต้องรัน (ตายตัว): push/merge = save-git merge-gate · deploy = ship-gate ·
-   migration = สำรอง + ทดสอบ restore จริง + verify checksum ก่อน ·
-   auth/CI/external API = รันบน staging หรือ dry-run ที่ไม่ใช้ของจริงก่อน
-2. ผลด่านต้องมาจากเครื่องมือจริง (exit code / ผลแบบมีโครงสร้าง) — ห้าม AI ตีความว่า SAFE เอง
-3. fail-closed: ด่านหาไม่เจอ / timeout / อ่านผลไม่ออก / ผลไม่ใช่ SAFE ชัดเจน = ถือว่า BLOCKED ทันที
-4. ผูกด่านกับคำสั่งจริง: บันทึก target (repo/branch/commit SHA/env/service/migration id)
-   คำสั่งที่ทำจริงต้องตรงกับ target ที่ด่านตรวจ (ด่านตรวจ commit A ห้าม push commit B)
-5. จำกัดขอบเขต: auto ได้เฉพาะ path/service/env/branch ที่ประกาศไว้รอบนี้ เกินจากนี้ = หยุด
-6. deploy production ต้องมี health check + คำสั่ง rollback พร้อม + เงื่อนไขหยุดอัตโนมัติถ้า health เพี้ยน
-ด่านตอบ SAFE → ทำต่อเลย · BLOCKED → หยุด รายงานชั้นที่ติด
-ทุกการกระทำชั้น 3A เขียน ledger (append-only ห้ามแก้ย้อนหลัง):
-เวลา / คำสั่ง / ด่านที่รัน / exit code / commit SHA / ผล
+[เปลี่ยนสำคัญ] ต้องขอคนเสมอ (ค่าตั้งต้น · แม้ด่าน SAFE):
+- merge → main · deploy production · migration prod → เพราะ merge→main = CI/CD ดันขึ้น prod ที่มีผู้ใช้จริงอัตโนมัติ
+- เปิด auto ได้เฉพาะเมื่อเจ้าของตั้ง `ALLOW_AUTO_PROD=ON` ชัดเจน (Schema §12) · เปิดแล้วยังต้องผ่านด่าน+ledger
 
-ชั้น 3B ต้องขออนุมัติคนชัดก่อนเสมอ (ด่านอัตโนมัติตรวจแทนไม่ได้ · แม้ด่านบอก SAFE):
-ใช้เงิน / ส่งอีเมลหรือทำแทนบุคคลภายนอก / เปิดเผย secret / ลบไฟล์สำคัญถาวร
+ชั้น 3B ต้องขอคนเสมอ: ใช้เงิน / ส่งอีเมลหรือทำแทนบุคคลภายนอก / เปิดเผย secret / ลบไฟล์สำคัญถาวร
 
-[นิยาม "ว้าว"]
-เหนือความคาดหมาย / สร้างประสบการณ์ใหม่ / สิ่งที่ผู้ใช้ไม่เคยเจอ
-แต่ "ว้าว" ใช้เป็นเกณฑ์เลือกวิธีที่ดีที่สุดภายใน scope เท่านั้น
-ห้ามใช้เป็นเหตุผลขยาย scope · งานนอกเป้าหมายให้บันทึกเป็น backlog เสนอ ไม่ทำเอง
+[กติกาด่าน 3A — บังคับทุกข้อ]
+1. ด่านตายตัว: push/merge = save-git merge-gate · deploy = ship-gate · migration = สำรอง+ทดสอบ restore จริง+verify checksum ก่อน · auth/CI/external API = staging หรือ dry-run ก่อน
+2. ผลด่านจากเครื่องมือจริง (exit code/ผลมีโครงสร้าง) — ห้าม AI ตีความว่า SAFE เอง
+3. fail-closed: ด่านหาไม่เจอ/timeout/อ่านผลไม่ออก/ไม่ใช่ SAFE ชัดเจน = BLOCKED ทันที
+4. ผูกด่านกับคำสั่งจริง: บันทึก target (repo/branch/SHA/env/service/migration id) · ด่านตรวจ commit A ห้าม push commit B
+5. จำกัดขอบเขต: auto เฉพาะ path/service/env/branch ที่ประกาศรอบนี้ เกิน = หยุด
+6. deploy ต้องมี health check + คำสั่ง rollback พร้อม + เงื่อนไขหยุดอัตโนมัติถ้า health เพี้ยน
+ด่าน SAFE → ทำต่อ · BLOCKED → หยุด รายงานชั้นที่ติด
 
-[นิยาม "ผ่าน 100%"]
-= ทุก issue ในเฟส verified จริง (test ผ่าน / lint ผ่าน / manual check ผ่าน + มีหลักฐาน)
-% เฟส = issue ที่ verified ÷ issue ทั้งหมด · วัดเป็นเลขไม่ได้ให้ใช้ PASS/BLOCKED แทน
-ทำไม่ได้จริงให้แยกเป็น blocker ห้ามนับรวม 100%
+[Ledger — ผูกเข้าความจำ · ใหม่]
+ทุกการกระทำชั้น 3A เขียน append-only ที่ `.hermes/ledger/<branch>.md` (Schema §13): เวลา / issue_id / คำสั่ง / ด่านที่รัน / exit code / commit SHA / ผล · redact secret §7
+ตอน Close จะยก ledger เข้า session log · ไม่มี ledger ทั้งที่ทำชั้น 3A = งานนั้นนับเป็น claimed
+
+[นิยาม "ว้าว"] เหนือคาด / ประสบการณ์ใหม่ / สิ่งที่ไม่เคยเจอ — แต่ใช้เลือกวิธีที่ดีสุด ภายใน scope เท่านั้น · ห้ามใช้เป็นเหตุขยาย scope · งานนอกเป้า → backlog เสนอ ไม่ทำเอง
+
+[นิยาม "ผ่าน 100%"] = ทุก issue ในเฟส verified จริง (test/lint/manual ผ่าน + หลักฐาน · ค้น gate เอง Schema §5) · % เฟส = verified÷ทั้งหมด · วัดเลขไม่ได้ใช้ PASS/BLOCKED · ทำไม่ได้จริง = แยก blocker ห้ามนับรวม 100%
 
 วิธีทำ:
-1. อ่าน context (กติกาโปรเจกต์ / memory / tracking / สถานะ / เป้าหมายรอบนี้)
-2. แตกเฟส (เป้าหมาย / issue / วิธีตรวจ / เงื่อนไขผ่าน / output)
-3. ทำทีละเฟส จบและตรวจก่อนข้าม · fail ให้แก้จนผ่านหรือระบุ blocker
-4. บันทึกเหตุผล + trade-off ทุกครั้งที่ตัดสินใจแทนผู้ใช้
-   - เรื่องสำคัญที่ไม่รู้จริง (กระทบทางเลือกหลัก) = หยุดถาม
-   - รายละเอียดเล็กระดับวิธีเขียน = เลือกเองได้ แล้วบันทึกเหตุผล
+1. อ่าน context (ขั้น 0 ด้านบน: plan/memory/token/claim/เป้าหมายรอบนี้)
+2. แตกเฟส (อ้าง id เดิม: เป้าหมาย/issue/วิธีตรวจ/เงื่อนไขผ่าน/output)
+3. ทำทีละเฟส จบและตรวจก่อนข้าม · fail → แก้จนผ่านหรือระบุ blocker
+4. บันทึกเหตุผล+trade-off ทุกครั้งที่ตัดสินใจแทนผู้ใช้ · เรื่องสำคัญที่ไม่รู้จริง = หยุดถาม · รายละเอียดเล็ก = เลือกเอง+บันทึก
 
-[STOP ทันที]
-- worktree dirty เฉพาะไฟล์ที่จะเข้าไปแตะ หรือมีงานคนอื่นค้างเสี่ยงทับ
-- จะแตะงานชั้น 3B หรือด่านชั้น 3A ตอบ BLOCKED
-- error class เดิม 3 ครั้งไม่ผ่าน
-- เจอ secret ใน diff
-- ต้องเดาเรื่องสำคัญเพราะ context ไม่พอ
-→ หยุด รายงาน ถาม 1 คำถาม
+[STOP ทันที] worktree dirty เฉพาะไฟล์ที่จะแตะ/มีงานคนอื่นเสี่ยงทับ · จะแตะชั้น 3B หรือ prod ที่ ALLOW_AUTO_PROD=OFF · ด่าน 3A ตอบ BLOCKED · error class เดิม 3 ครั้ง · เจอ secret ใน diff · ต้องเดาเรื่องสำคัญเพราะ context ไม่พอ → หยุด รายงาน ถาม 1 คำถาม
 
 ส่งงานจบ (closeout):
-| Phase | เป้าหมาย | % หรือสถานะ | หลักฐาน |
-+ สิ่งที่ทำ / ไฟล์ที่แก้ / คำสั่งตรวจ / เรื่องที่เลือกแทนผู้ใช้ /
-  ความเสี่ยงค้าง / next step เดียวที่แนะนำสุด
-(ช่อง % ใส่ BLOCKED หรือ NOT VERIFIED แทนได้ ถ้าวัดเป็นเลขไม่ได้)
+| phase_id | เป้าหมาย | % หรือสถานะ | หลักฐาน |
++ สิ่งที่ทำ / ไฟล์ที่แก้ / คำสั่งตรวจ (ค้น gate เอง) / เรื่องที่เลือกแทนผู้ใช้ / ledger รอบนี้ / ความเสี่ยงค้าง / next step เดียวที่แนะนำสุด
+(ช่อง % ใส่ BLOCKED/NOT VERIFIED ได้ถ้าวัดเลขไม่ได้)
+จบแล้วส่งต่อ Use Close Chat เพื่อ verify รวบ + เขียน memory + ออก token
+
+ข้อห้าม: merge/deploy prod เองตอน ALLOW_AUTO_PROD=OFF · ตีความ SAFE เอง · ทำชั้น 3A โดยไม่เขียน ledger · เขียน secret ลง ledger · แตะ worktree คนอื่น · ลุยต่อทั้งที่ token รอบก่อน = NEED_OWNER_ACTION
 ```
 
 ## Legacy Names
@@ -113,11 +107,15 @@ Use Continue
 
 ## Changelog
 
-- v3.1 (2026-06-24): ผ่านการตรวจ 2 AI (Claude ร่าง · Codex cross-check ด้านความปลอดภัย) · เปลี่ยนงานเสี่ยงสูงจาก "ต้องขออนุมัติคน" เป็น "auto ผ่านด่านอัตโนมัติ" (ชั้น 3A) ตามคำสั่งเจ้าของงาน · ด่านต้อง fail-closed + ผลจากเครื่องมือจริง + ผูกกับคำสั่งจริง + จำกัดขอบเขต · คงงานย้อนยากสุด (เงิน/อีเมล/secret/ลบถาวร) ไว้ที่ชั้น 3B · เพิ่มนิยาม "ว้าว" + นิยาม 100% + STOP rule + closeout
+- v4.1 (2026-07-05): เกาะ Memory Schema v1.2 — ขั้น 0 อ่าน `.project/plan.md` + `.project/OverviewProgress.md` + `.project/decisions.md` (เดิมอ่าน `.hermes/`+handoff) · เจอไฟล์เก่า = Migration §1b ก่อนลุย · ledger ยังอยู่ `.hermes/ledger/` (ไฟล์เครื่องจักร) · schema ไม่ตรง = ห้ามเขียนความจำ (คำสั่งเจ้าของ 2026-07-05)
+- v4.0 (2026-06-26): เกาะ Memory Schema v1.1 · **เปลี่ยนนโยบาย: merge→main/deploy prod/migration prod ออกจาก auto → ต้องขอคน (ALLOW_AUTO_PROD=OFF ค่าตั้งต้น ตาม §12)** · เพิ่มขั้น 0 อ่าน plan/memory/token/claim ก่อนลงมือ · เคารพ claim/worktree (ไม่แตะของคนอื่น) · ledger ผูกเข้า memory (§13) · ค้น gate เอง (§5) · อ้าง phase_id/issue_id เดิม · ส่งต่อ Use Close Chat ตอนจบ · redact secret (§7)
+- v3.1 (2026-06-24): งานเสี่ยงสูงเป็น auto ผ่านด่าน (ชั้น 3A) · fail-closed + ผลจากเครื่องมือจริง + ผูกกับคำสั่งจริง · เพิ่มนิยาม "ว้าว" + นิยาม 100% + STOP rule + closeout
 - v3.0 (2026-06-07): เปลี่ยนชื่อจาก Go to Sleep เป็น Use Continue
 
 ## Graph Links
 
-- Parent hub: [[skills/README|skills]]
-- Router: [[00-Center/docs/AI_SKILL_ROUTER|AI Skill Router]]
-- Graph: [[00-Center/docs/SKILL_GRAPH|Skill Graph]]
+- Parent hub: [[skills/prompt-shortcuts/Prompt Shortcuts|Prompt Shortcuts]]
+- Registry: [[ai-context/prompt-shortcut-registry|Prompt Shortcut Registry]]
+- Schema: [[skills/prompt-shortcuts/references/memory-schema|Memory Schema v1.1]]
+- Prev in lifecycle: [[skills/prompt-shortcuts/references/use-comply|Use Comply]]
+- Next in lifecycle: [[skills/prompt-shortcuts/references/use-close-chat|Use Close Chat]]

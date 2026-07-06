@@ -220,6 +220,22 @@ class TestComputeNextRun:
         assert isinstance(next_dt, datetime)
         assert next_dt > datetime.now().astimezone()
 
+    def test_cron_legacy_cron_key_returns_future(self):
+        pytest.importorskip("croniter")
+        schedule = {"kind": "cron", "cron": "* * * * *", "display": "* * * * *"}
+
+        result = compute_next_run(schedule)
+
+        assert isinstance(result, str), f"Expected ISO timestamp string, got {type(result)}"
+        next_dt = datetime.fromisoformat(result)
+        assert isinstance(next_dt, datetime)
+        assert next_dt > datetime.now().astimezone()
+
+    def test_cron_missing_expr_returns_none(self):
+        pytest.importorskip("croniter")
+
+        assert compute_next_run({"kind": "cron", "display": "missing expr"}) is None
+
     def test_unknown_kind_returns_none(self):
         assert compute_next_run({"kind": "unknown"}) is None
 
@@ -819,6 +835,23 @@ class TestGetDueJobs:
 
         due = get_due_jobs()
         assert len(due) == 0
+
+    def test_malformed_job_is_skipped_without_blocking_other_due_jobs(self, tmp_cron_dir, caplog):
+        broken = create_job(prompt="Broken", schedule="every 1h", name="broken")
+        healthy = create_job(prompt="Healthy", schedule="every 1h", name="healthy")
+        from cron.jobs import _hermes_now
+
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = "not-a-date"
+        jobs[1]["next_run_at"] = (_hermes_now() - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        with caplog.at_level("ERROR", logger="cron.jobs"):
+            due = get_due_jobs()
+
+        assert [job["id"] for job in due] == [healthy["id"]]
+        assert get_job(broken["id"])["next_run_at"] == "not-a-date"
+        assert "Skipping cron job 'broken' during due-check" in caplog.text
 
     def test_broken_recent_one_shot_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 22, 30, tzinfo=timezone.utc)

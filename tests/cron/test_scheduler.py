@@ -2547,6 +2547,11 @@ class TestParseWakeGate:
         from cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate('{"wakeAgent": false}') is False
 
+    def test_pretty_json_wake_gate_false_skips(self):
+        from cron.scheduler import _parse_wake_gate
+        pretty = '{\n  "wakeAgent": false,\n  "data": {\n    "new": 0\n  }\n}'
+        assert _parse_wake_gate(pretty) is False
+
     def test_wake_gate_true_wakes(self):
         from cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate('{"wakeAgent": true}') is True
@@ -2626,6 +2631,23 @@ class TestRunJobWakeGate:
 
         with patch.object(scheduler, "_run_job_script",
                           return_value=(True, '{"wakeAgent": false}')), \
+             patch("run_agent.AIAgent") as agent_cls:
+            success, doc, final, err = scheduler.run_job(self._make_job())
+
+        assert success is True
+        assert err is None
+        assert final == SILENT_MARKER
+        assert "Script gate returned `wakeAgent=false`" in doc
+        agent_cls.assert_not_called()
+
+    def test_pretty_wake_false_skips_agent_and_returns_silent(self):
+        """Pretty-printed wakeAgent=false JSON must not wake the LLM."""
+        from cron.scheduler import SILENT_MARKER
+        import cron.scheduler as scheduler
+
+        pretty = '{\n  "wakeAgent": false,\n  "external_mutations": 0\n}'
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(True, pretty)), \
              patch("run_agent.AIAgent") as agent_cls:
             success, doc, final, err = scheduler.run_job(self._make_job())
 
@@ -2875,6 +2897,15 @@ class TestParallelTick:
         lock_file = lock_dir / ".tick.lock"
         with patch("cron.scheduler._get_lock_paths", return_value=(lock_dir, lock_file)):
             yield
+
+    def test_tick_catches_due_job_loader_failure(self, caplog):
+        with patch("cron.scheduler.get_due_jobs", side_effect=RuntimeError("registry exploded")):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                result = tick(verbose=False)
+
+        assert result == 0
+        assert "Cron tick could not load due jobs" in caplog.text
 
     def test_parallel_jobs_run_concurrently(self):
         """Two jobs launched in the same tick should overlap in time."""

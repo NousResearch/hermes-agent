@@ -472,6 +472,13 @@ def _recoverable_oneshot_run_at(
     return None
 
 
+def _cron_expr(schedule: Dict[str, Any]) -> Optional[str]:
+    """Return the cron expression from current or legacy persisted schedule keys."""
+    expr = schedule.get("expr") or schedule.get("cron")
+    text = str(expr or "").strip()
+    return text or None
+
+
 def _compute_grace_seconds(schedule: dict) -> int:
     """Compute how late a job can be and still catch up instead of fast-forwarding.
 
@@ -492,7 +499,10 @@ def _compute_grace_seconds(schedule: dict) -> int:
     if kind == "cron" and HAS_CRONITER:
         try:
             now = _hermes_now()
-            cron = croniter(schedule["expr"], now)
+            expr = _cron_expr(schedule)
+            if not expr:
+                return MIN_GRACE
+            cron = croniter(expr, now)
             first = cron.get_next(datetime)
             second = cron.get_next(datetime)
             period_seconds = int((second - first).total_seconds())
@@ -536,6 +546,10 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 schedule.get("expr"),
             )
             return None
+        expr = _cron_expr(schedule)
+        if not expr:
+            logger.warning("Cannot compute next run for cron schedule with missing expr: %r", schedule)
+            return None
         # Use last_run_at as the croniter base when available, consistent
         # with interval jobs.  This ensures that after a crash/restart,
         # the next run is anchored to the actual last execution time
@@ -543,7 +557,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         base_time = now
         if last_run_at:
             base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
-        cron = croniter(schedule["expr"], base_time)
+        cron = croniter(expr, base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
 
@@ -1362,13 +1376,29 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
-    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
+    jobs = []
+    for raw_job in copy.deepcopy(raw_jobs):
+        try:
+            jobs.append(_apply_skill_fields(raw_job))
+        except Exception:
+            logger.exception(
+                "Skipping cron job during due-check normalization; malformed job=%r",
+                raw_job,
+            )
     due = []
     needs_save = False
 
-    for job in jobs:
+    def _set_raw_next_run(job: Dict[str, Any], next_run_at: str) -> None:
+        nonlocal needs_save
+        for rj in raw_jobs:
+            if rj["id"] == job["id"]:
+                rj["next_run_at"] = next_run_at
+                needs_save = True
+                break
+
+    def _due_job_or_none(job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not job.get("enabled", True):
-            continue
+            return None
 
         next_run = job.get("next_run_at")
         if not next_run:
@@ -1394,7 +1424,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     recovery_kind = kind
 
             if not recovered_next:
-                continue
+                return None
 
             job["next_run_at"] = recovered_next
             next_run = recovered_next
@@ -1404,11 +1434,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 recovery_kind,
                 recovered_next,
             )
-            for rj in raw_jobs:
-                if rj["id"] == job["id"]:
-                    rj["next_run_at"] = recovered_next
-                    needs_save = True
-                    break
+            _set_raw_next_run(job, recovered_next)
 
         raw_next_run_dt = datetime.fromisoformat(next_run)
         schedule = job.get("schedule", {})
@@ -1446,15 +1472,10 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     now.utcoffset(),
                     new_next,
                 )
-                for rj in raw_jobs:
-                    if rj["id"] == job["id"]:
-                        rj["next_run_at"] = new_next
-                        needs_save = True
-                        break
-                continue
+                _set_raw_next_run(job, new_next)
+                return None
 
         if next_run_dt <= now:
-
             # For recurring jobs, check if the scheduled time is stale
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
@@ -1482,14 +1503,24 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     # fire_due provider path, which does not call
                     # advance_next_run. mark_job_run re-anchors next_run_at off
                     # the actual completion time, so this value is provisional.
-                    for rj in raw_jobs:
-                        if rj["id"] == job["id"]:
-                            rj["next_run_at"] = new_next
-                            needs_save = True
-                            break
+                    _set_raw_next_run(job, new_next)
                     # Fall through to due.append(job) — execute once now
 
-            due.append(job)
+            return job
+
+        return None
+
+    for job in jobs:
+        try:
+            due_job = _due_job_or_none(job)
+        except Exception:
+            logger.exception(
+                "Skipping cron job '%s' during due-check; malformed schedule or run state",
+                job.get("name") or job.get("id") or "<unknown>",
+            )
+            continue
+        if due_job is not None:
+            due.append(due_job)
 
     if needs_save:
         save_jobs(raw_jobs)

@@ -1733,18 +1733,29 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
 
 def _parse_wake_gate(script_output: str) -> bool:
-    """Parse the last non-empty stdout line of a cron job's pre-check script
-    as a wake gate.
+    """Parse cron job pre-check stdout as a wake gate.
 
-    The convention (ported from nanoclaw #1232): if the last stdout line is
-    JSON like ``{"wakeAgent": false}``, the agent is skipped entirely — no
-    LLM run, no delivery. Any other output (non-JSON, missing flag, gate
-    absent, or ``wakeAgent: true``) means wake the agent normally.
+    The convention (ported from nanoclaw #1232): if the script emits JSON like
+    ``{"wakeAgent": false}``, the agent is skipped entirely — no LLM run, no
+    delivery. Pretty-printed whole-stdout JSON is accepted first; if stdout
+    contains log lines, the last non-empty line is parsed as a fallback. Any
+    other output (non-JSON, missing flag, gate absent, or ``wakeAgent: true``)
+    means wake the agent normally.
 
     Returns True if the agent should wake, False to skip.
     """
     if not script_output:
         return True
+    stripped_output = str(script_output).strip()
+    if not stripped_output:
+        return True
+    try:
+        gate = json.loads(stripped_output)
+    except (json.JSONDecodeError, ValueError):
+        gate = None
+    if isinstance(gate, dict):
+        return gate.get("wakeAgent", True) is not False
+
     stripped_lines = [line for line in script_output.splitlines() if line.strip()]
     if not stripped_lines:
         return True
@@ -2932,7 +2943,11 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         return 0
 
     try:
-        due_jobs = get_due_jobs()
+        try:
+            due_jobs = get_due_jobs()
+        except Exception as exc:
+            logger.exception("Cron tick could not load due jobs; skipping this tick: %s", exc)
+            return 0
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))

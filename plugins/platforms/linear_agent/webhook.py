@@ -37,6 +37,11 @@ class LinearWebhookContext:
     guidance: str = ""
     user_request: str = ""
     signal: str = ""
+    # The comment the agent was mentioned in when the session was spawned from
+    # a DIFFERENT thread (Linear re-anchors the session to a copied root, so
+    # this points back at the original human thread). Empty for fresh-root
+    # mentions. Its own thread is a normal thread, so replies there render.
+    source_comment_id: str = ""
     # Delegate as serialized in the webhook payload itself (issue-update
     # webhooks carry the issue model). Only trustworthy when
     # issue_delegate_known is True — an absent field means "not serialized",
@@ -64,6 +69,7 @@ class LinearWebhookContext:
             "linear_actor_user_id": self.actor_user_id,
             "linear_team_id": self.team_id,
             "linear_signal": self.signal,
+            "linear_source_comment_id": self.source_comment_id,
         }
 
 
@@ -465,6 +471,10 @@ def extract_context(
         guidance=_guidance_text(payload.get("guidance") or session.get("guidance")),
         user_request=user_request,
         signal=signal,
+        source_comment_id=_string(
+            payload.get("sourceCommentId")
+            or _get_path(session, "sourceComment", "id")
+        ),
     )
 
 

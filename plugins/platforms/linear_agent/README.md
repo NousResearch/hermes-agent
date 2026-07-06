@@ -101,6 +101,10 @@ linear_agent:
   # post as issue comments). Default false — delegation already arrives as
   # a real agent session, so update webhooks only feed auto-start.
   dispatch_issue_updates: false
+  # Opt-in: when mentioned inside an existing comment thread, also post the
+  # findings as a reply on that source comment (so they surface in the human
+  # thread, not only the session widget). Requires mutation_policy.create_comments.
+  reply_in_source_thread: false
   # Skill names auto-loaded into every Linear session (optional).
   auto_skills: []
   # Webhook body size cap in bytes (default 1 MiB).
@@ -157,6 +161,7 @@ For local development, expose the configured port with a tunnel and use the tunn
 - All write tools (issues, comments, projects, status updates, milestones, initiatives, documents, customer needs, releases) are gated by `mutation_policy` and fail closed by default. Agent-session activities (responses/thoughts/errors) are the core protocol and are not gated.
 - Set `LINEAR_AGENT_APP_USER_ID` (or `app_user_id`) so issue-update webhooks triggered by the agent's own mutations are ignored — without it, every write the agent makes echoes back as a new session. When unset, the adapter auto-discovers the id from Linear's `viewer` query at connect (best-effort backstop; setting it explicitly is still recommended).
 - Issue-update webhooks feed auto-start only by default — delegation itself arrives as a real `created` agent session, so dispatching update webhooks as turns too would double-process every delegation. Opt in with `dispatch_issue_updates: true` to react to issue edits; those turns have no agent session, so replies post as issue comments (requires `mutation_policy.create_comments: true`).
+- `reply_in_source_thread: true` is an opt-in **workaround** for a Linear limitation: a session response can't render inline in the thread the agent was mentioned from (only the first-party `@Linear` assistant can), so when on, the agent also replies on the mention's source comment. Content then appears in both the session widget and the thread. Default off matches other third-party agents. **Remove this flag** if Linear ships native inline/source-thread replies for third-party agents (see the adapter's `_reply_in_source_thread` comment for the unwind steps).
 - `linear_agent_update_issue`/`create_issue` accept a workflow state NAME (`state: "Done"`) and resolve it to the required `stateId` automatically.
 - MCP parity: `update_issue`/`create_issue` also resolve friendly reference keys (`assignee` by name/email/`me`, `labels`, `project`, `team`, `cycle`, `milestone`, `delegate`) to Linear's `*Id` fields; `null` clears where Linear allows it, and raw `*Id` keys still pass straight through. Ambiguous or unknown names abort BEFORE the mutation and name the lookup tool.
 - `update_issue` manages issue relations (`blocks`, `blockedBy`, `relatedTo` — append-only; `removeBlocks`/`removeBlockedBy`/`removeRelatedTo` to remove; `parentId`; `duplicateOf`) and URL attachments (`links: [{url, title}]`, append-only). `blockedBy` is stored as the inverse of `blocks`.

@@ -338,6 +338,7 @@ def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> Optional[dict[str,
         "auto_start_on_delegation",
         "auto_self_delegate",
         "dispatch_issue_updates",
+        "reply_in_source_thread",
         "allow_unsigned_webhooks",
         "proxy_url",
         "mutation_policy",
@@ -481,6 +482,24 @@ class LinearAgentAdapter(BasePlatformAdapter):
         self._dispatch_issue_updates = _bool_opt(
             extra, "dispatch_issue_updates",
             "LINEAR_AGENT_DISPATCH_ISSUE_UPDATES", False,
+        )
+        # WORKAROUND (Linear platform limitation, not a permanent feature):
+        # the Agent Sessions API offers no way to make a session response
+        # render inline in the thread the agent was mentioned from — mid-thread
+        # mentions re-anchor the session to a copied root, and agent comments
+        # inside a session-hosted thread are not rendered by Linear. Only the
+        # first-party @Linear assistant replies inline. When on, this posts the
+        # final findings as a reply on the mention's source comment (a normal
+        # thread that does render). Default off keeps behavior identical to
+        # other third-party agents (e.g. Cursor). Requires create_comments.
+        # UNWIND: if Linear routes a `response` into its sourceComment thread
+        # (or otherwise lets third-party agents reply inline), delete this flag,
+        # its yaml/env plumbing, and the "Reply in the source thread" prompt
+        # directive below. AgentSession.sourceComment already exists, so this is
+        # plausibly server-side work on Linear's part.
+        self._reply_in_source_thread = _bool_opt(
+            extra, "reply_in_source_thread",
+            "LINEAR_AGENT_REPLY_IN_SOURCE_THREAD", False,
         )
         self._mutation_policy = _merge_policy(extra.get("mutation_policy"))
         self._auto_skills = _list_value(extra.get("auto_skills"))
@@ -964,6 +983,16 @@ class LinearAgentAdapter(BasePlatformAdapter):
             if context.action == "prompted"
             else build_update_prompt(context)
         )
+        if self._reply_in_source_thread and context.source_comment_id:
+            message += (
+                "\n\n## Reply in the source thread\n\n"
+                "You were mentioned inside an existing comment thread. In "
+                "ADDITION to your normal session response, post your findings "
+                "as a reply on the source comment so they appear in that "
+                "thread: call linear_agent_create_comment with "
+                f"parent_id=\"{context.source_comment_id}\" and your answer as "
+                "the body. Do this once, after you have the answer."
+            )
 
         try:
             await self._dispatch_linear_message(context, message, payload, profile=profile)
@@ -1563,7 +1592,9 @@ def register(ctx) -> None:
             "'posted X in the thread'. Do NOT use linear_agent_create_comment "
             "to talk to the user in the CURRENT session; that duplicates the "
             "conversation and buries your reply. Comment tools are for OTHER "
-            "issues, or when the user explicitly asks for a comment. To ask "
+            "issues, when the user explicitly asks for a comment, or when a "
+            "'Reply in the source thread' instruction is present in your prompt "
+            "(then follow it exactly). To ask "
             "the user something, ask directly in your response (or via your "
             "clarify tool) — the session waits for their reply. "
             "For ALL Linear reads "

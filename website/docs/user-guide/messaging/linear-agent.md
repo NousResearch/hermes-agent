@@ -53,6 +53,15 @@ sequenceDiagram
 - Mention the agent in a **new comment** and the agent session anchors to that comment: the answer renders in the session panel and Linear mirrors it into that comment's thread.
 - Mention it **inside an existing comment thread** and Linear re-anchors the conversation: it copies your mention to a new root comment, attaches the session there, and the reply lands under that copy — not under the thread you typed in. This is Linear's session model, not agent behavior.
 - The agent replies through session responses only; it never posts comments into a session-hosted thread itself (Linear does not render agent comments inside those threads, and the mirrored response would be duplicated).
+- **Opt-in `reply_in_source_thread`**: when the agent is mentioned inside an existing thread, set this to also post the findings as a reply on the *source* comment — that thread is a normal thread, so the reply renders inline where the human asked. The session response still appears in the widget, so the content lands in both places; requires `mutation_policy.create_comments`.
+
+:::note[Why this is opt-in, and when to remove it]
+`reply_in_source_thread` is a **workaround for a current Linear platform limitation**, not a permanent feature. Linear's Agent Sessions API gives an agent no way to make its session response render inline in the thread it was mentioned from: `AgentActivityCreateInput` has no comment/placement field, `CommentCreateInput` has no session association, and agent comments posted into a session-hosted thread are not rendered. Only Linear's first-party `@Linear` assistant replies inline today. So when a teammate loops the agent into a thread expecting a contribution *there*, the answer otherwise only surfaces in the session widget. This flag bridges that gap by replying on the mention's source comment (a normal thread that does render), at the cost of the content appearing twice (widget + thread).
+
+**Default off on purpose:** without the workaround this integration matches how other third-party Linear agents (e.g. Cursor) behave, keeping the platform contract clean.
+
+**Unwind trigger:** if Linear adds native routing of a session `response` into its `sourceComment` thread (or otherwise lets third-party agents reply inline), this flag becomes redundant. At that point, remove the `reply_in_source_thread` config/env plumbing and the prompt directive in the adapter, and delete this note. `AgentSession.sourceComment` already exists in the schema, so the routing is plausibly on their side to add — tracked with Linear via their developer community.
+:::
 
 ## Step 1: Create the Linear OAuth App
 
@@ -181,6 +190,9 @@ linear_agent:
   # post as issue comments). Default false — delegation already arrives
   # as a real agent session; update webhooks only feed auto-start.
   dispatch_issue_updates: false
+  # Opt-in: also reply on the source comment when mentioned mid-thread
+  # (see "Where replies appear"). Requires mutation_policy.create_comments.
+  reply_in_source_thread: false
   # Every write operation fails closed; enable only what you need.
   # update_projects also covers project (status) updates, milestones,
   # and initiatives.

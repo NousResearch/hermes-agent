@@ -1850,6 +1850,42 @@ async def test_prompted_activity_content_object_body_is_extracted():
     assert "{'type'" not in dispatched[0].text
 
 
+@pytest.mark.asyncio
+async def test_reply_in_source_thread_directive_is_opt_in():
+    """When mentioned inside an existing thread, Linear supplies a source
+    comment. With reply_in_source_thread on, the dispatched prompt instructs
+    a reply on that comment; off (default), it never does."""
+    async def _dispatch(extra):
+        fake_client = _FakeLinearClient()
+        adapter = _make_adapter(client=fake_client, extra=extra)
+        dispatched = []
+
+        async def capture(event):
+            dispatched.append(event)
+
+        adapter.handle_message = capture
+        payload = _created_payload(event_id="evt-src-1")
+        payload["sourceCommentId"] = "comment-src-9"
+        raw = _body(payload)
+        _, status = await adapter.handle_webhook(
+            _headers(raw, "secret", delivery_id="evt-src-1"), raw
+        )
+        assert status == 200
+        assert len(dispatched) == 1
+        return dispatched[0].text
+
+    # Opt-in: directive present, naming the exact source comment id.
+    on = await _dispatch({"reply_in_source_thread": True})
+    assert "Reply in the source thread" in on
+    assert "comment-src-9" in on
+    assert "linear_agent_create_comment" in on
+
+    # Default: no directive, even though a source comment is present.
+    off = await _dispatch({})
+    assert "Reply in the source thread" not in off
+    assert "comment-src-9" not in off
+
+
 def test_register_routes_tools_through_plugin_context():
     """Tools re-register through ctx.register_tool so the plugin manager
     tracks them and the `linear_agent` toolset is discoverable in

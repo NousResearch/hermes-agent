@@ -143,3 +143,67 @@ def test_pool_reuse_across_worker_signatures():
         assert tid1 == tid2
     finally:
         pool.shutdown(wait=True)
+
+
+def test_py314_branch_args_tuple_shape():
+    """When _WORKER_USES_CTX is True, _adjust_thread_count must pass the
+    3-element args tuple (executor_ref, worker_context, work_queue) rather
+    than the 4-element tuple used on <= 3.13.
+
+    This test mocks _WORKER_USES_CTX so the 3.14 code path is validated even
+    when the test suite runs on a <= 3.13 interpreter (CI provisions 3.11).
+    """
+    import unittest.mock as mock
+
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    # _create_worker_context only exists on Python 3.14+, so we mock it on
+    # the instance to exercise the branch on older interpreters.
+    fake_ctx = object()
+
+    with mock.patch.object(
+        pool, "_create_worker_context", create=True, return_value=fake_ctx
+    ):
+        with mock.patch("tools.daemon_pool._WORKER_USES_CTX", True):
+            with mock.patch("tools.daemon_pool.threading.Thread") as MockThread:
+                pool._adjust_thread_count()
+
+                call_kwargs = MockThread.call_args[1]
+                args = call_kwargs["args"]
+
+                # 3.14 path: 3 args, not 4
+                assert len(args) == 3, (
+                    f"Expected 3 args for 3.14 path, got {len(args)}: {args!r}"
+                )
+                # Position 1 is the WorkerContext from _create_worker_context
+                assert args[1] is fake_ctx, (
+                    "args[1] must be the mocked WorkerContext"
+                )
+                # Position 2 is the work queue
+                assert args[2] is pool._work_queue, (
+                    "args[2] must be the work queue"
+                )
+                # The thread must be daemon=True on both branches
+                assert call_kwargs["daemon"] is True
+
+
+def test_py313_branch_args_tuple_shape():
+    """When _WORKER_USES_CTX is False (current <= 3.13 default), the args
+    tuple must be the legacy 4-element shape with initializer/initargs."""
+    import unittest.mock as mock
+
+    pool = DaemonThreadPoolExecutor(
+        max_workers=1, initializer=lambda: None, initargs=()
+    )
+    assert not _WORKER_USES_CTX, (
+        "This test only meaningful on <= 3.13 where _WORKER_USES_CTX is False"
+    )
+
+    with mock.patch("tools.daemon_pool.threading.Thread") as MockThread:
+        pool._adjust_thread_count()
+
+        args = MockThread.call_args[1]["args"]
+
+        assert len(args) == 4, (
+            f"Expected 4 args for <= 3.13 path, got {len(args)}: {args!r}"
+        )
+        assert MockThread.call_args[1]["daemon"] is True

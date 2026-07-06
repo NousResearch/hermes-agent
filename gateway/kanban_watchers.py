@@ -1211,10 +1211,13 @@ class GatewayKanbanWatchersMixin:
         logger.info(
             "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
         )
+        drain_logged = False
         while self._running:
             try:
                 # Reap zombie children before per-board work so a board DB
-                # failure cannot block cleanup of unrelated workers.
+                # failure cannot block cleanup of unrelated workers. This is
+                # safe during drain: it only reaps already-exited children and
+                # never claims/spawns new work.
                 pids = await asyncio.to_thread(_kb.reap_worker_zombies)
                 if pids:
                     logger.info(
@@ -1226,47 +1229,60 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
-                # Re-read the auto-decompose toggle live each tick so a user
-                # flipping kanban.auto_decompose=false to STOP runaway fan-out
-                # takes effect on the next tick, not on gateway restart (#49638).
-                _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
-                if _ad_enabled:
-                    await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
-                results = await asyncio.to_thread(_tick_once)
-                any_spawned = False
-                for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
-                        any_spawned = True
-                        # Quiet by default — only log when something actually
-                        # happened, so an idle gateway stays silent.
-                        logger.info(
-                            "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
-                            slug,
-                            len(res.spawned),
-                            res.reclaimed,
-                            len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
-                            len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
-                            res.promoted,
-                            len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
-                        )
-                # Health telemetry (aggregate across boards)
-                ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
-                    bad_ticks += 1
-                else:
+                # A gateway drain is a quiescing contract: no new sessions and no
+                # new worker subprocesses. The dispatcher owns spawning ready tasks
+                # (and auto-decompose can make more ready tasks), so skip the whole
+                # claim/decompose path while either shutdown-drain or external-drain
+                # is active. Keep the watcher alive so cancelling an external drain
+                # resumes dispatch without requiring a gateway restart.
+                if getattr(self, "_draining", False) or getattr(self, "_external_drain_active", False):
+                    if not drain_logged:
+                        logger.info("kanban dispatcher: paused while gateway is draining")
+                        drain_logged = True
                     bad_ticks = 0
-                if bad_ticks >= HEALTH_WINDOW:
-                    now = int(time.time())
-                    if now - last_warn_at >= 300:
-                        logger.warning(
-                            "kanban dispatcher stuck: ready queue non-empty for "
-                            "%d consecutive ticks but 0 workers spawned. Check "
-                            "profile health (venv, PATH, credentials) and "
-                            "`hermes kanban list --status ready`.",
-                            bad_ticks,
-                        )
-                        last_warn_at = now
+                else:
+                    drain_logged = False
+                    # Re-read the auto-decompose toggle live each tick so a user
+                    # flipping kanban.auto_decompose=false to STOP runaway fan-out
+                    # takes effect on the next tick, not on gateway restart (#49638).
+                    _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
+                    if _ad_enabled:
+                        await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
+                    results = await asyncio.to_thread(_tick_once)
+                    any_spawned = False
+                    for slug, res in (results or []):
+                        if res is not None and getattr(res, "spawned", None):
+                            any_spawned = True
+                            # Quiet by default — only log when something actually
+                            # happened, so an idle gateway stays silent.
+                            logger.info(
+                                "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
+                                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                                slug,
+                                len(res.spawned),
+                                res.reclaimed,
+                                len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
+                                len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                                res.promoted,
+                                len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            )
+                    # Health telemetry (aggregate across boards)
+                    ready_pending = await asyncio.to_thread(_ready_nonempty)
+                    if ready_pending and not any_spawned:
+                        bad_ticks += 1
+                    else:
+                        bad_ticks = 0
+                    if bad_ticks >= HEALTH_WINDOW:
+                        now = int(time.time())
+                        if now - last_warn_at >= 300:
+                            logger.warning(
+                                "kanban dispatcher stuck: ready queue non-empty for "
+                                "%d consecutive ticks but 0 workers spawned. Check "
+                                "profile health (venv, PATH, credentials) and "
+                                "`hermes kanban list --status ready`.",
+                                bad_ticks,
+                            )
+                            last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
                 _release_singleton_lock(self._kanban_dispatcher_lock_handle)

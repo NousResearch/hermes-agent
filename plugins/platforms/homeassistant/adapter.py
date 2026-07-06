@@ -131,6 +131,8 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._running = True
             logger.info("[%s] Connected to %s", self.name, self._hass_url)
+            # Plugin-registered native handlers (ctx.register_platform_handler).
+            self._wire_plugin_handlers(None)
             return True
 
         except Exception as e:

@@ -798,6 +798,10 @@ class LineAdapter(BasePlatformAdapter):
             self._handle_media,
         )
 
+        # Plugin-registered native handlers (aiohttp web.Application —
+        # router routes). Wired before AppRunner.setup() freezes the router.
+        self._wire_plugin_handlers(self._app)
+
         self._runner = web.AppRunner(self._app)
         try:
             await self._runner.setup()

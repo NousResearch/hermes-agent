@@ -448,6 +448,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "incoming webhook POSTs will be refused with 503. Set "
                 "the app secret to enable inbound message delivery."
             )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

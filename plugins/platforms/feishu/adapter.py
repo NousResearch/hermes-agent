@@ -1755,6 +1755,8 @@ class FeishuAdapter(BasePlatformAdapter):
             await self._connect_with_retry()
             self._mark_connected()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
+            # Plugin-registered native handlers (lark_oapi client).
+            self._wire_plugin_handlers(self._client)
             return True
         except Exception as exc:
             await self._release_app_lock()

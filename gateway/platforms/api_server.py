@@ -4850,6 +4850,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         self.name, self._host,
                     )
 
+            # Plugin-registered native handlers (aiohttp web.Application —
+            # router routes). Wired before AppRunner.setup() freezes the router.
+            self._wire_plugin_handlers(self._app)
+
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
             self._site = web.TCPSite(self._runner, self._host, self._port)

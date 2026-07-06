@@ -161,6 +161,10 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         app.router.add_get(self._webhook_path, self._handle_validation)
         app.router.add_post(self._webhook_path, self._handle_notification)
 
+        # Plugin-registered native handlers (aiohttp web.Application —
+        # router routes). Wired before AppRunner.setup() freezes the router.
+        self._wire_plugin_handlers(app)
+
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._host, self._port)

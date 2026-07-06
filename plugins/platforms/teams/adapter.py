@@ -768,6 +768,11 @@ class TeamsAdapter(BasePlatformAdapter):
             ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
                 return await self._on_card_action(ctx)
 
+            # Plugin-registered native handlers (Teams App — on_message /
+            # on_card_action / on_* decorators). Wired before initialize()
+            # so plugin routes register alongside ours.
+            self._wire_plugin_handlers(self._app)
+
             # initialize() calls register_route() on the bridge, which adds
             # POST /api/messages to aiohttp_app automatically
             await self._app.initialize()

@@ -373,6 +373,8 @@ class SignalAdapter(BasePlatformAdapter):
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
 
             logger.info("Signal: connected to %s", self.http_url)
+            # Plugin-registered native handlers (ctx.register_platform_handler).
+            self._wire_plugin_handlers(None)
             return True
         finally:
             if not self._running:

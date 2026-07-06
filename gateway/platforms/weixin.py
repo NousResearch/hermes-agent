@@ -1307,6 +1307,8 @@ class WeixinAdapter(BasePlatformAdapter):
                 self.name,
                 self._group_policy,
             )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

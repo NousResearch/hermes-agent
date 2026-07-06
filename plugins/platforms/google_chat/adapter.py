@@ -917,6 +917,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
             self._max_messages,
             self._max_bytes,
         )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

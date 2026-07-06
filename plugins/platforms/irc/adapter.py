@@ -217,6 +217,8 @@ class IRCAdapter(BasePlatformAdapter):
 
         self._mark_connected()
         logger.info("IRC: connected to %s:%s as %s, joined %s", self.server, self.port, self._current_nick, self.channel)
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

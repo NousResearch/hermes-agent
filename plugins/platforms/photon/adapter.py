@@ -462,6 +462,8 @@ class PhotonAdapter(BasePlatformAdapter):
             "[photon] connected — sidecar on %s:%d, streaming inbound over gRPC",
             self._sidecar_bind, self._sidecar_port,
         )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

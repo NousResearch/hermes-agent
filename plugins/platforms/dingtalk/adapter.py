@@ -300,6 +300,8 @@ class DingTalkAdapter(BasePlatformAdapter):
             self._stream_task = asyncio.create_task(self._run_stream())
             self._mark_connected()
             logger.info("[%s] Connected via Stream Mode", self.name)
+            # Plugin-registered native handlers (DingTalkStreamClient — register_callback_handler()).
+            self._wire_plugin_handlers(self._stream_client)
             return True
         except Exception as e:
             logger.error("[%s] Failed to connect: %s", self.name, e)

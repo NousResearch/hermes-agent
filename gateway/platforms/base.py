@@ -2755,6 +2755,50 @@ class BasePlatformAdapter(ABC):
         release_scoped_lock(self._platform_lock_scope, identity)
         self._platform_lock_identity = None
 
+    def _wire_plugin_handlers(self, native: Any = None) -> None:
+        """Invoke plugin-registered native handler factories for this platform.
+
+        Plugins call ``ctx.register_platform_handler(<platform>, factory)``
+        at register() time; adapters call this from ``connect()`` once
+        their native client object exists (and, where dispatch order
+        matters, before their own handlers register). Each factory is
+        invoked with ``(native, adapter)``.
+
+        Args:
+            native: The platform's native client/app object to hand to
+                factories (PTB ``Application``, ``commands.Bot``,
+                ``AsyncApp``, aiohttp ``web.Application``, ...). Pass
+                ``None`` for adapters with no separate native object —
+                factories then work against the adapter handle alone.
+
+        Each factory is isolated so a misbehaving plugin can't prevent
+        the platform from connecting.
+        """
+        platform_name = getattr(self.platform, "value", str(self.platform))
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            factories = get_plugin_manager().get_platform_handler_factories(
+                platform_name
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                "[%s] Could not load plugin handler factories: %s",
+                self.name, e,
+            )
+            return
+        for factory, plugin_name in factories:
+            try:
+                factory(native, self)
+                logger.info(
+                    "[%s] Wired native handlers from plugin '%s'",
+                    self.name, plugin_name,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] Plugin '%s' handler factory raised: %s",
+                    self.name, plugin_name, exc, exc_info=True,
+                )
+
     @property
     def name(self) -> str:
         """Human-readable name for this adapter."""

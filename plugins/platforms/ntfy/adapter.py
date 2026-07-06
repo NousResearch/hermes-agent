@@ -197,6 +197,8 @@ class NtfyAdapter(BasePlatformAdapter):
             self._stream_task = asyncio.create_task(self._run_stream())
             self._mark_connected()
             logger.info("[%s] Connected — subscribing to %s/%s", self.name, self._server, self._topic)
+            # Plugin-registered native handlers (ctx.register_platform_handler).
+            self._wire_plugin_handlers(None)
             return True
         except Exception as e:
             logger.error("[%s] Failed to connect: %s", self.name, e)

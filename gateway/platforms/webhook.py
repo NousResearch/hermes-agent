@@ -237,6 +237,8 @@ class WebhookAdapter(BasePlatformAdapter):
             self._port,
             route_names,
         )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

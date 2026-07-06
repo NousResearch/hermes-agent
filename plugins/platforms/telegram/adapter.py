@@ -3093,7 +3093,16 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
-            
+
+            # Wire plugin-provided PTB handlers BEFORE the core handlers.
+            # Plugins register via ctx.register_telegram_handler (alias of
+            # ctx.register_platform_handler("telegram", ...)); factories
+            # receive (application, adapter). PTB dispatches the first
+            # matching handler per group, so pattern-scoped plugin handlers
+            # take precedence for their own updates while everything else
+            # falls through to the core handlers below.
+            self._wire_plugin_handlers(self._app)
+
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,

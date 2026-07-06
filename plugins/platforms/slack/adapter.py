@@ -1238,6 +1238,14 @@ class SlackAdapter(BasePlatformAdapter):
                     len(_plugin_handlers),
                 )
 
+            # Generic plugin-registered native handlers
+            # (ctx.register_platform_handler("slack", ...)). Factories get
+            # the slack_bolt AsyncApp — the full app.event()/app.action()/
+            # app.command() surface, not just Block Kit actions. Wired
+            # before Socket Mode starts so bolt's matcher knows about them
+            # before events dispatch.
+            self._wire_plugin_handlers(self._app)
+
             # Bring up the handler and watchdog atomically. ``_running`` only
             # flips to True after the handler is alive so the watchdog loop
             # observes the live task immediately; on any failure here we tear

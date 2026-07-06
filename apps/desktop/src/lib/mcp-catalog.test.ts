@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { connectorDisplayName, connectorPrimaryActionKind } from './mcp-catalog'
+import { connectorDisplayName, connectorPrimaryActionKind, connectorSetupSummary } from './mcp-catalog'
 
 const entry = (overrides = {}) => ({
   name: 'github-enterprise',
@@ -53,5 +53,25 @@ describe('connectorPrimaryActionKind', () => {
 
   it('returns installed once the entry is already installed', () => {
     expect(connectorPrimaryActionKind(entry({ installed: true, enabled: true }))).toBe('installed')
+  })
+})
+
+describe('connectorSetupSummary', () => {
+  it('describes OAuth HTTP connectors as browser sign-in flows', () => {
+    expect(connectorSetupSummary(entry({ setup_steps: ['Sign in', 'Pick tools'] }))).toBe(
+      '2 setup steps · Browser OAuth'
+    )
+  })
+
+  it('describes api-key connectors as credential setup flows', () => {
+    expect(
+      connectorSetupSummary(
+        entry({ auth_type: 'api_key', required_env: [{ name: 'API_KEY', prompt: 'API key', required: true }] })
+      )
+    ).toBe('1 setup step · Requires credentials')
+  })
+
+  it('describes local build connectors without setup steps', () => {
+    expect(connectorSetupSummary(entry({ auth_type: 'none', needs_install: true, setup_steps: [] }))).toBe('Local build')
   })
 })

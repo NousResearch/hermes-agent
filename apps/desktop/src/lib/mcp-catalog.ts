@@ -25,3 +25,24 @@ export function connectorPrimaryActionKind(
 
   return entry.auth_type === 'oauth' && entry.transport === 'http' ? 'connect' : 'install'
 }
+
+export function connectorSetupSummary(
+  entry: Pick<McpCatalogEntry, 'auth_type' | 'needs_install' | 'required_env' | 'setup_steps' | 'transport'>
+): string {
+  const parts: string[] = []
+  const stepCount = entry.setup_steps.length || entry.required_env.filter(env => env.required).length
+
+  if (stepCount > 0) {
+    parts.push(`${stepCount} setup step${stepCount === 1 ? '' : 's'}`)
+  }
+
+  if (entry.auth_type === 'oauth' && entry.transport === 'http') {
+    parts.push('Browser OAuth')
+  } else if (entry.auth_type === 'api_key' || entry.required_env.length > 0) {
+    parts.push('Requires credentials')
+  } else if (entry.needs_install) {
+    parts.push('Local build')
+  }
+
+  return parts.join(' · ')
+}

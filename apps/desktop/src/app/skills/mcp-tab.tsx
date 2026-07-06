@@ -37,7 +37,7 @@ import {
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { connectorDisplayName, connectorPrimaryActionKind } from '@/lib/mcp-catalog'
+import { connectorDisplayName, connectorPrimaryActionKind, connectorSetupSummary } from '@/lib/mcp-catalog'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -1376,6 +1376,7 @@ function McpCatalog({
       {entries.map(entry => {
         const draft = envDrafts[entry.name] ?? {}
         const actionKind = connectorPrimaryActionKind(entry)
+        const setupSummary = connectorSetupSummary(entry)
 
         return (
           <div className="rounded-md px-2 py-2" key={entry.name}>
@@ -1404,6 +1405,24 @@ function McpCatalog({
                   )}
                 </div>
                 <p className="mt-0.5 line-clamp-2 text-[0.68rem] text-muted-foreground/70">{entry.description}</p>
+                {setupSummary && (
+                  <div className="mt-1 flex items-center gap-1.5 text-[0.62rem] text-(--ui-text-tertiary)">
+                    <Codicon name="pass" size="0.7rem" />
+                    <span>{setupSummary}</span>
+                  </div>
+                )}
+                {entry.setup_steps.length > 0 && (
+                  <div className="mt-2 grid gap-1 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2">
+                    {entry.setup_steps.slice(0, 3).map((step, index) => (
+                      <div className="flex gap-2 text-[0.62rem] leading-relaxed text-(--ui-text-tertiary)" key={step}>
+                        <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-(--ui-bg-tertiary) text-[0.55rem] text-(--ui-text-secondary)">
+                          {index + 1}
+                        </span>
+                        <span>{step}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {entry.capabilities.length > 0 && (
                   <div className="mt-1 flex flex-wrap gap-1">
                     {entry.capabilities.slice(0, 3).map(capability => (

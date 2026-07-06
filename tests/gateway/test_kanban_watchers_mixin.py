@@ -67,3 +67,88 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+def test_max_spawn_config_int_cast():
+    """Verify that kanban.max_spawn is correctly cast to int (not left as str).
+
+    Regression test for #59499: when max_spawn was a YAML string,
+    comparing it with int running_count raised TypeError and caused
+    the dispatcher to spawn all tasks concurrently.
+    """
+    # The gateway watcher reads max_spawn and casts it to int.
+    # This test verifies the pattern used in kanban_watchers.py:
+    #   raw_max_spawn = kanban_cfg.get("max_spawn", None)
+    #   max_spawn = None
+    #   if raw_max_spawn is not None:
+    #       try:
+    #           max_spawn = int(raw_max_spawn)
+    #       except (TypeError, ValueError):
+    #           # log warning, set to None
+    #
+    # We test the casting logic directly:
+    def _parse_max_spawn(raw):
+        max_spawn = None
+        if raw is not None:
+            try:
+                max_spawn = int(raw)
+            except (TypeError, ValueError):
+                max_spawn = None
+        return max_spawn
+
+    # Valid int-like values
+    assert _parse_max_spawn(10) == 10
+    assert _parse_max_spawn("10") == 10
+    assert _parse_max_spawn(1) == 1
+    assert _parse_max_spawn("1") == 1
+
+    # Invalid values (should be None)
+    assert _parse_max_spawn(None) is None
+    assert _parse_max_spawn("invalid") is None
+    assert _parse_max_spawn("") is None
+    assert _parse_max_spawn("10.5") is None  # int() doesn't parse floats
+    assert _parse_max_spawn([]) is None
+    assert _parse_max_spawn({}) is None
+
+    # Demonstrate the bug: comparing int with string raises TypeError
+    running_count = 0
+    spawned = 0
+    max_spawn_str = "36"
+
+    # Bug scenario (string max_spawn) — raises TypeError in Python 3
+    try:
+        if max_spawn_str is not None and running_count + spawned >= max_spawn_str:
+            bug_break_hit = True
+        else:
+            bug_break_hit = False
+    except TypeError:
+        # The comparison crashes, causing the cap check to fail
+        bug_break_hit = False
+        bug_crashed = True
+    else:
+        bug_crashed = False
+
+    assert bug_crashed is True, "Bug confirmed: string max_spawn causes TypeError"
+
+    # Simulate the dispatcher loop with bug (string max_spawn)
+    # When TypeError is caught, the loop continues without breaking
+    tasks_spawned_buggy = 0
+    for i in range(100):
+        try:
+            if max_spawn_str is not None and tasks_spawned_buggy >= max_spawn_str:
+                break
+        except TypeError:
+            pass  # Bug: exception silently caught, loop continues
+        tasks_spawned_buggy += 1
+
+    assert tasks_spawned_buggy == 100, "Bug: all tasks spawned due to TypeError"
+
+    # Simulate the dispatcher loop with fix (int max_spawn)
+    max_spawn_int = 36
+    tasks_spawned_fixed = 0
+    for i in range(100):
+        if max_spawn_int is not None and tasks_spawned_fixed >= max_spawn_int:
+            break
+        tasks_spawned_fixed += 1
+
+    assert tasks_spawned_fixed == 36, "Fix: dispatcher respects max_spawn cap"

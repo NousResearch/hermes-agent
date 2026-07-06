@@ -827,9 +827,19 @@ class GatewayKanbanWatchersMixin:
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
         # Read max_spawn config to limit concurrent kanban tasks
-        max_spawn = kanban_cfg.get("max_spawn", None)
-        if max_spawn is not None:
-            logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
+        raw_max_spawn = kanban_cfg.get("max_spawn", None)
+        max_spawn = None
+        if raw_max_spawn is not None:
+            try:
+                max_spawn = int(raw_max_spawn)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.max_spawn=%r; ignoring",
+                    raw_max_spawn,
+                )
+                max_spawn = None
+            else:
+                logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
 
         # Cap the number of simultaneously running tasks so slow workers
         # (local LLMs, resource-constrained hosts) don't pile up and time

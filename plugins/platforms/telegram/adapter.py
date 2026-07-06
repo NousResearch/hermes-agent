@@ -7815,6 +7815,22 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as _e:
             logger.debug("[%s] Could not load guest update_ids: %s", self.name, _e)
 
+    def _guest_media_root(self) -> _Path:
+        """Return the resolved root directory guest media staging is confined to.
+
+        The delivery-constraint prompt tells the LLM to stage downloads under
+        ``/cache/<subdir>/`` (translated to ``HERMES_HOME/cache/<subdir>`` on the
+        host by ``_translate_docker_path``), but that is only a prompt-level
+        instruction — nothing enforced it. A guest-triggered turn that is
+        coerced (directly asked, or prompt-injected) into emitting
+        ``MEDIA: /home/hermes/.hermes/auth.json`` or any other host path would
+        otherwise have it staged and made deliverable to the guest chat with no
+        containment at all. This is the hard boundary: any resolved local path
+        outside this root is rejected before ``open()``/upload is ever reached.
+        """
+        from hermes_constants import get_hermes_home
+        return (get_hermes_home() / "cache").resolve()
+
     async def _guest_media_send(self, chat_id: str, tg_type: str, local_path: str, caption: Optional[str] = None) -> "SendResult":
         """Stage media to TELEGRAM_HOME_CHANNEL and record it for OPC delivery.
 
@@ -7840,6 +7856,29 @@ class TelegramAdapter(BasePlatformAdapter):
 
         _is_url = local_path.startswith("http://") or local_path.startswith("https://")
         _resolved_path = local_path if _is_url else self._translate_docker_path(local_path)
+
+        if not _is_url:
+            # Hard containment: reject anything outside the guest media root
+            # before any open()/upload is attempted, regardless of what the
+            # LLM turn was coerced into requesting. Not a soft/advisory check --
+            # this is the only thing standing between a guest chat and reading
+            # an arbitrary file the hermes process can access.
+            try:
+                _abs_resolved = _Path(_resolved_path).resolve()
+                _abs_resolved.relative_to(self._guest_media_root())
+            except ValueError:
+                logger.warning(
+                    "[%s] guest_media_send: rejected path outside staging root "
+                    "(chat=%s requested=%r resolved=%s)",
+                    self.name, _chat_id_str, local_path, _abs_resolved,
+                )
+                return SendResult(
+                    success=False,
+                    error=f"guest_media: path outside the allowed staging directory: {local_path}",
+                )
+            except Exception as _path_err:
+                return SendResult(success=False, error=f"guest_media: path validation failed: {_path_err}")
+            _resolved_path = str(_abs_resolved)
 
         _cache_key = (_resolved_path, tg_type)
         _file_id = self._guest_file_id_cache.get(_cache_key)

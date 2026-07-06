@@ -47,6 +47,7 @@ def _make_adapter() -> TelegramAdapter:
     cfg.extra = {"guest_mode": True}
     adapter = TelegramAdapter(cfg)
     adapter._bot = MagicMock()
+    adapter._bot.username = "testbot"  # real str so _clean_bot_trigger_text regex works
     adapter._bot.do_api_request = AsyncMock(return_value={"inline_message_id": "imi_abc"})
     return adapter
 
@@ -398,3 +399,63 @@ async def test_callback_on_stub_only_dismisses_loading():
     # do_api_request should NOT have been called with answerGuestQuery from this path
     for c in adapter._bot.do_api_request.await_args_list:
         assert c.args[0] != "answerGuestQuery", "answerGuestQuery must not fire from callback handler"
+
+
+# ---------------------------------------------------------------------------
+# _guest_media_send — hard path containment for the MEDIA: staging flow
+#
+# The delivery-constraint prompt *tells* the LLM to stage under
+# HERMES_HOME/cache/<subdir>, but that was only a prompt-level instruction --
+# nothing enforced it, so a guest-triggered turn coerced into requesting an
+# arbitrary host path (e.g. the credentials store) would previously have had
+# it staged and made deliverable to the guest chat. These tests cover the
+# hard containment check added to _guest_media_send.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_guest_media_send_rejects_path_outside_staging_root(tmp_path, monkeypatch):
+    """A path outside HERMES_HOME/cache is rejected before any open()/upload."""
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100999")
+
+    outside_file = tmp_path / "auth.json"
+    outside_file.write_text('{"api_key": "secret"}')
+
+    adapter = _make_adapter()
+    adapter._translate_docker_path = lambda p: p  # not under test here
+    adapter._bot.send_document = AsyncMock()
+
+    result = await adapter._guest_media_send("42", "document", str(outside_file))
+
+    assert result.success is False
+    assert "outside the allowed staging directory" in result.error
+    adapter._bot.send_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guest_media_send_allows_path_inside_staging_root(tmp_path, monkeypatch):
+    """A path inside HERMES_HOME/cache proceeds to staging as before."""
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100999")
+
+    cache_dir = tmp_path / "cache" / "videos"
+    cache_dir.mkdir(parents=True)
+    video_file = cache_dir / "clip.mp4"
+    video_file.write_bytes(b"fake video bytes")
+
+    adapter = _make_adapter()
+    adapter._translate_docker_path = lambda p: p
+
+    sent_video = MagicMock()
+    sent_video.video = MagicMock(file_id="fid_ok")
+    adapter._bot.send_video = AsyncMock(return_value=sent_video)
+
+    result = await adapter._guest_media_send("42", "video", str(video_file))
+
+    assert result.success is True
+    adapter._bot.send_video.assert_awaited_once()
+    assert adapter._guest_turn_media["42"]["file_id"] == "fid_ok"

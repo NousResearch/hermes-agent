@@ -1355,10 +1355,17 @@ class HonchoMemoryProvider(MemoryProvider):
                     return tool_error("Missing required parameter: query")
                 peer = args.get("peer", "user")
                 reasoning_level = args.get("reasoning_level")
+                # The model explicitly requested a synthesized answer here, so
+                # do NOT apply the auto-injection dialecticMaxChars cap — that
+                # budget is for the per-turn system-prompt supplement, not for
+                # a tool result the model asked for. The auto-injection path
+                # (_run_dialectic_depth) still uses the default cap.
+                # See https://github.com/NousResearch/hermes-agent/issues/59469.
                 result = self._manager.dialectic_query(
                     self._session_key, query,
                     reasoning_level=reasoning_level,
                     peer=peer,
+                    apply_injection_cap=False,
                 )
                 # Update cadence tracker so auto-injection respects the gap after an explicit call
                 self._last_dialectic_turn = self._turn_count

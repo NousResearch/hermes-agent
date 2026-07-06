@@ -602,6 +602,7 @@ class HonchoSessionManager:
         self, session_key: str, query: str,
         reasoning_level: str | None = None,
         peer: str = "user",
+        apply_injection_cap: bool = True,
     ) -> str:
         """
         Query Honcho's dialectic endpoint about a peer.
@@ -617,9 +618,20 @@ class HonchoSessionManager:
                              Only honored when dialecticDynamic is true.
                              If None or dialecticDynamic is false, uses the configured default.
             peer: Which peer to query — "user" (default) or "ai".
+            apply_injection_cap: When True (default), apply the Hermes-side
+                ``dialecticMaxChars`` char cap before returning — the cap is
+                the small-budget guardrail for results auto-injected into the
+                system prompt every turn. When False, return Honcho's full
+                answer untouched — used by the explicit ``honcho_reasoning``
+                tool path where the model asked for a synthesized answer and
+                has no context-window justification for the 600-char cap.
+                See https://github.com/NousResearch/hermes-agent/issues/59469.
 
         Returns:
-            Honcho's synthesized answer, or empty string on failure.
+            Honcho's synthesized answer, or empty string on failure. When the
+            cap is applied and truncation occurs, a ``[truncated, full result
+            in logs]`` marker is appended so callers can detect loss instead
+            of being silently clipped.
         """
         session = self._cache.get(session_key)
         if not session:
@@ -655,9 +667,34 @@ class HonchoSessionManager:
                 target_peer = self._get_or_create_peer(target_peer_id)
                 result = target_peer.chat(query, reasoning_level=level) or ""
 
-            # Apply Hermes-side char cap before caching
-            if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:
-                result = result[:self._dialectic_max_chars].rsplit(" ", 1)[0] + " …"
+            # Apply Hermes-side char cap before caching.
+            # Only the auto-injection path uses this cap — the explicit
+            # honcho_reasoning tool passes apply_injection_cap=False so a
+            # model that asked for a synthesized answer gets the full thing.
+            if (
+                apply_injection_cap
+                and result
+                and self._dialectic_max_chars
+                and len(result) > self._dialectic_max_chars
+            ):
+                original_full = result
+                truncated_len = len(result)
+                cap = self._dialectic_max_chars
+                result = result[:cap].rsplit(" ", 1)[0] + (
+                    " … [truncated, full result in logs]"
+                )
+                logger.warning(
+                    "Honcho dialectic result truncated: %d -> %d chars (cap=%d). "
+                    "Full result available via DEBUG-level log of the raw return value.",
+                    truncated_len,
+                    len(result),
+                    cap,
+                )
+                logger.debug(
+                    "Honcho dialectic full result (%d chars): %r",
+                    truncated_len,
+                    original_full,
+                )
             return result
         except Exception as e:
             logger.warning("Honcho dialectic query failed: %s", e)

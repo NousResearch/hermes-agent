@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import csv
+import hashlib
 import json
+import os
 import re
 import sys
 from argparse import Namespace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +45,21 @@ from .morning_brief import render_morning_brief_text
 from .operator import TorbenOperator
 from .runtime_secrets import validate_runtime_env_template
 from .relationship_learning import apply_relationship_learning_answer
+
+ERIC_SIGNAL_SENDER = "+15163843337"
+LADDER_CATEGORIES = (
+    "gmail_archive",
+    "gmail_trash",
+    "calendar_edit",
+    "booking",
+    "form_filing",
+    "gtm_post",
+    "payment_adjacent",
+)
+LADDER_RUNGS = ("packet_only", "approve_each", "auto_within_caps")
+PROMOTION_REPLY_RE = re.compile(r"^\s*promote\s+(?:category\s+)?(?P<category>[a-z_]+)\s*$", re.I)
+TRACK_REPLY_RE = re.compile(r"^\s*track\s+(?P<item>.+?)\s*$", re.I)
+OPEN_LOOP_HEADER = ["id", "item", "state", "owner", "due", "domain", "note", "created", "updated"]
 
 
 def _default_ledger_path() -> Path:
@@ -99,6 +118,22 @@ def _default_relationship_context_path() -> Path:
     return get_hermes_home() / "config" / "relationship_context.yaml"
 
 
+def _default_ladder_config_path() -> Path:
+    return get_hermes_home() / "config" / "torben-autonomy-ladder.yaml"
+
+
+def _default_open_loop_tracker_path() -> Path:
+    return get_hermes_home() / "state" / "torben-open-loops.csv"
+
+
+def _default_capture_dedupe_path() -> Path:
+    return get_hermes_home() / "state" / "torben-capture-dedupe.json"
+
+
+def _default_capture_confirmations_path() -> Path:
+    return get_hermes_home() / "state" / "torben-capture-confirmations.jsonl"
+
+
 def _read_json_file(path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -118,6 +153,288 @@ def _load_torben_config() -> dict[str, Any]:
     if not isinstance(data, dict):
         return {}
     return data
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_signal_sender(sender: str | None) -> str:
+    digits = re.sub(r"\D+", "", str(sender or ""))
+    return f"+{digits}" if digits else ""
+
+
+def _parse_promotion_reply(reply_text: str) -> str | None:
+    match = PROMOTION_REPLY_RE.match(reply_text)
+    if not match:
+        return None
+    return match.group("category").lower()
+
+
+def _parse_track_reply(reply_text: str) -> str | None:
+    match = TRACK_REPLY_RE.match(reply_text)
+    if not match:
+        return None
+    item = re.sub(r"\s+", " ", match.group("item").strip())
+    return item or None
+
+
+def _read_yaml_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected ladder config mapping: {path}")
+    return payload
+
+
+def _read_json_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected ladder state mapping: {path}")
+    return payload
+
+
+def _resolve_profile_path(value: str | Path | None, default: str) -> Path:
+    path = Path(str(value or default))
+    if path.is_absolute():
+        return path
+    return get_hermes_home() / path
+
+
+def _ladder_paths(config: dict[str, Any], *, config_path: Path) -> tuple[Path, Path, Path]:
+    state_path = _resolve_profile_path(config.get("state_path"), "state/torben-autonomy-ladder.json")
+    event_log_path = _resolve_profile_path(config.get("event_log_path"), "state/torben-autonomy-ladder-events.jsonl")
+    return config_path, state_path, event_log_path
+
+
+def _initial_ladder_category_state() -> dict[str, Any]:
+    return {
+        "rung": "packet_only",
+        "clean_approved_executions": 0,
+        "daily_auto_counts": {},
+        "promotion": {
+            "status": "not_eligible",
+            "manual_signal_required": True,
+            "eligible_input_needed": False,
+        },
+        "updated_at": _utc_now(),
+    }
+
+
+def _load_ladder_state(path: Path) -> dict[str, Any]:
+    state = _read_json_mapping(path)
+    if not state:
+        state = {
+            "schema": "torben.autonomy-ladder.v1",
+            "generated_at": _utc_now(),
+            "categories": {},
+        }
+    categories = state.setdefault("categories", {})
+    if not isinstance(categories, dict):
+        raise ValueError(f"Expected ladder categories mapping: {path}")
+    for category in LADDER_CATEGORIES:
+        categories.setdefault(category, _initial_ladder_category_state())
+        if categories[category].get("rung") not in LADDER_RUNGS:
+            raise ValueError(f"Invalid rung for {category}: {categories[category].get('rung')}")
+    return state
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _load_open_loops(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames != OPEN_LOOP_HEADER:
+            raise ValueError(f"Open-loop tracker header must be {','.join(OPEN_LOOP_HEADER)}: {path}")
+        return [dict(row) for row in reader]
+
+
+def _write_open_loops(path: Path, rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with tmp.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=OPEN_LOOP_HEADER)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: str(row.get(field) or "") for field in OPEN_LOOP_HEADER})
+    os.replace(tmp, path)
+
+
+def _load_capture_dedupe(path: Path) -> dict[str, int]:
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+    if not isinstance(payload, dict):
+        return {}
+    return {str(key): int(value) for key, value in payload.items()}
+
+
+def _write_capture_dedupe(path: Path, payload: dict[str, int]) -> None:
+    _write_json_atomic(path, payload)
+
+
+def _capture_key(*, text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    material = f"signal-track:{normalized}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _handle_track_reply(args: Namespace, *, reply_text: str, item: str) -> dict[str, Any]:
+    sender = _normalize_signal_sender(getattr(args, "sender", None))
+    if sender != ERIC_SIGNAL_SENDER:
+        return {
+            "schema": "torben.signal-track-resolver.v1",
+            "status": "rejected",
+            "reason": "track_requires_eric_signal_sender",
+            "sender": sender,
+            "reply_text": reply_text,
+        }
+    tracker_path = _default_open_loop_tracker_path()
+    dedupe_path = _default_capture_dedupe_path()
+    confirmations_path = _default_capture_confirmations_path()
+    key = _capture_key(text=item)
+    dedupe = _load_capture_dedupe(dedupe_path)
+    if key in dedupe:
+        return {
+            "schema": "torben.signal-track-resolver.v1",
+            "status": "duplicate",
+            "loop_id": dedupe[key],
+            "confirmation": f"Already tracking loop #{dedupe[key]}: {item}",
+            "wakeAgent": True,
+        }
+
+    rows = _load_open_loops(tracker_path)
+    next_id = max([int(row.get("id") or 0) for row in rows] or [0]) + 1
+    day = datetime.now(timezone.utc).date().isoformat()
+    row = {
+        "id": str(next_id),
+        "item": item,
+        "state": "next-action",
+        "owner": "eric",
+        "due": "",
+        "domain": "admin",
+        "note": f"capture_key={key};source=signal-track-resolver",
+        "created": day,
+        "updated": day,
+    }
+    rows.append(row)
+    _write_open_loops(tracker_path, rows)
+    dedupe[key] = next_id
+    _write_capture_dedupe(dedupe_path, dedupe)
+    confirmation = {
+        "schema": "torben.capture-confirmation.v1",
+        "created_at": _utc_now(),
+        "channel": "signal",
+        "recipient": sender,
+        "loop_id": next_id,
+        "text": f"Captured loop #{next_id} as next-action: {item}",
+    }
+    _append_jsonl(confirmations_path, confirmation)
+    return {
+        "schema": "torben.signal-track-resolver.v1",
+        "status": "captured",
+        "loop": row,
+        "confirmation": confirmation["text"],
+        "wakeAgent": True,
+    }
+
+
+def _promotion_event(
+    *,
+    status: str,
+    category: str,
+    sender: str,
+    reason: str | None = None,
+    from_rung: str | None = None,
+    to_rung: str | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "schema": "torben.autonomy-ladder-event.v1",
+        "event": "promotion" if status == "promoted" else "promotion_rejected",
+        "status": status,
+        "category": category,
+        "actor": sender,
+        "sender": sender,
+        "manual_signal_required": True,
+        "created_at": _utc_now(),
+    }
+    if reason:
+        payload["reason"] = reason
+    if from_rung is not None:
+        payload["from_rung"] = from_rung
+    if to_rung is not None:
+        payload["to_rung"] = to_rung
+    return payload
+
+
+def _handle_promotion_reply(args: Namespace, *, reply_text: str, category: str) -> dict[str, Any]:
+    sender = _normalize_signal_sender(getattr(args, "sender", None))
+    config_path = Path(getattr(args, "ladder_config", None) or _default_ladder_config_path())
+    config = _read_yaml_mapping(config_path)
+    _, state_path, event_log_path = _ladder_paths(config, config_path=config_path)
+    if category not in LADDER_CATEGORIES:
+        event = _promotion_event(
+            status="rejected",
+            category=category,
+            sender=sender,
+            reason="unknown_category",
+        )
+        _append_jsonl(event_log_path, event)
+        return {"status": "rejected", "reply_text": reply_text, "promotion": event}
+    if sender != ERIC_SIGNAL_SENDER:
+        event = _promotion_event(
+            status="rejected",
+            category=category,
+            sender=sender,
+            reason="promotion_requires_eric_signal_sender",
+        )
+        _append_jsonl(event_log_path, event)
+        return {"status": "rejected", "reply_text": reply_text, "promotion": event}
+
+    state = _load_ladder_state(state_path)
+    category_state = state["categories"][category]
+    before = str(category_state["rung"])
+    before_index = LADDER_RUNGS.index(before)
+    after = LADDER_RUNGS[min(before_index + 1, len(LADDER_RUNGS) - 1)]
+    status = "already_top_rung" if after == before else "promoted"
+    category_state["rung"] = after
+    category_state["promotion"] = {
+        "status": status,
+        "manual_signal_required": True,
+        "eligible_input_needed": False,
+        "actor": sender,
+        "updated_at": _utc_now(),
+    }
+    category_state["updated_at"] = _utc_now()
+    event = _promotion_event(
+        status=status,
+        category=category,
+        sender=sender,
+        reason=None if status == "promoted" else "already_top_rung",
+        from_rung=before,
+        to_rung=after,
+    )
+    _write_json_atomic(state_path, state)
+    _append_jsonl(event_log_path, event)
+    return {"status": status, "reply_text": reply_text, "promotion": event}
 
 
 def _cmd_ea_brief(args: Namespace) -> int:
@@ -144,6 +461,33 @@ def _cmd_operating_brief(args: Namespace) -> int:
 
 def _cmd_resolve_reply(args: Namespace) -> int:
     reply_text = " ".join(args.reply).strip()
+    promotion_category = _parse_promotion_reply(reply_text)
+    if promotion_category is not None:
+        payload = _handle_promotion_reply(args, reply_text=reply_text, category=promotion_category)
+        if args.json:
+            _json_print(payload)
+        else:
+            promotion = payload["promotion"]
+            if payload["status"] == "promoted":
+                print(f"promoted: {promotion['category']} {promotion['from_rung']} -> {promotion['to_rung']}")
+            else:
+                print(f"rejected: {promotion['category']} - {promotion.get('reason') or payload['status']}")
+        return 0
+
+    track_item = _parse_track_reply(reply_text)
+    if track_item is not None:
+        payload = _handle_track_reply(args, reply_text=reply_text, item=track_item)
+        if args.json:
+            _json_print(payload)
+        else:
+            if payload["status"] == "captured":
+                print(payload["confirmation"])
+            elif payload["status"] == "duplicate":
+                print(payload["confirmation"])
+            else:
+                print(f"rejected: track - {payload.get('reason') or payload['status']}")
+        return 0
+
     operator = TorbenOperator(ledger_path=args.ledger or _default_ledger_path())
     resolution = operator.resolve_reply(reply_text)
     apply_result = None

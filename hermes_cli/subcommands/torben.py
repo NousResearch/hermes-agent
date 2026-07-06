@@ -57,6 +57,16 @@ def build_torben_parser(subparsers, *, cmd_torben: Callable) -> None:
         default=None,
         help="Action ledger path (default: $HERMES_HOME/state/torben-action-ledger.jsonl)",
     )
+    resolve_reply.add_argument(
+        "--sender",
+        default=None,
+        help="Signal sender phone number for authority-bound replies",
+    )
+    resolve_reply.add_argument(
+        "--ladder-config",
+        default=None,
+        help="Autonomy ladder config path (default: $HERMES_HOME/config/torben-autonomy-ladder.yaml)",
+    )
     resolve_reply.add_argument("--json", action="store_true", help="Print JSON output")
 
     learn_contact = torben_subparsers.add_parser(

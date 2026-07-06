@@ -131,8 +131,7 @@ def skills_from_real_toolsets(toolset_registry: dict) -> list[dict]:
                 "id": f"toolset.{ts_name}",
                 "name": ts_name,
                 "description": desc,
-                "tags": [ts_name],
-                # Include tool names as tags for capability matching
+                # Include toolset name + tool names as tags for capability matching
                 "tags": [ts_name] + tool_names[:10],
             })
     if not skills:
@@ -233,6 +232,8 @@ def _now_iso() -> str:
 # Anti-loop ping-pong protection
 # --------------------------------------------------------------------------
 
+import threading
+
 # Track turns per context_id to prevent infinite agent-to-agent loops.
 # A "turn" is one inbound message/send from a peer. When the count exceeds
 # max_pingpong_turns(), we reject further messages for that context.
@@ -240,6 +241,7 @@ def _now_iso() -> str:
 
 _turn_counts: dict[str, int] = defaultdict(int)
 _turn_timestamps: dict[str, float] = {}
+_turn_lock = threading.Lock()
 
 # Clean up turn tracking for contexts older than 1 hour.
 _TURN_TTL = 3600
@@ -251,27 +253,30 @@ def track_turn(context_id: str) -> int:
     Returns the *new* count. Caller should reject if > max_pingpong_turns().
     Also prunes stale entries to prevent unbounded growth.
     """
-    now = time.time()
-    # Prune stale entries
-    stale = [cid for cid, ts in _turn_timestamps.items() if now - ts > _TURN_TTL]
-    for cid in stale:
-        _turn_counts.pop(cid, None)
-        _turn_timestamps.pop(cid, None)
+    with _turn_lock:
+        now = time.time()
+        # Prune stale entries
+        stale = [cid for cid, ts in _turn_timestamps.items() if now - ts > _TURN_TTL]
+        for cid in stale:
+            _turn_counts.pop(cid, None)
+            _turn_timestamps.pop(cid, None)
 
-    _turn_counts[context_id] += 1
-    _turn_timestamps[context_id] = now
-    return _turn_counts[context_id]
+        _turn_counts[context_id] += 1
+        _turn_timestamps[context_id] = now
+        return _turn_counts[context_id]
 
 
 def turn_count(context_id: str) -> int:
     """Return current turn count for a context (0 if unknown)."""
-    return _turn_counts.get(context_id, 0)
+    with _turn_lock:
+        return _turn_counts.get(context_id, 0)
 
 
 def reset_turns(context_id: str) -> None:
     """Reset turn count for a context (e.g. after explicit cancel)."""
-    _turn_counts.pop(context_id, None)
-    _turn_timestamps.pop(context_id, None)
+    with _turn_lock:
+        _turn_counts.pop(context_id, None)
+        _turn_timestamps.pop(context_id, None)
 
 
 # --------------------------------------------------------------------------
@@ -393,6 +398,7 @@ def list_conversations() -> list[str]:
 
 _RATE_LIMIT_DEFAULT = 60  # requests per minute
 _rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+_rate_lock = threading.Lock()
 _RATE_WINDOW = 60.0  # seconds
 
 
@@ -405,25 +411,27 @@ def _rate_limit_per_minute() -> int:
 
 def rate_limit_allow(peer: str) -> bool:
     """Check if peer is within rate limit. Returns True if allowed."""
-    limit = _rate_limit_per_minute()
-    now = time.time()
-    bucket = _rate_buckets[peer]
-    # Expire old entries
-    while bucket and now - bucket[0] > _RATE_WINDOW:
-        bucket.popleft()
-    if len(bucket) >= limit:
-        return False
-    bucket.append(now)
-    return True
+    with _rate_lock:
+        limit = _rate_limit_per_minute()
+        now = time.time()
+        bucket = _rate_buckets[peer]
+        # Expire old entries
+        while bucket and now - bucket[0] > _RATE_WINDOW:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            return False
+        bucket.append(now)
+        return True
 
 
 def rate_limit_status(peer: str) -> dict[str, Any]:
     """Return rate limit status for a peer."""
-    limit = _rate_limit_per_minute()
-    now = time.time()
-    bucket = _rate_buckets[peer]
-    # Count active entries
-    active = sum(1 for ts in bucket if now - ts <= _RATE_WINDOW)
+    with _rate_lock:
+        limit = _rate_limit_per_minute()
+        now = time.time()
+        bucket = _rate_buckets[peer]
+        # Count active entries
+        active = sum(1 for ts in bucket if now - ts <= _RATE_WINDOW)
     return {
         "peer": peer,
         "limit_per_minute": limit,
@@ -441,15 +449,11 @@ def rate_limit_status(peer: str) -> dict[str, Any]:
 # OpenClaw pattern: sessions_send (async durable messaging).
 
 _pending_tasks: dict[str, dict[str, Any]] = {}
-_pending_lock = None  # Will be set by adapter on init
+_pending_lock = threading.Lock()
 
 
 def register_pending_task(task_id: str, context_id: str, peer: str, callback_url: str = "") -> None:
     """Register a task as pending (in-flight)."""
-    import threading
-    global _pending_lock
-    if _pending_lock is None:
-        _pending_lock = threading.Lock()
     with _pending_lock:
         _pending_tasks[task_id] = {
             "context_id": context_id,
@@ -462,10 +466,6 @@ def register_pending_task(task_id: str, context_id: str, peer: str, callback_url
 
 def complete_pending_task(task_id: str, state: str, reply: str = "") -> dict | None:
     """Mark a pending task as complete. Returns the task info if found."""
-    import threading
-    global _pending_lock
-    if _pending_lock is None:
-        _pending_lock = threading.Lock()
     with _pending_lock:
         info = _pending_tasks.pop(task_id, None)
     if info:
@@ -477,10 +477,6 @@ def complete_pending_task(task_id: str, state: str, reply: str = "") -> dict | N
 
 def pending_task_info(task_id: str) -> dict | None:
     """Get info about a pending task (for tasks/get)."""
-    import threading
-    global _pending_lock
-    if _pending_lock is None:
-        _pending_lock = threading.Lock()
     with _pending_lock:
         return _pending_tasks.get(task_id)
 
@@ -490,12 +486,8 @@ def orphaned_tasks(timeout_seconds: int = 300) -> list[dict]:
 
     Used by the orphaned task watchdog to clean up stale tasks.
     """
-    import threading
-    global _pending_lock
-    if _pending_lock is None:
-        _pending_lock = threading.Lock()
-    now = time.time()
     with _pending_lock:
+        now = time.time()
         return [
             {"task_id": tid, **info}
             for tid, info in _pending_tasks.items()
@@ -505,13 +497,9 @@ def orphaned_tasks(timeout_seconds: int = 300) -> list[dict]:
 
 def clear_orphaned_tasks(timeout_seconds: int = 300) -> list[str]:
     """Remove and return task_ids of tasks pending longer than timeout."""
-    import threading
-    global _pending_lock
-    if _pending_lock is None:
-        _pending_lock = threading.Lock()
-    now = time.time()
-    cleared = []
     with _pending_lock:
+        now = time.time()
+        cleared = []
         for tid in list(_pending_tasks.keys()):
             info = _pending_tasks[tid]
             if now - info.get("started_at", now) > timeout_seconds:

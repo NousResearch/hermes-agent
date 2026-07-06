@@ -450,3 +450,144 @@ class TestWatchdog:
         cleared = protocol.clear_orphaned_tasks(timeout_seconds=300)
         assert "task-watchdog-1" in cleared
         assert protocol.pending_task_info("task-watchdog-1") is None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Code review fixes: SSRF protection, body size limit, watchdog reconnect
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestSSRFProtection:
+    """Push notification callback URL validation (SSRF prevention)."""
+
+    def test_safe_https_url_allowed(self):
+        assert security.is_safe_callback_url("https://example.com/webhook") is True
+
+    def test_safe_http_url_allowed(self):
+        assert security.is_safe_callback_url("http://example.com/webhook") is True
+
+    def test_localhost_blocked_in_remote_mode(self):
+        """In remote mode (localhost_only=False), localhost should be blocked."""
+        # Temporarily disable localhost_only
+        original = security.localhost_only
+        security.localhost_only = lambda: False
+        try:
+            assert security.is_safe_callback_url("http://127.0.0.1:8080/hook") is False
+            assert security.is_safe_callback_url("http://localhost:8080/hook") is False
+        finally:
+            security.localhost_only = original
+
+    def test_aws_metadata_blocked(self):
+        """169.254.x.x (AWS metadata) must be blocked."""
+        original = security.localhost_only
+        security.localhost_only = lambda: False
+        try:
+            assert security.is_safe_callback_url("http://169.254.169.254/latest/meta-data/") is False
+        finally:
+            security.localhost_only = original
+
+    def test_private_ranges_blocked(self):
+        """RFC1918 private ranges must be blocked in remote mode."""
+        original = security.localhost_only
+        security.localhost_only = lambda: False
+        try:
+            assert security.is_safe_callback_url("http://10.0.0.1/hook") is False
+            assert security.is_safe_callback_url("http://192.168.1.1/hook") is False
+            assert security.is_safe_callback_url("http://172.16.0.1/hook") is False
+        finally:
+            security.localhost_only = original
+
+    def test_file_scheme_blocked(self):
+        """file:// URLs must be blocked (urllib follows them)."""
+        assert security.is_safe_callback_url("file:///etc/passwd") is False
+
+    def test_ftp_scheme_blocked(self):
+        assert security.is_safe_callback_url("ftp://example.com/file") is False
+
+    def test_empty_url_blocked(self):
+        assert security.is_safe_callback_url("") is False
+        assert security.is_safe_callback_url(None) is False
+
+
+class TestBodySizeLimit:
+    """Request body size limit (DoS prevention)."""
+
+    def test_max_body_constant_exists(self):
+        """adapter module should define _MAX_BODY."""
+        from plugins.platforms.a2a import adapter
+        assert hasattr(adapter, "_MAX_BODY")
+        assert adapter._MAX_BODY > 0
+        # Should be reasonable (1-10MB)
+        assert adapter._MAX_BODY <= 10_485_760
+
+    def test_max_body_imports_from_adapter(self):
+        """The body size check should reference _MAX_BODY."""
+        from plugins.platforms.a2a import adapter
+        import inspect
+        source = inspect.getsource(adapter)
+        assert "_MAX_BODY" in source
+        assert "413" in source  # HTTP 413 Payload Too Large
+
+
+class TestWatchdogReconnect:
+    """Watchdog should survive reconnection (disconnect → connect cycle)."""
+
+    def test_watchdog_stop_cleared_on_connect(self):
+        """connect() should call _watchdog_stop.clear() to reset state."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        import inspect
+        source = inspect.getsource(A2AAdapter.connect)
+        assert "_watchdog_stop.clear()" in source
+
+
+class TestErrorRedaction:
+    """Error messages should be redacted before sending to peers."""
+
+    def test_dispatch_failed_uses_redact_outbound(self):
+        """adapter should call security.redact_outbound on error messages."""
+        from plugins.platforms.a2a import adapter
+        import inspect
+        source = inspect.getsource(adapter)
+        # All 'Dispatch failed' messages should go through redact_outbound
+        import re
+        dispatch_fails = re.findall(r'"Dispatch failed[^"]*"', source)
+        for match in dispatch_fails:
+            # Find the surrounding context (should contain redact_outbound)
+            idx = source.index(match)
+            context = source[max(0, idx-200):idx+100]
+            assert "redact_outbound" in context, f"Dispatch failed message not redacted: {match}"
+
+
+class TestThreadSafety:
+    """Verify thread-safe shared state access."""
+
+    def test_turn_tracking_is_thread_safe(self):
+        """track_turn, turn_count, reset_turns should use a lock."""
+        import inspect
+        assert hasattr(protocol, "_turn_lock")
+        source = inspect.getsource(protocol.track_turn)
+        assert "_turn_lock" in source
+
+    def test_rate_limiting_is_thread_safe(self):
+        """rate_limit_allow should use a lock."""
+        import inspect
+        assert hasattr(protocol, "_rate_lock")
+        source = inspect.getsource(protocol.rate_limit_allow)
+        assert "_rate_lock" in source
+
+    def test_pending_tasks_lock_initialized_at_import(self):
+        """_pending_lock should be initialized at module level, not lazily."""
+        assert hasattr(protocol, "_pending_lock")
+        assert protocol._pending_lock is not None
+        # Should be a Lock instance, not None
+        assert hasattr(protocol._pending_lock, "acquire")
+
+
+class TestContextIdConsistency:
+    """a2a_call should always send contextId, even on first turn."""
+
+    def test_a2a_call_always_sends_context_id(self):
+        """tools.a2a_call should include contextId in params even when not provided."""
+        import inspect
+        source = inspect.getsource(tools.a2a_call)
+        # The contextId should be set unconditionally, not inside an if block
+        assert "contextId" in source

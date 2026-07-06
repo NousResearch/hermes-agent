@@ -51,6 +51,7 @@ _DEFAULT_PORT = 9900
 _REPLY_TIMEOUT = 300  # seconds to wait for the agent to answer an inbound task
 _ORPHAN_TIMEOUT = 300  # seconds before a pending task is considered orphaned
 _WATCHDOG_INTERVAL = 60  # seconds between orphaned task watchdog runs
+_MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 
 
 def _default_agent_name() -> str:
@@ -83,9 +84,6 @@ class A2AAdapter(BasePlatformAdapter):
         # Per-context reply futures: an inbound HTTP request blocks on its
         # future until adapter.send() resolves it with the agent's reply.
         self._pending_replies: Dict[str, Future] = {}
-        # Per-context streaming queues: for message/stream, the handler writes
-        # SSE chunks and the send() method pushes intermediate results.
-        self._streaming_queues: Dict[str, list] = {}
         self._pending_lock = threading.Lock()
 
         # Push notification callback URLs per task
@@ -93,8 +91,8 @@ class A2AAdapter(BasePlatformAdapter):
         self._push_lock = threading.Lock()
 
         # Orphaned task watchdog
-        self._watchdog_thread: Optional[threading.Thread] = None
         self._watchdog_stop = threading.Event()
+        self._watchdog_thread: Optional[threading.Thread] = None
 
     @property
     def name(self) -> str:
@@ -167,6 +165,9 @@ class A2AAdapter(BasePlatformAdapter):
                     return
                 try:
                     length = int(self.headers.get("Content-Length", 0))
+                    if length > _MAX_BODY:
+                        self._json(413, protocol.jsonrpc_error(None, -32700, "payload too large"))
+                        return
                     raw = self.rfile.read(length) if length else b"{}"
                     req = json.loads(raw.decode("utf-8"))
                 except Exception:
@@ -177,8 +178,14 @@ class A2AAdapter(BasePlatformAdapter):
                 method = req.get("method", "")
                 params = req.get("params", {}) or {}
 
-                # Rate limit check
-                peer_id = str(params.get("peer") or (params.get("message", {}) or {}).get("from") or "unknown")
+                # Rate limit check — derive peer identity from authenticated source.
+                # A2A spec has no "peer" field, so we use the remote IP as fallback.
+                # This prevents rate limiting from collapsing to a single "unknown" bucket
+                # and makes the trusted-peer gate meaningful.
+                peer_id = str(params.get("peer") or (params.get("message", {}) or {}).get("from") or "")
+                if not peer_id:
+                    # Fall back to client IP — the one thing we actually know
+                    peer_id = self.client_address[0] if hasattr(self, "client_address") else "unknown"
                 if not protocol.rate_limit_allow(peer_id):
                     protocol.metrics.rate_limit_triggers += 1
                     self._json(429, protocol.jsonrpc_error(req_id, -32002, "rate limit exceeded"))
@@ -246,6 +253,9 @@ class A2AAdapter(BasePlatformAdapter):
         )
         self._server_thread.start()
 
+        # Reset watchdog state for reconnection (disconnect sets the event)
+        self._watchdog_stop.clear()
+
         # Start orphaned task watchdog
         self._watchdog_thread = threading.Thread(
             target=self._watchdog_loop,
@@ -279,7 +289,8 @@ class A2AAdapter(BasePlatformAdapter):
                 if not fut.done():
                     fut.set_result("[agent shutting down]")
             self._pending_replies.clear()
-            self._streaming_queues.clear()
+        with self._push_lock:
+            self._push_callbacks.clear()
 
     # ── Orphaned task watchdog ─────────────────────────────────────────────
 
@@ -404,8 +415,8 @@ class A2AAdapter(BasePlatformAdapter):
         except Exception as e:
             with self._pending_lock:
                 self._pending_replies.pop(context_id, None)
-            protocol.complete_pending_task(task_id, protocol.STATE_FAILED, f"Dispatch failed: {e}")
-            return protocol.build_task(task_id, context_id, protocol.STATE_FAILED, f"Dispatch failed: {e}")
+            protocol.complete_pending_task(task_id, protocol.STATE_FAILED, security.redact_outbound(f"Dispatch failed: {e}"))
+            return protocol.build_task(task_id, context_id, protocol.STATE_FAILED, security.redact_outbound(f"Dispatch failed: {e}"))
 
         try:
             reply = fut.result(timeout=_REPLY_TIMEOUT)
@@ -535,7 +546,7 @@ class A2AAdapter(BasePlatformAdapter):
             with self._pending_lock:
                 self._pending_replies.pop(context_id, None)
             event = protocol.build_streaming_event("status", task_id, context_id, {
-                "status": {"state": protocol.STATE_FAILED, "message": f"Dispatch failed: {e}"},
+                "status": {"state": protocol.STATE_FAILED, "message": security.redact_outbound(f"Dispatch failed: {e}")},
             })
             handler.wfile.write(event.encode("utf-8"))
             done = protocol.build_streaming_event("done", task_id, context_id)
@@ -545,23 +556,24 @@ class A2AAdapter(BasePlatformAdapter):
         # 3. Wait for reply (with keepalive pings)
         start = time.time()
         reply = None
-        while True:
-            try:
-                reply = fut.result(timeout=5)
-                break
-            except TimeoutError:
-                # Send keepalive comment
-                handler.wfile.write(b": keepalive\n\n")
-                handler.wfile.flush()
-                if time.time() - start > _REPLY_TIMEOUT:
+        try:
+            while True:
+                try:
+                    reply = fut.result(timeout=5)
+                    break
+                except TimeoutError:
+                    # Send keepalive comment
+                    handler.wfile.write(b": keepalive\n\n")
+                    handler.wfile.flush()
+                    if time.time() - start > _REPLY_TIMEOUT:
+                        reply = "[agent did not reply in time]"
+                        break
+                except Exception:
                     reply = "[agent did not reply in time]"
                     break
-            except Exception:
-                reply = "[agent did not reply in time]"
-                break
-
-        with self._pending_lock:
-            self._pending_replies.pop(context_id, None)
+        finally:
+            with self._pending_lock:
+                self._pending_replies.pop(context_id, None)
 
         reply = security.redact_outbound(reply or "")
         protocol.persist_message(context_id, "agent", reply, task_id)
@@ -588,11 +600,22 @@ class A2AAdapter(BasePlatformAdapter):
     # ── Push notifications ────────────────────────────────────────────────
 
     def _send_push_notification(self, task_id: str, context_id: str, reply: str, state: str) -> None:
-        """Send a push notification to the registered callback URL for this task."""
+        """Send a push notification to the registered callback URL for this task.
+
+        Validates the callback URL to prevent SSRF — blocks internal/private
+        addresses (169.254.x.x metadata, loopback, RFC1918 private ranges)
+        unless we're in localhost-only mode (where internal access is expected).
+        """
         with self._push_lock:
             callback_url = self._push_callbacks.pop(task_id, None)
 
         if not callback_url:
+            return
+
+        # SSRF protection: validate the callback URL
+        if not security.is_safe_callback_url(callback_url):
+            logger.warning("A2A: push notification for task %s blocked — unsafe callback URL: %s", task_id, callback_url)
+            protocol.metrics.push_failed += 1
             return
 
         payload = {

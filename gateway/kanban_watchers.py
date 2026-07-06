@@ -353,22 +353,40 @@ class GatewayKanbanWatchersMixin:
                             payload_summary = None
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
+                            # A completion summary is the worker's handoff —
+                            # deliver it whole, like block reasons below: cap
+                            # well under Telegram's 4096 limit with a marker +
+                            # pointer to the card instead of a silent mid-word
+                            # cut at 200 chars.
                             if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
-                                handoff = f"\n{h}"
+                                raw = payload_summary.strip()
+                                clipped = raw[:3500]
+                                if len(raw) > 3500:
+                                    clipped += " …[truncated — full summary on the card]"
+                                handoff = f"\n{clipped}"
                             elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
-                                handoff = f"\n{r}"
+                                raw = task.result.strip()
+                                clipped = raw[:3500]
+                                if len(raw) > 3500:
+                                    clipped += " …[truncated — full result on the card]"
+                                handoff = f"\n{clipped}"
                             msg = (
                                 f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
                                 f" — {title}{handoff}"
                             )
                         elif kind == "blocked":
+                            # A block reason (esp. kind=needs_input) IS the
+                            # actionable payload the subscriber must answer, so
+                            # deliver it near-whole. Cap well under Telegram's
+                            # 4096 limit, with a marker + pointer to the card
+                            # when a pathologically long reason is clipped.
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
+                                raw = str(ev.payload["reason"])
+                                clipped = raw[:3500]
+                                if len(raw) > 3500:
+                                    clipped += " …[truncated — full reason on the card]"
+                                reason = f": {clipped}"
                             msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""

@@ -55,6 +55,7 @@ from agent.secret_sources._cache import (
     FetchResult,
     is_valid_env_name,
 )
+from agent.secret_sources.base import ErrorKind, SecretSource
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +476,156 @@ def apply_onepassword_secrets(
         result.applied.append(name)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# SecretSource adapter — the registry-facing wrapper around this module.
+# ---------------------------------------------------------------------------
+
+
+class OnePasswordSource(SecretSource):
+    """1Password as a registered secret source.
+
+    Thin adapter over the module's fetch machinery.  ``fetch()`` only
+    *fetches* — precedence, override semantics, conflict warnings, and
+    the ``os.environ`` writes are the orchestrator's job
+    (see ``agent.secret_sources.registry.apply_all``).
+
+    1Password is a **mapped** source: the user explicitly binds each env
+    var to an ``op://`` reference under ``secrets.onepassword.env``, so
+    its claims outrank bulk sources (e.g. a Bitwarden project dump) on
+    contested vars.
+    """
+
+    name = "onepassword"
+    label = "1Password"
+    shape = "mapped"
+    scheme = "op"
+
+    def override_existing(self, cfg: dict) -> bool:
+        # Default True: an explicit VAR→op:// binding is the strongest
+        # user intent there is — leaving a stale .env line in place
+        # should not silently defeat it (same rotation rationale as
+        # Bitwarden).
+        return bool(isinstance(cfg, dict) and cfg.get("override_existing", True))
+
+    def protected_env_vars(self, cfg: dict):
+        token_env = _DEFAULT_TOKEN_ENV
+        if isinstance(cfg, dict):
+            token_env = str(cfg.get("service_account_token_env") or token_env)
+        return frozenset({token_env})
+
+    def config_schema(self) -> dict:
+        return {
+            "enabled": {"description": "Master switch", "default": False},
+            "env": {
+                "description": "Map of ENV_VAR -> op://vault/item/field reference",
+                "default": {},
+            },
+            "account": {
+                "description": "op --account shorthand (empty = default account)",
+                "default": "",
+            },
+            "service_account_token_env": {
+                "description": "Env var holding the service-account token "
+                               "(unset = desktop/interactive session)",
+                "default": _DEFAULT_TOKEN_ENV,
+            },
+            "binary_path": {
+                "description": "Pin the op binary (empty = resolve via PATH)",
+                "default": "",
+            },
+            "cache_ttl_seconds": {
+                "description": "Disk+memory cache TTL; 0 disables",
+                "default": 300,
+            },
+            "override_existing": {
+                "description": "Resolved values overwrite .env/shell values",
+                "default": True,
+            },
+        }
+
+    def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
+        cfg = cfg if isinstance(cfg, dict) else {}
+        result = FetchResult()
+
+        env_map = cfg.get("env")
+        valid, warnings = _validate_references(
+            env_map if isinstance(env_map, dict) else None
+        )
+        result.warnings.extend(warnings)
+        if not valid:
+            if not warnings:
+                result.error = (
+                    "secrets.onepassword.enabled is true but the env: map is "
+                    "empty.  Add ENV_VAR: op://vault/item/field entries."
+                )
+                result.error_kind = ErrorKind.NOT_CONFIGURED
+            return result
+
+        binary_path = str(cfg.get("binary_path") or "")
+        binary = find_op(binary_path)
+        result.binary_path = binary
+        if binary is None:
+            if binary_path:
+                result.error = (
+                    f"secrets.onepassword.binary_path ({binary_path!r}) is "
+                    "not an executable op binary."
+                )
+            else:
+                result.error = (
+                    "secrets.onepassword.enabled is true but the op CLI was "
+                    "not found on PATH.  Install it "
+                    "(https://developer.1password.com/docs/cli/get-started/) "
+                    "or set secrets.onepassword.binary_path."
+                )
+            result.error_kind = ErrorKind.BINARY_MISSING
+            return result
+
+        try:
+            ttl = float(cfg.get("cache_ttl_seconds", 300))
+        except (TypeError, ValueError):
+            ttl = 300.0
+
+        try:
+            secrets, fetch_warnings = fetch_onepassword_secrets(
+                references=valid,
+                account=str(cfg.get("account") or ""),
+                token_env=str(
+                    cfg.get("service_account_token_env") or _DEFAULT_TOKEN_ENV
+                ),
+                binary=binary,
+                cache_ttl_seconds=ttl,
+                home_path=home_path,
+            )
+        except RuntimeError as exc:
+            result.error = str(exc)
+            result.error_kind = _classify_op_error(str(exc))
+            return result
+
+        result.secrets = secrets
+        result.warnings.extend(fetch_warnings)
+        return result
+
+
+def _classify_op_error(message: str) -> ErrorKind:
+    """Best-effort mapping of op failure text onto the shared taxonomy."""
+    lowered = message.lower()
+    if "timed out" in lowered:
+        return ErrorKind.TIMEOUT
+    if "not found on path" in lowered or "not an executable" in lowered \
+            or "failed to invoke" in lowered:
+        return ErrorKind.BINARY_MISSING
+    if any(tok in lowered for tok in ("unauthorized", "not signed in",
+                                      "session expired", "authentication",
+                                      "401", "403")):
+        return ErrorKind.AUTH_FAILED
+    if "empty value" in lowered:
+        return ErrorKind.EMPTY_VALUE
+    if any(tok in lowered for tok in ("network", "connection", "resolve host",
+                                      "dns")):
+        return ErrorKind.NETWORK
+    return ErrorKind.INTERNAL
 
 
 # ---------------------------------------------------------------------------

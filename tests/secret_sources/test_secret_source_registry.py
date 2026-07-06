@@ -466,3 +466,135 @@ class TestBitwardenConformance(SecretSourceConformance):
         monkeypatch.setattr(bw, "find_bws", lambda **kw: None)
         monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
         return BitwardenSource()
+
+
+# ---------------------------------------------------------------------------
+# 1Password adapter
+# ---------------------------------------------------------------------------
+
+
+class TestOnePasswordSource:
+    def test_identity(self):
+        from agent.secret_sources.onepassword import OnePasswordSource
+
+        src = OnePasswordSource()
+        assert src.name == "onepassword"
+        assert src.shape == "mapped"
+        assert src.scheme == "op"
+
+    def test_override_existing_defaults_true(self):
+        from agent.secret_sources.onepassword import OnePasswordSource
+
+        src = OnePasswordSource()
+        assert src.override_existing({}) is True
+        assert src.override_existing({"override_existing": False}) is False
+
+    def test_protected_vars_track_token_env(self):
+        from agent.secret_sources.onepassword import OnePasswordSource
+
+        src = OnePasswordSource()
+        assert src.protected_env_vars({}) == frozenset(
+            {"OP_SERVICE_ACCOUNT_TOKEN"}
+        )
+        assert src.protected_env_vars(
+            {"service_account_token_env": "MY_OP_TOKEN"}
+        ) == frozenset({"MY_OP_TOKEN"})
+
+    def test_fetch_empty_map_not_configured(self, tmp_path):
+        from agent.secret_sources.onepassword import OnePasswordSource
+
+        result = OnePasswordSource().fetch({"enabled": True}, tmp_path)
+        assert result.error_kind is ErrorKind.NOT_CONFIGURED
+
+    def test_fetch_missing_binary(self, tmp_path, monkeypatch):
+        import agent.secret_sources.onepassword as op
+
+        monkeypatch.setattr(op, "find_op", lambda *_a, **_kw: None)
+        result = op.OnePasswordSource().fetch(
+            {"enabled": True, "env": {"K": "op://V/I/F"}}, tmp_path
+        )
+        assert result.error_kind is ErrorKind.BINARY_MISSING
+
+    def test_fetch_delegates_and_passes_config(self, tmp_path, monkeypatch):
+        import agent.secret_sources.onepassword as op
+
+        monkeypatch.setattr(op, "find_op", lambda *_a, **_kw: Path("/fake/op"))
+        captured = {}
+
+        def _fake_fetch(**kwargs):
+            captured.update(kwargs)
+            return {"K": "v"}, ["warn"]
+
+        monkeypatch.setattr(op, "fetch_onepassword_secrets", _fake_fetch)
+        result = op.OnePasswordSource().fetch(
+            {"enabled": True, "env": {"K": "op://V/I/F"},
+             "account": "team", "service_account_token_env": "MY_TOK"},
+            tmp_path,
+        )
+        assert result.ok and result.secrets == {"K": "v"}
+        assert captured["references"] == {"K": "op://V/I/F"}
+        assert captured["account"] == "team"
+        assert captured["token_env"] == "MY_TOK"
+
+    def test_invalid_refs_warned_not_fatal(self, tmp_path, monkeypatch):
+        import agent.secret_sources.onepassword as op
+
+        monkeypatch.setattr(op, "find_op", lambda *_a, **_kw: Path("/fake/op"))
+        monkeypatch.setattr(op, "fetch_onepassword_secrets",
+                            lambda **kw: ({"GOOD": "v"}, []))
+        result = op.OnePasswordSource().fetch(
+            {"enabled": True,
+             "env": {"GOOD": "op://V/I/F", "BAD": "not-a-ref",
+                     "bad name": "op://V/I/F"}},
+            tmp_path,
+        )
+        assert result.ok
+        assert len(result.warnings) == 2
+
+    def test_mapped_op_beats_bulk_bitwarden_through_orchestrator(
+        self, tmp_path, monkeypatch
+    ):
+        """The headline multi-source scenario: both vaults claim the same var."""
+        import agent.secret_sources.bitwarden as bw
+        import agent.secret_sources.onepassword as op
+
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.token")
+        monkeypatch.setattr(bw, "find_bws", lambda **kw: Path("/fake/bws"))
+        monkeypatch.setattr(
+            bw, "fetch_bitwarden_secrets",
+            lambda **kw: ({"SHARED_KEY": "from-bitwarden",
+                           "BW_ONLY": "bw-val"}, []),
+        )
+        monkeypatch.setattr(op, "find_op", lambda *_a, **_kw: Path("/fake/op"))
+        monkeypatch.setattr(
+            op, "fetch_onepassword_secrets",
+            lambda **kw: ({"SHARED_KEY": "from-1password"}, []),
+        )
+        reg.register_source(bw.BitwardenSource())
+        reg.register_source(op.OnePasswordSource())
+        env = {"BWS_ACCESS_TOKEN": "0.token"}
+        report = reg.apply_all(
+            {
+                # bitwarden listed FIRST — mapped 1Password must still win.
+                "sources": ["bitwarden", "onepassword"],
+                "bitwarden": {"enabled": True, "project_id": "proj"},
+                "onepassword": {"enabled": True,
+                                "env": {"SHARED_KEY": "op://V/I/F"}},
+            },
+            tmp_path, environ=env,
+        )
+        assert env["SHARED_KEY"] == "from-1password"
+        assert env["BW_ONLY"] == "bw-val"
+        assert report.provenance["SHARED_KEY"].source == "onepassword"
+        assert report.provenance["BW_ONLY"].source == "bitwarden"
+        assert report.conflicts  # the shadowed bitwarden claim is surfaced
+
+
+class TestOnePasswordConformance(SecretSourceConformance):
+    @pytest.fixture
+    def source(self, monkeypatch):
+        import agent.secret_sources.onepassword as op
+
+        monkeypatch.setattr(op, "find_op", lambda *_a, **_kw: None)
+        monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+        return op.OnePasswordSource()

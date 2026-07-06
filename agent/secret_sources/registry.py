@@ -167,6 +167,13 @@ def _ensure_builtin_sources() -> None:
     except Exception:  # noqa: BLE001 — never block startup
         logger.warning("Failed to register bundled Bitwarden secret source",
                        exc_info=True)
+    try:
+        from agent.secret_sources.onepassword import OnePasswordSource
+
+        register_source(OnePasswordSource())
+    except Exception:  # noqa: BLE001 — never block startup
+        logger.warning("Failed to register bundled 1Password secret source",
+                       exc_info=True)
 
 
 def _reset_registry_for_tests() -> None:

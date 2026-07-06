@@ -191,10 +191,13 @@ def main():
     print("├─────────────────┬──────────────┬──────────────┬────────────────────┤")
     print("│ Memories stored │ Builtin FTS5 │  kv-memory   │ Reduction          │")
     print("├─────────────────┼──────────────┼──────────────┼────────────────────┤")
-    # Builtin: measured from real Hermes CLI — 157 tokens at 10 entries, linear growth
-    builtin_per_entry = 15.7  # real measurement: 157 tokens / 10 entries
+    # Builtin: real measurements from Hermes CLI
+    #   10 entries = 157 tokens (measured)
+    #   50 entries = 456 tokens (measured)
+    #   100 entries = extrapolated (~900 tokens)
+    builtin_real = {10: 157, 50: 456, 100: 900}
     for n in [10, 50, 100]:
-        builtin_tok = int(n * builtin_per_entry)
+        builtin_tok = builtin_real[n]
         kv_tok = int(bloat[n])
         reduction = (builtin_tok - kv_tok) / builtin_tok * 100
         print(f"│ {n:>5}          │ {builtin_tok:>8} tok │ {kv_tok:>8} tok │ {reduction:>8.0f}%             │")
@@ -219,8 +222,8 @@ def main():
     print("=" * 70)
     print(f"  • Semantic recall: {sem['kv_recall5']/max(sem['fts5_recall5'],0.001):.1f}x better")
     print(f"  • Finds by meaning: {sem['fts5_semgap']:.0%} → {sem['kv_semgap']:.0%} (FTS5 literally cannot)")
-    reduction_100 = (int(100 * builtin_per_entry) - int(bloat[100])) / (100 * builtin_per_entry) * 100
-    print(f"  • Prompt bloat: {reduction_100:.0f}% fewer tokens at 100 memories")
+    reduction_50 = (456 - int(bloat[50])) / 456 * 100
+    print(f"  • Prompt bloat: {reduction_50:.0f}% fewer tokens at 50 memories (456→{int(bloat[50])})")
     print(f"  • Storage: {fts5_bytes_per_turn/kv_bytes_per_turn:.1f}x smaller")
     print(f"  • Zero core changes. One pip install.")
     print()

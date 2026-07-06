@@ -96,3 +96,7 @@ tools/knowledge-graph-3d/3d-force-graph.min.js
 tools/knowledge-graph-3d/graph.json
 .playwright-cli/
 scripts/jarvis-voice/.env
+
+# jarvis-voice: ไฟล์เครื่องจักร relay (ledger/briefs) ไม่เข้า git
+scripts/jarvis-voice/.hermes/
+scripts/jarvis-voice/__pycache__/

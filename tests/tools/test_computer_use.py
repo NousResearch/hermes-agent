@@ -69,8 +69,18 @@ class TestSchema:
         actions = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"])
         assert actions >= {
             "capture", "click", "double_click", "right_click", "middle_click",
-            "drag", "scroll", "type", "key", "wait", "list_apps", "focus_app",
+            "drag", "scroll", "type", "key", "wait", "list_apps", "list_windows",
+            "focus_app",
         }
+
+    def test_schema_exposes_window_targeting_fields(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+
+        assert props["window_title"]["type"] == "string"
+        assert props["pid"]["type"] == "integer"
+        assert props["window_id"]["type"] == "integer"
 
     def test_capture_mode_enum_has_som_vision_ax(self):
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
@@ -97,6 +107,18 @@ class TestSchema:
         prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["max_elements"]
         assert prop.get("default") == _DEFAULT_MAX_ELEMENTS
         assert prop.get("maximum") == _MAX_ALLOWED_MAX_ELEMENTS
+
+    def test_schema_exposes_delivery_mode_for_action_ladder(self):
+        """cua-driver 0.7 exposes background/foreground dispatch as a first-class
+        action-time choice; the Hermes wrapper must not hide that rung.
+        """
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+
+        prop = COMPUTER_USE_SCHEMA["parameters"]["properties"].get("delivery_mode")
+
+        assert prop is not None
+        assert prop["type"] == "string"
+        assert set(prop["enum"]) == {"background", "foreground"}
 
 
 class TestRegistration:
@@ -165,6 +187,15 @@ class TestDispatch:
         assert "apps" in parsed
         assert parsed["count"] == 0
 
+    def test_list_windows_returns_json(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({"action": "list_windows"})
+
+        parsed = json.loads(out)
+        assert "windows" in parsed
+        assert parsed["count"] == 0
+
     def test_wait_clamps_long_waits(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
         # The backend's default wait() uses time.sleep with clamping.
@@ -211,6 +242,50 @@ class TestDispatch:
         assert "type" in call_names
         type_kw = next(c[1] for c in noop_backend.calls if c[0] == "type")
         assert type_kw["text"] == "hello"
+
+    def test_type_action_passes_target_and_delivery_mode_to_backend(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({
+            "action": "type",
+            "text": "hello",
+            "element": 4,
+            "coordinate": [12, 34],
+            "delivery_mode": "foreground",
+        })
+
+        parsed = json.loads(out)
+        assert "error" not in parsed
+        type_kw = next(c[1] for c in noop_backend.calls if c[0] == "type")
+        assert type_kw == {
+            "text": "hello",
+            "element": 4,
+            "x": 12,
+            "y": 34,
+            "delivery_mode": "foreground",
+        }
+
+    def test_key_action_passes_target_and_delivery_mode_to_backend(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({
+            "action": "key",
+            "keys": "ctrl+l",
+            "element": 2,
+            "coordinate": [55, 66],
+            "delivery_mode": "foreground",
+        })
+
+        parsed = json.loads(out)
+        assert "error" not in parsed
+        key_kw = next(c[1] for c in noop_backend.calls if c[0] == "key")
+        assert key_kw == {
+            "keys": "ctrl+l",
+            "element": 2,
+            "x": 55,
+            "y": 66,
+            "delivery_mode": "foreground",
+        }
 
     def test_drag_action_routes_to_backend_by_coordinate(self, noop_backend):
         """drag action must dispatch to backend.drag with coordinates (issue #24170, bug 4)."""
@@ -395,6 +470,29 @@ class TestCaptureResponse:
         assert isinstance(out["content"], list)
         assert any(p.get("type") == "image_url" for p in out["content"])
         assert any(p.get("type") == "text" for p in out["content"])
+
+    def test_capture_zero_dimension_window_returns_error_json(self):
+        """A 0x0 mutter/guard-window capture is not a valid screenshot."""
+        from tools.computer_use.backend import CaptureResult
+        from tools.computer_use import tool as cu_tool
+
+        cap = CaptureResult(
+            mode="som",
+            width=0,
+            height=0,
+            png_b64=None,
+            elements=[],
+            app="mutter-x11-frames",
+            window_title="",
+        )
+
+        out = cu_tool._capture_response(cap)
+
+        parsed = json.loads(out)
+        assert parsed["error"] == "capture returned zero-size window"
+        assert parsed["width"] == 0
+        assert parsed["height"] == 0
+        assert parsed["retry"]["action"] == "list_windows"
 
     def test_capture_tiny_image_returns_text_json(self):
         """Providers can reject <8px images, so placeholders must be omitted."""

@@ -193,8 +193,21 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def stop(self) -> None: self._started = False
     def is_available(self) -> bool: return True
 
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        self.calls.append(("capture", {"mode": mode, "app": app}))
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        window_title: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
+        self.calls.append(("capture", {
+            "mode": mode,
+            "app": app,
+            "window_title": window_title,
+            "pid": pid,
+            "window_id": window_id,
+        }))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
                              elements=[], app=app or "", window_title="")
 
@@ -210,20 +223,41 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("scroll", kw))
         return ActionResult(ok=True, action="scroll")
 
-    def type_text(self, text: str) -> ActionResult:
-        self.calls.append(("type", {"text": text}))
+    def type_text(self, text: str, **kw) -> ActionResult:
+        payload = {"text": text}
+        payload.update(kw)
+        self.calls.append(("type", payload))
         return ActionResult(ok=True, action="type")
 
-    def key(self, keys: str) -> ActionResult:
-        self.calls.append(("key", {"keys": keys}))
+    def key(self, keys: str, **kw) -> ActionResult:
+        payload = {"keys": keys}
+        payload.update(kw)
+        self.calls.append(("key", payload))
         return ActionResult(ok=True, action="key")
 
     def list_apps(self) -> List[Dict[str, Any]]:
         self.calls.append(("list_apps", {}))
         return []
 
-    def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
-        self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
+    def list_windows(self) -> List[Dict[str, Any]]:
+        self.calls.append(("list_windows", {}))
+        return []
+
+    def focus_app(
+        self,
+        app: Optional[str] = None,
+        raise_window: bool = False,
+        window_title: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> ActionResult:
+        self.calls.append(("focus_app", {
+            "app": app,
+            "raise": raise_window,
+            "window_title": window_title,
+            "pid": pid,
+            "window_id": window_id,
+        }))
         return ActionResult(ok=True, action="focus_app")
 
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
@@ -347,7 +381,14 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        cap = backend.capture(mode=mode, app=args.get("app"))
+        capture_kwargs = {"mode": mode, "app": args.get("app")}
+        if args.get("window_title") is not None:
+            capture_kwargs["window_title"] = args.get("window_title")
+        if args.get("pid") is not None:
+            capture_kwargs["pid"] = args.get("pid")
+        if args.get("window_id") is not None:
+            capture_kwargs["window_id"] = args.get("window_id")
+        cap = backend.capture(**capture_kwargs)
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
     if action == "wait":
@@ -359,11 +400,21 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         apps = backend.list_apps()
         return json.dumps({"apps": apps, "count": len(apps)})
 
+    if action == "list_windows":
+        windows = backend.list_windows()
+        return json.dumps({"windows": windows, "count": len(windows)})
+
     if action == "focus_app":
         app = args.get("app")
-        if not app:
-            return json.dumps({"error": "focus_app requires `app`"})
-        res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
+        if not app and not args.get("window_title") and args.get("pid") is None and args.get("window_id") is None:
+            return json.dumps({"error": "focus_app requires app, window_title, pid, or window_id"})
+        res = backend.focus_app(
+            app=app,
+            raise_window=bool(args.get("raise_window")),
+            window_title=args.get("window_title"),
+            pid=args.get("pid"),
+            window_id=args.get("window_id"),
+        )
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
@@ -384,6 +435,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             element=element if element is not None else None,
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
+            delivery_mode=args.get("delivery_mode"),
         )
         return _maybe_follow_capture(backend, res, capture_after)
 
@@ -401,6 +453,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             to_xy=tuple(args["to_coordinate"]) if args.get("to_coordinate") else None,
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
+            delivery_mode=args.get("delivery_mode"),
         )
         return _maybe_follow_capture(backend, res, capture_after)
 
@@ -413,15 +466,30 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=coord[0] if coord and coord[0] is not None else None,
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
+            delivery_mode=args.get("delivery_mode"),
         )
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "type":
-        res = backend.type_text(args.get("text", ""))
+        coord = args.get("coordinate") or (None, None)
+        res = backend.type_text(
+            args.get("text", ""),
+            element=args.get("element"),
+            x=coord[0] if coord and coord[0] is not None else None,
+            y=coord[1] if coord and coord[1] is not None else None,
+            delivery_mode=args.get("delivery_mode"),
+        )
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "key":
-        res = backend.key(args.get("keys", ""))
+        coord = args.get("coordinate") or (None, None)
+        res = backend.key(
+            args.get("keys", ""),
+            element=args.get("element"),
+            x=coord[0] if coord and coord[0] is not None else None,
+            y=coord[1] if coord and coord[1] is not None else None,
+            delivery_mode=args.get("delivery_mode"),
+        )
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "set_value":
@@ -542,6 +610,23 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     image_dimensions = _image_dimensions_from_b64(cap.png_b64 or "") if cap.png_b64 else None
     response_width = image_dimensions[0] if image_dimensions else cap.width
     response_height = image_dimensions[1] if image_dimensions else cap.height
+    if response_width <= 0 or response_height <= 0:
+        return json.dumps({
+            "error": "capture returned zero-size window",
+            "mode": cap.mode,
+            "width": response_width,
+            "height": response_height,
+            "app": cap.app,
+            "window_title": cap.window_title,
+            "elements": total_elements,
+            "hint": (
+                "The selected native window has no visible capture surface "
+                "(common with mutter-x11-frames/guard windows on GNOME). "
+                "Call list_windows and retry capture with window_title, pid, "
+                "or window_id."
+            ),
+            "retry": {"action": "list_windows"},
+        })
     image_too_small = bool(
         image_dimensions
         and (

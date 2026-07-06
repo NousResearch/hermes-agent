@@ -99,7 +99,14 @@ class ComputerUseBackend(ABC):
 
     # ── Capture ─────────────────────────────────────────────────────
     @abstractmethod
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult: ...
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        window_title: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult: ...
 
     # ── Pointer actions ─────────────────────────────────────────────
     @abstractmethod
@@ -112,6 +119,7 @@ class ComputerUseBackend(ABC):
         button: str = "left",           # left | right | middle
         click_count: int = 1,
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
     ) -> ActionResult: ...
 
     @abstractmethod
@@ -124,6 +132,7 @@ class ComputerUseBackend(ABC):
         to_xy: Optional[Tuple[int, int]] = None,
         button: str = "left",
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
     ) -> ActionResult: ...
 
     @abstractmethod
@@ -136,14 +145,31 @@ class ComputerUseBackend(ABC):
         x: Optional[int] = None,
         y: Optional[int] = None,
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
     ) -> ActionResult: ...
 
     # ── Keyboard ────────────────────────────────────────────────────
     @abstractmethod
-    def type_text(self, text: str) -> ActionResult: ...
+    def type_text(
+        self,
+        text: str,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        delivery_mode: Optional[str] = None,
+    ) -> ActionResult: ...
 
     @abstractmethod
-    def key(self, keys: str) -> ActionResult:
+    def key(
+        self,
+        keys: str,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        delivery_mode: Optional[str] = None,
+    ) -> ActionResult:
         """Send a key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return'."""
 
     # ── Introspection ───────────────────────────────────────────────
@@ -152,8 +178,19 @@ class ComputerUseBackend(ABC):
         """Return running apps with bundle IDs, PIDs, window counts."""
 
     @abstractmethod
-    def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
-        """Route input to `app` (by name or bundle ID). Default: focus without raise."""
+    def list_windows(self) -> List[Dict[str, Any]]:
+        """Return targetable windows with app/title/pid/window_id/z-order."""
+
+    @abstractmethod
+    def focus_app(
+        self,
+        app: Optional[str] = None,
+        raise_window: bool = False,
+        window_title: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> ActionResult:
+        """Route input to a window by app/title/pid/window_id without raising."""
 
     # ── Native-value mutation ────────────────────────────────────────
     @abstractmethod

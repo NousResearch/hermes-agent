@@ -44,6 +44,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "set_value",
                     "wait",
                     "list_apps",
+                    "list_windows",
                     "focus_app",
                 ],
                 "description": (
@@ -79,6 +80,31 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "capture is per-window; a single image cannot span "
                     "multiple monitors, so on a multi-screen setup capture "
                     "one window or display at a time."
+                ),
+            },
+            "window_title": {
+                "type": "string",
+                "description": (
+                    "Optional. Target a window by case-insensitive title "
+                    "substring. Works with action='capture' and "
+                    "action='focus_app'. Use action='list_windows' first "
+                    "when app-name matching is ambiguous."
+                ),
+            },
+            "pid": {
+                "type": "integer",
+                "description": (
+                    "Optional. Target an exact OS process id for "
+                    "action='capture' or action='focus_app'. Prefer pairing "
+                    "with window_id when multiple windows share a pid."
+                ),
+            },
+            "window_id": {
+                "type": "integer",
+                "description": (
+                    "Optional. Target an exact native window id for "
+                    "action='capture' or action='focus_app'. Get ids from "
+                    "action='list_windows'."
                 ),
             },
             "max_elements": {
@@ -138,6 +164,17 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     ],
                 },
                 "description": "Modifier keys held during the action.",
+            },
+            "delivery_mode": {
+                "type": "string",
+                "enum": ["background", "foreground"],
+                "description": (
+                    "Optional input delivery rung for cua-driver action tools. "
+                    "`background` (default) routes without raising/activating "
+                    "the target window. `foreground` is the explicit escalation "
+                    "for focus-sensitive pixel/keyboard paths after a background "
+                    "attempt is observed not to land."
+                ),
             },
             # ── drag ───────────────────────────────────────────────
             "from_element": {"type": "integer",

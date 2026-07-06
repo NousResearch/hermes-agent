@@ -180,6 +180,7 @@ Platform docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/
 
 ```
 hermes sessions list        List recent sessions
+hermes sessions search Q    Full-text search saved session transcripts
 hermes sessions browse      Interactive picker
 hermes sessions export OUT  Export to JSONL
 hermes sessions rename ID T Rename a session

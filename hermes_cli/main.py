@@ -13392,7 +13392,7 @@ def main():
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, rename, export, prune, delete)",
+        help="Manage session history (list, search, rename, export, prune, delete)",
         description="View and manage the SQLite session store",
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -13403,6 +13403,44 @@ def main():
     )
     sessions_list.add_argument(
         "--limit", type=int, default=20, help="Max sessions to show"
+    )
+
+    sessions_search = sessions_subparsers.add_parser(
+        "search",
+        help="Full-text search session transcripts",
+        description=(
+            "Search saved session messages using the same FTS5-backed recall "
+            "engine as the session_search tool."
+        ),
+    )
+    sessions_search.add_argument(
+        "query",
+        nargs="+",
+        help=(
+            "Search query. Supports FTS5 syntax such as exact phrases, OR, "
+            "NOT, and prefix terms like deploy*."
+        ),
+    )
+    sessions_search.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="Max matching sessions to show (default: 5, max: 10)",
+    )
+    sessions_search.add_argument(
+        "--sort",
+        choices=["newest", "oldest"],
+        help="Order matches by message recency instead of FTS rank",
+    )
+    sessions_search.add_argument(
+        "--role",
+        dest="role_filter",
+        help="Comma-separated roles to search (default: user,assistant; e.g. tool)",
+    )
+    sessions_search.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the raw structured search payload as JSON",
     )
 
     sessions_export = sessions_subparsers.add_parser(
@@ -13687,6 +13725,28 @@ def main():
                 else:
                     sid = s["id"]
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+
+        elif action == "search":
+            from hermes_cli.session_search_cli import format_session_search_results
+            from tools.session_search_tool import session_search as _session_search
+
+            search_query = " ".join(getattr(args, "query", []) or []).strip()
+            result_text = _session_search(
+                query=search_query,
+                role_filter=getattr(args, "role_filter", None),
+                limit=getattr(args, "limit", 5),
+                sort=getattr(args, "sort", None),
+                db=db,
+            )
+            if getattr(args, "json", False):
+                sys.stdout.write(result_text.rstrip() + "\n")
+            else:
+                try:
+                    payload = _json.loads(result_text)
+                except Exception as e:
+                    print(f"Error: Could not decode search results: {e}")
+                else:
+                    print(format_session_search_results(payload, query=search_query))
 
         elif action == "export":
             if args.session_id:

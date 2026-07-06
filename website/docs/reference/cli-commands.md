@@ -1361,6 +1361,7 @@ Subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `list` | List recent sessions. |
+| `search <query>` | Full-text search saved session transcripts. Supports `--limit`, `--sort newest|oldest`, `--role`, and `--json`. |
 | `browse` | Interactive session picker with search and resume. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |

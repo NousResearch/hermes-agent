@@ -1337,6 +1337,19 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
+        try:
+            from agent.tool_result_handles import maybe_handle_tool_result
+            result = maybe_handle_tool_result(
+                result,
+                tool_name=function_name,
+                args=function_args,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
+        except Exception as _handle_err:
+            logger.debug("tool-result handle canonicalization error: %s", _handle_err)
+
         return result
 
     except Exception as e:

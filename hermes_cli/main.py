@@ -13943,6 +13943,59 @@ def main():
     sessions_parser.set_defaults(func=cmd_sessions)
 
     # =========================================================================
+    # tool-result command
+    # =========================================================================
+    tool_result_parser = subparsers.add_parser(
+        "tool-result",
+        help="Recover large tool results stored out-of-band by compact handles",
+        description=(
+            "Recover exact full content for a hermes_tool_result_handle id stored "
+            "under HERMES_HOME/tool-results."
+        ),
+    )
+    tool_result_subparsers = tool_result_parser.add_subparsers(dest="tool_result_action")
+
+    tool_result_get = tool_result_subparsers.add_parser(
+        "get",
+        help="Print the full content for a stored tool-result handle id",
+    )
+    tool_result_get.add_argument("handle", help="Handle id or compact handle JSON")
+    tool_result_get.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the stored artifact metadata JSON instead of only content",
+    )
+
+    def cmd_tool_result(args):
+        action = getattr(args, "tool_result_action", None)
+        if action != "get":
+            tool_result_parser.print_help()
+            return
+
+        from agent.tool_result_handles import load_artifact, recover_tool_result
+
+        if getattr(args, "json", False):
+            artifact = load_artifact(args.handle)
+            if not artifact:
+                print(f"Tool-result handle not found: {args.handle}", file=sys.stderr)
+                raise SystemExit(1)
+            relative_path = artifact.get("relative_path")
+            if isinstance(relative_path, str) and relative_path:
+                artifact = {**artifact, "path": str(get_hermes_home() / relative_path)}
+            print(json.dumps(artifact, ensure_ascii=False, indent=2))
+            return
+
+        content = recover_tool_result(args.handle)
+        if content is None:
+            print(f"Tool-result handle not found: {args.handle}", file=sys.stderr)
+            raise SystemExit(1)
+        sys.stdout.write(content)
+        if content and not content.endswith("\n"):
+            sys.stdout.write("\n")
+
+    tool_result_parser.set_defaults(func=cmd_tool_result)
+
+    # =========================================================================
     # insights command  (parser built in hermes_cli/subcommands/insights.py)
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)

@@ -909,6 +909,13 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "tool_results": {
+        # Opt-in large-result clearing: persist oversized tool outputs under
+        # HERMES_HOME/tool-results and replay a compact preview+handle instead.
+        "handles_enabled": False,
+        "handle_threshold_bytes": 24000,
+        "preview_bytes": 2000,
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,

@@ -4432,6 +4432,43 @@ def _on_tool_progress(
     if event_type == "moa.aggregating":
         _emit("moa.aggregating", sid, {"aggregator": str(name or "")})
         return
+    if event_type == "moa.progress":
+        # Per-reference completion — drives the status-bar progress indicator
+        # (`MOA: 2/3 refs done`) requested in issue #59546. Only emitted when
+        # both counters are present so the client can render deterministically.
+        refs_done = _kwargs.get("moa_refs_done")
+        refs_total = _kwargs.get("moa_refs_total")
+        if refs_done is None or refs_total is None:
+            return
+        _emit(
+            "moa.progress",
+            sid,
+            {
+                "label": str(name or ""),
+                "refs_done": int(refs_done),
+                "refs_total": int(refs_total),
+            },
+        )
+        return
+    if event_type == "moa.phase":
+        # Phase transition — currently only ``phase="aggregator"`` fires once
+        # the fan-out completes and the aggregator is about to act. Tells the
+        # client which phase of the MoA pipeline is currently running so it
+        # can swap status-bar copy accordingly.
+        phase = _kwargs.get("moa_phase")
+        if not phase:
+            return
+        phase_payload: dict[str, object] = {"phase": str(phase)}
+        refs_done = _kwargs.get("moa_refs_done")
+        refs_total = _kwargs.get("moa_refs_total")
+        if refs_done is not None:
+            phase_payload["refs_done"] = int(refs_done)
+        if refs_total is not None:
+            phase_payload["refs_total"] = int(refs_total)
+        if name:
+            phase_payload["aggregator"] = str(name)
+        _emit("moa.phase", sid, phase_payload)
+        return
     if event_type.startswith("subagent."):
         payload = {
             "goal": str(_kwargs.get("goal") or ""),

@@ -1032,12 +1032,12 @@ def init_agent(
         # reference-model outputs to the agent's tool_progress_callback so
         # every surface that already consumes it (CLI spinner/scrollback, TUI,
         # desktop, gateway) can show each reference's answer as a labelled
-        # block before the aggregator acts. The facade emits "moa.reference"
-        # and "moa.aggregating" events, forwarded through the same callback
-        # the tool lifecycle uses. Best-effort and cache-safe — display-only
-        # events, they never touch the message history. The factory is shared
-        # with the fallback-restore/recovery paths so a restored facade keeps
-        # emitting these events (#53802).
+        # block before the aggregator acts. The facade emits "moa.reference",
+        # "moa.progress", "moa.phase", and "moa.aggregating" events, forwarded
+        # through the same callback the tool lifecycle uses. Best-effort and
+        # cache-safe — display-only events, they never touch the message
+        # history. The factory is shared with the fallback-restore/recovery
+        # paths so a restored facade keeps emitting these events (#53802).
         agent.client = build_moa_facade(agent, agent.model)
         agent._client_kwargs = {}
         agent.api_key = api_key or "moa-virtual-provider"

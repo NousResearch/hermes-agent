@@ -559,6 +559,7 @@ def _run_references_parallel(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    progress_callback: Any = None,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -567,6 +568,12 @@ def _run_references_parallel(
     the aggregator. Output order matches ``reference_models`` so the
     ``Reference {idx}`` labelling stays stable. MoA presets that reference
     another MoA preset are skipped here (recursion guard) with a labelled note.
+
+    If ``progress_callback`` is provided it is invoked as each reference
+    completes: ``progress_callback(refs_done, refs_total, label)``. The total
+    matches ``len(reference_models)`` so listeners can render a status-bar
+    progress like ``MOA: 2/3 refs done``. Best-effort — failures are logged
+    but never break the fan-out (display must never block a turn).
 
     Each element is ``(label, text, usage)`` where usage is a
     ``CanonicalUsage`` (zeroed for skipped/failed references).
@@ -585,6 +592,8 @@ def _run_references_parallel(
     # advisor calls attribute to the same conversation as the acting turn.
     from tools.thread_context import propagate_context_to_thread
 
+    total = len(reference_models)
+    done = 0
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -607,6 +616,13 @@ def _run_references_parallel(
         # complete set, so there is no early-exit / first-completed path here.
         for future, idx in futures.items():
             results[idx] = future.result()
+            done += 1
+            if progress_callback is not None:
+                try:
+                    label = _slot_label(reference_models[idx])
+                    progress_callback(done, total, label)
+                except Exception as exc:  # pragma: no cover - display must never break
+                    logger.debug("MoA progress_callback failed: %s", exc)
 
     return [r for r in results if r is not None]
 
@@ -988,6 +1004,14 @@ class MoAChatCompletions:
         #   reference_callback(event, **kwargs)
         # where event is one of:
         #   "moa.reference"   kwargs: index, count, label, text
+        #   "moa.progress"    kwargs: refs_done, refs_total, label
+        #                       (fired once per reference completion — drives
+        #                        status-bar progress like ``MOA: 2/3 refs done``)
+        #   "moa.phase"       kwargs: phase, refs_done, refs_total, aggregator
+        #                       (fired on phase transitions, currently
+        #                        phase="aggregator" right before the aggregator
+        #                        acts; phase="reference" mirrors ``moa.progress``
+        #                        so listeners can rely on a single event family)
         #   "moa.aggregating" kwargs: aggregator (label), ref_count
         # Never raises into the model call — display is best-effort.
         self.reference_callback = reference_callback
@@ -1389,11 +1413,25 @@ class MoAChatCompletions:
             # not a new MoA turn.
             self._pending_trace = None
         else:
+            # Per-reference progress callback: emits ``moa.progress`` so
+            # listeners can render ``MOA: N/M refs done`` in the status bar as
+            # each reference completes. The callback is bound to self so it
+            # goes through the same display hook as the existing
+            # ``moa.reference`` / ``moa.aggregating`` events.
+            def _progress(done: int, total: int, label: str) -> None:
+                self._emit(
+                    "moa.progress",
+                    refs_done=done,
+                    refs_total=total,
+                    label=label,
+                )
+
             reference_outputs = _run_references_parallel(
                 reference_models,
                 ref_messages,
                 temperature=temperature,
                 max_tokens=reference_max_tokens,
+                progress_callback=_progress,
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
@@ -1456,6 +1494,17 @@ class MoAChatCompletions:
                     text=_redact_reference_text(_text) if privacy_mode else _text,
                 )
             if _ref_count:
+                # Phase transition: reference fan-out is complete, the
+                # aggregator is about to act. Listeners that prefer a single
+                # event family for phase tracking can switch on ``phase``
+                # instead of subscribing to ``moa.aggregating`` separately.
+                self._emit(
+                    "moa.phase",
+                    phase="aggregator",
+                    refs_done=_ref_count,
+                    refs_total=_ref_count,
+                    aggregator=_slot_label(aggregator),
+                )
                 self._emit(
                     "moa.aggregating",
                     aggregator=_slot_label(aggregator),
@@ -1573,6 +1622,30 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
                     None,
                     moa_index=idx,
                     moa_count=count,
+                )
+            elif event == "moa.progress":
+                # Per-reference completion. Frontends render this as a
+                # status-bar progress indicator like ``MOA: N/M refs done``.
+                cb(
+                    "moa.progress",
+                    str(kwargs.get("label") or ""),
+                    None,
+                    None,
+                    moa_refs_done=kwargs.get("refs_done"),
+                    moa_refs_total=kwargs.get("refs_total"),
+                )
+            elif event == "moa.phase":
+                # Phase transition (currently only ``phase="aggregator"``
+                # fires once the fan-out is done). Subscribers can switch
+                # on ``moa_phase`` to know which phase is active.
+                cb(
+                    "moa.phase",
+                    str(kwargs.get("aggregator") or ""),
+                    None,
+                    None,
+                    moa_phase=kwargs.get("phase"),
+                    moa_refs_done=kwargs.get("refs_done"),
+                    moa_refs_total=kwargs.get("refs_total"),
                 )
             elif event == "moa.aggregating":
                 cb(

@@ -22,6 +22,7 @@ from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+from tests.hermes_cli.test_dashboard_auth_password_login import PasswordProvider
 
 
 @pytest.fixture
@@ -110,11 +111,46 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
 def test_gated_html_redirects_to_login(gated_app):
     r = gated_app.get("/", follow_redirects=False)
     assert r.status_code == 302
-    # Phase 1 (cloud-auto-discovery): with a single interactive provider, an
-    # unauthenticated HTML load auto-initiates the OAuth redirect to
+    # Phase 1 (cloud-auto-discovery): with a single interactive OAuth provider,
+    # an unauthenticated HTML load auto-initiates the OAuth redirect to
     # /auth/login rather than rendering the /login interstitial. The /login
-    # page remains the fallback (multiple/zero providers, or loop-guard trip).
+    # page remains the fallback (multiple/zero providers, loop-guard trip, or
+    # password-only providers).
     assert r.headers["location"].startswith("/auth/login?provider=stub")
+
+
+def test_single_password_provider_falls_back_to_login_form():
+    """Password-only providers must not be auto-SSO redirected to /auth/login.
+
+    ``BasicAuthProvider.start_login`` intentionally raises because password
+    auth posts to ``/auth/password-login``. With one password provider
+    registered, the gate must render /login instead of auto-redirecting the
+    browser to the OAuth-only route and producing a 500.
+    """
+    clear_providers()
+    register_provider(PasswordProvider())
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.bound_port = 443
+    web_server.app.state.auth_required = True
+    try:
+        client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+        r = client.get("/", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
+
+        login = client.get(r.headers["location"])
+        assert login.status_code == 200
+        assert "/auth/password-login" in login.text
+        assert 'data-provider="testpw"' in login.text
+    finally:
+        clear_providers()
+        web_server.app.state.bound_host = prev_host
+        web_server.app.state.bound_port = prev_port
+        web_server.app.state.auth_required = prev_required
 
 
 def test_gated_auth_providers_is_public(gated_app):

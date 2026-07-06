@@ -185,10 +185,11 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
 
 
 def test_apply_external_secret_sources_records_onepassword_origin(tmp_path, monkeypatch):
-    """When ``apply_onepassword_secrets`` returns applied keys, they end up in
+    """When the 1Password source resolves refs, applied vars end up in
     ``_SECRET_SOURCES`` labeled ``onepassword``."""
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     (tmp_path / "config.yaml").write_text(
         "secrets:\n"
         "  onepassword:\n"
@@ -198,16 +199,18 @@ def test_apply_external_secret_sources_records_onepassword_origin(tmp_path, monk
         encoding="utf-8",
     )
 
-    from agent.secret_sources.onepassword import FetchResult
-
-    def _fake_apply(**_kwargs):
-        return FetchResult(
-            secrets={"ANTHROPIC_API_KEY": "sk-ant-test"},
-            applied=["ANTHROPIC_API_KEY"],
-        )
-
     import agent.secret_sources.onepassword as op_module
-    monkeypatch.setattr(op_module, "apply_onepassword_secrets", _fake_apply)
+
+    monkeypatch.setattr(op_module, "find_op", lambda *_a, **_kw: Path("/fake/op"))
+    monkeypatch.setattr(
+        op_module,
+        "fetch_onepassword_secrets",
+        lambda **_kw: ({"ANTHROPIC_API_KEY": "sk-ant-test"}, []),
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
 
     env_loader._apply_external_secret_sources(tmp_path)
 
@@ -255,14 +258,17 @@ def test_apply_external_secret_sources_bad_ttl_does_not_crash(tmp_path, monkeypa
 
     captured = {}
 
-    from agent.secret_sources.onepassword import FetchResult
-
-    def _fake_apply(**kwargs):
+    def _fake_fetch(**kwargs):
         captured.update(kwargs)
-        return FetchResult()
+        return {}, []
 
     import agent.secret_sources.onepassword as op_module
-    monkeypatch.setattr(op_module, "apply_onepassword_secrets", _fake_apply)
+    monkeypatch.setattr(op_module, "find_op", lambda *_a, **_kw: Path("/fake/op"))
+    monkeypatch.setattr(op_module, "fetch_onepassword_secrets", _fake_fetch)
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
 
     env_loader._apply_external_secret_sources(tmp_path)
 

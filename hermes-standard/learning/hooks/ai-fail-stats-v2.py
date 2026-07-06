@@ -268,8 +268,11 @@ def main():
     if not hits:
         return 0
 
-    counts, host = write_hits(hits, data.get("cwd") or "")
-    print(json.dumps(build_response(counts, host), ensure_ascii=False))
+    try:
+        counts, host = write_hits(hits, data.get("cwd") or "")
+        print(json.dumps(build_response(counts, host), ensure_ascii=False))
+    except Exception:
+        return 0
     return 0
 
 

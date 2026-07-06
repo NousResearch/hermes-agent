@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -142,3 +143,25 @@ def test_hook_subprocess_writes_log_to_env_stats_dir(tmp_path):
 
     counts = json.loads((stats_dir / "counts.json").read_text(encoding="utf-8"))
     assert counts["target:opus"] == 1
+
+
+def test_hook_write_failure_exits_zero_without_output(monkeypatch):
+    module = load_hook()
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(module, "write_hits", fail_write)
+    monkeypatch.setattr(
+        module.sys,
+        "stdin",
+        io.StringIO(json.dumps({"prompt": "Fuck you Opus", "cwd": "/tmp/work"})),
+    )
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(module.sys, "stdout", stdout)
+    monkeypatch.setattr(module.sys, "stderr", stderr)
+
+    assert module.main() == 0
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == ""

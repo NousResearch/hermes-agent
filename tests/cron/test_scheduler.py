@@ -217,6 +217,25 @@ class TestResolveDeliveryTarget:
             "thread_id": "topic-7",
         }
 
+    def test_bare_platform_delivery_uses_home_root_instead_of_origin_thread(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-parent")
+        monkeypatch.delenv("DISCORD_HOME_CHANNEL_THREAD_ID", raising=False)
+
+        job = {
+            "deliver": "discord",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "origin-parent",
+                "thread_id": "origin-thread",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "discord",
+            "chat_id": "home-parent",
+            "thread_id": None,
+        }
+
     def test_telegram_cron_thread_id_overrides_home_thread_id(self, monkeypatch):
         """TELEGRAM_CRON_THREAD_ID wins over TELEGRAM_HOME_CHANNEL_THREAD_ID for cron (#24409)."""
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1001234567890")

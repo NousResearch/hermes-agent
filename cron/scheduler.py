@@ -1200,6 +1200,13 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     platform_name = deliver_value
     if origin and origin.get("platform") == platform_name:
+        chat_id = _get_home_target_chat_id(platform_name)
+        if chat_id:
+            return {
+                "platform": platform_name,
+                "chat_id": chat_id,
+                "thread_id": _get_home_target_thread_id(platform_name),
+            }
         return {
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),

@@ -2760,6 +2760,13 @@ DEFAULT_CONFIG = {
         # works as a manual override and wins if set explicitly.
         "platform_connect_timeout": 30,
 
+        # Whether the gateway keeps writing the legacy sessions.json mirror of
+        # its routing index. The primary copy lives in state.db (the
+        # gateway_routing table). Default True for backward compatibility with
+        # external tooling and downgrade safety; set to false to stop
+        # producing ~/.hermes/sessions/sessions.json entirely.
+        "write_sessions_json": True,
+
         # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
         # and, when an instance is opted in via the NAS "Labs" toggle (carried as
         # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent

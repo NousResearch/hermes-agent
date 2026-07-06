@@ -34,6 +34,10 @@ Example config::
         headers:
           Authorization: "Bearer sk-..."
         timeout: 180
+        skip_preflight: true  # bypass the content-type probe for a valid
+                              # Streamable HTTP endpoint that answers HEAD/GET
+                              # with a non-MCP content type but serves real
+                              # MCP over POST. Default: false.
       searxng:
         url: "http://localhost:8000/sse"
         transport: sse       # use SSE transport instead of Streamable HTTP
@@ -2067,11 +2071,17 @@ class MCPServerTask:
 
         Detection is allow-list based: a 2xx response is rejected only when it
         carries a definite content type that is NOT one an MCP endpoint uses
-        (``application/json`` / ``text/event-stream``). A missing or empty
-        content type, non-2xx status, or any network/transport error passes
-        through silently — the probe is strictly best-effort, and the real
-        handshake remains the source of truth for everything except the
-        unambiguous "this is a web page, not MCP" case.
+        (``application/json`` / ``text/event-stream``).  When HEAD/GET returns
+        a non-MCP content type (e.g. ``text/html``), a lightweight JSON-RPC
+        ``initialize`` POST is attempted before giving up — some servers
+        (e.g. DocuSeal) serve a web UI on GET but speak Streamable HTTP only
+        via POST.
+
+        A missing or empty content type, non-2xx status, or any
+        network/transport error passes through silently — the probe is
+        strictly best-effort, and the real handshake remains the source of
+        truth for everything except the unambiguous "this is a web page,
+        not MCP" case.
 
         Runs on its own httpx client OUTSIDE the SDK's anyio task group, so the
         raised error propagates as itself rather than being wrapped in an
@@ -2099,6 +2109,47 @@ class MCPServerTask:
                 resp = await client.head(url, headers=probe_headers)
                 if resp.status_code in (405, 501):
                     resp = await client.get(url, headers=probe_headers)
+
+                # Some MCP servers (e.g. DocuSeal) serve their web UI on
+                # HEAD/GET but speak Streamable HTTP only via POST.  Before
+                # rejecting the endpoint, try a lightweight JSON-RPC POST
+                # probe so we don't false-positive on POST-only servers.
+                ct = (
+                    resp.headers.get("content-type", "")
+                    .split(";")[0]
+                    .strip()
+                    .lower()
+                )
+                if (
+                    ct
+                    and ct not in self._MCP_CONTENT_TYPES
+                    and 200 <= resp.status_code < 300
+                ):
+                    post_resp = await client.post(
+                        url,
+                        headers={
+                            **probe_headers,
+                            "Content-Type": "application/json",
+                            "Accept": "application/json, text/event-stream",
+                        },
+                        content=(
+                            '{"jsonrpc":"2.0","id":"_probe",'
+                            '"method":"initialize",'
+                            '"params":{"protocolVersion":"2025-03-26",'
+                            '"capabilities":{},'
+                            '"clientInfo":{"name":"hermes-probe",'
+                            '"version":"0.1"}}}'
+                        ),
+                    )
+                    if 200 <= post_resp.status_code < 300:
+                        post_ct = (
+                            post_resp.headers.get("content-type", "")
+                            .split(";")[0]
+                            .strip()
+                            .lower()
+                        )
+                        if post_ct in self._MCP_CONTENT_TYPES:
+                            resp = post_resp
         except _httpx.HTTPError:
             return  # DNS/connect/timeout/transport error — let the SDK try.
 
@@ -2442,7 +2493,7 @@ class MCPServerTask:
             # re-probing is a redundant round-trip. Also skip for OAuth servers:
             # without a cached token the endpoint returns HTML or 401, which
             # would incorrectly block the OAuth flow before it can run.
-            if config.get("transport") != "sse" and not self._ready.is_set() and self._auth_type != "oauth":
+            if config.get("transport") != "sse" and not config.get("skip_preflight") and not self._ready.is_set() and self._auth_type != "oauth":
                 try:
                     _probe_headers = dict(config.get("headers") or {})
                     await self._preflight_content_type(
@@ -2488,12 +2539,12 @@ class MCPServerTask:
                 # permanently kill an otherwise-healthy server.
                 self._reconnect_retries = 0
                 backoff = 1.0
-                # Reset the session reference; _run_http/_run_stdio will
-                # repopulate it on successful re-entry.
+                # Reset the session reference and readiness; _run_http/_run_stdio
+                # will repopulate both on successful re-entry.  Leaving
+                # _ready set here lets handler-side recovery mistake the stale
+                # pre-reconnect session for a fresh one and retry too early.
+                self._ready.clear()
                 self.session = None
-                # Keep _ready set across reconnects so tool handlers can
-                # still detect a transient in-flight state — it'll be
-                # re-set after the fresh session initializes.
                 continue
             except asyncio.CancelledError:
                 # Task was cancelled (shutdown, gateway restart, explicit
@@ -2765,6 +2816,89 @@ def _signal_reconnect(server: Any) -> bool:
     return True
 
 
+def _wait_for_server_session_ready(
+    srv: "MCPServerTask",
+    *,
+    old_session: Any = None,
+    timeout: float = 15.0,
+) -> bool:
+    """Wait for an MCP server to expose a usable session.
+
+    Tool handlers run in normal worker threads while the MCP transport lives on
+    the module's background asyncio loop. During a reconnect there is a short
+    window where ``srv.session`` is ``None`` (or still points at the stale
+    session until the lifecycle coroutine has left the transport context). A
+    handler that blindly retries in that window can burn circuit-breaker strikes
+    and return ``not connected`` even though the reconnect is already in
+    progress.
+
+    When ``old_session`` is supplied, require the observed session object to be
+    different so callers do not mistake the pre-reconnect, stale session for a
+    fresh one.
+    """
+    # Iteration-bounded rather than deadline-bounded: several tests (and the
+    # circuit-breaker cooldown logic) monkeypatch time.monotonic to a frozen
+    # clock, which would make a monotonic-deadline loop spin forever.
+    poll_interval = 0.25
+    iterations = max(1, int(max(float(timeout), 0.0) / poll_interval))
+    for i in range(iterations):
+        session = getattr(srv, "session", None)
+        ready = getattr(srv, "_ready", None)
+        is_ready = True
+        if ready is not None and hasattr(ready, "is_set"):
+            try:
+                is_ready = bool(ready.is_set())
+            except Exception:
+                is_ready = True
+        if session is not None and session is not old_session and is_ready:
+            return True
+        if i < iterations - 1:
+            time.sleep(poll_interval)
+    return False
+
+
+def _signal_reconnect_and_wait(
+    server_name: str,
+    srv: "MCPServerTask",
+    *,
+    op_description: str,
+    timeout: float = 15.0,
+) -> bool:
+    """Ask a live MCP server task to rebuild its transport session.
+
+    The important detail is clearing ``_ready`` on the MCP event loop before
+    setting ``_reconnect_event``. Older code left ``_ready`` set across
+    reconnects, so the caller's readiness poll could return immediately and
+    retry against the same dead HTTP/stream session. That was observed as
+    repeated ``Session terminated`` / ``not connected`` / circuit-breaker
+    failures in long-lived gateway sessions even though a fresh CLI process
+    could connect successfully.
+    """
+    loop = _mcp_loop
+    if loop is None or not loop.is_running():
+        return False
+
+    old_session = getattr(srv, "session", None)
+
+    def _request_reconnect() -> None:
+        ready = getattr(srv, "_ready", None)
+        if ready is not None and hasattr(ready, "clear"):
+            ready.clear()
+        reconnect_event = getattr(srv, "_reconnect_event", None)
+        if reconnect_event is not None and hasattr(reconnect_event, "set"):
+            reconnect_event.set()
+
+    logger.info(
+        "MCP server '%s': %s requesting transport reconnect",
+        server_name, op_description,
+    )
+    loop.call_soon_threadsafe(_request_reconnect)
+    return _wait_for_server_session_ready(
+        srv,
+        old_session=old_session,
+        timeout=timeout,
+    )
+
 # ---------------------------------------------------------------------------
 # Auth-failure detection helpers (Task 6 of MCP OAuth consolidation)
 # ---------------------------------------------------------------------------
@@ -2890,41 +3024,24 @@ def _handle_auth_error_and_retry(
     if recovered:
         with _lock:
             srv = _servers.get(server_name)
+        reconnected = False
         if srv is not None and hasattr(srv, "_reconnect_event"):
-            loop = _mcp_loop
-            if loop is not None and loop.is_running():
-                loop.call_soon_threadsafe(srv._reconnect_event.set)
+            reconnected = _signal_reconnect_and_wait(
+                server_name,
+                srv,
+                op_description=f"{op_description} after OAuth recovery",
+                timeout=15,
+            )
 
-                # Wait briefly for the session to come back ready. Bounded
-                # so that a stuck reconnect falls through to the error
-                # path rather than hanging the caller.  The async helper
-                # runs on the MCP event loop via _run_on_mcp_loop so it
-                # does NOT block the event loop during the poll interval.
-                async def _await_ready() -> bool:
-                    deadline = time.monotonic() + 15
-                    while time.monotonic() < deadline:
-                        if srv.session is not None and srv._ready.is_set():
-                            return True
-                        await asyncio.sleep(0.25)
-                    return False
-
-                try:
-                    _run_on_mcp_loop(_await_ready(), timeout=15)
-                except Exception as exc:
-                    logger.warning(
-                        "MCP OAuth '%s': ready poll failed: %s",
-                        server_name, exc,
-                    )
-
-        # A successful OAuth recovery is independent evidence that the
-        # server is viable again, so close the circuit breaker here —
-        # not only on retry success. Without this, a reconnect
-        # followed by a failing retry would leave the breaker pinned
-        # above threshold forever (the retry-exception branch below
-        # bumps the count again).  The post-reset retry still goes
-        # through _bump_server_error on failure, so a genuinely broken
-        # server will re-trip the breaker as normal.
-        _reset_server_error(server_name)
+        # A successful OAuth recovery + transport reconnect is independent
+        # evidence that the server is viable again, so close the circuit
+        # breaker here — not only on retry success. Without this, a reconnect
+        # followed by a failing retry would leave the breaker pinned above
+        # threshold forever. The post-reset retry still goes through
+        # _bump_server_error on failure, so a genuinely broken server will
+        # re-trip the breaker as normal.
+        if reconnected:
+            _reset_server_error(server_name)
 
         try:
             result = retry_call()
@@ -3053,15 +3170,12 @@ def _handle_session_expired_and_retry(
 
     # Trigger the same reconnect mechanism the OAuth recovery path
     # uses, then wait briefly for the new session to come back ready.
-    loop.call_soon_threadsafe(srv._reconnect_event.set)
-    deadline = time.monotonic() + 15
-    ready = False
-    while time.monotonic() < deadline:
-        if srv.session is not None and srv._ready.is_set():
-            ready = True
-            break
-        time.sleep(0.25)
-    if not ready:
+    if not _signal_reconnect_and_wait(
+        server_name,
+        srv,
+        op_description=op_description,
+        timeout=15,
+    ):
         logger.warning(
             "MCP server '%s': reconnect did not ready within 15s after "
             "session-expired error; falling through to error response.",
@@ -3510,27 +3624,38 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         if not server.session:
-            # No live session — the server task is reconnecting, or it has
-            # exhausted its retry budget and parked (e.g. a dead stdio
-            # subprocess). Probing here would write into a dead/absent
-            # transport and re-arm the breaker forever (#16788). Instead,
-            # ask the (always-present) server task to rebuild the transport
-            # — which respawns a dead stdio subprocess — and return a clean
-            # "reconnecting" error so the model backs off without burning
-            # iterations. The breaker resets once the fresh session
-            # initializes (_run_stdio/_run_http call _reset_server_error).
-            _bump_server_error(server_name)
-            if _signal_reconnect(server):
+            # No live session. A reconnect may already be completing (the
+            # transport swaps in a fresh session object asynchronously) —
+            # wait briefly before treating this as a failure, so a
+            # transient reconnect window doesn't burn a circuit-breaker
+            # strike (#26892).
+            if _wait_for_server_session_ready(
+                server, timeout=min(5.0, float(tool_timeout or 5.0)),
+            ):
+                pass  # Fresh session arrived; proceed below.
+            else:
+                # Still down — the server task is reconnecting, or it has
+                # exhausted its retry budget and parked (e.g. a dead stdio
+                # subprocess). Probing here would write into a dead/absent
+                # transport and re-arm the breaker forever (#16788). Instead,
+                # ask the (always-present) server task to rebuild the
+                # transport — which respawns a dead stdio subprocess — and
+                # return a clean "reconnecting" error so the model backs off
+                # without burning iterations. The breaker resets once the
+                # fresh session initializes (_run_stdio/_run_http call
+                # _reset_server_error).
+                _bump_server_error(server_name)
+                if _signal_reconnect(server):
+                    return json.dumps({
+                        "error": (
+                            f"MCP server '{server_name}' transport is down; "
+                            f"reconnect requested. Do NOT retry this tool "
+                            f"immediately — give it a few seconds to come back."
+                        )
+                    }, ensure_ascii=False)
                 return json.dumps({
-                    "error": (
-                        f"MCP server '{server_name}' transport is down; "
-                        f"reconnect requested. Do NOT retry this tool "
-                        f"immediately — give it a few seconds to come back."
-                    )
+                    "error": f"MCP server '{server_name}' is not connected"
                 }, ensure_ascii=False)
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
 
         async def _call():
             async with server._rpc_lock:
@@ -4478,6 +4603,16 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             for k, v in servers.items()
             if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
         }
+        # Cached entries with no live session are parked or mid-reconnect.
+        # Their tools are deregistered, so nothing else can reach
+        # _signal_reconnect — without this nudge a new session silently
+        # waits up to _PARKED_RETRY_INTERVAL for the next self-probe
+        # (#50170). Wake them now so their tools come back promptly.
+        stale_cached = [
+            _servers[k]
+            for k in servers
+            if k in _servers and getattr(_servers[k], "session", None) is None
+        ]
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
             _server_connect_errors.pop(srv_name, None)
@@ -4487,6 +4622,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                 _parallel_safe_servers.add(sanitize_mcp_name_component(srv_name))
             else:
                 _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
+
+    for srv in stale_cached:
+        _signal_reconnect(srv)
 
     if not new_servers:
         return _existing_tool_names()

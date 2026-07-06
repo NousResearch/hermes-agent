@@ -978,6 +978,20 @@ def create_job(
         no_agent=normalized_no_agent,
     )
 
+    next_run_at = compute_next_run(parsed_schedule)
+    if parsed_schedule.get("kind") == "once" and next_run_at is None:
+        run_at = parsed_schedule.get("run_at") or schedule
+        logger.warning(
+            "Rejecting one-shot cron job '%s': run_at %s is outside the %ss grace window",
+            name or label_source[:50].strip(),
+            run_at,
+            ONESHOT_GRACE_SECONDS,
+        )
+        raise ValueError(
+            f"Requested one-shot time {run_at} is more than "
+            f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled."
+        )
+
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -1006,7 +1020,7 @@ def create_job(
         "paused_at": None,
         "paused_reason": None,
         "created_at": now,
-        "next_run_at": compute_next_run(parsed_schedule),
+        "next_run_at": next_run_at,
         "last_run_at": None,
         "last_status": None,
         "last_error": None,
@@ -1137,7 +1151,29 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updated_schedule.get("display", updated.get("schedule_display")),
                 )
                 if updated.get("state") != "paused":
-                    updated["next_run_at"] = compute_next_run(updated_schedule)
+                    updated_next_run = compute_next_run(updated_schedule)
+                    # Same guard as create_job: an UPDATE that sets a one-shot
+                    # to a time >ONESHOT_GRACE_SECONDS in the past would store
+                    # next_run_at=None with state="scheduled", re-creating the
+                    # ghost job that never fires (#59395). Reject it here too so
+                    # the bug can't re-enter through the update door.
+                    if (
+                        updated_next_run is None
+                        and updated_schedule.get("kind") == "once"
+                    ):
+                        run_at = updated_schedule.get("run_at") or updated_schedule
+                        logger.warning(
+                            "Rejecting one-shot cron job update '%s': run_at %s "
+                            "is outside the %ss grace window",
+                            updated.get("name", job_id),
+                            run_at,
+                            ONESHOT_GRACE_SECONDS,
+                        )
+                        raise ValueError(
+                            f"Requested one-shot time {run_at} is more than "
+                            f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled."
+                        )
+                    updated["next_run_at"] = updated_next_run
 
             if inference_fields_changed:
                 provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
@@ -1150,7 +1186,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updated["model_snapshot"] = model_snapshot
 
             if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-                updated["next_run_at"] = compute_next_run(updated["schedule"])
+                next_run = compute_next_run(updated["schedule"])
+                if next_run is None and updated["schedule"].get("kind") == "once":
+                    run_at = updated["schedule"].get("run_at", "unknown")
+                    raise ValueError(
+                        f"Requested one-shot time {run_at} is in the past "
+                        f"(grace window: {ONESHOT_GRACE_SECONDS}s) and cannot be scheduled."
+                    )
+                updated["next_run_at"] = next_run
 
             jobs[i] = updated
             save_jobs(jobs)
@@ -1181,6 +1224,12 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     next_run_at = compute_next_run(job["schedule"])
+    if next_run_at is None and job["schedule"].get("kind") == "once":
+        run_at = job["schedule"].get("run_at", "unknown")
+        raise ValueError(
+            f"Cannot resume: one-shot time {run_at} is in the past "
+            f"(grace window: {ONESHOT_GRACE_SECONDS}s) and will never fire."
+        )
     return update_job(
         job["id"],
         {

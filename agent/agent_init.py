@@ -19,6 +19,7 @@ preserved.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -1209,6 +1210,26 @@ def init_agent(
     # In-memory todo list for task planning (one per agent/session)
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
+
+    # Rehydrate persisted todo state (issue #59544). The conversation-history
+    # replay in ``turn_context`` runs later and is the authoritative source
+    # for resumed sessions, but reading the stored snapshot up-front lets
+    # the agent start with the right plan visible in the system prompt even
+    # if the gateway forgot to replay history (e.g. first turn after a
+    # process restart).
+    try:
+        if getattr(agent, "_session_db", None) is not None and agent.session_id:
+            from tools.todo_tool import TodoStore as _TodoStore
+            _todo_payload = agent._session_db.load_todo_state(agent.session_id)
+            if _todo_payload:
+                _restored = _TodoStore.from_dict(json.loads(_todo_payload))
+                if _restored.has_items():
+                    agent._todo_store = _restored
+    except Exception:
+        # Defensive — a corrupted snapshot must not break agent init.
+        # The history-replay path in turn_context.py still has a chance
+        # to seed the store.
+        pass
     
     # Load config once for memory, skills, and compression sections
     try:

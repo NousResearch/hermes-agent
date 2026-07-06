@@ -1183,6 +1183,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+            # Issue #59544 — after a todo mutation, invalidate the cached
+            # system prompt (the active-block surface depends on the store)
+            # and persist the snapshot so a fresh agent can rehydrate the
+            # same plan without replaying tool results from history.
+            try:
+                if agent.valid_tool_names and "todo" in agent.valid_tool_names:
+                    agent._invalidate_system_prompt()
+                _todo_session_db = getattr(agent, "_session_db", None)
+                _todo_session_id = getattr(agent, "session_id", None)
+                if _todo_session_db and _todo_session_id and agent._todo_store is not None:
+                    _todo_session_db.save_todo_state(
+                        _todo_session_id,
+                        json.dumps(agent._todo_store.to_dict()),
+                    )
+            except Exception:
+                # Persistence / cache invalidation must never fail a turn
+                # — the next todo call will retry the write.
+                pass
         elif function_name == "session_search":
             def _execute(next_args: dict) -> Any:
                 session_db = agent._get_session_db_for_recall()

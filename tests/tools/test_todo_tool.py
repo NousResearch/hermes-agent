@@ -32,8 +32,8 @@ class TestWriteAndRead:
             {"id": "1", "content": "Latest version", "status": "in_progress"},
         ])
         assert result == [
-            {"id": "2", "content": "Other task", "status": "pending"},
-            {"id": "1", "content": "Latest version", "status": "in_progress"},
+            {"id": "2", "content": "Other task", "status": "pending", "activeForm": ""},
+            {"id": "1", "content": "Latest version", "status": "in_progress", "activeForm": ""},
         ]
 
 
@@ -175,3 +175,217 @@ class TestTodoStoreBounds:
         items = store.read()
         assert [i["content"] for i in items] == ["write the report", "review PR"]
         assert "[truncated]" not in items[0]["content"]
+
+
+class TestActiveForm:
+    """Issue #59544 — Claude Code-style ``activeForm`` field for the
+    in_progress item, surfaced in both the system prompt and the
+    post-compression injection block.
+    """
+
+    def test_active_form_default_is_empty_string(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Edit todo_tool.py", "status": "in_progress"},
+        ])
+        item = store.read()[0]
+        assert item["activeForm"] == ""
+
+    def test_active_form_is_persisted_on_write(self):
+        store = TodoStore()
+        store.write([
+            {
+                "id": "1",
+                "content": "Edit todo_tool.py",
+                "status": "in_progress",
+                "activeForm": "Editing todo_tool.py",
+            },
+        ])
+        item = store.read()[0]
+        assert item["activeForm"] == "Editing todo_tool.py"
+
+    def test_active_form_renders_in_injection_for_in_progress(self):
+        store = TodoStore()
+        store.write([
+            {
+                "id": "1",
+                "content": "Wire session persistence",
+                "status": "in_progress",
+                "activeForm": "Wiring session persistence",
+            },
+            {"id": "2", "content": "Write tests", "status": "pending"},
+        ])
+        text = store.format_for_injection()
+        assert "Wiring session persistence" in text
+        # Em-dash separates content from activeForm when both differ
+        assert "— Wiring session persistence" in text
+
+    def test_active_form_falls_back_to_content_when_missing(self):
+        """No activeForm supplied -> the injection just shows content.
+
+        The format_for_injection helper is the source of truth for the
+        fallback contract — used by both the post-compression block and
+        the system prompt surface.
+        """
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Edit todo_tool.py", "status": "in_progress"},
+        ])
+        text = store.format_for_injection()
+        assert "Edit todo_tool.py" in text
+        # No dangling "—" when no activeForm was supplied.
+        assert "—" not in text
+
+    def test_active_form_renders_in_active_block(self):
+        store = TodoStore()
+        store.write([
+            {
+                "id": "1",
+                "content": "Edit todo_tool.py",
+                "status": "in_progress",
+                "activeForm": "Editing todo_tool.py",
+            },
+            {"id": "2", "content": "Write tests", "status": "pending"},
+            {"id": "3", "content": "Wire persistence", "status": "completed"},
+        ])
+        text = store.format_for_active_block()
+        assert "[Active task list" in text
+        assert "3 items" in text
+        assert "1 done" in text
+        assert "[>]" in text
+        assert "[x]" in text
+        assert "[ ]" in text
+        assert "Editing todo_tool.py" in text
+
+    def test_active_block_returns_none_when_empty(self):
+        store = TodoStore()
+        assert store.format_for_active_block() is None
+
+    def test_active_block_omitted_when_no_valid_status(self):
+        store = TodoStore()
+        # Bypass _validate by injecting raw items with an unknown status.
+        # Valid statuses are filtered out, so the block should be empty.
+        store._items = [{"id": "1", "content": "x", "status": "bogus", "activeForm": ""}]
+        assert store.format_for_active_block() is None
+
+
+class TestPersistenceRoundTrip:
+    """Issue #59544 — the todo state survives across agent restarts via
+    ``SessionDB.save_todo_state``/``load_todo_state``. We exercise the
+    in-memory half here (``TodoStore.to_dict`` / ``TodoStore.from_dict``)
+    so the tests stay focused on the tool layer; the SessionDB half is
+    exercised by ``test_hermes_state_todo.py`` in the state module.
+    """
+
+    def test_round_trip_preserves_items_and_active_form(self):
+        original = TodoStore()
+        original.write([
+            {
+                "id": "1",
+                "content": "Edit todo_tool.py",
+                "status": "in_progress",
+                "activeForm": "Editing todo_tool.py",
+            },
+            {"id": "2", "content": "Wire persistence", "status": "pending"},
+            {"id": "3", "content": "Add tests", "status": "completed"},
+        ])
+
+        payload = original.to_dict()
+        assert payload["version"] == 1
+        assert len(payload["items"]) == 3
+
+        restored = TodoStore.from_dict(payload)
+        assert restored.read() == original.read()
+        # activeForm round-trips
+        assert restored.read()[0]["activeForm"] == "Editing todo_tool.py"
+
+    def test_from_dict_handles_missing_payload(self):
+        assert TodoStore.from_dict(None).has_items() is False
+        assert TodoStore.from_dict({}).has_items() is False
+        assert TodoStore.from_dict({"items": []}).has_items() is False
+
+    def test_from_dict_handles_malformed_payload(self):
+        """Defensive: a corrupted persisted blob should not crash the
+        session — fall back to an empty store (fail-open)."""
+        restored = TodoStore.from_dict({"items": "not a list"})
+        assert restored.has_items() is False
+        restored = TodoStore.from_dict({"items": [None, "garbage", 42]})
+        # _validate synthesizes placeholder rows for bad inputs, so we
+        # land on the same defensive behavior as the live write path.
+        items = restored.read()
+        assert len(items) == 3
+        assert all(item["id"] == "?" for item in items)
+
+    def test_from_dict_caps_oversized_payload(self):
+        from tools.todo_tool import MAX_TODO_ITEMS
+        items = [
+            {"id": str(i), "content": f"task {i}", "status": "pending"}
+            for i in range(5000)
+        ]
+        restored = TodoStore.from_dict({"version": 1, "items": items})
+        assert len(restored.read()) == MAX_TODO_ITEMS
+
+    def test_to_dict_is_json_serializable(self):
+        """The payload is meant for a SQLite TEXT column — make sure
+        ``json.dumps`` accepts it without a custom encoder."""
+        import json
+        store = TodoStore()
+        store.write([
+            {
+                "id": "1",
+                "content": "Edit todo_tool.py",
+                "status": "in_progress",
+                "activeForm": "Editing todo_tool.py",
+            },
+        ])
+        encoded = json.dumps(store.to_dict())
+        decoded = json.loads(encoded)
+        assert decoded["version"] == 1
+        assert decoded["items"][0]["activeForm"] == "Editing todo_tool.py"
+
+
+class TestStatusTransitions:
+    """Explicit pending → in_progress → completed transitions via the
+    public tool entry point. Issue #59544 requires status to be a first-
+    class field the model can flip without rebuilding the whole plan.
+    """
+
+    def test_pending_to_in_progress_to_completed(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Write tests", "status": "pending"},
+        ])
+
+        # Promote to in_progress with an activeForm.
+        store.write(
+            [{"id": "1", "status": "in_progress", "activeForm": "Writing tests"}],
+            merge=True,
+        )
+        item = store.read()[0]
+        assert item["status"] == "in_progress"
+        assert item["activeForm"] == "Writing tests"
+
+        # Complete the task — content + activeForm persist, only status flips.
+        store.write(
+            [{"id": "1", "status": "completed"}],
+            merge=True,
+        )
+        item = store.read()[0]
+        assert item["status"] == "completed"
+        assert item["activeForm"] == "Writing tests"
+
+    def test_active_form_can_be_cleared_via_merge(self):
+        store = TodoStore()
+        store.write([
+            {
+                "id": "1",
+                "content": "Edit todo_tool.py",
+                "status": "in_progress",
+                "activeForm": "Editing todo_tool.py",
+            },
+        ])
+        store.write(
+            [{"id": "1", "activeForm": ""}],
+            merge=True,
+        )
+        assert store.read()[0]["activeForm"] == ""

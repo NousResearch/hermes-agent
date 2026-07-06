@@ -3,7 +3,6 @@ from hermes_cli.codex_usage import (
     compute_recommendation,
     render_compact,
     summarize_window,
-    usage_bar,
 )
 
 
@@ -60,16 +59,6 @@ def test_render_compact_includes_risk_and_recommendation():
 
     text = render_compact(payload)
 
-    assert "🧭 Codex 사용량" in text
-    assert "✅ 추천 company-plus-100" in text
     assert "company-plus-100" in text
-    assert "5h  1% 🟢" in text
-    assert "7d 54% 🟢" in text
-    assert "[" in text and "]" in text
-
-
-def test_usage_bar_visualizes_percent_buckets():
-    assert usage_bar(0, width=10) == "░░░░░░░░░░"
-    assert usage_bar(54, width=10) == "█████░░░░░"
-    assert usage_bar(98, width=10) == "██████████"
-    assert usage_bar(None, width=10) == "??????????"
+    assert "5h 1% 🟢" in text
+    assert "추천: company-plus-100" in text

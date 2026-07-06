@@ -800,6 +800,15 @@ def format_auth_error(error: Exception) -> str:
     if is_rate_limited_auth_error(error):
         return str(error)
 
+    # Portal token-expiry breaker messages (#58572) are pre-formatted with
+    # multi-line recovery instructions for headless operators. Do NOT wrap
+    # them with the standard "Run `hermes model`" suffix — that would bury
+    # the actionable /login guidance inside a generic one-liner.
+    if error.code and error.code.startswith("portal_token_expired"):
+        return str(error)
+    if error.code == "portal_refresh_rejected":
+        return str(error)
+
     if error.relogin_required:
         return f"{error} Run `hermes model` to re-authenticate."
 
@@ -5416,6 +5425,16 @@ def persist_nous_credentials(
     # auth.json is still the source of truth).
     _write_shared_nous_state(state)
 
+    # New tokens => clear the Portal token-expiry circuit breaker so any
+    # gateway dispatch that was previously short-circuiting resumes normal
+    # credential resolution immediately (#58572).
+    if _nous_token_expiry_breaker is not None:
+        reset_nous_token_expiry_breaker()
+        logger.info(
+            "Nous Portal token expiry circuit breaker CLOSED by "
+            "persist_nous_credentials (login completed)."
+        )
+
     pool = load_pool("nous")
     return next(
         (e for e in pool.entries() if e.source == NOUS_DEVICE_CODE_SOURCE),
@@ -5450,6 +5469,30 @@ def resolve_nous_runtime_credentials(
     expires_in, source ("invoke_jwt"), and auth_path.
     """
     sequence_id = uuid.uuid4().hex[:12]
+
+    # Circuit-breaker short-circuit (#58572): when a previous refresh attempt
+    # in this process hit a terminal failure (revoked RT, refresh_token_reused,
+    # no refresh_token at all), don't replay the same doomed request on every
+    # gateway dispatch. The first failure already produced a clear, actionable
+    # error to the operator; subsequent calls in the same process get the
+    # same actionable error immediately, with no network I/O. ``force_refresh``
+    # bypasses the breaker (used by explicit `hermes auth refresh` flows and
+    # by tests).
+    if not force_refresh:
+        breaker = _is_nous_token_expiry_breaker_open()
+        if breaker is not None:
+            _oauth_trace(
+                "nous_token_expiry_breaker_short_circuit",
+                sequence_id=sequence_id,
+                code=breaker.get("code"),
+                opened_at=breaker.get("opened_at"),
+            )
+            raise AuthError(
+                _format_portal_token_expiry_breaker_message(breaker),
+                provider="nous",
+                code=breaker.get("code") or "portal_token_expired",
+                relogin_required=True,
+            )
 
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -5584,7 +5627,7 @@ def resolve_nous_runtime_credentials(
                     if force_refresh or invoke_jwt_status is not None:
                         if not isinstance(refresh_token, str) or not refresh_token:
                             reason = invoke_jwt_status or "force_refresh"
-                            raise AuthError(
+                            err = AuthError(
                                 "Nous Portal access token is not a usable inference JWT "
                                 f"({reason}) and no refresh token is available. "
                                 "Re-authenticate with: hermes auth add nous",
@@ -5592,6 +5635,15 @@ def resolve_nous_runtime_credentials(
                                 code=reason,
                                 relogin_required=True,
                             )
+                            # Terminal failure (#58572): no way to recover in-process.
+                            # Open the breaker so subsequent gateway dispatches don't
+                            # loop on this same state and re-emit the canned error.
+                            _record_nous_token_expiry_failure(
+                                code=reason or "portal_token_expired_no_refresh_token",
+                                message=str(err),
+                                has_refresh_token=False,
+                            )
+                            raise err
 
                         refresh_reason = "force_refresh" if force_refresh else (invoke_jwt_status or "access_unusable")
                         _oauth_trace(
@@ -5618,6 +5670,14 @@ def resolve_nous_runtime_credentials(
                                     reason="runtime_access_refresh_failure",
                                 )
                                 _persist_state("terminal_runtime_access_refresh_failure")
+                                # Terminal failure (#58572): Portal rejected the
+                                # refresh token — open the breaker so the gateway
+                                # doesn't replay this on every incoming message.
+                                _record_nous_token_expiry_failure(
+                                    code=exc.code or "portal_refresh_rejected",
+                                    message=str(exc),
+                                    has_refresh_token=True,
+                                )
                             raise
                         now = datetime.now(timezone.utc)
                         access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
@@ -5652,6 +5712,15 @@ def resolve_nous_runtime_credentials(
                             previous_refresh_token_fp=_token_fingerprint(previous_refresh_token),
                             new_refresh_token_fp=_token_fingerprint(refresh_token),
                         )
+                        # Clear the expiry breaker — the refresh worked, so any
+                        # prior terminal-failure record is stale (#58572).
+                        if _nous_token_expiry_breaker is not None:
+                            reset_nous_token_expiry_breaker()
+                            logger.info(
+                                "Nous Portal token expiry circuit breaker CLOSED "
+                                "after successful refresh (sequence=%s).",
+                                sequence_id,
+                            )
                         # Persist immediately so validation failures cannot drop rotated refresh tokens.
                         _persist_state("post_refresh_access_token")
 
@@ -5824,6 +5893,126 @@ def invalidate_nous_auth_status_cache() -> None:
     """
     global _nous_auth_status_cache
     _nous_auth_status_cache = None
+
+
+# ── Circuit breaker for terminal Nous Portal token-expiry failures (#58572) ──
+# When the Portal refresh token is permanently bad (revoked, refresh_token_reused,
+# no refresh_token at all), the gateway would otherwise re-attempt the refresh on
+# every incoming message and either:
+#   (a) spam the Portal with failed POST /api/oauth/token calls (single-use refresh
+#       tokens compound the damage — each failed call can rotate the RT forward
+#       and chain-revoke siblings), or
+#   (b) return a generic canned error that doesn't tell the remote operator what
+#       to do — they then have to SSH into the box to recover.
+# This breaker short-circuits the second-and-subsequent refresh attempts in the
+# same process, surfaces ONE clear actionable error (with the recovery command),
+# and reopens only after the operator runs `hermes auth add nous` (which calls
+# ``reset_nous_token_expiry_breaker`` below) or after a cool-off window elapses.
+_NOUS_TOKEN_EXPIRY_BREAKER_COOLDOWN_SECONDS = 300.0  # 5 min — let the operator act
+_nous_token_expiry_breaker: Optional[Dict[str, Any]] = None
+_nous_token_expiry_breaker_lock = threading.Lock()
+
+
+def _record_nous_token_expiry_failure(
+    *, code: str, message: str, has_refresh_token: bool,
+) -> Dict[str, Any]:
+    """Open the circuit breaker for terminal Portal token-expiry failures.
+
+    Called when ``resolve_nous_runtime_credentials()`` exhausts its refresh
+    path with a permanent failure (revoked RT, no RT at all, refresh_token_reused).
+    Subsequent calls (until ``reset_nous_token_expiry_breaker()`` runs after
+    ``hermes auth add nous``) raise a single clear actionable error instead
+    of re-running the full refresh dance and re-shipping the same canned
+    message back to the operator's Telegram/Discord channel.
+    """
+    global _nous_token_expiry_breaker
+    snapshot = {
+        "opened_at": time.time(),
+        "code": code or "portal_token_expired",
+        "message": message,
+        "has_refresh_token": bool(has_refresh_token),
+        "cooldown_seconds": _NOUS_TOKEN_EXPIRY_BREAKER_COOLDOWN_SECONDS,
+    }
+    with _nous_token_expiry_breaker_lock:
+        _nous_token_expiry_breaker = dict(snapshot)
+    logger.warning(
+        "Nous Portal token expiry circuit breaker OPEN (code=%s has_refresh_token=%s). "
+        "Subsequent refresh attempts in this process will short-circuit until "
+        "`hermes auth add nous` is run or the %ss cool-off elapses.",
+        code, bool(has_refresh_token), int(_NOUS_TOKEN_EXPIRY_BREAKER_COOLDOWN_SECONDS),
+    )
+    return snapshot
+
+
+def _is_nous_token_expiry_breaker_open() -> Optional[Dict[str, Any]]:
+    """Return the breaker snapshot if open, else None.
+
+    The breaker auto-resets after ``_NOUS_TOKEN_EXPIRY_BREAKER_COOLDOWN_SECONDS``
+    so that an operator who simply waits (e.g. Portal outage resolved itself)
+    gets a fresh attempt without re-running the login flow. Manual reset via
+    ``reset_nous_token_expiry_breaker()`` (called from login flows) bypasses
+    the cool-off.
+    """
+    with _nous_token_expiry_breaker_lock:
+        snap = _nous_token_expiry_breaker
+    if not snap:
+        return None
+    opened_at = float(snap.get("opened_at") or 0.0)
+    cooldown = float(snap.get("cooldown_seconds") or _NOUS_TOKEN_EXPIRY_BREAKER_COOLDOWN_SECONDS)
+    if (time.time() - opened_at) >= cooldown:
+        # Cool-off elapsed — auto-close so a one-off transient outage can recover.
+        reset_nous_token_expiry_breaker()
+        return None
+    return dict(snap)
+
+
+def reset_nous_token_expiry_breaker() -> None:
+    """Clear the breaker after a successful login / manual reset.
+
+    Called by ``hermes auth add nous`` (and friends) on success and by tests.
+    """
+    global _nous_token_expiry_breaker
+    with _nous_token_expiry_breaker_lock:
+        _nous_token_expiry_breaker = None
+
+
+def get_nous_token_expiry_breaker_state() -> Optional[Dict[str, Any]]:
+    """Read-only accessor for diagnostics / status surfaces."""
+    return _is_nous_token_expiry_breaker_open()
+
+
+def _format_portal_token_expiry_breaker_message(breaker: Dict[str, Any]) -> str:
+    """Operator-facing message for the Portal token-expiry circuit breaker (#58572).
+
+    Designed to be dropped verbatim into a Telegram/Discord/Slack/WhatsApp
+    channel — it must (a) tell the user WHAT happened, (b) tell them WHAT to
+    do, and (c) tell them WHY recovery won't happen automatically. Long-lived
+    headless deployments depend on this being actionable without terminal
+    access.
+    """
+    code = str(breaker.get("code") or "portal_token_expired")
+    has_rt = bool(breaker.get("has_refresh_token"))
+    if has_rt:
+        cause = (
+            "Nous Portal rejected the saved refresh token "
+            f"(reason: {code}). This usually means the refresh token has been "
+            "rotated, revoked, or marked as reused."
+        )
+    else:
+        cause = (
+            "The saved Nous Portal session has no refresh token, so the "
+            "gateway cannot transparently mint a new access token."
+        )
+    return (
+        f"⚠ Nous Portal session expired — gateway is paused, not crashed.\n"
+        f"{cause}\n"
+        f"Recovery (run on the gateway host, or via `/login` if your "
+        f"platform forwards it):\n"
+        f"  hermes auth add nous\n"
+        f"  # or: hermes model  # then re-select the Nous provider\n"
+        f"Auto-retry will resume after the 5-minute cool-off, or immediately "
+        f"after `hermes auth add nous` completes."
+    )
 
 
 def get_nous_auth_status() -> Dict[str, Any]:

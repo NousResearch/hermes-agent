@@ -12207,6 +12207,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
+        "deployment-monitor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
@@ -12943,6 +12944,14 @@ def main():
     # cron command  (parser built in hermes_cli/subcommands/cron.py)
     # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
+
+    # =========================================================================
+    # deployment-monitor command — Kanban-backed URL/marker checks
+    # =========================================================================
+    from hermes_cli.deployment_monitor import (
+        build_parser as _build_deployment_monitor_parser,
+    )
+    _build_deployment_monitor_parser(subparsers)
 
     # =========================================================================
     # webhook command  (parser built in hermes_cli/subcommands/webhook.py)

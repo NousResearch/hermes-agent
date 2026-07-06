@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ApprovalsSection } from "./ApprovalsSection";
 import { type ApprovalPreview } from "../mockData";
@@ -57,6 +57,26 @@ describe("ApprovalsSection decision readiness", () => {
     await waitFor(() => expect(onDecision).toHaveBeenCalledWith(approval.id, "approve_once"));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.getAllByRole("alert").some((node) => node.textContent?.includes("Очередь одобрений устарела"))).toBe(true);
+  });
+
+  it("exposes an external close callback for Telegram BackButton to dismiss the confirmation sheet", async () => {
+    let closeConfirm: (() => void) | undefined;
+    const onConfirmOpenChange = vi.fn((isOpen: boolean, close?: () => void) => {
+      closeConfirm = close;
+    });
+
+    renderSection({ onConfirmOpenChange });
+    fireEvent.click(screen.getByRole("button", { name: "Одобрить" }));
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await waitFor(() => expect(onConfirmOpenChange).toHaveBeenCalledWith(true, expect.any(Function)));
+
+    act(() => {
+      closeConfirm?.();
+    });
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(onConfirmOpenChange).toHaveBeenLastCalledWith(false);
   });
 
   it("uses record-only copy and never says gateway already applies decisions", () => {

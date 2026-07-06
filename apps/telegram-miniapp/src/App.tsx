@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hasMiniAppApi } from "./api";
 import { navItems, statusCards, type NavKey } from "./mockData";
 import {
@@ -30,6 +30,8 @@ import { CommandPalette } from "./components/CommandPalette";
 export function App() {
   const [activeTab, setActiveTab] = useState<NavKey>(() => readStoredNavKey());
   const [isPaletteOpen, setPaletteOpen] = useState(false);
+  const [isApprovalConfirmOpen, setApprovalConfirmOpen] = useState(false);
+  const closeApprovalConfirmRef = useRef<(() => void) | null>(null);
   const [theme, setTheme] = useState<Theme>(() => readStoredTheme());
 
   useEffect(() => {
@@ -81,14 +83,23 @@ export function App() {
   const publicSmoke = snapshot?.miniapp.public_exposure === true;
 
   const closeTransientUi = useCallback(() => {
+    if (isApprovalConfirmOpen) {
+      closeApprovalConfirmRef.current?.();
+      return;
+    }
     if (isPaletteOpen) {
       setPaletteOpen(false);
       return;
     }
     if (activeTab !== "status") setActiveTab("status");
-  }, [activeTab, isPaletteOpen]);
+  }, [activeTab, isApprovalConfirmOpen, isPaletteOpen]);
 
-  useEffect(() => configureTelegramBackButton(isPaletteOpen || activeTab !== "status", closeTransientUi), [activeTab, closeTransientUi, isPaletteOpen]);
+  const handleApprovalConfirmOpenChange = useCallback((isOpen: boolean, closeConfirm?: () => void) => {
+    setApprovalConfirmOpen(isOpen);
+    closeApprovalConfirmRef.current = isOpen ? closeConfirm ?? null : null;
+  }, []);
+
+  useEffect(() => configureTelegramBackButton(isApprovalConfirmOpen || isPaletteOpen || activeTab !== "status", closeTransientUi), [activeTab, closeTransientUi, isApprovalConfirmOpen, isPaletteOpen]);
 
   useEffect(() => {
     writeStoredValue(STORAGE_KEYS.activeTab, activeTab);
@@ -249,6 +260,7 @@ export function App() {
           isOwner={isActionOwner}
           isConnected={isConnected}
           onDecision={submitApprovalDecision}
+          onConfirmOpenChange={handleApprovalConfirmOpenChange}
         />
       ) : null}
       {activeTab === "logs" && sectionAvailable ? (

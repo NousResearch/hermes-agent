@@ -1,4 +1,4 @@
-import { useState, type RefObject } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { type ApprovalDecision } from "../api";
 import { type ApprovalDecisionValue, type ApprovalPreview } from "../mockData";
 import { EmptyState, RiskBadge } from "./chrome";
@@ -130,6 +130,7 @@ export function ApprovalsSection({
   isOwner = false,
   isConnected = false,
   onDecision,
+  onConfirmOpenChange,
 }: {
   approvals: ApprovalPreview[];
   selectedId: string;
@@ -142,12 +143,26 @@ export function ApprovalsSection({
   isOwner?: boolean;
   isConnected?: boolean;
   onDecision?: (approvalId: string, decision: ApprovalDecision) => Promise<boolean>;
+  onConfirmOpenChange?: (isOpen: boolean, closeConfirm?: () => void) => void;
 }) {
   // The confirm freezes BOTH the decision and the exact approval it targets, so
   // a poll-refresh or a selection change between step 1 and step 2 can never
   // redirect the decision onto a different pending approval.
   const [confirm, setConfirm] = useState<{ approval: ApprovalPreview; decision: ApprovalDecisionValue } | null>(null);
   const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    if (!onConfirmOpenChange) return undefined;
+    if (!confirm) {
+      onConfirmOpenChange(false);
+      return undefined;
+    }
+    const closeConfirm = () => {
+      if (!pending) setConfirm(null);
+    };
+    onConfirmOpenChange(true, closeConfirm);
+    return () => onConfirmOpenChange(false);
+  }, [confirm, onConfirmOpenChange, pending]);
 
   if (approvals.length === 0) {
     return <EmptyState title="Очередь одобрений пуста" text="Сервер вернул пустую очередь. Это считается валидным live-состоянием, а не поводом показывать mock-запросы." />;

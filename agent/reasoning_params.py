@@ -123,7 +123,7 @@ class ReasoningParamsMixin:
             # Nearest-neighbour fallbacks: xhigh→high, minimal→low, else medium, else the first published level.
             nearest = {"xhigh": "high", "minimal": "low"}.get(effort)
             effort = nearest if nearest in supported else "medium" if "medium" in supported else supported[0]
-        return {"effort": effort}
+        return {"effort": effort, "summary": "auto"}
 
     _build_assistant_message = _forward("agent.chat_completion_helpers", "build_assistant_message")
 

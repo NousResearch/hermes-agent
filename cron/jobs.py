@@ -87,15 +87,51 @@ _jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
-# How long a one-shot's running-claim (#59229) is honored before it is
-# considered stale and the job may be re-dispatched. The claim's real job is
-# to be cleared by mark_job_run() the moment the run completes (success or
-# failure); this TTL is only a safety valve for a claiming tick that DIED
-# mid-run (gateway kill, OOM, hard-timeout) so a one-shot is never wedged
-# forever. It must exceed the longest legitimate run: the default cron
-# inactivity timeout is 600s and a job that keeps producing output can run
-# past that, so 30 min gives generous headroom over any healthy run.
+# Fallback stale-recovery window for a one-shot's running-claim (#59229) when
+# the cron inactivity timeout is disabled (HERMES_CRON_TIMEOUT=0 → unlimited),
+# in which case no finite run bound exists to derive from. Also acts as the
+# floor for the derived value so a very short configured timeout can't make the
+# claim expire mid-run.
 ONESHOT_RUN_CLAIM_TTL_SECONDS = 1800
+
+# The derived TTL is the cron inactivity timeout times this headroom multiplier.
+# A healthy run clears its claim via mark_job_run() long before the TTL; the
+# TTL only recovers a claim left by a tick that DIED mid-run. HERMES_CRON_TIMEOUT
+# is an *inactivity* limit, not a wall-clock cap — a job that keeps producing
+# output legitimately runs past it — so the multiplier gives comfortable
+# headroom over any healthy run before we treat a claim as stale.
+_ONESHOT_RUN_CLAIM_TTL_HEADROOM = 3
+
+_DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
+
+
+def _oneshot_run_claim_ttl_seconds() -> float:
+    """Resolve the one-shot running-claim stale-recovery TTL.
+
+    Derived from ``HERMES_CRON_TIMEOUT`` (the cron inactivity timeout the
+    scheduler enforces on each run) so the safety valve tracks how long a run
+    is actually allowed to go quiet, instead of a magic constant:
+
+    - unset / invalid → default 600s inactivity limit → TTL = 1800s
+    - ``0`` (unlimited runs) → no finite bound to derive from → fall back to
+      ``ONESHOT_RUN_CLAIM_TTL_SECONDS``
+    - positive N → ``max(N * headroom, ONESHOT_RUN_CLAIM_TTL_SECONDS)`` so a
+      tiny configured timeout can never expire a claim mid-run.
+    """
+    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
+    if raw:
+        try:
+            timeout = float(raw)
+        except (ValueError, TypeError):
+            timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
+    if timeout <= 0:
+        # Unlimited runs — cannot bound; use the fixed fallback floor.
+        return float(ONESHOT_RUN_CLAIM_TTL_SECONDS)
+    return max(
+        timeout * _ONESHOT_RUN_CLAIM_TTL_HEADROOM,
+        float(ONESHOT_RUN_CLAIM_TTL_SECONDS),
+    )
 
 
 def _jobs_lock_file() -> Path:
@@ -1569,6 +1605,9 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []
     needs_save = False
+    # Resolve the one-shot running-claim stale-recovery TTL once per scan
+    # (derived from HERMES_CRON_TIMEOUT). See _oneshot_run_claim_ttl_seconds.
+    _run_claim_ttl = _oneshot_run_claim_ttl_seconds()
 
     for job in jobs:
         if not job.get("enabled", True):
@@ -1587,7 +1626,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 claimed_at = _ensure_aware(
                     datetime.fromisoformat(existing_claim["at"])
                 )
-                if (now - claimed_at).total_seconds() < ONESHOT_RUN_CLAIM_TTL_SECONDS:
+                if (now - claimed_at).total_seconds() < _run_claim_ttl:
                     continue  # a fresh claim is held by an in-flight run
             except (KeyError, ValueError, TypeError):
                 pass  # malformed claim → fall through and (re)claim
@@ -1749,8 +1788,9 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # a fresh claim on its next tick and skips (handled at the top of
             # this loop). mark_job_run() clears the claim on completion. The TTL
             # is only a safety valve: a claiming tick that DIES mid-run leaves a
-            # stale claim that expires after ONESHOT_RUN_CLAIM_TTL_SECONDS, so
-            # the job is re-dispatched rather than wedged forever.
+            # stale claim that expires after the resolved run-claim TTL
+            # (_oneshot_run_claim_ttl_seconds, derived from HERMES_CRON_TIMEOUT),
+            # so the job is re-dispatched rather than wedged forever.
             if kind == "once":
                 claim = {"at": now.isoformat(), "by": _machine_id()}
                 job["run_claim"] = claim

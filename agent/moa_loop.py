@@ -334,7 +334,7 @@ def _run_reference(
 
 
 def _run_references_parallel(
-    reference_models: list[dict[str, str]],
+    reference_models: list[dict[str, Any]],
     ref_messages: list[dict[str, Any]],
     *,
     temperature: float | None = None,
@@ -594,6 +594,7 @@ def aggregate_moa_context(
     provider default applies — matching single-model agent behavior. Presets
     may still pin explicit values.
     """
+    reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
     reference_outputs: list[tuple[str, str, Any]] = []
     ref_messages = _reference_messages(api_messages)
     reference_outputs = _run_references_parallel(
@@ -803,7 +804,10 @@ class MoAChatCompletions:
 
         preset = resolve_moa_preset(load_config().get("moa") or {}, self.preset_name)
         messages = list(api_kwargs.get("messages") or [])
-        reference_models = preset.get("reference_models") or []
+        reference_models = [
+            slot for slot in (preset.get("reference_models") or [])
+            if slot.get("enabled", True)
+        ]
         aggregator = preset.get("aggregator") or {}
         # Expose the resolved aggregator slot so session cost accounting can
         # price the aggregator's acting turn at its REAL model/provider. The

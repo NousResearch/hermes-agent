@@ -947,6 +947,7 @@ class ModelAssignment(BaseModel):
 class MoaModelSlot(BaseModel):
     provider: str = ""
     model: str = ""
+    enabled: bool = True
 
 
 class MoaPresetPayload(BaseModel):

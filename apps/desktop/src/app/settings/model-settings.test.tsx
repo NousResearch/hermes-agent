@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -16,6 +17,9 @@ const getAuxiliaryModels = vi.fn()
 const setModelAssignment = vi.fn()
 const getRecommendedDefaultModel = vi.fn()
 const setEnvVar = vi.fn()
+const getMoaModels = vi.fn()
+const saveMoaModels = vi.fn()
+const setApiRequestProfile = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const saveHermesConfig = vi.fn()
 const startManualProviderOAuth = vi.fn()
@@ -27,6 +31,9 @@ vi.mock('@/hermes', () => ({
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
+  getMoaModels: () => getMoaModels(),
+  saveMoaModels: (body: unknown) => saveMoaModels(body),
+  setApiRequestProfile: (profile: string | null) => setApiRequestProfile(profile),
   getHermesConfigRecord: () => getHermesConfigRecord(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config)
 }))
@@ -46,6 +53,12 @@ beforeEach(() => {
         authenticated: true,
         capabilities: { 'hermes-4': { reasoning: true, fast: true } }
       },
+      {
+        name: 'OpenRouter',
+        slug: 'openrouter',
+        models: ['deepseek/deepseek-v4-pro', 'anthropic/claude-opus-4.8'],
+        authenticated: true
+      },
       // An unconfigured api_key provider — surfaced by the full-universe payload.
       {
         name: 'DeepSeek',
@@ -64,6 +77,33 @@ beforeEach(() => {
   setModelAssignment.mockResolvedValue({ provider: 'nous', model: 'hermes-4', gateway_tools: [] })
   getRecommendedDefaultModel.mockResolvedValue({ provider: 'deepseek', model: 'deepseek-chat', free_tier: null })
   setEnvVar.mockResolvedValue({ ok: true })
+  getMoaModels.mockResolvedValue({
+    default_preset: 'review',
+    active_preset: '',
+    presets: {
+      review: {
+        reference_models: [
+          { provider: 'nous', model: 'hermes-4', enabled: true },
+          { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', enabled: true }
+        ],
+        aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
+        reference_temperature: null,
+        aggregator_temperature: null,
+        max_tokens: 4096,
+        enabled: true
+      }
+    },
+    reference_models: [
+      { provider: 'nous', model: 'hermes-4', enabled: true },
+      { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', enabled: true }
+    ],
+    aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
+    reference_temperature: null,
+    aggregator_temperature: null,
+    max_tokens: 4096,
+    enabled: true
+  })
+  saveMoaModels.mockImplementation(async body => ({ ...(body as object), ok: true }))
   getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
   saveHermesConfig.mockResolvedValue({ ok: true })
 })
@@ -75,8 +115,13 @@ afterEach(() => {
 
 async function renderModelSettings() {
   const { ModelSettings } = await import('./model-settings')
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-  return render(<ModelSettings />)
+  return render(
+    <QueryClientProvider client={client}>
+      <ModelSettings />
+    </QueryClientProvider>
+  )
 }
 
 describe('ModelSettings', () => {
@@ -91,11 +136,10 @@ describe('ModelSettings', () => {
     const triggers = await screen.findAllByRole('combobox')
     fireEvent.click(triggers[0])
 
-    // "Nous" shows in both the trigger and the open list; the unconfigured
-    // provider + its setup hint are the unique signal of the full universe.
+    // "Nous" shows in both the trigger and the open list; DeepSeek is the
+    // unique signal that the unconfigured provider universe is present.
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(await screen.findByText(/DeepSeek/)).toBeTruthy()
-    expect(await screen.findByText(/set up/)).toBeTruthy()
   })
 
   it('activates an unconfigured api_key provider inline by saving its key', async () => {
@@ -123,7 +167,7 @@ describe('ModelSettings', () => {
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
-    const fastSwitch = await screen.findByRole('switch')
+    const fastSwitch = await screen.findByText('Fast')
     fireEvent.click(fastSwitch)
 
     await waitFor(() =>
@@ -149,7 +193,7 @@ describe('ModelSettings', () => {
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
-    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.queryByText('Fast')).toBeNull()
   })
 
   it('renders the auxiliary task rows', async () => {
@@ -157,6 +201,31 @@ describe('ModelSettings', () => {
 
     expect(await screen.findByText('Vision')).toBeTruthy()
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
+  })
+
+  it('saves disabled MoA reference models without removing them', async () => {
+    await renderModelSettings()
+
+    const referenceSwitch = await screen.findByRole('switch', { name: 'Disable reference 1' })
+    fireEvent.click(referenceSwitch)
+
+    const saveButton = await screen.findByRole('button', { name: 'Save' })
+    fireEvent.click(saveButton)
+
+    await waitFor(() =>
+      expect(saveMoaModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presets: expect.objectContaining({
+            review: expect.objectContaining({
+              reference_models: [
+                expect.objectContaining({ provider: 'nous', model: 'hermes-4', enabled: false }),
+                expect.objectContaining({ provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', enabled: true })
+              ]
+            })
+          })
+        })
+      )
+    )
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {

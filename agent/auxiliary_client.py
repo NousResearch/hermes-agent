@@ -4335,18 +4335,23 @@ def _try_configured_fallback_chain(
     ``base_url``, and ``api_key`` are optional.
 
     ``failed_model`` narrows the skip check to the exact (provider, model)
-    pair that just failed, rather than the whole provider. Without it (the
-    "no client could be built" callers, where credentials/auth are broken
-    for the whole provider regardless of model) every entry sharing that
-    provider is skipped, same as before. With it (the runtime request-error
-    callers), a chain that intentionally lists several models under the
-    same provider — e.g. two more NVIDIA NIM models after the primary NIM
-    model times out — is no longer skipped wholesale; only the entry that
-    is an exact match for what just failed is skipped, so the chain can
-    still serve the request from the same provider instead of jumping
-    straight to the main-agent-model safety net. See issue where an NVIDIA
-    NIM timeout on the primary compression model fell through to the main
-    Codex model instead of trying the two other configured NIM fallbacks.
+    pair that just failed, rather than the whole provider. Without it every
+    entry sharing the failed provider is skipped (the original behaviour).
+    Callers pass it only when a sibling model on the same provider could
+    plausibly recover:
+
+    - Model-specific runtime failures (timeout, connection, rate limit,
+      model-incompatible, invalid response) pass ``failed_model`` so a
+      chain that intentionally lists several models under the same provider
+      — e.g. two more NVIDIA NIM models after the primary NIM model times
+      out — is not skipped wholesale. Only the exact model that failed is
+      skipped; the siblings still run instead of jumping straight to the
+      main-agent-model safety net.
+    - Provider-wide failures (auth 401, payment 402) and "no client could
+      be built" callers leave ``failed_model`` as None, keeping the whole
+      provider skipped — the shared credentials/account behind every model
+      on that provider are broken, so a sibling can't help and the
+      main-agent-model safety net should be reached instead.
 
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
@@ -8099,6 +8104,15 @@ def call_llm(
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
 
+            # Narrow the configured-chain skip to the exact model that
+            # failed ONLY for model-specific failures. Auth (401) and
+            # payment (402) errors are provider-wide — the credentials or
+            # account behind every model on that provider are the same — so
+            # a sibling model can't recover; keep skipping the whole
+            # provider so the main-agent-model safety net is still reached.
+            _chain_failed_model = (
+                None if reason in ("auth error", "payment error") else final_model
+            )
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. For auto: top-level main fallback_providers/fallback_model
@@ -8108,7 +8122,7 @@ def call_llm(
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason,
-                    failed_model=final_model)
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
                         task, resolved_provider or "auto", reason=reason)
@@ -8118,7 +8132,7 @@ def call_llm(
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason,
-                    failed_model=final_model)
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
@@ -8635,6 +8649,15 @@ async def async_call_llm(
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
 
+            # Narrow the configured-chain skip to the exact model that
+            # failed ONLY for model-specific failures. Auth (401) and
+            # payment (402) errors are provider-wide — the credentials or
+            # account behind every model on that provider are the same — so
+            # a sibling model can't recover; keep skipping the whole
+            # provider so the main-agent-model safety net is still reached.
+            _chain_failed_model = (
+                None if reason in ("auth error", "payment error") else final_model
+            )
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. For auto: top-level main fallback_providers/fallback_model
@@ -8644,7 +8667,7 @@ async def async_call_llm(
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason,
-                    failed_model=final_model)
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
                         task, resolved_provider or "auto", reason=reason)
@@ -8654,7 +8677,7 @@ async def async_call_llm(
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason,
-                    failed_model=final_model)
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)

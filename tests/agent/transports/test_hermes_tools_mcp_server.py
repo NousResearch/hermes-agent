@@ -72,6 +72,7 @@ class TestModuleSurface:
         for worker_tool in (
             "kanban_complete",
             "kanban_block",
+            "kanban_request_review",
             "kanban_comment",
             "kanban_heartbeat",
         ):

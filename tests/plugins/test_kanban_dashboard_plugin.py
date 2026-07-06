@@ -334,6 +334,28 @@ def test_patch_block_then_unblock(client):
     assert r.json()["task"]["status"] == "ready"
 
 
+def test_patch_request_review_then_reopen(client):
+    """Dragging a card into 'review' routes through request_review (non-block),
+    and dragging it back to 'ready' routes through reopen_review_task rather
+    than a raw status write."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    # Into review — manual "request review" from the board.
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "review", "summary": "v1 implemented + tested"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "review"
+
+    # Back out for changes -> reopen_review_task -> ready + review_reopened event.
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "ready"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "ready"
+
+
 def test_patch_schedule_then_unblock(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(
@@ -979,6 +1001,33 @@ def test_bulk_status_ready(client):
     ready = next(col for col in board["columns"] if col["name"] == "ready")
     ids = {t["id"] for t in ready["tasks"]}
     assert {a["id"], b["id"], c2["id"]}.issubset(ids)
+
+
+def test_bulk_status_review_then_reopen(client):
+    """Bulk endpoint must route review the same way as PATCH: ->review via
+    request_review, review->ready via reopen_review_task (not a raw write)."""
+    a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
+    b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
+
+    # Bulk into review.
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [a["id"], b["id"]], "status": "review", "summary": "v1"},
+    )
+    assert r.status_code == 200
+    assert all(x["ok"] for x in r.json()["results"])
+    for tid in (a["id"], b["id"]):
+        assert client.get(f"/api/plugins/kanban/tasks/{tid}").json()["task"]["status"] == "review"
+
+    # Bulk reopen (changes requested) -> ready.
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [a["id"], b["id"]], "status": "ready"},
+    )
+    assert r.status_code == 200
+    assert all(x["ok"] for x in r.json()["results"])
+    for tid in (a["id"], b["id"]):
+        assert client.get(f"/api/plugins/kanban/tasks/{tid}").json()["task"]["status"] == "ready"
 
 
 def test_bulk_status_done_forwards_completion_summary(client):

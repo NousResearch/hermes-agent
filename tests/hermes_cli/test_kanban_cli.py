@@ -159,6 +159,23 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_request_review_reopen_cycle(kanban_home):
+    out = kc.run_slash("create 'x' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    # Claim first so request-review finds it running.
+    kc.run_slash(f"claim {tid}")
+    assert "Requested review" in kc.run_slash(
+        f"request-review {tid} --summary 'v1 done'"
+    )
+    show = kc.run_slash(f"show {tid}")
+    assert re.search(r"status:\s+review", show), show
+    # Changes requested -> back to ready.
+    assert "Reopened" in kc.run_slash(f"reopen-review {tid}")
+    show = kc.run_slash(f"show {tid}")
+    assert re.search(r"status:\s+ready", show), show
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

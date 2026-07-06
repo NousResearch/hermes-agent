@@ -3702,7 +3702,24 @@ def test_claim_review_task_fails_when_already_claimed(kanban_home):
     assert second is None
 
 
-def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
+@pytest.fixture
+def review_dispatch_on(monkeypatch):
+    """Enable autonomous review-column dispatch for a test.
+
+    ``kanban.review_dispatch`` defaults to False (this build ships no
+    sdlc-review agent, so review tasks wait for a human). The tests below
+    exercise the autonomous dispatch loop itself, so they opt the gate on.
+    """
+    import hermes_cli.config as _cfg
+    monkeypatch.setattr(
+        _cfg, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+
+def test_dispatch_review_dry_run(
+    kanban_home, all_assignees_spawnable, review_dispatch_on,
+):
     """dispatch_once dry-run sees review tasks and reports them as spawned."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review me", assignee="alice")
@@ -3716,7 +3733,7 @@ def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
 
 
 def test_dispatch_review_spawns_with_correct_skills(
-    kanban_home, all_assignees_spawnable,
+    kanban_home, all_assignees_spawnable, review_dispatch_on,
 ):
     """Review tasks get sdlc-review skill set before spawning."""
     spawned_tasks = []
@@ -3734,7 +3751,7 @@ def test_dispatch_review_spawns_with_correct_skills(
     assert spawned_tasks[0].skills == ["sdlc-review"]
 
 
-def test_dispatch_review_skips_unassigned(kanban_home):
+def test_dispatch_review_skips_unassigned(kanban_home, review_dispatch_on):
     """Unassigned review tasks go to skipped_unassigned, not spawned."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review floater")
@@ -3745,7 +3762,7 @@ def test_dispatch_review_skips_unassigned(kanban_home):
 
 
 def test_dispatch_review_counts_toward_max_spawn(
-    kanban_home, all_assignees_spawnable,
+    kanban_home, all_assignees_spawnable, review_dispatch_on,
 ):
     """Review spawns count against max_spawn alongside ready tasks."""
     spawns = []
@@ -3767,7 +3784,7 @@ def test_dispatch_review_counts_toward_max_spawn(
 
 
 def test_dispatch_review_spawns_when_ready_empty(
-    kanban_home, all_assignees_spawnable,
+    kanban_home, all_assignees_spawnable, review_dispatch_on,
 ):
     """When only review tasks exist, they still get dispatched."""
     spawns = []
@@ -3811,7 +3828,9 @@ def test_has_spawnable_review_false_when_only_terminal_lanes(
         assert kb.has_spawnable_review(conn) is False
 
 
-def test_dispatch_review_skips_nonspawnable(kanban_home, monkeypatch):
+def test_dispatch_review_skips_nonspawnable(
+    kanban_home, monkeypatch, review_dispatch_on,
+):
     """Review tasks with non-existent profiles go to skipped_nonspawnable."""
     from hermes_cli import profiles
     monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
@@ -4766,3 +4785,62 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+
+# ---------------------------------------------------------------------------
+# Event-summary extraction must not crash on a whitespace-only summary
+# ---------------------------------------------------------------------------
+# Sibling call paths of the request_review IndexError: complete_task and
+# edit_completed_task_result build the same first-line event summary with the
+# identical "test the truthiness of the pre-strip value, index the post-strip
+# list" flaw. A summary of "   " is truthy, strips to "", and
+# "".splitlines()[0] raised IndexError inside write_txn. All three are guarded
+# the same way now.
+
+
+def _latest_event_payload(conn, tid, kind):
+    import json
+
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (tid, kind),
+    ).fetchone()
+    assert row is not None, f"no {kind!r} event for {tid}"
+    return json.loads(row["payload"]) if row["payload"] else {}
+
+
+@pytest.mark.parametrize("blank", ["   ", "\n", "\t\n  "])
+def test_complete_task_whitespace_only_summary_does_not_crash(kanban_home, blank):
+    """complete_task must survive a whitespace-only summary (no IndexError)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="blank complete")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+
+        ok = kb.complete_task(
+            conn, tid, summary=blank, result="done", expected_run_id=run_id
+        )
+        assert ok is True
+        assert kb.get_task(conn, tid).status == "done"
+        # Whitespace collapses to no summary on the event payload.
+        assert _latest_event_payload(conn, tid, "completed")["summary"] is None
+
+
+@pytest.mark.parametrize("blank", ["   ", "\n", "\t\n  "])
+def test_edit_completed_task_whitespace_only_summary_does_not_crash(kanban_home, blank):
+    """edit_completed_task_result must survive a whitespace-only summary."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="blank edit")
+        kb.claim_task(conn, tid)
+        kb.complete_task(
+            conn, tid, result="orig",
+            expected_run_id=kb.get_task(conn, tid).current_run_id,
+        )
+        assert kb.get_task(conn, tid).status == "done"
+
+        ok = kb.edit_completed_task_result(conn, tid, result="new", summary=blank)
+        assert ok is True
+        # Whitespace collapses to no summary on the event payload.
+        assert _latest_event_payload(conn, tid, "edited")["summary"] is None

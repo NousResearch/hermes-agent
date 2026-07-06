@@ -3254,9 +3254,9 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits
-      ``"gave_up"``, *not* ``"blocked"``, and is meant to recover
-      automatically once the underlying conditions change (e.g. parents
-      finish, transient infra error clears).
+      ``"gave_up"``, *not* ``"blocked"``.  Terminal circuit-breaker
+      blocks are handled by ``_has_terminal_failure_block`` below so
+      sticky human blocks and failure blocks remain distinguishable.
 
     The cheapest signal that distinguishes the two is the most recent
     ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
@@ -3276,6 +3276,24 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
         (task_id,),
     ).fetchone()
     return bool(row) and row["kind"] == "blocked"
+
+
+def _has_terminal_failure_block(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True when the task's latest event is a circuit-breaker trip.
+
+    ``gave_up`` is emitted only after ``_record_task_failure`` decides the
+    task exhausted its retry budget.  That is a terminal blocked state until
+    an operator explicitly unblocks/reassigns the task.  This separate check
+    prevents ``recompute_ready`` from immediately re-promoting protocol
+    violations that forced ``failure_limit=1`` while the dispatcher itself is
+    configured with a higher global failure limit.
+    """
+    row = conn.execute(
+        "SELECT kind FROM task_events "
+        "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return bool(row) and row["kind"] == "gave_up"
 
 
 def recompute_ready(
@@ -3300,7 +3318,12 @@ def recompute_ready(
        counter would reset on every recovery cycle and the circuit
        breaker could never trip (#35072).
 
-    The effective failure limit resolves in the same order as the
+    A task whose latest event is ``gave_up`` is already terminally blocked
+    by the circuit breaker and must not be auto-promoted just because this
+    caller's ``failure_limit`` is higher than the one that tripped the
+    breaker.
+
+    The effective failure limit guard resolves in the same order as the
     circuit breaker in ``_record_task_failure`` so the two never
     disagree about when a task is permanently blocked:
 
@@ -3325,6 +3348,11 @@ def recompute_ready(
                 # silently auto-recover.  ``unblock_task`` is the only
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
+                continue
+            if cur_status == "blocked" and _has_terminal_failure_block(conn, task_id):
+                # Circuit-breaker trips are terminal until explicit
+                # operator recovery.  Do not let dependency promotion
+                # resurrect a task in the same dispatcher tick.
                 continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "

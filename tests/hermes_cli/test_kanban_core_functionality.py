@@ -4457,6 +4457,63 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
         conn.close()
 
 
+def test_dispatch_protocol_violation_gave_up_is_not_repromoted(
+    kanban_home, all_assignees_spawnable,
+):
+    """A protocol-violation ``gave_up`` must survive the rest of the tick.
+
+    ``detect_crashed_workers`` forces protocol violations through
+    ``_record_task_failure(..., failure_limit=1)`` so the task is blocked
+    immediately.  The dispatcher then calls ``recompute_ready`` with its
+    configured global failure limit.  If ``recompute_ready`` only compares
+    ``consecutive_failures`` to that global limit, it can promote and respawn
+    the task in the same tick.  Keep ``gave_up`` terminal until an explicit
+    operator recovery action.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="quiet", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999996
+        kb._set_worker_pid(conn, tid, fake_pid)
+        _kb._record_worker_exit(fake_pid, 0)
+
+        spawn_calls = []
+
+        def _spawn_should_not_run(task, ws):
+            spawn_calls.append(task.id)
+            return 12345
+
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            result = kb.dispatch_once(
+                conn,
+                spawn_fn=_spawn_should_not_run,
+                failure_limit=2,
+            )
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in result.crashed
+        assert tid in result.auto_blocked
+        assert spawn_calls == []
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        gave_up_index = max(i for i, kind in enumerate(kinds) if kind == "gave_up")
+        assert "promoted" not in kinds[gave_up_index + 1:]
+    finally:
+        conn.close()
+
+
 def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
     """A worker that exited non-zero (real error / crash) uses the
     normal counter path — one failure doesn't trip the breaker.

@@ -457,6 +457,9 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "xiaomimimo.com": "xiaomi",
     "api.gmi-serving.com": "gmi",
     "api.novita.ai": "novita",
+    "api.routstr.com": "routstr",
+    "api.nonkycai.com": "routstr",
+    "privateprovider.xyz": "routstr",
     "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
 }

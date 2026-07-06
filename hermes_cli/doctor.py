@@ -34,6 +34,8 @@ _PROVIDER_ENV_HINTS = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_TOKEN",
+    "ROUTSTR_API_KEY",
+    "GEMINI_API_KEY",
     "OPENAI_BASE_URL",
     "NOUS_API_KEY",
     "GLM_API_KEY",
@@ -838,6 +840,7 @@ def run_doctor(args):
             provider_policy_id = str(provider_for_policy or "").strip().lower()
             providers_accepting_vendor_slugs = {
                 "openrouter",
+                "routstr",
                 "auto",
                 "kilocode",
                 "opencode-zen",

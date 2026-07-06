@@ -1030,6 +1030,7 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
+    ProviderEntry("routstr",        "Routstr",                  "Routstr — decentralized OpenAI-compatible AI inference router"),
     ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
@@ -1558,12 +1559,25 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous, novita)."""
+    """Return live pricing for providers that support it (openrouter, routstr, nous, novita)."""
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return fetch_models_with_pricing(
             api_key=_resolve_openrouter_api_key(),
             base_url="https://openrouter.ai/api",
+            force_refresh=force_refresh,
+        )
+    if normalized == "routstr":
+        from hermes_cli.config import get_env_value
+
+        api_key = get_env_value("ROUTSTR_API_KEY") or ""
+        base_url = get_env_value("ROUTSTR_BASE_URL") or "https://api.routstr.com/v1"
+        # Strip /v1 suffix since fetch_models_with_pricing appends its own /v1/models
+        import re as _re2
+        base_url = _re2.sub(r"/v\d+/?$", "", base_url.rstrip("/"))
+        return fetch_models_with_pricing(
+            api_key=api_key,
+            base_url=base_url,
             force_refresh=force_refresh,
         )
     if normalized == "novita":
@@ -1804,7 +1818,7 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
 
 
 _AGGREGATOR_PROVIDERS = frozenset(
-    {"nous", "openrouter", "copilot", "kilocode"}
+    {"nous", "openrouter", "routstr", "copilot", "kilocode"}
 )
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models

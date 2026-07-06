@@ -2981,3 +2981,142 @@ def _model_flow_anthropic(config, current_model=""):
         print(f"Default model set to: {selected} (via Anthropic)")
     else:
         print("No change.")
+
+
+def _model_flow_routstr(config, current_model=""):
+    """Routstr provider: API key, choose base URL/node, then pick model with pricing."""
+    from hermes_cli.main import _prompt_api_key, _prompt_provider_choice
+    from hermes_cli.auth import (
+        ProviderConfig,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import (
+        get_env_value,
+        save_env_value,
+        load_config,
+        save_config,
+    )
+    import re as _re
+
+    from hermes_cli.models import fetch_models_with_pricing
+
+    pconfig = ProviderConfig(
+        id="routstr",
+        name="Routstr",
+        auth_type="api_key",
+        api_key_env_vars=("ROUTSTR_API_KEY",),
+        base_url_env_var="ROUTSTR_BASE_URL",
+    )
+
+    existing_key = get_env_value("ROUTSTR_API_KEY") or ""
+    if not existing_key:
+        print("Get a Routstr API key at: https://chat.routstr.com/?tab=apikeys")
+        print()
+
+    resolved_key, abort = _prompt_api_key(pconfig, existing_key, provider_id="routstr")
+    if abort:
+        return
+
+    effective_key = resolved_key or existing_key
+    if not effective_key:
+        print("No API key provided. Cancelled.")
+        return
+
+    # --- Base URL / node selection ---
+    known_nodes = [
+        ("https://api.routstr.com/v1", "Routstr official node"),
+        ("https://api.nonkycai.com/v1", "Non-KYC AI node"),
+        ("https://privateprovider.xyz/v1", "PrivateProvider node"),
+    ]
+
+    current_base = get_env_value("ROUTSTR_BASE_URL") or "https://api.routstr.com/v1"
+    print()
+    print("Select base URL for this API key:")
+    choices = [f"{url} ({label})" for url, label in known_nodes] + [
+        "Custom endpoint (enter URL manually)"
+    ]
+    default_idx = next(
+        (i for i, (u, _) in enumerate(known_nodes) if u == current_base), 0
+    )
+
+    idx = _prompt_provider_choice(
+        choices, default=default_idx, title="Select Base URL"
+    )
+    if idx is None:
+        print("No change.")
+        return
+
+    if idx < len(known_nodes):
+        effective_base = known_nodes[idx][0]
+    else:
+        try:
+            custom = input(f"Custom base URL [{current_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        effective_base = custom or current_base
+
+    if not effective_base.startswith(("http://", "https://")):
+        print(f"Invalid URL: {effective_base} (must start with http:// or https://)")
+        return
+
+    save_env_value("ROUTSTR_API_KEY", effective_key)
+    save_env_value("ROUTSTR_BASE_URL", effective_base)
+
+    # --- Fetch models + pricing ---
+    # fetch_models_with_pricing appends /v1/models, so strip any existing
+    # /vN suffix from the base URL to avoid double paths like /v1/v1/models.
+    pricing_base = _re.sub(r"/v\d+/?$", "", effective_base.rstrip("/"))
+    print()
+    print(f"Fetching models from {effective_base}...")
+    priced = fetch_models_with_pricing(
+        api_key=effective_key,
+        base_url=pricing_base,
+        force_refresh=True,
+    )
+
+    if not priced:
+        print("Could not fetch models/pricing from this Routstr node.")
+        print("Falling back to manual model entry.")
+        try:
+            model_name = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        if not model_name:
+            print("No model specified. Cancelled.")
+            return
+    else:
+        model_list = sorted(priced.keys())
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            pricing=priced,
+            confirm_provider="routstr",
+            confirm_base_url=effective_base,
+            confirm_api_key=effective_key,
+        )
+        if not selected:
+            print("No change.")
+            return
+        model_name = selected
+
+    # --- Persist ---
+    _save_model_choice(model_name)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = "routstr"
+    model["base_url"] = effective_base
+    model["api_key"] = effective_key
+    model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {model_name} (via Routstr — {effective_base})")

@@ -30,6 +30,7 @@ import dataclasses
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -1753,11 +1754,15 @@ def _resolve_workflow_dispatch_settings(load_config_callable: Callable[[], Any])
         return False, _WORKFLOW_DISPATCH_INTERVAL_DEFAULT, _WORKFLOW_DISPATCH_LIMIT_DEFAULT
 
     workflow_cfg = cfg.get("workflow", {}) if isinstance(cfg, dict) else {}
-    enabled = bool(workflow_cfg.get("dispatch_in_gateway", False))
+    if not isinstance(workflow_cfg, dict):
+        workflow_cfg = {}
+    enabled = is_truthy_value(workflow_cfg.get("dispatch_in_gateway"), default=False)
 
     raw_interval = workflow_cfg.get("tick_interval_seconds", _WORKFLOW_DISPATCH_INTERVAL_DEFAULT)
     try:
         interval = float(raw_interval)
+        if not math.isfinite(interval):
+            raise ValueError("non-finite interval")
     except (TypeError, ValueError):
         logger.warning(
             "workflow dispatcher: invalid tick_interval_seconds=%r, using default %.0f",
@@ -1775,7 +1780,7 @@ def _resolve_workflow_dispatch_settings(load_config_callable: Callable[[], Any])
     raw_limit = workflow_cfg.get("max_executions_per_tick", _WORKFLOW_DISPATCH_LIMIT_DEFAULT)
     try:
         limit = int(raw_limit)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         logger.warning(
             "workflow dispatcher: invalid max_executions_per_tick=%r, using default %d",
             raw_limit,
@@ -2794,7 +2799,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _startup_restore_in_progress: bool = False
 
-    async def _workflow_dispatcher_watcher(self, initial_delay: float = 5.0) -> None:
+    async def _workflow_dispatcher_watcher(
+        self,
+        initial_delay: float = 5.0,
+        sleep: Optional[Callable[[float], Any]] = None,
+    ) -> None:
         try:
             from hermes_cli.config import load_config as _load_config
         except Exception:
@@ -2819,8 +2828,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             interval,
             limit,
         )
+        sleeper = sleep or asyncio.sleep
         if initial_delay > 0:
-            await asyncio.sleep(initial_delay)
+            await sleeper(initial_delay)
 
         while self._running:
             try:
@@ -2831,7 +2841,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 raise
             except Exception as exc:
                 logger.exception("workflow dispatcher: tick failed: %s", exc)
-            await asyncio.sleep(interval)
+            await sleeper(interval)
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref

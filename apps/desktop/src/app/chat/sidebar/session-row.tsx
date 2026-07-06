@@ -92,12 +92,28 @@ export function SidebarSessionRow({
     >
       <SidebarRowShell
         actions={
-          <div className="relative z-2 grid w-[1.375rem] place-items-center">
+          <div className="relative z-2 flex w-14 items-center justify-end gap-0.5">
             {!isWorking && (
-              <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
+              <span className="pointer-events-none absolute right-0 top-1/2 w-12 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-100 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
                 {age}
               </span>
             )}
+            <Button
+              aria-label={r.archive}
+              className="pointer-events-none size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) opacity-0 transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:opacity-100 focus-visible:ring-0 [&_svg]:size-3.5!"
+              onClick={event => {
+                event.preventDefault()
+                event.stopPropagation()
+                triggerHaptic('selection')
+                onArchive()
+              }}
+              size="icon"
+              title={r.archive}
+              type="button"
+              variant="ghost"
+            >
+              <Codicon name="archive" size="0.875rem" />
+            </Button>
             <SessionActionsMenu
               onArchive={onArchive}
               onBranch={onBranch}
@@ -110,7 +126,7 @@ export function SidebarSessionRow({
             >
               <Button
                 aria-label={r.actionsFor(title)}
-                className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
+                className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) group-focus-within:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
                 size="icon"
                 title={r.sessionActions}
                 variant="ghost"
@@ -152,7 +168,7 @@ export function SidebarSessionRow({
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <SidebarRowBody
-          className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
+          className={cn('z-0', branchStem && 'pl-3.5')}
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()

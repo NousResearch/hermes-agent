@@ -8,6 +8,7 @@ import {
   SiSentry,
   SiStripe,
   SiSupabase,
+  SiUnrealengine,
   SiVercel
 } from '@icons-pack/react-simple-icons'
 import { useStore } from '@nanostores/react'
@@ -37,7 +38,7 @@ import {
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { connectorDisplayName, connectorPrimaryActionKind, connectorSetupSummary } from '@/lib/mcp-catalog'
+import { connectorDisplayName, connectorIdentityKey, connectorPrimaryActionKind, connectorSetupSummary } from '@/lib/mcp-catalog'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -1377,20 +1378,22 @@ function McpCatalog({
         const draft = envDrafts[entry.name] ?? {}
         const actionKind = connectorPrimaryActionKind(entry)
         const setupSummary = connectorSetupSummary(entry)
+        const identityKey = connectorIdentityKey(entry)
 
         return (
-          <div className="rounded-md px-2 py-2" key={entry.name}>
-            <div className="flex items-start gap-2">
-              {/* 2px nudge so the start-aligned avatar sits where McpRow's
-                  center-aligned one does — no jump when flipping Servers⇄Catalog. */}
+          <div
+            className="group/connector rounded-xl border border-(--ui-stroke-tertiary) bg-linear-to-br from-(--ui-bg-secondary) to-(--ui-bg-tertiary)/60 px-3 py-3 shadow-sm transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--ui-bg-tertiary)"
+            key={entry.name}
+          >
+            <div className="flex items-start gap-3">
               <McpAvatar
-                className="mt-0.5"
-                name={entry.name}
+                className="mt-0.5 size-9 rounded-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] ring-1 ring-(--ui-stroke-tertiary)"
+                name={identityKey}
                 status={entry.installed ? (entry.enabled ? 'ok' : 'off') : 'unknown'}
               />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="truncate text-[0.78rem] font-medium text-foreground/85">
+                  <span className="truncate text-[0.86rem] font-semibold tracking-tight text-foreground/90">
                     {connectorDisplayName(entry)}
                   </span>
                   {entry.category && <CatalogTag>{entry.category}</CatalogTag>}
@@ -1577,6 +1580,8 @@ const MCP_BRAND_ICONS: Record<string, { Icon: ComponentType<SVGProps<SVGSVGEleme
   gitlab: { Icon: SiGitlab, color: '#FC6D26' },
   linear: { Icon: SiLinear, color: '#5E6AD2' },
   notion: { Icon: SiNotion, color: '#000000' },
+  'unreal-engine': { Icon: SiUnrealengine, color: '#0E1128' },
+  unrealengine: { Icon: SiUnrealengine, color: '#0E1128' },
   postgres: { Icon: SiPostgresql, color: '#4169E1' },
   postgresql: { Icon: SiPostgresql, color: '#4169E1' },
   sentry: { Icon: SiSentry, color: '#362D59' },
@@ -1609,7 +1614,7 @@ function McpAvatar({ className, name, status }: { className?: string; name: stri
       style={brand ? { backgroundColor: `color-mix(in srgb, ${brand.color} 16%, transparent)` } : undefined}
     >
       {brand ? (
-        <brand.Icon aria-hidden className="size-3.5" style={{ color: brand.color }} />
+        <brand.Icon aria-hidden className="size-[58%]" style={{ color: brand.color }} />
       ) : (
         name.charAt(0).toUpperCase()
       )}

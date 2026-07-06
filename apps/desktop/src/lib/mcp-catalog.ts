@@ -2,6 +2,10 @@ import type { McpCatalogEntry } from '@/types/hermes'
 
 export type ConnectorPrimaryActionKind = 'connect' | 'install' | 'installed'
 
+export function connectorIdentityKey(entry: Pick<McpCatalogEntry, 'icon' | 'name'>): string {
+  return entry.icon?.trim() || entry.name
+}
+
 export function connectorDisplayName(entry: Pick<McpCatalogEntry, 'display_name' | 'name'>): string {
   const displayName = entry.display_name?.trim()
 

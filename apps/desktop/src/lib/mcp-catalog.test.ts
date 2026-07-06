@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { connectorDisplayName, connectorPrimaryActionKind, connectorSetupSummary } from './mcp-catalog'
+import { connectorDisplayName, connectorIdentityKey, connectorPrimaryActionKind, connectorSetupSummary } from './mcp-catalog'
 
 const entry = (overrides = {}) => ({
   name: 'github-enterprise',
@@ -37,6 +37,16 @@ describe('connectorDisplayName', () => {
 
   it('falls back to a readable name for legacy manifests', () => {
     expect(connectorDisplayName(entry())).toBe('Github Enterprise')
+  })
+})
+
+describe('connectorIdentityKey', () => {
+  it('prefers the curated icon key over the config name', () => {
+    expect(connectorIdentityKey(entry({ icon: 'unreal-engine', name: 'ue-local' }))).toBe('unreal-engine')
+  })
+
+  it('falls back to the entry name for legacy manifests', () => {
+    expect(connectorIdentityKey(entry({ icon: '' }))).toBe('github-enterprise')
   })
 })
 

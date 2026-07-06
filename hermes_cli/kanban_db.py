@@ -6657,6 +6657,18 @@ def _record_task_failure(
             _append_event(
                 conn, task_id, "gave_up", payload, run_id=run_id,
             )
+            _append_event(
+                conn, task_id, "blocked",
+                {
+                    "reason": (
+                        f"auto_blocked: gave_up after "
+                        f"{failures} consecutive failures"
+                    ),
+                    "kind": "capability",
+                    "auto": True,
+                },
+                run_id=run_id,
+            )
             blocked = True
         else:
             # Below threshold.

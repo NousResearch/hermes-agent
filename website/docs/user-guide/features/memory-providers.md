@@ -552,20 +552,20 @@ Local-first SQLite memory with hybrid semantic + FTS5 + temporal ranking, episod
 | **Data storage** | Local SQLite (no network egress) |
 | **Cost** | Free (MIT) — no API key, no subscription, no quotas |
 
-**Tools (19):** `mnemosyne_remember`, `mnemosyne_recall`, `mnemosyne_stats`, `mnemosyne_triple_add`, `mnemosyne_triple_query`, `mnemosyne_sleep`, `mnemosyne_scratchpad_write`, `mnemosyne_scratchpad_read`, `mnemosyne_scratchpad_clear`, `mnemosyne_invalidate`, `mnemosyne_export`, `mnemosyne_import`, `mnemosyne_update`, `mnemosyne_forget`, `mnemosyne_diagnose`, `mnemosyne_graph_query`, `mnemosyne_graph_link`, `mnemosyne_get`, `mnemosyne_validate`.
+**Tools (26):** `mnemosyne_remember`, `mnemosyne_recall`, `mnemosyne_remember_canonical`, `mnemosyne_recall_canonical`, `mnemosyne_shared_remember`, `mnemosyne_shared_recall`, `mnemosyne_shared_forget`, `mnemosyne_shared_stats`, `mnemosyne_sleep`, `mnemosyne_stats`, `mnemosyne_invalidate`, `mnemosyne_validate`, `mnemosyne_get`, `mnemosyne_triple_add`, `mnemosyne_triple_query`, `mnemosyne_triple_end`, `mnemosyne_scratchpad_write`, `mnemosyne_scratchpad_read`, `mnemosyne_scratchpad_clear`, `mnemosyne_export`, `mnemosyne_import`, `mnemosyne_update`, `mnemosyne_forget`, `mnemosyne_diagnose`, `mnemosyne_graph_query`, `mnemosyne_graph_link`.
 
 **Setup:**
 ```bash
 pip install mnemosyne-memory
 
 # Symlink the plugin into $HERMES_HOME so Hermes plugin discovery picks it up.
-# Adjust the source path if your pip install lands the package elsewhere.
+# We symlink the hermes_memory_provider package (not the core mnemosyne package)
+# because that's where the register_memory_provider() entry point lives.
 mkdir -p "$HERMES_HOME/plugins"
-ln -s "$(python -c 'import mnemosyne, os; print(os.path.dirname(mnemosyne.__file__))')" \
+ln -s "$(python3 -c 'import hermes_memory_provider, os; print(os.path.dirname(hermes_memory_provider.__file__))')" \
       "$HERMES_HOME/plugins/mnemosyne"
 
 hermes config set memory.provider mnemosyne
-hermes memory setup    # walks through the configurable fields
 ```
 
 **Key capabilities:**
@@ -576,7 +576,7 @@ hermes memory setup    # walks through the configurable fields
 - **Strict fact matching** — configurable fact recall precision (lenient vs strict) with entity prefix guards.
 - **Memory export / import** — full JSON backup and cross-instance migration.
 
-**Lifecycle integration:** Mnemosyne implements the full provider contract (`register`, `initialize`, `is_available`, `system_prompt_block`, `prefetch` + `queue_prefetch`, `sync_turn`, `get_tool_schemas`, `handle_tool_call`, `shutdown`) plus the optional hooks `on_turn_start`, `on_session_end`, and `on_memory_write` (mirrors built-in memory writes to the SQLite backend). `on_session_switch`, `on_pre_compress`, and `on_delegation` are not yet implemented — see the provider's own changelog for status.
+**Lifecycle integration:** Mnemosyne implements the full provider contract (`register_memory_provider`, `initialize`, `is_available`, `system_prompt_block`, `prefetch` + `queue_prefetch`, `sync_turn`, `get_tool_schemas`, `handle_tool_call`, `shutdown`) plus the optional hooks `on_turn_start`, `on_session_end`, and `on_memory_write` (mirrors built-in memory writes to the SQLite backend). A separate `register(ctx)` entry point registers the `hermes mnemosyne` CLI commands. `on_session_switch`, `on_pre_compress`, and `on_delegation` are not yet implemented — see the provider's changelog for status.
 
 **Status note:** Mnemosyne is **community-maintained** rather than first-party-bundled. Inclusion here is to make the option discoverable; bugs and feature requests should go to the Mnemosyne project. The Hermes plugin contract is documented in the [Developer Guide](/developer-guide/memory-provider-plugin) and applies to Mnemosyne the same way it applies to bundled providers.
 
@@ -595,7 +595,7 @@ hermes memory setup    # walks through the configurable fields
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
-| **Mnemosyne**¹ | Local | Free | 19 | `mnemosyne-memory` | Hybrid semantic + FTS5 + temporal ranking + knowledge graph |
+| **Mnemosyne**¹ | Local | Free | 26 | `mnemosyne-memory` | Hybrid semantic + FTS5 + temporal ranking + knowledge graph |
 
 ¹ Community-maintained; loaded via the plugin-discovery system from `$HERMES_HOME/plugins/`.
 

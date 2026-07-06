@@ -304,6 +304,12 @@ def _needs_chromium_sandbox_bypass() -> bool:
         return True
     if _running_in_docker():
         return True
+    # Kubernetes pods: restricted security contexts (drop ALL capabilities,
+    # seccomp, read-only rootfs) prevent Chrome's sandbox from creating
+    # user namespaces. KUBERNETES_SERVICE_HOST is injected by the kubelet
+    # into every container.
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return True
     userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
     try:
         with open(userns_restrict, encoding="utf-8") as f:

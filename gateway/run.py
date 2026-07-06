@@ -30,6 +30,7 @@ import dataclasses
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -79,7 +80,6 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
-    r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
     r"|preflight\s+compression"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
@@ -145,6 +145,248 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
     re.IGNORECASE,
 )
+
+_DELEGATE_TASK_GOAL_PREVIEW_CHARS = 120
+# Max delegate_task rows rendered on one card (batch tasks beyond this collapse
+# into a "… +N more" line). Mirrors gateway.subagent_roster._MAX_ROWS.
+_DELEGATE_TASK_MAX_ROWS = 10
+# Non-goal/context params surfaced (in this order) to the LEFT of the goal on a
+# roster row, after the profile. Curated so the row stays scannable instead of
+# dumping every arg (e.g. background=False). Keys absent from a call are skipped.
+_DELEGATE_TASK_ROW_PARAM_ORDER = ("role", "toolsets", "agentType", "acp_command")
+
+
+def _redact_delegate_text(text: str) -> str:
+    """Best-effort secret redaction for one rendered roster cell."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(text)
+    except Exception:
+        return text
+
+
+def _delegate_goal_cell(goal: Any, *, limit: int = _DELEGATE_TASK_GOAL_PREVIEW_CHARS) -> str:
+    """Render the goal as an inline-code cell, whitespace-collapsed + capped.
+
+    Backticks are stripped (the cell renders inside a `` `...` `` span, so a
+    stray backtick would break it on Telegram), matching ``roster_label`` in
+    ``gateway.subagent_roster``. Empty/missing goal -> ``goal`` placeholder.
+    """
+    try:
+        cap = max(1, int(limit))
+    except (TypeError, ValueError):
+        cap = _DELEGATE_TASK_GOAL_PREVIEW_CHARS
+    text = " ".join(_redact_delegate_text(str(goal or "")).replace("`", "").split())
+    if not text:
+        text = "goal"
+    if len(text) > cap:
+        text = text[: cap - 1] + "…"
+    return f"`{text}`"
+
+
+def _delegate_param_cells(spec: dict) -> List[str]:
+    """Plain-text ``key=value`` cells for curated non-goal/context params.
+
+    Order is fixed by ``_DELEGATE_TASK_ROW_PARAM_ORDER`` so rows are stable.
+    Lists render compactly (``toolsets=terminal,file``); everything is
+    whitespace-collapsed, redacted, and kept short. Profile is handled
+    separately (it leads the row) so it is excluded here.
+    """
+    cells: List[str] = []
+    for key in _DELEGATE_TASK_ROW_PARAM_ORDER:
+        if key not in spec:
+            continue
+        value = spec.get(key)
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        if isinstance(value, (list, tuple)):
+            rendered = ",".join(str(v) for v in value)
+        else:
+            rendered = str(value)
+        # Strip backticks: plain cells must not introduce an inline-code
+        # delimiter that pairs with the goal cell's backticks on Telegram.
+        rendered = " ".join(_redact_delegate_text(rendered).replace("`", "").split())
+        if len(rendered) > 60:
+            rendered = rendered[:59] + "…"
+        cells.append(f"{key}={rendered}")
+    return cells
+
+
+def _delegate_task_row(spec: dict, *, default_profile: Optional[str]) -> str:
+    """One roster row: ``profile · key=val · `goal` `` (profile NOT backticked).
+
+    Per-task ``profile`` overrides the call-level ``default_profile``. The goal
+    is the only inline-code cell; profile and extra params are plain text, all
+    joined by `` · `` — mirroring the subagent roster's row shape.
+    """
+    profile = spec.get("profile") or default_profile
+    left: List[str] = []
+    if profile:
+        # Strip backticks for the same reason as param/goal cells: the profile
+        # is plain text and a stray backtick would break the goal code span.
+        left.append(" ".join(_redact_delegate_text(str(profile)).replace("`", "").split()))
+    left.extend(_delegate_param_cells(spec))
+    left.append(_delegate_goal_cell(spec.get("goal")))
+    return " · ".join(left)
+
+
+def _format_delegate_task_args_progress(args: Optional[dict]) -> List[str]:
+    """Render ``delegate_task`` call args as a compact Telegram roster card.
+
+    Mirrors the live subagent roster style (``gateway.subagent_roster``):
+    a ``🔀 Delegate task`` header, then one row per dispatched task with the
+    profile (plus any curated extra param) on the left and the goal as an
+    inline-code cell capped at ``_DELEGATE_TASK_GOAL_PREVIEW_CHARS`` on the
+    right. This is intentionally only the tool *input* payload, never subagent
+    output, so Telegram users can audit what was handed to child agents without
+    switching all tool progress into noisy verbose mode.
+
+    Batch mode: when ``args['tasks']`` is a non-empty list, each entry is its
+    own row (per-task ``profile`` overrides the call-level one). Otherwise the
+    single top-level ``goal`` is one row.
+    """
+    args = args or {}
+    default_profile = args.get("profile")
+
+    tasks = args.get("tasks")
+    specs: List[dict]
+    if isinstance(tasks, list) and tasks:
+        specs = [t if isinstance(t, dict) else {"goal": t} for t in tasks]
+        header = f"🔀 Delegate task — {len(specs)} tasks"
+    else:
+        specs = [args]
+        header = "🔀 Delegate task"
+
+    lines = [header]
+    shown = specs[:_DELEGATE_TASK_MAX_ROWS]
+    for spec in shown:
+        lines.append(_delegate_task_row(spec, default_profile=default_profile))
+    extra = len(specs) - len(shown)
+    if extra > 0:
+        lines.append(f"… +{extra} more")
+    return ["\n".join(lines)]
+
+
+def _tool_progress_pipeline_enabled(
+    *,
+    is_webhook: bool,
+    progress_mode: str,
+    tool_completion_durations_enabled: bool,
+    subagent_progress_enabled: bool,
+    delegate_task_args_enabled: bool,
+    subagent_roster_enabled: bool = False,
+    todo_progress_enabled: bool = False,
+) -> bool:
+    """Decide whether the gateway tool-progress pipeline must stay alive.
+
+    The progress queue/consumer is normally torn down when ``tool_progress``
+    is ``"off"``. Several features still need the pipeline even then:
+    completion durations, subagent tool visibility, ``delegate_task_args``
+    (surface delegate_task call parameters WITHOUT general tool noise), the
+    live subagent ROSTER bubble, and ``todo_progress`` (surface the todo plan
+    card WITHOUT general tool noise). Webhooks never get tool progress (no
+    message editing). Extracted as a pure function so these wiring gaps are
+    unit-testable. ``subagent_roster_enabled`` / ``todo_progress_enabled``
+    default False for back-compat with existing callers/tests.
+
+    NOTE: the result gates PIPELINE creation, NOT whether ordinary tool rows
+    render. ``progress_mode`` remains the sole source of truth for tool rows
+    (the ``progress_mode == "off"`` guard in ``progress_callback``). So
+    roster-only / todo-only mode keeps the queue/consumer alive without
+    leaking other tool rows.
+    """
+    if is_webhook:
+        return False
+    return bool(
+        progress_mode != "off"
+        or tool_completion_durations_enabled
+        or subagent_progress_enabled
+        or delegate_task_args_enabled
+        or subagent_roster_enabled
+        or todo_progress_enabled
+    )
+
+
+def _format_subagent_tool_card(
+    tool_name: Optional[str],
+    preview: Optional[str],
+    *,
+    goal: Optional[str] = None,
+    task_index: int = 0,
+    task_count: int = 1,
+    include_header: bool = True,
+) -> str:
+    """Render ONE delegate_task child tool call as a compact gateway card.
+
+    Used when ``display.platforms.<platform>.subagent_tool_progress == "full"``.
+    Child tool events are already relayed from ``tools/delegate_tool.py`` as
+    ``"subagent.tool"``; this turns one into a short, redacted progress line so
+    a user watching on Telegram/Discord can see what a subagent is doing
+    without dropping to the CLI. It is intentionally the child's tool *input*
+    preview only — never subagent stdout/output, matching the privacy posture
+    of ``_format_delegate_task_args_progress``.
+
+    ``include_header`` controls whether the ``🔀 <goal>`` header line is
+    emitted. The caller drops it for consecutive tool calls from the SAME
+    subagent so a long child run renders as one header followed by a run of
+    bare ``└ <tool>`` lines — mirroring the consecutive-terminal-block header
+    drop. When False, only the indented tool line is returned.
+    """
+    from agent.display import get_tool_emoji, get_tool_preview_max_len
+
+    emoji = get_tool_emoji(tool_name or "", default="⚙️")
+
+    line = f"{emoji} {tool_name or 'tool'}"
+    if preview:
+        _pl = get_tool_preview_max_len()
+        _cap = _pl if _pl > 0 else 40
+        short = preview if len(preview) <= _cap else preview[: _cap - 1] + "…"
+        line += f'  "{short}"'
+
+    if include_header:
+        # 1-indexed subagent tag only when several children run in parallel, so
+        # a single-subagent run stays clean.
+        tag = f"[{task_index + 1}] " if task_count > 1 else ""
+        goal_label = (goal or "").strip()
+        if goal_label:
+            goal_short = (goal_label[:40] + "…") if len(goal_label) > 40 else goal_label
+            header = f"🔀 {tag}{goal_short}"
+        else:
+            header = f"🔀 {tag}subagent"
+        card = f"{header}\n└ {line}"
+    else:
+        card = f"└ {line}"
+
+    try:
+        from agent.redact import redact_sensitive_text
+
+        card = redact_sensitive_text(card)
+    except Exception:
+        pass
+    return card
+
+
+def _format_subagent_progress_card(preview: Optional[str]) -> Optional[str]:
+    """Render the BATCHED subagent progress summary as a gateway card.
+
+    Used when ``subagent_tool_progress == "batched"``. ``tools/delegate_tool.py``
+    relays one ``"subagent.progress"`` event per ~5 child tool calls, with the
+    already-formatted ``"🔀 …"`` summary string in ``preview``. We only redact
+    and pass it through — no per-tool spam, just a periodic heartbeat of which
+    tools the child has run.
+    """
+    text = (preview or "").strip()
+    if not text:
+        return None
+    try:
+        from agent.redact import redact_sensitive_text
+
+        text = redact_sensitive_text(text)
+    except Exception:
+        pass
+    return text
+
 
 _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
@@ -388,6 +630,83 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
 )
 
 
+def _merge_pre_dispatch_results(hook_results):
+    """Merge pre_gateway_dispatch hook results into a single directive.
+
+    Pure function (no I/O, no event mutation) so it is unit-testable in
+    isolation from the 19k-line gateway. ``invoke_hook`` already ran every
+    callback; this decides what their combined effect is:
+
+      * skip            -> terminal: caller drops the turn.
+      * session_binding -> pin the session. >1 DISTINCT binding across hooks is
+                           a conflict -> refuse ALL (fail-closed), never guess.
+      * rewrite text    -> first rewrite in registration order wins; later
+                           rewrites are reported in ``extra_rewrites``.
+      * allow / None     -> no-op; never suppresses the above.
+
+    A ``session_binding`` result value may be a SessionBinding instance OR a
+    ``{"namespace","key"}`` dict; both normalize via SessionBinding.from_dict.
+
+    Returns a dict:
+      {
+        "skip": bool, "skip_reason": Any,
+        "rewrite_text": Optional[str], "extra_rewrites": int,
+        "binding": Optional[SessionBinding], "binding_conflict": Optional[list],
+      }
+    """
+    skip = False
+    skip_reason = None
+    rewrite_text = None
+    rewrite_seen = False
+    extra_rewrites = 0
+    bindings = []
+
+    for result in hook_results or []:
+        if not isinstance(result, dict):
+            continue
+        action = result.get("action")
+        if action == "skip":
+            skip = True
+            skip_reason = result.get("reason")
+            continue
+        rb = result.get("session_binding")
+        if rb is not None:
+            binding_obj = rb if isinstance(rb, SessionBinding) else None
+            if binding_obj is None:
+                try:
+                    binding_obj = SessionBinding.from_dict(rb)
+                except Exception:
+                    binding_obj = None
+            if binding_obj is not None:
+                bindings.append(binding_obj)
+        if action == "rewrite":
+            new_text = result.get("text")
+            if isinstance(new_text, str):
+                if not rewrite_seen:
+                    rewrite_text = new_text
+                    rewrite_seen = True
+                else:
+                    extra_rewrites += 1
+
+    binding = None
+    binding_conflict = None
+    if bindings:
+        distinct = sorted({(b.namespace, b.key) for b in bindings})
+        if len(distinct) == 1:
+            binding = bindings[0]
+        else:
+            binding_conflict = distinct
+
+    return {
+        "skip": skip,
+        "skip_reason": skip_reason,
+        "rewrite_text": rewrite_text,
+        "extra_rewrites": extra_rewrites,
+        "binding": binding,
+        "binding_conflict": binding_conflict,
+    }
+
+
 def _looks_like_gateway_provider_error(text: str) -> bool:
     """True when text is infrastructure/provider failure, not normal content.
 
@@ -457,6 +776,19 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     return text
 
 
+def _gateway_status_key(event_type: str, message: str) -> str:
+    """Return the editable status-bubble key for a status callback."""
+    key = str(event_type or "status")
+    try:
+        from agent.conversation_compression import COMPACTION_STATUS_MARKER
+
+        if COMPACTION_STATUS_MARKER in str(message or ""):
+            return "compacting"
+    except Exception:
+        pass
+    return key
+
+
 def render_notice_line(notice) -> str:
     """Render an AgentNotice to a single plaintext line for messaging platforms.
 
@@ -472,7 +804,15 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
-async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
+async def _send_or_update_status_coro(
+    adapter,
+    chat_id,
+    status_key,
+    content,
+    metadata,
+    *,
+    sequence: Optional[int] = None,
+):
     """Route a status message through adapter.send_or_update_status when supported.
 
     Issue #30045: adapters that implement send_or_update_status (currently
@@ -481,7 +821,13 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     """
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
-        return await sender(chat_id, status_key, content, metadata=metadata)
+        return await sender(
+            chat_id,
+            status_key,
+            content,
+            metadata=metadata,
+            sequence=sequence,
+        )
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
@@ -1712,6 +2058,7 @@ from gateway.config import (
 from gateway.session import (
     SessionStore,
     SessionSource,
+    SessionBinding,
     SessionContext,
     build_session_context,
     build_session_context_prompt,
@@ -2050,14 +2397,110 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
 
 
 def _format_duration(seconds: float) -> str:
-    total = int(round(seconds))
-    if total < 0:
-        total = 0
-    hours, rem = divmod(total, 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
+    # Delegates to the shared util (gateway/duration_format.py) so pure helper
+    # modules can reuse the exact M:SS / H:MM:SS semantics without importing
+    # this 18k-line module. Kept as a thin alias for existing call sites.
+    from gateway.duration_format import format_duration
+
+    return format_duration(seconds)
+
+
+def _format_tool_progress_duration(seconds: float) -> str:
+    """Compact human duration for gateway tool-progress completion lines."""
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value < 0:
+        value = 0.0
+
+    if value < 0.1:
+        return f"{int(round(value * 1000))}ms"
+    if value < 10:
+        return f"{value:.1f}s"
+
+    total = int(round(value))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def _format_tool_completion_progress_line(
+    tool_name: str,
+    duration: float,
+    *,
+    is_error: bool = False,
+) -> str:
+    """Render a concise fallback completion row for gateway tool progress."""
+    name = str(tool_name or "tool")
+    elapsed = _format_tool_progress_duration(duration)
+    if is_error:
+        return f"❌ {name} failed after {elapsed}"
+    return f"✅ {name} completed in {elapsed}"
+
+
+def _format_tool_completion_duration_suffix(
+    duration: float,
+    *,
+    is_error: bool = False,
+) -> str:
+    """Render the compact suffix appended to an existing tool-progress row."""
+    elapsed = _format_tool_progress_duration(duration)
+    if is_error:
+        return f" · failed after {elapsed}"
+    return f" · {elapsed}"
+
+
+def _append_tool_completion_duration_to_progress_line(
+    line: Any,
+    duration: float,
+    *,
+    is_error: bool = False,
+) -> str:
+    """Append completion timing to the first visible line of a progress card."""
+    text = str(line or "")
+    suffix = _format_tool_completion_duration_suffix(duration, is_error=is_error)
+    if not text:
+        return suffix.strip()
+
+    lines = text.splitlines()
+    for index, part in enumerate(lines):
+        if part.strip():
+            lines[index] = f"{part}{suffix}"
+            return "\n".join(lines)
+    return f"{text}{suffix}"
+
+
+def _append_subagent_duration_to_card(
+    line: Any,
+    duration: float,
+    *,
+    is_error: bool = False,
+) -> str:
+    """Append completion timing to the LAST visible line of a subagent card.
+
+    Subagent "full"-mode cards are either two lines (``🔀 <goal>`` header +
+    ``└ <tool> "preview"``) or, when the header was deduped, a single bare
+    ``└ <tool>`` line. The benchmark suffix must sit with the *tool* line, so
+    we append to the last non-blank line rather than the first — otherwise on a
+    header card the "· 10ms" would land on the goal header. For a bare deduped
+    card the last line IS the tool line, so this is correct in both shapes.
+    """
+    text = str(line or "")
+    suffix = _format_tool_completion_duration_suffix(duration, is_error=is_error)
+    if not text:
+        return suffix.strip()
+
+    lines = text.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].strip():
+            lines[index] = f"{lines[index]}{suffix}"
+            return "\n".join(lines)
+    return f"{text}{suffix}"
 
 
 async def _probe_audio_duration(path: str) -> Optional[str]:
@@ -2777,6 +3220,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        # Gateway-assigned status sequence numbers must outlive a single agent
+        # turn. Telegram keeps an adapter-lifetime high-water mark to drop stale
+        # async status edits, so the gateway counter must be runner-scoped too.
+        self._status_update_sequence_lock = threading.Lock()
+        self._status_update_sequences: Dict[tuple[str, str], int] = {}
         # Multi-profile multiplexing: adapters for NON-default profiles live
         # here, keyed by profile name then Platform. self.adapters stays the
         # default/active profile's map so the ~93 existing self.adapters[...]
@@ -2928,6 +3376,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Persistent cross-turn todo plan card, keyed by session_key. Value:
+        # {"message_id", "last_text", "finished", "thread_sig", "seeded_at"}.
+        # ONE living card is edited in place across turns instead of stacking a
+        # new card per todo call. Written only by the progress consumer
+        # coroutine (loop thread) and the session-boundary handlers.
+        # Presentation-only; never persisted to conversation history (prompt
+        # caching is sacred). Capped OrderedDict + LRU: the boundary clears only
+        # fire on session transitions, so an idle-abandoned session would leak a
+        # plain dict entry forever; the cap bounds it like _session_sources.
+        self._todo_card_state: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._todo_card_state_max = 512
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -3075,6 +3534,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set after a wake (re-arm cooldown, 0.F) so we don't immediately re-go
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
+
+
+    def _next_status_update_sequence(self, chat_id: Any, status_key: str) -> int:
+        """Return a runner-lifetime sequence for one editable status bubble."""
+        key = (str(chat_id), str(status_key))
+        with self._status_update_sequence_lock:
+            self._status_update_sequences[key] = (
+                self._status_update_sequences.get(key, 0) + 1
+            )
+            return self._status_update_sequences[key]
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -4725,7 +5194,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Load reasoning effort from config.yaml.
 
         Reads agent.reasoning_effort from config.yaml. Valid: "none",
-        "minimal", "low", "medium", "high", "xhigh". Returns None to use
+        "minimal", "low", "medium", "high", "xhigh", "max". Returns None to use
         default (medium).
         """
         from hermes_constants import parse_reasoning_effort
@@ -5259,6 +5728,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # cascade after the current turn finishes.
         if getattr(event, "internal", False):
             return False
+
+        # --- Synthetic webhook turns: strict FIFO, never steer/interrupt ---
+        # A webhook delivery (chat_type=="webhook" + an intake-stamped
+        # arrival_seq) that resolves to an active session binding must become
+        # the NEXT ordered turn, not steer into / interrupt / coalesce with the
+        # running turn. This is the FIFO half of the topic-ordering fix: two
+        # same-binding GitHub "Ask Hermes" deliveries (Q1, Q2) serialize so Q2
+        # runs after Q1 and sees its transcript, regardless of busy_input_mode
+        # (steer/interrupt would otherwise splice or drop Q2). _queue_or_replace
+        # _pending_event routes through the per-turn FIFO (no merge_text
+        # coalescing), preserving each delivery as its own turn in arrival order.
+        if (
+            getattr(event.source, "chat_type", None) == "webhook"
+            and getattr(event, "arrival_seq", None) is not None
+        ):
+            logger.info(
+                "Queuing synthetic webhook turn FIFO for session %s "
+                "(arrival_seq=%s; no steer/interrupt)",
+                session_key, event.arrival_seq,
+            )
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
 
         running_agent = self._running_agents.get(session_key)
 
@@ -7563,6 +8054,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _lrm = getattr(self, "_last_resolved_model", None)
                         if _lrm is not None:
                             _lrm.pop(key, None)
+                        if isinstance(getattr(self, "_todo_card_state", None), dict):
+                            self._todo_card_state.pop(key, None)
                         _pending_approvals = getattr(self, "_pending_approvals", None)
                         if isinstance(_pending_approvals, dict):
                             _pending_approvals.pop(key, None)
@@ -8717,26 +9210,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
                 _hook_results = []
 
-            for _result in _hook_results:
-                if not isinstance(_result, dict):
-                    continue
-                _action = _result.get("action")
-                if _action == "skip":
-                    logger.info(
-                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                        _result.get("reason"),
-                        source.platform.value if source.platform else "unknown",
-                        source.chat_id or "unknown",
+            # ---- pre_gateway_dispatch result MERGE contract ----------------
+            # invoke_hook already ran every callback. _merge_pre_dispatch_results
+            # (pure, unit-tested) decides the combined effect so independent
+            # plugins each contribute: skip (terminal), session_binding (pin the
+            # session; conflicting distinct bindings refuse fail-closed), and a
+            # single first-wins text rewrite. This lets the gh-review binding
+            # hook and the topic-rename seed rewrite hook BOTH apply on one turn.
+            _merged = _merge_pre_dispatch_results(_hook_results)
+
+            if _merged["skip"]:
+                logger.info(
+                    "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                    _merged["skip_reason"],
+                    source.platform.value if source.platform else "unknown",
+                    source.chat_id or "unknown",
+                )
+                return None
+
+            if _merged["extra_rewrites"]:
+                logger.warning(
+                    "pre_gateway_dispatch: ignored %d extra rewrite(s) "
+                    "(first-in-registration-order won)",
+                    _merged["extra_rewrites"],
+                )
+            if _merged["binding_conflict"]:
+                logger.warning(
+                    "pre_gateway_dispatch: %d distinct session bindings from "
+                    "hooks (%s) — refusing all (fail-closed)",
+                    len(_merged["binding_conflict"]), _merged["binding_conflict"],
+                )
+
+            _rewrite_text = _merged["rewrite_text"]
+            _binding_to_apply = _merged["binding"]
+            if _rewrite_text is not None or _binding_to_apply is not None:
+                _new_source = source
+                if _binding_to_apply is not None:
+                    _new_source = dataclasses.replace(
+                        source, session_binding=_binding_to_apply
                     )
-                    return None
-                if _action == "rewrite":
-                    _new_text = _result.get("text")
-                    if isinstance(_new_text, str):
-                        event = dataclasses.replace(event, text=_new_text)
-                        source = event.source
-                    break
-                if _action == "allow":
-                    break
+                event = dataclasses.replace(
+                    event,
+                    text=_rewrite_text if _rewrite_text is not None else event.text,
+                    source=_new_source,
+                )
+                source = event.source
 
         if is_internal:
             pass
@@ -9703,6 +10221,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "branch":
             return await self._handle_branch_command(event)
 
+        if canonical == "forktopic":
+            return await self._handle_forktopic_command(event)
+
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
 
@@ -10585,6 +11106,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # compaction summaries. Mirrors /reset and the compression-exhausted
             # path (#9893). Covers daily/idle/suspended auto-reset.
             self._evict_cached_agent(session_key)
+            if isinstance(getattr(self, "_todo_card_state", None), dict):
+                self._todo_card_state.pop(session_key, None)
             session_entry.was_auto_reset = False
         
         # Emit session:start for new or auto-reset sessions
@@ -10907,6 +11430,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
                     _hyg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+
+                    # B1 (durable local patch): notify the user that a heavy,
+                    # pre-agent "session hygiene" compaction is happening NOW.
+                    # The agent's own 🗜️ indicator never fires on this path
+                    # because the throwaway _hyg_agent below is constructed
+                    # WITHOUT a status_callback, so this branch was previously
+                    # SILENT on Telegram/Discord. We send a standalone, persistent
+                    # message directly through the adapter (not the status_callback
+                    # rail) so it (a) survives as a real chat message instead of an
+                    # overwritable status bubble and (b) is independent of the
+                    # _TELEGRAM_NOISY_STATUS_RE filter / un-mute hook.
+                    # Re-applied on boot by the gateway:startup hook
+                    # 'notify-hygiene-compaction' so `hermes update` can't revert it.
+                    try:
+                        _hyg_notify_adapter = self.adapters.get(source.platform)
+                        if _hyg_notify_adapter is not None:
+                            _hyg_notice_msg = (
+                                f"🗜️ Compacting this conversation now "
+                                f"({_msg_count} messages, ~{_approx_tokens:,} tokens "
+                                f"reached the hygiene threshold). Earlier history is "
+                                f"being summarized so I can keep going. If you want a "
+                                f"clean slate with full context, this is a good moment "
+                                f"to start a fresh session with /new."
+                            )
+                            await _hyg_notify_adapter.send(
+                                source.chat_id, _hyg_notice_msg, metadata=_hyg_meta
+                            )
+                    except Exception:
+                        logger.debug(
+                            "hygiene compaction user-notice failed", exc_info=True
+                        )
 
                     try:
                         from run_agent import AIAgent
@@ -11573,6 +12127,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _lrm = getattr(self, "_last_resolved_model", None)
                 if _lrm is not None:
                     _lrm.pop(session_key, None)
+                if isinstance(getattr(self, "_todo_card_state", None), dict):
+                    self._todo_card_state.pop(session_key, None)
                 if new_entry is not None:
                     # Drop the stale reference to the bloated compressed child and
                     # re-point the Telegram topic binding at the fresh session.
@@ -14975,23 +15531,344 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _enrich_async_delegation_routing(self, evt: dict) -> None:
         """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
 
-        Async-delegation completion events only carry ``session_key`` (the
-        daemon worker has no access to the per-message routing metadata the
-        terminal background watcher captures at spawn time). Parse the
-        session_key into the routing fields ``_build_process_event_source``
-        expects. Best-effort: a CLI-origin event (empty session_key) is left
-        as-is and simply won't route on the gateway.
+        Background batch events captured at dispatch time carry an explicit
+        ``routing`` dict (platform/chat_id/thread_id/message_id) AND top-level
+        copies of those fields. Honor that routing first — it is the freshest,
+        most specific origin we have. Only fall back to parsing ``session_key``
+        for fields routing did not provide. A CLI-origin event (empty routing +
+        empty session_key) is left as-is and simply won't route on the gateway.
         """
-        if evt.get("platform"):
-            return  # already enriched
+        routing = evt.get("routing") if isinstance(evt.get("routing"), dict) else {}
+        for key in (
+            "platform",
+            "chat_type",
+            "chat_id",
+            "thread_id",
+            "message_id",
+            "user_id",
+            "user_name",
+        ):
+            value = routing.get(key)
+            if value and not evt.get(key):
+                evt[key] = str(value)
+
         parsed = _parse_session_key(evt.get("session_key", "") or "")
         if not parsed:
             return
-        evt["platform"] = parsed.get("platform", "")
-        evt["chat_type"] = parsed.get("chat_type", "")
-        evt["chat_id"] = parsed.get("chat_id", "")
-        if parsed.get("thread_id"):
+
+        evt.setdefault("platform", parsed.get("platform", ""))
+        evt.setdefault("chat_type", parsed.get("chat_type", ""))
+        evt.setdefault("chat_id", parsed.get("chat_id", ""))
+        if parsed.get("thread_id") and not evt.get("thread_id"):
             evt["thread_id"] = parsed["thread_id"]
+
+    def _async_roster_bubbles(self) -> Dict[str, Dict[str, Any]]:
+        bubbles = getattr(self, "_async_subagent_roster_bubbles", None)
+        if bubbles is None:
+            bubbles = {}
+            self._async_subagent_roster_bubbles = bubbles
+        return bubbles
+
+    def _async_roster_target(self, evt: dict):
+        """Resolve (source, adapter, metadata) for a background roster bubble.
+
+        B1: build the SessionSource DIRECTLY from the routing captured at
+        dispatch time (platform/chat_id/chat_type/thread_id) instead of going
+        through ``_build_process_event_source``, which prefers the persisted
+        session-store origin (and its cached source) BEFORE explicit routing —
+        that would let a stale/foreground origin override the freshly captured
+        topic/chat. Only fall back to ``_build_process_event_source`` when
+        routing is incomplete. The reply anchor (message_id) is passed
+        separately to ``_thread_metadata_for_source`` — SessionSource has no
+        message_id field.
+        """
+        from gateway.session import SessionSource
+
+        route_evt = dict(evt)
+        self._enrich_async_delegation_routing(route_evt)
+
+        platform_name = str(route_evt.get("platform") or "").strip().lower()
+        chat_type = str(route_evt.get("chat_type") or "").strip().lower()
+        chat_id = str(route_evt.get("chat_id") or "").strip()
+
+        source = None
+        if platform_name and chat_type and chat_id:
+            try:
+                platform = Platform(platform_name)
+                if platform.value not in _BUILTIN_PLATFORM_VALUES:
+                    from gateway.platform_registry import platform_registry
+                    if not platform_registry.is_registered(platform.value):
+                        raise ValueError(platform_name)
+                source = SessionSource(
+                    platform=platform,
+                    chat_id=chat_id,
+                    chat_type=chat_type,
+                    thread_id=str(route_evt.get("thread_id") or "").strip() or None,
+                    user_id=str(route_evt.get("user_id") or "").strip() or None,
+                    user_name=str(route_evt.get("user_name") or "").strip() or None,
+                )
+            except Exception:
+                source = None
+        if source is None:
+            source = self._build_process_event_source(route_evt)
+        if not source:
+            return None
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return None
+        if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            return None
+
+        try:
+            from gateway.display_config import resolve_display_setting
+
+            platform_key = _platform_config_key(source.platform)
+            enabled = is_truthy_value(
+                resolve_display_setting(
+                    _load_gateway_config(),
+                    platform_key,
+                    "subagent_roster",
+                    False,
+                ),
+                default=False,
+            )
+        except Exception:
+            enabled = False
+        if not enabled:
+            return None
+
+        reply_anchor = str(route_evt.get("message_id") or "").strip() or None
+        metadata = self._thread_metadata_for_source(source, reply_anchor)
+        metadata = _non_conversational_metadata(metadata, platform=source.platform)
+        return source, adapter, metadata
+
+    @staticmethod
+    def _adapter_edit_accepts_metadata(adapter: Any) -> bool:
+        try:
+            params = inspect.signature(adapter.edit_message).parameters
+            return (
+                "metadata" in params
+                or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+            )
+        except (TypeError, ValueError):
+            return False
+
+    async def _publish_async_delegation_roster(
+        self,
+        record: dict,
+        active_subagents: List[Dict[str, Any]],
+        *,
+        force: bool = False,
+        collapsed: bool = False,
+        allow_seed: bool = True,
+    ) -> None:
+        delegation_id = str(record.get("delegation_id") or "")
+        if not delegation_id:
+            return
+
+        target = self._async_roster_target(record)
+        if target is None:
+            return
+        source, adapter, metadata = target
+
+        from gateway.async_subagent_roster import (
+            build_async_subagent_roster_rows,
+            build_async_dispatched_header,
+        )
+        from gateway.subagent_roster import (
+            format_subagent_roster,
+            resolve_roster_interval,
+        )
+
+        rows = build_async_subagent_roster_rows(record, active_subagents)
+
+        # Header wall-clock for this delegation (the real time waited), threaded
+        # into format_subagent_roster so the header is NOT a sum of parallel
+        # child durations. _coerce returns finite-or-None so a malformed/non-
+        # finite timestamp can never produce a bogus 0.0 or a non-finite value
+        # (the formatter's _usable is a second finite-guard, defense in depth).
+        def _coerce(v: Any) -> Optional[float]:
+            try:
+                v = float(v)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return v if math.isfinite(v) else None
+
+        if collapsed:
+            # Authoritative batch wall-clock; fall back to completed-dispatched.
+            _wall = _coerce(record.get("total_duration_seconds"))
+            if _wall is None:
+                _d = _coerce(record.get("dispatched_at"))
+                _c = _coerce(record.get("completed_at"))
+                _wall = max(0.0, _c - _d) if (_d is not None and _c is not None) else None
+        else:
+            # Live: real elapsed since dispatch.
+            _d = _coerce(record.get("dispatched_at"))
+            _wall = max(0.0, time.time() - _d) if _d is not None else None
+
+        # PINNED HEADER: a "what I dispatched" line that stays for the WHOLE
+        # lifecycle instead of morphing away. The roster rows are appended
+        # BELOW it and updated in place every tick (live → collapsed), so the
+        # profile/agent-count/toolsets audit info is ALWAYS visible, not just in
+        # the first ~10s frame. Gated on delegate_task_args (toggle independence:
+        # args:off + roster:on → roster only, no header). The watcher is a global
+        # loop that otherwise only honors subagent_roster, so resolve args here
+        # with the same shape _async_roster_target uses for subagent_roster.
+        try:
+            from gateway.display_config import resolve_display_setting
+
+            _args_enabled = is_truthy_value(
+                resolve_display_setting(
+                    _load_gateway_config(),
+                    _platform_config_key(source.platform),
+                    "delegate_task_args",
+                    False,
+                ),
+                default=False,
+            )
+        except Exception:
+            _args_enabled = False
+
+        roster_text = format_subagent_roster(rows, collapsed=collapsed, wall_clock=_wall)
+        if _args_enabled:
+            header = build_async_dispatched_header(record)
+            if header:
+                text = f"{header}\n{roster_text}" if roster_text else header
+            else:
+                text = roster_text
+        else:
+            text = roster_text
+        if not text:
+            return
+
+        bubbles = self._async_roster_bubbles()
+        bubble = bubbles.setdefault(
+            delegation_id,
+            {
+                "message_id": None,
+                "seed_failed": False,
+                "last_text": None,
+                "last_edit_ts": 0.0,
+            },
+        )
+
+        try:
+            interval = resolve_roster_interval(
+                _load_gateway_config(), _platform_config_key(source.platform)
+            )
+        except Exception:
+            from gateway.subagent_roster import ROSTER_EDIT_INTERVAL
+            interval = ROSTER_EDIT_INTERVAL
+
+        now = time.monotonic()
+        if not force and (now - float(bubble.get("last_edit_ts") or 0.0)) < interval:
+            return
+        if not force and text == bubble.get("last_text"):
+            return
+
+        if bubble.get("message_id") is None:
+            if not allow_seed or bubble.get("seed_failed"):
+                return
+            result = await adapter.send(
+                chat_id=source.chat_id,
+                content=text,
+                metadata=metadata,
+            )
+            if getattr(result, "success", False) and getattr(result, "message_id", None):
+                bubble["message_id"] = str(result.message_id)
+            else:
+                # A flood/rate reject means the seed DEFINITIVELY did not land,
+                # so re-seeding next tick cannot duplicate — do NOT latch; just
+                # stamp the throttle clock so retries pace at the roster interval
+                # instead of hammering every idle tick. Only an AMBIGUOUS failure
+                # (might have delivered) latches seed_failed to avoid dup spam.
+                from gateway.subagent_roster import is_flood_error
+                if not is_flood_error(result):
+                    bubble["seed_failed"] = True
+                bubble["last_edit_ts"] = now
+                return
+        else:
+            kwargs: Dict[str, Any] = {
+                "chat_id": source.chat_id,
+                "message_id": str(bubble["message_id"]),
+                "content": text,
+            }
+            if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
+                kwargs["finalize"] = True
+            if metadata and self._adapter_edit_accepts_metadata(adapter):
+                kwargs["metadata"] = metadata
+            try:
+                await adapter.edit_message(**kwargs)
+            except Exception:
+                logger.debug("async roster edit failed", exc_info=True)
+                return
+
+        bubble["last_text"] = text
+        bubble["last_edit_ts"] = now
+
+    async def _tick_async_delegation_rosters(
+        self,
+        records: List[Dict[str, Any]],
+        active_subagents: List[Dict[str, Any]],
+    ) -> None:
+        running_ids = set()
+        for record in records or []:
+            if record.get("type") and record.get("type") != "async_delegation":
+                continue
+            if not record.get("is_batch"):
+                continue
+            if record.get("status") != "running":
+                continue
+            did = str(record.get("delegation_id") or "")
+            if not did:
+                continue
+            running_ids.add(did)
+            try:
+                await self._publish_async_delegation_roster(
+                    record,
+                    active_subagents,
+                    force=False,
+                    collapsed=False,
+                    allow_seed=True,
+                )
+            except Exception:
+                logger.debug("async roster tick failed", exc_info=True)
+
+        bubbles = self._async_roster_bubbles()
+        for did in list(bubbles.keys()):
+            if did not in running_ids and bubbles[did].get("message_id") is None:
+                bubbles.pop(did, None)
+
+    async def _finalize_async_delegation_roster(
+        self,
+        evt: dict,
+        active_subagents: List[Dict[str, Any]],
+    ) -> None:
+        if evt.get("type") != "async_delegation":
+            return
+        if not evt.get("is_batch"):
+            return
+        did = str(evt.get("delegation_id") or "")
+        if not did:
+            return
+        try:
+            # Single collapsed publish handles BOTH cases now that the header is
+            # pinned into every render (live AND collapsed): a never-seeded fast
+            # completion seeds the bubble directly with header + collapsed roster
+            # (allow_seed=True), and an already-seeded bubble edits in place. No
+            # pre-seed non-collapsed pass is needed — the old card-first dance
+            # existed only because the dispatched card used to be a separate
+            # first frame that the collapsed roster would otherwise skip.
+            await self._publish_async_delegation_roster(
+                evt,
+                active_subagents,
+                force=True,
+                collapsed=True,
+                allow_seed=True,
+            )
+        finally:
+            self._async_roster_bubbles().pop(did, None)
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async-delegation completions and inject them as new turns.
@@ -15009,8 +15886,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         await asyncio.sleep(3)  # let platforms finish connecting
         from tools.process_registry import process_registry as _pr
+        from tools.async_delegation import list_async_delegations as _list_async_delegations
+        from tools.delegate_tool import list_active_subagents as _list_active_subagents
         while self._running:
             try:
+                # Live roster tick: seed/edit the watcher-owned background
+                # subagent roster bubble for every running batch delegation
+                # BEFORE draining completions. The parent turn that dispatched
+                # these children has already ended, so this watcher is the only
+                # owner of their live progress surface.
+                try:
+                    active_subagents = _list_active_subagents()
+                except Exception:
+                    active_subagents = []
+                try:
+                    records = _list_async_delegations()
+                except Exception:
+                    records = []
+                await self._tick_async_delegation_rosters(records, active_subagents)
+
                 # Peek the queue for async-delegation events. We must NOT
                 # consume watch/completion events here (other drains own them),
                 # so requeue anything that isn't ours.
@@ -15033,6 +15927,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not synth_text:
                         continue
                     try:
+                        await self._finalize_async_delegation_roster(evt, active_subagents)
                         await self._inject_watch_notification(synth_text, evt)
                     except Exception as e:
                         logger.error("Async delegation injection error: %s", e)
@@ -15552,6 +16447,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not session_key:
             return
 
+        # Persistent todo plan card belongs to the prior conversation. Drop the
+        # stored message_id so a fresh session seeds its own card instead of
+        # editing a pre-reset message. Placed FIRST so a later import/return in
+        # this method can never skip it.
+        todo_card_state = getattr(self, "_todo_card_state", None)
+        if isinstance(todo_card_state, dict):
+            todo_card_state.pop(session_key, None)
+
         pending_skills_reload_notes = getattr(
             self, "_pending_skills_reload_notes", None
         )
@@ -15837,6 +16740,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if interrupt_depth == 0:
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
+            try:
+                from agent.activity import reset_turn_activity
+
+                reset_turn_activity(agent)
+            except Exception:
+                pass
             # Reset the SessionDB flush cursor so the new turn's messages are
             # fully persisted — a stale value from the previous turn would
             # cause `_flush_messages_to_session_db` to skip new rows (#44327).
@@ -16636,10 +17545,108 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _phrase_err:
                 logger.debug("generic status phrase selection failed: %s", _phrase_err)
                 return "still on it" if kind in {"heartbeat", "waiting", "long_running", "status"} else "one sec"
+
+        try:
+            tool_completion_durations_enabled = is_truthy_value(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "tool_completion_durations",
+                    False,
+                ),
+                default=False,
+            )
+        except Exception:
+            tool_completion_durations_enabled = False
+
+        # delegate_task child tool visibility. "off" (default) drops child tool
+        # events; "batched" renders the periodic subagent.progress summary;
+        # "full" renders every child tool start. Resolved once here so it can
+        # both (a) keep the progress pipeline alive when tool_progress is "off"
+        # and (b) drive the subagent.* branch in progress_callback below.
+        try:
+            subagent_progress_mode = str(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "subagent_tool_progress",
+                    "off",
+                )
+                or "off"
+            ).lower()
+            if subagent_progress_mode not in {"off", "batched", "full"}:
+                subagent_progress_mode = "off"
+        except Exception:
+            subagent_progress_mode = "off"
+        subagent_progress_enabled = subagent_progress_mode != "off"
+
         # Disable tool progress for webhooks - they don't support message editing,
-        # so each progress line would be sent as a separate message.
+        # so each progress line would be sent as a separate message.  Completion
+        # durations can opt into the same event pipeline even when normal
+        # tool-start progress is off; the callback suppresses start rows in that
+        # duration-only mode.  Subagent tool visibility likewise keeps the
+        # pipeline alive even when the parent's own tool progress is "off".
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
+        # delegate_task input visibility is an independent opt-in: it must keep
+        # the progress pipeline alive even when tool_progress is "off" (the
+        # whole point: show delegate_task params WITHOUT general tool noise).
+        try:
+            delegate_task_args_enabled = is_truthy_value(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "delegate_task_args",
+                    False,
+                ),
+                default=False,
+            )
+        except Exception:
+            delegate_task_args_enabled = False
+        # Live subagent roster bubble is an independent opt-in: it must keep the
+        # progress pipeline alive even when tool_progress is "off" (the Telegram
+        # default), exactly like delegate_task_args. Resolved once here so it
+        # gates both pipeline creation and the subagent.* relay in
+        # progress_callback below. Only renders on edit-capable adapters; the
+        # consumer no-ops on platforms without message editing.
+        try:
+            subagent_roster_enabled = is_truthy_value(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "subagent_roster",
+                    False,
+                ),
+                default=False,
+            )
+        except Exception:
+            subagent_roster_enabled = False
+        # Todo plan card is an independent opt-in: it must keep the progress
+        # pipeline alive even when tool_progress is "off" (the Telegram
+        # default), exactly like delegate_task_args / subagent_roster. Resolved
+        # once here so it gates both pipeline creation and the todo branches in
+        # progress_callback below. Only renders on edit-capable adapters; the
+        # consumer no-ops on platforms without message editing.
+        try:
+            todo_progress_enabled = is_truthy_value(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "todo_progress",
+                    False,
+                ),
+                default=False,
+            )
+        except Exception:
+            todo_progress_enabled = False
+        progress_pipeline_enabled = _tool_progress_pipeline_enabled(
+            is_webhook=(source.platform == Platform.WEBHOOK),
+            progress_mode=progress_mode,
+            tool_completion_durations_enabled=tool_completion_durations_enabled,
+            subagent_progress_enabled=subagent_progress_enabled,
+            delegate_task_args_enabled=delegate_task_args_enabled,
+            subagent_roster_enabled=subagent_roster_enabled,
+            todo_progress_enabled=todo_progress_enabled,
+        )
         # "log" mode: tool calls are written to ~/.hermes/logs/tool_calls.log
         # instead of the chat (#3459 / #3458). Gateway-only by design.
         log_mode_enabled = progress_mode == "log" and source.platform != Platform.WEBHOOK
@@ -16666,7 +17673,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
-        needs_progress_queue = tool_progress_enabled or _thinking_enabled
+        needs_progress_queue = progress_pipeline_enabled or _thinking_enabled
 
 
         # Queue for progress messages (thread-safe)
@@ -16678,6 +17685,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # fenced code block — consecutive terminal calls then drop the
         # repeated "💻 terminal" header and render back-to-back blocks.
         last_was_terminal_block = [False]
+        # Last delegate_task subagent whose tool card we rendered (by stable
+        # subagent_id). In "full" mode, consecutive child tool calls from the
+        # SAME subagent drop the repeated "🔀 <goal>" header so a long child
+        # run reads as one header + a run of bare "└ <tool>" lines — mirroring
+        # the consecutive-terminal-block header drop above. None until the
+        # first subagent tool card; reset is unnecessary since a different
+        # subagent_id naturally re-emits the header.
+        last_subagent_id = [None]
 
         # ── Discord voice "verbal ack before tool calls" ────────────────
         # When the bot is in a voice channel with the continuous mixer
@@ -16741,6 +17756,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
+        # FIFO of the ``merge`` flag for each todo call, pushed at tool.started
+        # and popped at tool.completed. Lets the completion re-render keep the
+        # same "📋 Plan" vs "📋 Plan update" title the start card used. The
+        # agent emits started/completed in parsed-call (FIFO) order.
+        _todo_merge_flags: List[bool] = []
+        # FIFO of the persistent-card `new_plan` flag (write call with
+        # merge=False) pushed at todo tool.started and popped at tool.completed.
+        # Separate from _todo_merge_flags so the persistent path and the legacy
+        # shared-bubble path never share a queue. Only one path runs per call
+        # (gated on todo_progress_enabled). Per-turn scoped, so an interrupt-
+        # cancelled todo (start without completion) self-heals next turn; the
+        # `pop(0) if flags else False` at the completion site tolerates under-pop.
+        _todo_card_new_plan_flags: List[bool] = []
+
+        # Length budget for the todo plan card: the active adapter's per-message
+        # char limit. Passed to format_todo_progress so a long plan collapses
+        # only its overflow tail (keeping the card ONE editable message) instead
+        # of overflowing adapters whose edit path truncates/sends-unsplit.
+        # Adapters that expose no positive MAX_MESSAGE_LENGTH (Mattermost, IRC,
+        # LINE, whatsapp, the base class) fall back to 4096 — matching this
+        # gateway's existing convention (stream_consumer.py:898, run.py
+        # _PROGRESS_TEXT_LIMIT) — rather than 0, which would leave the card
+        # unbounded and re-open the overflow on those unsplit edit paths.
+        try:
+            _todo_progress_adapter = self.adapters.get(source.platform)
+            _todo_card_max_chars = int(
+                getattr(_todo_progress_adapter, "MAX_MESSAGE_LENGTH", 0) or 4096
+            )
+        except Exception:
+            _todo_card_max_chars = 4096
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
@@ -16757,33 +17802,269 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not progress_queue or not _run_still_current():
                 return
 
+            # delegate_task child tool visibility. The child's progress callback
+            # (tools/delegate_tool.py) relays its OWN tool calls to this parent
+            # callback as "subagent.tool" (per call) and "subagent.progress" (a
+            # batched summary every ~5 child tools). Depth-2+ grandchild
+            # summaries arrive as the legacy underscore event "subagent_progress"
+            # with the summary string in the tool_name slot. The gateway drops
+            # all of these by default; surface them only when the operator opted
+            # in via display.platforms.<platform>.subagent_tool_progress.
+            #   "full"    → render every "subagent.tool"
+            #   "batched" → render the "subagent.progress"/"subagent_progress"
+            #               summary only
+            # Other subagent.* lifecycle events (start/complete/thinking) are
+            # intentionally NOT rendered here to avoid extra chat noise; the
+            # parent's own delegate_task call + summary already bracket the run.
+            # Queued under the "__subagent__" sentinel (not "delegate_task") so
+            # these cards stay out of the parent's tool-completion FIFO and never
+            # absorb a parent delegate_task duration suffix.
+            # B4 guard: background (async) children are owned by the long-lived
+            # _async_delegation_watcher roster. Their progress/tool/lifecycle
+            # events must never render on the parent-turn surface (the turn dies
+            # ~2s after dispatch, leaving a stale 0-done bubble or orphan tool
+            # cards). Drop EVERY subagent.* / subagent_progress event flagged
+            # async_background BEFORE any parent-turn handling below.
+            if kwargs.get("async_background") and (
+                str(event_type).startswith("subagent.")
+                or event_type == "subagent_progress"
+            ):
+                return
+
+            if event_type in {
+                "subagent.tool",
+                "subagent.progress",
+                "subagent_progress",
+                "subagent.tool_completed",
+            }:
+                if subagent_progress_mode == "full" and event_type == "subagent.tool":
+                    # Header dedup keyed on the stable subagent_id (sa-<idx>-<uuid>
+                    # from tools/delegate_tool.py): emit the "🔀 <goal>" header
+                    # only when the active subagent changes. A missing/blank id
+                    # fails safe to header-always so we never silently strip the
+                    # only context line. task_index is NOT used as the key — it
+                    # can collide across nested orchestrator levels.
+                    _sub_id = kwargs.get("subagent_id")
+                    _include_header = (not _sub_id) or (_sub_id != last_subagent_id[0])
+                    try:
+                        _card = _format_subagent_tool_card(
+                            tool_name,
+                            preview,
+                            goal=kwargs.get("goal"),
+                            task_index=int(kwargs.get("task_index", 0) or 0),
+                            task_count=int(kwargs.get("task_count", 1) or 1),
+                            include_header=_include_header,
+                        )
+                    except Exception as _sub_err:
+                        logger.debug("subagent tool card render failed: %s", _sub_err)
+                        _card = None
+                    if _card:
+                        last_was_terminal_block[0] = False
+                        if _sub_id:
+                            last_subagent_id[0] = _sub_id
+                        # Tuple carries the subagent_id + real tool name so the
+                        # consumer can match a later completion to THIS child's
+                        # card (keyed on (sub_id, tool)) without cross-attributing
+                        # a parallel sibling's duration. The "__subagent__"
+                        # sentinel still keeps these out of the parent's FIFO.
+                        progress_queue.put(
+                            (
+                                "__tool_start__",
+                                "__subagent__",
+                                _card,
+                                _sub_id or "",
+                                str(tool_name or ""),
+                            )
+                        )
+                elif subagent_progress_mode == "full" and event_type == "subagent.tool_completed":
+                    # Benchmark suffix: append "· <duration>" to this child's
+                    # matching tool card. Only meaningful in "full" mode (one
+                    # card per child tool); batched/off have no per-tool row to
+                    # annotate. Independent of the parent's
+                    # tool_completion_durations toggle — opting into "full"
+                    # subagent visibility implies you want the timings too.
+                    _sub_id = kwargs.get("subagent_id") or ""
+                    progress_queue.put(
+                        (
+                            "__subagent_duration__",
+                            _sub_id,
+                            str(tool_name or ""),
+                            kwargs.get("duration"),
+                            bool(kwargs.get("is_error", False)),
+                        )
+                    )
+                elif subagent_progress_mode == "batched" and event_type in {
+                    "subagent.progress",
+                    "subagent_progress",
+                }:
+                    # Dotted form carries the summary in `preview`; the legacy
+                    # underscore form (depth-2 grandchild) carries it in the
+                    # tool_name slot — accept either.
+                    try:
+                        _card = _format_subagent_progress_card(preview or tool_name)
+                    except Exception as _sub_err:
+                        logger.debug("subagent progress card render failed: %s", _sub_err)
+                        _card = None
+                    if _card:
+                        last_was_terminal_block[0] = False
+                        progress_queue.put(("__tool_start__", "__subagent__", _card))
+                return
+
+            # Live subagent roster bubble. Independent of subagent_tool_progress;
+            # gated only on display.platforms.<platform>.subagent_roster. The
+            # child's subagent.start/.complete lifecycle events are relayed from
+            # tools/delegate_tool.py with identity kwargs (subagent_id, goal,
+            # task_index, status, duration_seconds) but are otherwise dropped
+            # here. Forward them as roster sentinels; the consumer (gateway loop)
+            # owns roster state + its own edited-in-place bubble. This callback
+            # runs on a WORKER thread, so it ONLY enqueues — never touches roster
+            # state or the loop (no cross-thread scheduling, no deadlock trap).
+            if subagent_roster_enabled and event_type in {
+                "subagent.start",
+                "subagent.complete",
+            }:
+                if kwargs.get("async_background"):
+                    return  # B4 defensive: background rosters are watcher-owned
+                _sid = str(kwargs.get("subagent_id") or "")
+                if not _sid:
+                    return  # no stable id -> can't track a row; drop quietly
+                if event_type == "subagent.start":
+                    progress_queue.put((
+                        "__roster_start__",
+                        _sid,
+                        kwargs.get("goal") or preview or "",
+                        int(kwargs.get("task_index", 0) or 0),
+                        time.time(),
+                        kwargs.get("model") or "",
+                        kwargs.get("reasoning"),
+                        bool(kwargs.get("context_available")),
+                        str(kwargs.get("context_child_session_id") or kwargs.get("child_session_id") or ""),
+                    ))
+                else:
+                    progress_queue.put((
+                        "__roster_complete__",
+                        _sid,
+                        str(kwargs.get("status") or "completed").lower(),
+                        float(kwargs.get("duration_seconds") or 0.0),
+                        int(kwargs.get("tool_count") or 0),
+                    ))
+                return
+
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
             # (progress_mode == "all"), append a one-time hint suggesting
             # /verbose.  We only fire when (a) the user hasn't seen the hint
             # before and (b) /verbose is actually usable on this platform
             # (gateway gate must be open).  The CLI has its own trigger.
-            if event_type == "tool.completed" and not long_tool_hint_fired[0]:
-                try:
-                    duration = kwargs.get("duration") or 0
-                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
-                        from agent.onboarding import (
-                            TOOL_PROGRESS_FLAG,
-                            is_seen,
-                            mark_seen,
-                            tool_progress_hint_gateway,
+            if event_type == "tool.completed":
+                duration = kwargs.get("duration") or 0
+                if not long_tool_hint_fired[0]:
+                    try:
+                        if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                            from agent.onboarding import (
+                                TOOL_PROGRESS_FLAG,
+                                is_seen,
+                                mark_seen,
+                                tool_progress_hint_gateway,
+                            )
+                            _cfg = _load_gateway_config()
+                            gate_on = is_truthy_value(
+                                cfg_get(_cfg, "display", "tool_progress_command"),
+                                default=False,
+                            )
+                            if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
+                                long_tool_hint_fired[0] = True
+                                progress_queue.put(tool_progress_hint_gateway())
+                                mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                    except Exception as _hint_err:
+                        logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+
+                if tool_name == "todo":
+                    # Persistent cross-turn plan card supersedes the shared-bubble
+                    # append for the todo tool whenever todo_progress is on. The
+                    # result carries the full current list + per-item timing; the
+                    # card publisher edits ONE living message in place.
+                    if todo_progress_enabled:
+                        # B2: pop the new_plan FIFO UNCONDITIONALLY and FIRST.
+                        # A guardrail-appended result makes format_todo_progress
+                        # return None (json.loads fails); popping inside the
+                        # `if card:` branch would desync the FIFO for the rest of
+                        # the turn. Mirror the legacy pop-before-check ordering.
+                        _new_plan = (
+                            _todo_card_new_plan_flags.pop(0)
+                            if _todo_card_new_plan_flags else False
                         )
-                        _cfg = _load_gateway_config()
-                        gate_on = is_truthy_value(
-                            cfg_get(_cfg, "display", "tool_progress_command"),
-                            default=False,
+                        _todo_result = kwargs.get("result")
+                        _card = None
+                        _finished = False
+                        if _todo_result is not None:
+                            try:
+                                from gateway.todo_progress import (
+                                    format_todo_progress,
+                                    extract_todo_items,
+                                )
+                                from gateway.todo_card import todo_list_finished
+
+                                _card = format_todo_progress(
+                                    {"merge": False}, result=_todo_result,
+                                    max_chars=_todo_card_max_chars,
+                                )
+                                _finished = todo_list_finished(
+                                    extract_todo_items(_todo_result)
+                                )
+                            except Exception:
+                                _card = None
+                        # M4: do not enqueue None (unusable/guardrail result) —
+                        # leave the existing card untouched, do not clobber.
+                        if _card:
+                            last_was_terminal_block[0] = False
+                            progress_queue.put(
+                                ("__todo_card__", _card, _finished, _new_plan)
+                            )
+                        return
+                    # Legacy shared-bubble path (todo_progress off): the result
+                    # carries per-item wall-clock durations the start card could
+                    # not. Re-render and REPLACE the start row in place. Skip
+                    # entirely when progress is fully off (nothing was queued).
+                    if progress_mode == "off":
+                        return
+                    _merge_flag = _todo_merge_flags.pop(0) if _todo_merge_flags else False
+                    _todo_done_card = None
+                    _todo_result = kwargs.get("result")
+                    # Only re-render when the result actually carries items with
+                    # timing. With no usable result we leave the start card as-is
+                    # rather than emit the "Reading task list" sentinel (which
+                    # format_todo_progress returns for an empty/argless payload).
+                    if _todo_result is not None:
+                        try:
+                            from gateway.todo_progress import format_todo_progress
+
+                            _todo_done_card = format_todo_progress(
+                                {"merge": _merge_flag},
+                                result=_todo_result,
+                                max_chars=_todo_card_max_chars,
+                            )
+                        except Exception:
+                            _todo_done_card = None
+                    if _todo_done_card:
+                        last_was_terminal_block[0] = False
+                        last_progress_msg[0] = None
+                        repeat_count[0] = 0
+                        progress_queue.put(("__todo_complete__", "todo", _todo_done_card))
+                    return
+
+                if tool_completion_durations_enabled and tool_name:
+                    last_was_terminal_block[0] = False
+                    last_progress_msg[0] = None
+                    repeat_count[0] = 0
+                    progress_queue.put(
+                        (
+                            "__tool_duration__",
+                            tool_name,
+                            duration,
+                            bool(kwargs.get("is_error", False)),
                         )
-                        if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
-                            long_tool_hint_fired[0] = True
-                            progress_queue.put(tool_progress_hint_gateway())
-                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
-                except Exception as _hint_err:
-                    logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+                    )
                 return
 
             # "_thinking" is assistant scratch text between tool calls.  It
@@ -16802,12 +18083,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # If tool_progress is off, only _thinking passes through (above).
             # Regular tool calls are suppressed.
-            if not tool_progress_enabled:
+            if not progress_pipeline_enabled:
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+            # Only act on tool.started events (ignore reasoning.available, etc.)
             if event_type not in {"tool.started",}:
                 return
+
+            # delegate_task input visibility is INDEPENDENT of tool_progress:
+            # Telegram can keep tool_progress "off" (no general tool noise) yet
+            # still surface the exact delegate_task call parameters. Emit BEFORE
+            # the progress_mode=="off" guard below so the card isn't swallowed.
+            # Scoped to delegate_task starts only — no subagent stdout, no
+            # completion payload (matches _format_delegate_task_args_progress).
+            # delegate_task_args_enabled is resolved once at pipeline setup (it
+            # also keeps progress_queue alive when tool_progress is "off").
+            if tool_name == "delegate_task" and delegate_task_args_enabled:
+                last_tool[0] = tool_name
+                last_was_terminal_block[0] = False
+                # MERGE: when the live roster is ALSO on, a top-level (background)
+                # delegate_task is rendered as ONE bubble by the WATCHER
+                # (_publish_async_delegation_roster) — dispatched card -> live rows
+                # -> collapse, with per-child profile + cost. So SUPPRESS the
+                # foreground standalone card here to avoid a second bubble.
+                # Background is FORCED by depth (the schema `background` param is
+                # ignored): a top-level delegate_task (_delegate_depth==0) is ALWAYS
+                # background (run_agent._dispatch_delegate_task). agent_holder[0] is
+                # the live top-level agent (depth 0), so this suppresses for every
+                # top-level dispatch (the only kind that reaches this tool.started
+                # site — nested children relay as subagent.tool). When the roster
+                # is OFF, the standalone card emits exactly as today.
+                _disp_agent = agent_holder[0] if agent_holder else None
+                _is_background = getattr(_disp_agent, "_delegate_depth", 0) == 0
+                if subagent_roster_enabled and _is_background:
+                    return  # watcher owns the merged bubble; no foreground card
+                for _card in _format_delegate_task_args_progress(args):
+                    progress_queue.put(("__tool_start__", tool_name, _card))
+                return
+
+            # Persistent todo plan card is INDEPENDENT of tool_progress,
+            # mirroring delegate_task_args. When enabled it SUPERSEDES the
+            # per-turn shared-bubble todo rendering (both off and on modes), so
+            # a todo call never appears twice. Placed BEFORE the
+            # progress_mode=="off" guard so it fires in todo-only mode too.
+            # The card itself renders on COMPLETION (the result is the
+            # authoritative full list; a merge=True start carries only changed
+            # items and would clobber the living plan). Here we only push the
+            # new_plan flag for the completion re-render and suppress every
+            # shared-bubble append for the todo tool.
+            if tool_name == "todo" and todo_progress_enabled:
+                _args = args or {}
+                _is_write = isinstance(_args.get("todos"), list)
+                _new_plan = _is_write and not bool(_args.get("merge", False))
+                _todo_card_new_plan_flags.append(_new_plan)
+                return
+
+            if progress_mode == "off":
+                return
+
+            # Push this todo call's merge flag BEFORE the "new"-mode dedup
+            # early-return below, so the started/completed FIFO stays aligned
+            # even when a consecutive same-tool start row is deduped away. Both
+            # this push and the completion pop are gated on progress_mode != off
+            # (checked just above / in the tool.completed branch), so they stay
+            # one-to-one. The flag only drives the completion card's title.
+            if tool_name == "todo":
+                try:
+                    _todo_merge_flags.append(bool((args or {}).get("merge", False)))
+                except Exception:
+                    _todo_merge_flags.append(False)
 
             # Suppress tool-progress bubbles once the user has sent `stop`.
             # When the LLM response carries N parallel tool calls, the agent
@@ -16825,8 +18169,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-            # "new" mode: only report when tool changes
-            if progress_mode == "new" and tool_name == last_tool[0]:
+            # "new" mode: only report when tool changes. When completion
+            # durations are enabled every call needs its own row to carry its
+            # own timing suffix, so don't collapse repeats in that case.
+            if (
+                progress_mode == "new"
+                and tool_name == last_tool[0]
+                and not tool_completion_durations_enabled
+            ):
                 return
             last_tool[0] = tool_name
 
@@ -16865,8 +18215,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Consecutive terminal calls: drop the repeated
                 # "💻 terminal" header so back-to-back commands render as
                 # adjacent code blocks under a single header.
+                #
+                # Exception: when completion-duration suffixes are enabled we
+                # always keep the header. The suffix is appended to the row's
+                # first visible line, and without a header that line is the
+                # opening ``` fence — appending there corrupts the code block.
+                # A per-row header gives each terminal call a stable, visible
+                # line to carry its own duration.
+                _drop_header = last_was_terminal_block[0] and not tool_completion_durations_enabled
                 _block_header = (
-                    "" if last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+                    "" if _drop_header else f"{emoji} {tool_name}\n"
                 )
                 _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
                 # Single-line, capped preview for non-verbose modes.
@@ -16881,11 +18239,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _cmd_short = _cmd_short + " ..."
                 _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
+            if tool_name == "todo":
+                try:
+                    from gateway.todo_progress import format_todo_progress
+
+                    _todo_card = format_todo_progress(
+                        args, max_chars=_todo_card_max_chars,
+                    )
+                except Exception:
+                    _todo_card = None
+                if _todo_card:
+                    last_was_terminal_block[0] = False
+                    progress_queue.put(("__tool_start__", tool_name, _todo_card))
+                    return
+
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if _code_block_full is not None:
                     last_was_terminal_block[0] = True
-                    progress_queue.put(_code_block_full)
+                    progress_queue.put(("__tool_start__", tool_name, _code_block_full))
                     return
                 last_was_terminal_block[0] = False
                 if args:
@@ -16902,7 +18274,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     msg = f"{emoji} {tool_name}: \"{preview}\""
                 else:
                     msg = f"{emoji} {tool_name}..."
-                progress_queue.put(msg)
+                progress_queue.put(("__tool_start__", tool_name, msg))
                 return
             
             # "all" / "new" modes: short preview, respects tool_preview_length
@@ -16942,6 +18314,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 msg = f"{emoji} {tool_name}..."
                 last_was_terminal_block[0] = False
             
+            # Dedup completion tracking needs one row per tool call so each
+            # completion can append its own duration. Keep the older collapsed
+            # duplicate behavior only when duration suffixes are disabled.
+            if tool_completion_durations_enabled:
+                last_progress_msg[0] = None
+                repeat_count[0] = 0
+                progress_queue.put(("__tool_start__", tool_name, msg))
+                return
+
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
@@ -16954,7 +18335,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             last_progress_msg[0] = msg
             repeat_count[0] = 0
             
-            progress_queue.put(msg)
+            progress_queue.put(("__tool_start__", tool_name, msg))
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
@@ -17061,6 +18442,188 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
+            # ── Live subagent roster bubble state (display.subagent_roster) ──
+            # Its OWN message id + throttle + seed-state machine, separate from
+            # the tool bubble above (the roster is a rewritten-in-place table,
+            # not an append log). Single-writer: only THIS loop-bound coroutine
+            # mutates this state, fed by __roster_start__/__roster_complete__
+            # sentinels off progress_queue. The worker-thread callback only
+            # enqueues. Lazy import avoids a run.py <-> delegate_tool cycle.
+            from gateway.subagent_roster import (
+                SubagentRosterState,
+                format_subagent_roster,
+                resolve_roster_interval,
+            )
+            from tools.delegate_tool import (
+                list_active_subagents as _list_active_subagents,
+            )
+
+            roster = SubagentRosterState()
+            roster_msg_id = None
+            _last_roster_edit_ts = 0.0
+            _last_roster_text = None
+            roster_seed_attempted = False
+            roster_seed_failed = False
+            # Per-platform configurable edit cadence
+            # (display.platforms.<platform>.subagent_roster_interval), clamped
+            # to a 1.0s floor. Resolved once per turn here.
+            try:
+                _roster_edit_interval = resolve_roster_interval(user_config, platform_key)
+            except Exception:
+                from gateway.subagent_roster import ROSTER_EDIT_INTERVAL
+                _roster_edit_interval = ROSTER_EDIT_INTERVAL
+
+            def _render_roster(collapsed: bool):
+                """Fold roster state + a fresh registry poll into bubble text."""
+                try:
+                    active = {
+                        str(r.get("subagent_id")): r
+                        for r in _list_active_subagents()
+                        if str(r.get("subagent_id")) in roster.meta
+                    }
+                except Exception:
+                    active = {}
+                rows = roster.fold(active, time.time())
+                return format_subagent_roster(rows, collapsed=collapsed)
+
+            async def _publish_roster(*, force: bool, collapsed: bool = False, allow_seed: bool = True) -> None:
+                """Seed (one send) or edit the roster bubble. Throttled + gated.
+
+                Seed is awaited INLINE on the gateway loop, so roster_msg_id is
+                resolved before the next edit — the dynamic-workflows slow-seed
+                race (seed scheduled fire-and-forget from another thread) does
+                not apply here.
+                """
+                nonlocal roster_msg_id, _last_roster_edit_ts, _last_roster_text
+                nonlocal roster_seed_attempted, roster_seed_failed
+                if not _run_still_current():
+                    return
+                text = _render_roster(collapsed)
+                if not text:
+                    return
+                now = time.monotonic()
+                # Throttle ordinary edits; the final collapse (force) bypasses.
+                if not force and (now - _last_roster_edit_ts) < _roster_edit_interval:
+                    return
+                if not force and text == _last_roster_text:
+                    return
+                if roster_msg_id is None:
+                    # Seed policy: at most one outstanding seed; do not retry-spam
+                    # on every idle tick (a transient failure that actually
+                    # delivered would duplicate bubbles).
+                    if not allow_seed or roster_seed_failed:
+                        return
+                    roster_seed_attempted = True
+                    result = await adapter.send(
+                        chat_id=source.chat_id,
+                        content=text,
+                        reply_to=_progress_reply_to,
+                        metadata=_progress_metadata,
+                    )
+                    if getattr(result, "success", False) and getattr(result, "message_id", None):
+                        roster_msg_id = str(result.message_id)
+                        if _cleanup_progress:
+                            _cleanup_msg_ids.append(str(roster_msg_id))
+                    else:
+                        # A flood/rate reject DEFINITIVELY did not deliver, so a
+                        # re-seed next tick cannot duplicate — do NOT latch; stamp
+                        # the throttle clock so retries pace at the roster interval
+                        # rather than hammering every 0.3s idle tick. Only an
+                        # AMBIGUOUS failure (might have landed) latches to avoid
+                        # duplicate bubbles. Mirrors the watcher seed path.
+                        from gateway.subagent_roster import is_flood_error
+                        if not is_flood_error(result):
+                            roster_seed_failed = True
+                        _last_roster_edit_ts = now
+                        return
+                else:
+                    kwargs: Dict[str, Any] = {
+                        "chat_id": source.chat_id,
+                        "message_id": roster_msg_id,
+                        "content": text,
+                    }
+                    if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
+                        kwargs["finalize"] = True
+                    if _edit_accepts_metadata:
+                        kwargs["metadata"] = _progress_metadata
+                    try:
+                        await adapter.edit_message(**kwargs)
+                    except Exception:
+                        # Edits are best-effort; a transient failure just retries
+                        # on the next tick. Roster is never load-bearing.
+                        pass
+                _last_roster_edit_ts = now
+                _last_roster_text = text
+
+            async def _maybe_tick_roster() -> None:
+                """Idle-tick driver: advance running elapsed even when children
+                are silent. Throttled + change-gated inside _publish_roster."""
+                if roster_msg_id is None and not roster.has_records():
+                    return
+                await _publish_roster(force=False)
+
+            def _apply_roster_event(raw) -> None:
+                """Mutate roster state from a dequeued sentinel (loop thread)."""
+                try:
+                    roster.apply_event(raw)
+                except Exception as _roster_err:
+                    logger.debug("roster apply_event failed: %s", _roster_err)
+
+            # ── Persistent cross-turn todo plan card (display.todo_progress) ──
+            # Edits ONE message id stored on self._todo_card_state[session_key]
+            # so the card lives across turns. This consumer is the single writer;
+            # the worker callback only enqueues "__todo_card__" sentinels. Edits
+            # are throttled + coalesced (latest snapshot wins) to stay under
+            # Telegram's per-chat edit flood ceiling, mirroring the roster. The
+            # force=True path (drain on turn-end) bypasses the throttle so a
+            # stashed terminal "all completed" card is never lost (B1).
+            from gateway.todo_card import (
+                publish_todo_card as _publish_todo_card_io,
+                TODO_CARD_EDIT_INTERVAL as _TODO_CARD_EDIT_INTERVAL,
+            )
+            _todo_card_last_edit = [0.0]
+            _todo_card_pending: list = [None]  # (text, finished, new_plan) or None
+            _todo_thread_sig = str(_progress_thread_id or "")
+
+            async def _flush_todo_card(text, finished, new_plan) -> None:
+                if not _run_still_current():
+                    return
+                try:
+                    await _publish_todo_card_io(
+                        adapter=adapter,
+                        store=self._todo_card_state,
+                        session_key=session_key or session_id or "",
+                        card_text=text,
+                        finished=finished,
+                        new_plan=new_plan,
+                        chat_id=source.chat_id,
+                        metadata=_progress_metadata,
+                        reply_to=_progress_reply_to,
+                        edit_accepts_metadata=_edit_accepts_metadata,
+                        thread_sig=_todo_thread_sig,
+                    )
+                    # Enforce the cap after a write (publish may have seeded a
+                    # new entry). Mirrors the _session_sources LRU bound.
+                    try:
+                        _cap = int(getattr(self, "_todo_card_state_max", 512) or 512)
+                        while len(self._todo_card_state) > _cap:
+                            self._todo_card_state.popitem(last=False)
+                    except Exception:
+                        pass
+                except Exception as _tc_err:
+                    logger.debug("todo plan card publish failed: %s", _tc_err)
+                _todo_card_last_edit[0] = time.monotonic()
+
+            async def _maybe_flush_todo_card() -> None:
+                """Flush a throttle-stashed snapshot (idle tick + drain)."""
+                if _todo_card_pending[0] is None:
+                    return
+                _p = _todo_card_pending[0]
+                _todo_card_pending[0] = None
+                await _flush_todo_card(*_p)
+
+
+
             _progress_len_fn = (
                 adapter.message_len_fn
                 if isinstance(adapter, BasePlatformAdapter)
@@ -17107,6 +18670,168 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             def _progress_text(lines: list) -> str:
                 return "\n".join(str(line) for line in lines)
+
+            pending_tool_line_indexes: dict[str, list[int]] = {}
+
+            def _record_pending_tool_line(tool_name: Any, index: int) -> None:
+                if tool_name:
+                    pending_tool_line_indexes.setdefault(str(tool_name), []).append(index)
+
+            def _complete_pending_tool_line(
+                tool_name: Any,
+                duration: Any,
+                is_error: bool,
+            ) -> Optional[int]:
+                if not tool_name:
+                    return None
+                # The agent emits tool.started and tool.completed in the same
+                # parsed-call order (FIFO), including for parallel/repeated
+                # same-name calls, so match the oldest unresolved start row.
+                indexes = pending_tool_line_indexes.get(str(tool_name)) or []
+                while indexes:
+                    index = indexes.pop(0)
+                    if 0 <= index < len(progress_lines):
+                        progress_lines[index] = _append_tool_completion_duration_to_progress_line(
+                            progress_lines[index],
+                            duration,
+                            is_error=is_error,
+                        )
+                        return index
+                return None
+
+            def _append_fallback_completion_line(
+                tool_name: Any,
+                duration: Any,
+                is_error: bool,
+            ) -> int:
+                progress_lines.append(
+                    _format_tool_completion_progress_line(
+                        str(tool_name or "tool"),
+                        duration,
+                        is_error=is_error,
+                    )
+                )
+                return len(progress_lines) - 1
+
+            def _replace_pending_tool_line(tool_name: Any, new_text: str) -> Optional[int]:
+                """Swap a pending start row's text for a completion re-render.
+
+                Used by todo, whose completion card (with per-item durations)
+                fully supersedes the start card rather than appending a suffix.
+                Pops the oldest unresolved start row (FIFO, same ordering as
+                _complete_pending_tool_line) and overwrites it in place. Returns
+                the replaced index, or None when no start row is pending (e.g.
+                the start card was suppressed) so the caller can append instead.
+                """
+                if not tool_name:
+                    return None
+                indexes = pending_tool_line_indexes.get(str(tool_name)) or []
+                while indexes:
+                    index = indexes.pop(0)
+                    if 0 <= index < len(progress_lines):
+                        progress_lines[index] = str(new_text)
+                        return index
+                return None
+
+            def _reset_pending_tool_lines() -> None:
+                pending_tool_line_indexes.clear()
+                subagent_pending_indexes.clear()
+
+            # Parallel pending map for subagent tool cards, keyed on
+            # (subagent_id, tool_name). Kept separate from the parent's
+            # pending_tool_line_indexes (which keys on tool name alone and is
+            # fed by the "__subagent__" sentinel, so it never sees these) so a
+            # completion from one child can never staple its duration onto a
+            # concurrent sibling's identically-named tool card. Within a single
+            # child, starts and completions arrive in FIFO order, so popping the
+            # oldest index for a given (sub_id, tool) is correct even when two
+            # children interleave on the parent's single callback.
+            subagent_pending_indexes: dict[tuple, list[int]] = {}
+
+            def _record_subagent_pending_line(
+                sub_id: Any, tool_name: Any, index: int
+            ) -> None:
+                # Record even when sub_id is "" (missing id) so the matching
+                # completion (also "") can still find its card; the key just
+                # degrades to (\"\", tool) which is still per-tool-name FIFO.
+                if tool_name:
+                    subagent_pending_indexes.setdefault(
+                        (str(sub_id or ""), str(tool_name)), []
+                    ).append(index)
+
+            def _complete_subagent_pending_line(
+                sub_id: Any,
+                tool_name: Any,
+                duration: Any,
+                is_error: bool,
+            ) -> Optional[int]:
+                if not tool_name:
+                    return None
+                key = (str(sub_id or ""), str(tool_name))
+                indexes = subagent_pending_indexes.get(key) or []
+                while indexes:
+                    index = indexes.pop(0)
+                    if 0 <= index < len(progress_lines):
+                        progress_lines[index] = (
+                            _append_subagent_duration_to_card(
+                                progress_lines[index],
+                                duration,
+                                is_error=is_error,
+                            )
+                        )
+                        return index
+                # No matching start card (e.g. it overflowed out of the editable
+                # bubble, or the start was dropped). Unlike the parent path we do
+                # NOT emit a standalone "✅ tool completed" fallback row for
+                # subagents — an orphan completion line with no preceding card is
+                # more confusing than a silently-missing suffix.
+                return None
+
+            def _remap_subagent_pending_lines(kept_offset: int) -> None:
+                """Rebase subagent pending indexes onto the kept overflow bubble.
+
+                Mirrors _remap_pending_tool_lines for the (sub_id, tool) map so a
+                subagent card that survives an overflow split keeps its pending
+                slot and still receives its inline duration suffix.
+                """
+                if kept_offset <= 0:
+                    return
+                for key in list(subagent_pending_indexes.keys()):
+                    rebased = [
+                        index - kept_offset
+                        for index in subagent_pending_indexes[key]
+                        if index >= kept_offset
+                    ]
+                    if rebased:
+                        subagent_pending_indexes[key] = rebased
+                    else:
+                        del subagent_pending_indexes[key]
+
+            def _remap_pending_tool_lines(kept_offset: int) -> None:
+                """Rebase pending start-row indexes onto the kept overflow bubble.
+
+                After an overflow split keeps only ``groups[-1]`` as the mutable
+                bubble, every absolute index shifts down by ``kept_offset`` (the
+                number of lines flushed into earlier, now-immutable bubbles).
+                Rows that landed in those flushed groups can no longer be edited,
+                so drop them; rows that survived into the kept bubble keep their
+                pending status at the rebased offset.  Without this, a tool whose
+                start row survives the split loses its pending index and its
+                later duration renders as a standalone ``✅ tool completed in Xs``
+                fallback line instead of an inline ``· Xs`` suffix.
+                """
+                if kept_offset <= 0:
+                    return
+                for tool_name in list(pending_tool_line_indexes.keys()):
+                    rebased = [
+                        index - kept_offset
+                        for index in pending_tool_line_indexes[tool_name]
+                        if index >= kept_offset
+                    ]
+                    if rebased:
+                        pending_tool_line_indexes[tool_name] = rebased
+                    else:
+                        del pending_tool_line_indexes[tool_name]
 
             def _split_progress_groups(lines: list) -> list[list]:
                 """Partition progress lines into platform-sized editable bubbles."""
@@ -17174,12 +18899,245 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # The newest continuation is now the only mutable bubble.  Keep
                 # just its lines so subsequent edits update it instead of
                 # replaying the full historical transcript into new messages.
+                # Rebase pending tool-line indexes onto the kept bubble so a
+                # start row that survived the split still receives its inline
+                # completion-duration suffix (instead of a standalone fallback
+                # line) — see _remap_pending_tool_lines.
+                kept_offset = len(progress_lines) - len(groups[-1])
                 progress_lines = groups[-1]
+                _remap_pending_tool_lines(kept_offset)
+                _remap_subagent_pending_lines(kept_offset)
                 return True
+
+            async def _close_bubble_preserving_inflight() -> None:
+                """Finalize the current progress bubble on a content __reset__,
+                but carry still-in-flight tool rows into a fresh bubble.
+
+                A ``__reset__`` fires when interim/streamed content lands as a
+                new platform message; the current progress bubble must close so
+                later tool rows render BELOW the content (linearization).  But
+                interim content is sent asynchronously, so its reset can arrive
+                AFTER a long-running tool's start row was recorded and BEFORE
+                its ``__tool_duration__`` — clearing the pending index would
+                strand the duration as a standalone ``✅ tool completed in Xs``
+                fallback line (the reported "second line" symptom) or drop it.
+
+                Split instead: flush the already-resolved rows into the now-
+                immutable bubble, then re-seed a fresh bubble with the rows whose
+                tool has started but not yet completed, remapping their pending
+                indexes so the inbound suffix still attaches inline.  When no
+                tool is in flight this degrades to the old flush-then-clear.
+                """
+                nonlocal progress_msg_id, progress_lines, can_edit
+                if not can_edit:
+                    progress_msg_id = None
+                    progress_lines = []
+                    _reset_pending_tool_lines()
+                    return
+
+                inflight_indexes = sorted({
+                    idx
+                    for idxs in pending_tool_line_indexes.values()
+                    for idx in idxs
+                    if 0 <= idx < len(progress_lines)
+                } | {
+                    # Include subagent in-flight rows so a child tool whose
+                    # start card was queued but whose duration hasn't arrived
+                    # yet is carried into the re-seeded bubble too — otherwise
+                    # its later "· Xs" suffix would find no card and be dropped.
+                    idx
+                    for idxs in subagent_pending_indexes.values()
+                    for idx in idxs
+                    if 0 <= idx < len(progress_lines)
+                })
+                inflight_set = set(inflight_indexes)
+                resolved_lines = [
+                    line for i, line in enumerate(progress_lines) if i not in inflight_set
+                ]
+                carried_lines = [progress_lines[i] for i in inflight_indexes]
+
+                # Flush the resolved rows into the current (soon-immutable)
+                # bubble, splitting if they exceed the platform message limit.
+                if resolved_lines:
+                    groups = _split_progress_groups(resolved_lines)
+                    first_text = _progress_text(groups[0])
+                    if progress_msg_id is not None:
+                        try:
+                            await _edit_progress_message(progress_msg_id, first_text)
+                        except Exception:
+                            pass
+                    else:
+                        await _send_progress_text(first_text)
+                    for group in groups[1:]:
+                        await _send_progress_text(_progress_text(group))
+
+                # Re-seed a fresh bubble with the in-flight rows and rebase their
+                # pending indexes onto it.
+                old_to_new = {old: new for new, old in enumerate(inflight_indexes)}
+                for tool_name in list(pending_tool_line_indexes.keys()):
+                    remapped = [
+                        old_to_new[i]
+                        for i in pending_tool_line_indexes[tool_name]
+                        if i in old_to_new
+                    ]
+                    if remapped:
+                        pending_tool_line_indexes[tool_name] = remapped
+                    else:
+                        del pending_tool_line_indexes[tool_name]
+                # Same rebase for the subagent (sub_id, tool) pending map.
+                for _sa_key in list(subagent_pending_indexes.keys()):
+                    _sa_remapped = [
+                        old_to_new[i]
+                        for i in subagent_pending_indexes[_sa_key]
+                        if i in old_to_new
+                    ]
+                    if _sa_remapped:
+                        subagent_pending_indexes[_sa_key] = _sa_remapped
+                    else:
+                        del subagent_pending_indexes[_sa_key]
+                progress_msg_id = None
+                progress_lines = carried_lines
+                last_progress_msg[0] = None
+                repeat_count[0] = 0
+
+            async def _drain_and_flush_progress() -> None:
+                """Drain any queued progress events, then publish the final
+                bubble.  Called on cancellation from EITHER the idle
+                ``queue.Empty`` sleep or a direct ``CancelledError`` so a
+                throttle-deferred completion-duration suffix (already applied to
+                ``progress_lines`` in memory but not yet sent) is never lost.
+                """
+                nonlocal progress_msg_id, progress_lines, can_edit
+                while not progress_queue.empty():
+                    try:
+                        raw = progress_queue.get_nowait()
+                        if isinstance(raw, tuple) and raw and raw[0] in (
+                            "__roster_start__",
+                            "__roster_complete__",
+                        ):
+                            # Roster owns a separate bubble; apply state only,
+                            # the final collapse below publishes once.
+                            _apply_roster_event(raw)
+                        elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                            _, base_msg, count = raw
+                            if progress_lines:
+                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                                await _roll_progress_overflow_if_needed()
+                        elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__tool_start__":
+                            _, started_tool_name, started_msg = raw
+                            progress_lines.append(str(started_msg))
+                            _record_pending_tool_line(started_tool_name, len(progress_lines) - 1)
+                            await _roll_progress_overflow_if_needed()
+                        elif isinstance(raw, tuple) and len(raw) == 5 and raw[0] == "__tool_start__":
+                            # Subagent tool card: (sentinel, "__subagent__", card,
+                            # sub_id, real_tool). Record in the (sub_id, tool)
+                            # pending map — NOT the parent FIFO — so a later
+                            # __subagent_duration__ matches this child's card.
+                            _, _sa_sentinel, started_msg, _sa_id, _sa_tool = raw
+                            progress_lines.append(str(started_msg))
+                            _record_subagent_pending_line(
+                                _sa_id, _sa_tool, len(progress_lines) - 1
+                            )
+                            await _roll_progress_overflow_if_needed()
+                        elif isinstance(raw, tuple) and len(raw) == 5 and raw[0] == "__subagent_duration__":
+                            _, _sa_id, _sa_tool, _sa_dur, _sa_err = raw
+                            _complete_subagent_pending_line(
+                                _sa_id, _sa_tool, _sa_dur, bool(_sa_err)
+                            )
+                            await _roll_progress_overflow_if_needed()
+                        elif isinstance(raw, tuple) and len(raw) == 4 and raw[0] == "__tool_duration__":
+                            _, completed_tool_name, duration, is_error = raw
+                            completed_index = _complete_pending_tool_line(
+                                completed_tool_name,
+                                duration,
+                                bool(is_error),
+                            )
+                            if completed_index is None:
+                                _append_fallback_completion_line(
+                                    completed_tool_name,
+                                    duration,
+                                    bool(is_error),
+                                )
+                            await _roll_progress_overflow_if_needed()
+                        elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__todo_complete__":
+                            _, _todo_tool_name, _todo_card = raw
+                            if _replace_pending_tool_line(_todo_tool_name, _todo_card) is None:
+                                progress_lines.append(str(_todo_card))
+                            await _roll_progress_overflow_if_needed()
+                        elif isinstance(raw, tuple) and len(raw) == 4 and raw[0] == "__todo_card__":
+                            # Persistent plan card during drain: flush directly
+                            # (force=True bypasses the throttle below). Stash the
+                            # latest so the post-loop force-flush sends it once.
+                            _, _tc_text, _tc_finished, _tc_new_plan = raw
+                            _todo_card_pending[0] = (_tc_text, _tc_finished, _tc_new_plan)
+                        elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                            # Content-bubble marker during drain: close off the
+                            # current bubble but carry in-flight tool rows so a
+                            # still-pending duration suffix lands inline (see
+                            # _close_bubble_preserving_inflight).
+                            await _close_bubble_preserving_inflight()
+                        else:
+                            progress_lines.append(str(raw))
+                            await _roll_progress_overflow_if_needed()
+                    except Exception:
+                        break
+                # Final flush with all remaining lines.  Cancellation can arrive
+                # while the first send is still being awaited, before
+                # ``progress_msg_id`` is recorded; in that race, send a
+                # consolidated bubble instead of dropping the final lines.
+                if can_edit and progress_lines:
+                    await _roll_progress_overflow_if_needed()
+                if can_edit and progress_lines:
+                    full_text = _progress_text(progress_lines)
+                    try:
+                        if progress_msg_id:
+                            await _edit_progress_message(progress_msg_id, full_text)
+                        else:
+                            result = await _send_progress_text(full_text)
+                            if result.success and result.message_id:
+                                progress_msg_id = result.message_id
+                    except Exception:
+                        pass
+
+                # Collapse the roster bubble to a one-liner on the way out so it
+                # does not leave a wall of rows above the final answer. B1 fix:
+                # collapse whenever there are records, NOT only when a bubble was
+                # already seeded — a fast child (start+complete queued, parent
+                # returns before the consumer ticked) still gets ONE collapsed
+                # summary instead of silently nothing. allow_seed=True so that
+                # fast-child case can seed the one collapsed message here.
+                if roster.has_records():
+                    try:
+                        await _publish_roster(force=True, collapsed=True, allow_seed=True)
+                    except Exception:
+                        pass
+
+                # B1: force-flush any throttle-stashed plan card on the way out.
+                # The final all-completed card often lands <1.5s after the prior
+                # edit, so it sits in _todo_card_pending and would be lost on
+                # turn-end without this. force semantics: _maybe_flush_todo_card
+                # bypasses the live-loop throttle (it only gates enqueue, not the
+                # flush itself), so the terminal state always lands.
+                try:
+                    await _maybe_flush_todo_card()
+                except Exception:
+                    pass
 
             while True:
                 try:
                     if not _run_still_current():
+                        # B2: collapse an already-visible roster bubble before
+                        # bailing on a stale run (/stop, /new, generation
+                        # mismatch). Without this the bubble is stranded on
+                        # "▶ running" forever. Do NOT seed a new bubble after a
+                        # stop (allow_seed=False) — only finalize a live one.
+                        if roster.has_records() and roster_msg_id is not None:
+                            try:
+                                await _publish_roster(
+                                    force=True, collapsed=True, allow_seed=False
+                                )
+                            except Exception:
+                                pass
                         while not progress_queue.empty():
                             try:
                                 progress_queue.get_nowait()
@@ -17205,12 +19163,101 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
 
-                    # Handle dedup messages: update last line with repeat counter
+                    # Handle structured progress messages first, then legacy
+                    # plain strings.
+                    if isinstance(raw, tuple) and raw and raw[0] in (
+                        "__roster_start__",
+                        "__roster_complete__",
+                    ):
+                        # Roster owns a SEPARATE bubble; never falls through to
+                        # the tool-bubble edit logic. Apply state, then publish
+                        # via the throttled tick (Concern 1: a 10-20 child burst
+                        # must NOT fire 10-20 immediate edits — _maybe_tick_roster
+                        # is interval-throttled, so the burst coalesces into one
+                        # edit; membership/status shows up within ROSTER_EDIT_
+                        # INTERVAL).
+                        _apply_roster_event(raw)
+                        await _maybe_tick_roster()
+                        continue
+
+                    # Persistent todo plan card: edit the ONE living message in
+                    # place. Throttle + coalesce so a burst of todo calls in one
+                    # turn does not flood edits; the idle tick + drain flush the
+                    # latest stashed snapshot. Like the roster, it owns a SEPARATE
+                    # message and never enters progress_lines.
+                    if isinstance(raw, tuple) and len(raw) == 4 and raw[0] == "__todo_card__":
+                        _, _tc_text, _tc_finished, _tc_new_plan = raw
+                        if (time.monotonic() - _todo_card_last_edit[0]) < _TODO_CARD_EDIT_INTERVAL:
+                            _todo_card_pending[0] = (_tc_text, _tc_finished, _tc_new_plan)
+                            continue
+                        _todo_card_pending[0] = None
+                        await _flush_todo_card(_tc_text, _tc_finished, _tc_new_plan)
+                        continue
+
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                        # NOTE: this rewrites progress_lines[-1] in place. A
+                        # subagent tool card (queued as a 5-tuple "__tool_start__"
+                        # below) can legitimately occupy that last slot, and it
+                        # never updates last_progress_msg/repeat_count, so it is
+                        # never itself the dedup target. __dedup__ is also only
+                        # produced when tool_completion_durations is OFF, and a
+                        # child's duration suffixes are all enqueued (FIFO) before
+                        # delegate_task returns control to the parent — so a
+                        # pending subagent suffix can't land on a clobbered line.
                         _, base_msg, count = raw
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__tool_start__":
+                        _, started_tool_name, started_msg = raw
+                        msg = str(started_msg)
+                        progress_lines.append(msg)
+                        _record_pending_tool_line(started_tool_name, len(progress_lines) - 1)
+                    elif isinstance(raw, tuple) and len(raw) == 5 and raw[0] == "__tool_start__":
+                        # Subagent tool card: (sentinel, "__subagent__", card,
+                        # sub_id, real_tool). Recorded in the (sub_id, tool)
+                        # pending map so its later __subagent_duration__ matches
+                        # this child's row, never a parallel sibling's.
+                        _, _sa_sentinel, started_msg, _sa_id, _sa_tool = raw
+                        msg = str(started_msg)
+                        progress_lines.append(msg)
+                        _record_subagent_pending_line(
+                            _sa_id, _sa_tool, len(progress_lines) - 1
+                        )
+                    elif isinstance(raw, tuple) and len(raw) == 5 and raw[0] == "__subagent_duration__":
+                        _, _sa_id, _sa_tool, _sa_dur, _sa_err = raw
+                        _sa_index = _complete_subagent_pending_line(
+                            _sa_id, _sa_tool, _sa_dur, bool(_sa_err)
+                        )
+                        if _sa_index is None:
+                            # No matching card (overflowed/dropped). Suppress —
+                            # no orphan fallback row for subagents.
+                            continue
+                        msg = progress_lines[_sa_index]
+                    elif isinstance(raw, tuple) and len(raw) == 4 and raw[0] == "__tool_duration__":
+                        _, completed_tool_name, duration, is_error = raw
+                        completed_index = _complete_pending_tool_line(
+                            completed_tool_name,
+                            duration,
+                            bool(is_error),
+                        )
+                        if completed_index is None:
+                            completed_index = _append_fallback_completion_line(
+                                completed_tool_name,
+                                duration,
+                                bool(is_error),
+                            )
+                        msg = progress_lines[completed_index]
+                    elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__todo_complete__":
+                        # Todo finished: replace the start card with the timed
+                        # re-render in place. No duration suffix — the card
+                        # already shows per-item wall-clock durations.
+                        _, _todo_tool_name, _todo_card = raw
+                        replaced_index = _replace_pending_tool_line(_todo_tool_name, _todo_card)
+                        if replaced_index is None:
+                            progress_lines.append(str(_todo_card))
+                            replaced_index = len(progress_lines) - 1
+                        msg = progress_lines[replaced_index]
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
                         # the current tool-progress bubble so the next tool
@@ -17220,13 +19267,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # order. Mirrors GatewayStreamConsumer.on_segment_break
                         # on the content side. (Issue: tool + content
                         # linearization regression after PR #7885.)
-                        progress_msg_id = None
-                        progress_lines = []
-                        last_progress_msg[0] = None
-                        repeat_count[0] = 0
+                        #
+                        # Preserve in-flight tools: interim content is sent
+                        # asynchronously, so its reset can land AFTER a long
+                        # tool's start row but BEFORE its __tool_duration__.
+                        # _close_bubble_preserving_inflight() flushes resolved
+                        # rows, then re-seeds a fresh bubble carrying any started-
+                        # but-not-completed rows so their inline "· Xs" suffix
+                        # still attaches (no stranded "✅ tool completed" line and
+                        # no dropped suffix). The drain-path handler mirrors this.
+                        await _close_bubble_preserving_inflight()
                         continue
                     else:
-                        msg = raw
+                        msg = str(raw)
                         progress_lines.append(msg)
 
                     if await _roll_progress_overflow_if_needed():
@@ -17322,46 +19375,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
 
                 except queue.Empty:
-                    await asyncio.sleep(0.3)
+                    # Idle: advance the roster's running elapsed even when no
+                    # tool/lifecycle events are flowing (the common parallel-
+                    # verifiers case where children are silent). Throttled +
+                    # change-gated inside _maybe_tick_roster.
+                    try:
+                        await _maybe_tick_roster()
+                    except Exception:
+                        pass
+                    # Idle: flush a throttle-stashed plan card snapshot so a
+                    # within-throttle update lands during a quiet stretch instead
+                    # of waiting for the next todo call or turn-end drain.
+                    try:
+                        await _maybe_flush_todo_card()
+                    except Exception:
+                        pass
+                    # A cancellation can land while we idle here.  The sleep is
+                    # a sibling of the CancelledError handler below, so without
+                    # this guard a cancel during the idle wait escapes the whole
+                    # loop and SKIPS the drain/final-flush — stranding a
+                    # throttle-deferred duration suffix that was already applied
+                    # to ``progress_lines`` in memory (the "last tool before the
+                    # reply shows no · Xs" symptom).  Re-raise into the same
+                    # drain path so the pending edit is published.
+                    try:
+                        await asyncio.sleep(0.3)
+                    except asyncio.CancelledError:
+                        await _drain_and_flush_progress()
+                        return
                 except asyncio.CancelledError:
-                    # Drain remaining queued messages
-                    while not progress_queue.empty():
-                        try:
-                            raw = progress_queue.get_nowait()
-                            if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
-                                _, base_msg, count = raw
-                                if progress_lines:
-                                    progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                                    await _roll_progress_overflow_if_needed()
-                            elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                                # Content-bubble marker during drain: close off
-                                # the current progress bubble and start a fresh
-                                # one for any tool lines that arrived after.
-                                await _roll_progress_overflow_if_needed()
-                                if can_edit and progress_lines and progress_msg_id:
-                                    _pending_text = _progress_text(progress_lines)
-                                    try:
-                                        await _edit_progress_message(progress_msg_id, _pending_text)
-                                    except Exception:
-                                        pass
-                                progress_msg_id = None
-                                progress_lines = []
-                                last_progress_msg[0] = None
-                                repeat_count[0] = 0
-                            else:
-                                progress_lines.append(raw)
-                                await _roll_progress_overflow_if_needed()
-                        except Exception:
-                            break
-                    # Final edit with all remaining tools (only if editing works)
-                    if can_edit and progress_lines and progress_msg_id:
-                        await _roll_progress_overflow_if_needed()
-                    if can_edit and progress_lines and progress_msg_id:
-                        full_text = _progress_text(progress_lines)
-                        try:
-                            await _edit_progress_message(progress_msg_id, full_text)
-                        except Exception:
-                            pass
+                    await _drain_and_flush_progress()
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
@@ -17445,8 +19488,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _redact_gateway_user_facing_secrets(str(message or ""))[:160],
                 )
                 return
+            _status_key = _gateway_status_key(event_type, prepared_message)
+            _status_sequence = self._next_status_update_sequence(
+                _status_chat_id,
+                _status_key,
+            )
             _fut = safe_schedule_threadsafe(
-                _send_or_update_status_coro(_status_adapter, _status_chat_id, event_type, prepared_message, _status_thread_metadata),
+                _send_or_update_status_coro(
+                    _status_adapter,
+                    _status_chat_id,
+                    _status_key,
+                    prepared_message,
+                    _status_thread_metadata,
+                    sequence=_status_sequence,
+                ),
                 _loop_for_step,
                 logger=logger,
                 log_message=f"status_callback ({event_type}) scheduling error",
@@ -17823,14 +19878,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            # Gate on needs_progress_queue (tool_progress OR thinking_progress)
-            # rather than tool_progress alone: the progress_callback also relays
+            # Gate on needs_progress_queue (tool_progress / subagent roster / delegate_task args / thinking_progress)
+            # rather than progress_pipeline alone: the progress_callback also relays
             # _thinking assistant scratch text, which is gated on
-            # thinking_progress and is intentionally independent of tool
-            # progress. With the old `tool_progress_enabled`-only gate, a user
-            # who set thinking_progress:true but kept tool_progress:off got a
-            # None callback — so _thinking scratch bubbles never relayed even
-            # though the progress queue was created for them.
+            # thinking_progress and is intentionally independent of tool progress.
             agent.tool_progress_callback = (
                 progress_callback if (needs_progress_queue or log_mode_enabled) else None
             )
@@ -18827,11 +20878,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _notify_adapter = self._adapter_for_source(source)
             if not _notify_adapter:
                 return
-            # Track the heartbeat message id so we can edit-in-place on
-            # platforms that support it (Telegram, Discord, Slack, etc.)
-            # instead of spamming a new "Still working" bubble every
-            # interval. Falls back to send-new when edit fails or isn't
-            # supported by the adapter.
+            # Track the heartbeat message id so we edit one bubble in place.
+            # After the first send, edit failures are logged and swallowed
+            # instead of sending replacement bubbles. One stale heartbeat is
+            # better than periodic chat spam.
             _heartbeat_msg_id: Optional[str] = None
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
@@ -18849,13 +20899,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key, agent_holder[0], _exec_ref
                 ):
                     break
-                _elapsed_mins = int((time.time() - _notify_start) // 60)
-                # Include agent activity context if available. Default
-                # heartbeat is terse: elapsed + current tool. Verbose
-                # iteration counter is gated on busy_ack_detail so users
-                # who want it can opt in per platform.
+                _elapsed_seconds = time.time() - _notify_start
+                # Include bounded activity context if available. Default
+                # heartbeat edits ONE bubble in place; richer detail is useful
+                # only if it stays compact and non-spammy.
                 _agent_ref = agent_holder[0]
-                _status_detail = ""
                 _want_iteration_detail = bool(
                     resolve_display_setting(
                         user_config,
@@ -18864,26 +20912,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         True,
                     )
                 )
+                _activity = {}
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
-                        _a = _agent_ref.get_activity_summary()
+                        _activity = _agent_ref.get_activity_summary()
+                    except Exception:
+                        _activity = {}
+                if _long_running_mode == "generic":
+                    _heartbeat_text = _generic_status_phrase("status")
+                else:
+                    try:
+                        from gateway.heartbeat_status import format_long_running_heartbeat
+
+                        _heartbeat_text = format_long_running_heartbeat(
+                            _elapsed_seconds,
+                            _activity,
+                            want_iteration_detail=_want_iteration_detail,
+                        )
+                    except Exception:
+                        # Conservative fallback: preserve the historical one-line
+                        # heartbeat if the richer formatter ever breaks.
+                        _status_detail = ""
                         _parts = []
-                        if _want_iteration_detail:
+                        if _want_iteration_detail and _activity:
                             _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
+                                f"iteration {_activity.get('api_call_count')}/{_activity.get('max_iterations')}"
                             )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
+                        _action = _activity.get("current_tool") or _activity.get("last_activity_desc")
                         if _action:
                             _parts.append(str(_action))
                         if _parts:
                             _status_detail = " — " + ", ".join(_parts)
-                    except Exception:
-                        pass
-                _heartbeat_text = (
-                    _generic_status_phrase("status")
-                    if _long_running_mode == "generic"
-                    else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
-                )
+                        _elapsed_total = max(0, int(round(_elapsed_seconds)))
+                        _elapsed_minutes, _elapsed_secs = divmod(_elapsed_total, 60)
+                        _elapsed_display = (
+                            f"{_elapsed_minutes}m" + (f" {_elapsed_secs}s" if _elapsed_secs else "")
+                            if _elapsed_minutes else f"{_elapsed_secs}s"
+                        )
+                        _heartbeat_text = f"⏳ Working — {_elapsed_display}{_status_detail}"
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:
@@ -18892,22 +20958,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 source.chat_id,
                                 _heartbeat_msg_id,
                                 _heartbeat_text,
+                                finalize=True,
                             )
                         except Exception as _ee:
                             logger.debug("Heartbeat edit failed: %s", _ee)
                             _notify_res = None
-                    if not (_notify_res and getattr(_notify_res, "success", False)):
-                        _notify_res = await _notify_adapter.send(
-                            source.chat_id,
-                            _heartbeat_text,
-                            metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
-                        )
-                        if getattr(_notify_res, "success", False) and getattr(
-                            _notify_res, "message_id", None
-                        ):
-                            _heartbeat_msg_id = str(_notify_res.message_id)
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(_heartbeat_msg_id)
+                        if not (_notify_res and getattr(_notify_res, "success", False)):
+                            logger.debug(
+                                "Heartbeat edit did not succeed; suppressing replacement bubble to avoid spam"
+                            )
+                        continue
+                    _notify_res = await _notify_adapter.send(
+                        source.chat_id,
+                        _heartbeat_text,
+                        metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
+                    )
+                    if getattr(_notify_res, "success", False) and getattr(
+                        _notify_res, "message_id", None
+                    ):
+                        _heartbeat_msg_id = str(_notify_res.message_id)
+                        if _cleanup_progress:
+                            _cleanup_msg_ids.append(_heartbeat_msg_id)
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
@@ -19864,6 +21935,22 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
     """
+    # ── Raise RLIMIT_NOFILE before anything opens FDs ─────────────────
+    # macOS launchd starts daemons with a soft RLIMIT_NOFILE of 256 and
+    # editing the plist does not take effect until launchd is bootout/
+    # bootstrap-reloaded (a plain --replace/KeepAlive respawn keeps the
+    # cached 256). Under parallel orchestration the gateway can cross 256.
+    try:
+        import resource as _resource
+        _soft, _hard = _resource.getrlimit(_resource.RLIMIT_NOFILE)
+        _target = 10240
+        if _soft < _target:
+            _new_soft = _target if (_hard == _resource.RLIM_INFINITY or _hard >= _target) else _hard
+            _resource.setrlimit(_resource.RLIMIT_NOFILE, (_new_soft, _hard))
+            logger.info("Raised RLIMIT_NOFILE soft limit %d -> %d (hard=%s)", _soft, _new_soft, _hard)
+    except Exception as _e:
+        logger.warning("Could not raise RLIMIT_NOFILE (continuing): %s", _e)
+
     # Snapshot the checkout revision now, while sys.modules still matches disk,
     # so a later `git pull` under this long-lived process can be detected (and
     # risky work like model switching refused) instead of crashing on a stale

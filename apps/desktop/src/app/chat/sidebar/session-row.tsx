@@ -13,8 +13,8 @@ import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import { $workstreamActivity, type WorkstreamActivity, workstreamCountLabel } from '@/store/workstream'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -74,10 +74,11 @@ export function SidebarSessionRow({
   // Telegram thread continued here still reads as Telegram.
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
-  // Subscribe per-row (the leaf) instead of drilling a set through the list —
-  // the atom is tiny and rarely non-empty. True when a clarify prompt in this
-  // session is waiting on the user.
-  const needsInput = useStore($attentionSessionIds).includes(session.id)
+  // The per-session selector subscribes to global activity atoms but preserves
+  // object identity when unrelated sessions update, so subagent/todo heartbeats
+  // do not force every mounted row to re-render.
+  const workstream = useStore($workstreamActivity(session.id))
+  const needsInput = workstream.needsInput
 
   return (
     <SessionContextMenu
@@ -129,7 +130,9 @@ export function SidebarSessionRow({
           dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
           className
         )}
+        {...rest}
         data-working={isWorking ? 'true' : undefined}
+        data-workstream-session-id={session.id}
         draggable
         onDragStart={event => {
           // Reorder drags belong to dnd-kit (the grab handle) — cancel the
@@ -148,7 +151,6 @@ export function SidebarSessionRow({
         }}
         ref={ref}
         style={style}
-        {...rest}
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <SidebarRowBody
@@ -210,10 +212,57 @@ export function SidebarSessionRow({
           <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </SidebarRowLabel>
+          <WorkstreamBadges activity={workstream} />
         </SidebarRowBody>
       </SidebarRowShell>
     </SessionContextMenu>
   )
+}
+
+function WorkstreamBadges({ activity }: { activity: WorkstreamActivity }) {
+  const counts = [
+    activity.activeTodoCount > 0 ? workstreamCountLabel(activity.activeTodoCount, 'todo') : '',
+    activity.activeSubagentCount > 0 ? workstreamCountLabel(activity.activeSubagentCount, 'agent') : '',
+    activity.failedSubagentCount > 0 ? workstreamCountLabel(activity.failedSubagentCount, 'failed agent') : ''
+  ].filter(Boolean)
+
+  return (
+    <span className="flex shrink-0 items-center gap-1 text-[0.625rem] leading-none">
+      <span
+        aria-label={activity.label}
+        className={cn(
+          'grid size-4 place-items-center rounded-[4px] text-[0.6875rem]',
+          workstreamToneClass(activity.tone)
+        )}
+        title={activity.label}
+      >
+        {activity.icon}
+      </span>
+      {counts.map(label => (
+        <span
+          className="rounded-[4px] bg-(--ui-control-background) px-1.5 py-0.5 text-(--ui-text-tertiary)"
+          key={label}
+        >
+          {label}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+const WORKSTREAM_TONE_CLASSES: Record<WorkstreamActivity['tone'], string> = {
+  danger: 'bg-red-500/12 text-red-500',
+  done: 'bg-emerald-500/12 text-emerald-500',
+  idle: 'bg-transparent text-(--ui-text-quaternary)',
+  info: 'bg-sky-500/12 text-sky-500',
+  muted: 'bg-(--ui-control-background) text-(--ui-text-tertiary)',
+  review: 'bg-violet-500/12 text-violet-500',
+  warn: 'bg-amber-500/12 text-amber-500',
+  work: 'bg-(--ui-accent)/12 text-(--ui-accent)'
+}
+
+function workstreamToneClass(tone: WorkstreamActivity['tone']): string {
+  return WORKSTREAM_TONE_CLASSES[tone]
 }
 
 function SessionRowLeadDot({

@@ -6,9 +6,12 @@ import {
   AGENTS_ROUTE,
   appViewForPath,
   COMMAND_CENTER_ROUTE,
+  CONTEXT_ROUTE,
   isOverlayView,
   NEW_CHAT_ROUTE,
-  STARMAP_ROUTE
+  OBSERVATORY_ROUTE,
+  STARMAP_ROUTE,
+  WORKSTREAMS_ROUTE
 } from '@/app/routes'
 
 const SECTIONS = ['sessions', 'system', 'usage'] as const
@@ -20,8 +23,11 @@ export function useOverlayRouting() {
   const currentView = appViewForPath(location.pathname)
   const settingsOpen = currentView === 'settings'
   const commandCenterOpen = currentView === 'command-center'
+  const contextOpen = currentView === 'context'
   const agentsOpen = currentView === 'agents'
   const starmapOpen = currentView === 'starmap'
+  const workstreamsOpen = currentView === 'workstreams'
+  const observatoryOpen = currentView === 'observatory'
   const cronOpen = currentView === 'cron'
   const profilesOpen = currentView === 'profiles'
   const chatOpen = currentView === 'chat'
@@ -61,7 +67,10 @@ export function useOverlayRouting() {
   }, [closeOverlayToPreviousRoute, commandCenterOpen, navigate])
 
   const openAgents = useCallback(() => navigate(AGENTS_ROUTE), [navigate])
+  const openContext = useCallback(() => navigate(CONTEXT_ROUTE), [navigate])
   const openStarmap = useCallback(() => navigate(STARMAP_ROUTE), [navigate])
+  const openWorkstreams = useCallback(() => navigate(WORKSTREAMS_ROUTE), [navigate])
+  const openObservatory = useCallback(() => navigate(OBSERVATORY_ROUTE), [navigate])
 
   return {
     agentsOpen,
@@ -69,14 +78,20 @@ export function useOverlayRouting() {
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
     commandCenterOpen,
+    contextOpen,
     cronOpen,
     currentView,
     openAgents,
     openCommandCenterSection,
+    openContext,
+    openObservatory,
     openStarmap,
+    openWorkstreams,
+    observatoryOpen,
     profilesOpen,
     settingsOpen,
     starmapOpen,
-    toggleCommandCenter
+    toggleCommandCenter,
+    workstreamsOpen
   }
 }

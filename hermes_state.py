@@ -545,6 +545,12 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             msg = str(exc).lower()
             if "no such table" in msg or "no such column" in msg:
                 return None
+            if (
+                "database is locked" in msg
+                or "database table is locked" in msg
+                or "database is busy" in msg
+            ):
+                return None
             return str(exc)
         return None
     except sqlite3.DatabaseError as exc:
@@ -787,12 +793,38 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS subagent_context_artifacts (
+    child_session_id TEXT PRIMARY KEY,
+    parent_session_id TEXT,
+    subagent_id TEXT,
+    latest_artifact_path TEXT NOT NULL,
+    capture_sequence INTEGER NOT NULL DEFAULT 0,
+    latest_api_call_count INTEGER,
+    latest_retry_count INTEGER,
+    status TEXT NOT NULL DEFAULT 'capturing',
+    role TEXT,
+    profile TEXT,
+    model TEXT,
+    provider TEXT,
+    api_mode TEXT,
+    base_url TEXT,
+    toolsets_json TEXT,
+    artifact_sha256 TEXT,
+    artifact_size_bytes INTEGER,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    captured_at REAL,
+    finalized_at REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_subagent_context_parent ON subagent_context_artifacts(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_subagent_context_subagent ON subagent_context_artifacts(subagent_id);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -2584,6 +2616,51 @@ class SessionDB:
             )
             row = cursor.fetchone()
         return dict(row) if row else None
+
+    def list_child_sessions(self, parent_session_id: str) -> List[Dict[str, Any]]:
+        """List delegation (subagent) child sessions of a parent, oldest first.
+
+        Powers the Desktop Observatory historical timeline's child lanes: each
+        delegated subagent is persisted as its own session row with real
+        ``started_at`` / ``ended_at`` / ``tool_call_count``, so a finished run
+        can be reconstructed from storage instead of the ephemeral live store.
+
+        IMPORTANT: ``parent_session_id`` is NOT subagent-exclusive — ``/branch``
+        forks, ``/forktopic``, and compression/handoff continuations also set it
+        (verified: telegram/cli/discord/cron/webhook rows carry it). Filtering
+        ``source = 'subagent'`` is required so the timeline never renders
+        unrelated conversations as delegation lanes. The parent lookup rides the
+        existing ``idx_sessions_parent`` index.
+
+        ``status`` is derived from ``ended_at`` (authoritative), NOT
+        ``end_reason`` — most finished subagent rows have an empty ``end_reason``.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, title, started_at, ended_at, tool_call_count, "
+                "message_count, model, end_reason "
+                "FROM sessions "
+                "WHERE parent_session_id = ? AND source = 'subagent' "
+                "ORDER BY started_at ASC, id ASC",
+                (parent_session_id,),
+            ).fetchall()
+
+        children: List[Dict[str, Any]] = []
+        for row in rows:
+            ended_at = row["ended_at"]
+            children.append(
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "started_at": row["started_at"],
+                    "ended_at": ended_at,
+                    "tool_call_count": row["tool_call_count"] or 0,
+                    "message_count": row["message_count"] or 0,
+                    "model": row["model"],
+                    "status": "completed" if ended_at is not None else "running",
+                }
+            )
+        return children
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
@@ -5044,6 +5121,12 @@ class SessionDB:
 
         deleted = self._execute_write(_do)
         if deleted:
+            try:
+                from agent.subagent_context_artifacts import delete_subagent_context_artifacts_for_sessions
+
+                delete_subagent_context_artifacts_for_sessions([session_id, *removed_delegate_ids], session_db=self)
+            except Exception:
+                pass
             for delegate_id in removed_delegate_ids:
                 self._remove_session_files(sessions_dir, delegate_id)
             self._remove_session_files(sessions_dir, session_id)
@@ -5168,6 +5251,12 @@ class SessionDB:
             return len(existing)
 
         count = self._execute_write(_do)
+        try:
+            from agent.subagent_context_artifacts import delete_subagent_context_artifacts_for_sessions
+
+            delete_subagent_context_artifacts_for_sessions([*removed_ids, *removed_delegate_ids], session_db=self)
+        except Exception:
+            pass
         for sid in removed_delegate_ids:
             self._remove_session_files(sessions_dir, sid)
         for sid in removed_ids:
@@ -5262,6 +5351,12 @@ class SessionDB:
             return len(session_ids)
 
         count = self._execute_write(_do)
+        try:
+            from agent.subagent_context_artifacts import delete_subagent_context_artifacts_for_sessions
+
+            delete_subagent_context_artifacts_for_sessions(removed_ids, session_db=self)
+        except Exception:
+            pass
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
@@ -5508,6 +5603,12 @@ class SessionDB:
             return len(session_ids)
 
         count = self._execute_write(_do)
+        try:
+            from agent.subagent_context_artifacts import delete_subagent_context_artifacts_for_sessions
+
+            delete_subagent_context_artifacts_for_sessions(removed_ids, session_db=self)
+        except Exception:
+            pass
         # Clean up on-disk files outside the DB transaction
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)

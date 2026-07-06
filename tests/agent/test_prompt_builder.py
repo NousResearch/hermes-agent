@@ -18,6 +18,7 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    load_soul_md,
     CONTEXT_FILE_MAX_CHARS,
     _dynamic_context_file_max_chars,
     _get_context_file_max_chars,
@@ -1639,6 +1640,131 @@ class TestParallelToolCallGuidance:
         # steer. The Google-only block must NOT carry its own copy, otherwise
         # Gemini/Gemma would receive the instruction twice in one prompt.
         assert "parallel tool call" not in GOOGLE_MODEL_OPERATIONAL_GUIDANCE.lower()
+
+
+# =========================================================================
+# SOUL.md include integration
+# =========================================================================
+
+
+class TestSoulMdIncludeIntegration:
+    def test_load_soul_md_expands_include_in_identity_content(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "soul").mkdir()
+        (tmp_path / "soul" / "style.md").write_text("Be terse.", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text(
+            "Root start\n@include soul/style.md\nRoot end",
+            encoding="utf-8",
+        )
+
+        result = load_soul_md()
+
+        assert result == "Root start\nBe terse.\nRoot end"
+
+    def test_load_soul_md_import_alias_expands(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "soul").mkdir()
+        (tmp_path / "soul" / "rules.md").write_text("Rule body.", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("@import soul/rules.md", encoding="utf-8")
+
+        assert load_soul_md() == "Rule body."
+
+    def test_load_soul_md_glob_include_sorted(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        rules = tmp_path / "rules"
+        rules.mkdir()
+        (rules / "20.md").write_text("twenty", encoding="utf-8")
+        (rules / "10.md").write_text("ten", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("@include rules/*.md", encoding="utf-8")
+
+        assert load_soul_md() == "ten\ntwenty"
+
+    def test_load_soul_md_no_directive_preserves_existing_output(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
+
+        assert load_soul_md() == "Be concise and friendly."
+
+    def test_build_context_files_prompt_expanded_soul_has_no_wrapper_text(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "soul").mkdir()
+        (hermes_home / "soul" / "style.md").write_text("Be direct.", encoding="utf-8")
+        (hermes_home / "SOUL.md").write_text("@include soul/style.md", encoding="utf-8")
+
+        result = build_context_files_prompt(cwd=str(tmp_path))
+
+        assert "Be direct." in result
+        assert "## SOUL.md" not in result
+        assert "@include" not in result
+
+    def test_empty_soul_md_still_adds_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "SOUL.md").write_text("\n\n", encoding="utf-8")
+
+        assert load_soul_md() is None
+
+    def test_soul_expansion_truncates_once_after_expansion(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"context_file_max_chars": 120})
+        (tmp_path / "soul").mkdir()
+        (tmp_path / "soul" / "long.md").write_text("INCLUDED" + "x" * 300, encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("ROOT\n@include soul/long.md", encoding="utf-8")
+
+        result = load_soul_md()
+
+        assert result is not None
+        assert result.count("truncated SOUL.md") == 1
+        assert "ROOT" in result
+        assert "INCLUDED" in result
+
+    def test_final_security_scan_runs_before_truncation(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"context_file_max_chars": 120})
+        calls = []
+
+        def fake_scan(content: str, filename: str) -> str:
+            calls.append((filename, content))
+            if "MALICIOUS" in content.replace("\n", ""):
+                return f"[BLOCKED: {filename} contained potential prompt injection (test). Content not loaded.]"
+            return content
+
+        monkeypatch.setitem(load_soul_md.__globals__, "_scan_context_content", fake_scan)
+        (tmp_path / "soul").mkdir()
+        (tmp_path / "soul" / "tail.md").write_text("CIOUS" + "y" * 200, encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("x" * 150 + "MALI\n@include soul/tail.md", encoding="utf-8")
+
+        result = load_soul_md()
+
+        assert result is not None
+        assert result.startswith("[BLOCKED: SOUL.md")
+        assert any(name == "SOUL.md" and "MALI\nCIOUS" in content for name, content in calls)
+
+    def test_soul_include_error_does_not_fallback_to_default_identity(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "SOUL.md").write_text("Before\n@include missing.md\nAfter", encoding="utf-8")
+
+        result = load_soul_md()
+
+        assert result is not None
+        assert "Before" in result
+        assert "After" in result
+        assert "[INCLUDE ERROR: SOUL.md:2: no include matches: missing.md]" in result
+        assert DEFAULT_AGENT_IDENTITY not in result
+
+    def test_soul_include_decode_error_does_not_fallback_to_default_identity(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "bad.md").write_bytes(b"\xff\xfe\x00")
+        (tmp_path / "SOUL.md").write_text("Before\n@include bad.md\nAfter", encoding="utf-8")
+
+        result = load_soul_md()
+
+        assert result is not None
+        assert "Before" in result
+        assert "After" in result
+        assert "[INCLUDE ERROR: SOUL.md:2: could not read include bad.md: UnicodeDecodeError]" in result
+        assert DEFAULT_AGENT_IDENTITY not in result
 
 
 # =========================================================================

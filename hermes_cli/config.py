@@ -1441,6 +1441,13 @@ DEFAULT_CONFIG = {
     # Only used when model.provider is "bedrock".
     "bedrock": {
         "region": "",  # AWS region for Bedrock API calls (empty = AWS_REGION env var → us-east-1)
+        # Botocore client timeouts for Bedrock runtime and control-plane clients.
+        # These are config.yaml knobs, not env vars. The runtime client cache keeps
+        # the Config used at construction time until reset_client_cache() or process restart.
+        "read_timeout": 600,          # seconds, covers non-streaming converse() and IAM fallback paths
+        "connect_timeout": 10,        # seconds
+        "retries_max_attempts": 3,    # botocore retry attempts
+        "retries_mode": "adaptive",   # botocore retry mode
         "discovery": {
             "enabled": True,           # Auto-discover models via ListFoundationModels
             "provider_filter": [],     # Only show models from these providers (e.g. ["anthropic", "amazon"])
@@ -1797,6 +1804,7 @@ DEFAULT_CONFIG = {
         # replace configured surfaces. Per-platform overrides live under
         # display.platforms.<platform>.status_phrases.
         "status_phrases": {},
+        "tool_completion_durations": False,  # Gateway: append per-tool completion timing to progress rows (e.g. "💻 terminal · 10ms")
         # How a reasoning/thinking summary renders when show_reasoning is on.
         # "code" (default) = 💭 fenced code block; "blockquote" = "> " lines;
         # "subtext" = "-# " lines (Discord small grey metadata text). Discord
@@ -2156,9 +2164,33 @@ DEFAULT_CONFIG = {
                                      # = no timeout: children fail only from real errors
                                      # (API, tools, iteration budget), never a delegation
                                      # stopwatch. Set a positive number of seconds
-                                     # (floor 30s) to enforce a hard cap.
+                                     # (floor 30s) to enforce a hard cap. Profiles may
+                                     # override this with
+                                     # delegation.profiles.<name>.child_timeout_seconds.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
+        "service_tier": "",  # priority processing for subagents: "fast"/"priority"/"on" => priority;
+                              # empty inherits parent; unsupported models ignore fast overrides.
+        "profiles": {
+            # Named routing profiles for delegate_task(profile=...) and per-task
+            # {"profile": "..."}. Profiles override only the keys they set;
+            # unspecified keys inherit the root delegation config or parent agent.
+            # Use the reserved profile name "dual-review" to spawn both
+            # reviewer-codex and reviewer-opus for one review prompt.
+            # Example:
+            # "file-explorer": {
+            #     "provider": "openai-codex",
+            #     "model": "gpt-5.4-mini",
+            #     "reasoning_effort": "medium",
+            #     "service_tier": "fast",
+            #     "toolsets": ["file", "terminal"],
+            #     "max_iterations": 25,
+            #     "child_timeout_seconds": 300,
+            # },
+        },
+        # When true, direct reviewer-codex / reviewer-opus profile requests fail.
+        # Use profile="dual-review" instead so both reviewers always run.
+        "require_dual_review": False,
         "max_concurrent_children": 3,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap
@@ -2871,6 +2903,38 @@ DEFAULT_CONFIG = {
             # bounding CPU / memory / upstream-LLM-quota exhaustion from a
             # request flood. Set to 0 to disable the cap entirely.
             "max_concurrent_runs": 10,
+        },
+        # Shared-topic context backfill. When a Telegram message opens a NEW
+        # session in a SHARED topic/group, pull recent text from OTHER Hermes
+        # sessions in the same topic (platform+chat_id+thread_id) out of
+        # state.db and inject it as the fresh session's channel_context, so a
+        # new topic session starts with the prior topic activity (e.g. the
+        # dual-review bridge / cron posts that never arrive as bot updates).
+        # Mirrors the Discord channel-history backfill but sourced from the
+        # local session DB since the Telegram Bot API cannot fetch topic
+        # history. DMs and established (non-empty) sessions are never
+        # backfilled. Read via gateway.topic_backfill in load_gateway_config.
+        "topic_backfill": {
+            # Master switch. When false, no backfill block is ever produced.
+            "enabled": True,
+            # Cap on how many of the most recent merged topic messages are
+            # rendered into the backfill block.
+            "max_messages": 15,
+            # Only messages newer than this many hours are considered.
+            "max_age_hours": 24,
+            # Second source: raw Bot-API topic posts (cron digests, watchdog
+            # alerts, the review bridge) logged by local scripts to a per-topic
+            # rolling JSON log. These never create a Hermes session/state.db row,
+            # so the SessionDB-sibling scan above is blind to them. When true,
+            # the reader merges that log as a second source.
+            "recent_posts_enabled": True,
+            # Read/render-side caps only. The pure-stdlib writer
+            # (~/.hermes/scripts/tg_topic_recent_posts.py) cannot import this
+            # config, so it carries its own hardcoded storage caps; these two
+            # only bound what the reader considers (further bounded by
+            # max_messages / max_age_hours on the combined set).
+            "recent_posts_max_entries": 200,
+            "recent_posts_retention_hours": 168,
         },
     },
 
@@ -4612,6 +4676,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
+        "stream_idle_timeout_seconds", "stream_ttfb_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
         "ssl_ca_cert", "ssl_verify",
     }

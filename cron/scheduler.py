@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -1397,6 +1398,24 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
 
+        # Cron Telegram forum-topic self-heal: when this job targets a forum
+        # topic AND carries recreate metadata, a deleted topic is recreated +
+        # repointed inline (no separate sweep cron). Resolved once per target.
+        from cron.topic_heal import (
+            is_telegram_forum_topic_target,
+            topic_metadata_for_job,
+            thread_not_found_in_result,
+            requested_thread_from_result,
+            heal_dead_thread,
+            NO_THREAD_FALLBACK_METADATA,
+        )
+        topic_meta = None
+        if is_telegram_forum_topic_target(platform_name, chat_id, thread_id):
+            topic_meta = topic_metadata_for_job(job)
+        # Guard: a given target heals at most once per delivery (prevents a live
+        # heal+resend that then fails from re-entering the standalone heal path).
+        healed_this_target = False
+
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
         origin_thread = origin.get("thread_id")
@@ -1579,7 +1598,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if route_thread_id:
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
-
+            if thread_id and topic_meta:
+                # Tell the adapter to REPORT a dead thread instead of dumping to
+                # the group root, so we can recreate the topic and re-send.
+                route_metadata[NO_THREAD_FALLBACK_METADATA] = True
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
                 # Route through the gateway's DeliveryRouter so the live send
@@ -1606,14 +1628,40 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     # detection when "thread_id"/"message_thread_id" are absent
                     # from metadata, deriving the routing from target.thread_id
                     # or the explicit direct_messages_topic_id above.
-                    future = safe_schedule_threadsafe(
-                        router._deliver_to_platform(
-                            route_target,
-                            text_to_send,
-                            route_metadata,
-                        ),
-                        loop,
-                    )
+                    try:
+                        future = safe_schedule_threadsafe(
+                            router._deliver_to_platform(
+                                route_target,
+                                text_to_send,
+                                route_metadata,
+                            ),
+                            loop,
+                        )
+                    except Exception as ex:
+                        # Some synchronous test adapters / router paths raise
+                        # before returning a Future. Convert the deleted-topic
+                        # signal to the same result shape as an async Future
+                        # failure so the unified self-heal path below runs.
+                        if (
+                            topic_meta
+                            and thread_id
+                            and thread_not_found_in_result({"error": str(ex)})
+                        ):
+                            future = concurrent.futures.Future()
+                            future.set_result(
+                                {
+                                    "success": False,
+                                    "error": str(ex),
+                                    "raw_response": {
+                                        "requested_thread_id": thread_id,
+                                        "thread_not_found": True,
+                                        "thread_fallback": False,
+                                    },
+                                }
+                            )
+                        else:
+                            target_errors.append(f"live adapter send failed: {ex}")
+                            raise
                     if future is None:
                         adapter_ok = False
                         target_errors.append("live adapter event loop scheduling failed")
@@ -1664,11 +1712,31 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     job["id"], platform_name, chat_id,
                                 )
                         except Exception as ex:
-                            # A real send error (not a slow confirmation) — fall
-                            # through to the standalone path so the message is
-                            # still delivered.
-                            target_errors.append(f"live adapter send failed: {ex}")
-                            raise
+                            # DeliveryRouter may raise on an adapter-level dead
+                            # thread instead of returning a SendResult. Convert
+                            # that specific signal back into the normal
+                            # self-heal path; other send errors still fall
+                            # through to standalone delivery.
+                            if (
+                                topic_meta
+                                and thread_id
+                                and thread_not_found_in_result({"error": str(ex)})
+                            ):
+                                send_result = {
+                                    "success": False,
+                                    "error": str(ex),
+                                    "raw_response": {
+                                        "requested_thread_id": thread_id,
+                                        "thread_not_found": True,
+                                        "thread_fallback": False,
+                                    },
+                                }
+                            else:
+                                # A real send error (not a slow confirmation) — fall
+                                # through to the standalone path so the message is
+                                # still delivered.
+                                target_errors.append(f"live adapter send failed: {ex}")
+                                raise
 
                         if timeout_handled:
                             # The timeout branch above already decided the
@@ -1678,6 +1746,71 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             # confirmation/thread-fallback inspection below.
                             pass
                         else:
+                            # Cron topic self-heal: a deleted forum topic is reported
+                            # (thread_not_found) when topic_meta is present. Recreate
+                            # the topic, repoint co-located jobs, and re-send to the
+                            # fresh thread before treating it as a failure.
+                            if (
+                                topic_meta
+                                and thread_id
+                                and thread_not_found_in_result(send_result)
+                            ):
+                                healed_this_target = True
+                                old_thread = requested_thread_from_result(send_result, thread_id)
+                                new_tid = heal_dead_thread(
+                                    job, chat_id, str(old_thread),
+                                    adapter=runtime_adapter, loop=loop,
+                                    token=getattr(pconfig, "token", None),
+                                )
+                                if new_tid:
+                                    thread_id = str(new_tid)
+                                    resend_meta = {"thread_id": thread_id, NO_THREAD_FALLBACK_METADATA: True}
+                                    resend_future = safe_schedule_threadsafe(
+                                        runtime_adapter.send(chat_id, text_to_send, metadata=resend_meta),
+                                        loop,
+                                    )
+                                    if resend_future is None:
+                                        adapter_ok = False
+                                        target_errors.append("live adapter scheduling failed after topic recreate")
+                                    else:
+                                        try:
+                                            send_result = resend_future.result(timeout=60)
+                                        except Exception as ex:
+                                            target_errors.append(f"live adapter resend after topic recreate failed: {ex}")
+                                            raise
+                                        # Point subsequent MEDIA sends at the NEW topic
+                                        # without the no-fallback flag. Media has no
+                                        # recreate path, so let it fall back to root if
+                                        # the fresh thread somehow fails.
+                                        media_metadata = {"thread_id": thread_id}
+                                        logger.info(
+                                            "Job '%s': self-healed dead topic %s -> %s and re-delivered",
+                                            job["id"], old_thread, new_tid,
+                                        )
+                                else:
+                                    # Could not recreate (no metadata / API fail).
+                                    # Preserve the legacy fallback so the alert is not
+                                    # lost: re-send WITHOUT the no-fallback flag so it
+                                    # lands in the group root, and record the misroute.
+                                    resend_future = safe_schedule_threadsafe(
+                                        runtime_adapter.send(
+                                            chat_id, text_to_send,
+                                            metadata={"thread_id": thread_id} if thread_id else None,
+                                        ),
+                                        loop,
+                                    )
+                                    if resend_future is not None:
+                                        try:
+                                            send_result = resend_future.result(timeout=60)
+                                        except Exception:
+                                            pass
+                                    msg = (
+                                        f"configured thread_id {old_thread} for {platform_name}:{chat_id} "
+                                        f"was not found; topic recreate failed, delivered without thread_id"
+                                    )
+                                    logger.warning("Job '%s': %s", job["id"], msg)
+                                    delivery_errors.append(msg)
+
                             # _deliver_to_platform returns either a SendResult
                             # (.success attr) or, when the silence-narration
                             # filter drops the message, a plain dict
@@ -1715,6 +1848,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             elif (
                                 send_raw_response
                                 and thread_id
+                                and not topic_meta
                                 and send_raw_response.get("thread_fallback")
                             ):
                                 requested_thread_id = send_raw_response.get("requested_thread_id") or thread_id
@@ -1802,8 +1936,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 target_errors.append(msg)
                 delivery_errors.extend(target_errors)
                 continue
+            # If the live path already attempted a heal for this target, do not
+            # let the standalone fallback recreate the topic a second time.
+            standalone_can_heal = bool(topic_meta) and not healed_this_target
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(
+                platform, pconfig, chat_id, cleaned_delivery_content,
+                thread_id=thread_id, media_files=media_files,
+                allow_thread_fallback=not standalone_can_heal,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -1832,7 +1973,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        future = pool.submit(asyncio.run, _send_to_platform(
+                            platform, pconfig, chat_id, cleaned_delivery_content,
+                            thread_id=thread_id, media_files=media_files,
+                            allow_thread_fallback=not standalone_can_heal,
+                        ))
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)
@@ -1857,12 +2002,79 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.extend(target_errors)
                 continue
 
+            # Cron topic self-heal (standalone): a deleted forum topic is reported
+            # (thread_not_found) when topic_meta is present. Recreate + repoint +
+            # re-send to the fresh thread before treating it as an error.
+            if standalone_can_heal and thread_id and thread_not_found_in_result(result):
+                old_thread = requested_thread_from_result(result, thread_id)
+                new_tid = heal_dead_thread(
+                    job, chat_id, str(old_thread),
+                    adapter=None, loop=None,
+                    token=getattr(pconfig, "token", None),
+                )
+                if new_tid:
+                    thread_id = str(new_tid)
+                    retry = _send_to_platform(
+                        platform, pconfig, chat_id, cleaned_delivery_content,
+                        thread_id=thread_id, media_files=media_files,
+                        allow_thread_fallback=False,
+                    )
+                    try:
+                        result = asyncio.run(retry)
+                    except RuntimeError:
+                        retry.close()
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                            result = pool.submit(asyncio.run, _send_to_platform(
+                                platform, pconfig, chat_id, cleaned_delivery_content,
+                                thread_id=thread_id, media_files=media_files,
+                                allow_thread_fallback=False,
+                            )).result(timeout=30)
+                    logger.info(
+                        "Job '%s': self-healed dead topic %s -> %s (standalone) and re-delivered",
+                        job["id"], old_thread, new_tid,
+                    )
+                else:
+                    # Recreate failed: re-send WITH fallback so the alert still
+                    # reaches the chat (group root), and record the misroute.
+                    retry = _send_to_platform(
+                        platform, pconfig, chat_id, cleaned_delivery_content,
+                        thread_id=thread_id, media_files=media_files,
+                        allow_thread_fallback=True,
+                    )
+                    try:
+                        result = asyncio.run(retry)
+                    except RuntimeError:
+                        retry.close()
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                            result = pool.submit(asyncio.run, _send_to_platform(
+                                platform, pconfig, chat_id, cleaned_delivery_content,
+                                thread_id=thread_id, media_files=media_files,
+                                allow_thread_fallback=True,
+                            )).result(timeout=30)
+                    msg = (
+                        f"configured thread_id {old_thread} for {platform_name}:{chat_id} "
+                        f"was not found; topic recreate failed, delivered without thread_id"
+                    )
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    delivery_errors.append(msg)
+
             if result and result.get("error"):
                 msg = f"delivery error: {result['error']}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
                 continue
+
+            # No topic_meta: a legacy standalone thread_fallback is surfaced in
+            # the result so the misroute is recorded (parity with live adapter).
+            if result and thread_id and not topic_meta and isinstance(result, dict) and result.get("thread_fallback"):
+                requested_thread_id = result.get("requested_thread_id") or thread_id
+                msg = (
+                    f"configured thread_id {requested_thread_id} for "
+                    f"{platform_name}:{chat_id} was not found; delivered without thread_id"
+                )
+                logger.warning("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
             _maybe_mirror_cron_delivery(
@@ -2173,7 +2385,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "findings normally, or say [SILENT] and nothing more. "
+        "RECEIPT: if your report makes reusable claims another agent or "
+        "human will act on (not a [SILENT]/status-only ping), END it with "
+        "ONE fenced ```receipt block (pure JSON) per the agent-receipt "
+        "schema: {claim_id, producer, task, stop_reason, sources, touched, "
+        "commands, blockers, next_owner}. See the agent-receipt-schema "
+        "skill for field meanings.]\n\n"
     )
     prompt = cron_hint + prompt
     if skills is None:
@@ -2381,6 +2599,72 @@ def _guard_job_credential_exfil(job: dict) -> None:
             job_id, err,
         )
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
+
+
+def _parse_wallclock_timeout(raw):
+    """Per-job wall-clock cap parser. None/""/0/negative/invalid → None (unlimited).
+    Extracted as a module-level helper so the real parsing logic is unit-testable
+    (not re-implemented in tests)."""
+    if raw in (None, "", 0, "0"):
+        return None
+    try:
+        v = float(raw)
+    except (ValueError, TypeError):
+        return None
+    return v if v > 0 else None
+
+
+def _poll_cron_future(cron_future, agent, *, inactivity_limit, wallclock_limit,
+                      poll_interval, run_start):
+    """Block until the cron future completes OR a timeout cap is crossed.
+
+    Returns (result, timeout_cause, elapsed). timeout_cause is None | "inactivity"
+    | "wallclock". When a cap fires, result is None (the worker is still running).
+
+    Entry contract: the caller enters the poll loop when EITHER cap is set; if both
+    are None it should just await the future directly. Wall-clock is checked FIRST
+    (precedence) because an active-every-poll runaway never crosses the inactivity
+    threshold, so only wall-clock can catch it. This is the REAL logic exercised by
+    run_job — tests drive THIS function, not a copy."""
+    while True:
+        done, _ = concurrent.futures.wait({cron_future}, timeout=poll_interval)
+        if done:
+            return cron_future.result(), None, time.monotonic() - run_start
+        elapsed = time.monotonic() - run_start
+        if wallclock_limit is not None and elapsed >= wallclock_limit:
+            return None, "wallclock", elapsed
+        _idle_secs = 0.0
+        if hasattr(agent, "get_activity_summary"):
+            try:
+                _act = agent.get_activity_summary()
+                _idle_secs = _act.get("seconds_since_activity", 0.0)
+            except Exception:
+                pass
+        if inactivity_limit is not None and _idle_secs >= inactivity_limit:
+            return None, "inactivity", elapsed
+
+
+def _write_cron_killed_sentinel(cron_session_id, job_id, *, cause, elapsed,
+                                wallclock_limit, interrupt_state):
+    """Write the GENERIC killed-sentinel (job-agnostic). pr-2c (or any job) reconciles
+    it into its own surface on the next tick. Best-effort; never raises."""
+    if not cron_session_id:
+        return None
+    try:
+        _killed_dir = Path(os.path.expanduser("~/.hermes/state/cron-killed"))
+        _killed_dir.mkdir(parents=True, exist_ok=True)
+        _path = _killed_dir / f"{cron_session_id}.json"
+        _path.write_text(json.dumps({
+            "cause": cause,
+            "elapsed_s": round(elapsed, 1),
+            "wallclock_limit_s": wallclock_limit,
+            "job_id": job_id,
+            "interrupt_state": interrupt_state,
+            "at": int(time.time()),
+        }) + "\n")
+        return str(_path)
+    except Exception:
+        return None
 
 
 def run_job(
@@ -2998,6 +3282,14 @@ def run_job(
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+
+        # Per-job WALL-CLOCK cap (total runtime), distinct from the inactivity cap above.
+        # default None = unlimited (behavior-preserving for every job without the field).
+        # Behavioral config lives in jobs.json (AGENTS.md: no new HERMES_* for non-secret).
+        _wallclock_limit = _parse_wallclock_timeout(job.get("wallclock_timeout"))
+        if job.get("wallclock_timeout") not in (None, "", 0, "0") and _wallclock_limit is None:
+            logger.warning("Job '%s': invalid wallclock_timeout=%r; treating as unlimited",
+                           job_name, job.get("wallclock_timeout"))
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
@@ -3005,37 +3297,68 @@ def run_job(
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
-        _inactivity_timeout = False
+        _timeout_cause = None  # None | "inactivity" | "wallclock"
+        _run_start = time.monotonic()
+        _elapsed = 0.0
         try:
-            if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
+            if _cron_inactivity_limit is None and _wallclock_limit is None:
+                # Unlimited — just wait for the result (byte-for-byte the old no-cap path).
                 result = _cron_future.result()
             else:
-                result = None
-                while True:
-                    done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
-                    )
-                    if done:
-                        result = _cron_future.result()
-                        break
-                    # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+                # Poll loop is entered when EITHER cap is set (so a wall-clock cap is honored
+                # even when inactivity is disabled, HERMES_CRON_TIMEOUT=0). Real logic lives
+                # in the module-level _poll_cron_future helper so tests exercise THIS code.
+                result, _timeout_cause, _elapsed = _poll_cron_future(
+                    _cron_future, agent,
+                    inactivity_limit=_cron_inactivity_limit,
+                    wallclock_limit=_wallclock_limit,
+                    poll_interval=_POLL_INTERVAL, run_start=_run_start,
+                )
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
 
+        if _timeout_cause == "wallclock":
+            # Total-runtime cap hit. agent.interrupt() is COOPERATIVE (sets a flag the
+            # agent loop honors at its next turn-top checkpoint + aborts in-flight
+            # tools/HTTP); it is NOT a hard thread kill. We request the interrupt, wait a
+            # bounded grace for the worker to actually unwind, log completed-vs-pending,
+            # write a GENERIC killed-sentinel (job-agnostic — pr-2c reconciles it into a
+            # Telegram REFUSE@runaway card on its next tick), then raise TimeoutError so
+            # the job is marked failed regardless of whether the thread has exited yet.
+            logger.error(
+                "Job '%s' exceeded wall-clock cap (%.0fs >= %.0fs) — requesting cooperative interrupt",
+                job_name, _elapsed, _wallclock_limit,
+            )
+            if hasattr(agent, "interrupt"):
+                try:
+                    agent.interrupt("Cron job timed out (wall-clock)")
+                except Exception:
+                    pass
+            _interrupt_state = "interrupt_pending"
+            try:
+                _cron_future.result(timeout=30)
+                _interrupt_state = "interrupt_completed"
+            except Exception:
+                _interrupt_state = "interrupt_pending"
+            logger.error("Job '%s' wall-clock interrupt: %s", job_name, _interrupt_state)
+            _sess = None
+            try:
+                _sess = _cron_session_id  # bound earlier in this function
+            except NameError:
+                _sess = None
+            _write_cron_killed_sentinel(
+                _sess, job_id, cause="wallclock", elapsed=_elapsed,
+                wallclock_limit=_wallclock_limit, interrupt_state=_interrupt_state,
+            )
+            raise TimeoutError(
+                f"Cron job '{job_name}' exceeded wall-clock cap "
+                f"({int(_elapsed)}s >= {int(_wallclock_limit)}s) — {_interrupt_state}"
+            )
+
+        _inactivity_timeout = (_timeout_cause == "inactivity")
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.
             _activity = {}

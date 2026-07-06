@@ -79,6 +79,8 @@ import {
   scanAndRecordRepos
 } from '@/store/projects'
 import {
+  $activeSessionId,
+  $attentionSessionIds,
   $cronSessions,
   $currentCwd,
   $gatewayState,
@@ -94,6 +96,19 @@ import {
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
+import { $subagentsBySession } from '@/store/subagents'
+import { $todosBySession } from '@/store/todos'
+import {
+  $workstreamFilter,
+  collectRenderedWorkstreamSessionIds,
+  displaySessionsForWorkstreamFilter,
+  filterSessionsByWorkstream,
+  setWorkstreamFilter,
+  setWorkstreamVisibleSessionIds,
+  WORKSTREAM_FILTERS,
+  type WorkstreamFilter
+} from '@/store/workstream-filter'
+import { $workstreamMetadata } from '@/store/workstream-metadata'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
@@ -129,6 +144,15 @@ const NON_SESSION_INITIAL_ROWS = 3
 const NON_SESSION_LOAD_STEP = 10
 
 const NEW_SESSION_KBD = comboTokens('mod+n')
+
+const WORKSTREAM_FILTER_LABELS: Record<WorkstreamFilter, string> = {
+  all: 'All',
+  active: 'Active',
+  blocked: 'Blocked',
+  review: 'Review',
+  closed: 'Closed',
+  'safe-delete': 'Delete'
+}
 
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
@@ -240,6 +264,8 @@ export function ChatSidebar({
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
   const selectedSessionId = useStore($selectedStoredSessionId)
+  const activeRuntimeSessionId = useStore($activeSessionId)
+  const attentionSessionIds = useStore($attentionSessionIds)
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
@@ -250,6 +276,10 @@ export function ChatSidebar({
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
   const workingSessionIds = useStore($workingSessionIds)
+  const todosBySession = useStore($todosBySession)
+  const subagentsBySession = useStore($subagentsBySession)
+  const workstreamFilter = useStore($workstreamFilter)
+  const workstreamMetadata = useStore($workstreamMetadata)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
   // Only surface the profile switcher when more than one profile exists, so
@@ -285,6 +315,7 @@ export function ChatSidebar({
   // Per-platform count of rows currently revealed (starts at NON_SESSION_INITIAL_ROWS).
   const [messagingVisible, setMessagingVisible] = useState<Record<string, number>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const sessionRowsRootRef = useRef<HTMLDivElement>(null)
   const trimmedQuery = searchQuery.trim()
 
   // Hotkey (session.focusSearch) → focus the field once it's mounted.
@@ -340,6 +371,27 @@ export function ChatSidebar({
   )
 
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
+
+  const workstreamFilterRuntime = useMemo(
+    () => ({
+      activeSessionId: activeRuntimeSessionId,
+      attentionSessionIds,
+      metadataBySession: workstreamMetadata,
+      selectedStoredSessionId: selectedSessionId,
+      subagentsBySession,
+      todosBySession,
+      workingSessionIds
+    }),
+    [
+      activeRuntimeSessionId,
+      attentionSessionIds,
+      selectedSessionId,
+      subagentsBySession,
+      todosBySession,
+      workingSessionIds,
+      workstreamMetadata
+    ]
+  )
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.
@@ -895,7 +947,10 @@ export function ChatSidebar({
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
   // parallel grouped view, not a filter on this one — nothing is hidden here.
-  const displayAgentSessions = agentSessions
+  const displayAgentSessions = useMemo(
+    () => filterSessionsByWorkstream(agentSessions, workstreamFilter, workstreamFilterRuntime),
+    [agentSessions, workstreamFilter, workstreamFilterRuntime]
+  )
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
   // unified set. When scoped to one profile it must compare that profile's own
@@ -1005,6 +1060,47 @@ export function ChatSidebar({
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
   const showSessionSections = showSessionSkeletons || sortedSessions.length > 0 || projectModel.length > 0
+
+  useEffect(() => {
+    const root = sessionRowsRootRef.current
+
+    if (!contentVisible || !showSessionSections || !root) {
+      setWorkstreamVisibleSessionIds([])
+
+      return
+    }
+
+    let frame: null | number = null
+
+    const syncRenderedIds = () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame)
+      }
+
+      frame = window.requestAnimationFrame(() => {
+        frame = null
+        setWorkstreamVisibleSessionIds(collectRenderedWorkstreamSessionIds(root))
+      })
+    }
+
+    syncRenderedIds()
+
+    const observer = new MutationObserver(syncRenderedIds)
+    observer.observe(root, {
+      attributeFilter: ['data-workstream-session-id'],
+      attributes: true,
+      childList: true,
+      subtree: true
+    })
+
+    return () => {
+      observer.disconnect()
+
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame)
+      }
+    }
+  }, [contentVisible, showSessionSections])
 
   // Each reorderable list reports its OWN new id order; persisting is a direct,
   // typed write — no id-prefix sniffing to figure out which level moved.
@@ -1122,10 +1218,35 @@ export function ChatSidebar({
           </div>
         )}
 
+        {contentVisible && showSessionSections && !trimmedQuery && (
+          <div className="flex shrink-0 gap-1 overflow-x-auto px-2 pb-1 [-webkit-app-region:no-drag]">
+            {WORKSTREAM_FILTERS.map(filter => {
+              const active = workstreamFilter === filter
+
+              return (
+                <button
+                  aria-pressed={active}
+                  className={cn(
+                    'h-6 shrink-0 rounded-md border border-transparent px-2 text-[0.68rem] font-medium text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                    active && 'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground'
+                  )}
+                  data-testid={`workstream-filter-${filter}`}
+                  key={filter}
+                  onClick={() => setWorkstreamFilter(filter)}
+                  type="button"
+                >
+                  {WORKSTREAM_FILTER_LABELS[filter]}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         {contentVisible && showSessionSections && (
-          <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)}>
+          <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)} ref={sessionRowsRootRef}>
             {trimmedQuery && (
               <SidebarSessionsSection
+                activeRuntimeSessionId={activeRuntimeSessionId}
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn('flex min-h-0 flex-1 flex-col gap-px pb-1.75', SCROLL_Y)}
                 emptyState={
@@ -1155,6 +1276,7 @@ export function ChatSidebar({
 
             {!trimmedQuery && (
               <SidebarSessionsSection
+                activeRuntimeSessionId={activeRuntimeSessionId}
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
                 dndSensors={dndSensors}
@@ -1179,6 +1301,7 @@ export function ChatSidebar({
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeProjectId={activeProjectId}
+                activeRuntimeSessionId={activeRuntimeSessionId}
                 activeSessionId={activeSidebarSessionId}
                 collapsible={!inProject}
                 contentClassName={cn(
@@ -1335,13 +1458,16 @@ export function ChatSidebar({
               !worktreeGroupingActive &&
               messagingGroups.map(group => {
                 const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
-                const shownSessions = group.sessions.slice(0, visible)
+                const shownSessions = displaySessionsForWorkstreamFilter(group.sessions, visible, workstreamFilter)
+
                 // More to show if rows are hidden behind the cap, or the backend
                 // still has older threads on disk.
-                const canRevealMore = visible < group.sessions.length || group.hasMore
+                const canRevealMore =
+                  workstreamFilter === 'all' ? visible < group.sessions.length || group.hasMore : group.hasMore
 
                 return (
                   <SidebarSessionsSection
+                    activeRuntimeSessionId={activeRuntimeSessionId}
                     activeSessionId={activeSidebarSessionId}
                     contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
                     emptyState={null}

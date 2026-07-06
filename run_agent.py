@@ -3258,12 +3258,37 @@ class AIAgent:
         Called by the gateway timeout handler to report what the agent was doing
         when it was killed, and by the periodic "still working" notifications.
         """
-        elapsed = time.time() - self._last_activity_ts
+        now = time.time()
+        elapsed = now - self._last_activity_ts
+        current_tool_elapsed = None
+        current_todo = None
+        recent_tool_activity = []
+        try:
+            from agent.activity import current_tool_elapsed as _tool_elapsed
+            from agent.activity import todo_activity_snapshot, tool_activity_history
+
+            current_tool_elapsed = _tool_elapsed(self, now=now)
+            current_todo = todo_activity_snapshot(getattr(self, "_todo_store", None))
+            recent_tool_activity = tool_activity_history(self, now=now)
+        except Exception:
+            current_tool_elapsed = None
+            current_todo = None
+            recent_tool_activity = []
+
         return {
             "last_activity_ts": self._last_activity_ts,
             "last_activity_desc": self._last_activity_desc,
             "seconds_since_activity": round(elapsed, 1),
             "current_tool": self._current_tool,
+            "current_tool_preview": getattr(self, "_current_tool_preview", None),
+            "current_tool_elapsed": (
+                round(current_tool_elapsed, 1)
+                if isinstance(current_tool_elapsed, (int, float))
+                else None
+            ),
+            "last_completed_tool": getattr(self, "_last_completed_tool", None),
+            "recent_tool_activity": recent_tool_activity,
+            "current_todo": current_todo,
             "api_call_count": self._api_call_count,
             "max_iterations": self.max_iterations,
             "budget_used": self.iteration_budget.used,
@@ -4527,11 +4552,35 @@ class AIAgent:
         # api_mode-flip race (the Anthropic SDK raises a non-retryable
         # TypeError on them). See #31673.
         from agent.anthropic_adapter import create_anthropic_message
+
+        # Reset the per-request event timestamp before the call so a stale
+        # marker from a previous (potentially zombie) worker on this agent
+        # can't satisfy this call's TTFB check (B-race). The poll loop reads
+        # this attribute under the same generation id it stamps below.
+        _gen_id = object()
+        self._anthropic_stream_generation = _gen_id
+        self._anthropic_stream_last_event_ts = None
+        self._anthropic_stream_fallback_to_create = False
+
+        def _on_event(_event):
+            # Late-event race (B-race): a daemon worker that outlived its
+            # turn must not refresh the LIVE request's timestamp. We accept
+            # the event only if the agent's generation id still matches the
+            # one we stamped when this call started.
+            if self._anthropic_stream_generation is _gen_id:
+                self._anthropic_stream_last_event_ts = time.time()
+
+        def _on_fallback():
+            if self._anthropic_stream_generation is _gen_id:
+                self._anthropic_stream_fallback_to_create = True
+
         return create_anthropic_message(
             self._anthropic_client,
             api_kwargs,
             log_prefix=getattr(self, "log_prefix", ""),
             prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
+            on_event=_on_event,
+            on_fallback_to_create=_on_fallback,
         )
 
     def _rebuild_anthropic_client(self) -> None:
@@ -4550,7 +4599,10 @@ class AIAgent:
         if getattr(self, "provider", None) == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
-            self._anthropic_client = build_anthropic_bedrock_client(region)
+            self._anthropic_client = build_anthropic_bedrock_client(
+                region,
+                timeout=get_provider_request_timeout(self.provider, self.model),
+            )
         else:
             from agent.anthropic_adapter import build_anthropic_client
             self._anthropic_client = build_anthropic_client(
@@ -5680,6 +5732,7 @@ class AIAgent:
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
             background=(not _is_subagent),
+            profile=function_args.get("profile"),
             parent_agent=self,
         )
 

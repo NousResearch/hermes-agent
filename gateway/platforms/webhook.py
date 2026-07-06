@@ -156,6 +156,11 @@ class WebhookAdapter(BasePlatformAdapter):
             config.extra.get("max_body_bytes", 1_048_576)
         )  # 1MB
 
+        # Monotonic receipt counter. Stamped onto every event at INTAKE (before
+        # create_task) so deliveries that resolve to the same session binding
+        # can be drained in true arrival order regardless of task scheduling.
+        self._arrival_seq_counter: int = 0
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -449,6 +454,47 @@ class WebhookAdapter(BasePlatformAdapter):
             return _PROFILE_REJECTED
         return profile
 
+    @staticmethod
+    def _resolve_intake_binding(hook_results):
+        """Pick a single SessionBinding from pre_session_binding hook results.
+
+        Same fail-closed contract as the pre_gateway_dispatch merge: collect
+        every well-formed binding; exactly one DISTINCT binding -> use it; zero
+        -> None; more than one distinct -> refuse (None) and log, so an
+        ambiguous resolution never silently binds to the wrong session.
+        Accepts a SessionBinding, a ``{"namespace","key"}`` dict, or a hook
+        result dict carrying ``session_binding``.
+        """
+        from gateway.session import SessionBinding
+
+        bindings = []
+        for result in hook_results or []:
+            candidate = result
+            if isinstance(result, dict) and "session_binding" in result:
+                candidate = result.get("session_binding")
+            if candidate is None:
+                continue
+            if isinstance(candidate, SessionBinding):
+                bindings.append(candidate)
+                continue
+            try:
+                obj = SessionBinding.from_dict(candidate)
+            except Exception:
+                obj = None
+            if obj is not None:
+                bindings.append(obj)
+
+        if not bindings:
+            return None
+        distinct = sorted({(b.namespace, b.key) for b in bindings})
+        if len(distinct) == 1:
+            return bindings[0]
+        logger.warning(
+            "[webhook] %d distinct session bindings at intake (%s) — "
+            "refusing all (fail-closed)", len(distinct), distinct,
+        )
+        return None
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
@@ -720,6 +766,30 @@ class WebhookAdapter(BasePlatformAdapter):
             raw_message=payload,
             message_id=delivery_id,
         )
+
+        # Stamp a monotonic receipt sequence at INTAKE (before create_task) so
+        # that two deliveries resolving to the same session binding drain in
+        # true arrival order, not task-scheduling order.
+        self._arrival_seq_counter += 1
+        event.arrival_seq = self._arrival_seq_counter
+
+        # Resolve a SESSION BINDING synchronously, BEFORE create_task, via the
+        # pre_session_binding hook. This is the load-bearing ordering fix: the
+        # binding must be known before the event is scheduled so that two
+        # same-binding deliveries resolve to ONE session key and the existing
+        # _active_sessions guard serializes them FIFO (the second is queued
+        # behind the first instead of running concurrently). Plugins (e.g.
+        # gh-review-opener) own the gh-review-specific logic; core stays generic.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _binding_results = _invoke_hook(
+                "pre_session_binding", event=event, gateway=self.gateway_runner,
+            )
+            _binding = self._resolve_intake_binding(_binding_results)
+            if _binding is not None:
+                event.source.session_binding = _binding
+        except Exception as _bind_exc:  # never block intake on a hook error
+            logger.warning("[webhook] pre_session_binding hook failed: %s", _bind_exc)
 
         logger.info(
             "[webhook] %s event=%s route=%s prompt_len=%d delivery=%s",

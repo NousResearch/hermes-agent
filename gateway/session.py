@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import json
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -143,6 +144,92 @@ def _is_session_key_unsafe(value: object) -> bool:
     return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
 
 
+# ---------------------------------------------------------------------------
+# Session binding — a generic, constrained way for an adapter/plugin to pin a
+# turn's session to an explicit logical key, independent of the platform/chat
+# the message physically arrived on.
+#
+# Motivating case: GitHub "Ask Hermes" review questions arrive as distinct
+# webhook deliveries (each a unique chat_id) but must SHARE one ordered session
+# per PR-topic so a follow-up ("this too") sees the prior Q&A and answers cannot
+# race. A binding lets every such delivery — and the Telegram topic replies that
+# continue the thread — resolve to the same key.
+#
+# Constrained ON PURPOSE (not a raw "suffix string"): the namespace must NOT
+# collide with a real platform's key shape. build_session_key emits
+# ``agent:<profile>:<namespace>:<key>`` so positional parsers (parts[2] ==
+# platform) keep working: a binding's namespace lands in the ``platform`` slot,
+# so it MUST be a reserved word that no Platform enum value can equal.
+# ---------------------------------------------------------------------------
+
+# Lazily-built set of reserved namespace tokens a binding may NEVER use — every
+# Platform enum value, plus the chat-type literals — so a binding can never
+# impersonate a real platform/chat session key.
+_RESERVED_BINDING_NAMESPACES = frozenset(
+    {p.value for p in Platform} | {"dm", "group", "channel", "thread"}
+)
+
+# Binding segment patterns: lowercase alnum + dash/underscore, no colons (a
+# colon would forge extra key segments). The NAMESPACE is a short reserved-word
+# kind (<=64); the KEY is an opaque id that may be long (e.g. a gh-review
+# force-new topic key carries a file-slug + a UUID nonce), so it gets headroom.
+_BINDING_NS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_BINDING_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,200}$")
+
+
+@dataclass(frozen=True)
+class SessionBinding:
+    """An explicit logical session key, namespace + opaque key.
+
+    Both segments are validated at construction so a (trusted) plugin cannot
+    accidentally forge a key that collides with a real platform session or
+    smuggle extra ``:`` segments. ``namespace`` is a reserved word identifying
+    the binding KIND (e.g. ``gh-review``) and must not equal any Platform value;
+    ``key`` is an opaque id within that kind (e.g. a topic key).
+    """
+
+    namespace: str
+    key: str
+
+    def __post_init__(self) -> None:
+        ns = str(self.namespace or "")
+        key = str(self.key or "")
+        if not _BINDING_NS_RE.match(ns):
+            raise ValueError(
+                f"SessionBinding.namespace invalid: {ns!r} "
+                "(lowercase alnum/-/_ , <=64 chars, no colons)"
+            )
+        if not _BINDING_KEY_RE.match(key):
+            raise ValueError(
+                f"SessionBinding.key invalid: {key!r} "
+                "(lowercase alnum/-/_ , <=201 chars, no colons)"
+            )
+        if ns in _RESERVED_BINDING_NAMESPACES:
+            raise ValueError(
+                f"SessionBinding.namespace {ns!r} is reserved "
+                "(collides with a platform/chat-type session key shape)"
+            )
+
+    def to_dict(self) -> Dict[str, str]:
+        return {"namespace": self.namespace, "key": self.key}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> Optional["SessionBinding"]:
+        if not isinstance(data, dict):
+            return None
+        ns = data.get("namespace")
+        key = data.get("key")
+        if not isinstance(ns, str) or not isinstance(key, str):
+            return None
+        try:
+            return cls(namespace=ns, key=key)
+        except ValueError:
+            # A persisted binding that no longer validates (e.g. a namespace
+            # that became a platform value) is dropped rather than crashing
+            # session load — the turn falls back to normal key derivation.
+            return None
+
+
 @dataclass
 class SessionSource:
     """
@@ -193,6 +280,13 @@ class SessionSource:
     # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
     # forge it across the wire or have it restored from persistence.
     delivered_via_upstream_relay: bool = False
+
+    # Explicit logical session binding. When set, build_session_key returns
+    # ``agent:<profile>:<namespace>:<key>`` and IGNORES the platform/chat parts,
+    # so unrelated physical sources (e.g. distinct GitHub webhook deliveries +
+    # the Telegram topic that continues the thread) collapse into one ordered
+    # session. None => normal platform/chat key derivation.
+    session_binding: Optional[SessionBinding] = None
 
     def __post_init__(self) -> None:
         # D-Q2.5 dual-field reconciliation: `scope_id` is canonical, `guild_id`
@@ -254,6 +348,8 @@ class SessionSource:
             d["message_id"] = self.message_id
         if self.profile:
             d["profile"] = self.profile
+        if self.session_binding is not None:
+            d["session_binding"] = self.session_binding.to_dict()
         return d
 
     @classmethod
@@ -275,6 +371,7 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
+            session_binding=SessionBinding.from_dict(data.get("session_binding")),
         )
     
 
@@ -886,8 +983,20 @@ def build_session_key(
       - Without participant identifiers, or when isolation is disabled, messages fall back to one
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
+
+    Session binding override:
+      - When ``source.session_binding`` is set, ALL platform/chat derivation is
+        skipped and the key is ``<ns>:<namespace>:<key>``. The namespace lands in
+        the positional ``platform`` slot but is a reserved word no Platform value
+        can equal (enforced by SessionBinding), so positional parsers stay valid
+        and the binding can never collide with a real platform session.
     """
     ns = _session_key_namespace(profile)
+
+    binding = getattr(source, "session_binding", None)
+    if binding is not None:
+        return f"{ns}:{binding.namespace}:{binding.key}"
+
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id

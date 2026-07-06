@@ -45,6 +45,7 @@ interface AppShellProps {
   statusbarItems?: readonly StatusbarItem[]
   terminalPaneOpen?: boolean
   titlebarTools?: readonly TitlebarTool[]
+  workstreamPaneOpen?: boolean
 }
 
 // Renderer-side fallback so layout snaps even when the main-process fullscreen event
@@ -72,7 +73,8 @@ export function AppShell({
   previewPaneOpen = false,
   statusbarItems,
   terminalPaneOpen = false,
-  titlebarTools
+  titlebarTools,
+  workstreamPaneOpen = false
 }: AppShellProps) {
   const sidebarOpen = useStore($sidebarOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
@@ -114,9 +116,9 @@ export function AppShell({
   // is uncovered there regardless of their stored open state. A standalone
   // session window renders no sidebar at all, so its edge is always uncovered.
   const collapsibleLeftPaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
-  // The terminal + preview rails never force-collapse, so when they're the
+  // The terminal + preview + workstream rails never force-collapse, so when they're the
   // leftmost open pane (flipped layout) they cover the edge even when narrow.
-  const persistentLeftPaneOpen = panesFlipped && (terminalPaneOpen || previewPaneOpen)
+  const persistentLeftPaneOpen = panesFlipped && (terminalPaneOpen || previewPaneOpen || workstreamPaneOpen)
 
   const leftEdgePaneOpen =
     !isSecondaryWindow() && ((!narrowViewport && collapsibleLeftPaneOpen) || persistentLeftPaneOpen)

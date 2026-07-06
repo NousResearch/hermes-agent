@@ -70,8 +70,8 @@ class CleanupCaptureAdapter(BasePlatformAdapter):
         )
         return SendResult(success=True, message_id=mid)
 
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
-        self.edits.append({"chat_id": chat_id, "message_id": message_id, "content": content})
+    async def edit_message(self, chat_id, message_id, content, **kwargs) -> SendResult:
+        self.edits.append({"chat_id": chat_id, "message_id": message_id, "content": content, "kwargs": kwargs})
         return SendResult(success=True, message_id=message_id)
 
     async def delete_message(self, chat_id, message_id) -> bool:
@@ -86,6 +86,14 @@ class CleanupCaptureAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str):
         return {"id": chat_id}
+
+
+class EditFailingHeartbeatAdapter(CleanupCaptureAdapter):
+    """Adapter whose heartbeat edit attempts fail after the first send."""
+
+    async def edit_message(self, chat_id, message_id, content, **kwargs) -> SendResult:
+        self.edits.append({"chat_id": chat_id, "message_id": message_id, "content": content, "kwargs": kwargs})
+        return SendResult(success=False, message_id=message_id, error="simulated edit failure")
 
 
 class NoDeleteAdapter(CleanupCaptureAdapter):
@@ -118,6 +126,17 @@ class ProgressAgent:
             time.sleep(0.25)
             cb("tool.started", "terminal", "ls", {})
             time.sleep(0.25)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class SleepingAgent:
+    """Sleeps long enough for multiple heartbeat ticks, with no tool progress."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.22)
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
@@ -198,6 +217,34 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_edit_failure_does_not_send_replacement_bubbles(monkeypatch, tmp_path):
+    """After the first heartbeat bubble exists, edit failure must not create spam."""
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+    adapter = EditFailingHeartbeatAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, SleepingAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    heartbeat_sends = [entry for entry in adapter.sent if "Working" in entry["content"]]
+    assert len(heartbeat_sends) == 1
+    assert len(adapter.edits) >= 1
+    assert all(entry["kwargs"].get("finalize") is True for entry in adapter.edits)
 
 
 @pytest.mark.asyncio

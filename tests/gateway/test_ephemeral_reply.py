@@ -28,12 +28,13 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    ButtonReply,
     EphemeralReply,
     MessageEvent,
     MessageType,
     SendResult,
 )
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 
 
 class _NoDeleteAdapter(BasePlatformAdapter):
@@ -76,6 +77,28 @@ class _DeleteCapableAdapter(BasePlatformAdapter):
         return True
 
 
+class _StrictNoButtonsAdapter(BasePlatformAdapter):
+    """Adapter with a legacy send signature: no **kwargs, no buttons."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.sent: list[tuple[str, str, object, object]] = []
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def send(self, chat_id, content="", reply_to=None, metadata=None):  # type: ignore[override]
+        self.sent.append((chat_id, content, reply_to, metadata))
+        return SendResult(success=True, message_id="strict-1")
+
+    async def get_chat_info(self, chat_id):
+        return {}
+
+
+
 def _no_delete_adapter():
     return _NoDeleteAdapter(
         PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM
@@ -85,6 +108,12 @@ def _no_delete_adapter():
 def _delete_adapter():
     return _DeleteCapableAdapter(
         PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM
+    )
+
+
+def _strict_no_buttons_adapter():
+    return _StrictNoButtonsAdapter(
+        PlatformConfig(enabled=True, token="t"), Platform.DISCORD
     )
 
 
@@ -165,6 +194,30 @@ def test_unwrap_ephemeral_handles_unreadable_config():
     assert ttl == 0
 
 
+def test_unwrap_button_reply_returns_text_ttl_and_buttons():
+    adapter = _delete_adapter()
+    buttons = [{"text": "Open", "url": "https://example.com"}]
+
+    text, ttl, actual_buttons = adapter._unwrap_reply(ButtonReply("open it", buttons=buttons))
+
+    assert text == "open it"
+    assert ttl == 0
+    assert actual_buttons == buttons
+
+
+def test_button_reply_can_wrap_ephemeral_ttl():
+    adapter = _delete_adapter()
+    buttons = [{"text": "Ack", "callback_data": "ack:1"}]
+
+    text, ttl, actual_buttons = adapter._unwrap_reply(
+        ButtonReply("ack?", buttons=buttons, ttl_seconds=30)
+    )
+
+    assert text == "ack?"
+    assert ttl == 30
+    assert actual_buttons == buttons
+
+
 # ---------------------------------------------------------------------------
 # _schedule_ephemeral_delete
 # ---------------------------------------------------------------------------
@@ -230,6 +283,129 @@ def test_schedule_ephemeral_delete_outside_event_loop_is_noop():
 # ---------------------------------------------------------------------------
 # _process_message_background unwraps EphemeralReply before send
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_process_message_unwraps_button_reply_before_send():
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-1")
+    )
+    buttons = [{"text": "Open", "url": "https://example.com"}]
+
+    async def _handler(evt):
+        return ButtonReply("open it", buttons=buttons)
+
+    adapter.set_message_handler(_handler)
+
+    event = _make_event(text="/plan")
+    session_key = "agent:main:telegram:private:42"
+    with patch("gateway.platforms.base.asyncio.sleep", AsyncMock()), patch.object(
+        adapter, "_keep_typing", new=AsyncMock()
+    ):
+        await adapter._process_message_background(event, session_key)
+
+    adapter._send_with_retry.assert_called_once()
+    assert adapter._send_with_retry.call_args.kwargs["content"] == "open it"
+    assert adapter._send_with_retry.call_args.kwargs["buttons"] == buttons
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_omits_buttons_for_legacy_adapter_signature():
+    adapter = _strict_no_buttons_adapter()
+
+    result = await adapter._send_with_retry(
+        chat_id="42",
+        content="legacy",
+        reply_to="msg-1",
+        metadata={"thread_id": "99"},
+        buttons=[{"text": "Open", "url": "https://example.com"}],
+    )
+
+    assert result.success is True
+    assert adapter.sent == [("42", "legacy", "msg-1", {"thread_id": "99"})]
+
+
+@pytest.mark.asyncio
+async def test_process_message_button_reply_allows_local_file_extraction(tmp_path):
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-1")
+    )
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(success=True, message_id="doc-1")
+    )
+    report_path = tmp_path / "report.txt"
+    report_path.write_text("report", encoding="utf-8")
+    buttons = [{"text": "Open", "url": "https://example.com"}]
+
+    async def _handler(evt):
+        return ButtonReply(f"See {report_path}", buttons=buttons)
+
+    adapter.set_message_handler(_handler)
+
+    event = _make_event(text="/plan")
+    session_key = "agent:main:telegram:private:42"
+    with patch("gateway.platforms.base.asyncio.sleep", AsyncMock()), patch.object(
+        adapter, "_keep_typing", new=AsyncMock()
+    ):
+        await adapter._process_message_background(event, session_key)
+
+    adapter._send_with_retry.assert_called_once()
+    assert adapter._send_with_retry.call_args.kwargs["content"] == "See"
+    assert adapter._send_with_retry.call_args.kwargs["buttons"] == buttons
+    adapter.send_document.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_active_session_command_preserves_button_reply_buttons():
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-1")
+    )
+    adapter.cancel_session_processing = AsyncMock()
+    adapter._drain_pending_after_session_command = AsyncMock()
+    buttons = [{"text": "Open", "url": "https://example.com"}]
+
+    async def _handler(evt):
+        return ButtonReply("reset done", buttons=buttons)
+
+    adapter.set_message_handler(_handler)
+    session_key = "agent:main:telegram:private:42"
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter._dispatch_active_session_command(_make_event(text="/new"), session_key, "new")
+
+    adapter._send_with_retry.assert_called_once()
+    assert adapter._send_with_retry.call_args.kwargs["content"] == "reset done"
+    assert adapter._send_with_retry.call_args.kwargs["buttons"] == buttons
+
+
+@pytest.mark.asyncio
+async def test_bypass_active_session_command_preserves_button_reply_buttons():
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-1")
+    )
+    buttons = [{"text": "Open", "url": "https://example.com"}]
+
+    async def _handler(evt):
+        return ButtonReply("status done", buttons=buttons)
+
+    adapter.set_message_handler(_handler)
+    event = _make_event(text="/status")
+    session_key = build_session_key(
+        event.source,
+        group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+        thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+    )
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.handle_message(event)
+
+    adapter._send_with_retry.assert_called_once()
+    assert adapter._send_with_retry.call_args.kwargs["content"] == "status done"
+    assert adapter._send_with_retry.call_args.kwargs["buttons"] == buttons
 
 
 @pytest.mark.asyncio

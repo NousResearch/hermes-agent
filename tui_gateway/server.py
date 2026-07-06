@@ -3433,6 +3433,14 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             "name": name,
             "context": _tool_ctx(name, args),
         }
+        # Emit the backend-epoch start timestamp so a client (the desktop
+        # Observatory timeline) can place this tool call on a shared time axis.
+        # Reuses the value already stored above; display-only, never model
+        # context, so it does not affect prompt caching.
+        if session is not None:
+            started_at = session.get("tool_started_at", {}).get(tool_call_id)
+            if started_at is not None:
+                payload["started_at"] = started_at
         if _session_verbose(sid):
             args_text = _tool_args_text(args)
             if args_text:
@@ -6329,6 +6337,51 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, payload)
 
 
+def _empty_context_full_payload(agent=None) -> dict:
+    usage = _get_usage(agent)
+    return {
+        "available": False,
+        "state": "agent_not_built",
+        "source": "reconstructed_base",
+        "source_label": (
+            "Reconstructed base context (cached prefix + history; excludes per-turn "
+            "ephemeral injections)"
+        ),
+        "raw_unredacted": True,
+        "model": usage.get("model", "") or "",
+        "context_max": usage.get("context_max", 0) or 0,
+        "context_used": usage.get("context_used", 0) or 0,
+        "slices": [],
+        "messages": [],
+        "exact_capture_available": False,
+    }
+
+
+@method("session.context_full")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        # Missing/expired runtime session id: return the empty ContextFull
+        # contract (available:false) rather than a 4001 error, so the Desktop
+        # renders the "agent not built / resume session" empty state instead
+        # of an error toast. The inspector is read-only, so a missing session
+        # is simply "nothing to show yet", not a failure.
+        return _ok(rid, _empty_context_full_payload(None))
+    assert session is not None
+    agent = session.get("agent")
+    if agent is None:
+        return _ok(rid, _empty_context_full_payload(None))
+    with session["history_lock"]:
+        history = list(session.get("history", []))
+    try:
+        from agent.context_breakdown import compute_session_context_full
+
+        payload = compute_session_context_full(agent, history)
+    except Exception:
+        return _err(rid, 5000, "Could not compute full context")
+    return _ok(rid, payload)
+
+
 def _pet_frame_counts(spritesheet) -> dict:
     """Real (padding-trimmed) frame count per state, for the desktop canvas.
 
@@ -7975,6 +8028,30 @@ def _(rid, params: dict) -> dict:
 
     paused = bool(params.get("paused", True))
     return _ok(rid, {"paused": set_spawn_paused(paused)})
+
+
+@method("subagent.context.get")
+def _(rid, params: dict) -> dict:
+    child_session_id = str(
+        params.get("child_session_id")
+        or params.get("session_id")
+        or params.get("id")
+        or ""
+    ).strip()
+    if not child_session_id:
+        return _err(rid, 4000, "child_session_id is required")
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5033)
+    try:
+        from agent.subagent_context_artifacts import get_subagent_context_artifact
+        result = get_subagent_context_artifact(child_session_id, session_db=db)
+    except Exception as exc:
+        return _err(rid, 5005, str(exc))
+    if not result.get("ok"):
+        code = result.get("error") or "subagent_context_not_found"
+        return _err(rid, 4044, str(result.get("message") or code))
+    return _ok(rid, result)
 
 
 @method("subagent.interrupt")

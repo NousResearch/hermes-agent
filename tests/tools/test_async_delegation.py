@@ -364,6 +364,182 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert _drain_one() is None
 
 
+def test_batch_record_carries_child_metadata_routing_and_live_child_status():
+    did = ad.new_delegation_id()
+    marked = threading.Event()
+    finish = threading.Event()
+
+    def runner():
+        ad.update_batch_child_result(
+            did,
+            task_index=0,
+            subagent_id="sa-0",
+            result={
+                "status": "completed",
+                "duration_seconds": 6.0,
+                "summary": "six done",
+            },
+        )
+        marked.set()
+        finish.wait(timeout=5)
+        return {
+            "results": [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "six done",
+                    "duration_seconds": 6.0,
+                },
+                {
+                    "task_index": 1,
+                    "status": "completed",
+                    "summary": "ten done",
+                    "duration_seconds": 10.0,
+                },
+            ],
+            "total_duration_seconds": 10.0,
+        }
+
+    res = ad.dispatch_async_delegation_batch(
+        delegation_id=did,
+        goals=["sleep 6", "sleep 10"],
+        context="ctx",
+        toolsets=["terminal"],
+        role="leaf",
+        model="m",
+        session_key="agent:main:telegram:group:-1001:77",
+        runner=runner,
+        children=[
+            {"task_index": 0, "subagent_id": "sa-0", "goal": "sleep 6", "model": "m"},
+            {"task_index": 1, "subagent_id": "sa-1", "goal": "sleep 10", "model": "m"},
+        ],
+        routing={
+            "platform": "telegram",
+            "chat_type": "group",
+            "chat_id": "-1001",
+            "thread_id": "77",
+            "message_id": "42",
+        },
+        max_async_children=3,
+    )
+
+    assert res == {"status": "dispatched", "delegation_id": did}
+    assert marked.wait(timeout=2)
+
+    rec = next(r for r in ad.list_async_delegations() if r["delegation_id"] == did)
+    assert rec["routing"]["thread_id"] == "77"
+    assert rec["children"][0]["subagent_id"] == "sa-0"
+    assert rec["children"][0]["status"] == "completed"
+    assert rec["children"][0]["duration_seconds"] == 6.0
+    assert rec["children"][1]["status"] == "pending"
+
+    finish.set()
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["type"] == "async_delegation"
+    assert evt["delegation_id"] == did
+    assert evt["children"][0]["status"] == "completed"
+    assert evt["children"][1]["status"] == "completed"
+    assert evt["routing"]["thread_id"] == "77"
+    assert evt["thread_id"] == "77"
+
+
+def test_batch_completion_event_carries_profile():
+    """Regression: the batch completion event MUST carry the top-level `profile`
+    so the watcher's collapsed render keeps the pinned '🔀 … · <profile>' header.
+
+    The bug: `profile` was threaded onto the live record (so the RUNNING header
+    showed `· dual-review`) but dropped from the completion `evt`, so when the
+    bubble finalized from the evt the collapsed header lost the profile cell.
+    """
+    did = ad.new_delegation_id()
+
+    def runner():
+        return {
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "a", "duration_seconds": 1.0},
+                {"task_index": 1, "status": "completed", "summary": "b", "duration_seconds": 1.0},
+            ],
+            "total_duration_seconds": 1.0,
+        }
+
+    res = ad.dispatch_async_delegation_batch(
+        delegation_id=did,
+        goals=["g0", "g1"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=runner,
+        profile="dual-review",
+        children=[
+            {"task_index": 0, "subagent_id": "s0", "goal": "g0", "profile": "reviewer-codex", "model": "m"},
+            {"task_index": 1, "subagent_id": "s1", "goal": "g1", "profile": "reviewer-opus", "model": "m"},
+        ],
+        max_async_children=3,
+    )
+    assert res == {"status": "dispatched", "delegation_id": did}
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt.get("is_batch") is True
+    # The field that used to be dropped — top-level profile for the pinned header.
+    assert evt.get("profile") == "dual-review"
+    # End-to-end: the header builder renders the profile cell from this evt.
+    from gateway.async_subagent_roster import build_async_dispatched_header
+    assert build_async_dispatched_header(evt) == "🔀 Delegate task — 2 agents · profile: `dual-review`"
+
+
+def test_batch_completion_event_carries_header_toolsets():
+    """Regression: per-task (not top-level) toolsets must still surface on the
+    pinned header via `header_toolsets`.
+
+    The gap: the header only read the TOP-LEVEL `toolsets` arg, so a batch whose
+    toolsets were set PER-TASK (the common 'I gave every child terminal,file'
+    shape) showed NO toolsets cell even though the children were explicitly
+    provisioned. The caller now computes a uniform per-task set into
+    `header_toolsets`, which must ride the completion evt to the collapsed render.
+    """
+    did = ad.new_delegation_id()
+
+    def runner():
+        return {
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "a", "duration_seconds": 1.0},
+                {"task_index": 1, "status": "completed", "summary": "b", "duration_seconds": 1.0},
+            ],
+            "total_duration_seconds": 1.0,
+        }
+
+    res = ad.dispatch_async_delegation_batch(
+        delegation_id=did,
+        goals=["g0", "g1"],
+        context=None,
+        toolsets=None,  # NOT top-level — per-task instead
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=runner,
+        profile=None,
+        header_toolsets=["terminal", "file"],  # uniform per-task set computed by caller
+        children=[
+            {"task_index": 0, "subagent_id": "s0", "goal": "g0", "profile": "file-explorer", "model": "m"},
+            {"task_index": 1, "subagent_id": "s1", "goal": "g1", "profile": "", "model": "m"},
+        ],
+        max_async_children=3,
+    )
+    assert res == {"status": "dispatched", "delegation_id": did}
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt.get("header_toolsets") == ["terminal", "file"]
+    from gateway.async_subagent_roster import build_async_dispatched_header
+    # No top-level profile -> profile: none; per-task uniform toolsets surface.
+    assert build_async_dispatched_header(evt) == \
+        "🔀 Delegate task — 2 agents · profile: `none` · toolsets=`terminal,file`"
+
+
 def test_model_dispatch_forces_background():
     """The MODEL-facing dispatch path forces background=True for any top-level
     delegation (single task OR batch), and keeps it off for an orchestrator

@@ -189,12 +189,28 @@ def _make_config():
 
 
 def _install_telegram_mock(monkeypatch, bot):
+    class _FakeInlineKeyboardButton:
+        def __init__(self, text, callback_data=None, url=None):
+            self.text = text
+            self.callback_data = callback_data
+            self.url = url
+
+    class _FakeInlineKeyboardMarkup:
+        def __init__(self, inline_keyboard):
+            self.inline_keyboard = inline_keyboard
+
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
     # MessageEntity needed by #27865 mention-detection path; tests don't
     # inspect it but the import must succeed.
     _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
-    telegram_mod = SimpleNamespace(Bot=lambda token: bot, MessageEntity=_MessageEntity, constants=constants_mod)
+    telegram_mod = SimpleNamespace(
+        Bot=lambda token: bot,
+        MessageEntity=_MessageEntity,
+        InlineKeyboardButton=_FakeInlineKeyboardButton,
+        InlineKeyboardMarkup=_FakeInlineKeyboardMarkup,
+        constants=constants_mod,
+    )
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
 
@@ -329,6 +345,38 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
             force_document=False,
+        )
+
+    def test_send_action_forwards_buttons(self):
+        config, telegram_cfg = _make_config()
+        buttons = [{"text": "Open", "url": "https://example.com"}]
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:-1001:17585",
+                        "message": "hello",
+                        "buttons": buttons,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-1001",
+            "hello",
+            thread_id="17585",
+            media_files=[],
+            force_document=False,
+            buttons=buttons,
         )
 
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
@@ -1191,6 +1239,24 @@ class TestSendTelegramHtmlDetection:
 
         kwargs = bot.send_message.await_args.kwargs
         assert kwargs["disable_web_page_preview"] is True
+
+    def test_url_buttons_add_reply_markup(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram(
+                "tok",
+                "123",
+                "Open plan",
+                buttons=[{"text": "Open plan", "url": "https://example.com/plan"}],
+            )
+        )
+
+        kwargs = bot.send_message.await_args.kwargs
+        button = kwargs["reply_markup"].inline_keyboard[0][0]
+        assert button.text == "Open plan"
+        assert button.url == "https://example.com/plan"
 
     def test_html_with_code_and_pre_tags(self, monkeypatch):
         bot = self._make_bot()

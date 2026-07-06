@@ -30,6 +30,11 @@ from agent.display import (
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
+from agent.activity import (
+    mark_concurrent_tools_started,
+    mark_tool_completed,
+    mark_tool_started,
+)
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
@@ -530,8 +535,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
 
     # Touch activity before launching workers so the gateway knows
-    # we're executing tools (not stuck).
-    agent._current_tool = tool_names_str
+    # we're executing tools (not stuck), and stamp a compact preview for the
+    # long-running gateway heartbeat.
+    runnable_for_activity = [
+        (name, args)
+        for _, name, args, _, block_result, _ in parsed_calls
+        if block_result is None
+    ]
+    if runnable_for_activity:
+        mark_concurrent_tools_started(agent, runnable_for_activity)
+    else:
+        agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
 
     def _run_tool(index, tool_call, function_name, function_args, middleware_trace):
@@ -845,6 +859,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
             tool_duration = 0.0
+            is_error = True
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
 
@@ -899,7 +914,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 response_preview = _preview_str[:agent.log_prefix_chars] + "..." if len(_preview_str) > agent.log_prefix_chars else _preview_str
                 print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
-        agent._current_tool = None
+        mark_tool_completed(agent, name, tool_duration, is_error=is_error)
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
 
         if not blocked and agent.tool_complete_callback:
@@ -1077,7 +1092,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
         if not _execution_blocked:
-            agent._current_tool = function_name
+            mark_tool_started(agent, function_name, function_args)
             agent._touch_activity(f"executing tool: {function_name}")
 
         # Set activity callback for long-running tool execution (terminal
@@ -1550,7 +1565,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
-        agent._current_tool = None
+        mark_tool_completed(agent, function_name, tool_duration, is_error=_is_error_result)
         agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
 
         if agent.verbose_logging:

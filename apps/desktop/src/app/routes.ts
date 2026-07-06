@@ -8,6 +8,9 @@ export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
+export const CONTEXT_ROUTE = '/context'
+export const WORKSTREAMS_ROUTE = '/workstreams'
+export const OBSERVATORY_ROUTE = '/observatory'
 export const STARMAP_ROUTE = '/starmap'
 
 export type AppView =
@@ -15,17 +18,21 @@ export type AppView =
   | 'artifacts'
   | 'chat'
   | 'command-center'
+  | 'context'
   | 'cron'
   | 'messaging'
   | 'profiles'
   | 'settings'
   | 'skills'
   | 'starmap'
+  | 'workstreams'
+  | 'observatory'
 
 export type AppRouteId =
   | 'agents'
   | 'artifacts'
   | 'command-center'
+  | 'context'
   | 'cron'
   | 'messaging'
   | 'new'
@@ -33,6 +40,8 @@ export type AppRouteId =
   | 'settings'
   | 'skills'
   | 'starmap'
+  | 'workstreams'
+  | 'observatory'
 
 export interface AppRoute {
   id: AppRouteId
@@ -50,7 +59,10 @@ export const APP_ROUTES = [
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },
-  { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' }
+  { id: 'context', path: CONTEXT_ROUTE, view: 'context' },
+  { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' },
+  { id: 'workstreams', path: WORKSTREAMS_ROUTE, view: 'workstreams' },
+  { id: 'observatory', path: OBSERVATORY_ROUTE, view: 'observatory' }
 ] as const satisfies readonly AppRoute[]
 
 const APP_VIEW_BY_PATH = new Map<string, AppView>(APP_ROUTES.map(route => [route.path, route.view]))
@@ -62,10 +74,13 @@ const RESERVED_PATHS: ReadonlySet<string> = new Set(APP_ROUTES.map(route => rout
 export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
   'agents',
   'command-center',
+  'context',
   'cron',
   'profiles',
   'settings',
-  'starmap'
+  'starmap',
+  'workstreams',
+  'observatory'
 ])
 
 export function isOverlayView(view: AppView): boolean {

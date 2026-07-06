@@ -1251,6 +1251,35 @@ class TestBuildSystemPrompt:
         assert "SOUL IDENTITY" in prompt
         assert DEFAULT_AGENT_IDENTITY not in prompt
 
+    def test_build_system_prompt_uses_expanded_soul_identity_once(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "soul").mkdir()
+        (tmp_path / "soul" / "identity.md").write_text("Included identity", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text(
+            "Root identity\n@include soul/identity.md",
+            encoding="utf-8",
+        )
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                load_soul_identity=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+
+        assert "Root identity" in prompt
+        assert "Included identity" in prompt
+        assert prompt.count("Included identity") == 1
+        assert "@include" not in prompt
+        assert DEFAULT_AGENT_IDENTITY not in prompt
+
     def test_includes_system_message(self, agent):
         prompt = agent._build_system_prompt(system_message="Custom instruction")
         assert "Custom instruction" in prompt

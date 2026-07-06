@@ -155,6 +155,108 @@ describe('toChatMessages', () => {
 
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
   })
+
+  // --- Observatory historical timeline (H1): reconstruct parent-tool timing
+  // from persisted message timestamps when the live-only started_at/duration_s
+  // display fields are absent on a reloaded/finished session. ---
+
+  const toolCallPart = (messages: ChatMessage[], toolName: string): ChatMessagePart | undefined =>
+    messages
+      .flatMap(m => m.parts)
+      .find(p => p.type === 'tool-call' && (p as { toolName?: string }).toolName === toolName)
+
+  const partArgs = (part: ChatMessagePart | undefined): Record<string, unknown> =>
+    part && part.type === 'tool-call' ? ((part.args as Record<string, unknown>) ?? {}) : {}
+
+  const partResult = (part: ChatMessagePart | undefined): Record<string, unknown> =>
+    part && part.type === 'tool-call' ? (((part as { result?: Record<string, unknown> }).result as Record<string, unknown>) ?? {}) : {}
+
+  it('anchors stored tool started_at to the assistant tool_calls row timestamp', () => {
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 1_700_000_000,
+        tool_calls: [{ id: 'tc-a', function: { name: 'search_files', arguments: '{"path":"."}' } }]
+      },
+      { role: 'tool', tool_call_id: 'tc-a', tool_name: 'search_files', content: '{"matches":[]}', timestamp: 1_700_000_003 }
+    ])
+
+    const part = toolCallPart(messages, 'search_files')
+
+    // start = assistant row ts; duration = result ts - start (3s).
+    expect(partArgs(part).started_at).toBe(1_700_000_000)
+    expect(partResult(part).duration_s).toBe(3)
+  })
+
+  it('derives per-tool duration for parallel tool calls sharing one assistant timestamp', () => {
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 1_000,
+        tool_calls: [
+          { id: 'p-1', function: { name: 'read_file', arguments: '{"path":"a"}' } },
+          { id: 'p-2', function: { name: 'terminal', arguments: '{"command":"ls"}' } }
+        ]
+      },
+      { role: 'tool', tool_call_id: 'p-1', tool_name: 'read_file', content: '{"ok":true}', timestamp: 1_002 },
+      { role: 'tool', tool_call_id: 'p-2', tool_name: 'terminal', content: '{"exit_code":0}', timestamp: 1_009 }
+    ])
+
+    // Both share the same start, but each gets its own end from its own result row.
+    expect(partArgs(toolCallPart(messages, 'read_file')).started_at).toBe(1_000)
+    expect(partResult(toolCallPart(messages, 'read_file')).duration_s).toBe(2)
+    expect(partArgs(toolCallPart(messages, 'terminal')).started_at).toBe(1_000)
+    expect(partResult(toolCallPart(messages, 'terminal')).duration_s).toBe(9)
+  })
+
+  it('clamps duration_s to 0 when the result row timestamp precedes the call (non-monotonic clock)', () => {
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 5_000,
+        tool_calls: [{ id: 'nm-1', function: { name: 'web_search', arguments: '{"query":"x"}' } }]
+      },
+      // NTP step / sleep-resume: result stamped BEFORE the call.
+      { role: 'tool', tool_call_id: 'nm-1', tool_name: 'web_search', content: '{"data":{}}', timestamp: 4_990 }
+    ])
+
+    expect(partResult(toolCallPart(messages, 'web_search')).duration_s).toBe(0)
+  })
+
+  it('does not overwrite a duration_s already present on the stored result', () => {
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 100,
+        tool_calls: [{ id: 'd-1', function: { name: 'process', arguments: '{}' } }]
+      },
+      // Live path already persisted duration_s in the result JSON — keep it.
+      { role: 'tool', tool_call_id: 'd-1', tool_name: 'process', content: '{"duration_s":42}', timestamp: 100_000 }
+    ])
+
+    expect(partResult(toolCallPart(messages, 'process')).duration_s).toBe(42)
+  })
+
+  it('leaves timing undefined when the assistant tool_calls row has no timestamp (pre-timestamp sessions)', () => {
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'nt-1', function: { name: 'read_file', arguments: '{}' } }]
+      },
+      { role: 'tool', tool_call_id: 'nt-1', tool_name: 'read_file', content: '{"ok":true}' }
+    ])
+
+    const part = toolCallPart(messages, 'read_file')
+
+    // No anchor available -> the sequential fallback in run-timeline handles it.
+    expect(partArgs(part).started_at).toBeUndefined()
+    expect(partResult(part).duration_s).toBeUndefined()
+  })
 })
 
 describe('renderMediaTags', () => {

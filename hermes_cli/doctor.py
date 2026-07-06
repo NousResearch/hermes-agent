@@ -187,10 +187,86 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+_STATE_WAL_WARN_BYTES = 50 * 1024 * 1024
+_STATE_WAL_INFO_BYTES = 10 * 1024 * 1024
+
+
 def _section(title: str) -> None:
     """Print a doctor section banner: blank line + bold cyan ◆ title."""
     print()
     print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
+
+
+def _checkpoint_state_wal(state_db_path: Path, wal_path: Path) -> int:
+    """Best-effort TRUNCATE checkpoint; return the post-checkpoint WAL size."""
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(str(state_db_path))
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    try:
+        return wal_path.stat().st_size if wal_path.exists() else 0
+    except Exception:
+        return 0
+
+
+def _check_state_wal_size(
+    *,
+    state_db_path: Path,
+    wal_path: Path,
+    issues: list[str],
+    should_fix: bool,
+    baseline_size: int | None = None,
+) -> int:
+    """Report/fix large state.db WAL files without blaming doctor's own probe.
+
+    The state DB write-health probe intentionally performs a rolled-back write.
+    On large databases that can grow the WAL above the warning threshold during
+    this doctor run. If the WAL was small before the probe, checkpoint it and do
+    not report the probe-created growth as a user issue.
+    """
+    if not wal_path.exists():
+        return 0
+    try:
+        wal_size = wal_path.stat().st_size
+        if (
+            baseline_size is not None
+            and baseline_size <= _STATE_WAL_WARN_BYTES
+            and wal_size > _STATE_WAL_WARN_BYTES
+        ):
+            new_size = _checkpoint_state_wal(state_db_path, wal_path)
+            if new_size > _STATE_WAL_WARN_BYTES:
+                check_info(
+                    "WAL grew during doctor write-health probe; "
+                    "checkpoint attempted"
+                )
+            return 0
+        if wal_size > _STATE_WAL_WARN_BYTES:
+            check_warn(
+                f"WAL file is large ({wal_size // (1024*1024)} MB)",
+                "(may indicate missed checkpoints)",
+            )
+            if should_fix:
+                new_size = _checkpoint_state_wal(state_db_path, wal_path)
+                check_ok(
+                    f"WAL checkpoint performed "
+                    f"({wal_size // 1024}K → {new_size // 1024}K)"
+                )
+                return 1
+            issues.append("Large WAL file: run 'hermes doctor --fix' to checkpoint")
+        elif wal_size > _STATE_WAL_INFO_BYTES:
+            check_info(
+                f"WAL file is {wal_size // (1024*1024)} MB "
+                "(normal for active sessions)"
+            )
+    except Exception:
+        pass
+    return 0
 
 
 def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None:
@@ -1220,6 +1296,13 @@ def run_doctor(args):
     
     # Check SQLite session store
     state_db_path = hermes_home / "state.db"
+    wal_path = hermes_home / "state.db-wal"
+    try:
+        wal_size_before_health_probe = (
+            wal_path.stat().st_size if wal_path.exists() else 0
+        )
+    except Exception:
+        wal_size_before_health_probe = None
     if state_db_path.exists():
         try:
             import sqlite3
@@ -1319,30 +1402,14 @@ def run_doctor(args):
     else:
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
 
-    # Check WAL file size (unbounded growth indicates missed checkpoints)
-    wal_path = hermes_home / "state.db-wal"
-    if wal_path.exists():
-        try:
-            wal_size = wal_path.stat().st_size
-            if wal_size > 50 * 1024 * 1024:  # 50 MB
-                check_warn(
-                    f"WAL file is large ({wal_size // (1024*1024)} MB)",
-                    "(may indicate missed checkpoints)"
-                )
-                if should_fix:
-                    import sqlite3
-                    conn = sqlite3.connect(str(state_db_path))
-                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                    conn.close()
-                    new_size = wal_path.stat().st_size if wal_path.exists() else 0
-                    check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
-                    fixed_count += 1
-                else:
-                    issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
-            elif wal_size > 10 * 1024 * 1024:  # 10 MB
-                check_info(f"WAL file is {wal_size // (1024*1024)} MB (normal for active sessions)")
-        except Exception:
-            pass
+    # Check WAL file size (unbounded growth indicates missed checkpoints).
+    fixed_count += _check_state_wal_size(
+        state_db_path=state_db_path,
+        wal_path=wal_path,
+        issues=issues,
+        should_fix=should_fix,
+        baseline_size=wal_size_before_health_probe,
+    )
 
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)

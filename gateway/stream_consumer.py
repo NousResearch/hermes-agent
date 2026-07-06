@@ -1113,10 +1113,14 @@ class GatewayStreamConsumer:
         self._fallback_preserve_partial_messages = False
 
     def _is_flood_error(self, result) -> bool:
-        """Check if a SendResult failure is due to flood control / rate limiting."""
-        err = getattr(result, "error", "") or ""
-        err_lower = err.lower()
-        return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
+        """Check if a SendResult failure is due to flood control / rate limiting.
+
+        Delegates to the canonical gateway.flood_detect predicate so the token
+        set is shared with the roster seed path (precise match — no bare
+        ``"rate"`` that false-matched accurate/moderate/separate).
+        """
+        from gateway.flood_detect import is_flood_error
+        return is_flood_error(result)
 
     def _resolve_draft_streaming(self) -> bool:
         """Decide whether this run should use native draft streaming.

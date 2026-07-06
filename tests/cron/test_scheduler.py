@@ -1,5 +1,6 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -3916,6 +3917,218 @@ class TestDeliverOriginUnresolvableIsLocal:
         result = self._deliver(job, monkeypatch)
         assert result is not None
         assert "no delivery target resolved" in result
+
+
+class TestCronTopicSelfHeal:
+    """In-delivery self-heal: a cron job whose forum topic was deleted recreates
+    the topic, repoints co-located jobs, and re-delivers — no separate sweep cron."""
+
+    def _redirect(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        (home / "state").mkdir(parents=True)
+        (home / "cron").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        import cron.scheduler as sched
+        import cron.jobs as jobs_mod
+        monkeypatch.setattr(sched, "_hermes_home", home)
+        monkeypatch.setattr(jobs_mod, "HERMES_DIR", home)
+        monkeypatch.setattr(jobs_mod, "CRON_DIR", home / "cron")
+        monkeypatch.setattr(jobs_mod, "JOBS_FILE", home / "cron" / "jobs.json")
+        monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", home / "cron" / "output")
+        return home
+
+    def test_live_adapter_recreates_topic_and_repoints_colocated(self, tmp_path, monkeypatch):
+        from concurrent.futures import Future
+        from cron.jobs import save_jobs, load_jobs
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+
+        home = self._redirect(tmp_path, monkeypatch)
+
+        job = {
+            "id": "job-a", "name": "Slack monitor", "enabled": True,
+            "deliver": "telegram:-100123:17",
+            "origin": {"platform": "telegram", "chat_id": "-100123", "thread_id": "17"},
+            "schedule": {"kind": "interval", "minutes": 30},
+            "telegram_topic": {"name": "Slack Monitor", "seed": "Slack monitor context.", "icon_emoji_id": "emoji-1"},
+        }
+        colocated = {
+            "id": "job-b", "name": "Slack debug watchdog", "enabled": True,
+            "deliver": "telegram:-100123:17",
+            "origin": {"platform": "telegram", "chat_id": "-100123", "thread_id": "17"},
+            "schedule": {"kind": "interval", "minutes": 30},
+        }
+        save_jobs([job, colocated])
+
+        # First send: dead thread (no-fallback => failure + thread_not_found).
+        # Second send (after recreate): clean success.
+        dead = SendResult(success=False, error="Bad Request: message thread not found",
+                          raw_response={"requested_thread_id": 17, "thread_not_found": True, "thread_fallback": False})
+        ok = SendResult(success=True, message_id="fresh-1", raw_response={"thread_fallback": False})
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[dead, ok])
+        adapter.create_forum_topic = AsyncMock(return_value="888")
+
+        pconfig = MagicMock(); pconfig.enabled = True; pconfig.token = "token"
+        mock_cfg = MagicMock(); mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        loop = MagicMock(); loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            fut = Future()
+            fut.set_result(asyncio.run(coro))
+            return fut
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
+
+        assert result is None  # healed + re-sent: NOT a delivery error
+        adapter.create_forum_topic.assert_awaited_once()
+        assert adapter.send.await_count == 2
+        # second send targeted the NEW thread
+        assert adapter.send.await_args_list[1].kwargs["metadata"]["thread_id"] == "888"
+        # seed sidecar written for the new thread
+        seed = json.loads((home / "state" / "topic-seeds" / "888.json").read_text())
+        assert seed["seed_text"] == "Slack monitor context."
+        # BOTH jobs repointed
+        by_id = {j["id"]: j for j in load_jobs()}
+        assert by_id["job-a"]["deliver"] == "telegram:-100123:888"
+        assert by_id["job-b"]["deliver"] == "telegram:-100123:888"
+        assert by_id["job-b"]["telegram_topic"]["name"] == "Slack Monitor"
+
+    def test_live_heal_points_media_at_new_thread(self, tmp_path, monkeypatch):
+        """BLOCKER B2 regression: after a live heal recreates the topic, a MEDIA
+        attachment must be sent to the NEW thread, not the dead one."""
+        from concurrent.futures import Future
+        from cron.jobs import save_jobs
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+
+        home = self._redirect(tmp_path, monkeypatch)
+        # a real media file on disk
+        media = home / "shot.png"
+        media.write_bytes(b"img")
+        monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (home,))
+
+        job = {
+            "id": "job-media", "name": "monitor", "enabled": True,
+            "deliver": "telegram:-100123:17",
+            "origin": {"platform": "telegram", "chat_id": "-100123", "thread_id": "17"},
+            "schedule": {"kind": "interval", "minutes": 30},
+            "telegram_topic": {"name": "Mon", "seed": "ctx"},
+        }
+        save_jobs([job])
+
+        dead = SendResult(success=False, error="message thread not found",
+                          raw_response={"requested_thread_id": 17, "thread_not_found": True, "thread_fallback": False})
+        ok = SendResult(success=True, message_id="t1", raw_response={"thread_fallback": False})
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[dead, ok])
+        adapter.create_forum_topic = AsyncMock(return_value="888")
+        media_meta_seen = {}
+        def _media(adapter_, chat, files, metadata, loop_, j, platform=None):
+            media_meta_seen["metadata"] = dict(metadata or {})
+        pconfig = MagicMock(); pconfig.enabled = True; pconfig.token = "tok"
+        mock_cfg = MagicMock(); mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        loop = MagicMock(); loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            fut = Future(); fut.set_result(asyncio.run(coro)); return fut
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._send_media_via_adapter", side_effect=_media), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(job, "alert MEDIA:" + str(media),
+                            adapters={Platform.TELEGRAM: adapter}, loop=loop)
+
+        # media metadata must target the NEW thread (888), not the dead 17
+        assert media_meta_seen["metadata"].get("thread_id") == "888", media_meta_seen
+        # and must NOT carry the no-fallback flag (media has no recreate path)
+        assert "telegram_no_thread_fallback" not in media_meta_seen["metadata"]
+
+
+    def test_standalone_recreates_topic_and_repoints(self, tmp_path, monkeypatch):
+        from cron.jobs import save_jobs, load_jobs
+        from gateway.config import Platform
+
+        home = self._redirect(tmp_path, monkeypatch)
+
+        job = {
+            "id": "job-standalone", "name": "Loop audit", "enabled": True,
+            "deliver": "telegram:-100123:17",
+            "origin": {"platform": "telegram", "chat_id": "-100123", "thread_id": "17"},
+            "schedule": {"kind": "interval", "minutes": 30},
+            "telegram_topic": {"name": "Loop Audit", "seed": "Loop audit context."},
+        }
+        save_jobs([job])
+
+        pconfig = MagicMock(); pconfig.enabled = True; pconfig.token = "token"
+        mock_cfg = MagicMock(); mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        # No live adapter => standalone path. First send reports dead thread;
+        # second (after recreate) succeeds. Topic recreate is stubbed at the
+        # topic_heal seam (standalone create builds its own Bot otherwise).
+        send = AsyncMock(side_effect=[
+            {"error": "Bad Request: message thread not found", "thread_not_found": True,
+             "requested_thread_id": 17,
+             "raw_response": {"requested_thread_id": 17, "thread_not_found": True, "thread_fallback": False}},
+            {"success": True, "message_id": "fresh-2"},
+        ])
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=send), \
+             patch("cron.topic_heal.recreate_topic", return_value=999):
+            result = _deliver_result(job, "Standalone hello")  # no adapters/loop
+
+        assert result is None
+        assert send.await_count == 2
+        assert send.await_args_list[0].kwargs["allow_thread_fallback"] is False
+        assert send.await_args_list[1].kwargs["thread_id"] == "999"
+        assert send.await_args_list[1].kwargs["allow_thread_fallback"] is False
+        seed = json.loads((home / "state" / "topic-seeds" / "999.json").read_text())
+        assert seed["seed_text"] == "Loop audit context."
+        stored = load_jobs()[0]
+        assert stored["deliver"] == "telegram:-100123:999"
+
+    def test_no_metadata_keeps_legacy_group_root_fallback(self, tmp_path, monkeypatch):
+        """A forum-topic job WITHOUT telegram_topic must NOT recreate — it keeps the
+        legacy 'delivered without thread_id' behavior so nothing changes for jobs
+        that did not opt in."""
+        from concurrent.futures import Future
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+
+        self._redirect(tmp_path, monkeypatch)
+
+        # No no-fallback flag => adapter falls back to root and reports thread_fallback.
+        send_result = SendResult(success=True, message_id="42",
+                                 raw_response={"requested_thread_id": 17, "thread_fallback": True})
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.create_forum_topic = AsyncMock(return_value="888")
+        pconfig = MagicMock(); pconfig.enabled = True
+        mock_cfg = MagicMock(); mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        loop = MagicMock(); loop.is_running.return_value = True
+
+        completed = Future(); completed.set_result(send_result)
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed
+
+        job = {"id": "no-meta-job", "deliver": "telegram:-100123:17"}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
+
+        assert result == (
+            "configured thread_id 17 for telegram:-100123 was not found; delivered without thread_id"
+        )
+        adapter.create_forum_topic.assert_not_awaited()  # NO recreate without opt-in
 
 
 class TestSendMediaTimeoutCancelsFuture:

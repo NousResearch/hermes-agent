@@ -9,6 +9,7 @@ import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overla
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
+import { Codicon } from '@/components/ui/codicon'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { isFocusWithin } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
@@ -20,6 +21,7 @@ import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChat
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
+import { openContextInspector as openContextInspectorStore } from '../store/context-inspector'
 import { setCronFocusJobId } from '../store/cron'
 import {
   $fileBrowserOpen,
@@ -34,10 +36,11 @@ import {
   setSidebarOverlayMounted,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
-  unpinSession
+  unpinSession,
+  WORKSTREAM_PANE_ID
 } from '../store/layout'
 import { respondToApprovalAction } from '../store/native-notifications'
-import { $paneOpen } from '../store/panes'
+import { $paneOpen, setPaneOpen } from '../store/panes'
 import { setPetActivity } from '../store/pet'
 import { setPetScale } from '../store/pet-gallery'
 import {
@@ -126,6 +129,7 @@ import type { StatusbarItem } from './shell/statusbar-controls'
 import type { TitlebarTool } from './shell/titlebar-controls'
 import { useGroupRegistry } from './shell/use-group-registry'
 import { UpdatesOverlay } from './updates-overlay'
+import { WorkstreamProgressRail } from './workstream/workstream-progress-rail'
 
 const AgentsView = lazy(async () => ({ default: (await import('./agents')).AgentsView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
@@ -136,6 +140,9 @@ const MessagingView = lazy(async () => ({ default: (await import('./messaging'))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
+const MissionControlView = lazy(async () => ({ default: (await import('./workstreams')).MissionControlView }))
+const ObservatoryView = lazy(async () => ({ default: (await import('./observatory')).ObservatoryView }))
+const ContextInspectorView = lazy(async () => ({ default: (await import('./context/context-inspector')).ContextInspectorView }))
 
 // Latest cron-job sessions surfaced in the collapsed "Cron jobs" section. The
 // Cron sessions are written by a background scheduler tick (the desktop
@@ -200,6 +207,7 @@ export function DesktopController() {
   const reviewOpen = useStore($reviewOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const previewPaneOpen = useStore($paneOpen(PREVIEW_PANE_ID))
+  const workstreamPaneOpen = useStore($paneOpen(WORKSTREAM_PANE_ID))
   const panesFlipped = useStore($panesFlipped)
   const profileScope = useStore($profileScope)
   // Below SIDEBAR_COLLAPSE_BREAKPOINT_PX there's no room for a docked rail —
@@ -227,7 +235,12 @@ export function DesktopController() {
     profilesOpen,
     settingsOpen,
     starmapOpen,
-    toggleCommandCenter
+    toggleCommandCenter,
+    workstreamsOpen,
+    observatoryOpen,
+    openObservatory,
+    contextOpen,
+    openContext
   } = useOverlayRouting()
 
   const terminalSidebarOpen = chatOpen && terminalTakeover
@@ -236,6 +249,20 @@ export function DesktopController() {
   const statusbarItemGroups = useGroupRegistry<StatusbarItem>()
   const setTitlebarToolGroup = titlebarToolGroups.set
   const setStatusbarItemGroup = statusbarItemGroups.set
+
+  useEffect(() => {
+    setTitlebarToolGroup('workstream-progress', [
+      {
+        active: workstreamPaneOpen,
+        icon: <Codicon name="list-tree" />,
+        id: 'workstream-progress',
+        label: workstreamPaneOpen ? 'Hide workstream panel' : 'Show workstream panel',
+        onSelect: () => setPaneOpen(WORKSTREAM_PANE_ID, !workstreamPaneOpen)
+      }
+    ])
+
+    return () => setTitlebarToolGroup('workstream-progress', [])
+  }, [setTitlebarToolGroup, workstreamPaneOpen])
 
   const {
     activeSessionIdRef,
@@ -996,6 +1023,16 @@ export function DesktopController() {
     startFreshSessionDraft
   })
 
+  const openContextInspector = useCallback(
+    (sessionId: string | null) => {
+      void openContextInspectorStore(sessionId, requestGateway, {
+        runtimeIdByStoredSessionId: runtimeIdByStoredSessionIdRef.current
+      })
+      openContext()
+    },
+    [openContext, requestGateway, runtimeIdByStoredSessionIdRef]
+  )
+
   const { leftStatusbarItems, statusbarItems } = useStatusbarItems({
     agentsOpen,
     chatOpen,
@@ -1005,6 +1042,7 @@ export function DesktopController() {
     gatewayState,
     inferenceStatus,
     openAgents,
+    openContextInspector,
     freshDraftReady,
     openCommandCenterSection,
     requestGateway,
@@ -1129,6 +1167,27 @@ export function DesktopController() {
           <StarmapView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
+
+      {workstreamsOpen && (
+        <Suspense fallback={null}>
+          <MissionControlView
+            onClose={closeOverlayToPreviousRoute}
+            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+          />
+        </Suspense>
+      )}
+
+      {observatoryOpen && (
+        <Suspense fallback={null}>
+          <ObservatoryView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {contextOpen && (
+        <Suspense fallback={null}>
+          <ContextInspectorView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
     </>
   )
 
@@ -1174,6 +1233,7 @@ export function DesktopController() {
   // Other sidebars docked as real columns on the terminal's rail. Force-collapsed
   // hover-reveal overlays (narrow window) don't take a column, so they don't count.
   const railColumnOpen =
+    (chatOpen && workstreamPaneOpen) ||
     (chatOpen && Boolean(previewTarget || filePreviewTarget) && previewPaneOpen) ||
     (chatOpen && !narrowViewport && fileBrowserOpen) ||
     (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
@@ -1181,6 +1241,25 @@ export function DesktopController() {
   // Once the terminal would share its rail with another sidebar, drop it to a
   // full-width row beneath them rather than cramming in one more skinny column.
   const terminalAsRow = terminalSidebarOpen && railColumnOpen
+
+  const workstreamPane = (
+    <Pane
+      defaultOpen
+      disabled={!chatOpen}
+      id={WORKSTREAM_PANE_ID}
+      key="workstream-progress"
+      maxWidth="24rem"
+      minWidth="16rem"
+      resizable
+      side={railSide}
+      width="19rem"
+    >
+      <WorkstreamProgressRail
+        onClose={() => setPaneOpen(WORKSTREAM_PANE_ID, false)}
+        onOpenObservatory={openObservatory}
+      />
+    </Pane>
+  )
 
   const previewPane = (
     <Pane
@@ -1293,6 +1372,7 @@ export function DesktopController() {
       statusbarItems={statusbarItems}
       terminalPaneOpen={terminalSidebarOpen}
       titlebarTools={titlebarToolGroups.flat.right}
+      workstreamPaneOpen={chatOpen && workstreamPaneOpen}
     >
       {!isSecondaryWindow() && (
         <Pane
@@ -1342,6 +1422,9 @@ export function DesktopController() {
           <Route element={null} path="settings" />
           <Route element={null} path="command-center" />
           <Route element={null} path="agents" />
+          <Route element={null} path="workstreams" />
+          <Route element={null} path="observatory" />
+          <Route element={null} path="context" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
           <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
@@ -1349,14 +1432,15 @@ export function DesktopController() {
       </PaneMain>
       {/*
         Order within a side maps to column order. Default (rail on the right):
-        main | terminal | preview | file-browser. Flipped (rail on the left):
-        mirror to file-browser | preview | terminal | main so terminal stays
-        adjacent to the chat.
+        main | workstream | terminal | preview | review | file-browser. Flipped
+        (rail on the left): mirror to file-browser | review | preview | terminal
+        | workstream | main so live progress stays adjacent to the chat.
       */}
-      {panesFlipped ? fileBrowserPane : terminalPane}
+      {panesFlipped ? fileBrowserPane : workstreamPane}
+      {panesFlipped ? reviewPane : terminalPane}
       {previewPane}
-      {reviewPane}
-      {panesFlipped ? terminalPane : fileBrowserPane}
+      {panesFlipped ? terminalPane : reviewPane}
+      {panesFlipped ? workstreamPane : fileBrowserPane}
     </AppShell>
   )
 }

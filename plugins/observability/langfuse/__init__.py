@@ -538,6 +538,29 @@ def _serialize_assistant_message(message: Any) -> dict[str, Any]:
     }
 
 
+def _cost_details_from_estimate(model: str, usage: Any, *, provider: str, base_url: str) -> dict:
+    """Per-bucket langfuse cost_details from the UNIFIED engine [B1].
+
+    Single source for both the response-object path (_usage_and_cost) and the
+    usage-summary-dict fallback. Calls estimate_usage_cost (which applies the
+    config-gated corrections) and uses the CostResult.breakdown so a corrected
+    codex/bedrock total emits corrected per-bucket costs instead of the $0
+    `included` buckets the old raw get_pricing_entry recompute produced. Falls
+    back to a single `total` key when the engine has no per-bucket breakdown.
+    Never raises: any failure yields {} so langfuse ingestion is unaffected.
+    """
+    try:
+        from agent.usage_pricing import estimate_usage_cost
+        cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url, api_key="")
+        if cost.amount_usd is None:
+            return {}
+        if cost.breakdown is not None:
+            return cost.breakdown.as_langfuse_cost_details(total_fallback=cost.amount_usd)
+        return {"total": float(cost.amount_usd)}
+    except Exception:
+        return {}
+
+
 def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, base_url: str) -> tuple[dict[str, int], dict[str, float]]:
     usage_details: Dict[str, int] = {}
     cost_details: Dict[str, float] = {}
@@ -566,34 +589,11 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
             usage_details["cache_creation_input_tokens"] = canonical.cache_write_tokens
         if canonical.reasoning_tokens:
             usage_details["reasoning_tokens"] = canonical.reasoning_tokens
-        cost = estimate_usage_cost(
-            model,
-            canonical,
-            provider=provider,
-            base_url=base_url,
-            api_key="",
+        # [B1] Per-bucket cost from the UNIFIED engine (corrections applied),
+        # NOT a raw get_pricing_entry recompute (which returns $0 for codex).
+        cost_details = _cost_details_from_estimate(
+            model, canonical, provider=provider, base_url=base_url
         )
-        if cost.amount_usd is not None:
-            # Langfuse cost_details keys must match usage_details keys.
-            # Provide per-type breakdown so dashboard can show cost by type.
-            try:
-                from agent.usage_pricing import get_pricing_entry
-                from decimal import Decimal
-                _ONE_M = Decimal("1000000")
-                entry = get_pricing_entry(model, provider=provider, base_url=base_url)
-                if entry:
-                    if entry.input_cost_per_million is not None and canonical.input_tokens:
-                        cost_details["input"] = float(Decimal(canonical.input_tokens) * entry.input_cost_per_million / _ONE_M)
-                    if entry.output_cost_per_million is not None and canonical.output_tokens:
-                        cost_details["output"] = float(Decimal(canonical.output_tokens) * entry.output_cost_per_million / _ONE_M)
-                    if entry.cache_read_cost_per_million is not None and canonical.cache_read_tokens:
-                        cost_details["cache_read_input_tokens"] = float(Decimal(canonical.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_M)
-                    if entry.cache_write_cost_per_million is not None and canonical.cache_write_tokens:
-                        cost_details["cache_creation_input_tokens"] = float(Decimal(canonical.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_M)
-                else:
-                    cost_details["total"] = float(cost.amount_usd)
-            except Exception:
-                cost_details["total"] = float(cost.amount_usd)
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"usage normalization failed: {exc}")
 
@@ -987,12 +987,13 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
             usage_details["cache_creation_input_tokens"] = _cache_write
         if _reasoning:
             usage_details["reasoning_tokens"] = _reasoning
+        # [B1] Per-bucket cost from the UNIFIED engine (corrections applied),
+        # NOT a raw get_pricing_entry recompute. This is the LIVE GATEWAY path
+        # (gateway turns pass a sanitized dict response with no `.usage`), so a
+        # raw recompute here emitted $0 codex buckets on every gateway turn.
         cost_details = {}
-        # Estimate per-type cost from the summary if possible
         try:
-            from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, get_pricing_entry
-            from decimal import Decimal
-            _ONE_M = Decimal("1000000")
+            from agent.usage_pricing import CanonicalUsage
             _cu = CanonicalUsage(
                 input_tokens=_input,
                 output_tokens=_output,
@@ -1000,20 +1001,9 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
                 cache_write_tokens=_cache_write,
                 reasoning_tokens=_reasoning,
             )
-            entry = get_pricing_entry(model, provider=provider, base_url=base_url)
-            if entry:
-                if entry.input_cost_per_million is not None and _input:
-                    cost_details["input"] = float(Decimal(_input) * entry.input_cost_per_million / _ONE_M)
-                if entry.output_cost_per_million is not None and _output:
-                    cost_details["output"] = float(Decimal(_output) * entry.output_cost_per_million / _ONE_M)
-                if entry.cache_read_cost_per_million is not None and _cache_read:
-                    cost_details["cache_read_input_tokens"] = float(Decimal(_cache_read) * entry.cache_read_cost_per_million / _ONE_M)
-                if entry.cache_write_cost_per_million is not None and _cache_write:
-                    cost_details["cache_creation_input_tokens"] = float(Decimal(_cache_write) * entry.cache_write_cost_per_million / _ONE_M)
-            else:
-                _cost = estimate_usage_cost(model, _cu, provider=provider, base_url=base_url, api_key="")
-                if _cost.amount_usd is not None:
-                    cost_details["total"] = float(_cost.amount_usd)
+            cost_details = _cost_details_from_estimate(
+                model, _cu, provider=provider, base_url=base_url
+            )
         except Exception:
             pass
     else:

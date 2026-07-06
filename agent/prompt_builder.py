@@ -16,6 +16,7 @@ from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
+from agent.soul_includes import expand_soul_includes, has_soul_include_directive
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
@@ -216,7 +217,11 @@ KANBAN_GUIDANCE = (
     "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
     "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
     "artifacts. `metadata` is machine-readable facts "
-    "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
+    "(`{changed_files: [...], tests_run: N, decisions: [...]}`). REQUIRED: "
+    "`metadata.agent_receipt` — a structured completion receipt {claim_id, "
+    "producer, task, stop_reason, sources, touched, commands, blockers, "
+    "next_owner}; completion is REJECTED without a valid one (task stays "
+    "in-flight, retry). See the agent-receipt-schema skill. Downstream "
     "workers read both via their own `kanban_show`. Never put secrets / "
     "tokens / raw PII in either field — run rows are durable forever. "
     "Exception: if your output is a code change that needs human review "
@@ -1794,7 +1799,7 @@ def _truncate_content(
 
 
 def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
-    """Load SOUL.md from HERMES_HOME and return its content, or None.
+    """Load SOUL.md from HERMES_HOME and return its expanded content, or None.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
@@ -1813,6 +1818,17 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         content = soul_path.read_text(encoding="utf-8").strip()
         if not content:
             return None
+        if has_soul_include_directive(content):
+            content = expand_soul_includes(
+                content,
+                root_path=soul_path,
+                hermes_home=get_hermes_home(),
+                scan_content=_scan_context_content,
+            )
+            if not content:
+                return None
+        else:
+            content = _scan_context_content(content, "SOUL.md")
         content = _scan_context_content(content, "SOUL.md")
         content = _truncate_content(
             content, "SOUL.md", context_length=context_length,

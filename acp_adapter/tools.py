@@ -253,6 +253,27 @@ def _fenced_text(text: str, language: str = "") -> str:
     return f"{fence}{language}\n{text}\n{fence}"
 
 
+def _format_todo_elapsed(seconds: Any) -> Optional[str]:
+    """Compact wall-clock duration for a todo item, or None if unmeasured."""
+    if not isinstance(seconds, (int, float)) or isinstance(seconds, bool):
+        return None
+    value = float(seconds)
+    if value < 0:
+        value = 0.0
+    if value < 0.1:
+        return f"{int(round(value * 1000))}ms"
+    if value < 10:
+        return f"{value:.1f}s"
+    total = int(round(value))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
 def _format_todo_result(result: Optional[str]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict) or not isinstance(data.get("todos"), list):
@@ -271,17 +292,21 @@ def _format_todo_result(result: Optional[str]) -> Optional[str]:
         status = str(item.get("status") or "pending")
         content = str(item.get("content") or item.get("id") or "").strip()
         if content:
-            lines.append(f"- {icon.get(status, '•')} {content}")
+            elapsed = _format_todo_elapsed(item.get("elapsed_seconds"))
+            duration = f" ({elapsed})" if elapsed else ""
+            lines.append(f"- {icon.get(status, '•')}{duration} {content}")
     if summary:
         cancelled = summary.get("cancelled", 0)
-        lines.extend([
-            "",
+        total_elapsed = _format_todo_elapsed(summary.get("total_elapsed_seconds"))
+        progress = (
             "**Progress:** "
             f"{summary.get('completed', 0)} completed, "
             f"{summary.get('in_progress', 0)} in progress, "
             f"{summary.get('pending', 0)} pending"
-            + (f", {cancelled} cancelled" if cancelled else ""),
-        ])
+            + (f", {cancelled} cancelled" if cancelled else "")
+            + (f" · {total_elapsed} tracked" if total_elapsed else "")
+        )
+        lines.extend(["", progress])
     return "\n".join(lines)
 
 

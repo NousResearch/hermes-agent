@@ -291,6 +291,49 @@ def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 
 
+# Compact valid agent_receipt shape, printed in the rejection so an old-prompt worker
+# (one whose system prompt predates the receipt requirement) can self-correct in one retry.
+_RECEIPT_EXAMPLE = (
+    '{"claim_id":"rcpt-1","producer":"<your profile>","task":"<one line>",'
+    '"stop_reason":"completed","sources":[],"touched":[],"commands":[],'
+    '"blockers":[],"next_owner":"none"}'
+)
+
+
+def _check_agent_receipt(metadata: Any) -> Optional[str]:
+    """Validate ``metadata.agent_receipt`` for the hard kanban completion gate.
+
+    Returns ``None`` when the receipt is present and valid (completion proceeds), or a
+    retry-guidance error string when it is absent/invalid (completion is rejected, task
+    stays in-flight). The validator itself fails OPEN on internal code faults — if it
+    cannot run, this returns ``None`` so a validator bug can never brick completion.
+    """
+    try:
+        from tools import agent_receipt as _ar
+    except Exception:  # noqa: BLE001 — module import fault must not brick completion
+        logger.warning("kanban_complete: agent_receipt module unavailable; receipt gate degraded (open)")
+        return None
+
+    receipt = metadata.get("agent_receipt") if isinstance(metadata, dict) else None
+    if receipt is None:
+        return (
+            "kanban_complete blocked: a structured metadata.agent_receipt is REQUIRED to "
+            "complete a task (it makes the handoff auditable). Your task is still in-flight "
+            "(no state change). Retry kanban_complete with the SAME summary plus "
+            f"metadata.agent_receipt, e.g. metadata={{\"agent_receipt\": {_RECEIPT_EXAMPLE}}}. "
+            "See the agent-receipt-schema skill for field meanings."
+        )
+    ok, errors = _ar.validate(receipt)
+    if not ok:
+        return (
+            "kanban_complete blocked: metadata.agent_receipt is present but invalid: "
+            f"{'; '.join(errors[:5])}. Your task is still in-flight (no state change). "
+            f"Retry with a corrected receipt, e.g. {_RECEIPT_EXAMPLE}."
+        )
+    return None
+
+
+
 def _normalize_profile(value: Any) -> Optional[str]:
     """Normalize CLI-compatible assignee sentinels for the tool surface."""
     if value is None:
@@ -588,6 +631,15 @@ def _handle_complete(args: dict, **kw) -> str:
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
     metadata = _stamp_worker_session_metadata(tid, metadata)
+    # Hard receipt gate (agent_receipt schema guard): kanban_complete is an explicit
+    # completion of tracked work, so it ALWAYS owes a structured agent_receipt. Reject a
+    # missing/invalid one BEFORE the write txn — mirroring the HallucinatedCardsError gate
+    # above: the task is never mutated, so the worker just retries with a corrected receipt.
+    # The validator fails OPEN on its own code faults (never bricks completion); only a
+    # genuinely absent/invalid receipt blocks here.
+    receipt_err = _check_agent_receipt(metadata)
+    if receipt_err:
+        return tool_error(receipt_err)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -1211,7 +1263,13 @@ KANBAN_COMPLETE_SCHEMA = {
         "in ``artifacts`` — the gateway notifier will upload them as "
         "native attachments to the human who subscribed to the task, "
         "so the deliverable lands in their chat alongside the summary "
-        "instead of being a path they have to fetch by hand."
+        "instead of being a path they have to fetch by hand. "
+        "REQUIRED: ``metadata.agent_receipt`` — a structured completion "
+        "receipt (claim_id, producer, task, stop_reason, sources, "
+        "touched, commands, blockers, next_owner). Completion is "
+        "REJECTED without a valid one (the task stays in-flight so you "
+        "retry). See the agent-receipt-schema skill; the rejection "
+        "message includes a fill-in shape."
     ),
     "parameters": {
         "type": "object",

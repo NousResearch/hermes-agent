@@ -26,6 +26,25 @@ describe('subagent store', () => {
     expect(item?.summary).toBe('done')
   })
 
+  it('maps context metadata without raw context payload', () => {
+    upsertSubagent('s1', {
+      canonical_messages: [{ content: 'raw prompt', role: 'user' }],
+      context_available: true,
+      context_child_session_id: 'child-context-1',
+      goal: 'inspect me',
+      provider_request: { messages: ['raw'] },
+      status: 'running',
+      subagent_id: 'a1',
+      task_index: 0
+    })
+
+    const item = listFor('s1')[0]
+    expect(item?.contextAvailable).toBe(true)
+    expect(item?.contextSessionId).toBe('child-context-1')
+    expect(JSON.stringify(item)).not.toContain('raw prompt')
+    expect(JSON.stringify(item)).not.toContain('provider_request')
+  })
+
   it('builds parent/child trees', () => {
     upsertSubagent('s1', { goal: 'parent', status: 'running', subagent_id: 'p', task_index: 0 })
     upsertSubagent('s1', { goal: 'child', parent_id: 'p', status: 'queued', subagent_id: 'c', task_index: 1 })

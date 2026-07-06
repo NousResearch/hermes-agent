@@ -7,6 +7,28 @@ from hermes_cli import kanban_db as kb
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
+# kanban_complete now HARD-rejects a completion whose metadata lacks a
+# schema-valid agent_receipt (tools/kanban_tools._check_agent_receipt, validated
+# by tools/agent_receipt.validate). These notifier tests drive completion through
+# the real _handle_complete handler, so they must supply a valid receipt to reach
+# the artifact-delivery behavior they actually target. Minimal valid shape:
+# all 9 required keys, 4 anchors non-empty, rest []/"none".
+def _receipt(**over):
+    d = {
+        "claim_id": "rcpt-test",
+        "producer": "worker",
+        "task": "t",
+        "stop_reason": "completed",
+        "sources": [],
+        "touched": [],
+        "commands": [],
+        "blockers": [],
+        "next_owner": "none",
+    }
+    d.update(over)
+    return d
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -530,6 +552,7 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
         out = kt._handle_complete({
             "summary": "rendered the chart",
             "artifacts": [str(chart_path), str(report_path)],
+            "metadata": {"agent_receipt": _receipt()},
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
@@ -616,6 +639,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         kt._handle_complete({
             "summary": "one real, one ghost",
             "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+            "metadata": {"agent_receipt": _receipt()},
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)

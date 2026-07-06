@@ -34,6 +34,7 @@ const RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY = 'hermes.desktop.rightRailActiveTab'
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
 export const FILE_BROWSER_PANE_ID = 'file-browser'
 export const PREVIEW_PANE_ID = 'preview'
+export const WORKSTREAM_PANE_ID = 'workstream-progress'
 export const RIGHT_RAIL_PREVIEW_TAB_ID = 'preview'
 
 export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | `file:${string}`
@@ -41,6 +42,7 @@ export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | `file:${string}`
 ensurePaneRegistered(CHAT_SIDEBAR_PANE_ID, { open: true })
 ensurePaneRegistered(FILE_BROWSER_PANE_ID, { open: false })
 ensurePaneRegistered(PREVIEW_PANE_ID, { open: true })
+ensurePaneRegistered(WORKSTREAM_PANE_ID, { open: true })
 
 export const $sidebarOpen: ReadableAtom<boolean> = computed(
   $paneStates,

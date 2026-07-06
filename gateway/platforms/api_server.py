@@ -1826,6 +1826,38 @@ class APIServerAdapter(BasePlatformAdapter):
             "data": [self._message_response(m) for m in messages],
         })
 
+    async def _handle_subagent_context(self, request: "web.Request") -> "web.Response":
+        """GET /api/subagents/{child_session_id}/context — raw local/auth-only context artifact."""
+        # Stricter than legacy _check_auth: raw model context may contain secrets.
+        # Do not serve it from manual/no-key wiring even if the rest of the API
+        # server would allow unauthenticated requests in tests.
+        if not self._api_key:
+            return web.json_response(_openai_error("Subagent context requires API key authentication."), status=403)
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        child_session_id = str(request.match_info.get("child_session_id") or "").strip()
+        if not child_session_id:
+            return web.json_response(_openai_error("child_session_id is required", code="invalid_child_session_id"), status=400)
+        try:
+            from agent.subagent_context_artifacts import get_subagent_context_artifact
+            result = get_subagent_context_artifact(child_session_id, session_db=self._ensure_session_db())
+        except Exception as exc:
+            return web.json_response(_openai_error(_redact_api_error_text(exc)), status=500)
+
+        if not result.get("ok"):
+            error = result.get("error")
+            if isinstance(error, dict):
+                code = str(error.get("code") or "subagent_context_not_found")
+                message = str(error.get("message") or code)
+            else:
+                code = str(error or "subagent_context_not_found")
+                message = str(result.get("message") or code)
+            status = 404 if code in {"not_found", "pointer_missing", "artifact_missing", "missing_artifact"} else 409
+            return web.json_response(_openai_error(message, code=code), status=status)
+        return web.json_response({"object": "hermes.subagent_context", **result})
+
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
         auth_err = self._check_auth(request)
@@ -4780,6 +4812,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_patch("/api/sessions/{session_id}", self._handle_patch_session)
             self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
             self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
+            self._app.router.add_get("/api/subagents/{child_session_id}/context", self._handle_subagent_context)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)

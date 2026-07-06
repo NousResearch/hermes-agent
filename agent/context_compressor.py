@@ -2727,10 +2727,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                 an auto-compression abort.  Auto-compress callers pass False.
         """
         # Reset per-call summary failure state — callers inspect these fields
-        # after compress() returns to decide whether to surface a warning.
+        # after compress() returns to decide whether to surface a warning.  If
+        # auto-compression re-enters during the summary-failure cooldown, keep
+        # the original summary error so the abort warning still shows the real
+        # Bedrock/aux failure instead of a generic cooldown no-op.
+        previous_summary_error = None
+        if not force and self._summary_failure_cooldown_until > time.monotonic():
+            previous_summary_error = self._last_summary_error
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
-        self._last_summary_error = None
+        self._last_summary_error = previous_summary_error
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False

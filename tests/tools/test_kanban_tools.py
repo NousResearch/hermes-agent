@@ -15,6 +15,36 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
+# agent_receipt fixture for the hard completion gate
+# ---------------------------------------------------------------------------
+#
+# kanban_complete now HARD-rejects any completion whose ``metadata`` lacks a
+# schema-valid ``agent_receipt`` (see tools/kanban_tools._check_agent_receipt
+# and the gate at tools/kanban_tools.py:602, validated by
+# tools/agent_receipt.validate). The completion tests below predate that gate,
+# so each supplies this minimal VALID receipt to reach the behavior it actually
+# targets. The receipt has all 9 required keys, the 4 anchors non-empty, and the
+# rest []/"none" — confirmed valid via agent_receipt.validate -> (True, []).
+
+
+def _receipt(**over):
+    """Return a minimal schema-valid agent_receipt; override any field via kwargs."""
+    d = {
+        "claim_id": "rcpt-test",
+        "producer": "worker",
+        "task": "t",
+        "stop_reason": "completed",
+        "sources": [],
+        "touched": [],
+        "commands": [],
+        "blockers": [],
+        "next_owner": "none",
+    }
+    d.update(over)
+    return d
+
+
+# ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------
 
@@ -294,7 +324,7 @@ def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({
         "summary": "got the thing done",
-        "metadata": {"files": 2},
+        "metadata": {"files": 2, "agent_receipt": _receipt()},
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -306,7 +336,9 @@ def test_complete_happy_path(worker_env):
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
         assert run.summary == "got the thing done"
-        assert run.metadata == {"files": 2}
+        # Exact round-trip: the user-supplied "files" key survives verbatim,
+        # alongside the agent_receipt now required by the completion gate.
+        assert run.metadata == {"files": 2, "agent_receipt": _receipt()}
     finally:
         conn.close()
 
@@ -326,7 +358,7 @@ def test_complete_metadata_round_trips_through_show(worker_env):
 
     complete_out = kt._handle_complete({
         "summary": "finished with structured evidence",
-        "metadata": handoff,
+        "metadata": {**handoff, "agent_receipt": _receipt()},
     })
     assert json.loads(complete_out)["ok"] is True
 
@@ -334,14 +366,16 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     shown = json.loads(show_out)
     assert shown["task"]["status"] == "done"
     assert shown["runs"][-1]["summary"] == "finished with structured evidence"
-    assert shown["runs"][-1]["metadata"] == handoff
+    # Full structured handoff round-trips verbatim, now alongside the
+    # gate-required agent_receipt.
+    assert shown["runs"][-1]["metadata"] == {**handoff, "agent_receipt": _receipt()}
 
 
 def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
     from tools import kanban_tools as kt
 
     monkeypatch.setenv("HERMES_SESSION_ID", "session-trusted")
-    metadata = {"files": 2, "worker_session_id": "user-spoof"}
+    metadata = {"files": 2, "worker_session_id": "user-spoof", "agent_receipt": _receipt()}
 
     out = kt._handle_complete({
         "summary": "done by scoped worker",
@@ -357,6 +391,7 @@ def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
         assert run.metadata == {
             "files": 2,
             "worker_session_id": "session-trusted",
+            "agent_receipt": _receipt(),
         }
     finally:
         conn.close()
@@ -373,7 +408,7 @@ def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
     out = kt._handle_complete({
         "task_id": worker_env,
         "summary": "done outside worker scope",
-        "metadata": {"files": 2, "worker_session_id": "user-provided"},
+        "metadata": {"files": 2, "worker_session_id": "user-provided", "agent_receipt": _receipt()},
     })
     assert json.loads(out)["ok"] is True
 
@@ -384,6 +419,7 @@ def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
         assert run.metadata == {
             "files": 2,
             "worker_session_id": "user-provided",
+            "agent_receipt": _receipt(),
         }
     finally:
         conn.close()
@@ -392,7 +428,7 @@ def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
 def test_complete_with_result_only(worker_env):
     """`result` alone (without summary) is accepted for legacy compat."""
     from tools import kanban_tools as kt
-    out = kt._handle_complete({"result": "legacy result"})
+    out = kt._handle_complete({"result": "legacy result", "metadata": {"agent_receipt": _receipt()}})
     d = json.loads(out)
     assert d["ok"] is True
 
@@ -407,6 +443,7 @@ def test_complete_with_artifacts_lands_in_event_payload(worker_env):
     out = kt._handle_complete({
         "summary": "rendered the chart",
         "artifacts": ["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
+        "metadata": {"agent_receipt": _receipt()},
     })
     assert json.loads(out)["ok"] is True
 
@@ -439,6 +476,7 @@ def test_complete_artifacts_accepts_single_string(worker_env):
     out = kt._handle_complete({
         "summary": "one chart",
         "artifacts": "/tmp/chart.png",
+        "metadata": {"agent_receipt": _receipt()},
     })
     assert json.loads(out)["ok"] is True
 
@@ -458,7 +496,7 @@ def test_complete_artifacts_merges_with_explicit_metadata_field(worker_env):
 
     out = kt._handle_complete({
         "summary": "merged",
-        "metadata": {"artifacts": ["/tmp/a.png"], "other": "fact"},
+        "metadata": {"artifacts": ["/tmp/a.png"], "other": "fact", "agent_receipt": _receipt()},
         "artifacts": ["/tmp/b.pdf", "/tmp/a.png"],
     })
     assert json.loads(out)["ok"] is True
@@ -509,6 +547,7 @@ def test_complete_phantom_card_message_advertises_retry(worker_env):
     out = kt._handle_complete({
         "summary": "oops claimed a phantom",
         "created_cards": ["t_phantomdeadbeef"],
+        "metadata": {"agent_receipt": _receipt()},
     })
     err = json.loads(out).get("error", "")
     assert err, f"expected an error, got {out!r}"
@@ -542,6 +581,7 @@ def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     rejected = json.loads(kt._handle_complete({
         "summary": "oops",
         "created_cards": ["t_phantomdeadbeef"],
+        "metadata": {"agent_receipt": _receipt()},
     }))
     assert rejected.get("error")
 
@@ -549,6 +589,7 @@ def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     ok = json.loads(kt._handle_complete({
         "summary": "retry without claims",
         "created_cards": [],
+        "metadata": {"agent_receipt": _receipt()},
     }))
     assert ok.get("ok") is True
 
@@ -578,6 +619,7 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
     rejected = json.loads(kt._handle_complete({
         "summary": "oops",
         "created_cards": [real_id, "t_phantomdeadbeef"],
+        "metadata": {"agent_receipt": _receipt()},
     }))
     assert rejected.get("error")
     assert "t_phantomdeadbeef" in rejected["error"]
@@ -586,6 +628,7 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
     ok = json.loads(kt._handle_complete({
         "summary": "retry with corrected list",
         "created_cards": [real_id],
+        "metadata": {"agent_receipt": _receipt()},
     }))
     assert ok.get("ok") is True
 
@@ -1338,7 +1381,7 @@ def test_worker_lifecycle_through_tools(worker_env):
     # 5. complete with structured handoff
     comp = json.loads(kt._handle_complete({
         "summary": "implemented + spawned QA follow-up",
-        "metadata": {"child_task": child_out["task_id"]},
+        "metadata": {"child_task": child_out["task_id"], "agent_receipt": _receipt()},
     }))
     assert comp["ok"]
 
@@ -1351,7 +1394,7 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert parent.current_run_id is None
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
-        assert run.metadata == {"child_task": child_out["task_id"]}
+        assert run.metadata == {"child_task": child_out["task_id"], "agent_receipt": _receipt()}
         # Child is todo (parent just finished, but recompute_ready may
         # have promoted it — complete_task runs recompute internally).
         child = kb.get_task(conn, child_out["task_id"])
@@ -1441,9 +1484,8 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     The ceiling guards against unbounded growth, not against any growth.
     The block absorbed the load-bearing worker/orchestrator reference
     details (workspace kinds, deliverable artifacts, created-card claims,
-    profile discovery) when the standalone kanban-worker / kanban-orchestrator
-    skills were removed and folded into this always-injected guidance, so the
-    ceiling is sized to fit that content with a little headroom.
+    profile discovery) plus the agent_receipt completion gate, so the ceiling
+    is sized to fit that content with a little headroom.
     """
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
@@ -1612,7 +1654,10 @@ def test_worker_complete_own_task_still_works(worker_env):
     """The ownership check doesn't break the normal own-task happy path."""
     from tools import kanban_tools as kt
     # Both implicit (no task_id arg) and explicit (matching env) must work.
-    out = kt._handle_complete({"task_id": worker_env, "summary": "explicit own"})
+    out = kt._handle_complete({
+        "task_id": worker_env, "summary": "explicit own",
+        "metadata": {"agent_receipt": _receipt()},
+    })
     d = json.loads(out)
     assert d.get("ok") is True and d.get("task_id") == worker_env
 
@@ -1646,7 +1691,10 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
 
     from tools import kanban_tools as kt
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run1.id))
-    out = kt._handle_complete({"summary": "late stale completion"})
+    out = kt._handle_complete({
+        "summary": "late stale completion",
+        "metadata": {"agent_receipt": _receipt()},
+    })
     d = json.loads(out)
     assert d.get("ok") is not True
 
@@ -1659,7 +1707,10 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
         conn.close()
 
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run2.id))
-    out = kt._handle_complete({"summary": "current completion"})
+    out = kt._handle_complete({
+        "summary": "current completion",
+        "metadata": {"agent_receipt": _receipt()},
+    })
     d = json.loads(out)
     assert d.get("ok") is True
 
@@ -1686,7 +1737,10 @@ def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
         conn.close()
 
     from tools import kanban_tools as kt
-    out = kt._handle_complete({"task_id": tid, "summary": "orchestrator close"})
+    out = kt._handle_complete({
+        "task_id": tid, "summary": "orchestrator close",
+        "metadata": {"agent_receipt": _receipt()},
+    })
     d = json.loads(out)
     assert d.get("ok") is True and d.get("task_id") == tid
 
@@ -1868,6 +1922,7 @@ def test_board_param_routes_complete_to_alt_board(multi_board_env):
         "task_id": alt_seed,
         "summary": "alt close",
         "board": "alt",
+        "metadata": {"agent_receipt": _receipt()},
     })
     d = json.loads(out)
     assert d["ok"] is True

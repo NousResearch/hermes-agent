@@ -562,6 +562,82 @@ class StreamingConfig:
         )
 
 
+# Topic-context-backfill defaults — single source of truth so the dataclass,
+# DEFAULT_CONFIG, and the load_gateway_config bridge agree.
+DEFAULT_TOPIC_BACKFILL_MAX_MESSAGES: int = 15
+DEFAULT_TOPIC_BACKFILL_MAX_AGE_HOURS: int = 24
+# Second source: raw Bot-API topic posts (cron digests, watchdog alerts, the
+# review bridge) logged by local scripts. These never create a Hermes session
+# or state.db row, so the SessionDB-sibling scan is blind to them.
+DEFAULT_TOPIC_BACKFILL_RECENT_POSTS_ENABLED: bool = True
+# NOTE: these two caps are READ/RENDER-side knobs only. The pure-stdlib writer
+# (~/.hermes/scripts/tg_topic_recent_posts.py) cannot import gateway config, so
+# it carries its OWN hardcoded storage caps (MAX_ENTRIES / RETENTION_HOURS).
+# These values gate how many log rows the reader considers and are otherwise
+# bounded by max_messages / max_age_hours on the combined set.
+DEFAULT_TOPIC_BACKFILL_RECENT_POSTS_MAX_ENTRIES: int = 200
+DEFAULT_TOPIC_BACKFILL_RECENT_POSTS_RETENTION_HOURS: int = 168
+
+
+@dataclass
+class TopicBackfillConfig:
+    """Configuration for shared-topic context backfill (Telegram).
+
+    When a Telegram message opens a NEW session in a SHARED topic/group, the
+    adapter pulls recent text from OTHER Hermes sessions in the same topic
+    (platform+chat_id+thread_id) out of state.db AND from the per-topic
+    raw-Bot-API recent-posts log, and sets it as the event's ``channel_context``
+    so the fresh session has the prior topic activity. Mirrors the Discord
+    ``_fetch_channel_context`` delivery seam.
+    """
+    enabled: bool = True
+    max_messages: int = DEFAULT_TOPIC_BACKFILL_MAX_MESSAGES
+    max_age_hours: int = DEFAULT_TOPIC_BACKFILL_MAX_AGE_HOURS
+
+    # Second source: raw Bot-API topic posts logged by local scripts. The
+    # ``recent_posts_enabled`` master switch gates the source; the two caps are
+    # read/render-side only (the pure-stdlib writer has its own storage caps).
+    recent_posts_enabled: bool = DEFAULT_TOPIC_BACKFILL_RECENT_POSTS_ENABLED
+    recent_posts_max_entries: int = DEFAULT_TOPIC_BACKFILL_RECENT_POSTS_MAX_ENTRIES
+    recent_posts_retention_hours: int = DEFAULT_TOPIC_BACKFILL_RECENT_POSTS_RETENTION_HOURS
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "max_messages": self.max_messages,
+            "max_age_hours": self.max_age_hours,
+            "recent_posts_enabled": self.recent_posts_enabled,
+            "recent_posts_max_entries": self.recent_posts_max_entries,
+            "recent_posts_retention_hours": self.recent_posts_retention_hours,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TopicBackfillConfig":
+        if not data:
+            return cls()
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), True),
+            max_messages=_coerce_int(
+                data.get("max_messages"), DEFAULT_TOPIC_BACKFILL_MAX_MESSAGES,
+            ),
+            max_age_hours=_coerce_int(
+                data.get("max_age_hours"), DEFAULT_TOPIC_BACKFILL_MAX_AGE_HOURS,
+            ),
+            recent_posts_enabled=_coerce_bool(
+                data.get("recent_posts_enabled"),
+                DEFAULT_TOPIC_BACKFILL_RECENT_POSTS_ENABLED,
+            ),
+            recent_posts_max_entries=_coerce_int(
+                data.get("recent_posts_max_entries"),
+                DEFAULT_TOPIC_BACKFILL_RECENT_POSTS_MAX_ENTRIES,
+            ),
+            recent_posts_retention_hours=_coerce_int(
+                data.get("recent_posts_retention_hours"),
+                DEFAULT_TOPIC_BACKFILL_RECENT_POSTS_RETENTION_HOURS,
+            ),
+        )
+
+
 # -----------------------------------------------------------------------------
 # Built-in platform connection checkers
 # -----------------------------------------------------------------------------
@@ -663,6 +739,9 @@ class GatewayConfig:
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
+
+    # Shared-topic context backfill (Telegram new-session window)
+    topic_backfill: TopicBackfillConfig = field(default_factory=TopicBackfillConfig)
 
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
@@ -776,6 +855,7 @@ class GatewayConfig:
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "topic_backfill": self.topic_backfill.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
     
@@ -874,6 +954,9 @@ class GatewayConfig:
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            topic_backfill=TopicBackfillConfig.from_dict(
+                data.get("topic_backfill", {})
+            ),
             session_store_max_age_days=session_store_max_age_days,
         )
 
@@ -1003,6 +1086,18 @@ def load_gateway_config() -> GatewayConfig:
                 streaming_cfg = yaml_cfg.get("gateway", {}).get("streaming")
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
+
+            # Nested gateway.topic_backfill does NOT auto-flow through
+            # from_dict (from_dict reads the TOP-LEVEL "topic_backfill" key),
+            # so bridge it explicitly the same way streaming is bridged. Accept
+            # both a top-level ``topic_backfill`` block and the nested
+            # ``gateway.topic_backfill`` form written by
+            # ``hermes config set gateway.topic_backfill.*``.
+            topic_backfill_cfg = yaml_cfg.get("topic_backfill")
+            if not isinstance(topic_backfill_cfg, dict):
+                topic_backfill_cfg = yaml_cfg.get("gateway", {}).get("topic_backfill")
+            if isinstance(topic_backfill_cfg, dict):
+                gw_data["topic_backfill"] = topic_backfill_cfg
 
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]

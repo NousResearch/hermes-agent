@@ -922,6 +922,38 @@ export const zhHant = defineLocale({
     tokens: value => `${value} 詞元`
   },
 
+  contextInspector: {
+    title: '上下文檢查器',
+    close: '關閉上下文檢查器',
+    bucketGroupLabel: '上下文分組篩選',
+    buckets: {
+      all: '全部',
+      system: '系統',
+      user: '使用者',
+      assistant: '助理',
+      tools: '工具'
+    },
+    tabs: {
+      transcript: '有序轉錄',
+      raw: '進階 / 原始 JSON'
+    },
+    sourceFallback: '重建基礎上下文',
+    sourceHelp:
+      '重建基礎：快取前綴 + 對話歷史。不包含每輪臨時注入、提供者中介層重寫、快取標記、預填充以及精確上次送出載荷轉換。',
+    sourceHelpLabel: '來源詳情',
+    loading: '正在載入完整上下文…',
+    empty: '完整上下文會在代理初始化或送出第一輪後可用。',
+    error: message => `上下文載入失敗：${message}`,
+    noMessages: '沒有訊息符合此分組。',
+    collapseSystem: '收合系統',
+    expandSystem: '展開系統',
+    systemCollapsed: '系統訊息已收合。',
+    fullPayload: '完整載荷',
+    truncated: '此切片已由後端截斷；開啟即時工作階段查看完整來源。',
+    index: index => `#${index}`,
+    tokens: tokens => `${tokens} 詞元`
+  },
+
   commandCenter: {
     close: '關閉命令中心',
     paletteTitle: '命令面板',
@@ -1500,6 +1532,10 @@ export const zhHant = defineLocale({
       rename: '重新命名',
       archive: '封存',
       newWindow: '新視窗',
+      closeWorkstream: '關閉工作流',
+      markRestartRequired: '標記為需要重新啟動',
+      markSafeToDelete: '標記為可刪除',
+      reopenWorkstream: '重新開啟工作流',
       copyIdFailed: '無法複製工作階段 ID',
       actionsFor: title => `${title} 的動作`,
       sessionActions: '工作階段動作',
@@ -1980,6 +2016,7 @@ export const zhHant = defineLocale({
         },
         empty: '尚無上下文資料',
         loading: '正在載入明細…',
+        inspectFullContext: '檢查完整上下文',
         percentFull: percent => `已用 ${percent}%`,
         title: '上下文使用量',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`

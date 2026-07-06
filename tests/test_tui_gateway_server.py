@@ -8734,3 +8734,78 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_subagent_context_get_reads_artifact_without_creating_watch_session(monkeypatch, tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_state import SessionDB
+    from agent.subagent_context_artifacts import (
+        create_subagent_context_artifact_pointer,
+        update_subagent_context_artifact_capture,
+    )
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    db = SessionDB(db_path=home / "state.db")
+    old_db = server._db
+    old_sessions = dict(server._sessions)
+    try:
+        server._db = db
+        server._sessions.clear()
+        create_subagent_context_artifact_pointer(
+            child_session_id="child-rpc",
+            parent_session_id="parent-rpc",
+            subagent_id="sa-rpc",
+            model="test-model",
+            provider="test-provider",
+            session_db=db,
+        )
+        update_subagent_context_artifact_capture(
+            "child-rpc",
+            {
+                "schema_version": 1,
+                "kind": "subagent_context.latest",
+                "raw_unredacted_by_viewer": True,
+                "child_session_id": "child-rpc",
+                "parent_session_id": "parent-rpc",
+                "subagent_id": "sa-rpc",
+                "capture_sequence": 1,
+                "canonical_messages": [{"role": "user", "content": "secret-ish"}],
+                "provider_request": {"messages": [{"role": "user", "content": "secret-ish"}]},
+            },
+            session_db=db,
+        )
+
+        before = dict(server._sessions)
+        result = server._methods["subagent.context.get"]("r-context", {"child_session_id": "child-rpc"})
+
+        assert "result" in result
+        assert result["result"]["artifact"]["provider_request"]["messages"][0]["content"] == "secret-ish"
+        assert result["result"]["pointer"]["latest_artifact_path"]
+        assert server._sessions == before == {}
+    finally:
+        db.close()
+        server._db = old_db
+        server._sessions.clear()
+        server._sessions.update(old_sessions)
+        reset_hermes_home_override(token)
+
+
+def test_subagent_context_get_missing_returns_error(monkeypatch, tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_state import SessionDB
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    db = SessionDB(db_path=home / "state.db")
+    old_db = server._db
+    try:
+        server._db = db
+        result = server._methods["subagent.context.get"]("r-missing", {"child_session_id": "missing-child"})
+        assert result["error"]["code"] == 4044
+    finally:
+        db.close()
+        server._db = old_db
+        reset_hermes_home_override(token)

@@ -41,6 +41,7 @@ import logging
 import os
 import sys
 import threading
+import time
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -171,6 +172,15 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Session-binding resolution hook. Fired SYNCHRONOUSLY by an adapter at
+    # message INTAKE (before the event is scheduled for processing), so the
+    # session binding is known before the active-session guard computes the
+    # session key. This lets unrelated physical deliveries (e.g. distinct
+    # GitHub webhook deliveries) resolve to ONE shared, ordered session.
+    # A plugin returns a SessionBinding, a {"namespace","key"} dict, or a dict
+    # carrying "session_binding"; None to abstain. The adapter resolves a single
+    # binding fail-closed (>1 distinct -> refuse). Kwargs: event, gateway.
+    "pre_session_binding",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
@@ -210,6 +220,26 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Gateway inline-button callback hook. Fired by a gateway adapter
+    # (e.g. Telegram) when an inline-button click's callback_data matches
+    # no built-in core prefix (ea:/sc:/cl:/gt:/mp:/update_prompt:). Lets a
+    # plugin own its own button namespace without editing the core callback
+    # router. Kwargs:
+    #   data: str           -- raw callback_data
+    #   platform: str       -- e.g. "telegram"
+    #   authorized: bool    -- whether the clicking user passed the adapter's
+    #                          callback-auth check (core does the check; the
+    #                          plugin decides if its action requires it)
+    #   user_id, chat_id, chat_type, thread_id, user_name -- click context
+    # A callback returns a directive dict to act, or None to pass:
+    #   {"handled": bool,         -- True if this callback owns `data`
+    #    "answer": str,           -- toast text for query.answer()
+    #    "edit_text": str|None,   -- if set, edit the message body to this
+    #    "strip_buttons": bool}   -- remove the inline keyboard
+    # The adapter performs the answer/edit (async I/O stays in core); the
+    # first directive with handled=True wins. Unhandled clicks get a silent
+    # ack so the spinner clears.
+    "gateway_callback",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -1168,6 +1198,9 @@ class PluginContext:
                 ", ".join(sorted(VALID_HOOKS)),
             )
         self._manager._hooks.setdefault(hook_name, []).append(callback)
+        # Lockstep owner record (same index as the callback just appended) for
+        # fire-ledger attribution. See PluginManager.__init__.
+        self._manager._hook_owners.setdefault(hook_name, []).append(self.manifest.name)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
     # -- middleware registration -------------------------------------------
@@ -1189,6 +1222,8 @@ class PluginContext:
                 ", ".join(sorted(VALID_MIDDLEWARE)),
             )
         self._manager._middleware.setdefault(kind, []).append(callback)
+        # Lockstep owner record for fire-ledger attribution.
+        self._manager._middleware_owners.setdefault(kind, []).append(self.manifest.name)
         logger.debug("Plugin %s registered middleware: %s", self.manifest.name, kind)
 
     # -- skill registration -------------------------------------------------
@@ -1250,6 +1285,13 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._middleware: Dict[str, List[Callable]] = {}
+        # Fire-ledger attribution: plugin-owner name per registered callback,
+        # kept in LOCKSTEP by index with ``_hooks[name]`` / ``_middleware[kind]``.
+        # A parallel list (not an ``id(callback)`` side-map) so it survives
+        # force-reload's clear() and never mis-attributes a shared callback
+        # object registered by two plugins. Cleared alongside _hooks below.
+        self._hook_owners: Dict[str, List[str]] = {}
+        self._middleware_owners: Dict[str, List[str]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
@@ -1295,6 +1337,8 @@ class PluginManager:
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()
+            self._hook_owners.clear()
+            self._middleware_owners.clear()
             self._plugin_tool_names.clear()
             self._plugin_platform_names.clear()
             self._cli_commands.clear()
@@ -1913,19 +1957,42 @@ class PluginManager:
         """
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
+        owners = self._hook_owners.get(hook_name, [])
         results: List[Any] = []
-        for cb in callbacks:
+        for idx, cb in enumerate(callbacks):
+            _started = time.monotonic()
+            _ret: Any = None
+            _exc: Optional[Exception] = None
             try:
                 ret = cb(**kwargs)
+                _ret = ret
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
+                _exc = exc
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
                     hook_name,
                     getattr(cb, "__name__", repr(cb)),
                     exc,
                 )
+            finally:
+                # Fire-ledger recording is a pure side-effect: fully isolated so
+                # a ledger fault can NEVER affect dispatch, return values, or the
+                # prompt cache. kwargs is never mutated here.
+                try:
+                    from hermes_cli.fire_ledger import record_hook_fire
+                    record_hook_fire(
+                        plugin_name=(owners[idx] if idx < len(owners) else
+                                     getattr(cb, "__module__", "unknown")),
+                        hook_name=hook_name,
+                        kwargs=kwargs,
+                        result=_ret,
+                        error=_exc,
+                        duration_ms=int((time.monotonic() - _started) * 1000),
+                    )
+                except Exception:
+                    pass
         return results
 
     def has_hook(self, hook_name: str) -> bool:
@@ -1944,19 +2011,41 @@ class PluginManager:
         documented by the caller-specific contract.
         """
         callbacks = self._middleware.get(kind, [])
+        owners = self._middleware_owners.get(kind, [])
         results: List[Any] = []
-        for cb in callbacks:
+        for idx, cb in enumerate(callbacks):
+            _started = time.monotonic()
+            _ret: Any = None
+            _exc: Optional[Exception] = None
             try:
                 ret = cb(**kwargs)
+                _ret = ret
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
+                _exc = exc
                 logger.warning(
                     "Middleware '%s' callback %s raised: %s",
                     kind,
                     getattr(cb, "__name__", repr(cb)),
                     exc,
                 )
+            finally:
+                # Fire-ledger recording: isolated side-effect, never affects the
+                # middleware result or the runtime path. kwargs is not mutated.
+                try:
+                    from hermes_cli.fire_ledger import record_middleware_fire
+                    record_middleware_fire(
+                        plugin_name=(owners[idx] if idx < len(owners) else
+                                     getattr(cb, "__module__", "unknown")),
+                        kind=kind,
+                        kwargs=kwargs,
+                        result=_ret,
+                        error=_exc,
+                        duration_ms=int((time.monotonic() - _started) * 1000),
+                    )
+                except Exception:
+                    pass
         return results
 
     # -----------------------------------------------------------------------

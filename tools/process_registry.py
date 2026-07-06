@@ -1918,6 +1918,10 @@ def _format_async_delegation(evt: dict) -> str:
     import time as _time
 
     deleg_id = evt.get("delegation_id", "unknown")
+    # A workflow-completion wake event rides this same async_delegation rail
+    # (so it inherits the watcher + drain + routing), but is labeled honestly.
+    _is_workflow = str(evt.get("origin") or "") == "workflow"
+    _kind = "WORKFLOW" if _is_workflow else "ASYNC DELEGATION"
     goal = evt.get("goal", "") or ""
     context = evt.get("context")
     toolsets = evt.get("toolsets")
@@ -2000,10 +2004,16 @@ def _format_async_delegation(evt: dict) -> str:
         age = f" ({_format_age(completed_at - dispatched_at)} ago)"
 
     lines = [
-        f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
-        "A background subagent you dispatched earlier has finished. You may "
-        "have moved on since dispatching it; the full task source is below so "
-        "you can act on the result or re-dispatch if things have changed.",
+        f"[{_kind} COMPLETE — {deleg_id}]",
+        (
+            "A dynamic workflow you launched earlier has finished. You may "
+            "have moved on since launching it; the full result is below so "
+            "you can act on it or re-run if things have changed."
+            if _is_workflow else
+            "A background subagent you dispatched earlier has finished. You may "
+            "have moved on since dispatching it; the full task source is below so "
+            "you can act on the result or re-dispatch if things have changed."
+        ),
         "",
     ]
     if isinstance(dispatched_at, (int, float)):

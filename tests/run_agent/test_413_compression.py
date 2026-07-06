@@ -565,6 +565,7 @@ class TestPreflightCompression:
         # displacing events[0]. The flag value is irrelevant to what this
         # test asserts, so disable it to suppress the probe.
         agent.compression_enabled = False
+        agent._last_compression_model_label = "test-compressor"
         events = []
         agent.status_callback = lambda ev, msg: events.append((ev, msg))
 
@@ -587,7 +588,30 @@ class TestPreflightCompression:
         assert new_system_prompt == "new system prompt"
         assert events[0][0] == "lifecycle"
         assert "Compacting context" in events[0][1]
+        assert "🧠 test-compressor" in events[0][1]
         assert events[1] == ("compress", "started")
+        assert events[-1][0] == "lifecycle"
+        assert "Compacting context done with 🧠 test-compressor in" in events[-1][1]
+
+    def test_compaction_status_formatter_includes_elapsed_and_model(self):
+        from agent.conversation_compression import _format_compaction_status_message
+
+        running = _format_compaction_status_message(
+            "running",
+            model_label="claude-test",
+            elapsed_seconds=75,
+        )
+        done = _format_compaction_status_message(
+            "done",
+            model_label="claude-test",
+            elapsed_seconds=75,
+        )
+
+        assert running == (
+            "🗜️ Compacting context with 🧠 claude-test: "
+            "summarizing earlier conversation so I can continue... (1m 15s elapsed)"
+        )
+        assert done == "✅ Compacting context done with 🧠 claude-test in 1m 15s."
 
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""

@@ -1,11 +1,12 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { getSubagentContext, type SubagentContextArtifact } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { compactNumber } from '@/lib/format'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
@@ -47,6 +48,84 @@ const STREAM_TONE: Record<SubagentStreamEntry['kind'], string> = {
   summary: 'text-foreground/85',
   thinking: 'text-muted-foreground/80',
   tool: 'text-foreground/85'
+}
+
+type ContextInspectorState =
+  | { artifact: SubagentContextArtifact; status: 'ready' }
+  | { error: string; status: 'failed' }
+  | { status: 'idle' | 'loading' }
+
+const CONTEXT_INSPECTOR_COPY = {
+  action: 'Inspect context',
+  failed: 'Context failed to load',
+  loading: 'Loading context…',
+  title: 'Raw context'
+} as const
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function SubagentContextInspector({ childSessionId }: { childSessionId: string }) {
+  const [state, setState] = useState<ContextInspectorState>({ status: 'idle' })
+
+  const loadContext = async (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+
+    if (state.status === 'ready') {
+      setState({ status: 'idle' })
+
+      return
+    }
+
+    if (state.status === 'loading') {
+      return
+    }
+
+    setState({ status: 'loading' })
+
+    try {
+      const response = await getSubagentContext(childSessionId)
+      setState({ artifact: response.artifact, status: 'ready' })
+    } catch (error) {
+      setState({ error: errorMessage(error), status: 'failed' })
+    }
+  }
+
+  return (
+    <div className="grid min-w-0 gap-2 pl-6">
+      <button
+        aria-expanded={state.status === 'ready'}
+        className="inline-flex w-fit items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2 py-1 text-[0.66rem] font-medium text-muted-foreground/85 transition-colors hover:bg-muted/45 hover:text-foreground"
+        onClick={loadContext}
+        type="button"
+      >
+        <Codicon aria-hidden name="inspect" size="0.78rem" />
+        {CONTEXT_INSPECTOR_COPY.action}
+      </button>
+
+      {state.status === 'loading' ? (
+        <p className="text-[0.66rem] text-muted-foreground/70">{CONTEXT_INSPECTOR_COPY.loading}</p>
+      ) : null}
+
+      {state.status === 'failed' ? (
+        <p className="wrap-anywhere text-[0.66rem] text-destructive/85">
+          {CONTEXT_INSPECTOR_COPY.failed}: {state.error}
+        </p>
+      ) : null}
+
+      {state.status === 'ready' ? (
+        <section className="grid min-w-0 gap-1" data-selectable-text="true">
+          <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">
+            {CONTEXT_INSPECTOR_COPY.title}
+          </p>
+          <pre className="max-h-72 overflow-auto rounded-lg border border-border/50 bg-muted/25 p-2 font-mono text-[0.64rem] leading-relaxed text-foreground/85">
+            {JSON.stringify(state.artifact, null, 2)}
+          </pre>
+        </section>
+      ) : null}
+    </div>
+  )
 }
 
 function streamGlyph(entry: SubagentStreamEntry): ReactNode {
@@ -376,6 +455,10 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
             </p>
           ) : null}
         </div>
+      ) : null}
+
+      {open && node.contextAvailable && node.contextSessionId ? (
+        <SubagentContextInspector childSessionId={node.contextSessionId} />
       ) : null}
 
       {node.children.length > 0 ? (

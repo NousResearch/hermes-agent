@@ -70,10 +70,13 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         # toolsets is intentionally NOT exposed to the model — subagents always
-        # inherit the parent's toolsets. Letting the model name toolsets was a
+        # inherit the parent's toolsets unless an operator-selected delegation
+        # profile narrows them. Letting the model name toolsets was a
         # capability-selection surface the model should not control.
         self.assertNotIn("toolsets", props)
         self.assertNotIn("toolsets", props["tasks"]["items"]["properties"])
+        self.assertIn("profile", props)
+        self.assertIn("profile", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -85,6 +88,109 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("acp_command", props["tasks"]["items"]["properties"])
         self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+
+    def test_profile_examples_do_not_advertise_generic_reviewer_lane(self):
+        from tools.delegate_tool import (
+            _build_dynamic_schema_overrides,
+            _dual_review_lane_phrase,
+            _get_dual_reviewer_profiles,
+        )
+
+        overrides = _build_dynamic_schema_overrides()
+        props = overrides["parameters"]["properties"]
+        text = "\n".join(
+            [
+                overrides["description"],
+                props["profile"]["description"],
+                props["tasks"]["description"],
+                props["tasks"]["items"]["properties"]["profile"]["description"],
+            ]
+        )
+
+        # Invariant: the schema text describes the LIVE dual-review roster, not a
+        # frozen 2-lane snapshot. Derive the expectation from config so adding a
+        # 3rd lane (delegation.dual_review_profiles) keeps the text honest.
+        lanes = _get_dual_reviewer_profiles()
+        _, count_word = _dual_review_lane_phrase()
+        # Independent check: the spelled-out count must correspond to the real
+        # lane count — NOT just to whatever the phrase helper returned (otherwise
+        # a _COUNT_WORDS mapping bug like 3 -> "two" would pass unnoticed).
+        from tools.delegate_tool import _COUNT_WORDS
+
+        self.assertEqual(count_word, _COUNT_WORDS.get(len(lanes), str(len(lanes))))
+        self.assertIn("dual-review", text)
+        self.assertIn(f"counts as {count_word}", text)
+        for lane in lanes:
+            self.assertIn(lane, text)
+        self.assertNotIn("reviewer-codex + reviewer-opus tasks", text)
+        self.assertNotIn("reviewer for high-reasoning review", text)
+        self.assertNotIn("explorer, reviewer, coder", text)
+
+    def test_dual_review_roster_is_config_driven(self):
+        """A configured N-lane roster expands a dual-review task into N children,
+        every configured lane is rejected on direct dispatch under
+        require_dual_review, and the schema count word tracks the lane count.
+        Exercises the REAL resolver/expander against an explicit cfg (not the
+        live config) so the behavior is pinned regardless of machine config.
+        """
+        from unittest.mock import patch as mock_patch
+        from tools.delegate_tool import (
+            _COUNT_WORDS,
+            _dual_review_lane_phrase,
+            _expand_dual_review_task_items,
+            _get_dual_reviewer_profiles,
+            _is_single_reviewer_profile,
+            DUAL_REVIEWER_PROFILES,
+        )
+
+        three = {
+            "dual_review_profiles": ["reviewer-codex", "reviewer-opus", "reviewer-codex55-medium"],
+            "profiles": {
+                "reviewer-codex": {"provider": "openai-codex"},
+                "reviewer-opus": {"provider": "bedrock"},
+                "reviewer-codex55-medium": {"provider": "openai-codex"},
+            },
+        }
+        with mock_patch("tools.delegate_tool._load_config", return_value=three):
+            lanes = _get_dual_reviewer_profiles()
+            self.assertEqual(
+                lanes,
+                ("reviewer-codex", "reviewer-opus", "reviewer-codex55-medium"),
+            )
+            # Expander fans one dual-review task into exactly len(lanes) children.
+            items = _expand_dual_review_task_items(
+                [{"profile": "dual-review", "goal": "review the plan"}], None
+            )
+            self.assertEqual([it["task"]["profile"] for it in items], list(lanes))
+            self.assertTrue(all(it["from_dual_review"] for it in items))
+            # Every configured lane is a single-reviewer profile (rejected direct).
+            for lane in lanes:
+                self.assertTrue(_is_single_reviewer_profile(lane))
+            # Schema count word tracks the live lane count.
+            _, count_word = _dual_review_lane_phrase()
+            self.assertEqual(count_word, _COUNT_WORDS[len(lanes)])
+
+        # Safety: a typo'd lane (well-formed string, not in profiles) is SKIPPED;
+        # if that drops the roster below two usable lanes we fall back to the
+        # default pair — never hard-fail, never shrink to one lane.
+        typo_cfg = {
+            "dual_review_profiles": ["reviewer-codex", "reviewer-typo"],
+            "profiles": {
+                "reviewer-codex": {"provider": "openai-codex"},
+                "reviewer-opus": {"provider": "bedrock"},
+            },
+        }
+        with mock_patch("tools.delegate_tool._load_config", return_value=typo_cfg):
+            self.assertEqual(_get_dual_reviewer_profiles(), DUAL_REVIEWER_PROFILES)
+
+        # Fail-open: unreadable profiles map -> existence check skipped, the
+        # well-formed names are trusted (string-ness only).
+        no_profiles = {
+            "dual_review_profiles": ["lane-a", "lane-b"],
+            "profiles": None,
+        }
+        with mock_patch("tools.delegate_tool._load_config", return_value=no_profiles):
+            self.assertEqual(_get_dual_reviewer_profiles(), ("lane-a", "lane-b"))
 
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
@@ -152,6 +258,16 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+    def test_receipt_instruction_present(self):
+        """Reusable-work children are told to end with a receipt block (agent_receipt guard)."""
+        prompt = _build_child_system_prompt("Refactor the module")
+        self.assertIn("```receipt", prompt)
+        self.assertIn("agent-receipt schema", prompt)
+        # honest scope: conditional on running commands / writing files / orchestrator
+        self.assertIn("if you run commands", prompt.lower())
+        # must NOT ask the child to restate harness-captured facts
+        self.assertIn("not the tool trace", prompt.lower())
 
 
 class TestStripBlockedTools(unittest.TestCase):
@@ -411,6 +527,443 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_profile_routes_child_model_reasoning_toolsets_and_fast_mode(self):
+        parent = _make_mock_parent(depth=0)
+        parent.service_tier = None
+        cfg = {
+            "model": "",
+            "provider": "",
+            "reasoning_effort": "",
+            "max_iterations": 50,
+            "profiles": {
+                "file-explorer": {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4-mini",
+                    "reasoning_effort": "medium",
+                    "service_tier": "fast",
+                    "toolsets": ["file", "terminal"],
+                    "max_iterations": 17,
+                    "inherit_mcp_toolsets": False,
+                }
+            },
+        }
+        captured_cfgs = []
+
+        def fake_creds(profile_cfg, _parent):
+            captured_cfgs.append(profile_cfg)
+            return {
+                "model": profile_cfg.get("model"),
+                "provider": profile_cfg.get("provider"),
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "profile-key",
+                "api_mode": "codex_responses",
+                "command": None,
+                "args": [],
+            }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Explore repo", profile="file-explorer", parent_agent=parent)
+
+        self.assertEqual(captured_cfgs[0]["model"], "gpt-5.4-mini")
+        self.assertEqual(captured_cfgs[0]["provider"], "openai-codex")
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "gpt-5.4-mini")
+        self.assertEqual(kwargs["provider"], "openai-codex")
+        self.assertEqual(kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
+        self.assertEqual(sorted(kwargs["enabled_toolsets"]), ["file", "terminal"])
+        self.assertEqual(kwargs["max_iterations"], 17)
+        self.assertEqual(kwargs["service_tier"], "priority")
+        self.assertEqual(kwargs["request_overrides"], {"service_tier": "priority"})
+
+    def test_batch_tasks_can_use_different_profiles(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "max_iterations": 50,
+            "profiles": {
+                "file-explorer": {"provider": "openai-codex", "model": "gpt-5.4-mini"},
+                "reviewer-codex": {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "xhigh"},
+            },
+        }
+        seen = []
+
+        def fake_creds(profile_cfg, _parent):
+            seen.append((profile_cfg.get("provider"), profile_cfg.get("model")))
+            return {
+                "model": profile_cfg.get("model"),
+                "provider": profile_cfg.get("provider"),
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "profile-key",
+                "api_mode": "codex_responses",
+                "command": None,
+                "args": [],
+            }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                tasks=[
+                    {"goal": "Explore", "profile": "file-explorer"},
+                    {"goal": "Review", "profile": "reviewer-codex"},
+                ],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(
+            seen,
+            [("openai-codex", "gpt-5.4-mini"), ("openai-codex", "gpt-5.5")],
+        )
+
+    def test_dual_review_profile_expands_to_codex_and_opus_reviewers(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "max_iterations": 50,
+            "max_concurrent_children": 4,
+            "require_dual_review": True,
+            "profiles": {
+                "reviewer-codex": {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                    "reasoning_effort": "xhigh",
+                },
+                "reviewer-opus": {
+                    "provider": "bedrock",
+                    "model": "us.anthropic.claude-opus-4-8",
+                    "reasoning_effort": "xhigh",
+                },
+            },
+        }
+        seen = []
+
+        def fake_creds(profile_cfg, _parent):
+            seen.append((profile_cfg.get("_profile"), profile_cfg.get("provider"), profile_cfg.get("model")))
+            return {
+                "model": profile_cfg.get("model"),
+                "provider": profile_cfg.get("provider"),
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+                "command": None,
+                "args": [],
+            }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "review done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(goal="Review diff", profile="dual-review", parent_agent=parent)
+            )
+
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(
+            seen,
+            [
+                ("reviewer-codex", "openai-codex", "gpt-5.5"),
+                ("reviewer-opus", "bedrock", "us.anthropic.claude-opus-4-8"),
+            ],
+        )
+        self.assertEqual(MockAgent.call_count, 2)
+
+    def test_dual_review_injects_assigned_lane_into_child_prompt(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "max_iterations": 50,
+            "max_concurrent_children": 4,
+            "require_dual_review": True,
+            "profiles": {
+                "reviewer-codex": {"provider": "openai-codex", "model": "gpt-5.5"},
+                "reviewer-opus": {"provider": "bedrock", "model": "us.anthropic.claude-opus-4-8"},
+            },
+        }
+
+        def fake_creds(profile_cfg, _parent):
+            return {
+                "model": profile_cfg.get("model"),
+                "provider": profile_cfg.get("provider"),
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+                "command": None,
+                "args": [],
+            }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "review done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Review diff",
+                context=(
+                    "Write reviewer-codex output to findings/logic.reviewer-codex.md "
+                    "and reviewer-opus output to findings/logic.reviewer-opus.md."
+                ),
+                profile="dual-review",
+                parent_agent=parent,
+            )
+
+        prompts = [call.kwargs["ephemeral_system_prompt"] for call in MockAgent.call_args_list]
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("DUAL-REVIEW LANE", prompts[0])
+        self.assertIn("Your assigned reviewer lane is `reviewer-codex`", prompts[0])
+        self.assertIn("findings/logic.reviewer-codex.md", prompts[0])
+        self.assertIn("Your assigned reviewer lane is `reviewer-opus`", prompts[1])
+        self.assertIn("findings/logic.reviewer-opus.md", prompts[1])
+
+    def test_dual_review_profile_expands_batch_task_override(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "max_iterations": 50,
+            "max_concurrent_children": 4,
+            "profiles": {
+                "reviewer-codex": {"provider": "openai-codex", "model": "gpt-5.5"},
+                "reviewer-opus": {"provider": "bedrock", "model": "us.anthropic.claude-opus-4-8"},
+            },
+        }
+        seen_profiles = []
+
+        def fake_creds(profile_cfg, _parent):
+            seen_profiles.append(profile_cfg.get("_profile"))
+            return {
+                "model": profile_cfg.get("model"),
+                "provider": profile_cfg.get("provider"),
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+                "command": None,
+                "args": [],
+            }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "review done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "Review diff", "profile": "dual-review"}],
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(seen_profiles, ["reviewer-codex", "reviewer-opus"])
+        self.assertEqual(MockAgent.call_count, 2)
+
+    def test_dual_review_profile_expands_top_level_batch_profile(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "max_iterations": 50,
+            "max_concurrent_children": 4,
+            "profiles": {
+                "reviewer-codex": {"provider": "openai-codex", "model": "gpt-5.5"},
+                "reviewer-opus": {"provider": "bedrock", "model": "us.anthropic.claude-opus-4-8"},
+            },
+        }
+        seen_profiles = []
+
+        def fake_creds(profile_cfg, _parent):
+            seen_profiles.append(profile_cfg.get("_profile"))
+            return {
+                "model": profile_cfg.get("model"),
+                "provider": profile_cfg.get("provider"),
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+                "command": None,
+                "args": [],
+            }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "review done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "Review diff"}],
+                    profile="dual-review",
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(seen_profiles, ["reviewer-codex", "reviewer-opus"])
+        self.assertEqual(MockAgent.call_count, 2)
+
+    def test_require_dual_review_rejects_single_reviewer_profiles_before_spawn(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "require_dual_review": True,
+            "profiles": {
+                "reviewer-codex": {"provider": "openai-codex", "model": "gpt-5.5"},
+                "reviewer-opus": {"provider": "bedrock", "model": "us.anthropic.claude-opus-4-8"},
+            },
+        }
+
+        for reviewer_profile in ("reviewer-codex", "reviewer-opus"):
+            with self.subTest(reviewer_profile=reviewer_profile):
+                with (
+                    patch("tools.delegate_tool._load_config", return_value=cfg),
+                    patch(
+                        "tools.delegate_tool._resolve_delegation_credentials",
+                        side_effect=AssertionError("should not resolve creds"),
+                    ),
+                    patch("run_agent.AIAgent") as MockAgent,
+                ):
+                    result = json.loads(
+                        delegate_task(goal="Review diff", profile=reviewer_profile, parent_agent=parent)
+                    )
+
+                self.assertIn("error", result)
+                self.assertIn("dual-review", result["error"])
+                MockAgent.assert_not_called()
+
+    def test_dual_review_expansion_counts_against_concurrency_limit(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "max_concurrent_children": 1,
+            "profiles": {
+                "reviewer-codex": {"provider": "openai-codex", "model": "gpt-5.5"},
+                "reviewer-opus": {"provider": "bedrock", "model": "us.anthropic.claude-opus-4-8"},
+            },
+        }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            result = json.loads(
+                delegate_task(goal="Review diff", profile="dual-review", parent_agent=parent)
+            )
+
+        self.assertIn("error", result)
+        self.assertIn("Too many tasks: 2", result["error"])
+        MockAgent.assert_not_called()
+
+    def test_unknown_profile_returns_error_before_spawn(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {"profiles": {"file-explorer": {"model": "gpt-5.4-mini"}}}
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            result = json.loads(
+                delegate_task(goal="Explore", profile="missing", parent_agent=parent)
+            )
+
+        self.assertIn("error", result)
+        self.assertIn("Unknown delegation profile 'missing'", result["error"])
+        MockAgent.assert_not_called()
+
+    def test_oracle_profile_can_route_to_opus_max_reasoning(self):
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["file", "terminal", "session_search", "search", "skills"]
+        cfg = {
+            "profiles": {
+                "oracle": {
+                    "provider": "bedrock",
+                    "model": "us.anthropic.claude-opus-4-8",
+                    "reasoning_effort": "max",
+                    "service_tier": "normal",
+                    "toolsets": ["file", "terminal", "session_search"],
+                    "max_iterations": 80,
+                }
+            }
+        }
+
+        def fake_creds(profile_cfg, _parent):
+            return {
+                "model": profile_cfg.get("model"),
+                "provider": profile_cfg.get("provider"),
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+                "command": None,
+                "args": [],
+            }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "oracle verdict",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Review this plan", profile="oracle", parent_agent=parent)
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "bedrock")
+        self.assertEqual(kwargs["model"], "us.anthropic.claude-opus-4-8")
+        self.assertEqual(kwargs["reasoning_config"], {"enabled": True, "effort": "max"})
+        self.assertEqual(sorted(kwargs["enabled_toolsets"]), ["file", "session_search", "terminal"])
+        self.assertEqual(kwargs["max_iterations"], 80)
+        self.assertIsNone(kwargs["service_tier"])
+        self.assertEqual(kwargs["request_overrides"], {})
+
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
         sink = MagicMock()
@@ -453,8 +1006,221 @@ class TestDelegateTask(unittest.TestCase):
             )
 
         self.assertTrue(callable(mock_child.thinking_callback))
+        parent.tool_progress_callback.reset_mock()
         mock_child.thinking_callback("deliberating...")
         parent.tool_progress_callback.assert_not_called()
+
+    def test_child_session_metadata_stamps_profile_and_tier(self):
+        # Telemetry: a profiled delegation stamps _profile + derived _tier onto
+        # the child's session-init model_config (persisted to state.db), next to
+        # the existing _delegate_from marker. Parent prompt is untouched.
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-abc"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child._session_init_model_config = {}
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="tier telemetry check",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                delegation_cfg={
+                    "_profile": "oracle",
+                    "model": "us.anthropic.claude-opus-4-8",
+                    "reasoning_effort": "high",
+                },
+            )
+
+        cfg = mock_child._session_init_model_config
+        self.assertEqual(cfg.get("_delegate_from"), "parent-abc")
+        self.assertEqual(cfg.get("_profile"), "oracle")
+        self.assertEqual(cfg.get("_tier"), "heavy")
+
+    def test_child_bare_delegation_records_unprofiled(self):
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-xyz"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child._session_init_model_config = {}
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="bare delegation",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                delegation_cfg={},
+            )
+
+        cfg = mock_child._session_init_model_config
+        self.assertIsNone(cfg.get("_profile"))
+        self.assertEqual(cfg.get("_tier"), "unprofiled")
+
+
+class TestDualPlanProfile(unittest.TestCase):
+    """The dual-plan pseudo-profile fans one task into both planner lanes,
+    mirroring dual-review. Pure ergonomics; the require_dual_review gate is
+    unaffected (planner profiles are not single-reviewer profiles)."""
+
+    def test_dual_plan_expands_to_two_planner_lanes_with_both_flags(self):
+        from unittest.mock import patch as mock_patch
+        from tools.delegate_tool import (
+            _expand_reserved_profile_task_items,
+            _get_dual_planner_profiles,
+        )
+
+        cfg = {
+            "dual_plan_profiles": ["planner-codex", "planner-opus"],
+            "profiles": {
+                "planner-codex": {"provider": "openai-codex"},
+                "planner-opus": {"provider": "bedrock"},
+            },
+        }
+        with mock_patch("tools.delegate_tool._load_config", return_value=cfg):
+            lanes = _get_dual_planner_profiles()
+            self.assertEqual(lanes, ("planner-codex", "planner-opus"))
+            items = _expand_reserved_profile_task_items(
+                [{"profile": "dual-plan", "goal": "plan the feature"}], None
+            )
+            # exactly 2 children, one per planner lane
+            self.assertEqual([it["task"]["profile"] for it in items], list(lanes))
+            # BOTH flags present on every item; dual-plan True, dual-review False
+            for it in items:
+                self.assertIn("from_dual_review", it)
+                self.assertIn("from_dual_plan", it)
+                self.assertFalse(it["from_dual_review"])
+                self.assertTrue(it["from_dual_plan"])
+                self.assertEqual(it["dual_plan_profile"], "dual-plan")
+                self.assertIsNone(it["dual_review_profile"])
+                # lane marker injected into the child context
+                self.assertIn("DUAL-PLAN LANE", it["task"]["context"])
+            # original source_index preserved
+            self.assertEqual([it["source_index"] for it in items], [0, 0])
+
+    def test_dual_plan_roster_config_driven_with_fallback(self):
+        from unittest.mock import patch as mock_patch
+        from tools.delegate_tool import (
+            _get_dual_planner_profiles,
+            DUAL_PLANNER_PROFILES,
+        )
+
+        # typo'd lane (well-formed, not in profiles) -> skipped -> <2 usable ->
+        # fall back to the default pair (never hard-fail, never shrink to one).
+        typo = {
+            "dual_plan_profiles": ["planner-codex", "planner-typo"],
+            "profiles": {
+                "planner-codex": {"provider": "openai-codex"},
+                "planner-opus": {"provider": "bedrock"},
+            },
+        }
+        with mock_patch("tools.delegate_tool._load_config", return_value=typo):
+            self.assertEqual(_get_dual_planner_profiles(), DUAL_PLANNER_PROFILES)
+
+        # absent key -> default pair
+        with mock_patch("tools.delegate_tool._load_config", return_value={}):
+            self.assertEqual(_get_dual_planner_profiles(), DUAL_PLANNER_PROFILES)
+
+        # unreadable profiles map -> existence check skipped, names trusted
+        no_profiles = {"dual_plan_profiles": ["lane-a", "lane-b"], "profiles": None}
+        with mock_patch("tools.delegate_tool._load_config", return_value=no_profiles):
+            self.assertEqual(_get_dual_planner_profiles(), ("lane-a", "lane-b"))
+
+    def test_non_reserved_task_passes_through_with_both_flags_false(self):
+        from tools.delegate_tool import _expand_reserved_profile_task_items
+
+        items = _expand_reserved_profile_task_items(
+            [{"profile": "coder", "goal": "do a thing"}], None
+        )
+        self.assertEqual(len(items), 1)
+        self.assertFalse(items[0]["from_dual_review"])
+        self.assertFalse(items[0]["from_dual_plan"])
+        self.assertEqual(items[0]["task"]["profile"], "coder")
+
+    def test_mixed_batch_dispatch_does_not_regress_dual_review_gate(self):
+        """The B1/B2 seam: a mixed batch [dual-review, dual-plan, coder] under
+        require_dual_review=true must (a) still expand dual-review with
+        from_dual_review=True and NOT block it, (b) expand dual-plan to 2 planner
+        lanes, (c) pass coder through. The expanded count (2+2+1=5) needs the cap
+        raised above the default 3, so set max_concurrent_children=5."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "require_dual_review": True,
+            "max_concurrent_children": 5,
+            "dual_review_profiles": ["reviewer-codex", "reviewer-opus"],
+            "dual_plan_profiles": ["planner-codex", "planner-opus"],
+            "profiles": {
+                "reviewer-codex": {"provider": "openai-codex", "model": "gpt-5.5"},
+                "reviewer-opus": {"provider": "bedrock", "model": "us.anthropic.claude-opus-4-8"},
+                "planner-codex": {"provider": "openai-codex", "model": "gpt-5.5"},
+                "planner-opus": {"provider": "bedrock", "model": "us.anthropic.claude-opus-4-8"},
+                "coder": {"provider": "bedrock", "model": "us.anthropic.claude-opus-4-8"},
+            },
+        }
+
+        def fake_creds(profile_cfg, _parent):
+            return {
+                "model": profile_cfg.get("model"),
+                "provider": profile_cfg.get("provider"),
+                "base_url": None, "api_key": None, "api_mode": None,
+                "command": None, "args": [],
+            }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok", "completed": True, "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"profile": "dual-review", "goal": "review the diff"},
+                        {"profile": "dual-plan", "goal": "plan the feature"},
+                        {"profile": "coder", "goal": "tiny edit"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+
+        # NOT blocked by the single-reviewer gate (dual-review expansion is trusted,
+        # dual-plan/coder are not single-reviewer profiles).
+        self.assertNotIn("error", result)
+        # 5 children built: 2 reviewers + 2 planners + 1 coder.
+        self.assertEqual(MockAgent.call_count, 5)
+
+    def test_dual_plan_advertised_in_schema(self):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+
+        overrides = _build_dynamic_schema_overrides()
+        props = overrides["parameters"]["properties"]
+        text = "\n".join(
+            [
+                overrides["description"],
+                props["profile"]["description"],
+                props["tasks"]["description"],
+                props["tasks"]["items"]["properties"]["profile"]["description"],
+            ]
+        )
+        self.assertIn("dual-plan", text)
+        self.assertIn("planner-codex", text)
+        self.assertIn("planner-opus", text)
 
 
 class TestToolNamePreservation(unittest.TestCase):
@@ -2118,10 +2884,13 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            # Long enough to exceed the OLD idle threshold (5 cycles) at
-            # the patched interval, but shorter than the new in-tool
-            # threshold.
-            time.sleep(0.4)
+            # Wait for an observable number of heartbeats instead of sleeping
+            # a fixed duration. If the code incorrectly applies the idle stale
+            # threshold while current_tool is set, heartbeats stop before this
+            # target and the bounded wait falls through to the assertion.
+            deadline = time.monotonic() + 1.0
+            while len(touch_calls) <= 4 and time.monotonic() < deadline:
+                time.sleep(0.005)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
@@ -2146,7 +2915,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         self.assertGreater(
             len(touch_calls), 2,
             f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            f"got {len(touch_calls)} touches with idle stale threshold 2",
         )
 
 
@@ -2700,6 +3469,38 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
         self.assertIn("depth 1", prompt)
         self.assertIn("max_spawn_depth=2", prompt)
 
+    # ── Verify-status provenance contract (unwatched-surface tagging) ────
+
+    def test_leaf_prompt_carries_verify_status_contract(self):
+        """Every child summary is an unwatched surface (consumed by the parent
+        with no human watching), so the child is instructed to tag external-state
+        claims with verify-status. This must reach leaf children, the common case."""
+        prompt = _build_child_system_prompt(
+            "Fix tests", role="leaf",
+            max_spawn_depth=2, child_depth=1,
+        )
+        # The contract is keyed off the two-state field + the never-fake rule.
+        self.assertIn("[verified:", prompt)
+        self.assertIn("[unverified]", prompt)
+        self.assertIn("external-state claim", prompt)
+
+    def test_orchestrator_prompt_carries_verify_status_contract(self):
+        """The contract lives in the SHARED summary block, so orchestrator
+        children get it too."""
+        prompt = _build_child_system_prompt(
+            "Survey approaches", role="orchestrator",
+            max_spawn_depth=2, child_depth=1,
+        )
+        self.assertIn("[verified:", prompt)
+        self.assertIn("[unverified]", prompt)
+
+    def test_verify_status_contract_present_for_goal_only_child(self):
+        """No role / no context still gets the contract — it is unconditional
+        in the shared block, not gated on role or context."""
+        prompt = _build_child_system_prompt("Do something")
+        self.assertIn("[verified:", prompt)
+        self.assertIn("[unverified]", prompt)
+
     def test_orchestrator_prompt_at_depth_floor_says_children_are_leaves(self):
         """With max_spawn_depth=2 and child_depth=1, the orchestrator's
         own children would be at depth 2 (the floor) → must be leaves."""
@@ -3029,6 +3830,51 @@ class TestFallbackModelInheritance(unittest.TestCase):
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
 
+
+
+def test_build_child_agent_creates_context_pointer_before_spawn_event(tmp_path):
+    from hermes_state import SessionDB
+    from agent.subagent_context_artifacts import get_subagent_context_artifact
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    events = []
+    parent = _make_mock_parent()
+    parent.session_id = "parent-context-test"
+    parent._session_db = db
+    parent.tool_progress_callback = lambda event_type, tool_name=None, preview=None, args=None, **kwargs: events.append((event_type, kwargs))
+
+    try:
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.session_id = "child-context-test"
+            MockAgent.return_value = mock_child
+
+            child = _build_child_agent(
+                task_index=0,
+                goal="inspect real context",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=50,
+                task_count=1,
+                parent_agent=parent,
+                delegation_cfg={"_profile": "coder"},
+            )
+
+        assert getattr(child, "_subagent_context_ref")["child_session_id"] == "child-context-test"
+        pointer = get_subagent_context_artifact("child-context-test", session_db=db)
+        assert pointer["ok"] is True
+        assert pointer["pointer"]["parent_session_id"] == "parent-context-test"
+
+        spawn_events = [event for event in events if event[0] == "subagent.spawn_requested"]
+        assert spawn_events, events
+        spawn_kwargs = spawn_events[0][1]
+        assert spawn_kwargs["context_available"] is True
+        assert spawn_kwargs["context_child_session_id"] == "child-context-test"
+        assert "latest_artifact_path" not in spawn_kwargs
+        assert "provider_request" not in spawn_kwargs
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     unittest.main()

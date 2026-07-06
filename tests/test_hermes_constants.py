@@ -461,6 +461,7 @@ class TestParseReasoningEffort:
             ("  low  ", "low"),
             ("\tXHIGH\n", "xhigh"),
             ("None", False),
+            (" MAX ", "max"),
         ],
     )
     def test_case_and_whitespace_normalized(self, raw, expected_effort):

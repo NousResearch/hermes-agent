@@ -275,6 +275,21 @@ def _corrupt_fts_index_data(db_path: Path) -> None:
     conn.close()
 
 
+def test_db_opens_cleanly_treats_write_lock_as_transient(tmp_path):
+    """A concurrent writer lock is contention, not FTS corruption."""
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    blocker = sqlite3.connect(str(db_path), isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        assert _db_opens_cleanly(db_path) is None
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+
+
 def test_fts_write_corruption_detected_by_write_probe(tmp_path):
     """_db_opens_cleanly's rolled-back write probe flags FTS write corruption."""
     from hermes_state import _db_opens_cleanly

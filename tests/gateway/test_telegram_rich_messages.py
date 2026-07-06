@@ -76,6 +76,23 @@ def _make_adapter(extra=None):
     return adapter
 
 
+def _install_fake_inline_keyboard(monkeypatch):
+    import plugins.platforms.telegram.adapter as adapter_module
+
+    class _FakeInlineKeyboardButton:
+        def __init__(self, text, callback_data=None, url=None):
+            self.text = text
+            self.callback_data = callback_data
+            self.url = url
+
+    class _FakeInlineKeyboardMarkup:
+        def __init__(self, inline_keyboard):
+            self.inline_keyboard = inline_keyboard
+
+    monkeypatch.setattr(adapter_module, "InlineKeyboardButton", _FakeInlineKeyboardButton)
+    monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
+
+
 def _rich_api_kwargs(adapter):
     """Return the api_kwargs dict from the single sendRichMessage call."""
     call = adapter._bot.do_api_request.call_args
@@ -124,6 +141,42 @@ async def test_rich_happy_path_sends_raw_markdown():
     assert "- [x] table renders" in api_kwargs["rich_message"]["markdown"]
     # Legacy path must not run on rich success.
     adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_url_buttons_skip_rich_and_use_inline_keyboard(monkeypatch):
+    _install_fake_inline_keyboard(monkeypatch)
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "12345",
+        RICH_CONTENT,
+        buttons=[{"text": "Open plan", "url": "https://example.com/plan"}],
+    )
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited_once()
+    reply_markup = adapter._bot.send_message.await_args.kwargs["reply_markup"]
+    button = reply_markup.inline_keyboard[0][0]
+    assert button.text == "Open plan"
+    assert button.url == "https://example.com/plan"
+
+
+@pytest.mark.asyncio
+async def test_inline_keyboard_supports_callback_and_url_rows(monkeypatch):
+    _install_fake_inline_keyboard(monkeypatch)
+    markup = TelegramAdapter._inline_keyboard_from_buttons([
+        [
+            {"text": "Stop", "callback_data": "wf:stop:123"},
+            {"text": "Log", "url": "https://example.com/log"},
+        ]
+    ])
+
+    assert markup is not None
+    stop, log = markup.inline_keyboard[0]
+    assert stop.callback_data == "wf:stop:123"
+    assert log.url == "https://example.com/log"
 
 
 @pytest.mark.asyncio
@@ -854,6 +907,40 @@ async def test_finalize_edit_uses_rich_for_table_content():
     # No fresh send / delete — the whole point of the in-place rich edit.
     adapter._bot.edit_message_text.assert_not_called()
     adapter._bot.delete_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_rich_clear_buttons_removes_keyboard():
+    """A final rich edit must still honor buttons=[] so completed workflow
+    progress bubbles drop their stale Stop button."""
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "12345", "555", RICH_CONTENT, finalize=True, buttons=[],
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert "reply_markup" in api_kwargs
+    assert api_kwargs["reply_markup"] is None
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_plain_overflow_clear_buttons_removes_keyboard():
+    """The legacy overflow-split final edit must also honor buttons=[] on
+    the edited first chunk."""
+    adapter = _make_adapter(extra={"rich_messages": False})
+    long_plain = "x" * (TelegramAdapter.MAX_MESSAGE_LENGTH + 50)
+
+    result = await adapter.edit_message(
+        "12345", "555", long_plain, finalize=True, buttons=[],
+    )
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    first_edit = bot.edit_message_text.await_args_list[0]
+    assert first_edit.kwargs["reply_markup"] is None
 
 
 @pytest.mark.asyncio

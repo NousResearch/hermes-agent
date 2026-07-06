@@ -10,6 +10,7 @@ import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 
 import { refreshRepoStatus } from './coding-status'
+import { currentGithubWorkstreamSessionId, syncReviewPrToWorkstream } from './github-workstream'
 import { $busy, $currentCwd } from './session'
 import { $workspaceChangeTick } from './workspace-events'
 
@@ -217,6 +218,7 @@ export function clearReviewSelection(): void {
 export async function refreshShipInfo(): Promise<void> {
   const ctx = reviewCtx()
   const seq = (shipInfoSeq += 1)
+  const workstreamSessionId = currentGithubWorkstreamSessionId()
 
   if (!ctx) {
     $reviewShipInfo.set({ ghReady: false, pr: null })
@@ -229,6 +231,7 @@ export async function refreshShipInfo(): Promise<void> {
 
     if (seq === shipInfoSeq && repoCwd() === ctx.cwd) {
       $reviewShipInfo.set(info)
+      syncReviewPrToWorkstream(workstreamSessionId, info)
       shipInfoLastCheckedAt = Date.now()
     }
   } catch {

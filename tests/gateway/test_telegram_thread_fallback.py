@@ -406,6 +406,77 @@ async def test_send_retries_without_thread_on_thread_not_found():
 
 
 @pytest.mark.asyncio
+async def test_send_reports_dead_thread_when_fallback_disabled():
+    """Cron topic self-heal: with telegram_no_thread_fallback, a dead thread is
+    REPORTED (failure + thread_not_found) instead of dumped to the group root."""
+    adapter = _make_adapter()
+
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id") is not None:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=42)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="-100123",
+        content="test message",
+        metadata={"thread_id": "99999", "telegram_no_thread_fallback": True},
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert "thread not found" in result.error.lower()
+    assert result.raw_response["thread_not_found"] is True
+    assert result.raw_response["thread_fallback"] is False
+    assert result.raw_response["requested_thread_id"] == 99999
+    # First attempt + one same-thread retry; NO root fallback send.
+    assert len(call_log) == 2
+    assert call_log[0]["message_thread_id"] == 99999
+    assert call_log[1]["message_thread_id"] == 99999
+
+
+@pytest.mark.asyncio
+async def test_create_forum_topic_public_wrapper_returns_thread_id():
+    """Cron self-heal can create a forum topic via the live adapter."""
+    adapter = _make_adapter()
+    captured = {}
+
+    async def mock_create_forum_topic(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(message_thread_id=888)
+
+    adapter._bot = SimpleNamespace(create_forum_topic=mock_create_forum_topic)
+
+    tid = await adapter.create_forum_topic(
+        "-100123", "Slack Monitor", icon_custom_emoji_id="emoji-1",
+    )
+    assert tid == "888"
+    assert captured["chat_id"] == -100123
+    assert captured["name"] == "Slack Monitor"
+    assert captured["icon_custom_emoji_id"] == "emoji-1"
+
+
+@pytest.mark.asyncio
+async def test_delete_forum_topic_public_wrapper_returns_true():
+    """Cron self-heal can roll back a just-created topic if seeding fails."""
+    adapter = _make_adapter()
+    captured = {}
+
+    async def mock_delete_forum_topic(**kwargs):
+        captured.update(kwargs)
+
+    adapter._bot = SimpleNamespace(delete_forum_topic=mock_delete_forum_topic)
+
+    ok = await adapter.delete_forum_topic("-100123", "888")
+    assert ok is True
+    assert captured == {"chat_id": -100123, "message_thread_id": 888}
+
+
+@pytest.mark.asyncio
 async def test_send_retries_transient_thread_not_found_before_fallback():
     """A one-off Telegram thread-not-found response should still land in the topic."""
     adapter = _make_adapter()

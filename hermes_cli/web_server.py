@@ -8069,9 +8069,36 @@ def _open_session_db_for_profile(profile: Optional[str]):
     """
     from hermes_state import SessionDB
     if not profile:
-        return SessionDB()
+        from hermes_constants import get_hermes_home
+
+        return SessionDB(db_path=get_hermes_home() / "state.db")
     _name, home = _cron_profile_home(profile)
     return SessionDB(db_path=Path(home) / "state.db")
+
+
+@app.get("/api/subagents/{child_session_id}/context")
+async def get_subagent_context(child_session_id: str, request: Request, profile: Optional[str] = None):
+    _require_token(request)
+    db = _open_session_db_for_profile(profile)
+    try:
+        from agent.subagent_context_artifacts import get_subagent_context_artifact
+
+        result = get_subagent_context_artifact(child_session_id, session_db=db)
+    finally:
+        db.close()
+
+    if not result.get("ok"):
+        error = result.get("error")
+        if isinstance(error, dict):
+            code = str(error.get("code") or "subagent_context_not_found")
+            message = str(error.get("message") or code)
+        else:
+            code = str(error or "subagent_context_not_found")
+            message = str(result.get("message") or code)
+        status = 404 if code in {"not_found", "pointer_missing", "artifact_missing"} else 409
+        raise HTTPException(status_code=status, detail=message)
+
+    return {"object": "hermes.subagent_context", **result}
 
 
 @app.get("/api/sessions/{session_id}")
@@ -8112,6 +8139,28 @@ async def get_session_messages(session_id: str, profile: Optional[str] = None):
         sid = db.resolve_resume_session_id(sid)
         messages = db.get_messages(sid)
         return {"session_id": sid, "messages": messages}
+    finally:
+        db.close()
+
+
+@app.get("/api/sessions/{session_id}/children")
+async def get_session_children(session_id: str, profile: Optional[str] = None):
+    """List a session's delegation (subagent) children with persisted timing.
+
+    Powers the Desktop Observatory historical timeline. Returns only
+    ``source='subagent'`` children (see ``SessionDB.list_child_sessions`` — the
+    filter is required so ``/branch`` forks and compression continuations, which
+    also set ``parent_session_id``, are never rendered as delegation lanes).
+    ``profile`` opens another local profile's state.db, mirroring
+    ``/api/sessions/{id}/messages``.
+    """
+    db = _open_session_db_for_profile(profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        children = db.list_child_sessions(sid)
+        return {"session_id": sid, "children": children}
     finally:
         db.close()
 

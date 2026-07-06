@@ -306,3 +306,129 @@ def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkey
     )
 
     assert agent._compute_non_stream_stale_timeout([]) == 300.0
+
+
+# ── Stream idle / TTFB resolvers (bedrock idle-gap watchdog, 5.config) ──────
+from hermes_cli.timeouts import (  # noqa: E402
+    get_provider_stream_idle_timeout,
+    get_provider_stream_ttfb_timeout,
+    TTFB_DISABLED,
+)
+
+
+def test_stream_idle_unset_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          bedrock:
+            request_timeout_seconds: 1800
+        """,
+    )
+    # Unset → None so the caller falls back to the context-scaled default.
+    assert get_provider_stream_idle_timeout("bedrock", "us.anthropic.claude-opus-4-8") is None
+
+
+def test_stream_idle_zero_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          bedrock:
+            stream_idle_timeout_seconds: 0
+        """,
+    )
+    # idle has NO operator-disable sentinel: 0/<=0 → None → context-scaled.
+    assert get_provider_stream_idle_timeout("bedrock", "us.anthropic.claude-opus-4-8") is None
+
+
+def test_stream_idle_positive_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          bedrock:
+            stream_idle_timeout_seconds: 45
+        """,
+    )
+    assert get_provider_stream_idle_timeout("bedrock", "us.anthropic.claude-opus-4-8") == 45.0
+
+
+def test_stream_idle_model_override_beats_provider(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          bedrock:
+            stream_idle_timeout_seconds: 45
+            models:
+              us.anthropic.claude-opus-4-8:
+                stream_idle_timeout_seconds: 90
+        """,
+    )
+    assert get_provider_stream_idle_timeout("bedrock", "us.anthropic.claude-opus-4-8") == 90.0
+
+
+def test_stream_ttfb_unset_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          bedrock:
+            request_timeout_seconds: 1800
+        """,
+    )
+    # Unset → None so the caller applies the built-in 120s default.
+    assert get_provider_stream_ttfb_timeout("bedrock", "us.anthropic.claude-opus-4-8") is None
+
+
+def test_stream_ttfb_zero_is_disabled_sentinel(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          bedrock:
+            stream_ttfb_timeout_seconds: 0
+        """,
+    )
+    # Explicit 0 → the distinct non-falsy TTFB_DISABLED sentinel (NOT None,
+    # NOT 0.0). Compared by value (==), reload-proof across a double-import.
+    result = get_provider_stream_ttfb_timeout("bedrock", "us.anthropic.claude-opus-4-8")
+    assert result == TTFB_DISABLED
+    assert result is not None
+    assert not isinstance(result, (int, float))
+
+
+def test_stream_ttfb_positive_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          bedrock:
+            stream_ttfb_timeout_seconds: 45
+        """,
+    )
+    assert get_provider_stream_ttfb_timeout("bedrock", "us.anthropic.claude-opus-4-8") == 45.0
+
+
+def test_stream_ttfb_model_override_beats_provider(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          bedrock:
+            stream_ttfb_timeout_seconds: 120
+            models:
+              us.anthropic.claude-opus-4-8:
+                stream_ttfb_timeout_seconds: 60
+        """,
+    )
+    assert get_provider_stream_ttfb_timeout("bedrock", "us.anthropic.claude-opus-4-8") == 60.0

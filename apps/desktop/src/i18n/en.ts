@@ -214,10 +214,15 @@ export const en: Translations = {
       'nav.artifacts': 'Open artifacts',
       'nav.cron': 'Open scheduled jobs',
       'nav.agents': 'Open agents',
+      'nav.workstreams': 'Open Mission Control',
+      'nav.observatory': 'Open Observatory',
       'session.new': 'New session',
       'session.newWindow': 'New session in window',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
+      'workstream.navNext': 'Next workstream',
+      'workstream.navPrev': 'Previous workstream',
+      'workstream.cycleFilter': 'Cycle workstream filter',
       'session.slot.1': 'Switch to recent session 1',
       'session.slot.2': 'Switch to recent session 2',
       'session.slot.3': 'Switch to recent session 3',
@@ -245,6 +250,7 @@ export const en: Translations = {
       'view.terminalSelection': 'Send terminal selection to composer',
       'view.closePreviewTab': 'Close preview tab',
       'view.flipPanes': 'Swap sidebar sides',
+      'view.focusWorkstream': 'Focus workstream panel',
       'appearance.toggleMode': 'Toggle light / dark',
       'profile.default': 'Switch to default profile',
       'profile.switch.1': 'Switch to profile 1',
@@ -932,6 +938,38 @@ export const en: Translations = {
     tokens: value => `${value} tok`
   },
 
+  contextInspector: {
+    title: 'Context Inspector',
+    close: 'Close context inspector',
+    bucketGroupLabel: 'Context bucket filters',
+    buckets: {
+      all: 'All',
+      system: 'System',
+      user: 'User',
+      assistant: 'Assistant',
+      tools: 'Tools'
+    },
+    tabs: {
+      transcript: 'Ordered transcript',
+      raw: 'Advanced / Raw JSON'
+    },
+    sourceFallback: 'Reconstructed base',
+    sourceHelp:
+      'Reconstructed base: cached prefix + conversation history. Excludes per-turn ephemeral injections, provider middleware rewrites, cache markers, prefill, and exact last-sent payload transforms.',
+    sourceHelpLabel: 'Source details',
+    loading: 'Loading full context…',
+    empty: 'Full context is available after the agent initializes or sends the first turn.',
+    error: message => `Context failed to load: ${message}`,
+    noMessages: 'No messages match this bucket.',
+    collapseSystem: 'Collapse system',
+    expandSystem: 'Expand system',
+    systemCollapsed: 'System message collapsed.',
+    fullPayload: 'full payload',
+    truncated: 'This slice was truncated by the backend; open the live session for the complete source.',
+    index: index => `#${index}`,
+    tokens: tokens => `${tokens} tokens`
+  },
+
   commandCenter: {
     close: 'Close command center',
     paletteTitle: 'Command palette',
@@ -1574,6 +1612,10 @@ export const en: Translations = {
       rename: 'Rename',
       archive: 'Archive',
       newWindow: 'New window',
+      closeWorkstream: 'Close workstream',
+      markRestartRequired: 'Mark restart required',
+      markSafeToDelete: 'Mark safe to delete',
+      reopenWorkstream: 'Reopen workstream',
       copyIdFailed: 'Could not copy session ID',
       actionsFor: title => `Actions for ${title}`,
       sessionActions: 'Session actions',
@@ -2064,6 +2106,7 @@ export const en: Translations = {
         },
         empty: 'No context data yet',
         loading: 'Loading breakdown…',
+        inspectFullContext: 'Inspect full context',
         percentFull: percent => `${percent}% Full`,
         title: 'Context Usage',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`

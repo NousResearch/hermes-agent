@@ -36,6 +36,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+_BEDROCK_CONTEXT_1M_BETA = "context-1m-2025-08-07"
+
 # ---------------------------------------------------------------------------
 # Ensure boto3/botocore are installed before any code in this module runs.
 # Upstream removed boto3 from [all] extras (PRs #24220, #24515); lazy_deps
@@ -88,6 +90,75 @@ def _require_boto3():
     return boto3
 
 
+_BEDROCK_DEFAULT_READ_TIMEOUT = 600.0
+_BEDROCK_DEFAULT_CONNECT_TIMEOUT = 10.0
+_BEDROCK_DEFAULT_RETRIES_MAX_ATTEMPTS = 3
+_BEDROCK_DEFAULT_RETRIES_MODE = "adaptive"
+
+
+def _positive_float(raw: Any, default: float) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _positive_int(raw: Any, default: int) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _bedrock_config_section() -> Dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+    except Exception:
+        return {}
+    bedrock = cfg.get("bedrock", {}) if isinstance(cfg, dict) else {}
+    return bedrock if isinstance(bedrock, dict) else {}
+
+
+def _build_botocore_config():
+    """Build botocore Config for Bedrock clients.
+
+    Imported lazily so non-Bedrock users do not pay botocore import cost at
+    startup. reset_client_cache() is enough for tests or profile switches to
+    force reconstruction with updated config.
+    """
+    from botocore.config import Config
+
+    cfg = _bedrock_config_section()
+    read_timeout = _positive_float(
+        cfg.get("read_timeout"),
+        _BEDROCK_DEFAULT_READ_TIMEOUT,
+    )
+    connect_timeout = _positive_float(
+        cfg.get("connect_timeout"),
+        _BEDROCK_DEFAULT_CONNECT_TIMEOUT,
+    )
+    retries_max_attempts = _positive_int(
+        cfg.get("retries_max_attempts"),
+        _BEDROCK_DEFAULT_RETRIES_MAX_ATTEMPTS,
+    )
+    retries_mode = str(
+        cfg.get("retries_mode") or _BEDROCK_DEFAULT_RETRIES_MODE
+    ).strip() or _BEDROCK_DEFAULT_RETRIES_MODE
+
+    return Config(
+        read_timeout=read_timeout,
+        connect_timeout=connect_timeout,
+        retries={
+            "max_attempts": retries_max_attempts,
+            "mode": retries_mode,
+        },
+    )
+
+
 def _get_bedrock_runtime_client(region: str):
     """Get or create a cached ``bedrock-runtime`` client for the given region.
 
@@ -96,7 +167,9 @@ def _get_bedrock_runtime_client(region: str):
     if region not in _bedrock_runtime_client_cache:
         boto3 = _require_boto3()
         _bedrock_runtime_client_cache[region] = boto3.client(
-            "bedrock-runtime", region_name=region,
+            "bedrock-runtime",
+            region_name=region,
+            config=_build_botocore_config(),
         )
     return _bedrock_runtime_client_cache[region]
 
@@ -106,7 +179,9 @@ def _get_bedrock_control_client(region: str):
     if region not in _bedrock_control_client_cache:
         boto3 = _require_boto3()
         _bedrock_control_client_cache[region] = boto3.client(
-            "bedrock", region_name=region,
+            "bedrock",
+            region_name=region,
+            config=_build_botocore_config(),
         )
     return _bedrock_control_client_cache[region]
 
@@ -445,10 +520,11 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
       - ``us.anthropic.claude-*`` (US inference profiles)
       - ``global.anthropic.claude-*`` (global inference profiles)
       - ``eu.anthropic.claude-*`` (EU inference profiles)
+      - ``au.anthropic.claude-*`` (Australia inference profiles)
     """
     model_lower = model_id.lower()
     # Strip regional prefix if present
-    for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
+    for prefix in ("us.", "global.", "eu.", "ap.", "jp.", "au."):
         if model_lower.startswith(prefix):
             model_lower = model_lower[len(prefix):]
             break
@@ -980,6 +1056,12 @@ def build_converse_kwargs(
                     "The agent will operate in text-only mode.", model
                 )
 
+    if _requires_context_1m_beta(model):
+        fields = kwargs.setdefault("additionalModelRequestFields", {})
+        betas = fields.setdefault("anthropic_beta", [])
+        if _BEDROCK_CONTEXT_1M_BETA not in betas:
+            betas.append(_BEDROCK_CONTEXT_1M_BETA)
+
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config
 
@@ -1297,8 +1379,10 @@ def classify_bedrock_error(error_message: str) -> str:
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     # Anthropic Claude models on Bedrock
-    "anthropic.claude-opus-4-6":     200_000,
-    "anthropic.claude-sonnet-4-6":   200_000,
+    "anthropic.claude-opus-4-8":     1_000_000,
+    "anthropic.claude-opus-4-7":     1_000_000,
+    "anthropic.claude-opus-4-6":     1_000_000,
+    "anthropic.claude-sonnet-4-6":   1_000_000,
     "anthropic.claude-sonnet-4-5":   200_000,
     "anthropic.claude-haiku-4-5":    200_000,
     "anthropic.claude-opus-4":       200_000,
@@ -1324,6 +1408,17 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
 
 # Default for unknown Bedrock models
 BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000
+
+
+def _requires_context_1m_beta(model_id: str) -> bool:
+    """Return True when Bedrock Converse needs the Claude 1M-context beta.
+
+    Bedrock Converse uses ``additionalModelRequestFields`` instead of the
+    Anthropic ``anthropic-beta`` header. Keep this keyed off the same metadata
+    used for context-window budgeting so advertising 1M context and enabling
+    the request path stay in sync.
+    """
+    return is_anthropic_bedrock_model(model_id) and get_bedrock_context_length(model_id) > 200_000
 
 
 def get_bedrock_context_length(model_id: str) -> int:

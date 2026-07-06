@@ -213,6 +213,25 @@ class TestSendWithRetryNetworkRetry:
 
 class TestSendWithRetryExhausted:
     @pytest.mark.asyncio
+    async def test_send_path_degraded_gets_extended_retry_window(self):
+        """A real reply waits through reconnect backoff plus heartbeat."""
+        adapter = _StubAdapter()
+        degraded = SendResult(success=False, error="send_path_degraded", retryable=True)
+        degraded_count = 24  # 24 fixed 5s sleeps = 120s recovery window.
+        adapter._send_results = [
+            *([degraded] * degraded_count),
+            SendResult(success=True, message_id="ok"),
+        ]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+
+        assert result.success
+        assert result.message_id == "ok"
+        assert len(adapter._send_calls) == degraded_count + 1
+        assert mock_sleep.await_count == degraded_count
+
+    @pytest.mark.asyncio
     async def test_sends_user_notice_after_exhaustion(self):
         adapter = _StubAdapter()
         network_err = SendResult(success=False, error="httpx.ConnectError: host unreachable")

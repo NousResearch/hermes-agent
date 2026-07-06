@@ -48,6 +48,7 @@ interface StatusbarItemsOptions {
   inferenceStatus: RuntimeReadinessResult | null
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
+  openContextInspector: (sessionId: string | null) => void
   freshDraftReady: boolean
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   statusSnapshot: StatusResponse | null
@@ -64,6 +65,7 @@ export function useStatusbarItems({
   inferenceStatus,
   openAgents,
   openCommandCenterSection,
+  openContextInspector,
   freshDraftReady,
   requestGateway,
   statusSnapshot,
@@ -369,7 +371,12 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
-          <ContextUsagePanel currentUsage={currentUsage} requestGateway={requestGateway} sessionId={activeSessionId} />
+          <ContextUsagePanel
+            currentUsage={currentUsage}
+            onInspectFullContext={openContextInspector}
+            requestGateway={requestGateway}
+            sessionId={activeSessionId}
+          />
         ),
         title: copy.openContextUsage,
         variant: 'menu'
@@ -417,6 +424,7 @@ export function useStatusbarItems({
       contextUsage,
       copy,
       currentUsage,
+      openContextInspector,
       requestGateway,
       sessionStartedAt,
       showYoloToggle,

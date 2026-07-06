@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 import uuid
 import threading
 from datetime import datetime
@@ -48,8 +49,199 @@ logger = logging.getLogger(__name__)
 # intact if you reword COMPACTION_STATUS.
 COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
-    f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
+    f"🗜️ {COMPACTION_STATUS_MARKER}: summarizing earlier conversation so I can continue..."
 )
+_COMPACTION_HEARTBEAT_INTERVAL_SECONDS = 10.0
+
+
+def _format_elapsed_seconds(seconds: float) -> str:
+    """Return compact wall-clock duration text for compaction status updates."""
+    try:
+        total = max(0, int(round(float(seconds))))
+    except (TypeError, ValueError):
+        total = 0
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs}s" if secs else f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+
+
+def _format_compression_model_label(model: Any, provider: Any = "") -> str:
+    """Format the compression backend label without leaking endpoint details."""
+    model_s = str(model or "").strip()
+    provider_s = str(provider or "").strip()
+    if provider_s.lower() in {"", "auto"}:
+        provider_s = ""
+    if model_s and provider_s:
+        return f"{model_s} ({provider_s})"
+    return model_s or provider_s
+
+
+def _remember_compression_model_label(agent: Any, model: Any, provider: Any = "") -> None:
+    label = _format_compression_model_label(model, provider)
+    if label:
+        try:
+            agent._last_compression_model_label = label
+        except Exception:
+            pass
+
+
+def _compression_model_label(agent: Any) -> str:
+    """Best-effort user-visible model label for the current compaction."""
+    compressor = getattr(agent, "context_compressor", None)
+    failed_model = str(getattr(compressor, "_last_aux_model_failure_model", "") or "").strip()
+    if failed_model:
+        main_model = str(getattr(compressor, "model", "") or getattr(agent, "model", "") or "").strip()
+        if main_model:
+            return f"{main_model} (fallback from {failed_model})"
+
+    summary_model = str(getattr(compressor, "summary_model", "") or "").strip()
+    if summary_model:
+        return summary_model
+
+    remembered = str(getattr(agent, "_last_compression_model_label", "") or "").strip()
+    if remembered:
+        return remembered
+
+    try:
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        provider, model, _, _, _ = _resolve_task_provider_model("compression")
+        label = _format_compression_model_label(model, provider)
+        if label:
+            return label
+    except Exception:
+        pass
+
+    return str(getattr(compressor, "model", "") or getattr(agent, "model", "") or "").strip()
+
+
+def _format_compaction_status_message(
+    state: str,
+    *,
+    model_label: str = "",
+    elapsed_seconds: float | None = None,
+) -> str:
+    model_part = f" with 🧠 {model_label}" if model_label else ""
+    if state == "running":
+        elapsed_part = (
+            f" ({_format_elapsed_seconds(elapsed_seconds)} elapsed)"
+            if elapsed_seconds is not None
+            else ""
+        )
+        return (
+            f"🗜️ {COMPACTION_STATUS_MARKER}{model_part}: "
+            f"summarizing earlier conversation so I can continue...{elapsed_part}"
+        )
+    elapsed = _format_elapsed_seconds(elapsed_seconds or 0)
+    if state == "done":
+        return f"✅ {COMPACTION_STATUS_MARKER} done{model_part} in {elapsed}."
+    if state == "skipped":
+        return (
+            f"⚠️ {COMPACTION_STATUS_MARKER} skipped{model_part} after {elapsed}: "
+            "another path is already compressing this session."
+        )
+    if state == "aborted":
+        return (
+            f"⚠️ {COMPACTION_STATUS_MARKER} aborted{model_part} after {elapsed}: "
+            "summary failed, conversation unchanged."
+        )
+    return f"⚠️ {COMPACTION_STATUS_MARKER} failed{model_part} after {elapsed}."
+
+
+def _emit_compaction_status(agent: Any, message: str, *, cli: bool = False) -> None:
+    """Emit a compaction lifecycle status without letting status I/O break work."""
+    if cli:
+        try:
+            agent._vprint(f"{getattr(agent, 'log_prefix', '')}{message}", force=True)
+        except Exception:
+            pass
+    callback = getattr(agent, "status_callback", None)
+    if callback:
+        try:
+            callback("lifecycle", message)
+        except Exception:
+            logger.debug("status_callback error in _emit_compaction_status", exc_info=True)
+
+
+class _CompactionStatusReporter:
+    """Start/final/heartbeat status updates for one compression attempt."""
+
+    def __init__(
+        self,
+        agent: Any,
+        model_label: str,
+        *,
+        interval_seconds: float = _COMPACTION_HEARTBEAT_INTERVAL_SECONDS,
+    ) -> None:
+        self._agent = agent
+        self._model_label = model_label
+        self._interval_seconds = max(1.0, float(interval_seconds or _COMPACTION_HEARTBEAT_INTERVAL_SECONDS))
+        self._started_at = time.monotonic()
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._finished = False
+        self._thread: threading.Thread | None = None
+
+    @property
+    def finished(self) -> bool:
+        return self._finished
+
+    def start(self) -> "_CompactionStatusReporter":
+        _emit_compaction_status(
+            self._agent,
+            _format_compaction_status_message("running", model_label=self._model_label),
+            cli=True,
+        )
+        if getattr(self._agent, "status_callback", None):
+            self._thread = threading.Thread(
+                target=self._run,
+                name="compaction-status-heartbeat",
+                daemon=True,
+            )
+            self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            with self._lock:
+                if self._finished:
+                    return
+                model_label = self._model_label
+            _emit_compaction_status(
+                self._agent,
+                _format_compaction_status_message(
+                    "running",
+                    model_label=model_label,
+                    elapsed_seconds=time.monotonic() - self._started_at,
+                ),
+                cli=False,
+            )
+
+    def finish(self, state: str) -> None:
+        with self._lock:
+            if self._finished:
+                return
+            self._finished = True
+            updated_label = _compression_model_label(self._agent)
+            if updated_label:
+                self._model_label = updated_label
+            model_label = self._model_label
+        self._stop.set()
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=0.5)
+        _emit_compaction_status(
+            self._agent,
+            _format_compaction_status_message(
+                state,
+                model_label=model_label,
+                elapsed_seconds=time.monotonic() - self._started_at,
+            ),
+            cli=True,
+        )
 
 
 def _compression_lock_holder(agent: Any) -> str:
@@ -199,6 +391,8 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 client, aux_model = fb_client, fb_model
                 if "(" in fb_label and fb_label.endswith(")"):
                     _aux_cfg_provider = fb_label.rsplit("(", 1)[1][:-1]
+        if client is not None and aux_model:
+            _remember_compression_model_label(agent, aux_model, _aux_cfg_provider)
         if client is None or not aux_model:
             if _aux_cfg_provider and _aux_cfg_provider != "auto":
                 msg = (
@@ -498,7 +692,10 @@ def compress_context(
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
-    agent._emit_status(COMPACTION_STATUS)
+    _compaction_status = _CompactionStatusReporter(
+        agent,
+        _compression_model_label(agent),
+    ).start()
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two
@@ -593,6 +790,7 @@ def compress_context(
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
+            _compaction_status.finish("skipped")
             return messages, _existing_sp
         if _lock_holder is not None:
             _lock_refresher = _CompressionLockLeaseRefresher(
@@ -628,11 +826,13 @@ def compress_context(
         try:
             compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
         except BaseException:
+            _compaction_status.finish("failed")
             _release_lock()
             raise
     except BaseException:
         # ANY exception during compress() must release the lock so the
         # session isn't permanently blocked from future compression.
+        _compaction_status.finish("failed")
         _release_lock()
         raise
 
@@ -656,6 +856,7 @@ def compress_context(
                 _existing_sp = agent._build_system_prompt(system_message)
             return messages, _existing_sp
         finally:
+            _compaction_status.finish("aborted")
             _release_lock()
 
     try:
@@ -961,8 +1162,11 @@ def compress_context(
             agent.session_id or "none", _pre_msg_count, len(compressed),
             f"{_compressed_est:,}",
         )
+        _compaction_status.finish("done")
         return compressed, new_system_prompt
     finally:
+        if not _compaction_status.finished:
+            _compaction_status.finish("failed")
         # Release the lock on the OLD session_id only AFTER rotation completed
         # and all post-rotation bookkeeping (memory manager, context engine,
         # file dedup) ran. A concurrent path that wakes up the moment we

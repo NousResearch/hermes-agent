@@ -65,11 +65,49 @@ Important:
 
 ## How Hermes uses it
 
-When Hermes starts a session, it reads `SOUL.md` from `HERMES_HOME`, scans it for prompt-injection patterns, truncates it if needed, and uses it as the **agent identity** — slot #1 in the system prompt. This means SOUL.md completely replaces the built-in default identity text.
+When Hermes starts a session, it reads `SOUL.md` from `HERMES_HOME`, expands any explicit include/import directives, scans the result for prompt-injection patterns, truncates it if needed, and uses it as the **agent identity** — slot #1 in the system prompt. This means SOUL.md completely replaces the built-in default identity text.
 
 If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
 
-No wrapper language is added around the file. The content itself matters — write the way you want your agent to think and speak.
+No wrapper language is added around the file. Included fragments are inserted directly where the directive appears. The content itself matters — write the way you want your agent to think and speak.
+
+## Splitting SOUL.md into modules
+
+You can keep `SOUL.md` small and import other markdown files from the same `HERMES_HOME`.
+
+Example layout:
+
+```text
+~/.hermes/
+├── SOUL.md
+└── soul/
+    ├── 00-identity.md
+    ├── 10-style.md
+    └── 20-reviewing.md
+```
+
+Example `SOUL.md`:
+
+```markdown
+You are Hermes Agent.
+
+@include soul/00-identity.md
+@include soul/10-style.md
+@import soul/20-reviewing.md
+```
+
+Rules:
+- directives must be alone on a line, starting at column 0
+- `@include` and `@import` are aliases
+- paths are relative to `$HERMES_HOME`, including nested fragments
+- only `.md` files are loaded
+- globs such as `@include soul/*.md` load matching markdown files in lexicographic order
+- recursive globs (`**`) are not allowed
+- successful includes add no wrapper text; add headings inside fragments if you want visible boundaries
+- missing, unsafe, cyclic, or blocked includes render a visible `[INCLUDE ERROR: ...]` placeholder
+- write `\@include soul/example.md` when you want a literal line, not an import
+
+Like any SOUL edit, changes affect new sessions and system-prompt rebuilds. Normal active turns do not hot-reload the file.
 
 ## A good first edit
 

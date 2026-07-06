@@ -7,11 +7,12 @@ import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types
 
 interface ContextUsagePanelProps {
   currentUsage: UsageStats
+  onInspectFullContext?: (sessionId: string | null) => void
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   sessionId: string | null
 }
 
-export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: ContextUsagePanelProps) {
+export function ContextUsagePanel({ currentUsage, onInspectFullContext, requestGateway, sessionId }: ContextUsagePanelProps) {
   const { t } = useI18n()
   const copy = t.shell.statusbar.contextUsagePanel
   const [breakdown, setBreakdown] = useState<ContextBreakdown | null>(null)
@@ -100,6 +101,15 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
       {loading && <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>}
 
       {!loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.empty}</p>}
+
+      <button
+        className="mt-1 inline-flex items-center justify-center rounded-md border border-border/60 bg-muted/20 px-2.5 py-1.5 text-[0.7rem] font-medium text-foreground transition-colors hover:bg-muted/45 disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={!sessionId}
+        onClick={() => onInspectFullContext?.(sessionId)}
+        type="button"
+      >
+        {copy.inspectFullContext}
+      </button>
     </div>
   )
 }

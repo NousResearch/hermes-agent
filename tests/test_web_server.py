@@ -7,6 +7,8 @@ Config + Server + asyncio.run to capture kwargs without starting an event loop.
 import asyncio
 import contextlib
 
+from fastapi.testclient import TestClient
+
 import uvicorn
 
 from hermes_cli import web_server
@@ -210,3 +212,74 @@ def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
     assert runner_called["hit"] is False, (
         "POSIX must not take the Windows loop-factory branch"
     )
+
+
+def test_dashboard_subagent_context_route_serves_artifact_with_session_token(tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_state import SessionDB
+    from agent.subagent_context_artifacts import (
+        create_subagent_context_artifact_pointer,
+        update_subagent_context_artifact_capture,
+    )
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        create_subagent_context_artifact_pointer(
+            child_session_id="child-dashboard",
+            parent_session_id="parent-dashboard",
+            subagent_id="sa-dashboard",
+            session_db=db,
+        )
+        update_subagent_context_artifact_capture(
+            "child-dashboard",
+            {
+                "schema_version": 1,
+                "kind": "subagent_context_payload",
+                "raw_unredacted_by_viewer": True,
+                "child_session_id": "child-dashboard",
+                "parent_session_id": "parent-dashboard",
+                "subagent_id": "sa-dashboard",
+                "canonical_messages": [{"role": "user", "content": "raw desktop context"}],
+                "provider_request": {"messages": [{"role": "user", "content": "raw desktop context"}]},
+            },
+            session_db=db,
+        )
+    finally:
+        db.close()
+
+    previous_auth_required = getattr(web_server.app.state, "auth_required", None)
+    previous_bound_host = getattr(web_server.app.state, "bound_host", None)
+    try:
+        web_server.app.state.auth_required = False
+        web_server.app.state.bound_host = "127.0.0.1"
+        with TestClient(web_server.app, base_url="http://127.0.0.1") as client:
+            unauth = client.get("/api/subagents/child-dashboard/context")
+            assert unauth.status_code == 401
+
+            resp = client.get(
+                "/api/subagents/child-dashboard/context",
+                headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["object"] == "hermes.subagent_context"
+            assert body["artifact"]["provider_request"]["messages"][0]["content"] == "raw desktop context"
+    finally:
+        if previous_auth_required is None:
+            try:
+                delattr(web_server.app.state, "auth_required")
+            except AttributeError:
+                pass
+        else:
+            web_server.app.state.auth_required = previous_auth_required
+        if previous_bound_host is None:
+            try:
+                delattr(web_server.app.state, "bound_host")
+            except AttributeError:
+                pass
+        else:
+            web_server.app.state.bound_host = previous_bound_host
+        reset_hermes_home_override(token)

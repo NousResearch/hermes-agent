@@ -40,6 +40,8 @@ export type GatewayEventPayload = {
   error?: string | boolean
   inline_diff?: string
   duration_s?: number
+  /** Backend epoch (seconds) when a tool call started — for the timeline axis. */
+  started_at?: number
   todos?: unknown
   model?: string
   provider?: string
@@ -426,6 +428,14 @@ function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown):
     ...eventArgs,
     ...(payload?.context ? { context: payload.context } : {}),
     ...(payload?.preview ? { preview: payload.preview } : {}),
+    // Persist the backend-epoch tool start on the part so the Observatory
+    // timeline can anchor the block. Set on tool.start (running phase) and
+    // carried forward if a later event omits it.
+    ...(payload?.started_at !== undefined
+      ? { started_at: payload.started_at }
+      : prev.started_at !== undefined
+        ? { started_at: prev.started_at }
+        : {}),
     ...carryTodos(payload, prevArgs)
   }
 }
@@ -562,7 +572,41 @@ function parseStoredToolResult(content: unknown): unknown {
   }
 }
 
-function toolPartFromStoredCall(call: unknown, fallbackIndex: number): ChatMessagePart {
+/**
+ * Observatory historical timeline: derive the tool's duration_s from the
+ * tool-result row's own backend-epoch (seconds) timestamp minus the tool-call
+ * part's started_at, clamped >= 0 (the message clock is not monotonic — a
+ * result row can carry an earlier ts than its call after an NTP step / sleep;
+ * see hermes_state.py:3780). Only fills duration_s when the result doesn't
+ * already carry it (the live tool.complete path sets it directly). Returns the
+ * result object, timing-enriched when derivable.
+ */
+function enrichStoredResultTiming(result: unknown, part: ChatMessagePart, resultTimestamp?: number): unknown {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return result
+  }
+
+  const resultObj = result as Record<string, unknown>
+
+  if (typeof resultObj.duration_s === 'number') {
+    return result
+  }
+
+  const partArgs = part.type === 'tool-call' ? ((part.args as Record<string, unknown> | undefined) ?? {}) : {}
+  const startedAt = typeof partArgs.started_at === 'number' ? partArgs.started_at : undefined
+
+  if (typeof resultTimestamp !== 'number' || startedAt === undefined) {
+    return result
+  }
+
+  return { ...resultObj, duration_s: Math.max(0, resultTimestamp - startedAt) }
+}
+
+function toolPartFromStoredCall(
+  call: unknown,
+  fallbackIndex: number,
+  assistantTimestamp?: number
+): ChatMessagePart {
   const row = recordFromUnknown(call) ?? {}
   const fn = recordFromUnknown(row.function)
   const id = String(row.id || row.tool_call_id || `stored-tool-${fallbackIndex}`)
@@ -573,12 +617,26 @@ function toolPartFromStoredCall(call: unknown, fallbackIndex: number): ChatMessa
 
   const args = firstNonEmptyObject(fn?.arguments, row.arguments, row.args, row.input)
 
+  // Observatory historical timeline: the stored transcript never persists the
+  // live-only `started_at` display field, but the assistant tool_calls row DOES
+  // carry a backend-epoch (seconds) timestamp. Anchor the parent block's start
+  // to it so a reloaded/finished session lays out tools by real time instead of
+  // the sequential fallback. Only when absent — the live path already sets it.
+  const startedAt =
+    typeof args.started_at === 'number'
+      ? args.started_at
+      : typeof assistantTimestamp === 'number'
+        ? assistantTimestamp
+        : undefined
+
+  const argsWithTiming = startedAt !== undefined ? { ...args, started_at: startedAt } : args
+
   return {
     type: 'tool-call',
     toolCallId: id,
     toolName,
-    args: args as never,
-    argsText: Object.keys(args).length ? JSON.stringify(args) : ''
+    args: argsWithTiming as never,
+    argsText: Object.keys(argsWithTiming).length ? JSON.stringify(argsWithTiming) : ''
   }
 }
 
@@ -608,7 +666,7 @@ function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMess
     const existing = parts[partIndex]
     parts[partIndex] = {
       ...existing,
-      result: parseStoredToolResult(content),
+      result: enrichStoredResultTiming(parseStoredToolResult(content), existing, toolMessage.timestamp),
       isError: false
     } as ChatMessagePart
     messages[i] = { ...message, parts }
@@ -638,7 +696,7 @@ function applyStoredToolResultToParts(parts: ChatMessagePart[], toolMessage: Ses
   const existing = next[partIndex]
   next[partIndex] = {
     ...existing,
-    result: parseStoredToolResult(content),
+    result: enrichStoredResultTiming(parseStoredToolResult(content), existing, toolMessage.timestamp),
     isError: false
   } as ChatMessagePart
 
@@ -783,7 +841,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
-      parts.push(...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex)))
+      parts.push(...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex, message.timestamp)))
     }
 
     if (!parts.length) {

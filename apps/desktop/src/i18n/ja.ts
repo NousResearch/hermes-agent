@@ -950,6 +950,38 @@ export const ja = defineLocale({
     tokens: value => `${value} トーク`
   },
 
+  contextInspector: {
+    title: 'コンテキストインスペクター',
+    close: 'コンテキストインスペクターを閉じる',
+    bucketGroupLabel: 'コンテキストのバケットフィルター',
+    buckets: {
+      all: 'すべて',
+      system: 'システム',
+      user: 'ユーザー',
+      assistant: 'アシスタント',
+      tools: 'ツール'
+    },
+    tabs: {
+      transcript: '順序付きトランスクリプト',
+      raw: '高度 / Raw JSON'
+    },
+    sourceFallback: '再構成ベース',
+    sourceHelp:
+      '再構成ベース: キャッシュ済みプレフィックス + 会話履歴。ターンごとの一時注入、プロバイダー/ミドルウェアの書き換え、キャッシュマーカー、プリフィル、正確な最終送信ペイロード変換は含みません。',
+    sourceHelpLabel: 'ソース詳細',
+    loading: '完全なコンテキストを読み込み中…',
+    empty: '完全なコンテキストは、エージェント初期化後または最初のターン送信後に利用できます。',
+    error: message => `コンテキストの読み込みに失敗しました: ${message}`,
+    noMessages: 'このバケットに一致するメッセージはありません。',
+    collapseSystem: 'システムを折りたたむ',
+    expandSystem: 'システムを展開',
+    systemCollapsed: 'システムメッセージは折りたたまれています。',
+    fullPayload: '完全なペイロード',
+    truncated: 'このスライスはバックエンドで切り詰められました。完全なソースはライブセッションで確認してください。',
+    index: index => `#${index}`,
+    tokens: tokens => `${tokens} トークン`
+  },
+
   commandCenter: {
     close: 'コマンドセンターを閉じる',
     paletteTitle: 'コマンドパレット',
@@ -1550,6 +1582,10 @@ export const ja = defineLocale({
       rename: '名前を変更',
       archive: 'アーカイブ',
       newWindow: '新しいウィンドウ',
+      closeWorkstream: 'ワークストリームを閉じる',
+      markRestartRequired: '再起動が必要としてマーク',
+      markSafeToDelete: '削除可能としてマーク',
+      reopenWorkstream: 'ワークストリームを再開',
       copyIdFailed: 'セッション ID をコピーできませんでした',
       actionsFor: title => `${title} のアクション`,
       sessionActions: 'セッションアクション',
@@ -2042,6 +2078,7 @@ export const ja = defineLocale({
         },
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
+        inspectFullContext: '完全なコンテキストを検査',
         percentFull: percent => `${percent}% 使用中`,
         title: 'コンテキスト使用状況',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`

@@ -74,6 +74,17 @@ gateway:
     branched_one:          "⑂ Ramificado a **{title}** ({count} mensaje copiado)\nOriginal: `{parent}`\nRama: `{new}`\nUsa `/resume` para volver al original."
     branched_many:         "⑂ Ramificado a **{title}** ({count} mensajes copiados)\nOriginal: `{parent}`\nRama: `{new}`\nUsa `/resume` para volver al original."
 
+  forktopic:
+    telegram_only:         "⚠️ `/forktopic` only works from Telegram."
+    no_chat:               "⚠️ Cannot create a topic without a Telegram chat id."
+    adapter_missing:       "⚠️ Telegram adapter cannot create forum topics in this gateway."
+    create_topic_failed:   "⚠️ Failed to create Telegram topic: {error}"
+    bind_failed:           "⚠️ Topic was not forked: {error}"
+    seed_message:          "⑂ **Forked conversation: {title}**\n\nCopied {count} user message(s) from the parent session. Continue this branch here.\n\nParent: `{parent}`\nFork: `{new}`"
+    created_one:           "⑂ Forked into Telegram topic **{title}** ({count} message copied)\nThread: `{thread}`\nParent: `{parent}`\nFork: `{new}`\n{url}"
+    created_many:          "⑂ Forked into Telegram topic **{title}** ({count} messages copied)\nThread: `{thread}`\nParent: `{parent}`\nFork: `{new}`\n{url}"
+    created_seed_send_failed: "⚠️ Forked topic **{title}**, but seed send failed: {error}\nThread: `{thread}`\nParent: `{parent}`\nFork: `{new}`\n{url}"
+
   commands:
     usage:                 "Uso: `/commands [page]`"
     skill_header:          "⚡ **Comandos de skill**:"

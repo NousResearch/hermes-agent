@@ -58,6 +58,48 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Optional per-tool completion timing in gateway progress bubbles. When
+    # enabled, each tool's existing progress row gets a compact duration suffix
+    # appended in place (e.g. "💻 terminal: \"date\" · 10ms"), and a fallback
+    # "✅ <tool> completed in <time>" row is emitted only if no matching start
+    # row was found. Off by default to avoid extra chat noise; platforms/users
+    # can opt in where timing visibility matters.
+    "tool_completion_durations": False,
+    # Surface a delegate_task child's OWN tool calls in gateway progress.
+    # Child tool events are already relayed to the parent's progress callback
+    # (tools/delegate_tool.py emits "subagent.tool"/"subagent.progress"), but
+    # the gateway drops them by default — only the parent's delegate_task call
+    # is shown. Three levels:
+    #   "off"     — drop child tool events (default; original behavior)
+    #   "batched" — render the batched "subagent.progress" summary only
+    #               (one card per ~5 child tools; low spam)
+    #   "full"    — render every individual "subagent.tool" event (noisy on
+    #               long subagent runs, but a complete live trace)
+    # A long subagent doing dozens of tools can post many permanent messages
+    # on platforms with no message editing, so this stays off unless opted in.
+    "subagent_tool_progress": "off",
+    # Live, edited-in-place roster bubble for delegate_task subagents. When
+    # "on", a single message shows how many children are running, each child's
+    # short goal, per-agent elapsed time, and status (running/done/errored/
+    # timed-out), collapsing to a one-liner at turn end. Independent of
+    # subagent_tool_progress (membership + status come from subagent.start/
+    # .complete lifecycle events; elapsed from a periodic registry poll). Only
+    # renders on edit-capable adapters (Telegram, Discord); silent no-op on
+    # platforms without message editing. Off by default.
+    "subagent_roster": "off",
+    # Minimum seconds between live roster bubble edits. Telegram enforces a
+    # per-chat edit flood ceiling; a busy chat with other bubbles can trip
+    # "Flood control exceeded" and freeze the roster's live timer. 10s stays
+    # well under the ceiling. The final collapse (force) bypasses this throttle
+    # so the terminal state always lands. Clamped to a 1.0s floor.
+    "subagent_roster_interval": 10.0,
+    # Surface the `todo` tool's plan/status card in gateway progress WITHOUT
+    # turning on general tool_progress. Mirrors delegate_task_args: a single
+    # tool's card is rendered even when tool_progress is "off" (the Telegram
+    # default), so the multi-step plan + per-item status/timing shows up
+    # without the rest of the tool noise. Binary on/off; off by default.
+    # Only renders on edit-capable adapters; harmless no-op elsewhere.
+    "todo_progress": "off",
 }
 
 # ---------------------------------------------------------------------------
@@ -259,7 +301,7 @@ def _normalise(setting: str, value: Any) -> Any:
                 return "generic"
             return val in {"true", "1", "yes", "on", "raw", "verbose"}
         return bool(value)
-    if setting == "cleanup_progress":
+    if setting in {"cleanup_progress", "tool_completion_durations"}:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
@@ -269,9 +311,36 @@ def _normalise(setting: str, value: Any) -> Any:
     if setting == "reasoning_style":
         val = str(value).lower()
         return val if val in ("code", "blockquote", "subtext") else "code"
+    if setting == "subagent_tool_progress":
+        # Tri-state string flag. Accept legacy booleans for forgiveness:
+        # True → "full" (show everything), False → "off". Unknown strings
+        # collapse to "off" so a typo fails safe (quiet) rather than spamming.
+        if value is True:
+            return "full"
+        if value is False:
+            return "off"
+        v = str(value).strip().lower()
+        return v if v in {"off", "batched", "full"} else "off"
+    if setting in {"subagent_roster", "todo_progress"}:
+        # Binary on/off. Accept YAML 1.1 booleans (bare on->True, off->False).
+        # Unknown strings fail safe to "off".
+        if value is True:
+            return "on"
+        if value is False:
+            return "off"
+        v = str(value).strip().lower()
+        return "on" if v in {"on", "true", "1", "yes"} else "off"
     if setting == "tool_preview_length":
         try:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "subagent_roster_interval":
+        # Seconds between roster edits. Parse to float and clamp to a 1.0s
+        # floor so a typo / 0 can never flood Telegram's edit rate limiter.
+        try:
+            secs = float(value)
+        except (TypeError, ValueError):
+            return 10.0
+        return max(1.0, secs)
     return value

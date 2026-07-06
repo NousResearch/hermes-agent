@@ -17,8 +17,10 @@ import {
   setFileBrowserOpen,
   toggleFileBrowserOpen,
   togglePanesFlipped,
-  toggleSidebarOpen
+  toggleSidebarOpen,
+  WORKSTREAM_PANE_ID
 } from '@/store/layout'
+import { setPaneOpen } from '@/store/panes'
 import {
   $newChatProfile,
   cycleProfile,
@@ -29,7 +31,7 @@ import {
 } from '@/store/profile'
 import { requestNewWorktree } from '@/store/projects'
 import { toggleReview } from '@/store/review'
-import { setModelPickerOpen } from '@/store/session'
+import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
 import {
   $switcherOpen,
   closeSwitcher,
@@ -42,6 +44,7 @@ import {
   switcherJustClosed
 } from '@/store/session-switcher'
 import { openNewSessionInNewWindow } from '@/store/windows'
+import { adjacentWorkstreamSessionId, cycleWorkstreamFilter } from '@/store/workstream-filter'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
@@ -51,10 +54,12 @@ import {
   ARTIFACTS_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  OBSERVATORY_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
-  SKILLS_ROUTE
+  SKILLS_ROUTE,
+  WORKSTREAMS_ROUTE
 } from '../routes'
 
 export interface KeybindRuntimeDeps {
@@ -67,6 +72,19 @@ export interface KeybindRuntimeDeps {
 }
 
 type HandlerMap = Record<string, () => void>
+
+const WORKSTREAM_INPUT_ACTIONS = new Set([
+  'workstream.navNext',
+  'workstream.navPrev',
+  'workstream.cycleFilter',
+  'view.focusWorkstream'
+])
+
+function focusWorkstreamPanel() {
+  requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>('[data-workstream-progress-rail]')?.focus({ preventScroll: true })
+  })
+}
 
 // Mount once near the top of the app. Owns the single global keydown listener
 // for every rebindable hotkey: it runs the matched action, or — while capture
@@ -108,6 +126,16 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     goToSession(openOrAdvanceSwitcher(direction))
   }
 
+  const stepWorkstream = (direction: 1 | -1) => {
+    closeSwitcher()
+    goToSession(adjacentWorkstreamSessionId($selectedStoredSessionId.get(), direction))
+  }
+
+  const openWorkstreamPanel = () => {
+    setPaneOpen(WORKSTREAM_PANE_ID, true)
+    focusWorkstreamPanel()
+  }
+
   const showFiles = () => {
     setFileBrowserOpen(true)
     setTerminalTakeover(false)
@@ -129,6 +157,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.artifacts': () => navigate(ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),
+    'nav.workstreams': () => navigate(WORKSTREAMS_ROUTE),
+    'nav.observatory': () => navigate(OBSERVATORY_ROUTE),
 
     'session.new': () => {
       // Match the sidebar New Session button. A plain keyboard new chat should
@@ -141,6 +171,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.newWindow': () => void openNewSessionInNewWindow(),
     'session.next': () => stepSession(1),
     'session.prev': () => stepSession(-1),
+    'workstream.navNext': () => stepWorkstream(1),
+    'workstream.navPrev': () => stepWorkstream(-1),
+    'workstream.cycleFilter': cycleWorkstreamFilter,
+    'view.focusWorkstream': openWorkstreamPanel,
     ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
@@ -238,7 +272,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      if (isEditableTarget(event.target) && !comboAllowedInInput(combo)) {
+      if (isEditableTarget(event.target) && !comboAllowedInInput(combo) && !WORKSTREAM_INPUT_ACTIONS.has(actionId)) {
         return
       }
 

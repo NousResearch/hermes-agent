@@ -1,4 +1,5 @@
 import type { useSensors } from '@dnd-kit/core'
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useMemo } from 'react'
 
@@ -9,7 +10,16 @@ import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
 import { cn } from '@/lib/utils'
-import { sessionPinId } from '@/store/session'
+import { $attentionSessionIds, $selectedStoredSessionId, sessionPinId } from '@/store/session'
+import { $subagentsBySession } from '@/store/subagents'
+import { $todosBySession } from '@/store/todos'
+import {
+  $workstreamFilter,
+  filterSessionsByWorkstream,
+  type WorkstreamFilter,
+  type WorkstreamFilterRuntime
+} from '@/store/workstream-filter'
+import { $workstreamMetadata } from '@/store/workstream-metadata'
 
 import { SidebarCount } from './chrome'
 import {
@@ -85,6 +95,7 @@ interface SidebarSessionsSectionProps {
   onToggle: () => void
   sessions: SessionInfo[]
   activeSessionId: null | string
+  activeRuntimeSessionId?: null | string
   workingSessionIdSet: Set<string>
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
@@ -137,12 +148,23 @@ interface SidebarSessionsSectionProps {
   dndSensors?: ReturnType<typeof useSensors>
 }
 
+function filterGroups(
+  groups: SidebarSessionGroup[] | undefined,
+  runtime: WorkstreamFilterRuntime,
+  filter: WorkstreamFilter
+): SidebarSessionGroup[] | undefined {
+  return groups
+    ?.map(group => ({ ...group, sessions: filterSessionsByWorkstream(group.sessions, filter, runtime) }))
+    .filter(group => group.sessions.length > 0)
+}
+
 export function SidebarSessionsSection({
   label,
   open,
   onToggle,
   sessions,
   activeSessionId,
+  activeRuntimeSessionId = activeSessionId,
   workingSessionIdSet,
   onResumeSession,
   onDeleteSession,
@@ -176,20 +198,54 @@ export function SidebarSessionsSection({
   projectBackRow,
   dndSensors
 }: SidebarSessionsSectionProps) {
+  const workstreamFilter = useStore($workstreamFilter)
+  const workstreamMetadata = useStore($workstreamMetadata)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const attentionSessionIds = useStore($attentionSessionIds)
+  const todosBySession = useStore($todosBySession)
+  const subagentsBySession = useStore($subagentsBySession)
+
+  const runtime = useMemo<WorkstreamFilterRuntime>(
+    () => ({
+      activeSessionId: activeRuntimeSessionId,
+      attentionSessionIds,
+      metadataBySession: workstreamMetadata,
+      selectedStoredSessionId,
+      subagentsBySession,
+      todosBySession,
+      workingSessionIds: [...workingSessionIdSet]
+    }),
+    [
+      activeRuntimeSessionId,
+      attentionSessionIds,
+      selectedStoredSessionId,
+      subagentsBySession,
+      todosBySession,
+      workingSessionIdSet,
+      workstreamMetadata
+    ]
+  )
+
+  const filteredSessions = useMemo(
+    () => filterSessionsByWorkstream(sessions, workstreamFilter, runtime),
+    [sessions, workstreamFilter, runtime]
+  )
+
+  const filteredGroups = useMemo(() => filterGroups(groups, runtime, workstreamFilter), [groups, runtime, workstreamFilter])
   const sectionOpen = collapsible ? open : true
-  const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
+  const hasGroupedSessions = Boolean(filteredGroups?.some(group => group.sessions.length > 0))
   // A defined project list is itself content (even an empty project should
   // render as a drill-in row so the user can see it exists).
   const hasProjectOverview = Boolean(projectOverview?.length)
   const hasProjectContent = Boolean(projectContent && projectContent.sessionCount > 0)
 
   const showEmptyState =
-    forceEmptyState || (!hasGroupedSessions && !hasProjectOverview && !hasProjectContent && sessions.length === 0)
+    forceEmptyState || (!hasGroupedSessions && !hasProjectOverview && !hasProjectContent && filteredSessions.length === 0)
 
   // The flat recents/pinned list is the only place sessions reorder by hand;
   // grouped/tree views always sort by creation date and never drag.
-  const sessionsDraggable = sortable && !!onReorderSessions
-  const displayEntries = useMemo(() => flattenSessionsWithBranches(sessions), [sessions])
+  const sessionsDraggable = sortable && workstreamFilter === 'all' && !!onReorderSessions
+  const displayEntries = useMemo(() => flattenSessionsWithBranches(filteredSessions), [filteredSessions])
 
   const renderRow = (session: SessionInfo, draggable: boolean, branchStem?: string) => {
     const rowProps = {
@@ -215,21 +271,23 @@ export function SidebarSessionsSection({
 
   // Sessions inside repos/worktrees are date-ordered and static.
   const renderRows = (items: SessionInfo[]) =>
-    flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem))
+    flattenSessionsWithBranches(filterSessionsByWorkstream(items, workstreamFilter, runtime)).map(({ branchStem, session }) =>
+      renderRow(session, false, branchStem)
+    )
 
   const flatVirtualized =
     !showEmptyState &&
-    !groups?.length &&
+    !filteredGroups?.length &&
     !projectOverview?.length &&
     !projectContent &&
-    sessions.length >= VIRTUALIZE_THRESHOLD
+    filteredSessions.length >= VIRTUALIZE_THRESHOLD
 
   // First paint into the grouped view (e.g. the app restoring the Projects tab)
   // has flat recents in `sessions` but no tree yet. Show skeletons rather than
   // flashing the flat session list until the overview/content/groups resolve. A
   // background refresh keeps the prior tree, so this only fires when empty.
   const showProjectsSkeleton =
-    projectsLoading && !hasProjectOverview && !hasProjectContent && !projectContent && !groups?.length
+    projectsLoading && !hasProjectOverview && !hasProjectContent && !projectContent && !filteredGroups?.length
 
   let inner: React.ReactNode
 
@@ -289,9 +347,9 @@ export function SidebarSessionsSection({
       ) : (
         rows
       )
-  } else if (groups?.length) {
+  } else if (filteredGroups?.length) {
     // Profile/source groups never reorder; render them flat with static rows.
-    inner = groups.map(group => (
+    inner = filteredGroups.map(group => (
       <SidebarWorkspaceGroup
         group={group}
         key={group.id}
@@ -318,7 +376,7 @@ export function SidebarSessionsSection({
 
     inner =
       sessionsDraggable && onReorderSessions ? (
-        <ReorderableList ids={sessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
+        <ReorderableList ids={filteredSessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
           {virtual}
         </ReorderableList>
       ) : (
@@ -326,7 +384,7 @@ export function SidebarSessionsSection({
       )
   } else if (sessionsDraggable && onReorderSessions) {
     inner = (
-      <ReorderableList ids={sessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
+      <ReorderableList ids={filteredSessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
         {displayEntries.map(({ branchStem, session }) => renderRow(session, true, branchStem))}
       </ReorderableList>
     )

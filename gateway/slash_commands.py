@@ -19,6 +19,7 @@ import asyncio
 import dataclasses
 import hashlib
 import inspect
+import json
 import logging
 import os
 import re
@@ -2705,11 +2706,10 @@ class GatewaySlashCommandsMixin:
             self._reasoning_config = self._load_reasoning_config()
             self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
-        if effort == "none":
-            parsed = {"enabled": False}
-        elif effort in {"minimal", "low", "medium", "high", "xhigh"}:
-            parsed = {"enabled": True, "effort": effort}
-        else:
+        from hermes_constants import parse_reasoning_effort
+
+        parsed = parse_reasoning_effort(effort)
+        if parsed is None:
             return t(
                 "gateway.reasoning.unknown_arg",
                 arg=effort or raw_args.lower(),
@@ -3830,6 +3830,267 @@ class GatewaySlashCommandsMixin:
         msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+
+    @staticmethod
+    def _text_for_forktopic_visible_message(content: Any) -> str:
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    text = part.get("text") or part.get("content")
+                    if isinstance(text, str):
+                        parts.append(text)
+            content = "\n".join(parts)
+        elif isinstance(content, dict):
+            try:
+                content = json.dumps(content, ensure_ascii=False)
+            except (TypeError, ValueError):
+                content = str(content)
+
+        text = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[ \t\f\v]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        return text
+
+    @staticmethod
+    def _forktopic_visible_time(message: dict[str, Any]) -> str:
+        timestamp = message.get("timestamp")
+        if timestamp is None:
+            return "time unknown"
+        try:
+            if hasattr(timestamp, "timestamp"):
+                dt = timestamp
+            else:
+                dt = datetime.fromtimestamp(float(timestamp))
+            return dt.strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError, OSError):
+            return "time unknown"
+
+    @staticmethod
+    def _split_forktopic_visible_message(header: str, text: str, *, limit: int = 3800) -> list[str]:
+        available = max(500, limit - len(header) - 16)
+        chunks = [text[index : index + available] for index in range(0, len(text), available)] or [""]
+        if len(chunks) == 1:
+            return [f"{header}\n{text}"]
+        return [
+            f"{header} ({index}/{len(chunks)})\n{chunk}"
+            for index, chunk in enumerate(chunks, start=1)
+        ]
+
+    def _format_forktopic_recent_context_messages(
+        self,
+        history: list[dict[str, Any]],
+        *,
+        limit: int = 5,
+    ) -> list[str]:
+        visible_messages: list[tuple[dict[str, Any], str]] = []
+        for message in history:
+            if message.get("role") not in {"user", "assistant"}:
+                continue
+            text = self._text_for_forktopic_visible_message(message.get("content"))
+            if not text:
+                continue
+            visible_messages.append((message, text))
+        visible_messages = visible_messages[-limit:]
+
+        messages: list[str] = []
+        for message, text in visible_messages:
+            role = message.get("role")
+            label = "You" if role == "user" else "Hermes"
+            header = f"**{label}** · {self._forktopic_visible_time(message)}"
+            messages.extend(self._split_forktopic_visible_message(header, text))
+        return messages
+
+    async def _handle_forktopic_command(self, event: MessageEvent) -> str:
+        """Handle /forktopic [name] — fork the current session into a new Telegram topic."""
+        import uuid as _uuid
+        from datetime import datetime as _dt
+
+        if event.source.platform != Platform.TELEGRAM:
+            return t("gateway.forktopic.telegram_only")
+        session_db = getattr(self, "_session_db", None)
+        if not session_db:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+
+        source = event.source
+        if not source.chat_id:
+            return t("gateway.forktopic.no_chat")
+
+        adapters = getattr(self, "adapters", {}) or {}
+        adapter: Any = adapters.get(Platform.TELEGRAM)
+        create_topic: Any = getattr(adapter, "create_forum_topic", None) if adapter else None
+        if not callable(create_topic):
+            return t("gateway.forktopic.adapter_missing")
+
+        session_store = getattr(self, "session_store", None)
+        if session_store is None:
+            return t("gateway.forktopic.bind_failed", error="session store unavailable")
+        current_entry = session_store.get_or_create_session(source)
+        parent_session_id = current_entry.session_id
+        history = session_store.load_transcript(parent_session_id)
+        if not history:
+            return t("gateway.branch.no_conversation")
+
+        raw_name = event.get_command_args().strip()
+        if raw_name:
+            topic_title = raw_name
+        else:
+            try:
+                current_title = session_db.get_session_title(parent_session_id)
+            except Exception:
+                current_title = None
+            topic_title = f"{current_title} fork" if current_title else "Hermes fork"
+        topic_title = re.sub(r"\s+", " ", topic_title).strip()[:128] or "Hermes fork"
+
+        try:
+            new_thread_id = await create_topic(str(source.chat_id), topic_title)
+        except Exception as exc:
+            logger.warning("forktopic: create_forum_topic failed", exc_info=True)
+            return t("gateway.forktopic.create_topic_failed", error=exc)
+        if not new_thread_id:
+            return t("gateway.forktopic.create_topic_failed", error="Telegram did not return a thread id")
+        new_thread_id = str(new_thread_id)
+
+        now = _dt.now()
+        new_session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
+        msg_count = len([m for m in history if m.get("role") == "user"])
+        seed_text = t(
+            "gateway.forktopic.seed_message",
+            title=topic_title,
+            count=msg_count,
+            parent=parent_session_id,
+            new=new_session_id,
+        )
+        context_seed_messages = self._format_forktopic_recent_context_messages(history)
+
+        dest_source = dataclasses.replace(
+            source,
+            chat_type="dm" if source.chat_type == "dm" else "forum",
+            thread_id=new_thread_id,
+        )
+        session_key_for_source = getattr(self, "_session_key_for_source")
+        dest_session_key = session_key_for_source(dest_source)
+
+        temp_dest_session_id = None
+        try:
+            model_name = None
+            config = getattr(self, "config", None)
+            if isinstance(config, dict):
+                model_name = (config.get("model", {}) or {}).get("default")
+            session_db.create_session(
+                session_id=new_session_id,
+                source="telegram",
+                model=model_name,
+                model_config={
+                    "_branched_from": parent_session_id,
+                    "_forktopic_from": parent_session_id,
+                    "_forktopic_chat_id": str(source.chat_id),
+                    "_forktopic_thread_id": new_thread_id,
+                },
+                parent_session_id=parent_session_id,
+            )
+            session_db.replace_messages(new_session_id, history)
+            try:
+                session_db.set_session_title(new_session_id, topic_title)
+            except Exception:
+                pass
+
+            temp_dest_entry = session_store.get_or_create_session(dest_source)
+            temp_dest_session_id = temp_dest_entry.session_id
+            new_entry = session_store.switch_session(dest_session_key, new_session_id)
+            if not new_entry:
+                raise RuntimeError("session store switch failed")
+            is_topic_lane = getattr(self, "_is_telegram_topic_lane", None)
+            record_topic_binding = getattr(self, "_record_telegram_topic_binding", None)
+            if callable(is_topic_lane) and is_topic_lane(dest_source):
+                if not callable(record_topic_binding):
+                    raise RuntimeError("Telegram topic binding helper unavailable")
+                record_topic_binding(dest_source, new_entry)
+            clear_security = getattr(self, "_clear_session_boundary_security_state", None)
+            if callable(clear_security):
+                clear_security(dest_session_key)
+            evict_agent = getattr(self, "_evict_cached_agent", None)
+            if callable(evict_agent):
+                evict_agent(dest_session_key)
+            release_running = getattr(self, "_release_running_agent_state", None)
+            if callable(release_running):
+                release_running(dest_session_key)
+            if temp_dest_session_id and temp_dest_session_id != new_session_id:
+                try:
+                    session_db.delete_session_if_empty(
+                        temp_dest_session_id,
+                        getattr(session_store, "sessions_dir", None),
+                    )
+                except Exception:
+                    logger.debug("forktopic: temp destination cleanup failed", exc_info=True)
+        except Exception as exc:
+            logger.error("forktopic: failed to bind new topic", exc_info=True)
+            delete_topic: Any = getattr(adapter, "delete_forum_topic", None)
+            if callable(delete_topic):
+                try:
+                    await delete_topic(str(source.chat_id), new_thread_id)
+                except Exception:
+                    logger.debug("forktopic: rollback delete failed", exc_info=True)
+            try:
+                for cleanup_session_id in {new_session_id, temp_dest_session_id}:
+                    if cleanup_session_id:
+                        session_db.delete_session(
+                            cleanup_session_id,
+                            getattr(session_store, "sessions_dir", None),
+                        )
+                with session_store._lock:
+                    session_store._entries.pop(dest_session_key, None)
+                    session_store._save()
+            except Exception:
+                logger.debug("forktopic: session rollback cleanup failed", exc_info=True)
+            return t("gateway.forktopic.bind_failed", error=exc)
+
+        send_error = None
+        try:
+            thread_metadata = getattr(self, "_thread_metadata_for_source", None)
+            metadata = thread_metadata(dest_source) if callable(thread_metadata) else {"thread_id": new_thread_id}
+            for index, content in enumerate([seed_text, *context_seed_messages], start=1):
+                send_result = await adapter.send(
+                    chat_id=str(source.chat_id),
+                    content=content,
+                    metadata=metadata,
+                )
+                if getattr(send_result, "success", True) is False:
+                    send_error = f"message {index}: {getattr(send_result, 'error', 'send returned success=False')}"
+                    break
+        except Exception as exc:
+            logger.warning("forktopic: failed to send seed message", exc_info=True)
+            send_error = str(exc)
+
+        topic_url = ""
+        chat_id_s = str(source.chat_id)
+        if chat_id_s.startswith("-100"):
+            topic_url = f"https://t.me/c/{chat_id_s[4:]}/{new_thread_id}"
+
+        key = "gateway.forktopic.created_one" if msg_count == 1 else "gateway.forktopic.created_many"
+        if send_error:
+            return t(
+                "gateway.forktopic.created_seed_send_failed",
+                title=topic_title,
+                count=msg_count,
+                parent=parent_session_id,
+                new=new_session_id,
+                thread=new_thread_id,
+                url=topic_url,
+                error=send_error,
+            )
+        return t(
+            key,
+            title=topic_title,
+            count=msg_count,
+            parent=parent_session_id,
+            new=new_session_id,
+            thread=new_thread_id,
+            url=topic_url,
+        )
 
     async def _handle_credits_command(self, event: MessageEvent) -> str:
         """Handle /credits -- show Nous credit balance and the top-up handoff.

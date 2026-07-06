@@ -209,10 +209,15 @@ export const zh: Translations = {
       'nav.artifacts': '打开制品',
       'nav.cron': '打开定时任务',
       'nav.agents': '打开智能体',
+      'nav.workstreams': '打开任务总览',
+      'nav.observatory': '打开观测台',
       'session.new': '新建会话',
       'session.newWindow': '在新窗口中新建会话',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
+      'workstream.navNext': '下一个工作流',
+      'workstream.navPrev': '上一个工作流',
+      'workstream.cycleFilter': '切换工作流筛选',
       'session.slot.1': '切换到最近会话 1',
       'session.slot.2': '切换到最近会话 2',
       'session.slot.3': '切换到最近会话 3',
@@ -236,6 +241,7 @@ export const zh: Translations = {
       'view.terminalSelection': '将终端选区发送到输入框',
       'view.closePreviewTab': '关闭预览标签',
       'view.flipPanes': '交换侧边栏位置',
+      'view.focusWorkstream': '聚焦工作流面板',
       'appearance.toggleMode': '切换浅色/深色',
       'profile.default': '切换到默认配置',
       'profile.switch.1': '切换到配置 1',
@@ -1114,6 +1120,38 @@ export const zh: Translations = {
     tokens: value => `${value} 词元`
   },
 
+  contextInspector: {
+    title: '上下文检查器',
+    close: '关闭上下文检查器',
+    bucketGroupLabel: '上下文分组筛选',
+    buckets: {
+      all: '全部',
+      system: '系统',
+      user: '用户',
+      assistant: '助手',
+      tools: '工具'
+    },
+    tabs: {
+      transcript: '有序转录',
+      raw: '高级 / 原始 JSON'
+    },
+    sourceFallback: '重建基础上下文',
+    sourceHelp:
+      '重建基础：缓存前缀 + 对话历史。不包含每轮临时注入、提供商中间件重写、缓存标记、预填充以及精确上次发送载荷转换。',
+    sourceHelpLabel: '来源详情',
+    loading: '正在加载完整上下文…',
+    empty: '完整上下文会在代理初始化或发送第一轮后可用。',
+    error: message => `上下文加载失败：${message}`,
+    noMessages: '没有消息匹配此分组。',
+    collapseSystem: '折叠系统',
+    expandSystem: '展开系统',
+    systemCollapsed: '系统消息已折叠。',
+    fullPayload: '完整载荷',
+    truncated: '此切片已由后端截断；打开实时会话查看完整来源。',
+    index: index => `#${index}`,
+    tokens: tokens => `${tokens} 词元`
+  },
+
   commandCenter: {
     close: '关闭命令中心',
     paletteTitle: '命令面板',
@@ -1750,6 +1788,10 @@ export const zh: Translations = {
       rename: '重命名',
       archive: '归档',
       newWindow: '新窗口',
+      closeWorkstream: '关闭工作流',
+      markRestartRequired: '标记为需要重启',
+      markSafeToDelete: '标记为可删除',
+      reopenWorkstream: '重新打开工作流',
       copyIdFailed: '无法复制会话 ID',
       actionsFor: title => `${title} 的操作`,
       sessionActions: '会话操作',
@@ -2232,6 +2274,7 @@ export const zh: Translations = {
         },
         empty: '暂无上下文数据',
         loading: '正在加载明细…',
+        inspectFullContext: '检查完整上下文',
         percentFull: percent => `已用 ${percent}%`,
         title: '上下文用量',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`

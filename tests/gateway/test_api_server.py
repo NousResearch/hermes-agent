@@ -4073,3 +4073,129 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+@pytest.mark.asyncio
+async def test_subagent_context_endpoint_requires_configured_api_key(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_state import SessionDB
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    db = SessionDB(db_path=home / "state.db")
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
+    adapter._session_db = db
+    app = web.Application()
+    app["api_server_adapter"] = adapter
+    app.router.add_get("/api/subagents/{child_session_id}/context", adapter._handle_subagent_context)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        resp = await client.get("/api/subagents/child-noauth/context")
+        body = await resp.json()
+        assert resp.status == 403
+        assert body["error"]["code"] is None or body["error"]["type"] == "invalid_request_error"
+    finally:
+        await client.close()
+        db.close()
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.asyncio
+async def test_subagent_context_endpoint_serves_raw_artifact_with_auth(tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_state import SessionDB
+    from agent.subagent_context_artifacts import (
+        create_subagent_context_artifact_pointer,
+        update_subagent_context_artifact_capture,
+    )
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    db = SessionDB(db_path=home / "state.db")
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test-context-123456"}))
+    adapter._session_db = db
+    create_subagent_context_artifact_pointer(
+        child_session_id="child-http",
+        parent_session_id="parent-http",
+        subagent_id="sa-http",
+        session_db=db,
+    )
+    update_subagent_context_artifact_capture(
+        "child-http",
+        {
+            "schema_version": 1,
+            "kind": "subagent_context.latest",
+            "raw_unredacted_by_viewer": True,
+            "child_session_id": "child-http",
+            "parent_session_id": "parent-http",
+            "subagent_id": "sa-http",
+            "capture_sequence": 1,
+            "canonical_messages": [{"role": "user", "content": "visible-secret-like-value"}],
+            "provider_request": {"messages": [{"role": "user", "content": "visible-secret-like-value"}]},
+        },
+        session_db=db,
+    )
+
+    app = web.Application()
+    app["api_server_adapter"] = adapter
+    app.router.add_get("/api/subagents/{child_session_id}/context", adapter._handle_subagent_context)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        unauth = await client.get("/api/subagents/child-http/context")
+        assert unauth.status == 401
+        resp = await client.get(
+            "/api/subagents/child-http/context",
+            headers={"Authorization": "Bearer sk-test-context-123456"},
+        )
+        body = await resp.json()
+        assert resp.status == 200
+        assert body["object"] == "hermes.subagent_context"
+        assert body["artifact"]["provider_request"]["messages"][0]["content"] == "visible-secret-like-value"
+        assert "latest_artifact_path" in body["pointer"]
+    finally:
+        await client.close()
+        db.close()
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.asyncio
+async def test_subagent_context_endpoint_handles_structured_artifact_error(tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_state import SessionDB
+    from agent.subagent_context_artifacts import create_subagent_context_artifact_pointer
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    db = SessionDB(db_path=home / "state.db")
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "context-test-key"}))
+    adapter._session_db = db
+    pointer = create_subagent_context_artifact_pointer(
+        child_session_id="child-missing-file",
+        parent_session_id="parent-missing-file",
+        subagent_id="sa-missing-file",
+        session_db=db,
+    )
+    os.unlink(pointer["latest_artifact_path"])
+
+    app = web.Application()
+    app["api_server_adapter"] = adapter
+    app.router.add_get("/api/subagents/{child_session_id}/context", adapter._handle_subagent_context)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        resp = await client.get(
+            "/api/subagents/child-missing-file/context",
+            headers={"Authorization": "Bearer context-test-key"},
+        )
+        body = await resp.json()
+        assert resp.status == 404
+        assert body["error"]["code"] == "artifact_missing"
+    finally:
+        await client.close()
+        db.close()
+        reset_hermes_home_override(token)

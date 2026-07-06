@@ -1,5 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
+import time
+
 import pytest
 import time
 from unittest.mock import patch, MagicMock
@@ -761,6 +763,30 @@ class TestSummaryFailureCooldown:
         assert first is None
         assert second is None
         assert mock_call.call_count == 1
+
+    def test_abort_during_summary_cooldown_preserves_previous_error(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                protect_first_n=1,
+                protect_last_n=2,
+                quiet_mode=True,
+                abort_on_summary_failure=True,
+            )
+        previous_error = "Error when retrieving token from sso: Token has expired and refresh failed"
+        c._summary_failure_cooldown_until = time.monotonic() + 60
+        c._last_summary_error = previous_error
+        msgs = [{"role": "system", "content": "System prompt"}]
+        msgs.extend(
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(16)
+        )
+
+        result = c.compress(msgs)
+
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_error == previous_error
 
 
 class TestAuthFailureAborts:

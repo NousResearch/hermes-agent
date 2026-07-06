@@ -103,6 +103,182 @@ def _new_delegation_id() -> str:
     return f"deleg_{uuid.uuid4().hex[:8]}"
 
 
+def new_delegation_id() -> str:
+    """Return a delegation id that is not currently present in _records."""
+    with _records_lock:
+        while True:
+            did = _new_delegation_id()
+            if did not in _records:
+                return did
+
+
+def _normalise_child_status(status: Any) -> str:
+    raw = str(status or "").strip().lower()
+    if raw == "success":
+        return "completed"
+    if raw in {"completed", "failed", "error", "timeout", "interrupted"}:
+        return raw
+    if raw in {"pending", "running", "queued", "dispatched"}:
+        return "pending"
+    return "error"
+
+
+def _normalise_children(
+    children: Optional[List[Dict[str, Any]]],
+    goals: List[str],
+    model: Optional[str],
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    source = children if isinstance(children, list) and children else []
+    if not source:
+        source = [
+            {"task_index": i, "goal": goal, "model": model}
+            for i, goal in enumerate(goals or [])
+        ]
+
+    for i, child in enumerate(source):
+        if not isinstance(child, dict):
+            child = {}
+        try:
+            task_index = int(child.get("task_index", i) or 0)
+        except Exception:
+            task_index = i
+        goal = child.get("goal")
+        if not goal and 0 <= task_index < len(goals):
+            goal = goals[task_index]
+        child_model = child.get("model")
+        out.append(
+            {
+                "task_index": task_index,
+                "subagent_id": str(child.get("subagent_id") or ""),
+                "goal": str(goal or ""),
+                "profile": str(child.get("profile") or ""),
+                "role": str(child.get("role") or ""),
+                "toolsets": child.get("toolsets"),
+                "model": child_model if isinstance(child_model, str) else model,
+                "reasoning": child.get("reasoning"),
+                "status": _normalise_child_status(child.get("status") or "pending"),
+                "started_at": child.get("started_at"),
+                "completed_at": child.get("completed_at"),
+                "duration_seconds": child.get("duration_seconds"),
+            }
+        )
+    out.sort(key=lambda item: int(item.get("task_index", 0) or 0))
+    return out
+
+
+def _snapshot_record_locked(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy a record for callers/events. Caller holds _records_lock."""
+    snap = {k: v for k, v in record.items() if k != "interrupt_fn"}
+    if isinstance(snap.get("children"), list):
+        snap["children"] = [dict(c) for c in snap["children"] if isinstance(c, dict)]
+    if isinstance(snap.get("routing"), dict):
+        snap["routing"] = dict(snap["routing"])
+    if isinstance(snap.get("goals"), list):
+        snap["goals"] = list(snap["goals"])
+    if isinstance(snap.get("results"), list):
+        snap["results"] = [dict(r) if isinstance(r, dict) else r for r in snap["results"]]
+    return snap
+
+
+def _update_child_result_locked(
+    record: Dict[str, Any],
+    *,
+    task_index: Optional[int],
+    subagent_id: Optional[str],
+    result: Dict[str, Any],
+) -> None:
+    children = record.get("children")
+    if not isinstance(children, list):
+        return
+
+    target = None
+    sid = str(subagent_id or "")
+    if sid:
+        for child in children:
+            if str(child.get("subagent_id") or "") == sid:
+                target = child
+                break
+
+    if target is None and task_index is not None:
+        try:
+            idx = int(task_index)
+        except Exception:
+            idx = -1
+        for child in children:
+            if int(child.get("task_index", -1) or -1) == idx:
+                target = child
+                break
+
+    if target is None:
+        return
+
+    target["status"] = _normalise_child_status(result.get("status"))
+    target["completed_at"] = time.time()
+    if result.get("duration_seconds") is not None:
+        try:
+            target["duration_seconds"] = float(result.get("duration_seconds") or 0.0)
+        except Exception:
+            target["duration_seconds"] = 0.0
+    # Final tool count for the roster's finished row. Prefer the explicit
+    # tool_count; fall back to api_calls when a runner only reports that.
+    _tc = result.get("tool_count")
+    if _tc is None:
+        _tc = result.get("api_calls")
+    if _tc is not None:
+        try:
+            target["tool_count"] = int(_tc or 0)
+        except (TypeError, ValueError):
+            pass
+    # Final per-child cost for the roster's finished row + header total. Public
+    # key threaded from _run_single_child's result entry (delegate_tool.py).
+    if result.get("cost_usd") is not None:
+        try:
+            target["cost_usd"] = float(result.get("cost_usd") or 0.0)
+        except (TypeError, ValueError):
+            pass
+    if result.get("error"):
+        target["error"] = str(result.get("error") or "")
+
+
+def update_batch_child_result(
+    delegation_id: str,
+    *,
+    task_index: Optional[int] = None,
+    subagent_id: Optional[str] = None,
+    result: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Update one child row in a running async batch record."""
+    if not delegation_id:
+        return
+    result = result or {}
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None:
+            return
+        _update_child_result_locked(
+            record,
+            task_index=task_index,
+            subagent_id=subagent_id,
+            result=result,
+        )
+
+
+def _apply_batch_results_to_children_locked(
+    record: Dict[str, Any],
+    combined: Dict[str, Any],
+) -> None:
+    for result in combined.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        _update_child_result_locked(
+            record,
+            task_index=result.get("task_index"),
+            subagent_id=result.get("subagent_id"),
+            result=result,
+        )
+
+
 def _prune_completed_locked() -> None:
     """Drop the oldest completed records beyond the retention cap.
 
@@ -286,6 +462,7 @@ def _push_completion_event(
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
         "role": record.get("role"),
+        "profile": record.get("profile"),
         "model": result.get("model") or record.get("model"),
         "status": status,
         "summary": summary,
@@ -319,6 +496,11 @@ def dispatch_async_delegation_batch(
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    delegation_id: Optional[str] = None,
+    children: Optional[List[Dict[str, Any]]] = None,
+    routing: Optional[Dict[str, Any]] = None,
+    profile: Optional[str] = None,
+    header_toolsets: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -340,7 +522,7 @@ def dispatch_async_delegation_batch(
     ``{"status": "rejected", "error": ...}`` when the async pool is at
     capacity.
     """
-    delegation_id = _new_delegation_id()
+    delegation_id = delegation_id or _new_delegation_id()
     dispatched_at = time.time()
     n = len(goals)
     # A combined goal label for status listings / the completion header.
@@ -353,7 +535,9 @@ def dispatch_async_delegation_batch(
         "goals": list(goals),
         "context": context,
         "toolsets": list(toolsets) if toolsets else None,
+        "header_toolsets": list(header_toolsets) if header_toolsets else None,
         "role": role,
+        "profile": profile or "",
         "model": model,
         "session_key": session_key,
         "status": "running",
@@ -361,7 +545,22 @@ def dispatch_async_delegation_batch(
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
         "is_batch": True,
+        "children": _normalise_children(children, goals, model),
+        "routing": dict(routing) if isinstance(routing, dict) else {},
     }
+    if isinstance(record["routing"], dict):
+        for key in (
+            "platform",
+            "chat_type",
+            "chat_id",
+            "thread_id",
+            "message_id",
+            "user_id",
+            "user_name",
+        ):
+            value = record["routing"].get(key)
+            if value:
+                record[key] = str(value)
     with _records_lock:
         running = sum(
             1 for r in _records.values() if r.get("status") == "running"
@@ -434,7 +633,8 @@ def _finalize_batch(
         record["status"] = status
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None
-        event_record = dict(record)
+        _apply_batch_results_to_children_locked(record, combined)
+        event_record = _snapshot_record_locked(record)
         _prune_completed_locked()
 
     try:
@@ -457,7 +657,9 @@ def _finalize_batch(
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),
         "toolsets": event_record.get("toolsets"),
+        "header_toolsets": event_record.get("header_toolsets"),
         "role": event_record.get("role"),
+        "profile": event_record.get("profile"),
         "model": event_record.get("model"),
         "status": status,
         "is_batch": True,
@@ -468,7 +670,21 @@ def _finalize_batch(
         "total_duration_seconds": combined.get("total_duration_seconds"),
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
+        "children": event_record.get("children"),
+        "routing": event_record.get("routing") or {},
     }
+    for key in (
+        "platform",
+        "chat_type",
+        "chat_id",
+        "thread_id",
+        "message_id",
+        "user_id",
+        "user_name",
+    ):
+        value = event_record.get(key) or (event_record.get("routing") or {}).get(key)
+        if value:
+            evt[key] = str(value)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -485,10 +701,7 @@ def list_async_delegations() -> List[Dict[str, Any]]:
     Safe to call from any thread. Excludes the non-serialisable interrupt_fn.
     """
     with _records_lock:
-        return [
-            {k: v for k, v in r.items() if k != "interrupt_fn"}
-            for r in _records.values()
-        ]
+        return [_snapshot_record_locked(r) for r in _records.values()]
 
 
 def interrupt_all(reason: str = "shutdown") -> int:

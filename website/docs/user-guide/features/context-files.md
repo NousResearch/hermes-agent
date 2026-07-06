@@ -92,7 +92,8 @@ Important details:
 - Hermes loads `SOUL.md` only from `HERMES_HOME`
 - Hermes does not probe the working directory for `SOUL.md`
 - If the file is empty, nothing from `SOUL.md` is added to the prompt
-- If the file has content, the content is injected verbatim after scanning and truncation
+- If the file has content, Hermes expands explicit `@include` / `@import` markdown directives, scans the root and fragments, then injects the expanded identity directly after final scanning and truncation
+- Include expansion applies only to the global `$HERMES_HOME/SOUL.md`; project context files do not use SOUL include semantics
 
 ## .cursorrules
 
@@ -124,9 +125,11 @@ Context files are loaded by `build_context_files_prompt()` in `agent/prompt_buil
 5. **Truncation** — capped at 8,000 characters per file
 6. **Injection** — appended to the tool result, so the model sees it in context naturally
 
-The final prompt section looks roughly like:
+The final prompt shape is roughly:
 
 ```text
+[SOUL.md expanded identity in slot #1]
+
 # Project Context
 
 The following project context files have been loaded and should be followed:
@@ -138,11 +141,9 @@ The following project context files have been loaded and should be followed:
 ## .cursorrules
 
 [Your .cursorrules content here]
-
-[Your SOUL.md content here]
 ```
 
-Notice that SOUL content is inserted directly, without extra wrapper text.
+Notice that SOUL content is inserted directly as the identity, without a `## SOUL.md` wrapper in the project context section.
 
 ## Security: Prompt Injection Protection
 

@@ -1776,6 +1776,12 @@ class MessageEvent:
     # particular key existing.
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # Monotonic receipt sequence stamped by an adapter at INTAKE (before the
+    # event is scheduled for processing), so that turns which resolve to the
+    # same session binding can be drained in true arrival order regardless of
+    # task-scheduling jitter. None for adapters that don't stamp it.
+    arrival_seq: Optional[int] = None
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -2061,6 +2067,36 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+class ButtonReply(str):
+    """Text reply with optional inline buttons.
+
+    ``buttons`` is the same generic schema accepted by adapter ``send`` /
+    ``edit_message``: a flat list (one row) or list of rows. Each button must
+    have ``text`` plus either ``callback_data`` or ``url``. Subclassing ``str``
+    keeps existing text/media extraction code working while the send path can
+    read the button metadata.
+    """
+
+    buttons: Optional[list]
+    ttl_seconds: Optional[int]
+
+    def __new__(
+        cls,
+        text: str,
+        *,
+        buttons: Optional[list] = None,
+        ttl_seconds: Optional[int] = None,
+    ):
+        instance = super().__new__(cls, text)
+        instance.buttons = buttons
+        instance.ttl_seconds = ttl_seconds
+        return instance
+
+    @property
+    def text(self) -> str:
+        return str.__str__(self)
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -2142,11 +2178,24 @@ _RETRYABLE_ERROR_PATTERNS = (
     "eoferror",
 )
 
+_SEND_PATH_DEGRADED_ERROR = "send_path_degraded"
+# Telegram sets send_path_degraded while polling recovers. Worst case is a
+# reconnect backoff (up to ~60s) plus the follow-up heartbeat probe delay
+# (~60s). Normal final replies must wait through that known recovery window
+# instead of exhausting the generic two-retry budget and disappearing.
+_SEND_PATH_DEGRADED_RETRY_ATTEMPTS = 26
+_SEND_PATH_DEGRADED_RETRY_DELAY = 5.0
+
+
+def _is_send_path_degraded_error(error: Optional[str]) -> bool:
+    return str(error or "").strip().lower() == _SEND_PATH_DEGRADED_ERROR
+
 
 # Type for message handlers.  Handlers may return a plain string (normal
-# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
-# ``None`` when the response was already delivered (e.g. via streaming).
-MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, a
+# ``ButtonReply`` to attach inline buttons, or ``None`` when the response was
+# already delivered (e.g. via streaming).
+MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply", "ButtonReply"]]]]
 
 
 def resolve_channel_prompt(
@@ -2611,6 +2660,23 @@ class BasePlatformAdapter(ABC):
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(event.tool_name, default="⚙️")
 
+        if event.tool_name == "todo":
+            try:
+                from gateway.todo_progress import format_todo_progress
+
+                # Fall back to 4096 (the gateway's conventional message limit)
+                # when this adapter exposes no positive MAX_MESSAGE_LENGTH, so
+                # the card stays bounded rather than unbounded on unsplit edit
+                # paths.
+                todo_card = format_todo_progress(
+                    event.args,
+                    max_chars=int(getattr(self, "MAX_MESSAGE_LENGTH", 0) or 4096),
+                )
+            except Exception:
+                todo_card = None
+            if todo_card:
+                return todo_card
+
         if mode == "verbose":
             if event.args:
                 import json
@@ -2891,7 +2957,8 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        buttons: Optional[list] = None
     ) -> SendResult:
         """
         Send a message to a chat.
@@ -2901,6 +2968,13 @@ class BasePlatformAdapter(ABC):
             content: Message content (may be markdown)
             reply_to: Optional message ID to reply to
             metadata: Additional platform-specific options
+            buttons: Optional inline buttons. A flat list of
+                ``{"text": str, "callback_data": str}`` or
+                ``{"text": str, "url": str}`` dicts (one row), or a list of
+                such rows. ``callback_data`` must be <=64 bytes. Adapters
+                without inline-button support ignore this argument. Button
+                callbacks that match no built-in prefix are dispatched to the
+                ``gateway_callback`` plugin hook.
         
         Returns:
             SendResult with success status and message ID
@@ -2949,6 +3023,7 @@ class BasePlatformAdapter(ABC):
         content: str,
         *,
         finalize: bool = False,
+        buttons: Optional[list] = None,
     ) -> SendResult:
         """
         Edit a previously sent message. Optional — platforms that don't
@@ -2968,6 +3043,13 @@ class BasePlatformAdapter(ABC):
         should set ``finalize=True`` on the final edit of a streamed
         response (typically when ``got_done`` fires in the stream
         consumer) and leave it ``False`` on intermediate edits.
+
+        ``buttons`` mirrors :meth:`send` — a flat list (one row) or list of
+        rows of ``{"text", "callback_data"}`` / ``{"text", "url"}`` dicts.
+        Pass ``None`` (the default) to leave/clear the inline keyboard;
+        adapters that support it should clear the markup when ``buttons`` is
+        falsy so a completed message can drop its buttons. Adapters without
+        inline-button support ignore it.
         """
         return SendResult(success=False, error="Not supported")
 
@@ -4058,17 +4140,57 @@ class BasePlatformAdapter(ABC):
         doesn't override :meth:`delete_message` so non-supporting
         platforms silently degrade to normal sends.
         """
-        if isinstance(response, EphemeralReply):
-            ttl = response.ttl_seconds
-            if ttl is None:
-                try:
-                    ttl = int(self._get_ephemeral_system_ttl_default())
-                except Exception:
-                    ttl = 0
-            if ttl and ttl > 0 and type(self).delete_message is BasePlatformAdapter.delete_message:
+        text, ttl, _buttons = self._unwrap_reply(response)
+        return text, ttl
+
+    def _reply_ttl(self, ttl: Optional[int]) -> int:
+        if ttl is None:
+            try:
+                ttl = int(self._get_ephemeral_system_ttl_default())
+            except Exception:
                 ttl = 0
-            return response.text, int(ttl or 0)
-        return response, 0
+        if ttl and ttl > 0 and type(self).delete_message is BasePlatformAdapter.delete_message:
+            ttl = 0
+        return int(ttl or 0)
+
+    def _unwrap_reply(self, response: Any) -> Tuple[Optional[str], int, Optional[list]]:
+        """Unwrap text plus optional TTL/buttons from handler responses."""
+        if isinstance(response, ButtonReply):
+            ttl = self._reply_ttl(response.ttl_seconds) if response.ttl_seconds is not None else 0
+            return response.text, ttl, response.buttons
+        if isinstance(response, EphemeralReply):
+            return response.text, self._reply_ttl(response.ttl_seconds), None
+        return response, 0, None
+
+    @staticmethod
+    def _method_accepts_kwarg(method: Callable[..., Any], name: str) -> bool:
+        """Return True when ``method`` accepts ``name`` or ``**kwargs``."""
+        try:
+            params = inspect.signature(method).parameters
+        except (TypeError, ValueError):
+            return False
+        return name in params or any(
+            param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
+        )
+
+    def _send_call_kwargs(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str],
+        metadata: Any,
+        buttons: Optional[list],
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        }
+        if buttons is not None and self._method_accepts_kwarg(self.send, "buttons"):
+            kwargs["buttons"] = buttons
+        return kwargs
 
     async def _send_with_retry(
         self,
@@ -4076,6 +4198,7 @@ class BasePlatformAdapter(ABC):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Any = None,
+        buttons: Optional[list] = None,
         max_retries: int = 2,
         base_delay: float = 2.0,
     ) -> "SendResult":
@@ -4088,12 +4211,13 @@ class BasePlatformAdapter(ABC):
         know to retry rather than waiting indefinitely.
         """
 
-        result = await self.send(
+        result = await self.send(**self._send_call_kwargs(
             chat_id=chat_id,
             content=content,
             reply_to=reply_to,
             metadata=metadata,
-        )
+            buttons=buttons,
+        ))
 
         if result.success:
             return result
@@ -4110,24 +4234,36 @@ class BasePlatformAdapter(ABC):
             # Retry with exponential backoff for transient errors.
             # Honor server-requested retry_after (e.g. Telegram FloodWait)
             # when present — it is authoritative over our backoff schedule.
+            # The Telegram-specific send_path_degraded sentinel is different:
+            # no send has been attempted yet, and it normally clears after the
+            # reconnect heartbeat (~60s), so use a fixed extended retry window.
+            effective_max_retries = max_retries
+            if _is_send_path_degraded_error(error_str):
+                effective_max_retries = max(effective_max_retries, _SEND_PATH_DEGRADED_RETRY_ATTEMPTS)
             server_retry_after = result.retry_after
-            for attempt in range(1, max_retries + 1):
+
+            attempt = 1
+            while attempt <= effective_max_retries:
                 if server_retry_after is not None:
                     delay = server_retry_after + random.uniform(0, 1)
                     server_retry_after = None  # only honor once per send
+                elif _is_send_path_degraded_error(error_str):
+                    effective_max_retries = max(effective_max_retries, _SEND_PATH_DEGRADED_RETRY_ATTEMPTS)
+                    delay = _SEND_PATH_DEGRADED_RETRY_DELAY
                 else:
                     delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 logger.warning(
                     "[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s",
-                    self.name, attempt, max_retries, delay, error_str,
+                    self.name, attempt, effective_max_retries, delay, error_str,
                 )
                 await asyncio.sleep(delay)
-                result = await self.send(
+                result = await self.send(**self._send_call_kwargs(
                     chat_id=chat_id,
                     content=content,
                     reply_to=reply_to,
                     metadata=metadata,
-                )
+                    buttons=buttons,
+                ))
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
@@ -4136,9 +4272,12 @@ class BasePlatformAdapter(ABC):
                     server_retry_after = result.retry_after
                 if not (result.retryable or self._is_retryable_error(error_str)):
                     break  # error switched to non-transient — fall through to plain-text fallback
+                if _is_send_path_degraded_error(error_str):
+                    effective_max_retries = max(effective_max_retries, _SEND_PATH_DEGRADED_RETRY_ATTEMPTS)
+                attempt += 1
             else:
                 # All retries exhausted (loop completed without break) — notify user
-                logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, effective_max_retries, error_str)
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
                     "Please try again \u2014 your request was processed but the response could not be sent."
@@ -4151,12 +4290,13 @@ class BasePlatformAdapter(ABC):
 
         # Non-network / post-retry formatting failure: try plain text as fallback
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
-        fallback_result = await self.send(
+        fallback_result = await self.send(**self._send_call_kwargs(
             chat_id=chat_id,
             content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
             reply_to=reply_to,
             metadata=metadata,
-        )
+            buttons=buttons,
+        ))
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
@@ -4537,7 +4677,7 @@ class BasePlatformAdapter(ABC):
 
         try:
             response = await self._message_handler(event)
-            _text, _eph_ttl = self._unwrap_ephemeral(response)
+            _text, _eph_ttl, _reply_buttons = self._unwrap_reply(response)
             # Send the response BEFORE cancelling the old task so the send
             # cannot be affected by task-cancellation side effects (race
             # condition fix — issue #18912).  Previously the send happened
@@ -4556,6 +4696,7 @@ class BasePlatformAdapter(ABC):
                     content=_text,
                     reply_to=_reply_anchor_for_event(event),
                     metadata=_mark_notify_metadata(thread_meta),
+                    buttons=_reply_buttons,
                 )
                 if _eph_ttl > 0 and _r.success and _r.message_id:
                     self._schedule_ephemeral_delete(
@@ -4601,11 +4742,31 @@ class BasePlatformAdapter(ABC):
         # Offloaded: the sync hook must not block the loop.
         await asyncio.to_thread(self._apply_topic_recovery, event)
 
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        # Derive the active-session guard key the SAME way the session store
+        # does, so the guard, the runner, and the store all agree. Routing
+        # through the store honors profile namespacing (multiplex) AND any
+        # session_binding on the source — without it, two same-binding webhook
+        # deliveries under different profiles would collide on one guard key,
+        # or a profile-prefixed route would guard under a different key than it
+        # later runs under. Falls back to build_session_key when no store is
+        # wired (tests / minimal setups); that path is byte-identical for the
+        # default profile + no-binding case, so this is a no-op for normal traffic.
+        _store = getattr(self, "_session_store", None)
+        if _store is not None and hasattr(_store, "_generate_session_key"):
+            try:
+                session_key = _store._generate_session_key(event.source)
+            except Exception:
+                session_key = build_session_key(
+                    event.source,
+                    group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                    thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+                )
+        else:
+            session_key = build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
@@ -4656,13 +4817,14 @@ class BasePlatformAdapter(ABC):
                 try:
                     _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
-                    _text, _eph_ttl = self._unwrap_ephemeral(response)
+                    _text, _eph_ttl, _reply_buttons = self._unwrap_reply(response)
                     if _text:
                         _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
                             content=_text,
                             reply_to=_reply_anchor_for_event(event),
                             metadata=_mark_notify_metadata(_thread_meta),
+                            buttons=_reply_buttons,
                         )
                         if _eph_ttl > 0 and _r.success and _r.message_id:
                             self._schedule_ephemeral_delete(
@@ -4709,13 +4871,14 @@ class BasePlatformAdapter(ABC):
                             event.source, _reply_anchor_for_event(event)
                         )
                         response = await self._message_handler(event)
-                        _text, _eph_ttl = self._unwrap_ephemeral(response)
+                        _text, _eph_ttl, _reply_buttons = self._unwrap_reply(response)
                         if _text:
                             _r = await self._send_with_retry(
                                 chat_id=event.source.chat_id,
                                 content=_text,
                                 reply_to=_reply_anchor_for_event(event),
                                 metadata=_mark_notify_metadata(_thread_meta),
+                                buttons=_reply_buttons,
                             )
                             if _eph_ttl > 0 and _r.success and _r.message_id:
                                 self._schedule_ephemeral_delete(
@@ -4862,11 +5025,11 @@ class BasePlatformAdapter(ABC):
             # Slash-command handlers may return an EphemeralReply sentinel to
             # request that their reply message auto-delete after a TTL (used
             # for system notices like "✨ New session started!" that the user
-            # doesn't need to keep in the thread).  Unwrap here so all the
-            # downstream extract_media / text-processing logic sees a plain
-            # string, and remember the TTL + platform capability so the
-            # post-send block can schedule the deletion.
-            response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+            # doesn't need to keep in the thread). ButtonReply carries inline
+            # button metadata while staying string-compatible. Unwrap here so
+            # all downstream extract_media / text-processing logic sees a
+            # plain string, and remember TTL/buttons for the send call.
+            response, _ephemeral_ttl, _reply_buttons = self._unwrap_reply(response)
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
@@ -5008,6 +5171,7 @@ class BasePlatformAdapter(ABC):
                         content=text_content,
                         reply_to=_reply_anchor,
                         metadata=_final_thread_metadata,
+                        buttons=_reply_buttons,
                     )
                     _record_delivery(result)
 

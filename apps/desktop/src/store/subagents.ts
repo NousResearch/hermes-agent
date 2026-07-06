@@ -18,6 +18,9 @@ export interface SubagentProgress {
   goal: string
   /** The child's own stored session id — lets UIs open its session window. */
   sessionId?: string
+  /** True when the backend has a raw request-context artifact for this child. */
+  contextAvailable?: boolean
+  contextSessionId?: string
   model?: string
   status: SubagentStatus
   taskCount: number
@@ -159,6 +162,8 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     parentId: str(payload.parent_id) || prev?.parentId || null,
     goal: str(payload.goal) || prev?.goal || 'Subagent',
     sessionId: str(payload.child_session_id) || prev?.sessionId,
+    contextAvailable: payload.context_available === true || prev?.contextAvailable,
+    contextSessionId: str(payload.context_child_session_id) || str(payload.child_session_id) || prev?.contextSessionId,
     model: str(payload.model) || prev?.model,
     status,
     taskCount: num(payload.task_count) ?? prev?.taskCount ?? 1,

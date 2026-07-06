@@ -28,7 +28,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from toolsets import TOOLSETS
 
@@ -422,45 +422,182 @@ def _get_max_async_children() -> int:
     return _get_max_concurrent_children()
 
 
-def _get_child_timeout() -> Optional[float]:
-    """Read delegation.child_timeout_seconds from config.
+_CHILD_TIMEOUT_UNSET = object()
+_CHILD_BUILD_LOCK = threading.RLock()
 
-    Returns the number of seconds a single child agent is allowed to run
-    before being cut off, or ``None`` when no wall-clock cap applies.
 
-    Default: ``None`` (no timeout). Subagents doing legitimate heavy work
-    (deep code review, large research fan-outs, slow reasoning models) were
-    routinely killed mid-task by the old blanket cap even though they were
-    making steady progress. Failures should come from what the child is
-    actually doing — API errors, tool errors, iteration budget — not from a
-    generic delegation-level stopwatch. Stuck-child protection is handled
-    separately by the heartbeat staleness monitor, which stops refreshing
-    parent activity so the gateway inactivity timeout can fire.
+def _coerce_child_timeout(raw: Any, *, label: str) -> Any:
+    """Parse a child timeout value.
 
-    Set ``delegation.child_timeout_seconds`` to a positive number to opt back
-    in to a hard cap (floor 30 s); ``0`` or a negative value means disabled.
+    Returns:
+      - float >= 30.0 for enabled timeouts
+      - None for explicit disable via 0 or negative
+      - _CHILD_TIMEOUT_UNSET for missing or invalid values
     """
-    cfg = _load_config()
-    val = cfg.get("child_timeout_seconds")
-    if val is not None:
-        try:
-            parsed = float(val)
-        except (TypeError, ValueError):
-            logger.warning(
-                "delegation.child_timeout_seconds=%r is not a valid number; "
-                "using default (no timeout)",
-                val,
+    if raw is None:
+        return _CHILD_TIMEOUT_UNSET
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("%s=%r is not a valid number; ignoring", label, raw)
+        return _CHILD_TIMEOUT_UNSET
+    return None if parsed <= 0 else max(30.0, parsed)
+
+
+def _route_identity_from_values(
+    provider: Any,
+    model: Any,
+    base_url: Any = "",
+) -> tuple[str, str, str]:
+    return (
+        str(provider or "").strip().lower(),
+        str(model or "").strip(),
+        str(base_url or "").strip().rstrip("/").lower(),
+    )
+
+
+def _route_identity(route: Dict[str, Any]) -> tuple[str, str, str]:
+    return _route_identity_from_values(
+        route.get("provider"),
+        route.get("model"),
+        route.get("base_url"),
+    )
+
+
+def _route_label(route: Dict[str, Any]) -> str:
+    provider = str(route.get("provider") or "unknown").strip() or "unknown"
+    model = str(route.get("model") or "unknown").strip() or "unknown"
+    return f"{provider}/{model}"
+
+
+def _child_timeout_attempt_routes(child: Any) -> List[Dict[str, Any]]:
+    """Return initial child route plus distinct fallback routes.
+
+    Dedupes exact provider/model/base_url identities. Same provider with a
+    different model is kept because config chain order is authoritative.
+    """
+    routes: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    current = {
+        "provider": getattr(child, "provider", None),
+        "model": getattr(child, "model", None),
+        "base_url": getattr(child, "base_url", None),
+        "api_mode": getattr(child, "api_mode", None),
+    }
+    current_identity = _route_identity(current)
+    if current_identity[0] or current_identity[1]:
+        routes.append(current)
+        seen.add(current_identity)
+
+    for raw in getattr(child, "_fallback_chain", None) or []:
+        if not isinstance(raw, dict):
+            continue
+        provider = str(raw.get("provider") or "").strip()
+        model = str(raw.get("model") or "").strip()
+        if not provider or not model:
+            continue
+        route = {
+            "provider": provider,
+            "model": model,
+            "base_url": str(raw.get("base_url") or "").strip(),
+            "api_key": str(raw.get("api_key") or "").strip(),
+            "api_mode": str(raw.get("api_mode") or "").strip(),
+            "key_env": str(raw.get("key_env") or raw.get("api_key_env") or "").strip(),
+        }
+        identity = _route_identity(route)
+        if identity in seen:
+            logger.info(
+                "Subagent timeout failover skipping duplicate route %s",
+                _route_label(route),
             )
-        else:
-            return None if parsed <= 0 else max(30.0, parsed)
-    env_val = os.getenv("DELEGATION_CHILD_TIMEOUT_SECONDS")
-    if env_val:
-        try:
-            parsed = float(env_val)
-        except (TypeError, ValueError):
-            pass
-        else:
-            return None if parsed <= 0 else max(30.0, parsed)
+            continue
+        seen.add(identity)
+        routes.append(route)
+
+    if not routes:
+        routes.append({"provider": "unknown", "model": "unknown", "base_url": ""})
+    return routes
+
+
+def _delegation_cfg_for_timeout_fallback(
+    base_cfg: Optional[dict],
+    route: Dict[str, Any],
+) -> dict:
+    """Build a delegation config for a fallback timeout attempt.
+
+    Keep non-routing policy from the merged task/profile config, but replace
+    provider/model/base_url/api_key/api_mode with the fallback route. This
+    prevents a root delegation.base_url from accidentally overriding a provider
+    fallback entry.
+    """
+    routing_keys = {"provider", "model", "base_url", "api_key", "api_mode"}
+    cfg = {
+        k: v
+        for k, v in (base_cfg or {}).items()
+        if k not in routing_keys
+    }
+    cfg["provider"] = str(route.get("provider") or "").strip()
+    cfg["model"] = str(route.get("model") or "").strip()
+
+    base_url = str(route.get("base_url") or "").strip()
+    if base_url:
+        cfg["base_url"] = base_url
+
+    api_key = str(route.get("api_key") or "").strip()
+    if not api_key:
+        key_env = str(route.get("key_env") or "").strip()
+        if key_env:
+            api_key = os.getenv(key_env, "").strip()
+    if api_key:
+        cfg["api_key"] = api_key
+
+    api_mode = str(route.get("api_mode") or "").strip()
+    if api_mode:
+        cfg["api_mode"] = api_mode
+
+    return cfg
+
+
+def _get_child_timeout(cfg: Optional[dict] = None) -> Optional[float]:
+    """Resolve child timeout from merged delegation config.
+
+    Precedence:
+      1. delegation.profiles.<name>.child_timeout_seconds, when the merged
+         profile provided it
+      2. delegation.child_timeout_seconds
+      3. DEFAULT_CHILD_TIMEOUT
+
+    A value <= 0 disables the wall-clock cap. Positive values are floored at
+    30 seconds.
+    """
+    cfg = cfg if cfg is not None else _load_config()
+    cfg = cfg or {}
+
+    profile_name = _normalize_profile_name(cfg.get("_profile"))
+    profile_overrode = bool(cfg.get("_profile_child_timeout_overridden"))
+
+    if profile_overrode:
+        label = f"delegation.profiles.{profile_name}.child_timeout_seconds"
+        parsed = _coerce_child_timeout(cfg.get("child_timeout_seconds"), label=label)
+        if parsed is not _CHILD_TIMEOUT_UNSET:
+            return parsed
+
+        parsed_global = _coerce_child_timeout(
+            cfg.get("_global_child_timeout_seconds"),
+            label="delegation.child_timeout_seconds",
+        )
+        if parsed_global is not _CHILD_TIMEOUT_UNSET:
+            return parsed_global
+        return DEFAULT_CHILD_TIMEOUT
+
+    parsed = _coerce_child_timeout(
+        cfg.get("child_timeout_seconds"),
+        label="delegation.child_timeout_seconds",
+    )
+    if parsed is not _CHILD_TIMEOUT_UNSET:
+        return parsed
+
     return DEFAULT_CHILD_TIMEOUT
 
 
@@ -520,10 +657,394 @@ def _get_orchestrator_enabled() -> bool:
     return True
 
 
-def _get_inherit_mcp_toolsets() -> bool:
+def _get_inherit_mcp_toolsets(cfg: Optional[dict] = None) -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
-    cfg = _load_config()
+    if cfg is None:
+        cfg = _load_config()
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
+
+
+def _normalize_profile_name(profile: Optional[str]) -> Optional[str]:
+    name = str(profile or "").strip()
+    return name or None
+
+
+DUAL_REVIEW_PROFILE = "dual-review"
+# Default reviewer lanes the 'dual-review' pseudo-profile fans out to. This is
+# the fallback roster; the live roster is config-driven via
+# delegation.dual_review_profiles (see _get_dual_reviewer_profiles) so the lane
+# set can be tuned WITHOUT a code edit + reinstall — e.g. adding a third
+# reviewer model. The tuple here remains the stable default and the symbol
+# tests import.
+DUAL_REVIEWER_PROFILES = ("reviewer-codex", "reviewer-opus")
+
+DUAL_PLAN_PROFILE = "dual-plan"
+# Default planner lanes the 'dual-plan' pseudo-profile fans out to. Mirror of
+# DUAL_REVIEWER_PROFILES: a stable fallback; the live roster is config-driven via
+# delegation.dual_plan_profiles (see _get_dual_planner_profiles) so the lane set
+# can be tuned WITHOUT a code edit + reinstall. dual-plan is the planning
+# analogue of dual-review — one model-visible task fans into one child per
+# planner lane so the two plans come from two DIFFERENT models.
+DUAL_PLANNER_PROFILES = ("planner-codex", "planner-opus")
+
+
+def _get_dual_reviewer_profiles(cfg: Optional[dict] = None) -> Tuple[str, ...]:
+    """Resolve the live dual-review lane roster.
+
+    Reads ``delegation.dual_review_profiles`` (a list of profile names) and
+    falls back to the hardcoded ``DUAL_REVIEWER_PROFILES`` pair whenever the
+    configured roster cannot yield at least two usable lanes. "Usable" means a
+    non-empty string that names a profile actually defined under
+    ``delegation.profiles`` — an unknown/typo'd name (e.g. ``reviewer-codx``) is
+    SKIPPED, not trusted, because routing a dual-review to a nonexistent profile
+    would hard-fail every dual-review at dispatch. Names are de-duplicated
+    preserving order. Net guarantee: a roster typo can never silently shrink
+    coverage to one lane and can never break dual-review outright — the worst
+    case is a clean fall back to the default pair. The known-profile check is
+    skipped (validate string-ness only) when the profiles map is unreadable, so
+    a transient config-load problem can't strand reviews on the default.
+    """
+    if cfg is None:
+        cfg = _load_config()
+    cfg = cfg or {}
+    raw = cfg.get("dual_review_profiles")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return DUAL_REVIEWER_PROFILES
+
+    profiles_map = cfg.get("profiles")
+    # Only enforce existence when we can actually read the profile map; if it's
+    # missing/malformed, fail open (string-ness only) so a transient load issue
+    # can't strand every review on the default pair.
+    known: Optional[set] = (
+        set(profiles_map.keys()) if isinstance(profiles_map, dict) else None
+    )
+
+    seen: set = set()
+    out: List[str] = []
+    for item in raw:
+        name = _normalize_profile_name(item if isinstance(item, str) else None)
+        if not name:
+            continue
+        if known is not None and name not in known:
+            # Unknown/typo'd lane: skip it rather than route a dual-review to a
+            # profile that doesn't exist (which would hard-fail at dispatch).
+            logger.warning(
+                "delegation.dual_review_profiles names unknown profile %r; "
+                "skipping it (not in delegation.profiles).",
+                name,
+            )
+            continue
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    if len(out) < 2:
+        return DUAL_REVIEWER_PROFILES
+    return tuple(out)
+
+
+def _is_dual_review_profile(profile: Optional[str]) -> bool:
+    return _normalize_profile_name(profile) == DUAL_REVIEW_PROFILE
+
+
+def _get_dual_planner_profiles(cfg: Optional[dict] = None) -> Tuple[str, ...]:
+    """Resolve the live dual-plan lane roster.
+
+    Mirror of ``_get_dual_reviewer_profiles`` for planners: reads
+    ``delegation.dual_plan_profiles`` (a list of profile names) and falls back to
+    the hardcoded ``DUAL_PLANNER_PROFILES`` pair whenever the configured roster
+    cannot yield at least two usable lanes. "Usable" means a non-empty string
+    naming a profile actually defined under ``delegation.profiles`` — an
+    unknown/typo'd name is SKIPPED so a dual-plan is never routed to a nonexistent
+    profile (which would hard-fail at dispatch). Names are de-duplicated
+    preserving order. Net guarantee: a roster typo can never silently shrink to
+    one lane and can never break dual-plan outright — worst case is a clean fall
+    back to the default pair. The known-profile check is skipped (string-ness
+    only) when the profiles map is unreadable, so a transient config-load problem
+    can't strand planning on the default.
+    """
+    if cfg is None:
+        cfg = _load_config()
+    cfg = cfg or {}
+    raw = cfg.get("dual_plan_profiles")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return DUAL_PLANNER_PROFILES
+
+    profiles_map = cfg.get("profiles")
+    known: Optional[set] = (
+        set(profiles_map.keys()) if isinstance(profiles_map, dict) else None
+    )
+
+    seen: set = set()
+    out: List[str] = []
+    for item in raw:
+        name = _normalize_profile_name(item if isinstance(item, str) else None)
+        if not name:
+            continue
+        if known is not None and name not in known:
+            logger.warning(
+                "delegation.dual_plan_profiles names unknown profile %r; "
+                "skipping it (not in delegation.profiles).",
+                name,
+            )
+            continue
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    if len(out) < 2:
+        return DUAL_PLANNER_PROFILES
+    return tuple(out)
+
+
+def _is_dual_plan_profile(profile: Optional[str]) -> bool:
+    return _normalize_profile_name(profile) == DUAL_PLAN_PROFILE
+
+
+def _is_single_reviewer_profile(profile: Optional[str]) -> bool:
+    profile_name = _normalize_profile_name(profile)
+    if not profile_name:
+        return False
+    return profile_name in frozenset(_get_dual_reviewer_profiles())
+
+
+def _requires_dual_review(cfg: Optional[dict]) -> bool:
+    """Whether direct single-reviewer profiles are disabled."""
+    return is_truthy_value((cfg or {}).get("require_dual_review"), default=False)
+
+
+def _task_with_dual_review_lane_context(task: Dict[str, Any], reviewer_profile: str) -> Dict[str, Any]:
+    """Clone a dual-review task and tell the child which reviewer lane it is.
+
+    Dual review expands one model-visible task into one child per configured
+    reviewer lane.  The task text is otherwise identical, so artifact-writing
+    workflows need a grounded way for each child to select its own output path
+    instead of racing on a shared file.  This marker is also useful for normal
+    review summaries.
+    """
+    cloned = dict(task)
+    cloned["profile"] = reviewer_profile
+    marker = (
+        "DUAL-REVIEW LANE:\n"
+        "- This task was expanded from profile='dual-review'.\n"
+        f"- Your assigned reviewer lane is `{reviewer_profile}`.\n"
+        "- If the task lists model-specific output paths, write only the path "
+        "for your assigned lane.\n"
+        "- Do not write a shared artifact path unless the task explicitly says "
+        "a shared write is safe."
+    )
+    context = cloned.get("context")
+    if isinstance(context, str) and context.strip():
+        cloned["context"] = f"{context.rstrip()}\n\n{marker}"
+    else:
+        cloned["context"] = marker
+    return cloned
+
+
+def _task_with_dual_plan_lane_context(task: Dict[str, Any], planner_profile: str) -> Dict[str, Any]:
+    """Clone a dual-plan task and tell the child which planner lane it is.
+
+    Planning analogue of ``_task_with_dual_review_lane_context``: dual-plan
+    expands one model-visible task into one child per configured planner lane so
+    the two plans come from two DIFFERENT models. The task text is otherwise
+    identical, so artifact-writing plans need a grounded way for each child to
+    pick its own output path instead of racing on a shared file.
+    """
+    cloned = dict(task)
+    cloned["profile"] = planner_profile
+    marker = (
+        "DUAL-PLAN LANE:\n"
+        "- This task was expanded from profile='dual-plan'.\n"
+        f"- Your assigned planner lane is `{planner_profile}`.\n"
+        "- If the task lists model-specific output paths, write only the path "
+        "for your assigned lane.\n"
+        "- Do not write a shared artifact path unless the task explicitly says "
+        "a shared write is safe."
+    )
+    context = cloned.get("context")
+    if isinstance(context, str) and context.strip():
+        cloned["context"] = f"{context.rstrip()}\n\n{marker}"
+    else:
+        cloned["context"] = marker
+    return cloned
+
+
+def _expand_reserved_profile_task_items(task_list: List[Dict[str, Any]], top_profile: Optional[str]) -> List[Dict[str, Any]]:
+    """Single-pass expander for the reserved fan-out pseudo-profiles.
+
+    Branches per source task into dual-review / dual-plan / passthrough and
+    ALWAYS emits BOTH ``from_dual_review`` and ``from_dual_plan`` (plus the
+    original ``source_index`` and the per-family profile marker) on EVERY item.
+    The both-flags-always invariant is load-bearing: the single-reviewer gate
+    hard-subscripts ``task_item["from_dual_review"]``, so a missing key would
+    KeyError. A task carries one profile string, so the review/plan branches are
+    mutually exclusive — never double-expanded.
+
+    The expansion returns metadata beside each task instead of trusting hidden
+    task fields from the model, so require_dual_review can reject direct
+    single-reviewer profiles while the tool's own expansion still routes through
+    the configured rosters (delegation.dual_review_profiles / dual_plan_profiles).
+    """
+    expanded: List[Dict[str, Any]] = []
+    dual_reviewer_profiles = _get_dual_reviewer_profiles()
+    dual_planner_profiles = _get_dual_planner_profiles()
+    for source_index, task in enumerate(task_list):
+        if not isinstance(task, dict):
+            expanded.append(
+                {
+                    "task": task,
+                    "from_dual_review": False,
+                    "from_dual_plan": False,
+                    "source_index": source_index,
+                    "dual_review_profile": None,
+                    "dual_plan_profile": None,
+                }
+            )
+            continue
+
+        task_profile = _normalize_profile_name(task.get("profile") or top_profile)
+        if _is_dual_review_profile(task_profile):
+            for reviewer_profile in dual_reviewer_profiles:
+                cloned = _task_with_dual_review_lane_context(task, reviewer_profile)
+                expanded.append(
+                    {
+                        "task": cloned,
+                        "from_dual_review": True,
+                        "from_dual_plan": False,
+                        "source_index": source_index,
+                        "dual_review_profile": DUAL_REVIEW_PROFILE,
+                        "dual_plan_profile": None,
+                    }
+                )
+        elif _is_dual_plan_profile(task_profile):
+            for planner_profile in dual_planner_profiles:
+                cloned = _task_with_dual_plan_lane_context(task, planner_profile)
+                expanded.append(
+                    {
+                        "task": cloned,
+                        "from_dual_review": False,
+                        "from_dual_plan": True,
+                        "source_index": source_index,
+                        "dual_review_profile": None,
+                        "dual_plan_profile": DUAL_PLAN_PROFILE,
+                    }
+                )
+        else:
+            expanded.append(
+                {
+                    "task": task,
+                    "from_dual_review": False,
+                    "from_dual_plan": False,
+                    "source_index": source_index,
+                    "dual_review_profile": None,
+                    "dual_plan_profile": None,
+                }
+            )
+    return expanded
+
+
+# Backward-compatible alias: existing callers/tests import this name. The unified
+# expander is a strict superset (dual-review behavior byte-identical, plus the
+# from_dual_plan / dual_plan_profile keys), so the alias keeps the dual-review
+# suite literally untouched.
+_expand_dual_review_task_items = _expand_reserved_profile_task_items
+
+
+def _single_reviewer_profile_error(profile_name: str) -> str:
+    lanes = _get_dual_reviewer_profiles()
+    lane_list = ", ".join(lanes)
+    return (
+        f"Direct reviewer profile '{profile_name}' is disabled because "
+        "delegation.require_dual_review=true. Use profile='dual-review' so "
+        f"all reviewer lanes ({lane_list}) run, then aggregate their "
+        "findings in the parent agent."
+    )
+
+
+def _merge_delegation_profile(cfg: dict, profile: Optional[str]) -> dict:
+    """Return delegation config with a named profile applied.
+
+    The root delegation config remains the default/inherit behavior. A profile
+    overrides only the keys it declares, so users can centralize common defaults
+    and specialize model/reasoning/tool policy per delegated task kind.
+    """
+    profile_name = _normalize_profile_name(profile)
+    base = {k: v for k, v in (cfg or {}).items() if k != "profiles"}
+    if not profile_name:
+        return base
+
+    profiles = (cfg or {}).get("profiles") or {}
+    if not isinstance(profiles, dict) or profile_name not in profiles:
+        known = sorted(str(k) for k in profiles.keys()) if isinstance(profiles, dict) else []
+        suffix = f" Known profiles: {', '.join(known)}." if known else " No profiles configured."
+        raise ValueError(f"Unknown delegation profile '{profile_name}'.{suffix}")
+
+    profile_cfg = profiles[profile_name]
+    if not isinstance(profile_cfg, dict):
+        raise ValueError(f"Delegation profile '{profile_name}' must be a mapping.")
+
+    base_child_timeout = base.get("child_timeout_seconds")
+    profile_child_timeout_overridden = (
+        "child_timeout_seconds" in profile_cfg
+        and profile_cfg.get("child_timeout_seconds") is not None
+    )
+
+    merged = dict(base)
+    for key, value in profile_cfg.items():
+        if value is not None:
+            merged[key] = value
+    merged["_profile"] = profile_name
+    merged["_profile_child_timeout_overridden"] = profile_child_timeout_overridden
+    merged["_global_child_timeout_seconds"] = base_child_timeout
+    return merged
+
+
+def _profile_toolsets(cfg: dict) -> Optional[List[str]]:
+    toolsets = (cfg or {}).get("toolsets")
+    if not isinstance(toolsets, list):
+        return None
+    return [str(t) for t in toolsets if str(t or "").strip()]
+
+
+def _profile_max_iterations(cfg: dict, default: int) -> int:
+    value = (cfg or {}).get("max_iterations", default)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_service_tier_config(raw: Any) -> Optional[str]:
+    value = str(raw or "").strip().lower()
+    if not value or value in {"normal", "default", "standard", "off", "none"}:
+        return None
+    if value in {"fast", "priority", "on"}:
+        return "priority"
+    logger.warning("Unknown delegation service_tier '%s', ignoring", raw)
+    return None
+
+
+def _request_overrides_for_child(model: Optional[str], cfg: dict, parent_agent) -> tuple[Optional[str], Dict[str, Any]]:
+    """Resolve fast/priority request overrides for a child agent."""
+    raw_service_tier = (cfg or {}).get("service_tier")
+    if raw_service_tier in (None, ""):
+        raw_service_tier = getattr(parent_agent, "service_tier", None)
+    service_tier = _parse_service_tier_config(raw_service_tier)
+
+    overrides: Dict[str, Any] = {}
+    configured_overrides = (cfg or {}).get("request_overrides")
+    if isinstance(configured_overrides, dict):
+        overrides.update(configured_overrides)
+
+    if service_tier:
+        try:
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            fast_overrides = resolve_fast_mode_overrides(model)
+        except Exception:
+            fast_overrides = None
+        if fast_overrides:
+            overrides.update(fast_overrides)
+
+    return service_tier, overrides
 
 
 def _is_mcp_toolset_name(name: str) -> bool:
@@ -697,6 +1218,20 @@ def _build_child_system_prompt(
         "- Any issues encountered\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
+        "Provenance: your summary is consumed by the parent agent with no human watching, so tag every "
+        "external-state claim (a checkable fact about the world: a file's contents, a line number, whether "
+        "something exists/is installed, a command's exit code, an HTTP status, a test result) with its "
+        "verify-status: '[verified: <how>]' when you actually checked it (e.g. read file, ran test, grep, "
+        "curl 200) or '[unverified]' when you are inferring or did not check. Do NOT tag reasoning, "
+        "recommendations, or opinions -- only checkable facts. Never fake a '[verified: ...]' for a fact "
+        "you did not actually check.\n\n"
+        "Receipt: if you run commands, write or patch files, or are an orchestrator, your work "
+        "is a reusable handoff — END your summary with ONE fenced ```receipt block (pure JSON) "
+        "per the agent-receipt schema: {claim_id, producer (your profile/lane, NOT the model id), "
+        "task, stop_reason (completed|blocked|partial|timeout|aborted), sources [{ref,status}], "
+        "touched [files/urls], commands [{cmd,result,status} -- TESTS you ran, not the tool trace], "
+        "blockers [], next_owner}. A pure read-only lookup that changed nothing does not need one. "
+        "Do NOT restate the model or tool trace the harness already captures.\n\n"
         "Keep your final summary tight: lead with outcomes, prefer bullet "
         "points over paragraphs, and don't replay your whole process. Your "
         "response is returned to the parent agent as a summary, and overlong "
@@ -865,6 +1400,19 @@ def _build_child_progress_callback(
         # event lets UIs open/inspect the subagent's session directly.
         if session_ref and session_ref.get("session_id"):
             kw["child_session_id"] = str(session_ref["session_id"])
+        if session_ref:
+            if session_ref.get("context_available"):
+                kw["context_available"] = True
+            if session_ref.get("context_child_session_id"):
+                kw["context_child_session_id"] = str(session_ref["context_child_session_id"])
+            if session_ref.get("async_delegation_id"):
+                kw["async_delegation_id"] = str(session_ref["async_delegation_id"])
+            if session_ref.get("async_background"):
+                kw["async_background"] = True
+            # Reasoning config is resolved AFTER this callback is built, so it
+            # is late-bound through the shared ref (same pattern as session_id).
+            if session_ref.get("reasoning") is not None:
+                kw["reasoning"] = session_ref["reasoning"]
         kw["tool_count"] = _tool_count[0]
         return kw
 
@@ -895,6 +1443,10 @@ def _build_child_progress_callback(
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
+            return
+
+        if event_type == "subagent.spawn_requested":
+            _relay("subagent.spawn_requested", preview=preview or goal_label or "", **kwargs)
             return
 
         if event_type == "subagent.complete":
@@ -936,6 +1488,22 @@ def _build_child_progress_callback(
             return
 
         if event == DelegateEvent.TASK_TOOL_COMPLETED:
+            # Relay the child tool's completion timing so the gateway can append
+            # a "· 10ms" benchmark suffix to the matching subagent card (same as
+            # the parent agent's tool rows). Forward ONLY tool_name + duration +
+            # is_error — never the result payload (that's subagent output, kept
+            # out of progress for the same privacy reason tool-start previews are
+            # input-only). subagent_id rides along via _identity_kwargs so the
+            # gateway can match completions to the right child under parallelism.
+            # CLI spinner path renders nothing on completion (it only prints tool
+            # starts), so this is gateway-only and a no-op when parent_cb is None.
+            if parent_cb:
+                _relay(
+                    "subagent.tool_completed",
+                    tool_name,
+                    duration=kwargs.get("duration"),
+                    is_error=bool(kwargs.get("is_error", False)),
+                )
             return
 
         if event == DelegateEvent.TASK_PROGRESS:
@@ -1062,6 +1630,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    delegation_cfg: Optional[dict] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1095,22 +1664,30 @@ def _build_child_agent(
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
-    delegation_cfg = _load_config()
+    delegation_cfg = delegation_cfg or _load_config()
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
     # Note: enabled_toolsets=None means "all tools enabled" (the default),
     # so we must derive effective toolsets from the parent's loaded tools.
-    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
+    parent_enabled_raw = getattr(parent_agent, "enabled_toolsets", None)
+    parent_enabled = (
+        parent_enabled_raw
+        if isinstance(parent_enabled_raw, (list, tuple, set, frozenset))
+        else None
+    )
     if parent_enabled is not None:
         parent_toolsets = set(parent_enabled)
-    elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
+    elif (
+        parent_agent
+        and isinstance(getattr(parent_agent, "valid_tool_names", None), (list, tuple, set, frozenset))
+    ):
         # enabled_toolsets is None (all tools) — derive from loaded tool names
         import model_tools
 
         parent_toolsets = {
             ts
-            for name in parent_agent.valid_tool_names
+            for name in getattr(parent_agent, "valid_tool_names", [])
             if (ts := model_tools.get_toolset_for_tool(name)) is not None
         }
     else:
@@ -1122,13 +1699,13 @@ def _build_child_agent(
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
+        if _get_inherit_mcp_toolsets(delegation_cfg):
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
             )
         child_toolsets = _strip_blocked_tools(child_toolsets)
     elif parent_agent and parent_enabled is not None:
-        child_toolsets = _strip_blocked_tools(parent_enabled)
+        child_toolsets = _strip_blocked_tools(list(parent_enabled))
     elif parent_toolsets:
         child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
     else:
@@ -1271,6 +1848,13 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    # Late-bind the resolved reasoning into the shared progress ref so relayed
+    # subagent events (and the roster row) can show the child's effort level.
+    try:
+        child_session_ref["reasoning"] = child_reasoning
+    except Exception:
+        pass
+
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
@@ -1298,6 +1882,10 @@ def _build_child_agent(
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
 
+    child_service_tier, child_request_overrides = _request_overrides_for_child(
+        effective_model, delegation_cfg, parent_agent
+    )
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1309,6 +1897,8 @@ def _build_child_agent(
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
+        service_tier=child_service_tier,
+        request_overrides=child_request_overrides,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
@@ -1334,6 +1924,48 @@ def _build_child_agent(
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
+    if not isinstance(child_session_ref["session_id"], str):
+        child_session_ref["session_id"] = ""
+    child._delegate_progress_ref = child_session_ref
+    parent_sid = getattr(parent_agent, "session_id", None)
+    if not isinstance(parent_sid, str):
+        parent_sid = None
+    try:
+        from agent.subagent_context_artifacts import create_subagent_context_artifact_pointer
+
+        child_session_id = child_session_ref["session_id"]
+        if not child_session_id:
+            raise ValueError("child session id unavailable")
+        pointer = create_subagent_context_artifact_pointer(
+            child_session_id=child_session_id,
+            parent_session_id=parent_sid,
+            subagent_id=subagent_id,
+            role=effective_role,
+            profile=(delegation_cfg or {}).get("_profile"),
+            model=effective_model,
+            provider=effective_provider,
+            api_mode=effective_api_mode,
+            base_url=effective_base_url,
+            toolsets=child_toolsets,
+            session_db=getattr(parent_agent, "_session_db", None),
+        )
+        setattr(child, "_subagent_context_ref", {
+            "child_session_id": child_session_id,
+            "parent_session_id": parent_sid,
+            "subagent_id": subagent_id,
+            "role": effective_role,
+            "profile": (delegation_cfg or {}).get("_profile"),
+            "model": effective_model,
+            "provider": effective_provider,
+            "api_mode": effective_api_mode,
+            "base_url": effective_base_url,
+            "toolsets": list(child_toolsets),
+            "latest_artifact_path": pointer.get("latest_artifact_path"),
+        })
+        child_session_ref["context_available"] = True
+        child_session_ref["context_child_session_id"] = child_session_id
+    except Exception:
+        logger.debug("subagent context artifact pointer creation failed", exc_info=True)
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
     # Stash the post-degrade role for introspection (leaf if the
@@ -1352,6 +1984,21 @@ def _build_child_agent(
     parent_sid = getattr(parent_agent, "session_id", None)
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
+        # Telemetry: stamp the delegation profile + derived tier so post-hoc
+        # audits can tell which lane ran (many profiles share one model) and
+        # whether the tiering policy is respected. Local metadata only — this
+        # touches the CHILD session's model_config, never the parent prompt, so
+        # prompt caching is unaffected. Best-effort: never break a delegation.
+        try:
+            from tools.tier_labels import derive_tier
+
+            _profile_name = (delegation_cfg or {}).get("_profile")
+            child._session_init_model_config["_profile"] = _profile_name
+            child._session_init_model_config["_tier"] = derive_tier(
+                _profile_name, delegation_cfg or {}
+            )
+        except Exception:
+            logger.debug("tier-label telemetry stamp failed", exc_info=True)
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1721,7 +2368,173 @@ def _run_single_child(
     goal: str,
     child=None,
     parent_agent=None,
+    *,
+    child_timeout: Any = _CHILD_TIMEOUT_UNSET,
+    child_builder: Optional[Callable[[Dict[str, Any]], Any]] = None,
     **_kwargs,
+) -> Dict[str, Any]:
+    """Run a child with timeout-triggered fallback attempts.
+
+    Only parent-side wall-clock timeout advances through the fallback chain.
+    Non-timeout exceptions preserve the existing one-and-done error behavior.
+    """
+    resolved_timeout = (
+        _get_child_timeout()
+        if child_timeout is _CHILD_TIMEOUT_UNSET
+        else child_timeout
+    )
+
+    routes = _child_timeout_attempt_routes(child)
+    if child_builder is None or resolved_timeout is None:
+        routes = routes[:1]
+
+    total_budget = (
+        float(resolved_timeout) * len(routes)
+        if resolved_timeout is not None
+        else None
+    )
+    total_deadline = (
+        time.monotonic() + total_budget
+        if total_budget is not None
+        else None
+    )
+
+    overall_start = time.monotonic()
+    current_child = child
+    providers_tried: List[str] = []
+    last_timeout_result: Optional[Dict[str, Any]] = None
+
+    for attempt_index, route in enumerate(routes):
+        route_label = _route_label(route)
+        providers_tried.append(route_label)
+
+        attempt_timeout = resolved_timeout
+        if total_deadline is not None and resolved_timeout is not None:
+            remaining = total_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            attempt_timeout = min(float(resolved_timeout), remaining)
+
+        result = _run_single_child_attempt(
+            task_index=task_index,
+            goal=goal,
+            child=current_child,
+            parent_agent=parent_agent,
+            child_timeout=attempt_timeout,
+        )
+        result["providers_tried"] = list(providers_tried)
+        result["attempt_count"] = len(providers_tried)
+        if total_budget is not None:
+            result["timeout_budget_seconds"] = round(total_budget, 2)
+
+        if result.get("status") != "timeout":
+            if len(providers_tried) > 1:
+                result["duration_seconds"] = round(time.monotonic() - overall_start, 2)
+            return result
+
+        last_timeout_result = result
+        if attempt_index >= len(routes) - 1:
+            break
+
+        next_route = routes[attempt_index + 1]
+        next_label = _route_label(next_route)
+        duration = float(result.get("duration_seconds") or 0.0)
+
+        logger.warning(
+            "Subagent %d timed out on %s after %.1fs - failing over to %s (attempt %d/%d)",
+            task_index,
+            route_label,
+            duration,
+            next_label,
+            attempt_index + 2,
+            len(routes),
+        )
+
+        child_progress_cb = getattr(current_child, "tool_progress_callback", None)
+        if child_progress_cb:
+            try:
+                child_progress_cb(
+                    "subagent.failover",
+                    preview=(
+                        f"Timed out on {route_label}; failing over to {next_label} "
+                        f"(attempt {attempt_index + 2}/{len(routes)})"
+                    ),
+                    status="timeout",
+                    from_provider=route.get("provider"),
+                    from_model=route.get("model"),
+                    to_provider=next_route.get("provider"),
+                    to_model=next_route.get("model"),
+                    attempt=attempt_index + 2,
+                    total_attempts=len(routes),
+                    providers_tried=list(providers_tried),
+                )
+            except Exception:
+                logger.debug("Progress callback failover relay failed", exc_info=True)
+
+        try:
+            current_child = child_builder(next_route)
+        except Exception as exc:
+            logger.warning(
+                "Subagent %d timed out on %s but fallback child build for %s failed: %s",
+                task_index,
+                route_label,
+                next_label,
+                exc,
+            )
+            return {
+                "task_index": task_index,
+                "status": "error",
+                "summary": None,
+                "error": (
+                    f"Subagent timed out on {route_label}, then failed to build "
+                    f"fallback child {next_label}: {exc}"
+                ),
+                "exit_reason": "error",
+                "api_calls": int(result.get("api_calls") or 0),
+                "duration_seconds": round(time.monotonic() - overall_start, 2),
+                "providers_tried": list(providers_tried),
+                "attempt_count": len(providers_tried),
+                "timeout_budget_seconds": round(total_budget, 2) if total_budget is not None else None,
+                "_child_role": result.get("_child_role"),
+                "_child_session_id": result.get("_child_session_id"),
+                "_child_subagent_id": result.get("_child_subagent_id"),
+            }
+
+    if last_timeout_result is not None:
+        attempts = len(providers_tried)
+        tried = ", ".join(providers_tried)
+        base_error = last_timeout_result.get("error") or "Subagent timed out."
+        last_timeout_result["error"] = (
+            f"{base_error} Timed out on {tried} ({attempts} "
+            f"{'attempt' if attempts == 1 else 'attempts'})."
+        )
+        last_timeout_result["providers_tried"] = list(providers_tried)
+        last_timeout_result["attempt_count"] = attempts
+        if total_budget is not None:
+            last_timeout_result["timeout_budget_seconds"] = round(total_budget, 2)
+        last_timeout_result["duration_seconds"] = round(time.monotonic() - overall_start, 2)
+        return last_timeout_result
+
+    return {
+        "task_index": task_index,
+        "status": "error",
+        "summary": None,
+        "error": "Subagent did not run.",
+        "exit_reason": "error",
+        "api_calls": 0,
+        "duration_seconds": round(time.monotonic() - overall_start, 2),
+        "providers_tried": list(providers_tried),
+        "attempt_count": len(providers_tried),
+    }
+
+
+def _run_single_child_attempt(
+    task_index: int,
+    goal: str,
+    child=None,
+    parent_agent=None,
+    *,
+    child_timeout: Optional[float],
 ) -> Dict[str, Any]:
     """
     Run a pre-built child agent. Called from within a thread.
@@ -1884,13 +2697,11 @@ def _run_single_child(
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
         )
 
-        # Run child with an optional hard timeout (off by default —
-        # result(timeout=None) blocks until the child finishes). Stuck-child
-        # protection comes from the heartbeat staleness monitor instead.
-        child_timeout = _get_child_timeout()
-        # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
-        # below; a stdlib non-daemon worker would then block interpreter
-        # exit at atexit-join time if the child never unwinds.
+        # Run this attempt with the resolved per-attempt hard timeout.
+        # result(timeout=None) blocks until the child finishes. Stuck-child
+        # protection still comes from the heartbeat staleness monitor when no
+        # hard cap is configured. Use a daemon worker so a timed-out child that
+        # never unwinds cannot block interpreter shutdown.
         from tools.daemon_pool import DaemonThreadPoolExecutor
         _timeout_executor = DaemonThreadPoolExecutor(
             max_workers=1,
@@ -2018,6 +2829,8 @@ def _run_single_child(
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
                 "_child_role": getattr(child, "_delegate_role", None),
+                "_child_session_id": getattr(child, "session_id", None),
+                "_child_subagent_id": getattr(child, "_subagent_id", None),
                 "diagnostic_path": diagnostic_path,
             }
         finally:
@@ -2110,6 +2923,22 @@ def _run_single_child(
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
+            # Final tool-call count for this child. The live registry entry is
+            # dropped on completion, so the roster needs this on the record to
+            # keep showing the count on the finished row.
+            "tool_count": len(tool_trace),
+            # PUBLIC per-child cost for the watcher roster's finished row + header
+            # total. Mirrors the private _child_cost_usd (which is underscore-
+            # stripped before the async result); this public key survives into the
+            # async child record. Display-only; the private key drives the parent
+            # session rollup.
+            "cost_usd": (
+                float(getattr(child, "session_estimated_cost_usd", 0.0) or 0.0)
+                if isinstance(
+                    getattr(child, "session_estimated_cost_usd", 0.0), (int, float)
+                )
+                else 0.0
+            ),
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
@@ -2126,6 +2955,8 @@ def _run_single_child(
             # parent thread can fire subagent_stop with the correct role.
             # Stripped before the dict is serialised back to the model.
             "_child_role": getattr(child, "_delegate_role", None),
+            "_child_session_id": getattr(child, "session_id", None),
+            "_child_subagent_id": getattr(child, "_subagent_id", None),
             # Captured before child.close() so the parent aggregator can fold
             # the child's total spend into the parent's session cost.  Port of
             # Kilo-Org/kilocode#9448 — previously the footer only reflected the
@@ -2142,6 +2973,29 @@ def _run_single_child(
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+
+        # Agent-receipt stamp (agent_receipt schema guard). Reusable delegated work owes a
+        # structured receipt. Derive receipt_owed from data the harness already has — the
+        # child's own tool_trace (did it write files / run commands?) plus its role
+        # (orchestrators always owe) — NOT a manual opt-in flag (which a careless caller
+        # never sets). ALWAYS stamp receipt_owed; only when owed do we validate the child's
+        # summary and add receipt_valid/receipt_errors. A pure read-only lookup owes nothing
+        # and gets no false-negative stamp. The validator fails open on its own faults.
+        try:
+            from tools import agent_receipt as _ar
+            _owed = _ar.owes_receipt(
+                surface="delegate",
+                role=entry.get("_child_role"),
+                tool_trace=tool_trace,
+            )
+            entry["receipt_owed"] = bool(_owed)
+            if _owed:
+                _ok_r, _errs_r = _ar.validate_text(summary or "")
+                entry["receipt_valid"] = bool(_ok_r)
+                if not _ok_r:
+                    entry["receipt_errors"] = _errs_r[:5]
+        except Exception:
+            logger.debug("agent_receipt stamp failed (non-fatal)", exc_info=True)
 
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent
@@ -2261,6 +3115,8 @@ def _run_single_child(
             "api_calls": 0,
             "duration_seconds": duration,
             "_child_role": getattr(child, "_delegate_role", None),
+            "_child_session_id": getattr(child, "session_id", None),
+            "_child_subagent_id": getattr(child, "_subagent_id", None),
         }
 
     finally:
@@ -2306,6 +3162,21 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+        # Freeze the latest captured outbound context before the child object is
+        # torn down. Fail-open: context capture must never change delegation
+        # outcome or cleanup behavior.
+        try:
+            ref = getattr(child, "_subagent_context_ref", None)
+            if isinstance(ref, dict) and ref.get("child_session_id"):
+                from agent.subagent_context_artifacts import finalize_subagent_context_artifact
+
+                finalize_subagent_context_artifact(
+                    str(ref["child_session_id"]),
+                    session_db=getattr(parent_agent, "_session_db", None),
+                )
+        except Exception:
+            logger.debug("subagent context artifact finalize failed", exc_info=True)
+
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) so subagent subprocesses
         # don't outlive the delegation.
@@ -2346,14 +3217,15 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, role, profile)
+      - Batch:  provide tasks array [{goal, context, role, profile}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -2374,8 +3246,9 @@ def delegate_task(
             "(`p` in /agents) or the `delegation.pause` RPC before retrying."
         )
 
-    # Normalise the top-level role once; per-task overrides re-normalise.
+    # Normalise the top-level role/profile once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+    top_profile = _normalize_profile_name(profile)
 
     # Background (async) delegation now applies to BOTH single tasks and
     # batches. A batch simply becomes N independent async dispatches: each
@@ -2404,7 +3277,7 @@ def delegate_task(
     # Load config
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
-    # Model-supplied max_iterations is ignored — the config value is authoritative
+    # Model-supplied max_iterations is ignored — the config/profile value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
     # and tests; a model-emitted value here would only shrink the budget and
     # surprise the user mid-run. Log and drop it if one slips through from a
@@ -2412,20 +3285,9 @@ def delegate_task(
     if max_iterations is not None and max_iterations != default_max_iter:
         logger.debug(
             "delegate_task: ignoring caller-supplied max_iterations=%s; "
-            "using delegation.max_iterations=%s from config",
-            max_iterations, default_max_iter,
+            "using delegation.max_iterations/profile max_iterations from config",
+            max_iterations,
         )
-    effective_max_iter = default_max_iter
-
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2436,31 +3298,78 @@ def delegate_task(
         tasks = recovered_tasks
 
     if tasks and isinstance(tasks, list):
-        if len(tasks) > max_children:
-            return tool_error(
-                f"Too many tasks: {len(tasks)} provided, but "
-                f"max_concurrent_children is {max_children}. "
-                f"Either reduce the task count, split into multiple "
-                f"delegate_task calls, or increase "
-                f"delegation.max_concurrent_children in config.yaml."
-            )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [
+            {
+                "goal": goal,
+                "context": context,
+                "role": top_role,
+                "profile": top_profile,
+            }
+        ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
     if not task_list:
         return tool_error("No tasks provided.")
 
-    # Validate each task has a goal
-    for i, task in enumerate(task_list):
+    expanded_task_items = _expand_reserved_profile_task_items(task_list, top_profile)
+    task_list = [item["task"] for item in expanded_task_items]
+    if len(task_list) > max_children:
+        return tool_error(
+            f"Too many tasks: {len(task_list)} provided, but "
+            f"max_concurrent_children is {max_children}. "
+            f"Either reduce the task count, split into multiple "
+            f"delegate_task calls, or increase "
+            f"delegation.max_concurrent_children in config.yaml."
+        )
+
+    # Validate each task has a goal and resolve profile-specific config before
+    # constructing any children. If a later task names a bad profile, return a
+    # clean error without leaving earlier children registered in active state.
+    task_specs = []
+    require_dual_review = _requires_dual_review(cfg)
+    for i, task_item in enumerate(expanded_task_items):
+        task = task_item["task"]
         if not isinstance(task, dict):
             return tool_error(
                 f"Task {i} must be an object, got {type(task).__name__}."
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+        task_profile = _normalize_profile_name(task.get("profile") or top_profile)
+        if (
+            require_dual_review
+            and _is_single_reviewer_profile(task_profile)
+            and not task_item["from_dual_review"]
+        ):
+            return tool_error(_single_reviewer_profile_error(task_profile or ""))
+
+        try:
+            task_cfg = _merge_delegation_profile(cfg, task_profile)
+            task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
+        # Toolset narrowing is operator/config-authoritative only.  The
+        # model-facing schema intentionally does not expose a toolsets field;
+        # profiles may still specify toolsets in config.yaml.
+        task_toolsets = _profile_toolsets(task_cfg)
+
+        task_specs.append(
+            {
+                "task": task,
+                "cfg": task_cfg,
+                "creds": task_creds,
+                "toolsets": task_toolsets,
+                "max_iterations": _profile_max_iterations(task_cfg, default_max_iter),
+                "child_timeout": _get_child_timeout(task_cfg),
+                "profile": task_profile,
+                "role": _normalize_role(task.get("role") or top_role),
+            }
+        )
 
     overall_start = time.monotonic()
     results = []
@@ -2481,37 +3390,67 @@ def delegate_task(
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
     try:
-        for i, t in enumerate(task_list):
-            # Per-task role beats top-level; normalise again so unknown
-            # per-task values warn and degrade to leaf uniformly.
-            effective_role = _normalize_role(t.get("role") or top_role)
-            child = _build_child_agent(
-                task_index=i,
-                goal=t["goal"],
-                context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
-                task_count=n_tasks,
-                parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
-                role=effective_role,
-            )
-            # Override with correct parent tool names (before child construction mutated global)
-            child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, t, child))
+        for i, spec in enumerate(task_specs):
+            t = spec["task"]
+
+            def _make_child(
+                route: Optional[Dict[str, Any]] = None,
+                *,
+                _i: int = i,
+                _spec: dict = spec,
+                _t: dict = t,
+            ):
+                if route is None:
+                    creds = _spec["creds"]
+                    child_cfg = _spec["cfg"]
+                else:
+                    child_cfg = _delegation_cfg_for_timeout_fallback(_spec["cfg"], route)
+                    creds = _resolve_delegation_credentials(child_cfg, parent_agent)
+
+                task_acp_args = _t.get("acp_args") if "acp_args" in _t else None
+
+                with _CHILD_BUILD_LOCK:
+                    child_obj = _build_child_agent(
+                        task_index=_i,
+                        goal=_t["goal"],
+                        context=_t.get("context"),
+                        toolsets=_spec["toolsets"],
+                        model=creds["model"],
+                        max_iterations=_spec["max_iterations"],
+                        task_count=n_tasks,
+                        parent_agent=parent_agent,
+                        override_provider=creds["provider"],
+                        override_base_url=creds["base_url"],
+                        override_api_key=creds["api_key"],
+                        override_api_mode=creds["api_mode"],
+                        override_acp_command=_t.get("acp_command")
+                        or creds.get("command"),
+                        override_acp_args=(
+                            task_acp_args
+                            if task_acp_args is not None
+                            else creds.get("args")
+                        ),
+                        role=_spec["role"],
+                        delegation_cfg=child_cfg,
+                    )
+                    child_obj._delegate_saved_tool_names = _parent_tool_names
+                    _model_tools._last_resolved_tool_names = _parent_tool_names
+                    return child_obj
+
+            child = _make_child()
+            children.append((i, t, child, _make_child, spec["child_timeout"]))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
-    def _execute_and_aggregate() -> dict:
+    # Preserve the prior behavior where `creds` referred to the last built
+    # child's resolved credentials (used by the background dispatch path for
+    # the batch-level model label). The build loop now resolves creds inside
+    # the per-task `_make_child` closure, so re-expose the last spec's creds
+    # here for those downstream references.
+    creds = task_specs[-1]["creds"] if task_specs else {"model": None}
+
+    def _execute_and_aggregate(async_delegation_id: Optional[str] = None) -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
         fire subagent_stop hooks + cost rollup, and return the combined result
         dict. Used by BOTH the synchronous path and the background runner. In
@@ -2521,11 +3460,38 @@ def delegate_task(
         results block. That is the contract: fan-out runs in the background,
         waits on each other, and returns together.
         """
+        def _mark_async_child_result(entry: Dict[str, Any], child_obj: Any) -> None:
+            if not async_delegation_id:
+                return
+            try:
+                from tools.async_delegation import update_batch_child_result
+
+                public_entry = {
+                    k: v for k, v in entry.items() if not str(k).startswith("_")
+                }
+                update_batch_child_result(
+                    async_delegation_id,
+                    task_index=entry.get("task_index"),
+                    subagent_id=entry.get("_child_subagent_id")
+                    or getattr(child_obj, "_subagent_id", None),
+                    result=public_entry,
+                )
+            except Exception:
+                logger.debug("async child status update failed", exc_info=True)
+
         if n_tasks == 1:
             # Single task -- run directly (no thread pool overhead)
-            _i, _t, child = children[0]
-            result = _run_single_child(_i, _t["goal"], child, parent_agent)
+            _i, _t, child, child_builder, child_timeout = children[0]
+            result = _run_single_child(
+                _i,
+                _t["goal"],
+                child,
+                parent_agent,
+                child_timeout=child_timeout,
+                child_builder=child_builder,
+            )
             results.append(result)
+            _mark_async_child_result(result, child)
         else:
             # Batch -- run in parallel with per-task progress lines
             completed_count = 0
@@ -2537,13 +3503,15 @@ def delegate_task(
             from tools.daemon_pool import DaemonThreadPoolExecutor
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
-                for i, t, child in children:
+                for i, t, child, child_builder, child_timeout in children:
                     future = executor.submit(
                         _run_single_child,
                         task_index=i,
                         goal=t["goal"],
                         child=child,
                         parent_agent=parent_agent,
+                        child_timeout=child_timeout,
+                        child_builder=child_builder,
                     )
                     futures[future] = i
 
@@ -2554,7 +3522,7 @@ def delegate_task(
                 # when the parent is interrupted.
                 # Map task_index -> child agent, so fabricated entries for
                 # still-pending futures can carry the correct _delegate_role.
-                _child_by_index = {i: child for (i, _, child) in children}
+                _child_by_index = {i: child for (i, _, child, _, _) in children}
 
                 pending = set(futures.keys())
                 while pending:
@@ -2593,6 +3561,7 @@ def delegate_task(
                                 }
                             results.append(entry)
                             completed_count += 1
+                            _mark_async_child_result(entry, _child_by_index.get(entry.get("task_index")))
                         break
 
                     from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
@@ -2618,6 +3587,7 @@ def delegate_task(
                             }
                         results.append(entry)
                         completed_count += 1
+                        _mark_async_child_result(entry, _child_by_index.get(entry.get("task_index")))
 
                         # Print per-task completion line above the spinner
                         idx = entry["task_index"]
@@ -2708,6 +3678,8 @@ def delegate_task(
             if _invoke_hook is None:
                 continue
             try:
+                _child_session_id = entry.pop("_child_session_id", None)
+                _child_subagent_id = entry.pop("_child_subagent_id", None)
                 _child_index = entry.get("task_index", -1)
                 _child_agent = (
                     children[_child_index][2]
@@ -2718,7 +3690,8 @@ def delegate_task(
                     "subagent_stop",
                     parent_session_id=_parent_session_id,
                     parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
-                    child_session_id=getattr(_child_agent, "session_id", None),
+                    child_session_id=_child_session_id or getattr(_child_agent, "session_id", None),
+                    child_subagent_id=_child_subagent_id or getattr(_child_agent, "_subagent_id", None),
                     child_role=child_role,
                     child_summary=entry.get("summary"),
                     child_status=entry.get("status"),
@@ -2764,7 +3737,10 @@ def delegate_task(
     # not blocked in the meantime. This is the contract: dispatch N subagents,
     # keep chatting, get the combined summaries back together at the end.
     if background:
-        from tools.async_delegation import dispatch_async_delegation_batch
+        from tools.async_delegation import (
+            dispatch_async_delegation_batch,
+            new_delegation_id,
+        )
         from tools.approval import get_current_session_key
 
         # Stateless request/response sessions (the API server / WebUI path)
@@ -2796,7 +3772,19 @@ def delegate_task(
             return json.dumps(_sync_result, ensure_ascii=False)
 
         _session_key = get_current_session_key(default="")
-        _child_agents = [c for (_, _, c) in children]
+        _delegation_id = new_delegation_id()
+        try:
+            from gateway.session_context import get_session_env
+
+            _routing = {
+                "platform": get_session_env("HERMES_SESSION_PLATFORM", ""),
+                "chat_id": get_session_env("HERMES_SESSION_CHAT_ID", ""),
+                "thread_id": get_session_env("HERMES_SESSION_THREAD_ID", ""),
+                "message_id": get_session_env("HERMES_SESSION_MESSAGE_ID", ""),
+            }
+        except Exception:
+            _routing = {}
+        _child_agents = [c for (_, _, c, _, _) in children]
 
         # Detach every child from the parent's interrupt-propagation list — the
         # batch's lifecycle is owned by the async registry now, not the parent
@@ -2814,7 +3802,7 @@ def delegate_task(
                     pass
 
         def _batch_runner():
-            return _execute_and_aggregate()
+            return _execute_and_aggregate(async_delegation_id=_delegation_id)
 
         def _batch_interrupt():
             for _c in _child_agents:
@@ -2827,6 +3815,58 @@ def delegate_task(
                     pass
 
         _goals = [t["goal"] for t in task_list]
+        _child_records = []
+        for _i, _t, _c, _, _ in children:
+            _model = getattr(_c, "model", None)
+            _reasoning = getattr(_c, "reasoning_config", None)
+            _spec = task_specs[_i] if _i < len(task_specs) else {}
+            _child_records.append(
+                {
+                    "task_index": _i,
+                    "subagent_id": getattr(_c, "_subagent_id", "") or "",
+                    "goal": _t["goal"],
+                    "profile": _spec.get("profile") or "",
+                    "role": _spec.get("role") or "",
+                    "toolsets": _spec.get("toolsets"),
+                    "model": _model if isinstance(_model, str) else creds["model"],
+                    "reasoning": _reasoning,
+                    "status": "pending",
+                }
+            )
+            # NOTE: these async flags are set AFTER _build_child_agent already
+            # emitted subagent.spawn_requested, so that event is intentionally
+            # UNMARKED (parent-turn). The watcher owns the background roster via
+            # the explicit _child_records above, never via spawn_requested. Every
+            # subagent.* event fired after this point carries async_background so
+            # the parent-turn callback (B4 guard) drops it.
+            _ref = getattr(_c, "_delegate_progress_ref", None)
+            if isinstance(_ref, dict):
+                _ref["async_delegation_id"] = _delegation_id
+                _ref["async_background"] = True
+
+        # Header toolsets (audit signal): the dispatched header shows toolsets
+        # ONLY when explicitly passed. delegate_task has no top-level `toolsets`
+        # param (the model has no toolsets arg; subagents inherit the parent's),
+        # so the ONLY explicit source is the per-task `toolsets` field. Surface
+        # it when every task shares the same set (uniform) — that is the common
+        # "I gave all the children terminal, file" shape. When per-task toolsets
+        # DIFFER (or none were explicit), leave it None so the header stays clean
+        # (mixed sets are not a single header value). NOTE: read the EXPLICIT
+        # task field, not the resolved spec toolsets (which fall back to the
+        # profile's defaults and would wrongly read as "explicit").
+        _header_toolsets = None
+        if _header_toolsets is None:
+            _explicit = [
+                _ti["task"].get("toolsets")
+                for _ti in expanded_task_items
+                if isinstance(_ti.get("task"), dict)
+            ]
+            if _explicit and all(
+                isinstance(t, (list, tuple)) and list(t) == list(_explicit[0])
+                for t in _explicit
+            ):
+                _header_toolsets = list(_explicit[0])
+
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -2839,6 +3879,11 @@ def delegate_task(
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
+            delegation_id=_delegation_id,
+            children=_child_records,
+            routing=_routing,
+            profile=top_profile,
+            header_toolsets=_header_toolsets,
         )
 
         if dispatch.get("status") == "dispatched":
@@ -2873,6 +3918,11 @@ def delegate_task(
             "batch synchronously instead.",
             dispatch.get("error", "rejected"),
         )
+        for _c in _child_agents:
+            _ref = getattr(_c, "_delegate_progress_ref", None)
+            if isinstance(_ref, dict):
+                _ref.pop("async_delegation_id", None)
+                _ref.pop("async_background", None)
         _cap_result = _execute_and_aggregate()
         if isinstance(_cap_result, dict):
             _cap_result["note"] = (
@@ -3127,6 +4177,43 @@ def _load_config() -> dict:
 # ---------------------------------------------------------------------------
 
 
+_COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+
+
+def _dual_review_lane_phrase() -> tuple:
+    """(expansion_clause, count_word) describing the live dual-review roster.
+
+    Keeps the model-facing schema text accurate when the lane roster is tuned
+    via delegation.dual_review_profiles, so the concurrency math the model does
+    ("counts as N child tasks") matches reality.
+    """
+    try:
+        lanes = _get_dual_reviewer_profiles()
+    except Exception:
+        lanes = DUAL_REVIEWER_PROFILES
+    n = len(lanes)
+    count_word = _COUNT_WORDS.get(n, str(n))
+    joined = ", ".join(lanes[:-1]) + f" + {lanes[-1]}" if n > 1 else lanes[0]
+    return joined, count_word
+
+
+def _dual_plan_lane_phrase() -> tuple:
+    """(expansion_clause, count_word) describing the live dual-plan roster.
+
+    Planning analogue of ``_dual_review_lane_phrase`` — keeps the model-facing
+    schema text accurate when the lane roster is tuned via
+    delegation.dual_plan_profiles.
+    """
+    try:
+        lanes = _get_dual_planner_profiles()
+    except Exception:
+        lanes = DUAL_PLANNER_PROFILES
+    n = len(lanes)
+    count_word = _COUNT_WORDS.get(n, str(n))
+    joined = ", ".join(lanes[:-1]) + f" + {lanes[-1]}" if n > 1 else lanes[0]
+    return joined, count_word
+
+
 def _build_top_level_description() -> str:
     """Compose the delegate_task tool description with current runtime limits.
 
@@ -3148,6 +4235,9 @@ def _build_top_level_description() -> str:
         orchestrator_on = _get_orchestrator_enabled()
     except Exception:
         orchestrator_on = True
+
+    _dr_lanes, _dr_count = _dual_review_lane_phrase()
+    _dp_lanes, _dp_count = _dual_plan_lane_phrase()
 
     if max_depth >= 2 and orchestrator_on:
         nesting_clause = (
@@ -3177,7 +4267,7 @@ def _build_top_level_description() -> str:
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets).\n"
+        "1. Single task: provide 'goal' (+ optional context, toolsets, profile).\n"
         f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
         f"items concurrently for this user (configured via "
         f"delegation.max_concurrent_children in config.yaml). {nesting_clause}\n\n"
@@ -3202,6 +4292,21 @@ def _build_top_level_description() -> str:
         "before a subagent finishes, that subagent's work is discarded, and "
         "/stop cancels every running background subagent.\n\n"
         "IMPORTANT:\n"
+        "- Use the 'profile' parameter when delegation.profiles defines a better lane "
+        "for the task class (e.g. file-explorer for repo/file DISCOVERY ONLY "
+        "(find files, grep, map flow, summarize — NOT git/PR-stack archaeology, "
+        "commit classification, conflict/rebase analysis, or root-cause tracing; "
+        "use git-surgeon or debugger for those), "
+        "jira-auditor for Jira/ticket scope checks, or dual-review for any "
+        f"review work). dual-review expands to {_dr_lanes} "
+        f"internally so all run and counts as {_dr_count} child "
+        "tasks for max_concurrent_children. Per-task profile beats "
+        "the top-level profile.\n"
+        "- For PLANNING work, profile='dual-plan' is the planning analogue of "
+        f"dual-review: it expands to {_dp_lanes} (two DIFFERENT planner models) "
+        f"and counts as {_dp_count} child tasks. Use it to get two independent "
+        "plans you reconcile, the same way dual-review gives two independent "
+        "reviews.\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
         "- If the user is writing in a non-English language, or asked for "
@@ -3236,11 +4341,35 @@ def _build_tasks_param_description() -> str:
         max_children = _get_max_concurrent_children()
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
+    _dr_lanes, _dr_count = _dual_review_lane_phrase()
+    _dp_lanes, _dp_count = _dual_plan_lane_phrase()
     return (
         f"Batch mode: tasks to run in parallel (up to {max_children} for this "
         f"user, set via delegation.max_concurrent_children). Each gets "
         "its own subagent with isolated context and terminal session. "
+        f"The reserved profile='dual-review' expands to {_dr_count} child tasks and "
+        f"counts as {_dr_count} against this limit. "
+        f"The reserved profile='dual-plan' likewise expands to {_dp_count} planner "
+        f"child tasks ({_dp_lanes}). "
         "When provided, top-level goal/context/toolsets are ignored."
+    )
+
+
+def _build_profile_param_description() -> str:
+    """Compose the 'profile' parameter description with the live dual-review roster."""
+    _dr_lanes, _dr_count = _dual_review_lane_phrase()
+    _dp_lanes, _dp_count = _dual_plan_lane_phrase()
+    return (
+        "Optional delegation profile from config.yaml delegation.profiles. "
+        "Use profiles to route task classes to the right model/reasoning/tool policy "
+        "(e.g. file-explorer for file/repo DISCOVERY ONLY — find files, grep, map flow, "
+        "summarize; NOT git/PR-stack archaeology, commit classification, conflict/rebase "
+        "analysis, or root-cause tracing (use git-surgeon or debugger for those); "
+        "jira-auditor for Jira/ticket scope checks; "
+        f"dual-review for enforced {_dr_lanes} review; "
+        f"dual-review counts as {_dr_count} child tasks; "
+        f"dual-plan for two independent plans from {_dp_lanes}, counting as {_dp_count} child tasks). "
+        "Per-task profile overrides this top-level value."
     )
 
 
@@ -3281,6 +4410,30 @@ def _build_role_param_description() -> str:
     )
 
 
+# Known ACP-compatible CLIs that delegate_task can shell out to. Kept
+# narrow on purpose: only the ones agent/copilot_acp_client.py and friends
+# actually understand. Add new entries here when a new ACP CLI ships.
+_KNOWN_ACP_BINARIES: tuple[str, ...] = ("copilot", "claude", "codex")
+
+
+def _acp_binary_available() -> bool:
+    """True iff at least one known ACP CLI is on PATH.
+
+    Used to gate inclusion of ``acp_command`` / ``acp_args`` in the
+    delegate_task schema. On headless hosts (Railway / Fly / Docker /
+    fresh VPS) without any of these binaries, exposing the fields invites
+    the model to hallucinate ``acp_command="copilot"`` from the schema's
+    description, which used to crash subagent runs and take the gateway
+    down. Pruning the fields from the schema removes the temptation.
+
+    Not cached: ``shutil.which`` is cheap and we want the schema to react
+    to mid-session installs without forcing a process restart.
+    """
+    import shutil as _shutil
+
+    return any(_shutil.which(name) for name in _KNOWN_ACP_BINARIES)
+
+
 def _build_dynamic_schema_overrides() -> dict:
     """Return per-call schema overrides reflecting current config.
 
@@ -3297,6 +4450,27 @@ def _build_dynamic_schema_overrides() -> dict:
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+
+    overrides_params["properties"]["profile"]["description"] = _build_profile_param_description()
+
+    # Prune ACP overrides from the schema when no known ACP CLI is on PATH.
+    # The runtime guard in _build_child_agent remains as defense-in-depth for
+    # internal callers / tests / future code paths that skip the schema layer.
+    if not _acp_binary_available():
+        overrides_params["properties"].pop("acp_command", None)
+        overrides_params["properties"].pop("acp_args", None)
+        tasks_schema = dict(overrides_params["properties"].get("tasks", {}))
+        if "items" in tasks_schema:
+            items = dict(tasks_schema["items"])
+            if "properties" in items:
+                items["properties"] = {
+                    k: v
+                    for k, v in items["properties"].items()
+                    if k not in ("acp_command", "acp_args")
+                }
+            tasks_schema["items"] = items
+            overrides_params["properties"]["tasks"] = tasks_schema
+
 
     return {
         "description": _build_top_level_description(),
@@ -3338,6 +4512,21 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Optional delegation profile from config.yaml delegation.profiles. "
+                    "Use profiles to route task classes to the right model/reasoning/tool policy "
+                    "(e.g. file-explorer for file/repo DISCOVERY ONLY — find files, grep, map flow, "
+                    "summarize; NOT git/PR-stack archaeology, commit classification, conflict/rebase "
+                    "analysis, or root-cause tracing (use git-surgeon or debugger for those); "
+                    "jira-auditor for Jira/ticket scope checks; "
+                    "dual-review for enforced reviewer-codex + reviewer-opus review; "
+                    "dual-review counts as two child tasks; "
+                    "dual-plan for two independent plans from planner-codex + planner-opus, counting as two child tasks). "
+                    "Per-task profile overrides this top-level value."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3347,6 +4536,10 @@ DELEGATE_TASK_SCHEMA = {
                         "context": {
                             "type": "string",
                             "description": "Task-specific context",
+                        },
+                        "profile": {
+                            "type": "string",
+                            "description": "Per-task delegation profile override (e.g. file-explorer, jira-auditor, dual-review, dual-plan, coder).",
                         },
                         "role": {
                             "type": "string",
@@ -3437,6 +4630,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        profile=args.get("profile"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

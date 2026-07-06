@@ -1165,13 +1165,17 @@ class TestBedrockErrorClassification:
 class TestBedrockContextLength:
     """Test Bedrock model context length lookup."""
 
+    def test_claude_opus_4_8(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("us.anthropic.claude-opus-4-8") == 1_000_000
+
     def test_claude_opus_4_6(self):
         from agent.bedrock_adapter import get_bedrock_context_length
-        assert get_bedrock_context_length("anthropic.claude-opus-4-6-20250514-v1:0") == 200_000
+        assert get_bedrock_context_length("anthropic.claude-opus-4-6-20250514-v1:0") == 1_000_000
 
     def test_claude_sonnet_versioned(self):
         from agent.bedrock_adapter import get_bedrock_context_length
-        assert get_bedrock_context_length("anthropic.claude-sonnet-4-6-20250514-v1:0") == 200_000
+        assert get_bedrock_context_length("anthropic.claude-sonnet-4-6-20250514-v1:0") == 1_000_000
 
     def test_nova_pro(self):
         from agent.bedrock_adapter import get_bedrock_context_length
@@ -1188,7 +1192,7 @@ class TestBedrockContextLength:
     def test_inference_profile_resolves(self):
         from agent.bedrock_adapter import get_bedrock_context_length
         # Cross-region inference profiles contain the base model ID
-        assert get_bedrock_context_length("us.anthropic.claude-sonnet-4-6") == 200_000
+        assert get_bedrock_context_length("us.anthropic.claude-sonnet-4-6") == 1_000_000
 
     def test_longest_prefix_wins(self):
         from agent.bedrock_adapter import get_bedrock_context_length
@@ -1302,6 +1306,10 @@ class TestIsAnthropicBedrockModel:
     def test_eu_claude(self):
         from agent.bedrock_adapter import is_anthropic_bedrock_model
         assert is_anthropic_bedrock_model("eu.anthropic.claude-sonnet-4-6") is True
+
+    def test_au_claude(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("au.anthropic.claude-opus-4-7") is True
 
 
 class TestEmptyTextBlockFix:

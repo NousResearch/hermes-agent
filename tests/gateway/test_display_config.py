@@ -333,6 +333,21 @@ class TestPlatformDefaults:
         assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
         assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
 
+    def test_tool_completion_durations_default_off_and_opt_in(self):
+        """Completion-duration setting is quiet by default and bool-normalised."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "tool_completion_durations") is False
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {"tool_completion_durations": "on"},
+                }
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "tool_completion_durations") is True
+
 
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms

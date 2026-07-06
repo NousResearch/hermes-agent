@@ -51,6 +51,56 @@ class TestProviderEnvDetection:
         assert not _has_provider_env_config(content)
 
 
+class TestDoctorStateWalCheck:
+    def test_probe_created_wal_growth_does_not_report_user_issue(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        db_path = tmp_path / "state.db"
+        wal_path = tmp_path / "state.db-wal"
+        db_path.write_bytes(b"")
+        wal_path.write_bytes(b"x" * 2048)
+        monkeypatch.setattr(doctor_mod, "_STATE_WAL_WARN_BYTES", 1024)
+        monkeypatch.setattr(doctor_mod, "_STATE_WAL_INFO_BYTES", 512)
+        issues: list[str] = []
+
+        fixed_count = doctor_mod._check_state_wal_size(
+            state_db_path=db_path,
+            wal_path=wal_path,
+            issues=issues,
+            should_fix=False,
+            baseline_size=0,
+        )
+
+        output = capsys.readouterr().out
+        assert fixed_count == 0
+        assert issues == []
+        assert "WAL file is large" not in output
+
+    def test_preexisting_large_wal_still_reports_issue(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        db_path = tmp_path / "state.db"
+        wal_path = tmp_path / "state.db-wal"
+        db_path.write_bytes(b"")
+        wal_path.write_bytes(b"x" * 2048)
+        monkeypatch.setattr(doctor_mod, "_STATE_WAL_WARN_BYTES", 1024)
+        monkeypatch.setattr(doctor_mod, "_STATE_WAL_INFO_BYTES", 512)
+        issues: list[str] = []
+
+        fixed_count = doctor_mod._check_state_wal_size(
+            state_db_path=db_path,
+            wal_path=wal_path,
+            issues=issues,
+            should_fix=False,
+            baseline_size=2048,
+        )
+
+        output = capsys.readouterr().out
+        assert fixed_count == 0
+        assert issues == ["Large WAL file: run 'hermes doctor --fix' to checkpoint"]
+        assert "WAL file is large" in output
+
+
 class TestDoctorToolAvailabilitySummary:
     def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):
         unavailable = [

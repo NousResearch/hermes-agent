@@ -228,6 +228,31 @@ export interface SessionSourceFilter {
   excludeSources?: string[]
 }
 
+export interface SubagentContextMessage {
+  content?: unknown
+  role?: string
+  [key: string]: unknown
+}
+
+export interface SubagentContextArtifact {
+  canonical_messages?: SubagentContextMessage[]
+  child_session_id: string
+  created_at?: number
+  parent_session_id?: string
+  provider_request?: Record<string, unknown>
+  request_hash?: string
+  role?: string
+  subagent_id?: string
+  task_index?: number
+  [key: string]: unknown
+}
+
+export interface SubagentContextResponse {
+  artifact: SubagentContextArtifact
+  child_session_id: string
+  ok: boolean
+}
+
 export async function listAllProfileSessions(
   limit = 40,
   minMessages = 0,
@@ -298,6 +323,44 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
   return window.hermesDesktop.api<SessionMessagesResponse>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
+  })
+}
+
+/** One delegation (subagent) child of a session, with persisted timing. Powers
+ *  the Observatory historical timeline's child lanes. All timestamps are
+ *  backend epoch SECONDS; `ended_at` null = still running. */
+export interface SessionChild {
+  id: string
+  title: null | string
+  started_at: number
+  ended_at: null | number
+  tool_call_count: number
+  message_count: number
+  model: null | string
+  status: 'completed' | 'running'
+}
+
+export interface SessionChildrenResponse {
+  session_id: string
+  children: SessionChild[]
+}
+
+// Delegation children of a session (source='subagent' only — /branch forks and
+// compression continuations are filtered server-side). Same profile routing as
+// getSessionMessages.
+export function getSessionChildren(id: string, profile?: string | null): Promise<SessionChildrenResponse> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
+  return window.hermesDesktop.api<SessionChildrenResponse>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}/children${suffix}`
+  })
+}
+
+export function getSubagentContext(childSessionId: string): Promise<SubagentContextResponse> {
+  return window.hermesDesktop.api<SubagentContextResponse>({
+    path: `/api/subagents/${encodeURIComponent(childSessionId)}/context`,
+    timeoutMs: 15_000
   })
 }
 

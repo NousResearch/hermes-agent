@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -23,6 +24,12 @@ import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import {
+  $workstreamMetadata,
+  setWorkstreamLifecycle,
+  workstreamLifecycle,
+  type WorkstreamLifecycle
+} from '@/store/workstream-metadata'
 
 import type { SessionTitleResponse } from '../../types'
 
@@ -105,6 +112,8 @@ function useSessionActions({
 }: SessionActions) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  const workstreamMetadata = useStore($workstreamMetadata)
+  const lifecycle = workstreamLifecycle(sessionId, workstreamMetadata)
   const [renameOpen, setRenameOpen] = useState(false)
 
   const pinItem: ItemSpec = {
@@ -116,6 +125,42 @@ function useSessionActions({
       onPin?.()
     }
   }
+
+  const setLifecycle = (nextLifecycle: WorkstreamLifecycle, haptic: 'selection' | 'warning' = 'selection') => {
+    triggerHaptic(haptic)
+    setWorkstreamLifecycle(sessionId, nextLifecycle)
+  }
+
+  const lifecycleItems: ItemSpec[] = [
+    {
+      disabled: !sessionId,
+      icon: 'close',
+      label: r.closeWorkstream,
+      onSelect: () => setLifecycle('closed')
+    },
+    {
+      disabled: !sessionId,
+      icon: 'folder',
+      label: r.markSafeToDelete,
+      onSelect: () => setLifecycle('safe_delete')
+    },
+    {
+      disabled: !sessionId,
+      icon: 'warning',
+      label: r.markRestartRequired,
+      onSelect: () => setLifecycle('restart_required', 'warning')
+    },
+    ...(lifecycle === 'active'
+      ? []
+      : [
+          {
+            disabled: !sessionId,
+            icon: 'refresh',
+            label: r.reopenWorkstream,
+            onSelect: () => setLifecycle('active')
+          }
+        ])
+  ]
 
   const items: ItemSpec[] = [
     ...(canOpenSessionWindow()
@@ -200,6 +245,7 @@ function useSessionActions({
         onCopyError={err => notifyError(err, r.copyIdFailed)}
         text={sessionId}
       />
+      {lifecycleItems.map(spec => renderMenuItem(Item, spec))}
       {items.map(spec => renderMenuItem(Item, spec))}
     </>
   )
@@ -233,7 +279,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         <DropdownMenuContent
           align={align}
           aria-label={t.sidebar.row.actionsFor(actions.title)}
-          className="w-40"
+          className="w-48"
           sideOffset={sideOffset}
         >
           {renderItems(DropdownMenuItem)}
@@ -256,7 +302,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
     <>
       <ContextMenu>
         <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-40">
+        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-48">
           {renderItems(ContextMenuItem)}
         </ContextMenuContent>
       </ContextMenu>

@@ -175,3 +175,145 @@ class TestTodoStoreBounds:
         items = store.read()
         assert [i["content"] for i in items] == ["write the report", "review PR"]
         assert "[truncated]" not in items[0]["content"]
+
+
+class TestTiming:
+    """Wall-clock per-item timing (started_at on -> in_progress, ended_at on
+    -> completed/cancelled). These prove the gap: an unmeasured item returns
+    None while a measured one returns a frozen span."""
+
+    def test_pending_item_has_no_elapsed(self):
+        store = TodoStore()
+        store.write([{"id": "a", "content": "task", "status": "pending"}])
+        assert store.elapsed_for("a") is None
+
+    def test_in_progress_starts_clock(self):
+        store = TodoStore()
+        store.write([{"id": "a", "content": "task", "status": "pending"}])
+        store.write([{"id": "a", "status": "in_progress"}], merge=True)
+        elapsed = store.elapsed_for("a")
+        assert elapsed is not None and elapsed >= 0
+
+    def test_completed_freezes_elapsed(self, monkeypatch):
+        import tools.todo_tool as todo_mod
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        store.write([{"id": "a", "content": "task", "status": "pending"}])
+        clock["t"] = 1000.0
+        store.write([{"id": "a", "status": "in_progress"}], merge=True)
+        clock["t"] = 1005.0
+        store.write([{"id": "a", "status": "completed"}], merge=True)
+        assert store.elapsed_for("a") == 5.0
+        # Time marches on, but a finished item's span stays frozen.
+        clock["t"] = 1100.0
+        assert store.elapsed_for("a") == 5.0
+
+    def test_completed_without_in_progress_has_no_elapsed(self):
+        store = TodoStore()
+        store.write([{"id": "a", "content": "task", "status": "pending"}])
+        store.write([{"id": "a", "status": "completed"}], merge=True)
+        assert store.elapsed_for("a") is None
+
+    def test_cancelled_freezes_elapsed(self, monkeypatch):
+        import tools.todo_tool as todo_mod
+        clock = {"t": 0.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        store.write([{"id": "a", "content": "task", "status": "in_progress"}])
+        clock["t"] = 3.0
+        store.write([{"id": "a", "status": "cancelled"}], merge=True)
+        assert store.elapsed_for("a") == 3.0
+
+    def test_reopen_resumes_accrual(self, monkeypatch):
+        import tools.todo_tool as todo_mod
+        clock = {"t": 0.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        store.write([{"id": "a", "content": "task", "status": "in_progress"}])
+        clock["t"] = 4.0
+        store.write([{"id": "a", "status": "completed"}], merge=True)
+        assert store.elapsed_for("a") == 4.0
+        # Re-open: ended_at clears, span keeps growing from the original start.
+        clock["t"] = 10.0
+        store.write([{"id": "a", "status": "in_progress"}], merge=True)
+        assert store.elapsed_for("a") == 10.0
+
+    def test_result_json_exposes_elapsed_and_total(self, monkeypatch):
+        import tools.todo_tool as todo_mod
+        clock = {"t": 100.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        store.write([
+            {"id": "a", "content": "A", "status": "in_progress"},
+            {"id": "b", "content": "B", "status": "pending"},
+        ])
+        clock["t"] = 102.0
+        result = json.loads(todo_tool(
+            todos=[{"id": "a", "status": "completed"}], merge=True, store=store,
+        ))
+        by_id = {i["id"]: i for i in result["todos"]}
+        assert by_id["a"]["elapsed_seconds"] == 2.0
+        assert "started_at" in by_id["a"] and "ended_at" in by_id["a"]
+        # b never started -> unmeasured.
+        assert by_id["b"]["elapsed_seconds"] is None
+        assert result["summary"]["total_elapsed_seconds"] == 2.0
+
+    def test_read_only_path_preserves_timing(self, monkeypatch):
+        import tools.todo_tool as todo_mod
+        clock = {"t": 0.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        store.write([{"id": "a", "content": "A", "status": "in_progress"}])
+        clock["t"] = 7.0
+        store.write([{"id": "a", "status": "completed"}], merge=True)
+        # Pure read (todos=None) must not re-stamp or reset the clock.
+        result = json.loads(todo_tool(store=store))
+        assert result["todos"][0]["elapsed_seconds"] == 7.0
+
+
+class TestTimingHydration:
+    """Timing must survive history replay: the gateway recreates the AIAgent
+    (and its TodoStore) per message, then replays the last todo result. The
+    raw started_at/ended_at carried in that result must be adopted, not reset.
+    """
+
+    def test_hydration_round_trip_preserves_frozen_span(self, monkeypatch):
+        import tools.todo_tool as todo_mod
+        clock = {"t": 500.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        store.write([
+            {"id": "a", "content": "A", "status": "in_progress"},
+            {"id": "b", "content": "B", "status": "pending"},
+        ])
+        clock["t"] = 506.0
+        first = json.loads(todo_tool(
+            todos=[{"id": "a", "status": "completed"}], merge=True, store=store,
+        ))
+
+        # Fresh store (simulates per-message AIAgent recreation). Replay items
+        # carrying started_at/ended_at in REPLACE mode, as _hydrate_todo_store
+        # does.
+        clock["t"] = 9999.0  # wall clock advanced a lot during the gap
+        fresh = TodoStore()
+        fresh.write(first["todos"], merge=False)
+        # The closed span is preserved exactly, not recomputed against now.
+        assert fresh.elapsed_for("a") == 6.0
+        assert fresh.elapsed_for("b") is None
+
+    def test_live_clock_wins_over_replayed(self, monkeypatch):
+        import tools.todo_tool as todo_mod
+        clock = {"t": 0.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        # Item already has a live started_at at t=0.
+        store.write([{"id": "a", "content": "A", "status": "in_progress"}])
+        # Replayed payload claims a different (later) started_at — must NOT
+        # clobber the live one (setdefault semantics).
+        store.write(
+            [{"id": "a", "status": "in_progress", "started_at": 50.0}],
+            merge=True,
+        )
+        clock["t"] = 10.0
+        assert store.elapsed_for("a") == 10.0  # from the live t=0 start, not 50

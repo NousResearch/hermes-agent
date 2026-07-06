@@ -74,6 +74,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
   { id: 'session.next', category: 'session', defaults: ['ctrl+tab'] },
   { id: 'session.prev', category: 'session', defaults: ['ctrl+shift+tab'] },
+  { id: 'workstream.navNext', category: 'session', defaults: ['alt+j'] },
+  { id: 'workstream.navPrev', category: 'session', defaults: ['alt+k'] },
+  { id: 'workstream.cycleFilter', category: 'session', defaults: ['alt+m'] },
+  { id: 'view.focusWorkstream', category: 'view', defaults: ['alt+,'] },
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
@@ -90,6 +94,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'nav.artifacts', category: 'navigation', defaults: [] },
   { id: 'nav.cron', category: 'navigation', defaults: [] },
   { id: 'nav.agents', category: 'navigation', defaults: [] },
+  { id: 'nav.workstreams', category: 'navigation', defaults: [] },
+  { id: 'nav.observatory', category: 'navigation', defaults: [] },
 
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },

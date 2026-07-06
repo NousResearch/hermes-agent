@@ -1,0 +1,131 @@
+{
+  "golden": [
+    {
+      "id": "20260625_182728_796a0b",
+      "status": "estimated",
+      "usd": 10.8433225
+    },
+    {
+      "id": "workflow-f0af9445d711",
+      "status": "estimated",
+      "usd": 7.443037500000001
+    },
+    {
+      "id": "20260626_210603_a89361",
+      "status": "estimated",
+      "usd": 6.5652575
+    },
+    {
+      "id": "20260626_121408_55b8bf",
+      "status": "estimated",
+      "usd": 0.898183
+    },
+    {
+      "id": "20260626_121044_62347e",
+      "status": "estimated",
+      "usd": 1.083771
+    },
+    {
+      "id": "cron_ac298cb32e3f_20260624_072741",
+      "status": "estimated",
+      "usd": 0.527117
+    },
+    {
+      "id": "cron_f7e502aac322_20260624_090724",
+      "status": "estimated",
+      "usd": 0.040248
+    },
+    {
+      "id": "20260623_121416_2b8dcd8e",
+      "status": "estimated",
+      "usd": 143.4804435
+    },
+    {
+      "id": "20260625_223949_688264e4",
+      "status": "estimated",
+      "usd": 90.17228725
+    },
+    {
+      "id": "20260626_122059_a54b8d80",
+      "status": "estimated",
+      "usd": 105.240653
+    },
+    {
+      "id": "cron_9fb716db0b0d_20260626_210706",
+      "status": "estimated",
+      "usd": 18.029925
+    },
+    {
+      "id": "cron_9fb716db0b0d_20260626_214603",
+      "status": "estimated",
+      "usd": 12.320065
+    },
+    {
+      "id": "20260621_232921_2e2227e7",
+      "status": "estimated",
+      "usd": 193.4837395
+    },
+    {
+      "id": "20260623_130134_063a4a61",
+      "status": "estimated",
+      "usd": 123.16787175
+    },
+    {
+      "id": "syn_anthropic_opus",
+      "status": "estimated",
+      "usd": 1.35
+    },
+    {
+      "id": "syn_anthropic_sonnet",
+      "status": "estimated",
+      "usd": 0.8625
+    },
+    {
+      "id": "syn_openai_gpt4o",
+      "status": "estimated",
+      "usd": 0.6
+    },
+    {
+      "id": "syn_bedrock_eu",
+      "status": "estimated",
+      "usd": 0.81
+    },
+    {
+      "id": "syn_bedrock_apac_opus",
+      "status": "estimated",
+      "usd": 1.45
+    },
+    {
+      "id": "syn_mislabel_gpt_bedrock",
+      "status": "estimated",
+      "usd": 3.75
+    },
+    {
+      "id": "syn_mislabel_claude_codex",
+      "status": "estimated",
+      "usd": 1.35
+    },
+    {
+      "id": "syn_codex_unknown_gpt",
+      "status": "included",
+      "usd": 0.0
+    },
+    {
+      "id": "syn_unknown_model",
+      "status": "unknown",
+      "usd": 0.0
+    },
+    {
+      "id": "syn_zero",
+      "status": "estimated",
+      "usd": 0.0
+    }
+  ],
+  "meta": {
+    "captured_at": 1782531200.124245,
+    "codex_pricing_version": "openai-api-2026-06 (company OAuth = real API price, tier=priority)",
+    "codex_tier": "priority",
+    "pricing_ok": true,
+    "row_count": 24
+  }
+}

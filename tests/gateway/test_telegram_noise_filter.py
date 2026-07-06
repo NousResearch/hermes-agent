@@ -4,6 +4,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run import (
+    _gateway_status_key,
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
 )
@@ -30,7 +31,6 @@ CHAT_PLATFORMS = [
 
 NOISY_STATUS_MESSAGES = [
     "🗜️ Preflight compression check before sending...",
-    "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
@@ -43,7 +43,6 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
     noisy_messages = [
         "⚠ Auxiliary title generation failed: HTTP 400: Operation contains cybersecurity risk",
         "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
-        "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
         "ℹ Configured compression model 'small-model' failed (timeout). Recovered using main model — check auxiliary.compression.model in config.yaml.",
         "⏳ Retrying in 4.2s (attempt 1/3)...",
         "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
@@ -52,6 +51,16 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
 
     for message in noisy_messages:
         assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
+
+
+def test_chat_gateways_keep_compaction_lifecycle_status():
+    message = (
+        "🗜️ Compacting context with 🧠 claude-test: "
+        "summarizing earlier conversation so I can continue... (10s elapsed)"
+    )
+
+    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message) == message
+    assert _gateway_status_key("lifecycle", message) == "compacting"
 
 
 def test_programmatic_surfaces_keep_raw_status():

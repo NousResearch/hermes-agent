@@ -74,6 +74,17 @@ gateway:
     branched_one:          "⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)\n원본: `{parent}`\n분기: `{new}`\n원본으로 돌아가려면 `/resume`을 사용하세요."
     branched_many:         "⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)\n원본: `{parent}`\n분기: `{new}`\n원본으로 돌아가려면 `/resume`을 사용하세요."
 
+  forktopic:
+    telegram_only:         "⚠️ `/forktopic` only works from Telegram."
+    no_chat:               "⚠️ Cannot create a topic without a Telegram chat id."
+    adapter_missing:       "⚠️ Telegram adapter cannot create forum topics in this gateway."
+    create_topic_failed:   "⚠️ Failed to create Telegram topic: {error}"
+    bind_failed:           "⚠️ Topic was not forked: {error}"
+    seed_message:          "⑂ **Forked conversation: {title}**\n\nCopied {count} user message(s) from the parent session. Continue this branch here.\n\nParent: `{parent}`\nFork: `{new}`"
+    created_one:           "⑂ Forked into Telegram topic **{title}** ({count} message copied)\nThread: `{thread}`\nParent: `{parent}`\nFork: `{new}`\n{url}"
+    created_many:          "⑂ Forked into Telegram topic **{title}** ({count} messages copied)\nThread: `{thread}`\nParent: `{parent}`\nFork: `{new}`\n{url}"
+    created_seed_send_failed: "⚠️ Forked topic **{title}**, but seed send failed: {error}\nThread: `{thread}`\nParent: `{parent}`\nFork: `{new}`\n{url}"
+
   commands:
     usage:                 "사용법: `/commands [page]`"
     skill_header:          "⚡ **스킬 명령**:"

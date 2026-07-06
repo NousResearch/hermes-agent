@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hermes-agent/agent_receipt.schema.json",
+  "title": "agent_receipt",
+  "description": "Structured completion receipt for reusable agent work (delegated subagent reports, Kanban completions, agent-driven cron output). The structured superset of the verify-status contract: every sources/commands entry carries its own verified|unverified status.",
+  "type": "object",
+  "required": ["claim_id", "producer", "task", "stop_reason", "sources", "touched", "commands", "blockers", "next_owner"],
+  "additionalProperties": true,
+  "properties": {
+    "claim_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable id for this completion claim (anchor, non-empty)."
+    },
+    "producer": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Profile / lane / persona that produced the work (anchor, non-empty). NOT the model id — the harness already records that."
+    },
+    "task": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One line: what the work was (anchor, non-empty)."
+    },
+    "stop_reason": {
+      "type": "string",
+      "enum": ["completed", "blocked", "partial", "timeout", "aborted"],
+      "description": "Why the work stopped (anchor)."
+    },
+    "sources": {
+      "type": "array",
+      "description": "What was read/consulted. May be [] when nothing was read.",
+      "items": {
+        "type": "object",
+        "required": ["ref", "status"],
+        "properties": {
+          "ref": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "enum": ["verified", "unverified"]}
+        }
+      }
+    },
+    "touched": {
+      "type": "array",
+      "description": "Files/URLs created or modified. May be [].",
+      "items": {"type": "string"}
+    },
+    "commands": {
+      "type": "array",
+      "description": "Tests / verifications run WITH pass-fail status. NOT a restatement of the harness tool_trace. May be [].",
+      "items": {
+        "type": "object",
+        "required": ["cmd", "status"],
+        "properties": {
+          "cmd": {"type": "string", "minLength": 1},
+          "result": {"type": "string"},
+          "status": {"type": "string", "enum": ["verified", "unverified"]}
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "description": "Open blockers. May be [].",
+      "items": {"type": "string"}
+    },
+    "next_owner": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Who/what picks this up next, or the literal string \"none\"."
+    }
+  }
+}

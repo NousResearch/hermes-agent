@@ -158,6 +158,77 @@ class TestBuildChildProgressCallback:
         assert parent_cb.call_args.args[0] == "subagent.thinking"
         assert parent_cb.call_args.args[2] == "some reasoning text"
 
+    def test_tool_completed_relays_duration_to_gateway(self):
+        """tool.completed now relays a subagent.tool_completed event carrying
+        the tool name + duration + is_error (so the gateway can append a
+        benchmark suffix). It must NOT forward the result payload — that's
+        subagent output, kept out of progress for the same privacy reason
+        tool-start previews are input-only."""
+        parent = MagicMock()
+        parent._delegate_spinner = None
+        parent_cb = MagicMock()
+        parent.tool_progress_callback = parent_cb
+
+        cb = _build_child_progress_callback(
+            0, "test goal", parent, subagent_id="sa-0-abc123"
+        )
+        cb(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            duration=0.0123,
+            is_error=False,
+            result="SECRET OUTPUT should not be forwarded",
+        )
+
+        # Exactly one relay, of the right event type.
+        relayed = [c for c in parent_cb.call_args_list if c.args[0] == "subagent.tool_completed"]
+        assert len(relayed) == 1
+        call = relayed[0]
+        assert call.args[1] == "terminal"  # tool name
+        assert call.kwargs.get("duration") == 0.0123
+        assert call.kwargs.get("is_error") is False
+        assert call.kwargs.get("subagent_id") == "sa-0-abc123"
+        # Result payload is never forwarded anywhere in the call.
+        assert "SECRET OUTPUT" not in str(call.args)
+        assert "SECRET OUTPUT" not in str(call.kwargs)
+
+    def test_tool_completed_not_relayed_without_parent_callback(self):
+        """CLI-only path (no parent_cb): tool.completed is a no-op — the
+        spinner renders nothing on completion, so no relay and no crash."""
+        buf = io.StringIO()
+        spinner = KawaiiSpinner("delegating")
+        spinner._out = buf
+        spinner.running = True
+
+        parent = MagicMock()
+        parent._delegate_spinner = spinner
+        parent.tool_progress_callback = None
+
+        cb = _build_child_progress_callback(0, "test goal", parent)
+        # Should not raise.
+        cb("tool.completed", "terminal", None, None, duration=0.5, is_error=False)
+        # Nothing rendered for completion on the CLI path.
+        assert "0.5" not in buf.getvalue()
+
+    def test_tool_completed_error_flag_relayed(self):
+        """An errored child tool relays is_error=True so the gateway can render
+        the 'failed after' suffix."""
+        parent = MagicMock()
+        parent._delegate_spinner = None
+        parent_cb = MagicMock()
+        parent.tool_progress_callback = parent_cb
+
+        cb = _build_child_progress_callback(
+            0, "test goal", parent, subagent_id="sa-0-xyz"
+        )
+        cb("tool.completed", "terminal", None, None, duration=1.0, is_error=True)
+
+        relayed = [c for c in parent_cb.call_args_list if c.args[0] == "subagent.tool_completed"]
+        assert len(relayed) == 1
+        assert relayed[0].kwargs.get("is_error") is True
+
     def test_parallel_callbacks_independent(self):
         """Each child's callback batches tool names independently."""
         parent = MagicMock()

@@ -818,6 +818,28 @@ export interface Translations {
     tokens: (value: number | string) => string
   }
 
+  contextInspector: {
+    title: string
+    close: string
+    bucketGroupLabel: string
+    buckets: Record<'all' | 'assistant' | 'system' | 'tools' | 'user', string>
+    tabs: Record<'raw' | 'transcript', string>
+    sourceFallback: string
+    sourceHelp: string
+    sourceHelpLabel: string
+    loading: string
+    empty: string
+    error: (message: string) => string
+    noMessages: string
+    collapseSystem: string
+    expandSystem: string
+    systemCollapsed: string
+    fullPayload: string
+    truncated: string
+    index: (index: number) => string
+    tokens: (tokens: string) => string
+  }
+
   commandCenter: {
     close: string
     paletteTitle: string
@@ -1305,6 +1327,10 @@ export interface Translations {
       rename: string
       archive: string
       newWindow: string
+      closeWorkstream: string
+      markRestartRequired: string
+      markSafeToDelete: string
+      reopenWorkstream: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string
@@ -1705,6 +1731,7 @@ export interface Translations {
         }
         empty: string
         loading: string
+        inspectFullContext: string
         percentFull: (percent: number) => string
         title: string
         tokenSummary: (used: string, max: string) => string

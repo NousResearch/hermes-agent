@@ -1,0 +1,275 @@
+{
+  "meta": {
+    "captured_at": 1782531200.124245,
+    "codex_pricing_version": "openai-api-2026-06 (company OAuth = real API price, tier=priority)",
+    "codex_tier": "priority",
+    "pricing_ok": true,
+    "row_count": 24
+  },
+  "rows": [
+    {
+      "billing_base_url": "https://chatgpt.com/backend-api/codex",
+      "billing_provider": "openai-codex",
+      "cache_read_tokens": 3240448,
+      "cache_write_tokens": 0,
+      "id": "20260625_182728_796a0b",
+      "input_tokens": 456829,
+      "model": "gpt-5.5",
+      "output_tokens": 14432,
+      "parent_session_id": "20260625_182339_b8591e38"
+    },
+    {
+      "billing_base_url": "https://chatgpt.com/backend-api/codex/",
+      "billing_provider": "openai-codex",
+      "cache_read_tokens": 760320,
+      "cache_write_tokens": 0,
+      "id": "workflow-f0af9445d711",
+      "input_tokens": 450429,
+      "model": "gpt-5.5",
+      "output_tokens": 11497,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": "https://chatgpt.com/backend-api/codex",
+      "billing_provider": "openai-codex",
+      "cache_read_tokens": 846336,
+      "cache_write_tokens": 0,
+      "id": "20260626_210603_a89361",
+      "input_tokens": 371419,
+      "model": "gpt-5.5",
+      "output_tokens": 11528,
+      "parent_session_id": "20260626_205127_0ae5773e"
+    },
+    {
+      "billing_base_url": "https://chatgpt.com/backend-api/codex",
+      "billing_provider": "openai-codex",
+      "cache_read_tokens": 367616,
+      "cache_write_tokens": 0,
+      "id": "20260626_121408_55b8bf",
+      "input_tokens": 88983,
+      "model": "gpt-5.4",
+      "output_tokens": 8982,
+      "parent_session_id": "20260625_234004_f01a0af5"
+    },
+    {
+      "billing_base_url": "https://chatgpt.com/backend-api/codex",
+      "billing_provider": "openai-codex",
+      "cache_read_tokens": 668672,
+      "cache_write_tokens": 0,
+      "id": "20260626_121044_62347e",
+      "input_tokens": 79663,
+      "model": "gpt-5.4",
+      "output_tokens": 11704,
+      "parent_session_id": "20260625_234004_f01a0af5"
+    },
+    {
+      "billing_base_url": "https://chatgpt.com/backend-api/codex/",
+      "billing_provider": "openai-codex",
+      "cache_read_tokens": 136704,
+      "cache_write_tokens": 0,
+      "id": "cron_ac298cb32e3f_20260624_072741",
+      "input_tokens": 60218,
+      "model": "us.anthropic.claude-opus-4-8",
+      "output_tokens": 6307,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": "https://chatgpt.com/backend-api/codex/",
+      "billing_provider": "openai-codex",
+      "cache_read_tokens": 4096,
+      "cache_write_tokens": 0,
+      "id": "cron_f7e502aac322_20260624_090724",
+      "input_tokens": 6270,
+      "model": "us.anthropic.claude-opus-4-8",
+      "output_tokens": 274,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": "https://bedrock-runtime.ca-central-1.amazonaws.com",
+      "billing_provider": "bedrock",
+      "cache_read_tokens": 98527122,
+      "cache_write_tokens": 4798954,
+      "id": "20260623_121416_2b8dcd8e",
+      "input_tokens": 10133154,
+      "model": "us.anthropic.claude-opus-4-8",
+      "output_tokens": 542306,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": "https://bedrock-runtime.ca-central-1.amazonaws.com",
+      "billing_provider": "bedrock",
+      "cache_read_tokens": 46600092,
+      "cache_write_tokens": 2284209,
+      "id": "20260625_223949_688264e4",
+      "input_tokens": 9180207,
+      "model": "us.anthropic.claude-opus-4-8",
+      "output_tokens": 267796,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": "https://bedrock-runtime.ca-central-1.amazonaws.com",
+      "billing_provider": "bedrock",
+      "cache_read_tokens": 56569611,
+      "cache_write_tokens": 4003026,
+      "id": "20260626_122059_a54b8d80",
+      "input_tokens": 8869797,
+      "model": "us.anthropic.claude-opus-4-8",
+      "output_tokens": 303518,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": "https://bedrock-runtime.ca-central-1.amazonaws.com",
+      "billing_provider": "bedrock",
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "id": "cron_9fb716db0b0d_20260626_210706",
+      "input_tokens": 3556605,
+      "model": "claude-opus-4-8",
+      "output_tokens": 9876,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": "https://bedrock-runtime.ca-central-1.amazonaws.com",
+      "billing_provider": "bedrock",
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "id": "cron_9fb716db0b0d_20260626_214603",
+      "input_tokens": 2433068,
+      "model": "claude-opus-4-8",
+      "output_tokens": 6189,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": "https://bedrock-runtime.ca-central-1.amazonaws.com",
+      "billing_provider": "bedrock",
+      "cache_read_tokens": 227600734,
+      "cache_write_tokens": 9220442,
+      "id": "20260621_232921_2e2227e7",
+      "input_tokens": 264587,
+      "model": "us.anthropic.claude-opus-4-8",
+      "output_tokens": 829307,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": "https://bedrock-runtime.ca-central-1.amazonaws.com",
+      "billing_provider": "bedrock",
+      "cache_read_tokens": 146583576,
+      "cache_write_tokens": 5843131,
+      "id": "20260623_130134_063a4a61",
+      "input_tokens": 121728,
+      "model": "us.anthropic.claude-opus-4-8",
+      "output_tokens": 509915,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": null,
+      "billing_provider": "anthropic",
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "id": "syn_anthropic_opus",
+      "input_tokens": 120000,
+      "model": "claude-opus-4-8",
+      "output_tokens": 30000,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": null,
+      "billing_provider": "anthropic",
+      "cache_read_tokens": 50000,
+      "cache_write_tokens": 10000,
+      "id": "syn_anthropic_sonnet",
+      "input_tokens": 120000,
+      "model": "claude-sonnet-4-5",
+      "output_tokens": 30000,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": null,
+      "billing_provider": "openai",
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "id": "syn_openai_gpt4o",
+      "input_tokens": 120000,
+      "model": "gpt-4o",
+      "output_tokens": 30000,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": null,
+      "billing_provider": "bedrock",
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "id": "syn_bedrock_eu",
+      "input_tokens": 120000,
+      "model": "eu.anthropic.claude-sonnet-4-5",
+      "output_tokens": 30000,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": null,
+      "billing_provider": "bedrock",
+      "cache_read_tokens": 200000,
+      "cache_write_tokens": 0,
+      "id": "syn_bedrock_apac_opus",
+      "input_tokens": 120000,
+      "model": "apac.anthropic.claude-opus-4-8",
+      "output_tokens": 30000,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": null,
+      "billing_provider": "bedrock",
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "id": "syn_mislabel_gpt_bedrock",
+      "input_tokens": 120000,
+      "model": "gpt-5.5",
+      "output_tokens": 30000,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": null,
+      "billing_provider": "openai-codex",
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "id": "syn_mislabel_claude_codex",
+      "input_tokens": 120000,
+      "model": "us.anthropic.claude-opus-4-8",
+      "output_tokens": 30000,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": null,
+      "billing_provider": "openai-codex",
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "id": "syn_codex_unknown_gpt",
+      "input_tokens": 120000,
+      "model": "gpt-9.9-imaginary",
+      "output_tokens": 30000,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": null,
+      "billing_provider": "mysteryprov",
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "id": "syn_unknown_model",
+      "input_tokens": 120000,
+      "model": "totally-made-up-model",
+      "output_tokens": 30000,
+      "parent_session_id": null
+    },
+    {
+      "billing_base_url": null,
+      "billing_provider": "anthropic",
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "id": "syn_zero",
+      "input_tokens": 0,
+      "model": "claude-opus-4-8",
+      "output_tokens": 0,
+      "parent_session_id": null
+    }
+  ]
+}

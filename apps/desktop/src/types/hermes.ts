@@ -480,6 +480,54 @@ export interface ContextBreakdown {
   model?: string
 }
 
+export type ContextSliceId =
+  | 'system_prompt'
+  | 'rules'
+  | 'skills'
+  | 'memory'
+  | 'tool_definitions'
+  | 'mcp'
+  | 'subagent_definitions'
+  | 'conversation'
+
+export type ContextBucket = 'conversation' | 'system' | 'tools'
+export type ContextMessageRole = 'assistant' | 'system' | 'tool' | 'user'
+export type ContextSourceKind = 'exact_last_sent' | 'reconstructed_base'
+export type ContextSourceAccuracy = 'cached_exact' | 'reconstructed_current'
+export type ContextState = 'agent_not_built' | 'ready'
+
+export interface ContextSlice {
+  bucket: ContextBucket
+  content_text: string
+  id: ContextSliceId
+  label: string
+  source_accuracy: ContextSourceAccuracy
+  tokens: number
+  truncated: boolean
+}
+
+export interface ContextMessage {
+  content_text: string
+  index: number
+  raw: Record<string, unknown>
+  role: ContextMessageRole
+  tokens: number
+}
+
+export interface ContextFull {
+  available: boolean
+  context_max: number
+  context_used: number
+  exact_capture_available: boolean
+  messages: ContextMessage[]
+  model: string
+  raw_unredacted: boolean
+  slices: ContextSlice[]
+  source: ContextSourceKind
+  source_label: string
+  state: ContextState
+}
+
 export interface AnalyticsDailyEntry {
   actual_cost: number
   api_calls: number

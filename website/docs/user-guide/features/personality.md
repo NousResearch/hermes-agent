@@ -35,7 +35,7 @@ $HERMES_HOME/SOUL.md
 - Hermes loads `SOUL.md` only from `HERMES_HOME`
 - Hermes does not look in the current working directory for `SOUL.md`
 - If `SOUL.md` exists but is empty, or cannot be loaded, Hermes falls back to a built-in default identity
-- If `SOUL.md` has content, that content is injected verbatim after security scanning and truncation
+- If `SOUL.md` has content, Hermes expands any explicit include/import directives, then injects the expanded content directly after security scanning and truncation
 - SOUL.md is **not** duplicated in the context files section — it appears only once, as the identity
 
 That makes `SOUL.md` a true per-user or per-instance identity, not just an additive layer.
@@ -118,10 +118,10 @@ You optimize for truth, clarity, and usefulness over politeness theater.
 
 ## What Hermes injects into the prompt
 
-`SOUL.md` content goes directly into slot #1 of the system prompt — the agent identity position. No wrapper language is added around it.
+`SOUL.md` content goes directly into slot #1 of the system prompt — the agent identity position. No wrapper language is added around it. If the file contains explicit `@include` / `@import` directive lines, Hermes replaces those lines with the referenced markdown fragments first; the expanded identity is what gets injected.
 
-The content goes through:
-- prompt-injection scanning
+The expanded content goes through:
+- prompt-injection scanning of the root file, each included fragment, and the final expanded identity
 - truncation if it is too large
 
 If the file is empty, whitespace-only, or cannot be read, Hermes falls back to a built-in default identity ("You are Hermes Agent, an intelligent AI assistant created by Nous Research..."). This fallback also applies when `skip_context_files` is set (e.g., in subagent/delegation contexts).

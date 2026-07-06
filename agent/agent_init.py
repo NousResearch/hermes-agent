@@ -637,6 +637,10 @@ def init_agent(
     agent._last_activity_ts: float = time.time()
     agent._last_activity_desc: str = "initializing"
     agent._current_tool: str | None = None
+    agent._current_tool_preview = None
+    agent._current_tool_started_at = None
+    agent._last_completed_tool = None
+    agent._recent_tool_activity = []
     agent._api_call_count: int = 0
     # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
     # Set on internal forks (e.g. background_review) that must keep ``tools[]``
@@ -730,8 +734,11 @@ def init_agent(
 
     # Resolve per-provider / per-model request timeout once up front so
     # every client construction path below (Anthropic native, OpenAI-wire,
-    # router-based implicit auth) can apply it consistently.  Bedrock
-    # Claude uses its own timeout path and is not covered here.
+    # router-based implicit auth, and Bedrock Claude) can apply it
+    # consistently. Bedrock threads this into build_anthropic_bedrock_client
+    # below so the AnthropicBedrock read timeout is configurable via
+    # providers.bedrock.request_timeout_seconds (or per-model timeout_seconds)
+    # instead of being pinned at the hard-coded 900s default.
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
     if agent.api_mode == "anthropic_messages":
@@ -744,7 +751,9 @@ def init_agent(
             _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
             _br_region = _region_match.group(1) if _region_match else "us-east-1"
             agent._bedrock_region = _br_region
-            agent._anthropic_client = build_anthropic_bedrock_client(_br_region)
+            agent._anthropic_client = build_anthropic_bedrock_client(
+                _br_region, timeout=_provider_timeout
+            )
             agent._anthropic_api_key = "aws-sdk"
             agent._anthropic_base_url = base_url
             agent._is_anthropic_oauth = False

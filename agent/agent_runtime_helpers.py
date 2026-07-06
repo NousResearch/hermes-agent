@@ -2437,9 +2437,13 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # and prompt caching byte-stable, per the #56980 review). Only touch turns
     # that still carry tool_calls — a content-less, tool-call-less assistant
     # turn is handled by the thinking-only drop downstream.
+    # Lazy copy: the common case strips nothing, so avoid rebuilding the whole
+    # list on every pre-API call. Only allocate ``rebuilt`` once we actually
+    # hit a turn that needs its empty ``content`` stripped; until then keep
+    # iterating the original ``messages`` untouched.
     stripped_empty_content = 0
-    rebuilt: List[Dict[str, Any]] = []
-    for msg in messages:
+    rebuilt: Optional[List[Dict[str, Any]]] = None
+    for idx, msg in enumerate(messages):
         if (
             isinstance(msg, dict)
             and msg.get("role") == "assistant"
@@ -2449,11 +2453,15 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             and isinstance(msg.get("content"), str)
             and not msg["content"].strip()
         ):
+            if rebuilt is None:
+                rebuilt = list(messages[:idx])
             msg = {k: v for k, v in msg.items() if k != "content"}
             stripped_empty_content += 1
-        rebuilt.append(msg)
+            rebuilt.append(msg)
+        elif rebuilt is not None:
+            rebuilt.append(msg)
     if stripped_empty_content:
-        messages = rebuilt
+        messages = rebuilt  # type: ignore[assignment]
         _ra().logger.debug(
             "Pre-call sanitizer: dropped empty text content on %d assistant "
             "tool-call turn(s)",

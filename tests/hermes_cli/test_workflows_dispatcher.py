@@ -482,6 +482,48 @@ def test_agent_task_text_prompt_interpolates_inline_templates(tmp_path, monkeypa
     assert "${ node.prepare.output.repo }" not in task.body
 
 
+def test_agent_task_structured_prompt_remains_supported_and_pretty_printed(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    wfdb.init_db()
+
+    spec = WorkflowSpec.model_validate({
+        "id": "structured_prompt_demo",
+        "name": "Structured Prompt Demo",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "ask": {
+                "type": "agent_task",
+                "profile": "worker",
+                "prompt": {
+                    "task": "Handle ${ input.topic }",
+                    "result_contract": {"summary": "string"},
+                },
+            },
+        },
+    })
+
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        wfdb.start_execution(
+            conn,
+            spec.id,
+            input_data={"topic": "workflow prompts"},
+            trigger_type="manual",
+        )
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+    with kb.connect() as kconn:
+        body = kb.list_tasks(kconn)[0].body or ""
+
+    assert '"task": "Handle workflow prompts"' in body
+    assert "\n  " in body
+
+
 def test_agent_task_resumes_from_summary_only_json_completion(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()

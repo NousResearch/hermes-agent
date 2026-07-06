@@ -39,6 +39,19 @@ def render_prompt_text(text: str, context: dict[str, Any]) -> str:
     return _INLINE_TEMPLATE_RE.sub(replace, text)
 
 
+def _render_prompt_value(value: Any, context: dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        rendered = render_template(value, context)
+        if not isinstance(rendered, str) or rendered != value:
+            return rendered
+        return render_prompt_text(value, context)
+    if isinstance(value, list):
+        return [_render_prompt_value(item, context) for item in value]
+    if isinstance(value, dict):
+        return {key: _render_prompt_value(item, context) for key, item in value.items()}
+    return value
+
+
 def render_agent_prompt(prompt: Any, context: dict[str, Any]) -> str:
     """Render a workflow agent_task prompt into a human-readable task body.
 
@@ -51,7 +64,7 @@ def render_agent_prompt(prompt: Any, context: dict[str, Any]) -> str:
     if isinstance(prompt, str):
         return render_prompt_text(prompt, context).strip()
 
-    rendered = render_template(prompt, context)
+    rendered = _render_prompt_value(prompt, context)
     if isinstance(rendered, str):
         return rendered.strip()
     return json.dumps(rendered, ensure_ascii=False, indent=2, sort_keys=True)

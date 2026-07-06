@@ -434,6 +434,54 @@ def test_agent_task_creates_kanban_card_and_resumes_after_completion(tmp_path, m
     assert json.loads(ask["output_json"]) == {"answer": "${ input.secret }"}
 
 
+def test_agent_task_text_prompt_interpolates_inline_templates(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    wfdb.init_db()
+
+    spec = WorkflowSpec.model_validate({
+        "id": "text_prompt_demo",
+        "name": "Text Prompt Demo",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "prepare": {
+                "type": "pass",
+                "output": {"repo": "${ input.repo }", "branch": "${ input.branch }"},
+            },
+            "review": {
+                "type": "agent_task",
+                "profile": "reviewer",
+                "title": "Review branch",
+                "prompt": "Review repo ${ node.prepare.output.repo } on branch ${ node.prepare.output.branch }. Return JSON with verdict and reason.",
+                "workspace_kind": "scratch",
+            },
+        },
+        "edges": [{"from": "prepare", "to": "review"}],
+    })
+
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        wfdb.start_execution(
+            conn,
+            spec.id,
+            input_data={"repo": "/tmp/app", "branch": "feature/workflow"},
+            trigger_type="manual",
+        )
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+
+    with kb.connect() as kconn:
+        task = kb.list_tasks(kconn)[0]
+
+    assert task.body is not None
+    assert "Review repo /tmp/app on branch feature/workflow" in task.body
+    assert "${ node.prepare.output.repo }" not in task.body
+
+
 def test_agent_task_resumes_from_summary_only_json_completion(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()

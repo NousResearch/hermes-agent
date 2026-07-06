@@ -11,7 +11,8 @@ from typing import Any
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import workflows_db as wfdb
-from hermes_cli.workflows_engine import EngineResult, render_template, run_in_memory_until_waiting
+from hermes_cli.workflows_engine import EngineResult, run_in_memory_until_waiting
+from hermes_cli.workflows_prompts import render_agent_prompt
 from hermes_cli.workflows_spec import WorkflowSpec
 
 
@@ -182,10 +183,7 @@ def _resume_due_retries(conn: sqlite3.Connection, *, now: int) -> None:
 
 
 def _render_agent_prompt(node: Any, context: dict[str, Any]) -> str:
-    rendered = render_template(node.prompt, context)
-    if isinstance(rendered, str):
-        return rendered
-    return _json_dumps(rendered)
+    return render_agent_prompt(node.prompt, context)
 
 
 def _create_or_get_agent_task(

@@ -1107,6 +1107,21 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             tool_calls.append(tc_dict)
         msg["tool_calls"] = tool_calls
 
+    # Bit-pack (output, reasoning) token counts onto the assistant row.
+    # conversation_loop stashes the call's CanonicalUsage on agent._last_usage
+    # right after the response arrives (before this message is built/appended),
+    # so the value here is this turn's. Stored NEGATIVE per the codec's
+    # F=sign-bit convention; stripped from provider payloads in build_api_kwargs
+    # / the api_messages loop. Skipped when usage is unavailable (e.g. an
+    # interim message built before usage on a truncated stream).
+    _usage = getattr(agent, "_last_usage", None)
+    if _usage is not None:
+        from hermes_token_codec import pack_assistant_tokens
+        msg["token_count"] = pack_assistant_tokens(
+            getattr(_usage, "output_tokens", 0) or 0,
+            getattr(_usage, "reasoning_tokens", 0) or 0,
+        )
+
     return msg
 
 
@@ -1488,6 +1503,43 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
         )
+
+        # ── Split session when fallback changes model ──
+        # Only split if the model actually changed (provider key rotation
+        # with the same model should not create a new session row).
+        _old_m = (old_model or '').strip().lower()
+        _new_m = (fb_model or '').strip().lower()
+        if _old_m != _new_m:
+            _session_db = getattr(agent, '_session_db', None)
+            _old_sess_id = getattr(agent, 'session_id', None)
+            if _session_db is not None and _old_sess_id:
+                import uuid
+                _new_sess_id = f"{_old_sess_id.split('_')[0]}_{uuid.uuid4().hex[:8]}"
+                try:
+                    _session_db.split_session(
+                        _old_sess_id,
+                        _new_sess_id,
+                        model=fb_model,
+                        billing_provider=fb_provider,
+                        billing_base_url=fb_base_url,
+                        billing_mode=getattr(agent, 'api_mode', None),
+                        source=getattr(agent, 'platform', None),
+                        user_id=getattr(agent, 'user_id', None),
+                        cwd=getattr(agent, 'cwd', None),
+                    )
+                    agent.session_id = _new_sess_id
+                    agent._transition_context_engine_session(
+                        old_session_id=_old_sess_id,
+                        new_session_id=_new_sess_id,
+                        carry_over_context=True,
+                    )
+                except Exception as _split_exc:
+                    logger.warning(
+                        "Session split on fallback failed (non-fatal): %s",
+                        _split_exc,
+                    )
+        # ──────────────────────────────────────────────────
+
         return True
     except Exception as e:
         if fb_provider == "nous":

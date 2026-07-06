@@ -12,6 +12,7 @@ Exposes an HTTP server with endpoints:
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
+- GET  /api/sessions/{session_id}/token-totals — decoded per-message token totals
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
@@ -1528,6 +1529,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
                 "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+                "session_token_totals": {"method": "GET", "path": "/api/sessions/{session_id}/token-totals"},
+                "analytics_provider_quotas": {"method": "GET", "path": "/api/analytics/provider-quotas"},
+                "analytics_usage_rates": {"method": "GET", "path": "/api/analytics/usage-rates"},
+                "analytics_token_trends": {"method": "GET", "path": "/api/analytics/token-trends"},
+                "analytics_cost_estimate": {"method": "GET", "path": "/api/analytics/cost-estimate"},
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
@@ -1660,7 +1666,24 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
             "reasoning_content",
         )
-        return {key: message.get(key) for key in safe_keys if key in message}
+        resp = {key: message.get(key) for key in safe_keys if key in message}
+        # token_count is stored bit-packed (NEGATIVE for packed rows — see
+        # hermes_token_codec). Never leak the raw packed sentinel to API
+        # clients: surface per-bucket counts under `tokens` and keep the scalar
+        # `token_count` backward-compatible (legacy assistant output count).
+        # Prefer the flattened view SessionDB.get_messages already attached
+        # (whose scalar token_count is likewise already neutralised); only
+        # decode here when handed a raw row (e.g. flatten_tokens=False).
+        tokens = message.get("tokens")
+        if tokens is None and "token_count" in resp:
+            from hermes_token_codec import resolve_message_tokens
+            tokens = resolve_message_tokens(message.get("role"), message.get("token_count"))
+            resp["token_count"] = (
+                tokens["output"] if message.get("role") == "assistant" else None
+            )
+        if tokens is not None:
+            resp["tokens"] = tokens
+        return resp
 
     async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
         try:
@@ -1826,6 +1849,179 @@ class APIServerAdapter(BasePlatformAdapter):
             "data": [self._message_response(m) for m in messages],
         })
 
+    async def _handle_session_token_totals(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/token-totals[?scope=session|conversation].
+
+        Decoded, aggregated per-message token buckets (bit-packed
+        token_count summed via the codec — see hermes_token_codec). ``scope``:
+          * ``session`` (default) — totals for this session's messages.
+          * ``conversation`` — totals across the whole compression lineage
+            (this session and its compression-continuation descendants).
+        Returns ``{session_id, scope, tokens:{input, output, cache_read,
+        reasoning, messages}}``.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        scope = (request.query.get("scope") or "session").strip().lower()
+        if scope not in ("session", "conversation"):
+            return web.json_response(
+                _openai_error("scope must be 'session' or 'conversation'", code="invalid_scope"),
+                status=400,
+            )
+        db = self._ensure_session_db()
+        resolved_id = db.resolve_resume_session_id(session_id)
+        if scope == "conversation":
+            tokens = db.get_conversation_message_token_totals(resolved_id)
+        else:
+            tokens = db.get_session_message_token_totals(resolved_id)
+        return web.json_response({
+            "session_id": resolved_id,
+            "scope": scope,
+            "tokens": tokens,
+        })
+
+    async def _handle_analytics_provider_quotas(self, request: "web.Request") -> "web.Response":
+        """GET /api/analytics/provider-quotas — reference rate/token limits.
+
+        Static, published reference limits per provider (RPM/RPD/TPM/TPD) so
+        the dashboard can show how close current usage sits to a provider's
+        ceiling. Representative entry-tier values; see each entry's source_url
+        and as_of. Optional ?provider= filters to one provider.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from agent.provider_quotas import get_provider_quota, list_provider_quotas
+
+        provider = request.query.get("provider")
+        if provider:
+            quota = get_provider_quota(provider)
+            data = [quota] if quota else []
+        else:
+            data = list_provider_quotas()
+        return web.json_response({"object": "list", "data": data})
+
+    # Window → lookback seconds for the analytics endpoints.
+    _ANALYTICS_WINDOWS = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000}
+    # Default trend bucket width per window (seconds).
+    _ANALYTICS_TREND_BUCKETS = {"1h": 60, "24h": 3600, "7d": 86400, "30d": 86400}
+
+    def _analytics_window_seconds(self, request: "web.Request") -> "tuple[str, int] | web.Response":
+        window = (request.query.get("window") or "24h").strip().lower()
+        seconds = self._ANALYTICS_WINDOWS.get(window)
+        if seconds is None:
+            return web.json_response(
+                _openai_error(
+                    "window must be one of: " + ", ".join(self._ANALYTICS_WINDOWS),
+                    code="invalid_window",
+                ),
+                status=400,
+            )
+        return window, seconds
+
+    async def _handle_analytics_usage_rates(self, request: "web.Request") -> "web.Response":
+        """GET /api/analytics/usage-rates?window=1h|24h|7d|30d[&session_id=].
+
+        RPM/TPM peaks over the window + RPD/TPD (last 24h), each compared to
+        the quotas of providers active in the window. Decoded from per-message
+        token_count; requests counted as assistant rows.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        wr = self._analytics_window_seconds(request)
+        if isinstance(wr, web.Response):
+            return wr
+        window, seconds = wr
+        session_id = request.query.get("session_id")
+
+        from agent.analytics import compute_usage_rates
+        from agent.provider_quotas import get_provider_quota
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        now = time.time()
+        minute_buckets = db.get_message_token_timeseries(now - seconds, now, 60, session_id=session_id)
+        daily = db.get_message_token_timeseries(now - 86400, now, 86400, session_id=session_id)
+        daily_totals = daily[-1] if daily else {}
+        quotas = [q for q in (get_provider_quota(p) for p in db.get_active_providers(now - seconds)) if q]
+
+        rates = compute_usage_rates(minute_buckets, daily_totals, quotas)
+        return web.json_response({"window": window, "generated_at": now, **rates})
+
+    async def _handle_analytics_token_trends(self, request: "web.Request") -> "web.Response":
+        """GET /api/analytics/token-trends?window=…[&bucket=…][&session_id=].
+
+        Time-series of decoded tokens with per-request averages/distributions
+        and cache-hit rate (cache_read / input). ``bucket`` (seconds) overrides
+        the per-window default granularity.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        wr = self._analytics_window_seconds(request)
+        if isinstance(wr, web.Response):
+            return wr
+        window, seconds = wr
+        session_id = request.query.get("session_id")
+        bucket = self._ANALYTICS_TREND_BUCKETS[window]
+        if request.query.get("bucket"):
+            try:
+                bucket = max(60, int(request.query["bucket"]))
+            except (TypeError, ValueError):
+                return web.json_response(_openai_error("bucket must be an integer (seconds)", code="invalid_bucket"), status=400)
+
+        from agent.analytics import compute_token_trends
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        now = time.time()
+        buckets = db.get_message_token_timeseries(now - seconds, now, bucket, session_id=session_id)
+        trends = compute_token_trends(buckets)
+        return web.json_response({
+            "window": window, "bucket_seconds": bucket, "generated_at": now, **trends,
+        })
+
+    async def _handle_analytics_cost_estimate(self, request: "web.Request") -> "web.Response":
+        """GET /api/analytics/cost-estimate?window=1h|24h|7d|30d.
+
+        Per-model cost over the window, broken down by price tier
+        (input/output/cache) from each model's published pricing, with a
+        daily/monthly projection. Falls back to the stored estimated_cost_usd
+        for models without known pricing (flagged via has_unpriced_models).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        wr = self._analytics_window_seconds(request)
+        if isinstance(wr, web.Response):
+            return wr
+        window, seconds = wr
+
+        from agent.analytics import compute_cost_estimate
+        from agent.usage_pricing import get_pricing_entry
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        now = time.time()
+        groups = db.get_session_cost_aggregates(now - seconds)
+
+        def _lookup(model, provider, base_url):
+            if not model:
+                return None
+            return get_pricing_entry(model, provider=provider, base_url=base_url)
+
+        estimate = compute_cost_estimate(groups, seconds, _lookup)
+        return web.json_response({"window": window, "generated_at": now, **estimate})
+
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
         auth_err = self._check_auth(request)
@@ -1857,7 +2053,9 @@ class APIServerAdapter(BasePlatformAdapter):
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,
         )
-        messages = db.get_messages(source_id)
+        # flatten_tokens=False: keep the raw bit-packed token_count so the
+        # fork's per-message token accounting is preserved on re-persist.
+        messages = db.get_messages(source_id, flatten_tokens=False)
         db.replace_messages(fork_id, messages)
         title = body.get("title")
         if title is None:
@@ -4780,6 +4978,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_patch("/api/sessions/{session_id}", self._handle_patch_session)
             self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
             self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
+            self._app.router.add_get("/api/sessions/{session_id}/token-totals", self._handle_session_token_totals)
+            self._app.router.add_get("/api/analytics/provider-quotas", self._handle_analytics_provider_quotas)
+            self._app.router.add_get("/api/analytics/usage-rates", self._handle_analytics_usage_rates)
+            self._app.router.add_get("/api/analytics/token-trends", self._handle_analytics_token_trends)
+            self._app.router.add_get("/api/analytics/cost-estimate", self._handle_analytics_cost_estimate)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)

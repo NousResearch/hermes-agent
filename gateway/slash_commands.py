@@ -1573,15 +1573,47 @@ class GatewaySlashCommandsMixin:
 
                         # Persist the new model to the session DB so the
                         # dashboard shows the updated model (#34850).
+                        # Note: switch_model() now internally splits the session
+                        # when the model changes, so agent.session_id has been
+                        # rotated to a new child session. Update the gateway
+                        # session entry to point to the new session_id.
                         _sess_db = getattr(_self, "_session_db", None)
                         if _sess_db is not None:
                             try:
                                 _sess_entry = _self.session_store.get_or_create_session(
                                     event.source
                                 )
-                                await _sess_db.update_session_model(
-                                    _sess_entry.session_id, result.new_model
-                                )
+                                # Re-anchor to the agent's new session_id
+                                # (may differ from _sess_entry.session_id after split)
+                                if cached_entry and cached_entry[0] is not None:
+                                    _new_sid = getattr(cached_entry[0], 'session_id', None)
+                                    if _new_sid:
+                                        _sess_entry.session_id = _new_sid
+                                        await _sess_db.update_session_model(_new_sid, result.new_model)
+                                else:
+                                    # No cached agent -> split manually
+                                    import uuid as _uuid
+                                    _old_sid = _sess_entry.session_id
+                                    _new_sid = f"{_old_sid.split('_')[0]}_{_uuid.uuid4().hex[:8]}"
+                                    try:
+                                        await _sess_db.split_session(
+                                            _old_sid, _new_sid,
+                                            model=result.new_model,
+                                            billing_provider=result.target_provider,
+                                            billing_base_url=result.base_url or '',
+                                            billing_mode=result.api_mode or '',
+                                            source=str(event.source.platform) if event.source else None,
+                                            user_id=str(event.source.user_id) if event.source and getattr(event.source, 'user_id', None) else None,
+                                        )
+                                        _sess_entry.session_id = _new_sid
+                                    except Exception as _split_exc:
+                                        logger.warning(
+                                            "Session split (picker no-agent fallback) failed: %s",
+                                            _split_exc,
+                                        )
+                                    await _sess_db.update_session_model(
+                                        _sess_entry.session_id, result.new_model
+                                    )
                             except Exception as exc:
                                 logger.debug(
                                     "Failed to persist model switch to DB: %s", exc
@@ -1813,8 +1845,9 @@ class GatewaySlashCommandsMixin:
                         ),
                     )
 
-            # Persist the new model to the session DB so the dashboard
-            # shows the updated model (#34850).
+            # ── Split session when model changes ──
+            # If cached agent exists, switch_model() already split internally
+            # and agent.session_id is the new child. Otherwise split manually.
             _sess_db = getattr(self, "_session_db", None)
             if _sess_db is not None:
                 try:
@@ -1824,6 +1857,33 @@ class GatewaySlashCommandsMixin:
                     # override just stored below (Closes #48031).
                     if getattr(_sess_entry, "was_auto_reset", False):
                         _sess_entry.was_auto_reset = False
+                    if cached_entry and cached_entry[0] is not None:
+                        # Agent exists -> switch_model() already split.
+                        # Re-anchor gateway session entry to agent's new id.
+                        _new_sid = getattr(cached_entry[0], 'session_id', None)
+                        if _new_sid and _new_sid != _sess_entry.session_id:
+                            _sess_entry.session_id = _new_sid
+                    else:
+                        # No cached agent -> split manually
+                        import uuid as _uuid
+                        _old_sid = _sess_entry.session_id
+                        _new_sid = f"{_old_sid.split('_')[0]}_{_uuid.uuid4().hex[:8]}"
+                        try:
+                            await _sess_db.split_session(
+                                _old_sid, _new_sid,
+                                model=result.new_model,
+                                billing_provider=result.target_provider,
+                                billing_base_url=result.base_url or '',
+                                billing_mode=result.api_mode or '',
+                                source=str(source.platform) if source else None,
+                                user_id=str(source.user_id) if source and getattr(source, 'user_id', None) else None,
+                            )
+                            _sess_entry.session_id = _new_sid
+                        except Exception as _split_exc:
+                            logger.warning(
+                                "Session split (no-agent fallback) failed: %s",
+                                _split_exc,
+                            )
                     await _sess_db.update_session_model(
                         _sess_entry.session_id, result.new_model
                     )
@@ -3864,6 +3924,49 @@ class GatewaySlashCommandsMixin:
             lines.append(f"Top up: {view.topup_url}")
             lines.append("Complete your top-up in the browser — credits will appear in /credits shortly.")
         return "\n".join(lines)
+
+    async def _handle_tokens_command(self, event: MessageEvent) -> str:
+        """Handle /tokens [on|off|always|status] — per-message token footer.
+
+        When enabled, each reply gets a compact decoded breakdown appended,
+        e.g. ``📊 in:1520 out:234 reason:128 cache:890``. Three states:
+          * ``on``     — enable for THIS session only (per-session override).
+          * ``off``    — disable for this session AND clear the global setting.
+          * ``always`` — enable GLOBALLY for every conversation.
+        Per-session overrides win over the global setting. All state is
+        persisted (gateway_tokens_display.json) and survives restarts.
+        """
+        args = event.get_command_args().strip().lower()
+        key = self._tokens_key(event.source.platform, event.source.chat_id)
+
+        if args == "always":
+            self._tokens_display_global = True
+            self._save_tokens_display()
+            return ("📊 Per-message token display enabled GLOBALLY — every "
+                    "conversation now shows in/out/reason/cache. Use /tokens "
+                    "off here to mute just this session.")
+        if args in {"on", "enable"}:
+            self._tokens_display[key] = True
+            self._save_tokens_display()
+            return "📊 Per-message token display enabled for this session."
+        if args in {"off", "disable"}:
+            self._tokens_display[key] = False
+            # 'off' also clears the global 'always' so it turns the feature off
+            # rather than leaving it on for other conversations.
+            self._tokens_display_global = False
+            self._save_tokens_display()
+            return "📊 Per-message token display turned off (this session; global 'always' cleared)."
+        if args == "status":
+            eff = self._tokens_enabled_for(event.source.platform, event.source.chat_id)
+            glob = bool(getattr(self, "_tokens_display_global", False))
+            return (f"📊 Token display — this session: {'ON' if eff else 'OFF'} · "
+                    f"global always: {'ON' if glob else 'OFF'}. "
+                    "Options: /tokens on | off | always")
+
+        # Bare /tokens (or unknown arg) → show status + usage hint.
+        eff = self._tokens_enabled_for(event.source.platform, event.source.chat_id)
+        return (f"📊 Token display is {'ON' if eff else 'OFF'} for this session. "
+                "Use /tokens on | off | always.")
 
     def _context_breakdown_lines(self, agent, source) -> list[str]:
         """Render the per-category context breakdown for /usage.

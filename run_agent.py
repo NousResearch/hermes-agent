@@ -1874,6 +1874,10 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=_row_timestamp,
+                    # Bit-packed per-message token accounting (hermes_token_codec):
+                    # assistant rows carry (output, reasoning); user/tool prompt
+                    # rows carry (total_input, cache_read). Negative = packed.
+                    token_count=msg.get("token_count"),
                 )
                 msg[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the
@@ -2556,6 +2560,7 @@ class AIAgent:
             return
 
         try:
+            from hermes_state import _attach_token_view
             cleaned = []
             for msg in messages:
                 # Mirror the SQLite flush: ephemeral recovery scaffolding is
@@ -2573,6 +2578,14 @@ class AIAgent:
                 if "content" in msg:
                     msg = dict(msg)
                     msg["content"] = self._redact_message_content(msg.get("content"))
+                # Flatten the bit-packed token_count for the external tooling
+                # that consumes this JSON snapshot: attach a decoded `tokens`
+                # bucket dict and neutralise the scalar so the file never
+                # carries the raw negative packed sentinel. Copy first so the
+                # live `messages` list (and the DB flush that follows in
+                # _persist_session) keeps its raw packed values.
+                msg = dict(msg)
+                _attach_token_view(msg)
                 cleaned.append(msg)
 
             # Guard: never overwrite a larger session log with fewer messages.

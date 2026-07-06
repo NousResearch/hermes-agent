@@ -814,6 +814,15 @@ def run_conversation(
                 api_msg.pop("finish_reason")
             # Strip internal thinking-prefill marker
             api_msg.pop("_thinking_prefill", None)
+            # Strip bit-packed per-message token accounting. token_count is an
+            # internal column (stored NEGATIVE for packed rows — see
+            # hermes_token_codec); it must never reach a provider payload,
+            # where it is an unknown field strict APIs reject.
+            api_msg.pop("token_count", None)
+            # Strip the flattened token view too — get_messages_as_conversation
+            # attaches `tokens` for display consumers, but it must not ride
+            # along into a provider payload.
+            api_msg.pop("tokens", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields
@@ -2084,6 +2093,23 @@ def run_conversation(
                     prompt_tokens = canonical_usage.prompt_tokens
                     completion_tokens = canonical_usage.output_tokens
                     total_tokens = canonical_usage.total_tokens
+
+                    # Stash the whole CanonicalUsage so build_assistant_message
+                    # can bit-pack (output, reasoning) onto the assistant row it
+                    # is about to construct (see hermes_token_codec).
+                    agent._last_usage = canonical_usage
+
+                    # Attribute this call's input cost to the prompt-tail row —
+                    # the user/tool message that triggered the request. Only a
+                    # user/tool tail is eligible (verified in the helper); an
+                    # assistant/system tail is skipped, not mis-attributed.
+                    # This mutates the live `messages` list and JSON session log
+                    # immediately; DB persistence is best-effort and depends on
+                    # the prompt-tail row not having been flushed before this
+                    # usage arrived (the assistant row, packed pre-append,
+                    # always persists).
+                    from hermes_token_codec import attribute_input_tokens_to_prompt_tail
+                    attribute_input_tokens_to_prompt_tail(messages, canonical_usage)
                     # Forward canonical token + cache buckets so context engines
                     # can make decisions on cache hit ratios / reasoning costs,
                     # not just legacy aggregate tokens. Legacy keys stay for

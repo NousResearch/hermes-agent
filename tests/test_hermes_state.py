@@ -277,7 +277,9 @@ class TestSessionLifecycle:
         db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
 
         session = db.get_session("s1")
-        assert session["model"] == "anthropic/claude-opus-4.6"
+        # COALESCE(?, model): the passed model takes priority.
+        # After session-split PR, update_token_counts reflects the live model.
+        assert session["model"] == "openai/gpt-5.4"
 
     def test_update_session_model_overwrites_existing(self, db):
         """A mid-session /model switch must overwrite the stored model.
@@ -297,11 +299,11 @@ class TestSessionLifecycle:
         db.update_session_model("s1", "xiaomi/mimo-v2.5")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
 
-        # And a subsequent token update does NOT revert it (COALESCE no-ops
-        # because the column is now non-NULL).
+        # And a subsequent token update with a NEW model now reflects that
+        # model (COALESCE(?, model) gives priority to the passed value).
         db.update_token_counts("s1", input_tokens=10, output_tokens=5,
                                model="xiaomi/mimo-v2.5-pro")
-        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5-pro"
 
     def test_update_session_billing_route_overwrites_after_switch(self, db):
         """A mid-session provider switch must overwrite the billing route.
@@ -357,6 +359,108 @@ class TestSessionLifecycle:
 
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
+
+
+class TestSessionSplit:
+    """split_session() unit tests — introduced with session-split PR."""
+
+    def test_split_ends_old_creates_child_with_chain(self, db):
+        """split_session ends parent and creates child with correct chain."""
+        db.create_session("A", source="telegram", model="deepseek-v4-flash")
+
+        db.split_session("A", "B", model="deepseek-v4-pro")
+
+        parent = db.get_session("A")
+        assert parent["ended_at"] is not None
+        assert parent["end_reason"] == "model_switch"
+        assert parent["model"] == "deepseek-v4-flash"
+
+        child = db.get_session("B")
+        assert child["parent_session_id"] == "A"
+        assert child["model"] == "deepseek-v4-pro"
+        assert child["ended_at"] is None
+        assert child["source"] == "telegram"
+
+    def test_split_inherits_source_and_metadata(self, db):
+        """Child inherits source, user_id, cwd from parent."""
+        db.create_session("P", source="telegram", user_id="U123",
+                          model="deepseek-v4-flash", cwd="/home/user/project")
+
+        db.split_session("P", "C", model="deepseek-v4-pro")
+
+        child = db.get_session("C")
+        assert child["source"] == "telegram"      # inherited, not 'split'
+        assert child["user_id"] == "U123"
+        assert child["cwd"] == "/home/user/project"
+
+    def test_split_preserves_billing_info(self, db):
+        """Billing info should be inherited from parent by default."""
+        db.create_session("P", source="cli", model="flash")
+        # Simulate a session that had billing info set
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET billing_provider=?, billing_base_url=? "
+            "WHERE id=?",
+            ("deepseek", "https://api.deepseek.com/v1", "P"),
+        ))
+
+        db.split_session("P", "C", model="pro")
+
+        child = db.get_session("C")
+        assert child["billing_provider"] == "deepseek"
+        assert child["billing_base_url"] == "https://api.deepseek.com/v1"
+
+    def test_split_explicit_billing_overrides_inheritance(self, db):
+        """Explicit billing args override parent inheritance."""
+        db.create_session("P", source="cli", model="flash")
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET billing_provider=?, billing_base_url=? "
+            "WHERE id=?",
+            ("deepseek", "https://api.deepseek.com/v1", "P"),
+        ))
+
+        db.split_session("P", "C", model="pro",
+                         billing_provider="fireworks",
+                         billing_base_url="https://api.fireworks.ai/inference/v1")
+
+        child = db.get_session("C")
+        assert child["billing_provider"] == "fireworks"
+        assert child["billing_base_url"] == "https://api.fireworks.ai/inference/v1"
+
+    def test_rapid_consecutive_splits_form_chain(self, db):
+        """Three rapid splits form correct A→B→C→D chain."""
+        db.create_session("A", source="telegram", model="flash")
+
+        db.split_session("A", "B", model="pro")
+        db.split_session("B", "C", model="flash")
+        db.split_session("C", "D", model="pro")
+
+        # All parents are ended
+        for sid in ("A", "B", "C"):
+            parent = db.get_session(sid)
+            assert parent["ended_at"] is not None
+            assert parent["end_reason"] == "model_switch"
+
+        # Chain is linear
+        assert db.get_session("B")["parent_session_id"] == "A"
+        assert db.get_session("C")["parent_session_id"] == "B"
+        assert db.get_session("D")["parent_session_id"] == "C"
+
+        # Last child is not ended
+        assert db.get_session("D")["ended_at"] is None
+
+    def test_split_with_already_ended_parent(self, db):
+        """split_session still works even if parent was already ended
+        (e.g. by compression). The child still gets created correctly."""
+        db.create_session("A", source="telegram", model="flash")
+        db.end_session("A", "compression")  # already ended
+
+        db.split_session("A", "B", model="pro")
+
+        child = db.get_session("B")
+        assert child["parent_session_id"] == "A"
+        assert child["model"] == "pro"
+        assert child["source"] == "telegram"
+
 
     def test_db_initializes_without_fts5_module(self, tmp_path, monkeypatch):
         real_connect = sqlite3.connect
@@ -944,6 +1048,8 @@ class TestMessageStorage:
         db.create_session("root", "tui")
         db.append_message("root", role="user", content="first prompt")
         db.append_message("root", role="assistant", content="first answer")
+        # End parent with model_switch so lineage walking follows the link
+        db.end_session("root", "model_switch")
         db.create_session("child", "tui", parent_session_id="root")
         db.append_message("child", role="user", content="second prompt")
         db.append_message("child", role="assistant", content="second answer")
@@ -962,12 +1068,38 @@ class TestMessageStorage:
         db.append_message("root", role="user", content="same prompt")
         db.append_message("root", role="user", content="same prompt")
         db.append_message("root", role="assistant", content="answer")
+        # End parent with model_switch so lineage walking follows the link
+        db.end_session("root", "model_switch")
         db.create_session("child", "tui", parent_session_id="root")
         db.append_message("child", role="user", content="next prompt")
 
         conv = db.get_messages_as_conversation("child", include_ancestors=True)
 
         assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
+
+    def test_get_messages_as_conversation_skips_compression_ancestors(self, db):
+        """Lineage walking must stop at non-model_switch boundaries.
+
+        Compression-split parents have their content summarised into the
+        child session.  Replaying the raw parent messages would inject
+        stale/duplicate context.
+        """
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="old prompt")
+        db.append_message("root", role="assistant", content="old answer")
+        # End parent with compression — NOT model_switch
+        db.end_session("root", "compression")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="new prompt")
+        db.append_message("child", role="assistant", content="new answer")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        # Should only contain child messages — root was compression-ended
+        assert [m["content"] for m in conv] == [
+            "new prompt",
+            "new answer",
+        ]
 
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -4969,6 +5101,67 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+class TestGetMessagesModelSwitchChain:
+    """Verify get_messages follows parent chain on model_switch."""
+
+    def test_single_switch_inherits_parent_messages(self, db):
+        db.create_session("chain_a", source="test", model="m-a")
+        db.append_message("chain_a", "user", "hello from A")
+        db.append_message("chain_a", "assistant", "hi back from A")
+
+        db.split_session("chain_a", "chain_b", model="m-b")
+
+        msgs = db.get_messages("chain_b")
+        contents = [m["content"] for m in msgs]
+        assert "hello from A" in contents
+        assert "hi back from A" in contents
+
+    def test_double_switch_inherits_full_chain(self, db):
+        db.create_session("dbl_a", source="test", model="m-a")
+        db.append_message("dbl_a", "user", "msg-a1")
+        db.append_message("dbl_a", "assistant", "msg-a2")
+
+        db.split_session("dbl_a", "dbl_b", model="m-b")
+        db.append_message("dbl_b", "user", "msg-b1")
+        db.append_message("dbl_b", "assistant", "msg-b2")
+
+        db.split_session("dbl_b", "dbl_c", model="m-c")
+
+        msgs = db.get_messages("dbl_c")
+        contents = [m["content"] for m in msgs]
+        assert contents == ["msg-a1", "msg-a2", "msg-b1", "msg-b2"]
+
+    def test_chain_stops_at_non_model_switch(self, db):
+        db.create_session("stop_x", source="test", model="m-x")
+        db.append_message("stop_x", "user", "should-not-appear")
+        db.end_session("stop_x", "compression")
+
+        db.create_session("stop_a", source="test", model="m-a")
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET parent_session_id = ? WHERE id = ?",
+            ("stop_x", "stop_a"),
+        ))
+        db.append_message("stop_a", "user", "msg-a")
+
+        db.split_session("stop_a", "stop_b", model="m-b")
+
+        msgs = db.get_messages("stop_b")
+        contents = [m["content"] for m in msgs]
+        assert "msg-a" in contents
+        assert "should-not-appear" not in contents
+
+    def test_no_duplication_across_chain(self, db):
+        db.create_session("nodup_a", source="test", model="m-a")
+        db.append_message("nodup_a", "user", "unique-msg")
+
+        db.split_session("nodup_a", "nodup_b", model="m-b")
+        db.split_session("nodup_b", "nodup_c", model="m-c")
+
+        msgs = db.get_messages("nodup_c")
+        contents = [m["content"] for m in msgs]
+        assert contents.count("unique-msg") == 1
 
 
 def test_gateway_session_peer_round_trip_and_recovery(db):

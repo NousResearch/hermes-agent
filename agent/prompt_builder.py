@@ -164,7 +164,14 @@ MEMORY_GUIDANCE = (
     "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
     "Imperative phrasing gets re-read as a directive in later sessions and can "
     "cause repeated work or override the user's current request. Procedures and "
-    "workflows belong in skills, not memory."
+    "workflows belong in skills, not memory.\n"
+    "Precedence: the user's CURRENT statement always outranks stored memory. If "
+    "they say something about themselves that conflicts with a remembered fact — "
+    "a name, a preference, a correction — believe them, update the memory entry, "
+    "and acknowledge the change in one short clause ('updating my notes — Dara, "
+    "not Darius'). Never insist a remembered fact is right over the user's own "
+    "words; memory is a snapshot of the past, and the person in front of you is "
+    "the authority on themselves."
 )
 
 SESSION_SEARCH_GUIDANCE = (

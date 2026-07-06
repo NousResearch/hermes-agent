@@ -676,8 +676,19 @@ class MemoryStore:
         else:
             header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
 
+        # Recency precedence, stated next to the data it governs: these entries
+        # are a snapshot of PAST sessions, and a stale entry has made the agent
+        # argue with a user about their own name (memory said the user is
+        # "Darius"; the user said "my name is Dara"; the agent greeted them as
+        # Darius). The current conversation always outranks this block.
+        precedence = (
+            "(Snapshot from past sessions. If anything here conflicts with what the user "
+            "says in the current conversation, the user's current statement wins — update "
+            "the entry and briefly acknowledge the correction.)"
+        )
+
         separator = "═" * 46
-        return f"{separator}\n{header}\n{separator}\n{content}"
+        return f"{separator}\n{header}\n{precedence}\n{separator}\n{content}"
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:

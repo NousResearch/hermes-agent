@@ -236,7 +236,7 @@ class DaytonaEnvironment(BaseEnvironment):
             shell_cmd = f"bash -c {shlex.quote(cmd_string)}"
 
         def exec_fn() -> tuple[str, int]:
-            response = sandbox.process.exec(shell_cmd, timeout=timeout)
+            response = sandbox.process.exec(shell_cmd, timeout=timeout, env=self.env)
             return (response.result or "", response.exit_code)
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)

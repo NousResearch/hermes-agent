@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 # below as well as by run_agent and the CLI for paste-from-clipboard
 # scrubbing.
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
+_TOOL_NAME_KEYS = ("action", "tool", "tool_name", "name", "function", "function_name")
+_PLAINTEXT_TOOL_RECOVERY_ALLOWLIST = frozenset({"clarify"})
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -277,6 +279,134 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         tool_name, raw_stripped[:80],
     )
     return "{}"
+
+
+def _strip_json_code_fence(content: str) -> str:
+    stripped = content.strip()
+    if not stripped.startswith("```") or not stripped.endswith("```"):
+        return stripped
+
+    lines = stripped.splitlines()
+    if len(lines) < 2:
+        return stripped
+    opener = lines[0].strip().lower()
+    if opener not in {"```", "```json", "```javascript", "```js"}:
+        return stripped
+    if lines[-1].strip() != "```":
+        return stripped
+    return "\n".join(lines[1:-1]).strip()
+
+
+def _load_plaintext_json_object(content: str) -> dict[str, Any] | None:
+    if not isinstance(content, str) or not content.strip():
+        return None
+    stripped = _strip_json_code_fence(content)
+    try:
+        parsed = json.loads(stripped)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _tool_schema_by_name(tools: list | None) -> dict[str, dict[str, Any]]:
+    schemas: dict[str, dict[str, Any]] = {}
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        parameters = function.get("parameters")
+        schemas[name] = parameters if isinstance(parameters, dict) else {}
+    return schemas
+
+
+def _explicit_tool_name(payload: dict[str, Any], valid_names: set[str]) -> str | None:
+    for key in _TOOL_NAME_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value in valid_names:
+            return value
+        if key == "function" and isinstance(value, dict):
+            nested_name = value.get("name")
+            if isinstance(nested_name, str) and nested_name in valid_names:
+                return nested_name
+    return None
+
+
+def _arguments_for_tool(
+    payload: dict[str, Any],
+    tool_name: str,
+    schema: dict[str, Any],
+) -> dict[str, Any] | None:
+    source = payload
+    function_value = payload.get("function")
+    if isinstance(function_value, dict) and function_value.get("name") == tool_name:
+        nested_args = function_value.get("arguments")
+        if isinstance(nested_args, dict):
+            source = nested_args
+
+    properties = schema.get("properties")
+    property_names = set(properties) if isinstance(properties, dict) else set()
+    required = schema.get("required")
+    required_names = {
+        item for item in required
+        if isinstance(item, str)
+    } if isinstance(required, list) else set()
+
+    if property_names:
+        arguments = {
+            key: value
+            for key, value in source.items()
+            if key in property_names
+        }
+    else:
+        arguments = {
+            key: value
+            for key, value in source.items()
+            if key not in _TOOL_NAME_KEYS
+        }
+
+    if not required_names.issubset(arguments):
+        return None
+    return arguments
+
+
+def recover_plaintext_tool_call(content: str, tools: list | None) -> dict[str, str] | None:
+    """Recover an explicit tool-call JSON envelope emitted as assistant text.
+
+    Weak local models can occasionally print a JSON object like
+    ``{"action":"clarify","question":"...","choices":[...]}`` in assistant
+    content instead of using the structured ``tool_calls`` field.  This guard
+    is intentionally conservative: the visible content must be a complete JSON
+    object (or a fenced JSON object), that object must name a real enabled tool
+    via a tool-name field, and the tool must be safe-listed for plaintext
+    recovery.  Extra envelope keys such as ``action`` are not forwarded as tool
+    arguments.
+    """
+    payload = _load_plaintext_json_object(content)
+    if not payload:
+        return None
+
+    schemas = {
+        name: schema
+        for name, schema in _tool_schema_by_name(tools).items()
+        if name in _PLAINTEXT_TOOL_RECOVERY_ALLOWLIST
+    }
+    tool_name = _explicit_tool_name(payload, set(schemas))
+    if not tool_name:
+        return None
+
+    arguments = _arguments_for_tool(payload, tool_name, schemas.get(tool_name, {}))
+    if arguments is None:
+        return None
+
+    return {
+        "name": tool_name,
+        "arguments": json.dumps(arguments, ensure_ascii=False, separators=(",", ":")),
+    }
 
 
 def close_interrupted_tool_sequence(messages: list, final_response: Any = None) -> bool:

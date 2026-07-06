@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -46,6 +47,7 @@ from agent.message_sanitization import (
     _sanitize_tools_non_ascii,
     _strip_images_from_messages,
     _strip_non_ascii,
+    recover_plaintext_tool_call,
 )
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -4234,6 +4236,32 @@ def run_conversation(
                     assistant_message.content = "\n".join(parts)
                 else:
                     assistant_message.content = str(raw)
+
+            if not getattr(assistant_message, "tool_calls", None):
+                recovered_tool_call = recover_plaintext_tool_call(
+                    assistant_message.content or "",
+                    agent.tools,
+                )
+                if recovered_tool_call:
+                    tool_name = recovered_tool_call["name"]
+                    assistant_message.tool_calls = [
+                        SimpleNamespace(
+                            id=f"call_recovered_{uuid.uuid4().hex[:12]}",
+                            type="function",
+                            function=SimpleNamespace(
+                                name=tool_name,
+                                arguments=recovered_tool_call["arguments"],
+                            ),
+                        )
+                    ]
+                    assistant_message.content = None
+                    finish_reason = "tool_calls"
+                    logger.warning(
+                        "Recovered plaintext JSON envelope as %s tool_call "
+                        "(session=%s)",
+                        tool_name,
+                        agent.session_id or "none",
+                    )
 
             try:
                 from hermes_cli.plugins import (

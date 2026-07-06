@@ -1580,3 +1580,122 @@ class TestGatewaySessionDbRecovery:
         assert reset.session_id != entry.session_id
         assert reset.was_auto_reset is True
         assert reset.auto_reset_reason == "idle"
+
+
+class TestGatewayRoutingTable:
+    """state.db gateway_routing table is the primary routing index (#9006 follow-up)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_db(self, tmp_path, monkeypatch):
+        # Each test gets its own state.db — DEFAULT_DB_PATH is module-level
+        # and would otherwise be shared by every SessionDB() in this file's
+        # subprocess, leaking gateway_routing rows between tests.
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+    def _source(self, chat_id="chat-1", user_id="user-1"):
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_name="Alice",
+            chat_type="dm",
+            user_id=user_id,
+        )
+
+    def test_index_survives_restart_without_sessions_json(self, tmp_path):
+        """Full SessionEntry state rehydrates from state.db alone."""
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        entry.suspended = True
+        store.set_model_override(entry.session_key, {"model": "test-model"})
+
+        # Kill the JSON mirror entirely — the DB routing table must carry
+        # the complete entry, not just the key mapping.
+        (tmp_path / "sessions.json").unlink()
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        restarted._ensure_loaded()
+        rehydrated = restarted._entries[entry.session_key]
+        assert rehydrated.session_id == entry.session_id
+        assert rehydrated.display_name == "Alice"
+        assert rehydrated.suspended is True
+        assert rehydrated.model_override == {"model": "test-model"}
+        restarted._db.close()
+
+    def test_write_sessions_json_false_stops_producing_file(self, tmp_path):
+        config = GatewayConfig(write_sessions_json=False)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        assert not (tmp_path / "sessions.json").exists()
+
+        # Routing still survives restart via the DB table.
+        store._db.close()
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        recovered = restarted.get_or_create_session(self._source())
+        assert recovered.session_id == entry.session_id
+        restarted._db.close()
+
+    def test_legacy_sessions_json_imported_when_db_table_empty(self, tmp_path):
+        """Pre-migration installs: sessions.json entries fold into the index."""
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        store._db.close()
+
+        # Simulate a pre-migration DB: routing table empty, JSON present.
+        import hermes_state
+        db = hermes_state.SessionDB()
+        db._conn.execute("DELETE FROM gateway_routing")
+        db._conn.commit()
+        db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        recovered = restarted.get_or_create_session(self._source())
+        assert recovered.session_id == entry.session_id
+        # And the next save persists the imported entry into the DB table.
+        rows = restarted._db.load_gateway_routing_entries(
+            scope=restarted._routing_scope()
+        )
+        assert entry.session_key in rows
+        restarted._db.close()
+
+    def test_db_entries_win_over_stale_json(self, tmp_path):
+        """When both stores have a key, the DB entry is authoritative."""
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+
+        # Doctor the JSON mirror to point at a different session id.
+        data = json.loads((tmp_path / "sessions.json").read_text())
+        data[entry.session_key]["session_id"] = "20990101_000000_stale999"
+        (tmp_path / "sessions.json").write_text(json.dumps(data))
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        restarted._ensure_loaded()
+        assert restarted._entries[entry.session_key].session_id == entry.session_id
+        restarted._db.close()
+
+    def test_prune_removes_routing_rows_for_ended_sessions(self, tmp_path):
+        """Startup prune drops ended sessions from the DB routing table too."""
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        store._db.end_session(entry.session_id, "session_reset")
+        store._db._conn.execute(
+            "UPDATE sessions SET ended_at = 1.0, end_reason = 'session_reset' WHERE id = ?",
+            (entry.session_id,),
+        )
+        store._db._conn.commit()
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        restarted._ensure_loaded()
+        assert entry.session_key not in restarted._entries
+        rows = restarted._db.load_gateway_routing_entries(
+            scope=restarted._routing_scope()
+        )
+        assert entry.session_key not in rows
+        restarted._db.close()

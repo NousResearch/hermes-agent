@@ -590,6 +590,13 @@ class GatewayConfig:
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
+
+    # Whether to keep writing the legacy sessions.json mirror of the gateway
+    # routing index. The primary copy lives in state.db (gateway_routing
+    # table, #9006). Default True for backward compatibility with external
+    # tooling and downgrade safety; set gateway.write_sessions_json: false in
+    # config.yaml to stop producing the file.
+    write_sessions_json: bool = True
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
@@ -724,6 +731,7 @@ class GatewayConfig:
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
+            "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
@@ -819,6 +827,7 @@ class GatewayConfig:
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
+            write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
@@ -963,6 +972,14 @@ def load_gateway_config() -> GatewayConfig:
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+
+            # write_sessions_json: top-level wins; nested gateway.* fallback
+            # (matches the gateway.streaming precedence pattern).
+            _gw_section = yaml_cfg.get("gateway")
+            if "write_sessions_json" in yaml_cfg:
+                gw_data["write_sessions_json"] = yaml_cfg["write_sessions_json"]
+            elif isinstance(_gw_section, dict) and "write_sessions_json" in _gw_section:
+                gw_data["write_sessions_json"] = _gw_section["write_sessions_json"]
 
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[

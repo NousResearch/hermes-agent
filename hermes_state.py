@@ -122,7 +122,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -770,6 +770,14 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gateway_routing (
+    scope TEXT NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    entry_json TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (scope, session_key)
 );
 
 CREATE TABLE IF NOT EXISTS compression_locks (
@@ -1713,6 +1721,83 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET expiry_finalized = ? WHERE id = ?",
                 (1 if finalized else 0, session_id),
+            )
+
+        self._execute_write(_do)
+
+    # ── Gateway routing index (replaces sessions.json, #9006 follow-up) ────
+
+    def save_gateway_routing_entry(
+        self, session_key: str, entry_json: str, *, scope: str = ""
+    ) -> None:
+        """Upsert one gateway routing entry (session_key -> SessionEntry JSON).
+
+        The gateway_routing table is the durable replacement for
+        sessions.json: one row per routing key, holding the full serialized
+        ``SessionEntry`` so the gateway can rehydrate exactly what it wrote.
+
+        ``scope`` namespaces the index the way separate sessions.json files
+        did (one per sessions_dir) — callers pass their sessions_dir path so
+        two stores with different directories never share routing state.
+        """
+        if not session_key or not entry_json:
+            return
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(scope, session_key) DO UPDATE SET
+                       entry_json = excluded.entry_json,
+                       updated_at = excluded.updated_at""",
+                (scope, session_key, entry_json, time.time()),
+            )
+
+        self._execute_write(_do)
+
+    def replace_gateway_routing_entries(
+        self, entries: Dict[str, str], *, scope: str = ""
+    ) -> None:
+        """Atomically replace the routing index for *scope* with *entries*.
+
+        Mirrors the sessions.json full-rewrite semantics: keys absent from
+        *entries* are removed (pruned/reset sessions disappear from the
+        index).  Runs as a single write transaction.  Other scopes are
+        untouched.
+        """
+        now = time.time()
+
+        def _do(conn):
+            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
+            if entries:
+                conn.executemany(
+                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    [(scope, k, v, now) for k, v in entries.items() if k and v],
+                )
+
+        self._execute_write(_do)
+
+    def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
+        """Load routing entries for *scope* as {session_key: entry_json}."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?",
+                (scope,),
+            ).fetchall()
+        return {r["session_key"]: r["entry_json"] for r in rows}
+
+    def delete_gateway_routing_entries(
+        self, session_keys: List[str], *, scope: str = ""
+    ) -> None:
+        """Remove routing entries for the given session keys in *scope*."""
+        if not session_keys:
+            return
+
+        def _do(conn):
+            conn.executemany(
+                "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                [(scope, k) for k in session_keys],
             )
 
         self._execute_write(_do)

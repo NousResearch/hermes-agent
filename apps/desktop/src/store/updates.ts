@@ -57,11 +57,13 @@ export type UpdateTarget = 'client' | 'backend'
 export const $updateOverlayTarget = atom<UpdateTarget>('client')
 
 export const setUpdateOverlayOpen = (open: boolean) => $updateOverlayOpen.set(open)
+
 export const openUpdateOverlayFor = (target: UpdateTarget) => {
   $updateOverlayTarget.set(target)
   $updateOverlayOpen.set(true)
   void (target === 'backend' ? checkBackendUpdates() : checkUpdates())
 }
+
 export const resetUpdateApplyState = () => {
   $updateApply.set(IDLE)
   $backendUpdateApply.set(IDLE)
@@ -247,6 +249,7 @@ function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
   return {
     supported: res.can_apply,
     message: res.message ?? undefined,
+    updateAvailable: res.update_available,
     behind: behind > 0 ? behind : 0,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
     commits: res.commits,
@@ -423,6 +426,7 @@ const BACKEND_RETURN_MAX_ATTEMPTS = 40
 async function waitForBackendReturn(): Promise<boolean> {
   for (let attempt = 0; attempt < BACKEND_RETURN_MAX_ATTEMPTS; attempt += 1) {
     await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_RETURN_POLL_MS))
+
     try {
       await checkHermesUpdate()
 
@@ -455,9 +459,35 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
 }
 
+function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionStatus>>): void {
+  const current = $backendUpdateApply.get()
+
+  const log = status.lines
+    .filter(line => line.trim().length > 0)
+    .map(line => ({ at: Date.now(), message: line, stage: current.stage }))
+    .slice(-50)
+
+  const latest = log.at(-1)?.message
+
+  if (log.length === 0 && !latest) {
+    return
+  }
+
+  $backendUpdateApply.set({
+    ...current,
+    log,
+    message: latest ?? current.message
+  })
+}
+
 export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
-  $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: translateNow('updates.applyStatus.preparing') })
+  $backendUpdateApply.set({
+    ...IDLE,
+    applying: true,
+    stage: 'prepare',
+    message: translateNow('updates.applyStatus.preparing')
+  })
 
   try {
     const started = await updateHermes()
@@ -470,13 +500,21 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       return { ok: false, error: 'manual', manual: true, message, command }
     }
 
-    $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'pull', message: translateNow('updates.applyStatus.pulling') })
+    $backendUpdateApply.set({
+      ...IDLE,
+      applying: true,
+      stage: 'pull',
+      message: translateNow('updates.applyStatus.pulling')
+    })
 
     let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
+
     for (let attempt = 0; attempt < 30; attempt += 1) {
       await new Promise(resolve => globalThis.setTimeout(resolve, 1500))
+
       try {
         last = await getActionStatus(started.name, 200)
+        ingestBackendActionStatus(last)
       } catch {
         // The dashboard restarts mid-update, dropping this connection — expected, not a failure.
         $backendUpdateApply.set({
@@ -495,8 +533,14 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     }
 
     const ok = !!last && (last.exit_code ?? 1) === 0
+
     if (ok) {
-      $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: true, stage: 'restart', message: translateNow('updates.applyStatus.restarting') })
+      $backendUpdateApply.set({
+        ...$backendUpdateApply.get(),
+        applying: true,
+        stage: 'restart',
+        message: translateNow('updates.applyStatus.restarting')
+      })
 
       return finishBackendApply(await waitForBackendReturn())
     }
@@ -512,7 +556,13 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     return { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })
+    $backendUpdateApply.set({
+      ...$backendUpdateApply.get(),
+      applying: false,
+      stage: 'error',
+      error: 'apply-failed',
+      message
+    })
 
     return { ok: false, error: 'apply-failed', message }
   }
@@ -521,6 +571,7 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 function ingestProgress(payload: DesktopUpdateProgress): void {
   const current = $updateApply.get()
   const log = [...current.log, { stage: payload.stage, message: payload.message, at: payload.at }].slice(-50)
+
   const terminal =
     payload.stage === 'error' ||
     payload.stage === 'restart' ||
@@ -531,7 +582,9 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
     applying: !terminal,
     stage: payload.stage,
     message: payload.message,
-    percent: payload.percent,
+    // Streamed log lines carry percent: null; keep the last milestone percent
+    // (10/60/…) instead of resetting the bar to indeterminate on every line.
+    percent: payload.percent ?? current.percent,
     error: payload.error,
     // 'manual' carries the command to run in its message field.
     command: payload.stage === 'manual' ? payload.message : current.command,
@@ -558,7 +611,6 @@ export function startUpdatePoller(): void {
   }
 
   pollerStarted = true
-  void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
@@ -570,17 +622,21 @@ export function startUpdatePoller(): void {
     if (conn?.mode === lastConnectionMode) {
       return
     }
+
     lastConnectionMode = conn?.mode
+
     if (conn?.mode === 'remote') {
       void checkBackendUpdates()
     }
   })
 
   window.addEventListener('focus', onFocus)
-  backgroundTimer = setInterval(() => {
-    void checkUpdates()
-    void checkBackendUpdates()
-  }, 30 * 60 * 1000)
+  backgroundTimer = setInterval(
+    () => {
+      void checkBackendUpdates()
+    },
+    30 * 60 * 1000
+  )
 }
 
 export function stopUpdatePoller(): void {
@@ -604,7 +660,6 @@ function onFocus() {
   }
 
   lastFocusAt = now
-  void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()
 }

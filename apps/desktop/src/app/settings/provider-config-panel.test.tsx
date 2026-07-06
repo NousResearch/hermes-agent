@@ -51,7 +51,16 @@ function hindsightSchema(overrides: Partial<MemoryProviderConfig['fields'][numbe
       is_set: true,
       options: []
     },
-    { key: 'bank_id', label: 'Bank ID', kind: 'text', value: 'hermes', description: '', placeholder: '', is_set: true, options: [] },
+    {
+      key: 'bank_id',
+      label: 'Bank ID',
+      kind: 'text',
+      value: 'hermes',
+      description: '',
+      placeholder: '',
+      is_set: true,
+      options: []
+    },
     {
       key: 'recall_budget',
       label: 'Recall budget',

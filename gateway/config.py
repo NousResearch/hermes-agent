@@ -288,7 +288,13 @@ class SessionResetPolicy:
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     notify: bool = True  # Send a notification to the user when auto-reset occurs
     notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
-    
+    # A background process this many hours old (or older) no longer blocks
+    # session idle/daily reset. A forgotten preview server should not keep a
+    # session alive forever (#29177). The process is NOT killed — only ignored
+    # by the reset guard. Raise this if you run legitimate multi-day jobs whose
+    # liveness should pin the conversation open.
+    bg_process_max_age_hours: int = 24
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "mode": self.mode,
@@ -296,6 +302,7 @@ class SessionResetPolicy:
             "idle_minutes": self.idle_minutes,
             "notify": self.notify,
             "notify_exclude_platforms": list(self.notify_exclude_platforms),
+            "bg_process_max_age_hours": self.bg_process_max_age_hours,
         }
     
     @classmethod
@@ -306,12 +313,14 @@ class SessionResetPolicy:
         idle_minutes = data.get("idle_minutes")
         notify = data.get("notify")
         exclude = data.get("notify_exclude_platforms")
+        bg_max_age = data.get("bg_process_max_age_hours")
         return cls(
             mode=mode if mode is not None else "both",
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
             notify=_coerce_bool(notify, True),
             notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
+            bg_process_max_age_hours=bg_max_age if bg_max_age is not None else 24,
         )
 
 
@@ -336,6 +345,15 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Whether the gateway shows a "typing…" / "is thinking…" status indicator
+    # while the agent processes a message on this platform. Default True
+    # preserves prior behavior. Set False on platforms where the indicator is
+    # unwanted (e.g. Slack's assistant.threads.setStatus "is thinking…", which
+    # disables the compose box, or any platform where users find the bubble
+    # noisy). Drives the per-message _keep_typing refresh loop in
+    # gateway/platforms/base.py.
+    typing_indicator: bool = True
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -345,6 +363,7 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
+            "typing_indicator": self.typing_indicator,
         }
         if self.token:
             result["token"] = self.token
@@ -368,6 +387,13 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        # typing_indicator mirrors gateway_restart_notification: it may arrive
+        # top-level or bridged into extra by the shared-key loop in
+        # load_gateway_config(), so check both.
+        _typing = data.get("typing_indicator")
+        if _typing is None:
+            _typing = data.get("extra", {}).get("typing_indicator")
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -375,6 +401,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            typing_indicator=_coerce_bool(_typing, True),
             extra=data.get("extra", {}),
         )
 
@@ -981,6 +1008,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
                 if "reply_in_thread" in platform_cfg:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
+                if "cron_continuable_surface" in platform_cfg:
+                    bridged["cron_continuable_surface"] = platform_cfg["cron_continuable_surface"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
@@ -1023,6 +1052,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "typing_indicator" in platform_cfg:
+                    bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

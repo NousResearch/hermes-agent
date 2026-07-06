@@ -54,7 +54,8 @@ class TestFindAgentBrowserCache:
 
     def test_cached_after_first_call(self):
         import tools.browser_tool as bt
-        with patch("shutil.which", return_value="/usr/bin/agent-browser"):
+        with patch("shutil.which", return_value="/usr/bin/agent-browser"), \
+             patch("tools.browser_tool.agent_browser_runnable", return_value=True):
             result1 = bt._find_agent_browser()
             result2 = bt._find_agent_browser()
         assert result1 == result2 == "/usr/bin/agent-browser"

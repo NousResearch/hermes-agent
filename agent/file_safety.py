@@ -77,15 +77,22 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     ]
 
 
-def get_safe_write_root() -> Optional[str]:
-    """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset."""
-    root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
-    if not root:
-        return None
-    try:
-        return os.path.realpath(os.path.expanduser(root))
-    except Exception:
-        return None
+def get_safe_write_roots() -> set[str]:
+    """Return resolved HERMES_WRITE_SAFE_ROOT paths. Supports multiple directories
+    separated by ``os.pathsep`` (``:`` on Unix, ``;`` on Windows).
+    E.g., ``/opt/data:/var/www/html`` on Unix, ``C:\\data;D:\\www`` on Windows."""
+    env = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
+    if not env:
+        return set()
+    roots: set[str] = set()
+    for path in env.split(os.pathsep):
+        if path:
+            try:
+                resolved = os.path.realpath(os.path.expanduser(path))
+                roots.add(resolved)
+            except (OSError, ValueError):
+                continue
+    return roots
 
 
 def is_write_denied(path: str) -> bool:
@@ -124,9 +131,15 @@ def is_write_denied(path: str) -> bool:
         except Exception:
             pass
 
-    safe_root = get_safe_write_root()
-    if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
-        return True
+    safe_roots = get_safe_write_roots()
+    if safe_roots:
+        allowed = False
+        for safe_root in safe_roots:
+            if resolved == safe_root or resolved.startswith(safe_root + os.sep):
+                allowed = True
+                break
+        if not allowed:
+            return True
 
     return False
 
@@ -280,7 +293,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     # .env contents — .env.example is the documented-shape substitute. The
     # terminal tool can still ``cat .env``; this is defense-in-depth, not a
     # boundary (see module docstring).
-    if resolved.name in _BLOCKED_PROJECT_ENV_BASENAMES:
+    if resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
         return (
             f"Access denied: {path} is a secret-bearing environment file "
             "and cannot be read to prevent credential leakage. "

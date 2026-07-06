@@ -455,7 +455,6 @@ Enable/disable via `hermes tools` (interactive) or `hermes tools enable/disable 
 | `feishu_drive` | Feishu (Lark) drive tools |
 | `yuanbao` | Yuanbao integration tools |
 | `rl` | Reinforcement learning tools (off by default) |
-| `moa` | Mixture of Agents (off by default) |
 
 Full enumeration lives in `toolsets.py` as the `TOOLSETS` dict; `_HERMES_CORE_TOOLS` is the default bundle most platforms inherit from.
 
@@ -648,7 +647,7 @@ here; full developer notes live in `AGENTS.md`, user-facing docs under
 Synchronous subagent spawn — the parent waits for the child's summary
 before continuing its own loop. Isolated context + terminal session.
 
-- **Single:** `delegate_task(goal, context, toolsets)`.
+- **Single:** `delegate_task(goal, context)`.
 - **Batch:** `delegate_task(tasks=[{goal, ...}, ...])` runs children in
   parallel, capped by `delegation.max_concurrent_children` (default 3).
 - **Roles:** `leaf` (default; cannot re-delegate) vs `orchestrator`

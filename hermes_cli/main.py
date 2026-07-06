@@ -12812,11 +12812,28 @@ def main():
 
     _secrets_cli.register_cli(secrets_bw)
 
+    # ``hermes secrets audit`` — scan for plaintext keys
+    audit_parser = secrets_subparsers.add_parser(
+        "audit",
+        help="Scan for plaintext API keys in skills, memory, and config",
+    )
+    audit_parser.add_argument(
+        "--check", action="store_true",
+        help="Exit non-zero if plaintext keys are found (CI/CD mode)",
+    )
+    audit_parser.add_argument(
+        "--fix", action="store_true",
+        help="Suggest SecretRef replacements for detected plaintext keys",
+    )
+    audit_parser.set_defaults(func=lambda a: _secrets_cli.cmd_audit(a))
+
     def _dispatch_secrets(args):  # noqa: ANN001
         sub = getattr(args, "secrets_command", None)
         bw_sub = getattr(args, "secrets_bw_command", None)
         if sub in ("bitwarden", "bw") and bw_sub is not None:
             return args.func(args)
+        if sub == "audit":
+            return _secrets_cli.cmd_audit(args)
         secrets_parser.print_help()
         return 0
 
@@ -14138,10 +14155,12 @@ def main():
         return
 
     # Execute the command
+    rc = 0
     if hasattr(args, "func"):
-        args.func(args)
+        rc = args.func(args) or 0
     else:
         parser.print_help()
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

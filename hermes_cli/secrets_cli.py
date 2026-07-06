@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -598,3 +599,96 @@ def _resolve_server_url(
                 )
             return custom
         console.print(f"  [red]Out of range — pick 1-{custom_idx}.[/red]")
+
+
+_AUDIT_KEY_PATTERNS: list[tuple[str, str, str]] = [
+    # (regex pattern, source_label, fix_suggestion_hint)
+    (r"(?i)\b(sk-[a-z0-9]{20,})\b", "OpenAI-style sk-", "env:OPENAI_API_KEY"),
+    (r"(?i)\b(xai-[a-zA-Z0-9]{20,})\b", "xAI key", "env:XAI_API_KEY"),
+    (r"(?i)\b(ds-[a-z0-9]{20,})\b", "DeepSeek key", "env:DEEPSEEK_API_KEY"),
+    (r"(?i)\b(nvapi-[a-z0-9-]{20,})\b", "NVIDIA key", "env:NVIDIA_API_KEY"),
+    (r"(?i)\b(Bearer\s+[a-zA-Z0-9_-]{20,})\b", "Bearer token in header value", "env:VAR_NAME"),
+]
+
+
+def _scan_file_for_keys(
+    file_path: Path,
+    console: Console,
+) -> list[dict]:
+    """Scan a single skill/memory file for plaintext API key patterns.
+
+    Returns a list of dicts: {path, line, match, source, fix_hint}.
+    """
+    findings: list[dict] = []
+    try:
+        text = file_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeDecodeError):
+        return findings
+
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for pattern, source, fix_hint in _AUDIT_KEY_PATTERNS:
+            for m in re.finditer(pattern, line):
+                # Skip lines that already use SecretRef format
+                if "${env:" in line or "${file:" in line:
+                    continue
+                findings.append({
+                    "path": str(file_path),
+                    "line": lineno,
+                    "match": m.group(0)[:40],
+                    "source": source,
+                    "fix_hint": fix_hint,
+                })
+                break  # one finding per line is enough
+    return findings
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    """``hermes secrets audit`` — scan for plaintext API keys."""
+    console = Console()
+
+    # Load .env first so SecretRef references resolve cleanly during scan
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    load_hermes_dotenv()
+
+    hermes_home = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
+    scan_dirs = [hermes_home / "skills", hermes_home / "memories"]
+    config_path = hermes_home / "config.yaml"
+
+    findings: list[dict] = []
+
+    # Scan skills and memories
+    for scan_dir in scan_dirs:
+        if not scan_dir.is_dir():
+            continue
+        for f in sorted(scan_dir.rglob("*.md")):
+            findings.extend(_scan_file_for_keys(f, console))
+
+    # Scan config.yaml
+    if config_path.is_file():
+        findings.extend(_scan_file_for_keys(config_path, console))
+
+    if not findings:
+        console.print("[green]✓ No plaintext API keys found in skills, memory, or config.[/green]")
+        return 0
+
+    console.print(f"[yellow]Found {len(findings)} potential plaintext key(s):[/yellow]\\n")
+    for f in findings:
+        console.print(
+            f"  {f['path']}:{f['line']}  "
+            f"[red]{f['source']}[/red]  "
+            f"…{f['match']}…"
+        )
+        if args.fix:
+            console.print(
+                f"    → hint: replace with [cyan]${{{f['fix_hint']}}}[/cyan]"
+            )
+
+    console.print(
+        f"\\n  Hint: move secrets to ~/.hermes/.env and reference them as "
+        f"[cyan]${{env:VAR_NAME}}[/cyan] in config.yaml"
+    )
+
+    if args.check:
+        return 1  # exit non-zero for CI/CD
+    return 0

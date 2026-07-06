@@ -3482,7 +3482,16 @@ def _interpolate_env_vars(value):
     if isinstance(value, str):
         def _replace(m):
             name = _env_ref_name(m.group(1))
-            return _get_secret(name, m.group(0)) or m.group(0)
+            resolved = _get_secret(name, None)
+            if resolved is not None:
+                return resolved
+            # Unresolved — log a warning and keep the literal placeholder
+            logger.warning(
+                "MCP config env-ref ${%s} (%s) is not set — "
+                "keeping literal placeholder",
+                m.group(1), name,
+            )
+            return m.group(0)
         return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
         return {k: _interpolate_env_vars(v) for k, v in value.items()}

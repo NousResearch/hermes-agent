@@ -6153,17 +6153,59 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     return cfg, stripped
 
 
+def _env_expand_match(m: re.Match) -> str:
+    """Expand a ``${...}`` match, supporting both ``${VAR}`` and ``${env:VAR}``.
+
+    ``${VAR}`` resolves via ``os.environ.get("VAR")`` (legacy).
+    ``${env:VAR}`` strips the ``env:`` prefix and resolves the same way.
+
+    Unresolved references are logged at warning level and returned verbatim.
+    """
+    raw = m.group(0)
+    inner = m.group(1)
+    if inner.startswith("env:"):
+        name = inner[len("env:"):]
+        if not name:
+            return raw
+        val = os.environ.get(name)
+        if val is not None:
+            return val
+        logger.warning(
+            "Config env-ref %r uses source 'env' but %s is not set "
+            "(check ~/.hermes/.env or HERMES_PROFILE/.env)",
+            raw, name,
+        )
+    elif inner.startswith("file:"):
+        logger.warning(
+            "Config env-ref %r uses source 'file' which is not yet supported; "
+            "keeping verbatim", raw,
+        )
+    elif inner.startswith(("bitwarden:", "vault:", "aws:")):
+        logger.warning(
+            "Config env-ref %r uses source %r which is not yet supported; "
+            "keeping verbatim", raw, inner.split(":")[0],
+        )
+    else:
+        # Legacy ``${VAR}`` — bare name, no source prefix
+        val = os.environ.get(inner)
+        if val is not None:
+            return val
+    return raw
+
+
 def _expand_env_vars(obj):
-    """Recursively expand ``${VAR}`` references in config values.
+    """Recursively expand ``${VAR}`` and ``${env:VAR}`` references in config values.
 
     Only string values are processed; dict keys, numbers, booleans, and
     None are left untouched.  Unresolved references (variable not in
     ``os.environ``) are kept verbatim so callers can detect them.
+
+    Since 2026.7 — also supports ``${source:name}`` SecretRef format.
     """
     if isinstance(obj, str):
         return re.sub(
             r"\${([^}]+)}",
-            lambda m: os.environ.get(m.group(1), m.group(0)),
+            _env_expand_match,
             obj,
         )
     if isinstance(obj, dict):
@@ -6174,8 +6216,8 @@ def _expand_env_vars(obj):
 
 
 def _env_ref_snapshot(obj, snapshot=None):
-    """Map every ``${VAR}`` name referenced in config values to its current
-    ``os.environ`` value (``None`` when unset).
+    """Map every ``${VAR}`` / ``${env:VAR}`` name referenced in config values
+    to its current ``os.environ`` value (``None`` when unset).
 
     Stored alongside cached ``load_config()`` results so a cache hit can
     detect that the cached expansion was made against a *different*
@@ -6183,11 +6225,17 @@ def _env_ref_snapshot(obj, snapshot=None):
     ``load_hermes_dotenv()`` populated the process env, or an env var
     rotated in-process after the first load. File mtime/size alone cannot
     see either case (#58514).
+
+    Since 2026.7 — strips ``env:`` prefix from ``${env:VAR}`` references
+    so the snapshot tracks the real env-var name, not ``"env:VAR"``.
     """
     if snapshot is None:
         snapshot = {}
     if isinstance(obj, str):
-        for name in re.findall(r"\${([^}]+)}", obj):
+        for raw in re.findall(r"\${([^}]+)}", obj):
+            name = raw[len("env:"):] if raw.startswith("env:") else raw
+            if raw.startswith(("file:", "bitwarden:", "vault:", "aws:")):
+                continue
             snapshot[name] = os.environ.get(name)
     elif isinstance(obj, dict):
         for value in obj.values():

@@ -734,7 +734,25 @@ class CDPSupervisor:
             backoff = min(backoff * 2, 10.0)
 
     async def _attach_initial_page(self) -> None:
-        """Find a page target, attach flattened session, enable domains, install dialog bridge."""
+        """Find a page target, attach flattened session, enable domains, install dialog bridge.
+
+        The ``Target.setAutoAttach`` call at the end of this method is
+        best-effort. Some local-engine CDP supervisors — notably
+        ``Brave`` launched with ``--remote-debugging-port=9222`` on
+        Windows (#59797) — refuse ``Target.setAutoAttach`` with the
+        error ``Target.attachToTarget: Not allowed`` even though
+        ``Target.attachToTarget(flatten=True)`` succeeds for the same
+        target. The flatten attach grants the supervisor a flat session
+        that already multiplexes the page + future children over the
+        same websocket, so the explicit ``setAutoAttach`` is redundant
+        there. Failure here is logged and swallowed instead of crashing
+        the whole attach path: if flatten attach returns a working
+        sessionId the rest of the navigation machinery continues
+        normally, and on the rare host that DOES need setAutoAttach
+        subsequent Target.* dispatches from ``browser_cdp`` or
+        ``browser_diagram`` get their attaches directly via
+        ``Target.attachToTarget`` (which works), not via auto-attach.
+        """
         resp = await self._cdp("Target.getTargets")
         targets = resp.get("result", {}).get("targetInfos", [])
         page_target = next((t for t in targets if t.get("type") == "page"), None)
@@ -751,11 +769,27 @@ class CDPSupervisor:
         self._page_session_id = attach["result"]["sessionId"]
         await self._cdp("Page.enable", session_id=self._page_session_id)
         await self._cdp("Runtime.enable", session_id=self._page_session_id)
-        await self._cdp(
-            "Target.setAutoAttach",
-            {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
-            session_id=self._page_session_id,
-        )
+        try:
+            await self._cdp(
+                "Target.setAutoAttach",
+                {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
+                session_id=self._page_session_id,
+            )
+        except Exception as exc:
+            # Best-effort — flag-and-continue. Local-engine CDPs that
+            # reject auto-attach (Brave/Windows, certain proxies) leave
+            # flatten-attach fully functional. Without this guard the
+            # supervisor would re-enter the reconnect loop on every
+            # browser_navigate / browser_vision call and the wrapper
+            # tools would surface ``Not allowed`` instead of returning
+            # page snapshots (#59797).
+            logger.warning(
+                "CDP supervisor %s: Target.setAutoAttach declined by host "
+                "(%s); continuing with flatten-only attach. Nested targets "
+                "will be attached explicitly via Target.attachToTarget.",
+                self.task_id, exc,
+            )
+
         # Install the dialog bridge — overrides native alert/confirm/prompt with
         # a synchronous XHR we intercept via Fetch domain. This is how we make
         # dialog response work on Browserbase (whose CDP proxy auto-dismisses

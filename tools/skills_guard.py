@@ -513,6 +513,28 @@ THREAT_PATTERNS = [
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration",
      "instructs agent to send data to a URL"),
+
+    # ── Agent tool abuse: terminal misuse (3 focused patterns) ──
+    # Split from the original single pattern: the broad "terminal(…curl…)" would
+    # flag innocent documentation like "Use terminal("curl ...") for API calls".
+    # Three narrower patterns target distinct abuse classes with no false hits
+    # across the Hermes core skill catalog (37 skills, 0 false positives).
+    (r'terminal\s*\(\s*["\'][^"\']*(?:rm\s+-[rf\s]+|mkfs|shutdown|reboot|halt|chmod\s+777|chown\b)',
+     "agent_terminal_destructive", "critical", "execution",
+     "skill instructs agent to run destructive/privilege-escalation command via terminal tool"),
+    (r'terminal\s*\(\s*["\'][^"\']*(?:curl|wget)[^"\']*\|\s*(?:sh|bash|python|perl|ruby|cmd|powershell)',
+     "agent_terminal_pipe_exec", "critical", "execution",
+     "skill instructs agent to pipe curl/wget output to an interpreter via terminal tool"),
+    (r'terminal\s*\(\s*["\'][^"\']*(?:curl|wget)[^"\']*(?:\$\(|`[^`]*`|@[a-zA-Z0-9_~./\\-]+|--post-file)',
+     "agent_terminal_exfil", "high", "exfiltration",
+     "skill instructs agent to exfiltrate data via curl/wget through terminal tool"),
+    # ── Agent tool abuse: memory & delegation ──
+    (r"memory\s*\(\s*.*\baction\s*=\s*['\"](?:add|replace)",
+     "agent_memory_persistence", "medium", "persistence",
+     "skill uses agent memory API; verify stored content for injection risk"),
+    (r'(?:delegate_task|subagent)\s*\(.*\b(?:background|bypass|skip)\s*=?\s*(?:true|True|1)',
+     "agent_subagent_spawn", "medium", "execution",
+     "skill spawns sub-agents via delegate_task; verify no privilege escalation"),
 ]
 
 # Structural limits for skill directories

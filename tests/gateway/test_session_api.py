@@ -334,7 +334,8 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: message.started" in body
     assert "event: assistant.delta" in body
     assert "Hello world" in body
-    assert "event: tool.progress" in body
+    assert "event: reasoning.available" in body
+    assert "event: tool.progress" not in body
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body

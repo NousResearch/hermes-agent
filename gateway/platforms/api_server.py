@@ -109,6 +109,78 @@ _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
 
 
+def _resolve_request_toolset_override(
+    body: Dict[str, Any],
+    platform_enabled_toolsets: List[str],
+) -> tuple[Optional[List[str]], Optional[str]]:
+    """Resolve a request-local toolset restriction.
+
+    ``None`` means "use the api_server platform default".  A list, including
+    an empty list, is an explicit per-request restriction.  Requests may only
+    disable tools or restrict to a subset of the platform-enabled toolsets;
+    they cannot expand the API-server tool surface.
+    """
+    requested: Optional[Any] = None
+
+    if "enabled_toolsets" in body:
+        requested = body.get("enabled_toolsets")
+    elif "toolsets" in body:
+        requested = body.get("toolsets")
+    elif body.get("tools") == [] or body.get("tool_choice") == "none":
+        requested = []
+
+    if requested is None:
+        return None, None
+
+    if not isinstance(requested, list):
+        return None, "enabled_toolsets/toolsets must be an array of toolset names"
+
+    clean: List[str] = []
+    for idx, item in enumerate(requested):
+        if not isinstance(item, str):
+            return None, f"enabled_toolsets[{idx}] must be a string"
+        name = item.strip()
+        if not name or re.search(r'[\r\n\x00]', name):
+            return None, f"enabled_toolsets[{idx}] is invalid"
+        clean.append(name)
+
+    platform_enabled = set(platform_enabled_toolsets)
+    unknown = sorted(set(clean) - platform_enabled)
+    if unknown:
+        return None, "Requested toolsets are not enabled for api_server: " + ", ".join(unknown)
+
+    return sorted(set(clean)), None
+
+
+def _api_stream_progress_event(
+    event_type: str,
+    *,
+    message_id: str,
+    tool_name: Optional[str] = None,
+    preview: Optional[str] = None,
+    args: Optional[Any] = None,
+) -> Optional[tuple[str, Dict[str, Any]]]:
+    """Map agent progress callbacks to API stream events.
+
+    Reasoning/thinking progress is not a tool call. Keep it on a separate
+    event name so no-tools clients can safely treat ``tool.*`` as real tool
+    activity instead of tripping over an internal thinking update.
+    """
+    if event_type == "reasoning.available":
+        return "reasoning.available", {
+            "message_id": message_id,
+            "delta": preview or "",
+        }
+    if event_type in {"tool.started", "tool.completed", "tool.failed"}:
+        return event_type, {
+            "message_id": message_id,
+            "tool_name": tool_name,
+            "preview": preview,
+            "args": args,
+        }
+    return None
+
+
 def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     """Normalize boolean-like API payload values.
 
@@ -1230,6 +1302,24 @@ class APIServerAdapter(BasePlatformAdapter):
             return dict(override) if isinstance(override, dict) else None
         except Exception:
             return None
+    def _get_platform_enabled_toolsets(self) -> List[str]:
+        """Return the configured api_server platform toolsets."""
+        from gateway.run import _load_gateway_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        return sorted(_get_platform_tools(_load_gateway_config(), "api_server"))
+
+    def _request_toolset_override_response(
+        self,
+        body: Dict[str, Any],
+    ) -> tuple[Optional[List[str]], Optional[Any]]:
+        override, error = _resolve_request_toolset_override(
+            body,
+            self._get_platform_enabled_toolsets(),
+        )
+        if error:
+            return None, web.json_response(_openai_error(error, code="invalid_toolsets"), status=400)
+        return override, None
 
     def _create_agent(
         self,
@@ -1241,6 +1331,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1270,7 +1361,6 @@ class APIServerAdapter(BasePlatformAdapter):
             _load_gateway_config,
             GatewayRunner,
         )
-        from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
@@ -1333,8 +1423,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key or session_id,
             )
 
-        user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        enabled_toolsets = (
+            enabled_toolsets_override
+            if enabled_toolsets_override is not None
+            else self._get_platform_enabled_toolsets()
+        )
 
         max_iterations = _current_max_iterations()
 
@@ -1894,6 +1987,9 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        toolset_override, toolset_err = self._request_toolset_override_response(body)
+        if toolset_err is not None:
+            return toolset_err
         history = self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(
             user_message=user_message,
@@ -1901,6 +1997,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            enabled_toolsets_override=toolset_override,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -1938,6 +2035,9 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        toolset_override, toolset_err = self._request_toolset_override_response(body)
+        if toolset_err is not None:
+            return toolset_err
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
@@ -1973,11 +2073,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 _enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
-            if event_type == "reasoning.available":
-                _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
-            elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
-                event_name = event_type.replace("tool.", "tool.")
-                _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+            mapped = _api_stream_progress_event(
+                event_type,
+                message_id=message_id,
+                tool_name=tool_name,
+                preview=preview,
+                args=args,
+            )
+            if mapped is not None:
+                name, payload = mapped
+                _enqueue(name, payload)
 
         async def _run_and_signal() -> None:
             try:
@@ -1992,6 +2097,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    enabled_toolsets_override=toolset_override,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -2190,6 +2296,9 @@ class APIServerAdapter(BasePlatformAdapter):
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
+        toolset_override, toolset_err = self._request_toolset_override_response(body)
+        if toolset_err is not None:
+            return toolset_err
 
         # Per-client model routing: if the requested model matches a
         # configured model_routes alias, this request's agent is created
@@ -2279,6 +2388,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                enabled_toolsets_override=toolset_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2299,11 +2409,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                enabled_toolsets_override=toolset_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "toolsets", "enabled_toolsets", "stream"])
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -3313,6 +3424,9 @@ class APIServerAdapter(BasePlatformAdapter):
         route = self._resolve_route(body.get("model"))
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
+        toolset_override, toolset_err = self._request_toolset_override_response(body)
+        if toolset_err is not None:
+            return toolset_err
         if stream:
             # Streaming branch — emit OpenAI Responses SSE events as the
             # agent runs so frontends can render text deltas and tool
@@ -3366,6 +3480,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                enabled_toolsets_override=toolset_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -3400,13 +3515,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                enabled_toolsets_override=toolset_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools", "tool_choice", "toolsets", "enabled_toolsets"],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -4031,6 +4147,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4067,6 +4184,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    enabled_toolsets_override=enabled_toolsets_override,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -4251,6 +4369,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # approval for one run must not unblock another run's dangerous command.
         approval_session_key = run_id
         ephemeral_system_prompt = instructions
+        toolset_override, toolset_err = self._request_toolset_override_response(body)
+        if toolset_err is not None:
+            return toolset_err
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
@@ -4295,6 +4416,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    enabled_toolsets_override=toolset_override,
                 )
                 self._active_run_agents[run_id] = agent
 

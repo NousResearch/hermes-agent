@@ -20,6 +20,8 @@ def _isolated_workflow_home(tmp_path, monkeypatch):
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("HERMES_WORKFLOW_CONTEXT", raising=False)
+    monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
 
     from model_tools import _clear_tool_defs_cache
     from tools.registry import invalidate_check_fn_cache
@@ -31,13 +33,21 @@ def _isolated_workflow_home(tmp_path, monkeypatch):
     _clear_tool_defs_cache()
 
 
-def _enable_workflow_toolset(hermes_home):
-    (hermes_home / "config.yaml").write_text("toolsets:\n  - workflow\n", encoding="utf-8")
+def _write_config(hermes_home, text):
+    (hermes_home / "config.yaml").write_text(text, encoding="utf-8")
     from model_tools import _clear_tool_defs_cache
     from tools.registry import invalidate_check_fn_cache
 
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
+
+
+def _enable_workflow_toolset(hermes_home):
+    _write_config(hermes_home, "toolsets:\n  - workflow\n")
+
+
+def _enable_cli_workflow_toolset(hermes_home):
+    _write_config(hermes_home, "platform_toolsets:\n  cli:\n    - workflow\n")
 
 
 def _tool_names_for_workflow_toolset():
@@ -85,6 +95,35 @@ def test_workflow_tool_visibility_tracks_env_without_manual_cache_invalidation(m
 def test_workflow_tools_visible_when_config_enables_workflow_toolset(_isolated_workflow_home):
     _enable_workflow_toolset(_isolated_workflow_home)
 
+    assert WORKFLOW_TOOL_NAMES.issubset(_tool_names_for_workflow_toolset())
+
+
+def test_workflow_tools_visible_when_platform_config_enables_workflow_toolset(
+    _isolated_workflow_home,
+):
+    _enable_cli_workflow_toolset(_isolated_workflow_home)
+
+    assert WORKFLOW_TOOL_NAMES.issubset(_tool_names_for_workflow_toolset())
+
+
+def test_workflow_tools_ignore_scalar_platform_toolsets(_isolated_workflow_home):
+    _write_config(_isolated_workflow_home, "platform_toolsets:\n  cli: notworkflow\n")
+
+    assert WORKFLOW_TOOL_NAMES.isdisjoint(_tool_names_for_workflow_toolset())
+
+
+def test_workflow_platform_toolsets_check_is_platform_independent(
+    _isolated_workflow_home,
+    monkeypatch,
+):
+    _write_config(
+        _isolated_workflow_home,
+        "platform_toolsets:\n  telegram:\n    - workflow\n",
+    )
+    monkeypatch.setenv("HERMES_PLATFORM", "cli")
+    assert WORKFLOW_TOOL_NAMES.issubset(_tool_names_for_workflow_toolset())
+
+    monkeypatch.setenv("HERMES_PLATFORM", "discord")
     assert WORKFLOW_TOOL_NAMES.issubset(_tool_names_for_workflow_toolset())
 
 

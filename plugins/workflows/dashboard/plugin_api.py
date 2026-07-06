@@ -263,7 +263,7 @@ async def deploy_definition(request: Request) -> dict[str, Any]:
         spec = _load_spec_from_payload(await _read_body(request))
         with _connect_initialized() as conn:
             wfdb.deploy_definition(conn, spec, created_by="dashboard")
-            record = _definition_record(conn, spec.id)
+            record = _definition_record(conn, spec.id, spec.version)
     except (json.JSONDecodeError, yaml.YAMLError, ValidationError, ValueError) as exc:
         raise _http_400(exc) from exc
     except KeyError as exc:

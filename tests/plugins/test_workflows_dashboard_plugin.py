@@ -312,6 +312,39 @@ def test_validate_deploy_list_show_roundtrip(client):
     _assert_pass_spec(shown["spec"])
 
 
+def test_deploy_endpoint_returns_deployed_version_not_latest(client):
+    workflow_id = "dashboard_deploy_version_demo"
+
+    def spec(version):
+        return {
+            "id": workflow_id,
+            "name": "Dashboard Deploy Version Demo",
+            "version": version,
+            "nodes": {"start": {"type": "pass"}},
+        }
+
+    first = _deploy(client, spec(2))
+    assert first["version"] == 2
+
+    second = _deploy(client, spec(1))
+
+    assert second["workflow_id"] == workflow_id
+    assert second["id"] == workflow_id
+    assert second["version"] == 1
+    assert second["created_by"] == "dashboard"
+
+    with wfdb.connect() as conn:
+        records = [
+            record
+            for record in wfdb.list_definitions(conn)
+            if record.workflow_id == workflow_id
+        ]
+    assert {(record.version, record.created_by) for record in records} == {
+        (1, "dashboard"),
+        (2, "dashboard"),
+    }
+
+
 def test_run_endpoint_creates_execution_and_list_show_return_it(client):
     _deploy(client)
 

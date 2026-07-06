@@ -279,7 +279,7 @@ TOOLSETS = {
     "workflow": {
         "description": (
             "Workflow graph orchestration tools — gated and opt-in for "
-            "profiles that start, inspect, or cancel workflow executions."
+            "profiles that validate, deploy, start, inspect, or cancel workflow executions."
         ),
         "tools": [
             "workflow_list",

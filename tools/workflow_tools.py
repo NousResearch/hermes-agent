@@ -22,7 +22,17 @@ def _check_workflow_mode() -> bool:
         return True
     try:
         cfg = load_config()
-        return "workflow" in (cfg.get("toolsets", []) or [])
+        toolsets = cfg.get("toolsets") or []
+        if isinstance(toolsets, (list, tuple, set)) and "workflow" in toolsets:
+            return True
+        platform_toolsets = cfg.get("platform_toolsets") or {}
+        if isinstance(platform_toolsets, dict):
+            return any(
+                "workflow" in toolsets
+                for toolsets in platform_toolsets.values()
+                if isinstance(toolsets, (list, tuple, set))
+            )
+        return False
     except Exception:
         return False
 

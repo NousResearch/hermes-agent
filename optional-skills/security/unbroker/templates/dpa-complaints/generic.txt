@@ -1,0 +1,67 @@
+Subject: Article 77 GDPR complaint — {broker_name}
+
+To the competent supervisory authority under Regulation (EU) 2016/679
+
+I, {full_name}, residing at {current_address}, contactable at {contact_email},
+
+make this complaint under Article 77 of Regulation (EU) 2016/679 ("GDPR") and the
+corresponding national provisions implementing Article 78 in my country of residence.
+
+1. DATA CONTROLLER: {broker_name}, with registered office at _______________________.
+
+2. PERSONAL DATA CONCERNED: the controller holds and publishes my personal data
+   (name, addresses, telephone numbers, sometimes data concerning my family
+   members) without my consent and without a compelling legitimate interest under
+   Article 6(1)(f) GDPR.
+
+3. PRIOR ARTICLE 17 REQUEST: on {request_date} I sent the controller an Article 17
+   erasure request for all personal data concerning me, together with an Article 21
+   objection. The request was sent by {request_channel} and was duly received
+   (evidence attached).
+
+4. CONTROLLER'S FAILURE: more than 30 days have now passed beyond the Article 12(3)
+   statutory deadline, and
+   [OR: the controller responded on __________ with a refusal that does not identify
+   specific compelling legitimate grounds under Article 17(3) GDPR]
+   [OR: the controller responded only partially, retaining some of my personal data
+   without justification].
+
+5. WHY THIS IS A COMPLAINT, NOT JUST A SECOND REQUEST: GDPR provides for a two-step
+   process — direct request to the controller (Article 17), and if that fails or is
+   unsatisfactory, complaint to the supervisory authority (Article 77). I have
+   completed step one. I am now invoking step two because the controller has not
+   satisfied its obligations under Articles 17, 12, and 5 GDPR.
+
+6. LEGAL BASIS: the controller typically relies on "legitimate interest" under
+   Article 6(1)(f) GDPR. That interest does not satisfy the tripartite balancing
+   test in EDPB Guidelines on legitimate interest, particularly because:
+     (a) I have a reasonable expectation of privacy (I never consented to commercial
+         resale of my data);
+     (b) the processing causes harm (privacy intrusion, stalking risk, identity
+         theft, harassment);
+     (c) Articles 7 (respect for private life) and 8 (protection of personal data)
+         of the Charter of Fundamental Rights of the European Union.
+
+I ASK THAT THE SUPERVISORY AUTHORITY
+
+pursuant to Article 58(2) GDPR:
+  (a) find that the controller has infringed Articles 17, 12 and 5 GDPR;
+  (b) order the controller to erase all personal data concerning me;
+  (c) impose administrative fines under Article 83 GDPR, up to 4% of total
+      worldwide annual turnover, where the conditions are met;
+  (d) make such further orders as the authority considers appropriate under
+      Article 58(2) GDPR.
+
+Attached:
+  1. copy of my Article 17 GDPR request sent on {request_date};
+  2. proof of receipt (email/web-form screenshot/postal receipt);
+  3. [if applicable, the controller's response];
+  4. copy of a current photo-bearing identity document.
+
+I confirm that the information provided is true and accurate to the best of my
+knowledge.
+
+Yours faithfully,
+{full_name}
+{contact_email}
+{current_address}

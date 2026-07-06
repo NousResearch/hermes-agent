@@ -1,0 +1,12 @@
+{
+  "id": "dvi_lv",
+  "name": "Datu valsts inspekcija",
+  "country": "LV",
+  "language": "lv",
+  "web_form_url": "https://www.dvi.gov.lv/en/services/complaint-concerning-processing-personal-data",
+  "complaint_template": "dpa-complaints/dvi_lv.txt",
+  "expected_days": 90,
+  "email": "pasts@dvi.gov.lv",
+  "source_url": "https://www.dvi.gov.lv/en/services/complaint-concerning-processing-personal-data",
+  "notes": "Latvia's DVI provides a service for complaints concerning personal-data processing. Latvian filing is preferred; include controller correspondence and evidence."
+}

@@ -1,0 +1,13 @@
+{
+  "id": "imy",
+  "name": "Integritetsskyddsmyndigheten",
+  "country": "SE",
+  "language": "sv",
+  "web_form_url": "https://www.imy.se/en/individuals/forms-and-e-services/file-a-gdpr-complaint/",
+  "complaint_template": "dpa-complaints/imy.txt",
+  "expected_days": 90,
+  "email": "imy@imy.se",
+  "postal_address": "Box 8114, 104 20 Stockholm",
+  "source_url": "https://www.imy.se/en/individuals/forms-and-e-services/file-a-gdpr-complaint/",
+  "notes": "IMY requires the complaint to concern the subject's own personal data, identify the controller, identify the complainant, and include contact details. The e-service requires Chrome or Edge; protected-identity subjects should file by letter or email instead."
+}

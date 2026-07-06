@@ -3,7 +3,10 @@
   "name": "FastPeopleSearch",
   "category": "people_search",
   "priority": "high",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US",
+    "EU"
+  ],
   "search": {
     "method": "url_pattern",
     "url": "https://www.fastpeoplesearch.com/",
@@ -11,7 +14,11 @@
     "antibot": "datadome",
     "match_signal": "result",
     "match_signal_notes": "SEO TRAP: title/H1/intro echoes the query ('Over 100+ FREE public records found for {Name}') with no real match behind it, and /name/{first}-{last} list pages are fuzzy-SURNAME namesakes (different states, no address overlap). Record `found` ONLY on a result CARD corroborated by the subject's address or DOB. Ignore templated title/intro/H1 text.",
-    "by": ["name", "phone", "address"],
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ],
     "url_patterns": {
       "name": "https://www.fastpeoplesearch.com/name/{first}-{last}"
     },
@@ -34,11 +41,22 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["full_name", "contact_email"],
+    "inputs": [
+      "full_name",
+      "contact_email"
+    ],
     "notes": "Opt-out NOT directly observed (2026-06-30): /removal is itself behind DataDome. By sibling-site pattern almost certainly mirrors truepeoplesearch (email-link flow, subject/agent toggle, name+email fields, hCaptcha) - INFERRED, not verified. Confirm before acting.",
     "est_processing_days": 3,
-    "reappearance_risk": "high"
+    "reappearance_risk": "high",
+    "deletion": {
+      "kinds": [
+        "gdpr"
+      ],
+      "email": "privacy@peopleconnect.us"
+    },
+    "email": "privacy@peopleconnect.us"
   },
   "last_verified": "2026-06-30",
-  "source": "BADBOOL"
+  "source": "BADBOOL",
+  "gdpr_scope": true
 }

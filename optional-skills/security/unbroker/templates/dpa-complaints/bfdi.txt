@@ -1,0 +1,95 @@
+Betreff: Beschwerde nach Art. 77 DSGVO — {broker_name}
+
+An die
+Bundesbeauftragte für den Datenschutz und die Informationsfreiheit (BfDI)
+Graurheindorfer Straße 153
+53117 Bonn
+
+Hinweis zur Zuständigkeit (Art. 77 DSGVO i.V.m. § 40 BDSG):
+Die BfDI ist zuständig für die Aufsicht über öffentliche Stellen des Bundes, über
+Telekommunikations- und Postdienstleister sowie über Stellen, die dem
+Sicherheitsüberprüfungsgesetz unterliegen. Für die Aufsicht über private Unternehmen
+und sonstige nicht-öffentliche Stellen sind die Landesdatenschutzbehörden des
+Bundeslandes zuständig, in dem der Verantwortliche seinen Sitz hat (vgl. BfDI,
+Zuständigkeit der BfDI: "Privatunternehmen werden meist von den Landesbehörden
+beaufsichtigt.").
+Da es sich bei {broker_name} um ein nicht-öffentliches Unternehmen handelt, ist
+vorrangig die Landesdatenschutzbehörde des Sitzlandes des Verantwortlichen zuständig.
+Ich bitte die BfDI daher höflich, diese Beschwerde an die zuständige
+Landesdatenschutzbehörde weiterzuleiten, sofern die BfDI nicht selbst zuständig ist,
+und mich über die Weiterleitung zu informieren (Art. 77 Abs. 2 DSGVO).
+
+---
+
+Ich, {full_name}, wohnhaft {current_address}, erreichbar unter {contact_email},
+
+erhebe hiermit Beschwerde nach Art. 77 der Verordnung (EU) 2016/679 ("DSGVO")
+und nach § 60 des Bundesdatenschutzgesetzes (BDSG),
+
+UND TRAGE FOLGENDES VOR
+
+1. Verantwortlicher: {broker_name}, mit Sitz in _______________________.
+
+2. Betroffene personenbezogene Daten: der Verantwortliche verarbeitet und
+   veröffentlicht meine personenbezogenen Daten (Name, Anschriften,
+   Telefonnummern, teilweise Daten zu meinen Angehörigen) ohne meine Einwilligung
+   und ohne dass ein überwiegendes berechtigtes Interesse gemäß Art. 6 Abs. 1
+   Buchstabe f DSGVO vorliegt.
+
+3. Antrag nach Art. 17 DSGVO (Recht auf Löschung): am {request_date} habe ich an
+   den Verantwortlichen einen Antrag auf Löschung sämtlicher mich betreffender
+   personenbezogener Daten gemäß Art. 17 DSGVO gerichtet, verbunden mit einem
+   Widerspruch nach Art. 21 DSGVO. Der Antrag wurde per {request_channel} versandt
+   und ist nachweislich zugegangen (siehe Anlage 1).
+
+4. Pflichtverletzung des Verantwortlichen: inzwischen sind mehr als 30 Tage über
+   die Frist des Art. 12 Abs. 3 DSGVO hinaus verstrichen,
+   [ODER: der Verantwortliche hat am __________ mit einer Ablehnung geantwortet,
+   die keine spezifischen überwiegenden berechtigten Gründe gemäß Art. 17 Abs. 3
+   DSGVO benennt]
+   [ODER: der Verantwortliche hat nur teilweise geantwortet und einen Teil meiner
+   personenbezogenen Daten ohne Rechtfertigung weiterhin gespeichert].
+
+5. Verletzte Vorschriften: Art. 5, 6, 12, 17 und 21 DSGVO in Verbindung mit Art. 7
+   (Achtung des Privatlebens) und Art. 8 (Schutz personenbezogener Daten) der Charta
+   der Grundrechte der Europäischen Union. Das vom Verantwortlichen geltend gemachte
+   berechtigte Interesse (Art. 6 Abs. 1 Buchstabe f DSGVO) besteht die dreistufige
+   Abwägung nicht, wie sie vom EDSA in seinen Leitlinien beschrieben wird,
+   insbesondere weil:
+     (a) die berechtigten Erwartungen der betroffenen Person verletzt werden (ich
+         habe der kommerziellen Weiterveräußerung meiner Daten nie zugestimmt);
+     (b) die Verarbeitung Schäden verursacht (Eingriff in die Privatsphäre,
+         Stalking-Risiko, Identitätsdiebstahl, Belästigung);
+     (c) Art. 7 und Art. 8 der Charta der Grundrechte der EU dies verbieten.
+
+6. Rechtsbehelf (Art. 78 DSGVO): Gegen eine ablehnende Entscheidung der Aufsichts-
+   behörde steht mir der Rechtsweg zum Verwaltungsgericht offen (§ 40 BDSG i.V.m.
+   § 80 DSGVO).
+
+ICH BITTE DIE ZUSTÄNDIGE AUFSICHTSBEHÖRDE
+
+gemäß Art. 58 Abs. 2 DSGVO:
+  (a) festzustellen, dass der Verantwortliche Art. 5, 6, 12, 17 und 21 DSGVO
+      verletzt hat;
+  (b) dem Verantwortlichen die Löschung sämtlicher mich betreffender
+      personenbezogener Daten aufzugeben (Art. 58 Abs. 2 Buchstabe c DSGVO);
+  (c) die in Art. 83 DSGVO vorgesehenen Geldbußen zu verhängen, die sich bis zu
+      4 % des gesamten weltweiten Jahresumsatzes belaufen können, sofern die
+      Voraussetzungen vorliegen;
+  (d) alle weiteren Maßnahmen anzuordnen, die nach Art. 58 Abs. 2 DSGVO als
+      angemessen erscheinen.
+
+Hinweis zur Verfahrensdauer: Gemäß Art. 78 Abs. 2 DSGVO und der BfDI-Praxis ist die
+Aufsichtsbehörde verpflichtet, mich spätestens nach drei Monaten über den
+Verfahrensstand der Beschwerde zu informieren.
+
+Anlagen:
+  1. Kopie meines Antrags nach Art. 17 DSGVO vom {request_date};
+  2. Empfangsnachweis (E-Mail / Screenshot des Formulars / Posteingang);
+  3. [ggf. Antwort des Verantwortlichen];
+  4. Kopie eines gültigen Ausweisdokuments.
+
+Mit freundlichen Grüßen,
+{full_name}
+{contact_email}
+{current_address}

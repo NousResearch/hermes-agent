@@ -1,0 +1,11 @@
+{
+  "id": "personuvernd_is",
+  "name": "Persónuvernd",
+  "country": "IS",
+  "language": "is",
+  "web_form_url": "https://www.personuvernd.is/",
+  "complaint_template": "dpa-complaints/personuvernd_is.txt",
+  "expected_days": 90,
+  "source_url": "https://www.personuvernd.is/",
+  "notes": "Iceland's data protection authority is the EEA supervisory authority for Iceland. The official website can be difficult to fetch from automated clients; route operators to the public site and EDPB member list when needed."
+}

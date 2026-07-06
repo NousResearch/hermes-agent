@@ -4,7 +4,8 @@
   "category": "people_search",
   "priority": "crucial",
   "jurisdictions": [
-    "US"
+    "US",
+    "EU"
   ],
   "parent": "peopleconnect",
   "owns": [
@@ -66,7 +67,11 @@
       "prefer": false,
       "url": "https://suppression.peopleconnect.us/guided-mode",
       "email": "privacy@peopleconnect.us",
-      "kinds": ["ccpa", "generic"],
+      "kinds": [
+        "ccpa",
+        "generic",
+        "gdpr"
+      ],
       "notes": "INVERTED for PeopleConnect: do NOT use 'Right to Delete / DELETE MY USER DATA' if the goal is staying out of search results. Per their privacy-center, deleting your user data ALSO deletes any suppressions you have, and deletion does NOT stop the people-search sites from showing you (public-records-sourced data re-lists). Suppression is the do-not-display list, so it is the effective lever and must be maintained. Use deletion ONLY if the goal is purging the account data they hold, accepting that you will re-list and must re-suppress. privacy@peopleconnect.us is the rights-request address for that data-purge path. FIELD-CONFIRMED 2026-07-03: a completed deletion emailed 'removed your identifying information from your suppression settings and you will need to re-enter that information' -- the suppression was wiped and the subject re-listed cluster-wide. If a 'deletion request is Complete' email appears, treat the suppression as gone: re-run suppression and re-verify the Control step reads 'suppressed'."
     },
     "playbook": [
@@ -95,5 +100,6 @@
     "reappearance_risk": "medium"
   },
   "last_verified": "2026-07-01",
-  "source": "BADBOOL"
+  "source": "BADBOOL",
+  "gdpr_scope": true
 }

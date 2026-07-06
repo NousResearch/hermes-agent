@@ -1,0 +1,13 @@
+{
+  "id": "cnpd_pt",
+  "name": "Comissão Nacional de Proteção de Dados",
+  "country": "PT",
+  "language": "pt",
+  "web_form_url": "https://www.cnpd.pt/cidadaos/participacoes/",
+  "complaint_template": "dpa-complaints/cnpd_pt.txt",
+  "expected_days": 90,
+  "email": "geral@cnpd.pt",
+  "postal_address": "Av. D. Carlos I, 134, 1º, 1200-651 Lisboa",
+  "source_url": "https://www.cnpd.pt/cidadaos/participacoes/",
+  "notes": "CNPD publishes three complaint forms; for ordinary controller non-response to an erasure request, use the general participation/complaint form unless the case is spam, video surveillance, or biometric data."
+}

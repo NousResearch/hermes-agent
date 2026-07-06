@@ -4,7 +4,8 @@
   "category": "people_search",
   "priority": "standard",
   "jurisdictions": [
-    "US"
+    "US",
+    "EU"
   ],
   "search": {
     "method": "url_pattern",
@@ -48,5 +49,6 @@
   },
   "last_verified": "2026-07-03",
   "source": "field_verified",
-  "confidence": "documented"
+  "confidence": "documented",
+  "gdpr_scope": false
 }

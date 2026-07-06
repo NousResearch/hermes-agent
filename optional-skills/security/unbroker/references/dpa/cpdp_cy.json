@@ -1,0 +1,11 @@
+{
+  "id": "cpdp_cy",
+  "name": "Office of the Commissioner for Personal Data Protection",
+  "country": "CY",
+  "language": "el",
+  "web_form_url": "https://www.dataprotection.gov.cy/dataprotection/dataprotection.nsf/page1i_en/page1i_en?opendocument=",
+  "complaint_template": "dpa-complaints/cpdp_cy.txt",
+  "expected_days": 90,
+  "source_url": "https://www.dataprotection.gov.cy/dataprotection/dataprotection.nsf/page1i_en/page1i_en?opendocument=",
+  "notes": "Cyprus guidance states that every data subject has the right to lodge a complaint with the Commissioner. Greek filing is preferred; English pages are available."
+}

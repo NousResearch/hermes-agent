@@ -117,6 +117,7 @@ breaks reading the dossier).
 | `$PDD brokers [--priority crucial]` | List the people-search broker database (curated + live) |
 | `$PDD refresh-brokers` | Pull the latest BADBOOL people-search list **and the CA Data Broker Registry** (`next` requeues this automatically when the cache is stale) |
 | `$PDD registry [--search NAME]` | State registry coverage (CA ~545 ingested; VT/OR/TX portals surfaced); the DROP/email lane, not scanned |
+| `$PDD dpas [--residency EU-ES]` | EU/EEA/UK DPA filing channels for Art. 77 escalation; resolves a residency code to its national authority |
 | `$PDD drop <subject> [--filed]` | **The one-shot legal lever**: one CA DROP request deletes from ALL registered brokers; `--filed` records it |
 | `$PDD plan <subject> [--priority crucial]` | Per-broker tier + method + `search_vectors` + the exact fields to disclose |
 | `$PDD plan <subject> --batch` | **Reduce view**: overlays ledger state, groups brokers by next action (unscanned/found/indirect/blocked/in_progress/done), collapses ownership clusters, **orders `found` cluster-parents-first + emits a tailored `parent_playbook`**, prints `next_actions` |

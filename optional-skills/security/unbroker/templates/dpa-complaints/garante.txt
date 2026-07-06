@@ -1,0 +1,73 @@
+Oggetto: Reclamo ex art. 77 GDPR — {broker_name}
+
+Al Garante per la protezione dei dati personali
+Piazza Venezia, 11 — 00187 Roma
+
+Il/La sottoscritto/a {full_name}, nato/a a __________________ il _____________,
+residente in {city}, {state} {postal}, CF __________________, email {contact_email},
+
+dichiara che la Repubblica italiana è lo Stato membro in cui risiede abitualmente,
+
+e con il presente reclamo, ai sensi dell'articolo 77 del Regolamento (UE) 2016/679
+("GDPR") e degli articoli 140-bis e seguenti del D.Lgs. 30 giugno 2003, n. 196
+("Codice in materia di protezione dei dati personali", come modificato dal D.Lgs.
+10 agosto 2018, n. 101),
+
+ESPONE QUANTO SEGUE
+
+a) Titolare del trattamento: {broker_name}, con sede in _______________________;
+
+b) Responsabile del trattamento (ove conosciuto): _______________________;
+
+c) Dati personali oggetto del reclamo: il Titolare detiene e pubblica i miei dati
+   personali (nome, indirizzi, recapiti telefonici, talvolta recapiti di familiari)
+   senza il mio consenso, in assenza di un legittimo interesse prevalente ai sensi
+   dell'articolo 6, paragrafo 1, lettera f), GDPR.
+
+d) Fatti e circostanze: in data {request_date} ho inviato al Titolare una richiesta di
+   cancellazione di tutti i dati personali che mi riguardano, ai sensi dell'articolo
+   17 GDPR, corredata di una contestuale obiezione ex articolo 21 GDPR. La richiesta
+   è stata inviata a mezzo {request_channel} ed è stata regolarmente ricevuta (si
+   veda l'allegato). Ad oggi, decorsi oltre 30 giorni dal termine di cui all'articolo
+   12, paragrafo 3, GDPR,
+   [OPPURE: il Titolare ha risposto in data __________ con un diniego che non indica
+   specifici motivi legittimi prevalenti ex articolo 17, paragrafo 3, GDPR]
+   [OPPURE: il Titolare ha risposto solo parzialmente, mantenendo alcuni dei miei
+   dati personali senza giustificazione].
+
+e) Disposizioni violate: articoli 5, 6, 12, 17 e 21 GDPR, in combinato disposto con
+   l'articolo 8 della Carta dei diritti fondamentali dell'Unione europea. Il legittimo
+   interesse invocato dal Titolare non supera il test di bilanciamento richiesto
+   dall'EDPB nelle sue Linee guida, in particolare considerando:
+     (i) le aspettative ragionevoli dell'interessato (che non ha acconsentito alla
+         rivendita commerciale dei propri dati);
+     (ii) il pregiudizio causato (intrusione nella privacy, rischio di stalking,
+          furto d'identità, molestie);
+     (iii) l'articolo 7 della Carta (rispetto della vita privata) e l'articolo 8
+          (protezione dei dati personali).
+
+CHIEDE
+
+ai sensi dell'articolo 58, paragrafo 2, GDPR, che il Garante voglia:
+  (a) accertare la violazione degli articoli 5, 6, 12, 17 e 21 GDPR da parte del
+      Titolare;
+  (b) ingiungere al Titolare la cancellazione di tutti i dati personali che mi
+      riguardano (art. 58(2)(c) GDPR);
+  (c) irrogare le sanzioni amministrative previste dall'articolo 83 GDPR, fino al
+      4% del fatturato mondiale annuo, ove ne ricorrano i presupposti;
+  (d) disporre ogni ulteriore misura ritenuta opportuna ai sensi dell'articolo 58,
+      paragrafo 2, GDPR.
+
+Allego alla presente:
+  1. copia della richiesta ex art. 17 GDPR inviata al Titolare in data {request_date};
+  2. prova dell'avvenuta ricezione (ricevuta PEC / email / screenshot del form);
+  3. [eventuale risposta del Titolare];
+  4. copia di un documento d'identità in corso di validità.
+
+Consapevole delle sanzioni penali di cui all'articolo 495 c.p. in caso di dichiarazioni
+mendaci, dichiaro che le informazioni fornite sono veritiere.
+
+Distinti saluti,
+{full_name}
+{contact_email}
+{current_address}

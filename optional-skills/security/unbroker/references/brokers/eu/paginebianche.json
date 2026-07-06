@@ -1,0 +1,53 @@
+{
+  "id": "paginebianche",
+  "name": "Pagine Bianche",
+  "category": "people_search",
+  "priority": "crucial",
+  "jurisdictions": ["EU-IT"],
+  "gdpr_scope": true,
+  "parent": "italiaonline",
+  "owns": [],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.paginebianche.it/",
+    "fetch": "browser",
+    "match_signal": "result",
+    "by": ["name", "phone", "address"]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "email",
+    "email": "privacy@paginebianche.it",
+    "requires": {
+      "profile_url": false,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": true,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["full_name", "contact_email", "current_address"],
+    "deletion": {
+      "via": "email_followup",
+      "email": "privacy@paginebianche.it",
+      "kinds": ["gdpr"],
+      "notes": "privacy@ is the documented privacy contact; ID copy required per Italian privacy practice. Italiaonline S.p.A. (Assago, Italy) is the parent and operates several Italian directory/media properties. A single Art. 17 request sent to privacy@paginebianche.it may cover multiple Italiaonline directories; confirm in the response."
+    },
+    "playbook": [
+      "Search the record on paginebianche.it (Italy's primary phone/address directory).",
+      "Send Art. 17 erasure request to privacy@paginebianche.it (Italian preferred; English accepted).",
+      "Attach copy of Italian ID (carta d'identità) or passport.",
+      "If no response within 30 days, escalate to Garante per la protezione dei dati personali via pdd.py escalate --dpa garante."
+    ],
+    "quirks": [
+      "Owned by Italiaonline — single erasure request may cover related Italiaonline directory properties. Verify in the response.",
+      "Listings include household members ('componenti del nucleo familiare'); request removal of all associated family members' data."
+    ],
+    "est_processing_days": 30,
+    "reappearance_risk": "medium"
+  },
+  "last_verified": null,
+  "source": "curated",
+  "confidence": "documented"
+}

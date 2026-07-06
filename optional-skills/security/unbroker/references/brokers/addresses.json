@@ -4,7 +4,8 @@
   "category": "people_search",
   "priority": "standard",
   "jurisdictions": [
-    "US"
+    "US",
+    "EU"
   ],
   "covered_by": "intelius",
   "search": {
@@ -44,9 +45,17 @@
       "Front-end only; holds no independent removal channel. The PeopleConnect Suppression Center is the lever."
     ],
     "est_processing_days": 7,
-    "reappearance_risk": "medium"
+    "reappearance_risk": "medium",
+    "deletion": {
+      "kinds": [
+        "gdpr"
+      ],
+      "email": "privacy@peopleconnect.us"
+    },
+    "email": "privacy@peopleconnect.us"
   },
   "last_verified": "2026-07-03",
   "source": "field_verified",
-  "confidence": "documented"
+  "confidence": "documented",
+  "gdpr_scope": true
 }

@@ -3,15 +3,24 @@
   "name": "Whitepages",
   "category": "people_search",
   "priority": "crucial",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US",
+    "EU"
+  ],
   "parent": "whitepages",
-  "owns": ["411"],
+  "owns": [
+    "411"
+  ],
   "search": {
     "method": "url_pattern",
     "url": "https://www.whitepages.com/",
     "fetch": "browser",
     "match_signal": "listing",
-    "by": ["name", "phone", "address"]
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ]
   },
   "optout": {
     "tier": "T1",
@@ -27,12 +36,20 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["full_name", "contact_email", "profile_url"],
+    "inputs": [
+      "full_name",
+      "contact_email",
+      "profile_url"
+    ],
     "deletion": {
       "via": "email",
       "email": "privacyrequest@whitepages.com",
       "url": "https://whitepagesprivacy.zendesk.com/hc/en-us/requests/new",
-      "kinds": ["ccpa", "generic"],
+      "kinds": [
+        "ccpa",
+        "generic",
+        "gdpr"
+      ],
       "notes": "privacyrequest@whitepages.com handles BOTH opt-out (removal from the site) and CCPA deletion requests, explicitly offered for people who do not want to provide a phone number for the automated tool. ~2 business day reply; opt-outs processed within 15 days. Verified from whitepages.com/privacy/consumer-rights 2026-07-01 (page dated 2026-06-22)."
     },
     "playbook": [
@@ -53,5 +70,6 @@
     "reappearance_risk": "medium"
   },
   "last_verified": "2026-07-01",
-  "source": "BADBOOL"
+  "source": "BADBOOL",
+  "gdpr_scope": true
 }

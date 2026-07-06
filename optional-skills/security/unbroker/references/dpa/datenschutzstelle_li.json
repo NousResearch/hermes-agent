@@ -1,0 +1,13 @@
+{
+  "id": "datenschutzstelle_li",
+  "name": "Datenschutzstelle Liechtenstein",
+  "country": "LI",
+  "language": "de",
+  "web_form_url": "https://www.datenschutzstelle.li/datenschutz/themen-z/beschwerderecht",
+  "complaint_template": "dpa-complaints/datenschutzstelle_li.txt",
+  "expected_days": 90,
+  "email": "info.dss@llv.li",
+  "postal_address": "Kirchstrasse 8, Postfach 684, FL-9490 Vaduz",
+  "source_url": "https://www.datenschutzstelle.li/services-und-downloads/formulare",
+  "notes": "Liechtenstein provides a free complaint right and forms, including for complaints about foreign companies where jurisdiction applies. German filing is preferred."
+}

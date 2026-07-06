@@ -1,0 +1,55 @@
+Temat: Skarga do Prezesa Urzędu Ochrony Danych Osobowych - brak usunięcia danych przez {broker_name}
+
+Do Prezesa Urzędu Ochrony Danych Osobowych
+ul. Stawki 2
+00-193 Warszawa
+
+Ja, {full_name}, zamieszkały/a pod adresem {current_address}, kontakt: {contact_email},
+
+wnoszę niniejszą skargę na podstawie art. 77 rozporządzenia (UE) 2016/679
+("RODO") oraz ustawy z dnia 10 maja 2018 r. o ochronie danych osobowych.
+
+STAN FAKTYCZNY
+
+1. Administrator danych: {broker_name}.
+
+2. Dane osobowe: administrator przetwarza i publikuje dotyczące mnie dane osobowe,
+   w tym imię i nazwisko, adresy, numery telefonu oraz, w razie występowania, dane
+   osób powiązanych lub członków rodziny.
+
+3. Wcześniejszy wniosek: w dniu {request_date}, za pośrednictwem {request_channel},
+   zwróciłem/am się do administratora o usunięcie moich danych osobowych na podstawie
+   art. 17 RODO oraz wniosłem/wniosłam sprzeciw wobec dalszego przetwarzania na
+   podstawie art. 21 RODO.
+
+4. Brak prawidłowej reakcji: upłynął termin jednego miesiąca określony w art. 12 ust. 3
+   RODO bez satysfakcjonującej odpowiedzi,
+   [ALBO: administrator odmówił usunięcia danych bez wykazania nadrzędnych prawnie
+   uzasadnionych podstaw],
+   [ALBO: administrator wykonał żądanie jedynie częściowo].
+
+5. Zarzucane naruszenia: art. 5, 6, 12, 17 i 21 RODO w związku z art. 7 i 8 Karty
+   praw podstawowych Unii Europejskiej. Administrator nie wykazał podstawy prawnej ani
+   nadrzędnego uzasadnionego interesu dla dalszej komercyjnej publikacji lub sprzedaży
+   moich danych osobowych.
+
+WNIOSEK
+
+Wnoszę o:
+  (a) przyjęcie i rozpoznanie niniejszej skargi;
+  (b) stwierdzenie naruszenia przepisów RODO przez {broker_name};
+  (c) nakazanie {broker_name} usunięcia wszystkich danych osobowych dotyczących mojej
+      osoby oraz zaprzestania dalszego przetwarzania, publikacji, sprzedaży lub
+      ponownego publikowania;
+  (d) zastosowanie odpowiednich środków naprawczych na podstawie art. 58 RODO.
+
+Załączniki:
+  1. kopia wniosku z dnia {request_date};
+  2. dowód wysłania lub doręczenia;
+  3. odpowiedź {broker_name}, jeżeli została udzielona;
+  4. dokument potwierdzający tożsamość, jeżeli jest wymagany.
+
+Z poważaniem,
+{full_name}
+{contact_email}
+{current_address}

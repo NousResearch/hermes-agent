@@ -1,0 +1,29 @@
+Subject: Article 77 GDPR complaint to AZOP - {broker_name}
+
+To Agencija za zastitu osobnih podataka (AZOP)
+
+I, {full_name}, residing at {current_address} and contactable at {contact_email},
+submit this complaint under Article 77 of Regulation (EU) 2016/679 ("GDPR").
+
+This complaint package is tailored for AZOP, the Croatian Personal Data Protection
+Agency. For formal filing, translate the final version into Croatian where possible.
+
+Facts:
+1. Controller complained of: {broker_name}.
+2. On {request_date}, I exercised my right to erasure under Article 17 GDPR and
+   objected under Article 21 GDPR by {request_channel}.
+3. The controller failed to satisfy the request within Article 12(3)'s deadline
+   or continues to process and disclose my personal data without a valid basis.
+
+I ask AZOP to determine the violation of my data-protection rights and use its
+Article 58(2) corrective powers to require erasure and cessation of processing.
+
+Attachments:
+1. copy of the Article 17 / Article 21 request;
+2. proof of receipt;
+3. any controller response;
+4. identity document copy if required.
+
+Signed,
+{full_name}
+{contact_email}

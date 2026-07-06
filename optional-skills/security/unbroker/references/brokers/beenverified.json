@@ -3,15 +3,26 @@
   "name": "BeenVerified",
   "category": "people_search",
   "priority": "crucial",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US",
+    "EU"
+  ],
   "parent": "beenverified",
-  "owns": ["peoplelooker", "peoplesmart"],
+  "owns": [
+    "peoplelooker",
+    "peoplesmart"
+  ],
   "search": {
     "method": "url_pattern",
     "url": "https://www.beenverified.com/app/optout/search",
     "fetch": "browser",
     "match_signal": "result",
-    "by": ["name", "phone", "email", "address"]
+    "by": [
+      "name",
+      "phone",
+      "email",
+      "address"
+    ]
   },
   "optout": {
     "tier": "T1",
@@ -27,11 +38,19 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["full_name", "contact_email", "profile_url"],
+    "inputs": [
+      "full_name",
+      "contact_email",
+      "profile_url"
+    ],
     "deletion": {
       "via": "email_followup",
       "email": "privacy@beenverified.com",
-      "kinds": ["ccpa", "generic"],
+      "kinds": [
+        "ccpa",
+        "generic",
+        "gdpr"
+      ],
       "notes": "privacy@beenverified.com is the documented address for opt-out, access, deletion, and correction requests (verified from the live privacy policy 2026-07-01). Controller is The Lifetime Value Co. -- a deletion request here can name their other properties too. DPO: dpo@beenverified.com. CCPA window: respond within 45 days (extendable to 90)."
     },
     "playbook": [
@@ -52,5 +71,6 @@
     "reappearance_risk": "medium"
   },
   "last_verified": "2026-07-01",
-  "source": "BADBOOL"
+  "source": "BADBOOL",
+  "gdpr_scope": true
 }

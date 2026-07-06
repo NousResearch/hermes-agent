@@ -1,0 +1,12 @@
+{
+  "id": "datatilsynet_no",
+  "name": "Datatilsynet",
+  "country": "NO",
+  "language": "no",
+  "web_form_url": "https://www.datatilsynet.no/om-datatilsynet/kontakt-oss/klage-til-datatilsynet/",
+  "complaint_template": "dpa-complaints/datatilsynet_no.txt",
+  "expected_days": 365,
+  "postal_address": "Postboks 458 Sentrum, 0105 Oslo",
+  "source_url": "https://www.datatilsynet.no/om-datatilsynet/kontakt-oss/klage-til-datatilsynet/",
+  "notes": "Norway's Datatilsynet asks complainants to contact the controller first and notes that complaints can take around one year. ID-porten is used for the digital form; written complaints are the fallback."
+}

@@ -1,0 +1,12 @@
+{
+  "id": "idpc_mt",
+  "name": "Information and Data Protection Commissioner",
+  "country": "MT",
+  "language": "en",
+  "web_form_url": "https://idpc.org.mt/contact/",
+  "complaint_template": "dpa-complaints/idpc_mt.txt",
+  "expected_days": 90,
+  "postal_address": "Floor 2, Airways House, High Street, Sliema SLM 1549",
+  "source_url": "https://idpc.org.mt/for-individuals/your-rights/",
+  "notes": "Malta's IDPC provides a Data Protection Complaint channel and accepts English filings. Attach prior controller request evidence."
+}

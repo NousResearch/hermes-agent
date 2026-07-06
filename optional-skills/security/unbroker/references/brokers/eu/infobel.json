@@ -1,0 +1,52 @@
+{
+  "id": "infobel",
+  "name": "Infobel",
+  "category": "people_search",
+  "priority": "crucial",
+  "jurisdictions": ["EU-BE"],
+  "gdpr_scope": true,
+  "parent": "infobel",
+  "owns": [],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.infobel.com/",
+    "fetch": "browser",
+    "match_signal": "result",
+    "by": ["name", "phone", "address"]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "email",
+    "email": "privacy@infobel.com",
+    "requires": {
+      "profile_url": false,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["full_name", "contact_email"],
+    "deletion": {
+      "via": "email_followup",
+      "email": "privacy@infobel.com",
+      "kinds": ["gdpr"],
+      "notes": "dpo@ is the DPO contact per the privacy policy pattern. Belgian-located but pan-European coverage. Contact email and playbook structure based on standard Belgian data-broker opt-out patterns; live Art.17 verification pending."
+    },
+    "playbook": [
+      "Search the record on infobel.com (one of Europe's largest phone directories).",
+      "Send Art. 17 erasure request to privacy@infobel.com.",
+      "Belgian DPA (APD/GBA) is the responsible authority if no response within 30 days."
+    ],
+    "quirks": [
+      "Infobel shares data with multiple national directories — erasure here does not automatically clear those.",
+      "Belgian DPA is the Autorité de protection des données / Gegevensbeschermingsautoriteit (APD/GBA); the dossier adapter for EU-BE is pending phase 3."
+    ],
+    "est_processing_days": 30,
+    "reappearance_risk": "medium"
+  },
+  "last_verified": null,
+  "source": "curated",
+  "confidence": "documented"
+}

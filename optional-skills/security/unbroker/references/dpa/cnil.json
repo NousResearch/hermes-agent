@@ -1,0 +1,11 @@
+{
+  "id": "cnil",
+  "name": "Commission Nationale de l'Informatique et des Libertés",
+  "country": "FR",
+  "language": "fr",
+  "web_form_url": "https://www.cnil.fr/fr/adresser-une-plainte",
+  "complaint_template": "dpa-complaints/cnil.txt",
+  "expected_days": 90,
+  "postal_address": "Commission nationale de l'informatique et des libertés, Service des plaintes, 3 Place de Fontenoy, 75007 PARIS",
+  "notes": "Complaints must be written in French (Article 1 of CNIL's procedural rules). The complaint is only valid if it is preceded by an attempt to exercise rights with the controller (Article 12(3) GDPR — 1 month deadline). CNIL commits to informing the complainant of progress 'au moins dans un délai de trois mois suivant son dépôt' (Article 23 Loi Informatique et Libertés). Postal complaints accepted at the address above; web form via the linked URL. CNIL is one of the most enforcement-active DPAs in the EU (Clearview AI, etc.)."
+}

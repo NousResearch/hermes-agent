@@ -1,0 +1,49 @@
+Subject: GDPR Article 21 objection to processing — {broker_name}
+
+To the Data Protection Officer of {broker_name},
+
+I am writing to object, under Article 21(1) of the General Data Protection Regulation
+(EU) 2016/679 (and, where applicable, the UK GDPR), to your processing of my personal
+data on the basis of Article 6(1)(f) (legitimate interest).
+
+1. THE OBJECTION
+   Personal data concerning me appears at:
+
+{listing_urls}
+
+   Identifying details for locating my record:
+     Name:  {full_name}
+     Email: {contact_email}
+
+   I object to all further processing of this data for any purpose related to the
+   publication, sale, licensing, or marketing of my personal information.
+
+2. YOUR OBLIGATION
+   Under Article 21(1), you must cease such processing unless you can demonstrate
+   compelling legitimate grounds that override my interests, rights, and freedoms.
+   Per EDPB Guidelines, the three-part test for legitimate interest under Article 6(1)(f)
+   is unlikely to be met where:
+     - the data subject's reasonable expectations are violated (they did not consent to
+       commercial resale of their personal data), or
+     - the processing causes harm (privacy intrusion, stalking risk, identity-theft
+       exposure, harassment) that is not outweighed by your interests.
+
+   The publication and resale of an identified individual's profile to commercial
+   third parties does not, in my view, satisfy this test.
+
+3. ALTERNATIVE: ERASURE (Article 17)
+   If you are not persuaded that compelling legitimate grounds exist, I alternatively
+   request erasure of my personal data under Article 17 GDPR, on the basis that the
+   data is no longer necessary for the purposes for which it was collected
+   (Article 17(1)(a)) and that I withdraw any consent previously given
+   (Article 17(1)(b)).
+
+4. RESPONSE
+   Please respond in writing within 30 days under Article 12(3). If you intend to
+   continue processing under Article 6(1)(f), please identify the specific compelling
+   legitimate ground and the balancing test you applied, so I may assess whether to
+   escalate to my national supervisory authority under Article 77.
+
+Sincerely,
+{full_name}
+{contact_email}

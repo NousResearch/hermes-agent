@@ -1,0 +1,34 @@
+Betreff: Beschwerde nach Art. 77 DSGVO an die Datenschutzstelle Liechtenstein - {broker_name}
+
+An die Datenschutzstelle Liechtenstein
+Kirchstrasse 8
+Postfach 684
+FL-9490 Vaduz
+
+Ich, {full_name}, wohnhaft in {current_address}, erreichbar unter {contact_email},
+erhebe Beschwerde nach Art. 77 der Verordnung (EU) 2016/679 ("DSGVO").
+
+Diese Beschwerde ist fuer die Datenschutzstelle Liechtenstein zugeschnitten. Bitte
+reichen Sie die endgueltige Fassung in deutscher Sprache ueber das vorgesehene
+Formular oder per schriftlicher Eingabe ein.
+
+Sachverhalt:
+1. Verantwortlicher: {broker_name}.
+2. Am {request_date} habe ich per {request_channel} Loeschung nach Art. 17 DSGVO
+   verlangt und zugleich Widerspruch nach Art. 21 DSGVO eingelegt.
+3. Der Verantwortliche hat nicht fristgerecht oder nicht zufriedenstellend reagiert
+   und verarbeitet meine personenbezogenen Daten weiterhin ohne ueberwiegende
+   berechtigte Gruende.
+
+Ich bitte die Datenschutzstelle, Verstoesse gegen Art. 5, 6, 12, 17 und 21 DSGVO
+zu pruefen und Abhilfebefugnisse nach Art. 58 Abs. 2 DSGVO auszuueben.
+
+Anlagen:
+1. Kopie des Antrags vom {request_date};
+2. Zustell- oder Empfangsnachweis;
+3. Antwort des Verantwortlichen, falls vorhanden;
+4. Ausweiskopie, falls erforderlich.
+
+Mit freundlichen Gruessen
+{full_name}
+{contact_email}

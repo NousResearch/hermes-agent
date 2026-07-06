@@ -4,7 +4,8 @@
   "category": "people_search",
   "priority": "high",
   "jurisdictions": [
-    "US"
+    "US",
+    "EU"
   ],
   "parent": "nuwber",
   "owns": [],
@@ -44,9 +45,16 @@
       "Email verification required."
     ],
     "est_processing_days": 3,
-    "reappearance_risk": "medium"
+    "reappearance_risk": "medium",
+    "deletion": {
+      "kinds": [
+        "gdpr"
+      ]
+    }
   },
   "last_verified": null,
   "source": "curated",
-  "confidence": "documented"
+  "confidence": "documented",
+  "gdpr_scope": false,
+  "notes": "Unverified: no documented privacy contact found. Conservative False — set to True once privacy@ or DPO contact is added to this broker's JSON or verified via live Art.17 test."
 }

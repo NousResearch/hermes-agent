@@ -1,0 +1,53 @@
+Onderwerp: Klacht bij de Autoriteit Persoonsgegevens - niet-uitgevoerde verwijdering door {broker_name}
+
+Aan de Autoriteit Persoonsgegevens
+Postbus 93374
+2509 AJ Den Haag
+
+Ik, {full_name}, wonend op {current_address}, bereikbaar via {contact_email},
+
+dien hierbij een klacht in op grond van artikel 77 van Verordening (EU) 2016/679
+(de Algemene verordening gegevensbescherming, "AVG") en de Uitvoeringswet AVG.
+
+FEITEN
+
+1. Verwerkingsverantwoordelijke: {broker_name}.
+
+2. Betrokken persoonsgegevens: de verantwoordelijke verwerkt en publiceert mijn
+   persoonsgegevens, waaronder mijn naam, adressen, telefoonnummers en mogelijk
+   gegevens over familieleden of andere gekoppelde personen.
+
+3. Eerder verzoek: op {request_date} heb ik de verantwoordelijke via {request_channel}
+   verzocht mijn persoonsgegevens te wissen op grond van artikel 17 AVG en bezwaar
+   gemaakt tegen verdere verwerking op grond van artikel 21 AVG.
+
+4. Uitblijven van een afdoende reactie: de termijn van een maand uit artikel 12 lid 3
+   AVG is verstreken zonder bevredigende reactie,
+   [OF: de verantwoordelijke heeft geweigerd zonder dwingende gerechtvaardigde gronden
+   aan te tonen],
+   [OF: de verantwoordelijke heeft slechts gedeeltelijk voldaan aan mijn verzoek].
+
+5. Schendingen: artikelen 5, 6, 12, 17 en 21 AVG, gelezen in samenhang met artikelen 7
+   en 8 van het Handvest van de grondrechten van de Europese Unie. Voor commerciele
+   publicatie en wederverkoop van mijn persoonsgegevens ontbreekt een geldige grondslag
+   of een zwaarder wegend gerechtvaardigd belang.
+
+VERZOEK
+
+Ik verzoek de Autoriteit Persoonsgegevens:
+  (a) deze klacht in behandeling te nemen;
+  (b) vast te stellen dat {broker_name} de AVG heeft geschonden;
+  (c) {broker_name} te gelasten mijn persoonsgegevens te wissen en verdere verwerking
+      te staken;
+  (d) zo nodig passende corrigerende maatregelen te nemen op grond van artikel 58 AVG.
+
+Bijlagen:
+  1. kopie van mijn verzoek van {request_date};
+  2. bewijs van verzending of ontvangst;
+  3. eventuele reactie van {broker_name};
+  4. kopie van een identiteitsdocument indien nodig voor verificatie.
+
+Met vriendelijke groet,
+{full_name}
+{contact_email}
+{current_address}

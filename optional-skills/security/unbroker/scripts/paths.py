@@ -55,6 +55,15 @@ def brokers_dir() -> Path:
     return skill_root() / "references" / "brokers"
 
 
+def dpa_dir() -> Path:
+    """National data-protection authority adapters (one JSON file per DPA).
+
+    Each adapter declares: id, full name, country, web-form URL, complaint template,
+    default response window. Mirrors brokers/ exactly so the loader shape is identical.
+    """
+    return skill_root() / "references" / "dpa"
+
+
 def brokers_cache_path() -> Path:
     """Live broker snapshot pulled from BADBOOL (merged under the curated DB)."""
     return data_dir() / "brokers-cache" / "badbool.json"

@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 
 import brokers as brokers_mod
+import dossier as dossier_mod
 import emailer
 import ledger as ledger_mod
 import paths
@@ -71,20 +72,48 @@ def _digest(broker_row: dict, reason: str, steps: list[str], prep: list[str] | N
 def request_kind(dossier: dict, allowed: list[str] | None = None) -> str:
     """Pick the honest legal basis for a deletion request from the subject's residency.
 
-    ccpa only for California residents, gdpr only for EU/UK residents, generic otherwise.
+    ccpa only for California residents (CCPA is California-specific; other US state
+    variants like NY/OR/TX have different statutes and the broker list does not currently
+    declare per-state adapters), gdpr for EU/EEA/UK residents, generic otherwise.
     `allowed` (from the broker's deletion.kinds) can restrict DOWN to generic but never
     upgrades to a law the subject can't truthfully claim.
+
+    The `dossier.legal_framework()` mapping is the canonical source for which residency
+    codes map to which legal framework — this function preserves the original
+    US-CA/EU/EEA/UK/generic trichotomy but delegates to the framework map when the framework
+    is GDPR/UK-GDPR. US state codes use the explicit `startswith('US-CA')` test because
+    CCPA is California-specific (no shipped per-state adapters).
     """
     res = (dossier.get("residency_jurisdiction") or "US").upper()
     if res.startswith("US-CA"):
         kind = "ccpa"
-    elif res.startswith(("EU", "UK", "GB")):
+    elif dossier_mod.is_eu_residency(res):
         kind = "gdpr"
     else:
         kind = "generic"
     if allowed and kind not in allowed and "generic" in allowed:
         kind = "generic"
     return kind
+
+
+# Days after Art. 17 submission before the DPA escalation path becomes actionable.
+#
+# Article 12(3) GDPR gives controllers one month to respond. The broker can extend
+# this by a further two months for complex requests (Art. 12(3) sentence 2) but MUST
+# notify the extension within the first month. So the realistic window is:
+#   - day 0:   Art. 17 sent
+#   - day 30:  broker's minimum deadline (Art. 12(3))
+#   - day 90:  broker's maximum deadline (Art. 12(3) + 2-month extension)
+#
+# We surface the escalation at 35 days — 30 + 5-day grace to absorb:
+#   - time zones between the subject and the broker
+#   - postal / PEC delivery timestamps vs. send timestamps
+#   - broker-side inbox spam-filter delays
+#
+# The `dpa_escalate` action's `why` text tells the subject the full 90-day story so
+# they can decide: file now, or wait if the broker explicitly invoked the 2-month
+# extension. Most brokers don't extend, so day 35 is the common case.
+DPA_ESCALATION_THRESHOLD_DAYS = 35
 
 
 _HUMAN_GATES = ("gov_id", "fax", "mail", "phone_voice", "phone_callback", "account")
@@ -244,9 +273,83 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
             "url": registry.DROP_URL,
             "command": f"python3 scripts/pdd.py drop {subject_id}",
             "why": f"CA resident: one DROP request deletes from all {len(registry_recs)} registered "
-                   "data brokers at once (superset of what commercial services cover).",
+                   f"data brokers at once (superset of what commercial services cover).",
             "after": f"python3 scripts/pdd.py drop {subject_id} --filed",
         })
+
+    # 0c) DPA escalation surface: for EU/EEA/UK subjects whose Art. 17 requests to gdpr_scope
+    # brokers have been pending for >35 days without a response, surface the escalation
+    # action so the autonomous run renders the complaint and the human can file it.
+    # This is the killer feature CCPA has no equivalent for — the regulatory escalation
+    # path that gives EU subjects actual enforcement teeth.
+    if dossier_mod.is_eu_residency(residency):
+        subject_dpa = dossier_mod.legal_framework(residency).get("dpa")
+        # Skip the surface if the subject already filed the DPA complaint for this broker
+        filed_prefs = (dossier.get("preferences") or {})
+        for case in (ledger or {}).values():
+            bid = case.get("broker_id") or case.get("id")
+            broker = by_id.get(bid) or {}
+            if not broker.get("gdpr_scope"):
+                continue
+            st = case.get("state")
+            # Only escalate cases pending broker response: submitted / awaiting_processing
+            # with 35+ days elapsed and no DPA complaint filed yet.
+            if st not in ("submitted", "awaiting_processing"):
+                continue
+            filed_at = filed_prefs.get(f"dpa_complaint_filed_{bid}")
+            if filed_at:
+                continue
+            submitted_at = case.get("submitted_at") or case.get("last_transition_at") or ""
+            if not submitted_at:
+                # fall back to history's last 'to' timestamp if available
+                hist = case.get("history") or []
+                for h in reversed(hist):
+                    if h.get("to") in ("submitted", "awaiting_processing"):
+                        submitted_at = h.get("at", "")
+                        break
+            if not submitted_at:
+                continue
+            try:
+                submitted_dt = _dt.datetime.strptime(submitted_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc)
+                age_days = (_dt.datetime.now(_dt.timezone.utc) - submitted_dt).days
+            except (ValueError, TypeError):
+                continue
+            if age_days < DPA_ESCALATION_THRESHOLD_DAYS:
+                continue
+            if not subject_dpa:
+                # Catch-all EU/EEA residency has no country-specific authority; use --dpa generic.
+                actions.append({
+                    "type": "dpa_escalate_generic",
+                    "broker_id": bid,
+                    "broker_name": broker.get("name", bid),
+                    "age_days": age_days,
+                    "subject_residency": residency,
+                    "why": (f"Art. 17 request to {broker.get('name', bid)} pending {age_days} days "
+                            f"with no response. Subject residency {residency!r} does not identify "
+                            f"a country-specific DPA — use the generic English complaint template. "
+                            f"Note: Article 12(3) GDPR allows brokers a 2-month extension "
+                            f"(total 90 days). If the broker explicitly invoked this extension, "
+                            f"you may want to wait until day 90 before filing."),
+                    "command": f"python3 scripts/pdd.py escalate {subject_id} {bid} --dpa generic "
+                               f"--request-date {submitted_at[:10]}",
+                })
+            else:
+                actions.append({
+                    "type": "dpa_escalate",
+                    "broker_id": bid,
+                    "broker_name": broker.get("name", bid),
+                    "dpa": subject_dpa,
+                    "age_days": age_days,
+                    "subject_residency": residency,
+                    "why": (f"Art. 17 request to {broker.get('name', bid)} pending {age_days} days "
+                            f"with no response. Subject residency {residency!r} maps to DPA "
+                            f"{subject_dpa!r}. Art. 77 escalation is the next legal step. "
+                            f"Note: Article 12(3) GDPR allows brokers a 2-month extension "
+                            f"(total 90 days). If the broker explicitly invoked this extension, "
+                            f"you may want to wait until day 90 before filing."),
+                    "command": f"python3 scripts/pdd.py escalate {subject_id} {bid} "
+                               f"--request-date {submitted_at[:10]}",
+                })
 
     # 1) Phase 1 crawl: everything unscanned (read-only, parallel-safe)
     unscanned = groups.get("unscanned") or []
@@ -328,6 +431,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
     for row in groups.get("indirect_exposure") or []:
         bid = row["broker_id"]
         has_email = bool(row.get("optout_email") or (row.get("deletion") or {}).get("email"))
+        indirect_kind = "gdpr_indirect" if request_kind(dossier) == "gdpr" else "ccpa_indirect"
         if not has_email and row.get("optout_url"):
             # No email lane (e.g. ThatsThem is web-form-only): drive the opt-out FORM, submitting
             # ONLY the subject's own identifiers to scrub from the third party's record.
@@ -346,16 +450,17 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                 "type": "indirect_email_send",
                 "broker_id": bid, "confirm_first": confirm_first,
                 "send_via": "browser" if email_mode == "browser" else "smtp",
-                "command": f"python3 scripts/pdd.py send-email {subject_id} {bid} --kind ccpa_indirect "
+                "kind": indirect_kind,
+                "command": f"python3 scripts/pdd.py send-email {subject_id} {bid} --kind {indirect_kind} "
                            f"--listing <third-party-listing-url>",
             })
         else:
             digest.append(_digest(row, "indirect-exposure request (draft mode: a human must hit send)",
-                                  ["Send the rendered ccpa_indirect draft",
+                                  [f"Send the rendered {indirect_kind} draft",
                                    f"Then: python3 scripts/pdd.py record {subject_id} {bid} submitted "
                                    f"--disclosed contact_email --channel email"],
                                   prep=[f"python3 scripts/pdd.py render-email {subject_id} {bid} "
-                                        f"--kind ccpa_indirect --listing <url>"]))
+                                        f"--kind {indirect_kind} --listing <url>"]))
 
     # 6) blocked sites: stealth pass if we have one, else the operator-browser path
     blocked = groups.get("blocked") or []

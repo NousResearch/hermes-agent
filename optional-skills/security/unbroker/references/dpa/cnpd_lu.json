@@ -1,0 +1,12 @@
+{
+  "id": "cnpd_lu",
+  "name": "Commission nationale pour la protection des donnees",
+  "country": "LU",
+  "language": "fr",
+  "web_form_url": "https://cnpd.public.lu/en/particuliers/faire-valoir/formulaire-plainte.html",
+  "complaint_template": "dpa-complaints/cnpd_lu.txt",
+  "expected_days": 90,
+  "postal_address": "15 Boulevard du Jazz, L-4370 Belvaux",
+  "source_url": "https://cnpd.public.lu/en/particuliers/faire-valoir/formulaire-plainte.html",
+  "notes": "Luxembourg CNPD provides an online complaint form for individuals. French filing is preferred; English guidance is available on the public site."
+}

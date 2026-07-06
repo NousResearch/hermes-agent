@@ -1,0 +1,52 @@
+Subject: Complaint under Article 77 GDPR and the Data Protection Act 2018 - {broker_name}
+
+To the Data Protection Commission
+6 Pembroke Row
+Dublin 2, D02 X963
+
+I, {full_name}, residing at {current_address}, contactable at {contact_email},
+
+raise this concern and complaint under Article 77 of Regulation (EU) 2016/679
+("GDPR") and the Data Protection Act 2018.
+
+FACTS
+
+1. Controller: {broker_name}.
+
+2. Personal data concerned: the controller processes and publishes personal data about
+   me, including my name, addresses, telephone numbers and, in some cases, data about
+   family members or associated persons.
+
+3. Prior request to the controller: on {request_date}, by {request_channel}, I sent an
+   erasure request under Article 17 GDPR and an objection to further processing under
+   Article 21 GDPR.
+
+4. Failure to resolve: more than one month has passed under Article 12(3) GDPR without
+   a satisfactory response,
+   [OR: the controller refused without identifying compelling legitimate grounds],
+   [OR: the controller responded only partially and retained personal data].
+
+5. Alleged infringements: Articles 5, 6, 12, 17 and 21 GDPR, read together with
+   Articles 7 and 8 of the Charter of Fundamental Rights of the European Union. The
+   controller has not shown a lawful basis or overriding legitimate interest for the
+   continued commercial publication or resale of my personal data.
+
+REQUESTED OUTCOME
+
+I ask the Data Protection Commission to:
+  (a) accept and assess this complaint;
+  (b) find that {broker_name} has infringed the GDPR;
+  (c) require {broker_name} to erase all personal data concerning me and stop further
+      processing, publication, sale or re-publication;
+  (d) take any corrective measures the DPC considers appropriate under Article 58 GDPR.
+
+Attachments:
+  1. copy of my Article 17 / Article 21 request sent on {request_date};
+  2. proof of sending or receipt;
+  3. any response from {broker_name};
+  4. proof of identity if required by the DPC.
+
+Yours faithfully,
+{full_name}
+{contact_email}
+{current_address}

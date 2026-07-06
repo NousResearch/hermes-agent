@@ -1,0 +1,13 @@
+{
+  "id": "apd_gba",
+  "name": "Autorité de protection des données / Gegevensbeschermingsautoriteit",
+  "country": "BE",
+  "language": "nl",
+  "web_form_url": "https://www.dataprotectionauthority.be/citizen/actions/lodge-a-complaint",
+  "complaint_template": "dpa-complaints/apd_gba.txt",
+  "expected_days": 90,
+  "email": "contact@apd-gba.be",
+  "postal_address": "Rue de la Presse 35 / Drukpersstraat 35, 1000 Bruxelles / Brussel",
+  "source_url": "https://www.dataprotectionauthority.be/citizen",
+  "notes": "Belgian residents can use the citizen portal to request mediation or lodge a complaint after exercising rights without success. The authority works in Dutch and French; choose the subject's language community where possible."
+}

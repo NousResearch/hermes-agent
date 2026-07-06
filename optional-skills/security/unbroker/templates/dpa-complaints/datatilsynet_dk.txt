@@ -1,0 +1,53 @@
+Emne: Klage til Datatilsynet - manglende sletning hos {broker_name}
+
+Til Datatilsynet
+Carl Jacobsens Vej 35
+2500 Valby
+
+Jeg, {full_name}, med adresse {current_address} og kontakt-e-mail {contact_email},
+
+indgiver hermed klage efter artikel 77 i Europa-Parlamentets og Radets forordning
+(EU) 2016/679 (databeskyttelsesforordningen) og databeskyttelsesloven.
+
+FAKTISKE OMSTAENDIGHEDER
+
+1. Dataansvarlig: {broker_name}.
+
+2. Personoplysninger: Den dataansvarlige behandler og offentliggor personoplysninger
+   om mig, herunder navn, adresser, telefonnumre og eventuelle oplysninger om
+   tilknyttede personer.
+
+3. Tidligere henvendelse: Den {request_date} sendte jeg via {request_channel} en
+   anmodning om sletning efter artikel 17 i databeskyttelsesforordningen og en
+   indsigelse mod fortsat behandling efter artikel 21.
+
+4. Manglende tilfredsstillende svar: Fristen pa en maned efter artikel 12, stk. 3, er
+   udlobet uden tilfredsstillende svar,
+   [ELLER: den dataansvarlige har afvist anmodningen uden at dokumentere tungtvejende
+   legitime grunde],
+   [ELLER: den dataansvarlige har kun delvist slettet oplysningerne].
+
+5. Mulige overtraedelser: artikel 5, 6, 12, 17 og 21 i databeskyttelsesforordningen,
+   sammenholdt med artikel 7 og 8 i EU's charter om grundlaeggende rettigheder.
+   Kommerciel offentliggorelse og videresalg af mine personoplysninger kan ikke
+   begrundes med en overvejende legitim interesse.
+
+ANMODNING
+
+Jeg anmoder Datatilsynet om:
+  (a) at behandle denne klage;
+  (b) at fastsla, at {broker_name} har overtradt databeskyttelsesreglerne;
+  (c) at palegge {broker_name} at slette alle personoplysninger om mig og ophore med
+      yderligere behandling;
+  (d) at traeffe passende korrigerende foranstaltninger efter artikel 58.
+
+Bilag:
+  1. kopi af min anmodning af {request_date};
+  2. dokumentation for afsendelse eller modtagelse;
+  3. eventuelt svar fra {broker_name};
+  4. identitetsdokumentation, hvis Datatilsynet kraever det.
+
+Med venlig hilsen
+{full_name}
+{contact_email}
+{current_address}

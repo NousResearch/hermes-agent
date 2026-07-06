@@ -1,0 +1,53 @@
+{
+  "id": "tellows",
+  "name": "Tellows",
+  "category": "people_search",
+  "priority": "high",
+  "jurisdictions": ["EU-DE"],
+  "gdpr_scope": true,
+  "parent": "tellows",
+  "owns": [],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.tellows.de/",
+    "fetch": "browser",
+    "match_signal": "result",
+    "by": ["phone"]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "email",
+    "email": "datenschutz@tellows.com",
+    "requires": {
+      "profile_url": false,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["phone", "contact_email"],
+    "deletion": {
+      "via": "email_followup",
+      "email": "datenschutz@tellows.com",
+      "kinds": ["gdpr"],
+      "notes": "datenschutz@ is the DPO contact per German privacy-policy patterns. Tellows is a community-driven spam-report site; per DSGVO it must honor Art. 17 for the personal data it holds. Contact email and playbook structure based on standard German data-broker opt-out patterns; live Art.17 verification pending."
+    },
+    "playbook": [
+      "Search the phone number on tellows.de (German spam-report community).",
+      "Send Art. 17 erasure request to datenschutz@tellows.com naming the phone number(s) to erase.",
+      "Include all aliases / associated names you want removed.",
+      "If no response within 30 days, escalate to the responsible Landesdatenschutzbehörde."
+    ],
+    "quirks": [
+      "Tellows is community-driven (users post spam reports); a full erasure also requires the underlying user-generated comments to be removed, not just the entry shell.",
+      "Some entries are aggregated from public phone directories; expect reappearance from those sources."
+    ],
+    "est_processing_days": 30,
+    "reappearance_risk": "medium"
+  },
+  "last_verified": null,
+  "source": "curated",
+  "confidence": "documented"
+}

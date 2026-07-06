@@ -1,0 +1,55 @@
+Betreff: Beschwerde gemaess Art. 77 DSGVO und § 24 DSG - {broker_name}
+
+An die
+Oesterreichische Datenschutzbehoerde
+Barichgasse 40-42
+1030 Wien
+
+Ich, {full_name}, wohnhaft {current_address}, erreichbar unter {contact_email},
+
+erhebe hiermit Beschwerde gemaess Art. 77 der Verordnung (EU) 2016/679 ("DSGVO")
+und § 24 Datenschutzgesetz ("DSG").
+
+SACHVERHALT
+
+1. Beschwerdegegner / Verantwortlicher: {broker_name}.
+
+2. Betroffene personenbezogene Daten: Der Verantwortliche verarbeitet und veroeffentlicht
+   personenbezogene Daten ueber mich, insbesondere Name, Anschriften, Telefonnummern und
+   gegebenenfalls Daten zu nahestehenden oder zugeordneten Personen.
+
+3. Vorherige Geltendmachung meiner Rechte: Am {request_date} habe ich per
+   {request_channel} die Loeschung meiner personenbezogenen Daten nach Art. 17 DSGVO
+   verlangt und zugleich Widerspruch nach Art. 21 DSGVO erhoben.
+
+4. Beschwerdegrund: Die Frist nach Art. 12 Abs. 3 DSGVO ist ohne zufriedenstellende
+   Antwort abgelaufen,
+   [ODER: der Verantwortliche hat die Loeschung ohne Nachweis zwingender schutzwuerdiger
+   Gruende abgelehnt],
+   [ODER: der Verantwortliche hat nur teilweise reagiert und Daten weiterhin gespeichert
+   oder veroeffentlicht].
+
+5. Verletzte Bestimmungen: Art. 5, 6, 12, 17 und 21 DSGVO in Verbindung mit Art. 7 und
+   Art. 8 der Charta der Grundrechte der Europaeischen Union. Fuer die kommerzielle
+   Veroeffentlichung und Weitergabe meiner Daten besteht keine tragfaehige Rechtsgrundlage
+   und kein ueberwiegendes berechtigtes Interesse.
+
+ANTRAG
+
+Ich beantrage, die Datenschutzbehoerde moege:
+  (a) diese Beschwerde als formelles Rechtsmittel behandeln;
+  (b) feststellen, dass {broker_name} gegen die DSGVO verstossen hat;
+  (c) {broker_name} die vollstaendige Loeschung meiner personenbezogenen Daten und die
+      Einstellung weiterer Verarbeitung auftragen;
+  (d) angemessene Abhilfemassnahmen nach Art. 58 DSGVO ergreifen.
+
+Beilagen:
+  1. Kopie meines Antrags vom {request_date};
+  2. Nachweis der Absendung oder des Zugangs;
+  3. allfaellige Antwort von {broker_name};
+  4. Identitaetsnachweis, soweit erforderlich.
+
+Mit freundlichen Gruessen
+{full_name}
+{contact_email}
+{current_address}

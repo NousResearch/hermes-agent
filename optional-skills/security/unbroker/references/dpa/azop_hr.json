@@ -1,0 +1,11 @@
+{
+  "id": "azop_hr",
+  "name": "Agencija za zastitu osobnih podataka",
+  "country": "HR",
+  "language": "hr",
+  "web_form_url": "https://azop.hr/rights-of-individuals/",
+  "complaint_template": "dpa-complaints/azop_hr.txt",
+  "expected_days": 90,
+  "source_url": "https://azop.hr/about-the-agency/",
+  "notes": "AZOP guidance states that individuals can submit a request to determine a violation of personal-data protection rights. Croatian filing is preferred."
+}

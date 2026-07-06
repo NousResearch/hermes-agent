@@ -1,0 +1,11 @@
+{
+  "id": "bfdi",
+  "name": "Bundesbeauftragte für den Datenschutz und die Informationsfreiheit",
+  "country": "DE",
+  "language": "de",
+  "web_form_url": "https://www.bfdi.bund.de/DE/Buerger/Inhalte/Allgemein/Datenschutz/BeschwerdeBeiDatenschutzbehoereden.html",
+  "complaint_template": "dpa-complaints/bfdi.txt",
+  "expected_days": 90,
+  "land_dpdas_landesbeauftragte_url": "https://www.bfdi.bund.de/DE/Service/Anschriften/Laender/Laender-node.html",
+  "notes": "BfDI is the FEDERAL DPA. Per BfDI's own jurisdictional guidance: BfDI handles federal public bodies + telecom/post providers + companies subject to the Sicherheitsüberprüfungsgesetz. For most private-sector data brokers (Spokeo, Whitepages, MyLife, etc.) the responsible authority is the LANDESDATENSCHUTZBEAUFTRAGTE of the subject's Bundesland of residence (16 Land DPAs). The BfDI complaint template (dpa-complaints/bfdi.txt) includes a forwarding note asking BfDI to route the complaint to the correct Land DPA if appropriate. Statutory update period: 'spätestens nach drei Monaten' (BfDI / Land DPA must inform complainant of progress within 3 months)."
+}

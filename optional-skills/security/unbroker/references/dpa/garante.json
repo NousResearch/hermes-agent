@@ -1,0 +1,12 @@
+{
+  "id": "garante",
+  "name": "Garante per la protezione dei dati personali",
+  "country": "IT",
+  "language": "it",
+  "web_form_url": "https://www.garanteprivacy.it/diritti/come-agire-per-tutelare-i-tuoi-dati-personali/reclamo",
+  "complaint_template": "dpa-complaints/garante.txt",
+  "expected_days": 90,
+  "email": "garante@gpdp.it",
+  "pec": "protocollo@pec.gpdp.it",
+  "notes": "Italian residents: filing via PEC (protocollo@pec.gpdp.it) provides the strongest paper trail and is preferred for any complaint that may escalate to court. The web form (linked above) is available as a no-PEC fallback. Attach COPIES (never originals) of any ID. The Garante's published Form for Reclamo ex art. 77 GDPR + artt. 140-bis to 143 Codice Privacy must be used as the structural template; the dpa-complaints/garante.txt template mirrors it."
+}

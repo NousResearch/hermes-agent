@@ -1,0 +1,77 @@
+Subject: Article 77 UK GDPR complaint — {broker_name}
+
+To the Information Commissioner's Office
+Wycliffe House, Water Lane
+Wilmslow, Cheshire SK9 5AF
+
+I, {full_name}, residing at {current_address}, contactable at {contact_email},
+
+make this complaint under section 165 of the Data Protection Act 2018 and Article 77
+of the UK General Data Protection Regulation (UK GDPR),
+
+AND STATE AS FOLLOWS
+
+1. Who I am and who the controller is
+   I am the data subject. The controller is {broker_name}, with registered office
+   at _______________________.
+
+2. The personal data concerned
+   The controller holds and publishes my personal data — including my name, current
+   and historical addresses, telephone numbers, and in some cases data concerning
+   my family members — without my consent and without a compelling legitimate
+   interest under Article 6(1)(f) UK GDPR.
+
+3. My prior attempt to resolve with the controller
+   Under section 165(2)(b) DPA 2018 and the ICO's published guidance, I attempted
+   to resolve this with the controller before complaining to you. On {request_date}
+   I sent the controller an Article 17 UK GDPR erasure request (right to erasure)
+   together with an Article 21 UK GDPR objection. The request was sent by
+   {request_channel} and was duly received (evidence attached).
+
+   More than 30 days have now passed beyond the statutory deadline in Article 12(3)
+   UK GDPR, and
+   [OR: the controller responded on __________ with a refusal that does not identify
+   specific compelling legitimate grounds under Article 17(3) UK GDPR]
+   [OR: the controller responded only partially, retaining some of my personal data
+   without justification].
+
+4. The legal basis for the complaint
+   The controller typically relies on "legitimate interest" under Article 6(1)(f)
+   UK GDPR. That interest does not satisfy the ICO's published guidance on the
+   tripartite balancing test, in particular because:
+     (a) I have a reasonable expectation of privacy (I never consented to commercial
+         resale of my data);
+     (b) the processing causes harm (privacy intrusion, stalking risk, identity
+         theft, harassment);
+     (c) the UK GDPR was enacted to enshrine in domestic law the protections of
+         Articles 7 (respect for private life) and 8 (protection of personal data)
+         of the Charter of Fundamental Rights of the European Union.
+
+5. Outcome I am asking the ICO to pursue
+   I am asking the ICO, under section 149 DPA 2018 and Article 58(2) UK GDPR, to:
+     (a) find that the controller has infringed Articles 5, 6, 12, 17 and 21 UK GDPR;
+     (b) order the controller to erase all personal data concerning me;
+     (c) impose administrative fines under Article 83 UK GDPR, up to the higher of
+         £17.5 million or 4% of total worldwide annual turnover, where the
+         conditions are met;
+     (d) make such further orders as the ICO considers appropriate under
+         Article 58(2) UK GDPR.
+
+6. My right of appeal (section 166 DPA 2018)
+   If the Commissioner does not handle this complaint or does not inform me of
+   progress or outcome within three months of receipt, I have a right to apply to
+   the First-tier Tribunal (General Regulatory Chamber) under section 166 DPA 2018.
+
+Attached:
+  1. copy of my Article 17 UK GDPR request sent on {request_date};
+  2. proof of receipt (email/web-form screenshot/postal receipt);
+  3. [if applicable, the controller's response];
+  4. copy of a current photo-bearing identity document.
+
+I confirm that the information provided is true and accurate to the best of my
+knowledge.
+
+Yours faithfully,
+{full_name}
+{contact_email}
+{current_address}

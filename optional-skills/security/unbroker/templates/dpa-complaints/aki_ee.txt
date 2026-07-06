@@ -1,0 +1,33 @@
+Subject: Article 77 GDPR complaint to Andmekaitse Inspektsioon - {broker_name}
+
+To Andmekaitse Inspektsioon (Estonian Data Protection Inspectorate)
+Tatari 39
+10134 Tallinn
+
+I, {full_name}, residing at {current_address} and contactable at {contact_email},
+submit this complaint under Article 77 of Regulation (EU) 2016/679 ("GDPR").
+
+This complaint package is tailored for Andmekaitse Inspektsioon. If filed formally,
+please translate the final text into Estonian or use AKI's preferred submission route.
+
+Facts:
+1. Controller complained of: {broker_name}.
+2. On {request_date}, I sent the controller an Article 17 erasure request and an
+   Article 21 objection by {request_channel}.
+3. The controller has not provided a satisfactory response within the Article 12(3)
+   GDPR deadline, or has continued processing my personal data without showing
+   overriding legitimate grounds.
+
+I ask AKI to investigate the controller's compliance with Articles 5, 6, 12, 17
+and 21 GDPR and to exercise corrective powers under Article 58(2), including an
+order to erase the personal data concerning me.
+
+Attachments:
+1. copy of my Article 17 / Article 21 request sent on {request_date};
+2. proof of receipt or delivery;
+3. any controller response;
+4. identity document copy if required by the authority.
+
+Signed,
+{full_name}
+{contact_email}

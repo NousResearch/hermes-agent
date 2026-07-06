@@ -1,0 +1,53 @@
+Aihe: Kantelu tietosuojavaltuutetulle - {broker_name} ei ole poistanut henkilötietoja
+
+Tietosuojavaltuutetun toimisto
+PL 800
+00531 Helsinki
+
+Minä, {full_name}, osoitteessa {current_address}, yhteyssähköposti {contact_email},
+
+teen tämän kantelun yleisen tietosuoja-asetuksen (EU) 2016/679 ("GDPR") 77 artiklan
+ja tietosuojalain (1050/2018) perusteella.
+
+TAUSTA
+
+1. Rekisterinpitäjä: {broker_name}.
+
+2. Kyseiset henkilötiedot: rekisterinpitäjä käsittelee ja julkaisee minua koskevia
+   henkilötietoja, kuten nimeäni, osoitteitani, puhelinnumeroitani ja mahdollisesti
+   perheenjäseniin tai liitettyihin henkilöihin liittyviä tietoja.
+
+3. Aiempi pyyntö: {request_date} lähetin rekisterinpitäjälle kanavalla {request_channel}
+   pyynnön poistaa minua koskevat henkilötiedot GDPR:n 17 artiklan nojalla sekä
+   vastustin käsittelyä GDPR:n 21 artiklan nojalla.
+
+4. Rekisterinpitäjän laiminlyönti: GDPR:n 12 artiklan 3 kohdan mukainen yhden kuukauden
+   määräaika on kulunut ilman tyydyttävää vastausta,
+   [TAI: rekisterinpitäjä on kieltäytynyt poistamisesta osoittamatta pakottavia
+   oikeutettuja perusteita],
+   [TAI: rekisterinpitäjä on poistanut tiedot vain osittain].
+
+5. Väitetyt rikkomukset: GDPR:n 5, 6, 12, 17 ja 21 artiklat yhdessä Euroopan unionin
+   perusoikeuskirjan 7 ja 8 artiklan kanssa. Henkilötietojeni kaupalliselle
+   julkaisemiselle tai edelleenmyynnille ei ole osoitettu laillista perustetta tai
+   rekisterinpitäjän etujen ylivoimaisuutta.
+
+PYYNTÖ
+
+Pyydän tietosuojavaltuutettua:
+  (a) tutkimaan tämän kantelun;
+  (b) toteamaan, että {broker_name} on rikkonut tietosuojasääntelyä;
+  (c) määräämään {broker_name} poistamaan kaikki minua koskevat henkilötiedot ja
+      lopettamaan jatkokäsittelyn, julkaisemisen, myynnin tai uudelleenjulkaisun;
+  (d) käyttämään tarvittaessa GDPR:n 58 artiklan mukaisia korjaavia toimivaltuuksia.
+
+Liitteet:
+  1. kopio pyynnöstäni, joka lähetettiin {request_date};
+  2. todiste lähettämisestä tai vastaanottamisesta;
+  3. {broker_name}:n mahdollinen vastaus;
+  4. henkilöllisyystodistus, jos sitä pyydetään henkilöllisyyden varmistamiseksi.
+
+Ystävällisin terveisin,
+{full_name}
+{contact_email}
+{current_address}

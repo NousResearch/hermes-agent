@@ -3,13 +3,20 @@
   "name": "AdvancedBackgroundChecks",
   "category": "people_search",
   "priority": "high",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US",
+    "EU"
+  ],
   "search": {
     "method": "url_pattern",
     "url": "https://www.advancedbackgroundchecks.com",
     "fetch": "web_extract",
     "match_signal": "result",
-    "by": ["name", "phone", "address"],
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ],
     "url_patterns": {
       "name": "https://www.advancedbackgroundchecks.com/name/{first}-{last}",
       "name_state": "https://www.advancedbackgroundchecks.com/name/{first}-{last}/in/{ST}",
@@ -40,11 +47,22 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["full_name", "contact_email"],
+    "inputs": [
+      "full_name",
+      "contact_email"
+    ],
     "notes": "Two-step email-verification flow: initial form (radio 'I am: The subject of the request / An authorized agent of the subject', First name*, Middle name, Last name*, Email*, consent) -> emailed link -> full form -> confirmation (processed within 45 days). CAPTCHA-gated: Google reCAPTCHA ('Recaptcha requires verification'). Verified read-only 2026-06-30; not submitted.",
     "est_processing_days": 3,
-    "reappearance_risk": "medium"
+    "reappearance_risk": "medium",
+    "deletion": {
+      "kinds": [
+        "gdpr"
+      ],
+      "email": "privacy@peopleconnect.us"
+    },
+    "email": "privacy@peopleconnect.us"
   },
   "last_verified": "2026-06-30",
-  "source": "BADBOOL"
+  "source": "BADBOOL",
+  "gdpr_scope": true
 }

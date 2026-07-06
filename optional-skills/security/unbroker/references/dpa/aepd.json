@@ -1,0 +1,13 @@
+{
+  "id": "aepd",
+  "name": "Agencia Española de Protección de Datos",
+  "country": "ES",
+  "language": "es",
+  "web_form_url": "https://sedeaepd.gob.es/sede-electronica-web/vistas/infoSede/tramitesCiudadanoReclamaciones.jsf",
+  "complaint_template": "dpa-complaints/aepd.txt",
+  "expected_days": 90,
+  "email": "internacional@aepd.es",
+  "postal_address": "C/ Jorge Juan, 6, 28001 Madrid",
+  "source_url": "https://sedeagpd.gob.es/",
+  "notes": "Spanish residents should file through the AEPD electronic office. The rights-specific complaint model covers controller non-response to access, rectification, erasure, restriction, portability, objection, and automated-decision requests; the general model is only for matters without a specific form. Spanish-language filing is preferred."
+}

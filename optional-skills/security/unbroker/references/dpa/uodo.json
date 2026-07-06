@@ -1,0 +1,13 @@
+{
+  "id": "uodo",
+  "name": "Urząd Ochrony Danych Osobowych",
+  "country": "PL",
+  "language": "pl",
+  "web_form_url": "https://uodo.gov.pl/en/680/1402",
+  "complaint_template": "dpa-complaints/uodo.txt",
+  "expected_days": 90,
+  "email": "kancelaria@uodo.gov.pl",
+  "postal_address": "ul. Stawki 2, 00-193 Warsaw",
+  "source_url": "https://uodo.gov.pl/en/680/1402",
+  "notes": "UODO says the data subject should first address the controller; the controller has one month, extendable by two months. Complaints can be filed in traditional or electronic form, and evidence of the controller request/response should be attached."
+}

@@ -14,6 +14,75 @@ NEVER_VOLUNTEER = {"ssn", "social_security_number", "passport", "drivers_license
 
 VALID_CONSENT_METHODS = {"self", "written_authorization", "poa"}
 
+# Residency -> legal framework. US codes map to CCPA/CPRA state variants (existing behaviour);
+# EU-*, EEA-* and UK codes map to GDPR/UK-GDPR. Anything else falls back to a generic
+# right-to-delete request (no specific legal cite — the broker may or may not honour it).
+RESIDENCY_LEGAL_FRAMEWORK = {
+    # United States
+    "US":     {"framework": "ccpa",      "default_request_kind": "ccpa",       "dpa": None},
+    "US-CA":  {"framework": "ccpa",      "default_request_kind": "ccpa",       "dpa": None},
+    "US-NY":  {"framework": "ccpa_ny",   "default_request_kind": "ccpa",       "dpa": None},
+    "US-VT":  {"framework": "ccpa_vt",   "default_request_kind": "ccpa",       "dpa": None},
+    "US-OR":  {"framework": "ccpa_or",   "default_request_kind": "ccpa",       "dpa": None},
+    "US-TX":  {"framework": "ccpa_tx",   "default_request_kind": "ccpa",       "dpa": None},
+    # European Union + EEA (one code per supported member state — extend as new EU members join).
+    # Country-specific codes route to a national DPA adapter. The catch-all EU / EU-EEA codes
+    # intentionally stay generic because they do not identify the subject's competent authority.
+    "EU":     {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": None},
+    "EU-IT":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "garante"},
+    "EU-FR":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "cnil"},
+    "EU-DE":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "bfdi"},
+    "EU-AT":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "dsb_at"},
+    "EU-BE":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "apd_gba"},
+    "EU-BG":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "cpdp_bg"},
+    "EU-HR":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "azop_hr"},
+    "EU-CY":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "cpdp_cy"},
+    "EU-CZ":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "uoou_cz"},
+    "EU-EE":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "aki_ee"},
+    "EU-ES":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "aepd"},
+    "EU-FI":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "tietosuoja"},
+    "EU-GR":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "hdpa_gr"},
+    "EU-HU":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "naih_hu"},
+    "EU-IE":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "dpc_ie"},
+    "EU-LT":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "vdai_lt"},
+    "EU-LU":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "cnpd_lu"},
+    "EU-LV":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "dvi_lv"},
+    "EU-MT":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "idpc_mt"},
+    "EU-NL":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "ap_nl"},
+    "EU-PL":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "uodo"},
+    "EU-PT":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "cnpd_pt"},
+    "EU-RO":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "anspdcp_ro"},
+    "EU-DK":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "datatilsynet_dk"},
+    "EU-SE":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "imy"},
+    "EU-SI":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "ip_rs"},
+    "EU-SK":  {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "uoou_sk"},
+    "EU-EEA": {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": None},  # EEA but non-EU (Norway, Iceland, Liechtenstein)
+    "EEA-IS": {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "personuvernd_is"},
+    "EEA-LI": {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "datenschutzstelle_li"},
+    "EEA-NO": {"framework": "gdpr",      "default_request_kind": "gdpr",       "dpa": "datatilsynet_no"},
+    # United Kingdom (post-Brexit UK GDPR, enforced by ICO)
+    "UK":     {"framework": "uk_gdpr",   "default_request_kind": "gdpr",       "dpa": "ico"},
+}
+
+
+def legal_framework(residency: str) -> dict:
+    """Return the legal-framework metadata for a residency code; fallback for unknown codes.
+
+    The fallback is deliberately permissive: an unknown residency code yields a generic
+    right-to-delete request rather than refusing — a subject can still try, just without
+    a specific GDPR/CCPA citation. Better than locking them out.
+    """
+    return RESIDENCY_LEGAL_FRAMEWORK.get(
+        residency,
+        {"framework": "generic", "default_request_kind": "generic", "dpa": None},
+    )
+
+
+def is_eu_residency(residency: str) -> bool:
+    """True if the residency is an EU/EEA/UK code that maps to GDPR/UK-GDPR."""
+    meta = RESIDENCY_LEGAL_FRAMEWORK.get(residency)
+    return bool(meta and meta["framework"] in ("gdpr", "uk_gdpr"))
+
 
 def now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

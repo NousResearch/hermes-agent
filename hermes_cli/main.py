@@ -341,6 +341,7 @@ def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     argv = sys.argv[1:]
     profile_name = None
+    profile_source = None
     consume = 0
     profile_index = None
 
@@ -410,11 +411,13 @@ def _apply_profile_override() -> None:
             break
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             profile_name = argv[i + 1]
+            profile_source = "flag"
             consume = 2
             profile_index = i
             break
         if arg.startswith("--profile="):
             profile_name = arg.split("=", 1)[1]
+            profile_source = "flag"
             consume = 1
             profile_index = i
             break
@@ -453,8 +456,21 @@ def _apply_profile_override() -> None:
     # See issue #22502.
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env:
-        if Path(hermes_home_env).parent.name == "profiles":
-            return
+        env_path = Path(hermes_home_env)
+        if env_path.parent.name == "profiles":
+            try:
+                if env_path.is_dir():
+                    return
+            except OSError:
+                return
+            try:
+                sys.stderr.write(
+                    f"Warning: ignoring stale HERMES_HOME for missing profile: {env_path}\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+            os.environ.pop("HERMES_HOME", None)
 
     # 2. If no flag, check active_profile in the hermes root.
     #
@@ -477,6 +493,7 @@ def _apply_profile_override() -> None:
                 name = active_path.read_text().strip()
                 if name and name != "default":
                     profile_name = name
+                    profile_source = "active_profile"
                     consume = 0  # don't strip anything from argv
         except (UnicodeDecodeError, OSError):
             pass  # corrupted file, skip
@@ -488,6 +505,15 @@ def _apply_profile_override() -> None:
 
             hermes_home = resolve_profile_env(profile_name)
         except FileNotFoundError as exc:
+            if profile_source == "active_profile":
+                try:
+                    sys.stderr.write(
+                        f"Warning: ignoring stale active_profile for missing profile: {profile_name}\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                return
             hermes_home = _resolve_sudo_user_profile_env(profile_name)
             if not hermes_home:
                 print(f"Error: {exc}", file=sys.stderr)

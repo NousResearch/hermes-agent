@@ -918,7 +918,7 @@ class MoAChatCompletions:
             for _lbl, _txt, _acct in reference_outputs:
                 if isinstance(_acct, _RefAccounting):
                     if isinstance(_acct.usage, CanonicalUsage):
-                        _ref_usage = _ref_usage + _acct.usage
+                        _ref_usage = (_ref_usage or CanonicalUsage()) + _acct.usage
                     if _acct.cost_usd is not None:
                         _ref_cost = (_ref_cost or 0) + _acct.cost_usd
             self._pending_reference_usage = _ref_usage

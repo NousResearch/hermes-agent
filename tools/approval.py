@@ -166,6 +166,27 @@ def get_current_session_key(default: str = "default") -> str:
     return get_session_env("HERMES_SESSION_KEY", default)
 
 
+def get_current_session_message_id(default: str = "") -> str:
+    """Return the triggering message id for the active session.
+
+    Mirrors :func:`get_current_session_key` but reads
+    ``HERMES_SESSION_MESSAGE_ID``.  Gateway adapters populate this from
+    ``source.message_id`` (per-turn inbound origin), so background dispatch
+    paths (``delegate_task(background=True)``, ``terminal notify_on_complete``)
+    can capture a stable ``om_``-style reply anchor BEFORE detaching onto the
+    daemon worker thread, where the contextvar is no longer carried.  The
+    anchor is threaded back into the completion event so the synthetic
+    re-entry message routes into the original topic/thread via the platform
+    reply API instead of an invalid create-by-thread-id path.
+
+    Resolution order mirrors :func:`get_current_session_key`: contextvars
+    first, ``os.environ`` fallback last.  Returns ``default`` when no
+    session context is active (CLI / cron / tests without a pinned id).
+    """
+    from gateway.session_context import get_session_env
+    return get_session_env("HERMES_SESSION_MESSAGE_ID", default)
+
+
 def _get_session_platform() -> str:
     """Return the current gateway platform from contextvars/env fallback."""
     try:

@@ -130,6 +130,7 @@ def dispatch_async_delegation(
     model: Optional[str],
     session_key: str,
     parent_session_id: Optional[str] = None,
+    message_id: str = "",
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
@@ -152,6 +153,14 @@ def dispatch_async_delegation(
         the delegation. Carried on the completion event so the gateway can
         pin routing to the spawning session instead of recovering the latest
         ``ended_at IS NULL`` row for the peer tuple (#57498).
+    message_id
+        The triggering platform message id (from
+        ``tools.approval.get_current_session_message_id``), captured on the
+        parent thread BEFORE dispatch. Carried into the completion event so
+        the synthetic re-entry message routes into the original topic/thread
+        via the platform reply API. Feishu has no create-by-thread-id path
+        and would otherwise reject the send; empty for CLI / cron / sessions
+        with no anchor (the gateway falls back per platform).
     runner
         Zero-arg callable that builds + runs the child and returns the same
         result dict ``_run_single_child`` produces. Runs on the worker thread.
@@ -159,9 +168,9 @@ def dispatch_async_delegation(
         Optional callable to signal the child to stop (used on shutdown /
         explicit cancel).
     max_async_children
-        Concurrency cap. When at capacity the dispatch is REJECTED (the caller
-        should fall back to sync or tell the user) rather than queued, so a
-        runaway model can't pile up unbounded background work.
+        Concurrency cap. When at capacity the dispatch is REJECTED (the
+        caller should fall back to sync or tell the user) rather than queued,
+        so a runaway model can't pile up unbounded background work.
 
     Returns
     -------
@@ -181,6 +190,7 @@ def dispatch_async_delegation(
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
         "parent_session_id": parent_session_id,
+        "message_id": message_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -293,6 +303,10 @@ def _push_completion_event(
         "session_key": record.get("session_key", ""),
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        # message_id carries the triggering message id back onto the
+        # synthetic re-entry event so topic/thread-capable platforms route
+        # the result via the reply API instead of an invalid create path.
+        "message_id": record.get("message_id", ""),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -328,6 +342,7 @@ def dispatch_async_delegation_batch(
     model: Optional[str],
     session_key: str,
     parent_session_id: Optional[str] = None,
+    message_id: str = "",
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
@@ -348,6 +363,11 @@ def dispatch_async_delegation_batch(
     ``results`` list, so the consolidated summaries re-enter the conversation
     as one message once every child is done — the chat is never blocked while
     they run.
+
+    ``message_id`` mirrors ``session_key``: the triggering platform message id
+    captured on the parent thread BEFORE dispatch, carried onto the completion
+    event so the synthetic re-entry routes into the original topic/thread via
+    the reply API on platforms that have no create-by-thread-id path (Feishu).
 
     Returns ``{"status": "dispatched", "delegation_id": ...}`` on success or
     ``{"status": "rejected", "error": ...}`` when the async pool is at
@@ -371,6 +391,7 @@ def dispatch_async_delegation_batch(
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
         "parent_session_id": parent_session_id,
+        "message_id": message_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -470,6 +491,10 @@ def _finalize_batch(
         "session_key": event_record.get("session_key", ""),
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        # message_id routes the synthetic re-entry message into the original
+        # topic/thread via the platform reply API; empty when the dispatching
+        # session had no anchor (CLI / cron / stateless HTTP).
+        "message_id": event_record.get("message_id", ""),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),

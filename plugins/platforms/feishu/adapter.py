@@ -3249,14 +3249,29 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        root_id = getattr(message, "root_id", None)
+        thread_id = getattr(message, "thread_id", None) or root_id or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None)
+            or root_id
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        # Feishu has no "send by thread_id" API — a message lands in a topic
+        # only via the reply API with reply_in_thread=true against an ``om_``
+        # message id.  Thread replies on real inbound messages route off
+        # ``event.reply_to_message_id``; synthetic / resumed sends (async
+        # delegation completions, terminal background notifications, cron
+        # deliveries) only see ``event.message_id`` plus ``source.message_id``
+        # (the latter is persisted on the session origin and rehydrated by the
+        # gateway).  Populate ``source.message_id`` with a stable thread anchor
+        # — the topic root when present, otherwise the message itself (which
+        # IS the root for a seed message) — so every downstream path that
+        # resolves a reply anchor for a Feishu thread can find a valid ``om_``
+        # id instead of falling into an invalid ``receive_id_type=thread_id``
+        # create branch.
+        thread_reply_anchor = root_id or message_id
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -3288,6 +3303,7 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+            message_id=thread_reply_anchor,
         )
         normalized = MessageEvent(
             text=text,
@@ -4620,34 +4636,45 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
+        # No reply anchor available.  Feishu's create-message API only
+        # accepts receive_id_type in {open_id, union_id, user_id, email,
+        # chat_id} — there is NO ``thread_id`` receive_id_type, so a topic
+        # message cannot be created by threading off the ``omt_`` thread id.
+        # Landing in a topic requires the reply API above against a real
+        # ``om_`` message id.  When a threaded send reaches this point anyway
+        # (a synthetic / resumed event whose source.message_id and metadata
+        # both lacked an anchor), fall back to a top-level chat create and
+        # warn loudly rather than emitting an invalid ``receive_id_type=
+        # thread_id`` request that the server rejects with
+        # ``[99992402] field validation failed``.  Thread context is lost on
+        # this fallback, which is strictly better than a hard send failure —
+        # the routing layer is expected to keep source.message_id populated
+        # so this branch stays unreached in normal operation.
+        if (metadata or {}).get("thread_id") and not effective_reply_to:
+            logger.warning(
+                "[Feishu] Thread send with no reply anchor for chat %s thread %s; "
+                "falling back to top-level chat send (thread context will be lost). "
+                "Ensure the inbound source.message_id and async-delegation / "
+                "terminal notification message_id are populated so threaded "
+                "sends route via the reply API.",
+                chat_id,
+                (metadata or {}).get("thread_id"),
             )
-            request = self._build_create_message_request("thread_id", body)
-        else:
-            receive_id = chat_id
-            receive_id_type = "chat_id"
-            if chat_id.startswith("feishu_user_id:"):
-                receive_id = chat_id.split(":", 1)[1]
-                receive_id_type = "user_id"
-            elif chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
+        receive_id = chat_id
+        receive_id_type = "chat_id"
+        if chat_id.startswith("feishu_user_id:"):
+            receive_id = chat_id.split(":", 1)[1]
+            receive_id_type = "user_id"
+        elif chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
 
-            body = self._build_create_message_body(
-                receive_id=receive_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request(receive_id_type, body)
+        body = self._build_create_message_body(
+            receive_id=receive_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+        )
+        request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
 
     @staticmethod

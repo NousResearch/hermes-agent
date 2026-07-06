@@ -1,0 +1,13 @@
+{
+  "name": "workflows",
+  "label": "Workflows",
+  "description": "workflow graph definitions/executions dashboard plugin",
+  "icon": "GitBranch",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/workflows",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

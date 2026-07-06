@@ -98,6 +98,19 @@ def test_sessions_prune_handles_eoferror_on_confirm(monkeypatch, capsys):
     import hermes_state
 
     class FakeDB:
+        def list_prune_candidates(self, **kwargs):
+            return [
+                {
+                    "id": "20260315_092437_c9a6ff",
+                    "source": "cli",
+                    "title": "old session",
+                    "started_at": 0.0,
+                    "ended_at": 1.0,
+                    "message_count": 3,
+                    "archived": 0,
+                }
+            ]
+
         def prune_sessions(self, **kwargs):
             raise AssertionError("prune_sessions should not be called when cancelled")
 

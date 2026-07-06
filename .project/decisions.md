@@ -2,6 +2,22 @@
 
 > memory-schema: v1.2 · ย้ายมาจาก `.hermes/decisions.md` เมื่อ 2026-07-05 (Migration §1b) · append อย่างเดียว ใหม่สุดอยู่บนหลังบรรทัดนี้
 
+## 2026-07-06 · JARVIS v2 — แผน 8 เฟส + หลายสมอง (Fable · เจ้าของอนุมัติ "โอเค ทำงานต่อ")
+
+Decision 1: แกนเสียงคง Gemini Live (เสียง-ถึง-เสียง) ไม่ย้ายไปโครงท่อประกอบเอง (Pipecat/LiveKit) — สองตัวนั้นจองไว้เฟส Call Center · เหตุผล: งานผู้ช่วยบนเครื่อง Gemini ให้ความไวแบบสตรีมฟรีอยู่แล้ว ที่วัดจริง 0.5-3 วิ อยู่เกณฑ์ตลาด
+
+Decision 2: หลายสมองทำผ่าน tool `ask_expert` — Gemini เป็นหูปาก · Opus (`claude -p`)/Grok เป็นสมองเสริม · อนาคต Local LLM (Qwen/GLM) เสียบผ่านช่องมาตรฐาน OpenAI (Ollama/vLLM) = เพิ่ม config ไม่แก้โค้ด · ก่อนเปิดตัวจ่ายงานจริงต้องได้กติกาชั้นความลับจากเจ้าของ (ระหว่างรอ: ห้ามส่งเนื้อไฟล์บริษัทไปสมองนอก)
+
+Decision 3: แบ่งงาน AI ตายตัว — โค้ด async/Live = Fable/Opus เขียนเอง (Codex เคยค้าง 36 นาที ห้ามใช้กับ async) · โค้ดธรรมดา (dashboard/stats/config) = Codex เขียน · ตรวจสลับค่าย Grok↔Codex ผ่าน relay-call · ห้าม AI เปิดโปรเซสไมค์เอง
+
+Decision 4: Wispr Flow ยกเลิกถาวร**เฉพาะเมื่อ**เจ้าของใช้ P2 (พิมพ์แทนตามช่องโฟกัส — ไอเดียเจ้าของ) + P3 (พจนานุกรม) กับงานจริงจนพอใจ · ก่อนหน้านั้นปิดชั่วคราวตอนทดสอบเท่านั้น
+
+Decision 5: อัพรุ่น `gemini-3.1-flash-live-preview` (กุญแจฟรีเชื่อมได้แล้ว CONNECT_OK 2026-07-06) ต้องวัด ⏱ เทียบ 2.5 ก่อนย้าย และสลับกลับได้ทันที (ยังติดป้าย preview) — กันซ้ำรอย v1 ที่สร้างบนของเก่า
+
+หลักฐานตรวจสดตลาด 2026-07-06: Browser Use 102,923 ดาว · Open Interpreter 64,284 ดาว **license เป็น Apache-2.0 แล้ว** (เอกสารเก่าว่า AGPL — ไม่จริงแล้ว) · Vocode ร้าง (commit สุดท้าย พ.ย. 2024) ตัดทิ้ง · รายละเอียดเต็มในตาราง FeatureSpec
+
+---
+
 ## 2026-07-05 · Project OS Recovery + ด่านไฟล์เข้า git จริง (Fable · เจ้าของอนุมัติ "ok")
 
 Decision 1: กู้ shortcut Project OS 3 ตัว (`use-overviewprogress`/`use-featurespec`/`use-designsystem`) จาก git history (`f22b6f3bd`) แทนการเขียนใหม่ · อัปเข้า Memory Schema v1.2 แล้วลงคลังกลาง + ทะเบียน (26→29) + ชุดแจกทีม

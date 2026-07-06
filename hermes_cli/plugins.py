@@ -1167,8 +1167,58 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
+        if hook_name == "transform_terminal_output":
+            callback = self._wrap_legacy_transform_terminal_output_hook(callback)
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
+
+    def _wrap_legacy_transform_terminal_output_hook(
+        self,
+        callback: Callable,
+    ) -> Callable:
+        """Adapt the legacy ``(output, context)`` terminal-output hook shape."""
+        try:
+            sig = inspect.signature(callback)
+        except (TypeError, ValueError):
+            return callback
+
+        params = list(sig.parameters.values())
+        has_var_keyword = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params
+        )
+        if has_var_keyword:
+            return callback
+
+        positional = [
+            p
+            for p in params
+            if p.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        if [p.name for p in positional] != ["output", "context"]:
+            return callback
+
+        logger.warning(
+            "Plugin '%s' registered transform_terminal_output using the legacy "
+            "(output, context) signature. Wrapping it for compatibility; update "
+            "the plugin to accept keyword arguments.",
+            self.manifest.name,
+        )
+
+        def _compat_transform_terminal_output(**kwargs: Any) -> Any:
+            output = kwargs.get("output", "")
+            context = {k: v for k, v in kwargs.items() if k != "output"}
+            return callback(output, context)
+
+        _compat_transform_terminal_output.__name__ = getattr(
+            callback,
+            "__name__",
+            "legacy_transform_terminal_output",
+        )
+        return _compat_transform_terminal_output
 
     # -- middleware registration -------------------------------------------
 

@@ -785,24 +785,22 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         chunks = [message]
 
     # --- Telegram: special handling for media attachments ---
+    # _send_telegram now owns text chunking internally — it formats the full
+    # message (MarkdownV2/HTML) and then splits the *formatted* text on UTF-16
+    # length so escaping inflation can't push a chunk over Telegram's 4096
+    # limit (issue #28557). Pass the whole message in one call; media attaches
+    # after all text chunks.
     if platform == Platform.TELEGRAM:
-        last_result = None
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
-        for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
-            result = await _send_telegram(
-                pconfig.token,
-                chat_id,
-                chunk,
-                media_files=media_files if is_last else [],
-                thread_id=thread_id,
-                disable_link_previews=disable_link_previews,
-                force_document=force_document,
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            last_result = result
-        return last_result
+        return await _send_telegram(
+            pconfig.token,
+            chat_id,
+            message,
+            media_files=media_files,
+            thread_id=thread_id,
+            disable_link_previews=disable_link_previews,
+            force_document=force_document,
+        )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
     # The plugin's ``_standalone_send`` (registered in
@@ -831,8 +829,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Matrix: use the native adapter helper when media is present ---
-    if platform == Platform.MATRIX and media_files:
+    # --- Matrix: route ALL sends through the native adapter so text is
+    # encrypted in E2EE rooms too (issue: text-only sends arrived with a red
+    # padlock because they took the raw-HTTP standalone path). The adapter
+    # reuses the live gateway's E2EE session when available (#46310) and falls
+    # back to an encryption-aware ephemeral adapter for standalone/cron. ---
+    if platform == Platform.MATRIX:
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
@@ -967,8 +969,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _registry_standalone_send("email", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.SMS:
             result = await _registry_standalone_send("sms", pconfig, chat_id, chunk, thread_id)
-        elif platform == Platform.MATRIX:
-            result = await _registry_standalone_send("matrix", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.DINGTALK:
             result = await _registry_standalone_send("dingtalk", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.FEISHU:
@@ -1110,48 +1110,60 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         warnings = []
 
         if formatted.strip():
-            try:
-                last_msg = await _send_telegram_message_with_retry(
-                    bot,
-                    chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **text_kwargs
-                )
-            except Exception as md_error:
-                # Thread not found — retry without message_thread_id so the
-                # message still delivers (matching the gateway adapter's
-                # fallback behaviour, issue #27012).
-                if _is_telegram_thread_not_found(md_error) and thread_kwargs:
-                    logger.warning(
-                        "Thread %s not found in _send_telegram, retrying without message_thread_id",
-                        thread_kwargs.get("message_thread_id"),
-                    )
-                    text_kwargs.pop("message_thread_id", None)
+            # Chunk *after* formatting: MarkdownV2/HTML escaping inflates the
+            # text (each escaped char like `!`/`.`/`-` becomes `\!`/`\.`/`\-`),
+            # so a message that fit under 4096 UTF-16 units raw can exceed the
+            # Telegram limit once formatted and get rejected as "Message is too
+            # long". Sizing on the formatted text in UTF-16 units guarantees
+            # every chunk is deliverable. (issue #28557)
+            from gateway.platforms.base import BasePlatformAdapter, utf16_len
+
+            text_chunks = BasePlatformAdapter.truncate_message(
+                formatted, 4096, len_fn=utf16_len
+            )
+            for chunk in text_chunks:
+                try:
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
-                        chat_id=int_chat_id, text=formatted,
+                        chat_id=int_chat_id, text=chunk,
                         parse_mode=send_parse_mode, **text_kwargs
                     )
-                elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
-                    logger.warning(
-                        "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
-                        send_parse_mode,
-                        _sanitize_error_text(md_error),
-                    )
-                    if not _has_html:
-                        try:
-                            from plugins.platforms.telegram.adapter import _strip_mdv2
-                            plain = _strip_mdv2(formatted)
-                        except Exception:
-                            plain = message
+                except Exception as md_error:
+                    # Thread not found — retry without message_thread_id so the
+                    # message still delivers (matching the gateway adapter's
+                    # fallback behaviour, issue #27012).
+                    if _is_telegram_thread_not_found(md_error) and text_kwargs.get("message_thread_id") is not None:
+                        logger.warning(
+                            "Thread %s not found in _send_telegram, retrying without message_thread_id",
+                            text_kwargs.get("message_thread_id"),
+                        )
+                        text_kwargs.pop("message_thread_id", None)
+                        last_msg = await _send_telegram_message_with_retry(
+                            bot,
+                            chat_id=int_chat_id, text=chunk,
+                            parse_mode=send_parse_mode, **text_kwargs
+                        )
+                    elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
+                        logger.warning(
+                            "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
+                            send_parse_mode,
+                            _sanitize_error_text(md_error),
+                        )
+                        if not _has_html:
+                            try:
+                                from plugins.platforms.telegram.adapter import _strip_mdv2
+                                plain = _strip_mdv2(chunk)
+                            except Exception:
+                                plain = chunk
+                        else:
+                            plain = chunk
+                        last_msg = await _send_telegram_message_with_retry(
+                            bot,
+                            chat_id=int_chat_id, text=plain,
+                            parse_mode=None, **text_kwargs
+                        )
                     else:
-                        plain = message
-                    last_msg = await _send_telegram_message_with_retry(
-                        bot,
-                        chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **text_kwargs
-                    )
-                else:
-                    raise
+                        raise
 
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
@@ -1698,7 +1710,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             token_data = token_resp.json()
             access_token = token_data.get("access_token")
             if not access_token:
-                return _error(f"QQBot: no access_token in response")
+                return _error("QQBot: no access_token in response")
 
             # Step 2: Send message via REST
             # QQ Bot API has separate endpoints for channels, C2C, and groups.

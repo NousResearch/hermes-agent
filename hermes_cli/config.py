@@ -5908,12 +5908,20 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     # platform_toolsets silently disables the affected tools — resolve_toolset()
     # returns [] for an unknown name, so the agent quietly loses tools with no
     # error or warning. Surface it loudly instead. See #38798.
+    #
+    # ``known_plugin_toolsets`` (written by ``_save_platform_tools`` in
+    # ``hermes_cli/tools_config.py``) is also passed so the validator can
+    # distinguish a typo from a real plugin toolset whose plugin is now
+    # disabled or uninstalled — see #59547.
     try:
         from toolsets import validate_toolset
         from hermes_cli.toolset_validation import validate_platform_toolsets
 
+        _raw_cfg = read_raw_config()
         ts_warnings = validate_platform_toolsets(
-            read_raw_config().get("platform_toolsets"), validate_toolset
+            _raw_cfg.get("platform_toolsets"),
+            validate_toolset,
+            _raw_cfg.get("known_plugin_toolsets"),
         )
         for w in ts_warnings:
             results["warnings"].append(w)

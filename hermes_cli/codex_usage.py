@@ -104,16 +104,23 @@ def collect() -> Dict[str, Any]:
     from agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
-    # clear_expired=True + refresh=True lets Hermes refresh OAuth tokens if needed.
-    entries = pool._available_entries(clear_expired=True, refresh=True)  # intentional internal API
+    # First let Hermes clear expired cooldowns / refresh available tokens, then
+    # inspect the full pool. Quota reporting must include exhausted credentials
+    # too; otherwise a 7d-reset-aware recommendation cannot see the account that
+    # is about to recover next.
+    pool._available_entries(clear_expired=True, refresh=True)  # intentional internal API
+    entries = pool.entries()
     now = datetime.now().astimezone()
     rows: list[dict[str, Any]] = []
     for entry in entries:
+        exhausted_until = local_dt(entry.last_error_reset_at)
         row: Dict[str, Any] = {
             "label": entry.label,
             "priority": entry.priority,
             "source": entry.source,
             "last_status": entry.last_status or "ok",
+            "available": (entry.last_status or "ok") == "ok",
+            "exhausted_until": exhausted_until.isoformat(timespec="seconds") if exhausted_until else None,
         }
         account_id = (
             entry.extra.get("account_id")
@@ -158,15 +165,79 @@ def _percent(row: Dict[str, Any], window_name: str) -> float:
         return 999.0
 
 
+def _window_reset_dt(row: Dict[str, Any], window_name: str) -> Optional[datetime]:
+    window = row.get(window_name) or {}
+    return local_dt(window.get("reset_at"))
+
+
+def _window_remaining_seconds(row: Dict[str, Any], window_name: str) -> float:
+    reset_dt = _window_reset_dt(row, window_name)
+    if reset_dt is None:
+        return float("inf")
+    return (reset_dt - datetime.now().astimezone()).total_seconds()
+
+
+def _reset_aware_blocker(row: Dict[str, Any]) -> Optional[str]:
+    """Return why a row should not be actively routed right now."""
+    if not row.get("ok"):
+        return "usage 조회 실패"
+    status = str(row.get("last_status") or "ok")
+    if status == "dead":
+        return "재로그인 필요"
+    if not row.get("available", True):
+        exhausted_until = row.get("exhausted_until") or "?"
+        return f"cooldown/exhausted until {short_reset(exhausted_until)}"
+    primary_used = _percent(row, "primary_window")
+    secondary_used = _percent(row, "secondary_window")
+    # Do not route into a near-full 5h window unless it is effectively about to
+    # reset; the proxy cannot wait, so promoting it would just create 429s.
+    if primary_used >= 95 and _window_remaining_seconds(row, "primary_window") > 15 * 60:
+        return "5h 95%+ and reset >15m"
+    if secondary_used >= 100 and _window_remaining_seconds(row, "secondary_window") > 15 * 60:
+        return "7d 100% and reset >15m"
+    return None
+
+
+def _recommendation_sort_key(row: Dict[str, Any]) -> tuple[Any, ...]:
+    secondary_reset = _window_reset_dt(row, "secondary_window")
+    secondary_missing = secondary_reset is None
+    secondary_used = _percent(row, "secondary_window")
+    # Reset timestamp is the primary policy. If the endpoint does not expose a
+    # reset timestamp, fall back to the old conservative behavior: lower 7d
+    # usage first. When reset timestamps tie, burn the fuller soon-resetting
+    # window first.
+    return (
+        1 if secondary_missing else 0,
+        secondary_reset or datetime.max.replace(tzinfo=datetime.now().astimezone().tzinfo),
+        secondary_used if secondary_missing else -secondary_used,
+        _percent(row, "primary_window"),
+        int(row.get("priority") or 999),
+    )
+
+
 def compute_recommendation(accounts: List[Dict[str, Any]]) -> Optional[Dict[str, str]]:
-    ok_accounts = [row for row in accounts if row.get("ok")]
-    if not ok_accounts:
+    candidates: list[Dict[str, Any]] = []
+    blocked: list[tuple[str, str]] = []
+    for row in accounts:
+        reason = _reset_aware_blocker(row)
+        if reason:
+            blocked.append((str(row.get("label")), reason))
+            continue
+        candidates.append(row)
+    if not candidates:
         return None
-    best = min(ok_accounts, key=lambda row: (_percent(row, "secondary_window"), _percent(row, "primary_window")))
+
+    best = min(candidates, key=_recommendation_sort_key)
     sec = best.get("secondary_window") or {}
     pri = best.get("primary_window") or {}
-    reason = f"7d {sec.get('used_percent', '?')}%, 5h {pri.get('used_percent', '?')}%"
-    return {"label": str(best.get("label")), "reason": reason}
+    reason = (
+        f"7d reset {short_reset(sec.get('reset_at'))} · {sec.get('remaining', '?')}, "
+        f"7d {sec.get('used_percent', '?')}%, 5h {pri.get('used_percent', '?')}%"
+    )
+    result = {"label": str(best.get("label")), "reason": reason, "policy": "7d-reset-aware"}
+    if blocked:
+        result["blocked"] = "; ".join(f"{label}: {why}" for label, why in blocked[:3])
+    return result
 
 
 # Backward-compatible alias.
@@ -452,11 +523,14 @@ def _recommendation_explanation(payload: Dict[str, Any]) -> str:
             used = _window_used(window)
             if used is not None and used >= 80:
                 blockers.append((used, f"{label} {display} {_fmt_percent(used).strip()}"))
+    blocked = recommendation.get("blocked")
+    if blocked:
+        return f"사유: 7d reset 우선 정책 · 제외: {blocked}"
     if blockers:
         blockers.sort(reverse=True)
         return f"사유: {blockers[0][1]}로 회복 전까지 보류"
     reason = recommendation.get("reason")
-    return f"사유: 7d 사용률이 가장 낮음 ({reason})" if reason else ""
+    return f"사유: 7d reset이 가장 가까운 사용 가능 계정 ({reason})" if reason else ""
 
 
 def _next_reset(accounts: list[dict[str, Any]], min_used: Optional[float] = None) -> Optional[dict[str, str]]:

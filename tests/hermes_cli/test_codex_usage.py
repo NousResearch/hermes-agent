@@ -38,7 +38,31 @@ def test_risk_policy_supports_per_window_thresholds():
     assert events[0]["used"] == 86
 
 
-def test_recommendation_prefers_lowest_weekly_then_five_hour_usage():
+def test_recommendation_prefers_soonest_weekly_reset_then_usage_fallback():
+    accounts = [
+        {
+            "label": "a",
+            "ok": True,
+            "primary_window": {"used_percent": 1},
+            "secondary_window": {"used_percent": 70, "reset_at": "2099-07-09T18:00:00+09:00", "remaining": "2d"},
+        },
+        {
+            "label": "b",
+            "ok": True,
+            "primary_window": {"used_percent": 60},
+            "secondary_window": {"used_percent": 40, "reset_at": "2099-07-07T10:00:00+09:00", "remaining": "1h"},
+        },
+    ]
+
+    rec = compute_recommendation(accounts)
+
+    assert rec is not None
+    assert rec["label"] == "b"
+    assert rec["policy"] == "7d-reset-aware"
+    assert "7d reset" in rec["reason"]
+
+
+def test_recommendation_falls_back_to_lowest_weekly_usage_without_reset_times():
     accounts = [
         {"label": "a", "ok": True, "primary_window": {"used_percent": 1}, "secondary_window": {"used_percent": 70}},
         {"label": "b", "ok": True, "primary_window": {"used_percent": 60}, "secondary_window": {"used_percent": 40}},
@@ -46,7 +70,8 @@ def test_recommendation_prefers_lowest_weekly_then_five_hour_usage():
 
     rec = compute_recommendation(accounts)
 
-    assert rec == {"label": "b", "reason": "7d 40%, 5h 60%"}
+    assert rec is not None
+    assert rec["label"] == "b"
 
 
 def test_annotate_usage_trends_uses_recent_history_for_burn_and_eta():

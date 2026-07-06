@@ -124,3 +124,31 @@ class TestConfigYamlModeCap:
         atomic_yaml_write(target, {"key": "new"})
 
         assert self._mode(target) == 0o666
+
+    def test_managed_mode_skips_cap(self, tmp_path):
+        """The NixOS module sets config.yaml to group-readable 0640 so
+        interactive users in the 'hermes' group can read it alongside the
+        gateway service (hermes_cli.config._secure_file's documented
+        behavior). Capping to 0600 would silently fight that sharing --
+        the cap must be a no-op in managed mode, same as _secure_file()."""
+        target = tmp_path / "config.yaml"
+        target.write_text("agent:\n  system_prompt: old\n", encoding="utf-8")
+        os.chmod(target, 0o666)
+
+        with patch("hermes_cli.config.is_managed", return_value=True):
+            atomic_yaml_write(target, {"agent": {"system_prompt": "new"}})
+
+        assert self._mode(target) == 0o666
+
+    def test_container_mode_skips_cap(self, tmp_path, monkeypatch):
+        """Same as managed mode: containers with volume-mounted config often
+        need the gateway/dashboard (different UIDs) to both reach it -- see
+        hermes_cli.config._is_container's docstring."""
+        monkeypatch.setenv("HERMES_CONTAINER", "1")
+        target = tmp_path / "config.yaml"
+        target.write_text("agent:\n  system_prompt: old\n", encoding="utf-8")
+        os.chmod(target, 0o666)
+
+        atomic_yaml_write(target, {"agent": {"system_prompt": "new"}})
+
+        assert self._mode(target) == 0o666

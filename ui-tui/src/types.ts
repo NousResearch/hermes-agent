@@ -154,6 +154,7 @@ export interface SessionInfo {
   mcp_servers?: McpServerStatus[]
   model: string
   profile_name?: string
+  provider?: string
   reasoning_effort?: string
   release_date?: string
   service_tier?: string

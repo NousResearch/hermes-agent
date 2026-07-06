@@ -255,7 +255,7 @@ def fetch_protonpass_secrets(
     if caching_enabled:
         entry = _CachedFetch(secrets=secrets, fetched_at=time.time())
         _CACHE[cache_key] = entry
-        _write_disk_cache(cache_key, entry, home_path)
+        _write_disk_cache(cache_key, entry, cache_ttl_seconds, home_path)
     return secrets, warnings
 
 

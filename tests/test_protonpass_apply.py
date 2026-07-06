@@ -20,6 +20,7 @@ import json
 import os
 from unittest import mock
 
+from agent.secret_sources.base import ErrorKind
 from tests._protonpass_helpers import (  # noqa: F401
     _fail,
     _ok,
@@ -103,6 +104,7 @@ def test_apply_missing_token(monkeypatch):
     )
     assert not result.ok
     assert "PROTON_PASS_PERSONAL_ACCESS_TOKEN" in result.error
+    assert result.error_kind is ErrorKind.NOT_CONFIGURED
 
 
 def test_apply_no_mode_errors(monkeypatch):
@@ -110,6 +112,7 @@ def test_apply_no_mode_errors(monkeypatch):
     result = pp.apply_protonpass_secrets(enabled=True, auto_install=False)
     assert not result.ok
     assert "neither a vault" in result.error
+    assert result.error_kind is ErrorKind.NOT_CONFIGURED
 
 
 def test_apply_no_binary_errors(monkeypatch):
@@ -120,6 +123,7 @@ def test_apply_no_binary_errors(monkeypatch):
     )
     assert not result.ok
     assert "pass-cli binary not available" in result.error
+    assert result.error_kind is ErrorKind.BINARY_MISSING
 
 
 def test_apply_does_not_override_existing(hermes_home, monkeypatch, tmp_path):
@@ -630,6 +634,48 @@ def test_cli_setup_saves_token_after_successful_fetch(hermes_home, monkeypatch):
     args = argparse.Namespace(vault="V", token_env="PROTON_PASS_PERSONAL_ACCESS_TOKEN")
     rc = cli.cmd_pp_setup(args)
     assert rc == 0
+    assert env_saves == [("PROTON_PASS_PERSONAL_ACCESS_TOKEN", "svc")]
+
+
+def test_cli_setup_non_tty_vault_eof_leaves_disabled(hermes_home, monkeypatch):
+    """Piped-token setup must not raw-crash if stdin closes before vault input."""
+    cli = _pp_cli()
+    monkeypatch.setenv("PROTON_PASS_PERSONAL_ACCESS_TOKEN", "svc")
+
+    cfg = {"secrets": {"protonpass": {
+        "enabled": False,
+        "auto_install": False,
+        "service_token_env": "PROTON_PASS_PERSONAL_ACCESS_TOKEN",
+    }}}
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+
+    saved = {}
+    env_saves = []
+    monkeypatch.setattr(cli, "save_config", lambda c: saved.setdefault("cfg", c))
+    monkeypatch.setattr(cli, "save_env_value", lambda k, v: env_saves.append((k, v)))
+    monkeypatch.setattr(cli, "get_env_path", lambda: "/tmp/.env")
+
+    binary = hermes_home / "bin" / "pass-cli"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("", encoding="utf-8")
+    monkeypatch.setattr(cli.pp, "find_pass_cli", lambda **kw: binary)
+    monkeypatch.setattr(cli, "_pp_version", lambda b: "pass-cli 2.1.1")
+
+    def fail_fetch(**kwargs):  # pragma: no cover - no target skips fetch
+        raise AssertionError("setup must skip fetch when vault prompt gets EOF")
+
+    monkeypatch.setattr(cli.pp, "fetch_protonpass_secrets", fail_fetch)
+    monkeypatch.setattr(
+        cli.Console,
+        "input",
+        lambda self, *_a, **_kw: (_ for _ in ()).throw(EOFError()),
+    )
+
+    args = argparse.Namespace(vault="", token_env="PROTON_PASS_PERSONAL_ACCESS_TOKEN")
+    rc = cli.cmd_pp_setup(args)
+    assert rc == 0
+    assert saved["cfg"]["secrets"]["protonpass"]["enabled"] is False
+    assert saved["cfg"]["secrets"]["protonpass"]["vault"] == ""
     assert env_saves == [("PROTON_PASS_PERSONAL_ACCESS_TOKEN", "svc")]
 
 

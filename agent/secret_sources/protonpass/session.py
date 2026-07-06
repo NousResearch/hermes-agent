@@ -134,6 +134,7 @@ def _run_pass_cli(cmd: List[str], env: Dict[str, str]):
             text=True,
             encoding="utf-8",  # pass-cli emits UTF-8; don't decode via the locale codepage
             errors="replace",  # invalid UTF-8 in output can't raise a decode error
+            stdin=subprocess.DEVNULL,
             timeout=_PASS_CLI_RUN_TIMEOUT,
         )
     except (subprocess.TimeoutExpired, OSError):

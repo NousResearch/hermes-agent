@@ -285,7 +285,7 @@ def test_fetch_drops_bootstrap_from_legacy_disk_cache_on_read(
         secrets={"PROTON_TOKEN": "pst_LEGACY_LEAK", "OPENAI_API_KEY": "ok"},
         fetched_at=__import__("time").time(),
     )
-    pp_cache._write_disk_cache(cache_key, legacy, hermes_home)
+    pp_cache._write_disk_cache(cache_key, legacy, 300, hermes_home)
 
     def fake_run(cmd, env):  # pragma: no cover - the cache hit short-circuits
         raise AssertionError("fetch must serve the disk cache, not run pass-cli")
@@ -385,7 +385,7 @@ def test_disk_cache_hit_promotes_bootstrap_dropped_entry_into_inprocess_cache(
         secrets={"PROTON_TOKEN": "pst_LEGACY_LEAK", "OPENAI_API_KEY": "ok"},
         fetched_at=time.time(),
     )
-    pp_cache._write_disk_cache(cache_key, legacy, hermes_home)
+    pp_cache._write_disk_cache(cache_key, legacy, 300, hermes_home)
     # Sanity: the in-process cache is empty, so the fetch must take the disk path.
     assert cache_key not in pp_fetch._CACHE
 

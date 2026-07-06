@@ -2,16 +2,17 @@
 
 This module owns:
 
-* :class:`FetchResult` — the outcome of one pull (shared shape with the
-  Bitwarden source so env_loader records both identically).
+* :class:`FetchResult` — the shared outcome shape imported from the universal
+  secret-source contract.
 * :func:`plan_application` — the SINGLE application planner.  It decides, for
   each fetched secret, whether it is applied or skipped and WHY.  Both
-  :func:`apply_protonpass_secrets` (which applies the plan) and the CLI ``sync``
-  / dry-run (which render the plan) use it, so the skip rules
+  :func:`apply_protonpass_secrets` (which applies the plan) and the CLI
+  ``sync`` / dry-run (which renders the plan) use it, so the skip rules
   (bootstrap-token, already-set) live in exactly ONE place.
 * :func:`apply_protonpass_secrets` — the legacy fetch-and-apply compatibility
-  entry point used by direct callers and the Proton Pass CLI.  It NEVER raises:
-  any failure returns a :class:`FetchResult` with ``error`` set.
+  entry point used by direct callers.  Startup now goes through the universal
+  registry.  This function NEVER raises: any failure returns a
+  :class:`FetchResult` with ``error`` set.
 """
 
 from __future__ import annotations
@@ -21,9 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional
 
-from agent.secret_sources.base import FetchResult
+from agent.secret_sources.base import ErrorKind, FetchResult
 
 from .config import ProtonPassConfig, strip_bootstrap_ref
+from .errors import classify_protonpass_error
 from .fetch import fetch_protonpass_secrets
 from .install import find_pass_cli
 from .session import _redact_token
@@ -153,6 +155,7 @@ def apply_protonpass_secrets(
             f"secrets.protonpass.enabled is true but {service_token_env} is "
             "not set.  Run `hermes secrets protonpass setup`."
         )
+        result.error_kind = ErrorKind.NOT_CONFIGURED
         return result
 
     # Strip — before the has-fetch-target pre-check — a MODE B ref that targets
@@ -176,6 +179,7 @@ def apply_protonpass_secrets(
             "secrets.protonpass has neither a vault (MODE A) nor env refs "
             "(MODE B).  Run `hermes secrets protonpass setup`."
         )
+        result.error_kind = ErrorKind.NOT_CONFIGURED
         return result
 
     binary = find_pass_cli(install_if_missing=auto_install)
@@ -187,6 +191,7 @@ def apply_protonpass_secrets(
             "`auto_install: true` in the secrets.protonpass config so Hermes "
             "downloads it automatically."
         )
+        result.error_kind = ErrorKind.BINARY_MISSING
         return result
 
     try:
@@ -207,6 +212,7 @@ def apply_protonpass_secrets(
         # crashing startup.  _redact_token already scrubs subprocess output;
         # scrub again here in case a message ever interpolates the token.
         result.error = _redact_token(str(exc), service_token)
+        result.error_kind = classify_protonpass_error(result.error)
         return result
 
     result.secrets = secrets

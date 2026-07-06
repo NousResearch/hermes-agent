@@ -56,6 +56,7 @@ from .apply import (
     plan_application,
 )
 from .config import _DEFAULT_SERVICE_TOKEN_ENV, ProtonPassConfig
+from .errors import classify_protonpass_error
 from .fetch import fetch_protonpass_secrets
 from .install import (
     find_pass_cli,
@@ -86,6 +87,9 @@ class ProtonPassSource(SecretSource):
 
     name = "protonpass"
     label = "Proton Pass"
+    # Proton Pass supports MODE A vault dumps too, but users can also provide
+    # explicit ENV_VAR -> pass://... refs and those are the safest shape to
+    # prioritize when the registry arbitrates with bulk-only sources.
     shape = "mapped"
     scheme = "pass"
 
@@ -177,29 +181,12 @@ class ProtonPassSource(SecretSource):
             from .session import _redact_token
 
             result.error = _redact_token(str(exc), service_token)
-            result.error_kind = _classify_protonpass_error(result.error)
+            result.error_kind = classify_protonpass_error(result.error)
             return result
 
         result.secrets = secrets
         result.warnings.extend(warnings)
         return result
-
-
-def _classify_protonpass_error(message: str) -> ErrorKind:
-    lowered = message.lower()
-    if "timed out" in lowered or "timeout" in lowered:
-        return ErrorKind.TIMEOUT
-    if "binary not available" in lowered or "failed to invoke" in lowered:
-        return ErrorKind.BINARY_MISSING
-    if any(tok in lowered for tok in ("invalid", "expired", "auth", "login")):
-        return ErrorKind.AUTH_FAILED
-    if any(tok in lowered for tok in ("malformed", "not valid", "pass://")):
-        return ErrorKind.REF_INVALID
-    if "empty" in lowered:
-        return ErrorKind.EMPTY_VALUE
-    if any(tok in lowered for tok in ("network", "connection", "download", "dns")):
-        return ErrorKind.NETWORK
-    return ErrorKind.INTERNAL
 
 
 __all__ = [

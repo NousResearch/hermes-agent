@@ -138,10 +138,11 @@ def test_run_pass_cli_uses_utf8_and_errors_replace(monkeypatch):
     codepage) and passes ``errors='replace'`` so invalid UTF-8 can't raise."""
     captured = {}
 
-    def fake_run(cmd, *, env, capture_output, text, encoding, errors, timeout):
+    def fake_run(cmd, *, env, capture_output, text, encoding, errors, stdin, timeout):
         captured["errors"] = errors
         captured["text"] = text
         captured["encoding"] = encoding
+        captured["stdin"] = stdin
         return __import__("unittest").mock.Mock(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(pp_session.subprocess, "run", fake_run)
@@ -149,6 +150,7 @@ def test_run_pass_cli_uses_utf8_and_errors_replace(monkeypatch):
     assert captured["errors"] == "replace"
     assert captured["text"] is True
     assert captured["encoding"] == "utf-8"
+    assert captured["stdin"] is pp_session.subprocess.DEVNULL
 
 
 # ---------------------------------------------------------------------------

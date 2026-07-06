@@ -61,7 +61,7 @@ Copy the minted token into `~/.hermes/.env` (never `config.yaml`):
 echo 'PROTON_PASS_PERSONAL_ACCESS_TOKEN=<agent-token>' >> ~/.hermes/.env
 ```
 
-> Reference mode (MODE B, below) works under **both** agent sessions and PAT sessions, so the agent-token path covers the recommended setup end to end. Agent tokens are scoped PATs (format `pst_...::...`) and are consumed exactly like a PAT: Hermes sets `PROTON_PASS_PERSONAL_ACCESS_TOKEN=<token>` in an isolated session (`PROTON_PASS_SESSION_DIR=<hermes_home>/protonpass-session`) and runs `pass-cli login` once non-interactively, then reuses that session for every fetch.
+> Reference mode (MODE B, below) works under **both** agent sessions and PAT sessions, so the agent-token path covers the recommended setup end to end. Agent tokens are scoped PATs (format `pst_...::...`) and are consumed exactly like a PAT: Hermes sets `PROTON_PASS_PERSONAL_ACCESS_TOKEN=<token>` in an isolated, token-fingerprinted session (`PROTON_PASS_SESSION_DIR=<hermes_home>/protonpass-session-<token-fingerprint>`) and runs `pass-cli login` once non-interactively, then reuses that session for every fetch.
 
 ### Personal access token (PAT)
 
@@ -125,7 +125,7 @@ secrets:
     vault: "Hermes keys"
 ```
 
-Invalid or colliding env var names are skipped with a warning - never a crash. If both modes are set, MODE B entries take precedence on a key collision.
+Invalid or colliding env var names are skipped with a warning - never a crash. If both modes are set, MODE B entries take precedence on a key collision. In the shared secret-source registry Proton Pass is treated as a mapped source because explicit MODE B references are the recommended path; MODE A vault output is still supported inside the provider.
 
 ### Full config block
 

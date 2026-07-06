@@ -310,13 +310,11 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     ``os.environ`` for credentials.  Any failure here is logged and
     swallowed — external secret sources must NEVER block startup.
 
-    Each registered source is processed in ONE loop where the full
-    iteration (config read + coerce, applicator import+invoke, AND result
-    recording) is wrapped in ``except Exception``: a failure logs a single
-    warning and continues to the next source.  This is what closes the
-    fail-open hole where e.g. ``float(cfg["cache_ttl_seconds"])`` on a bad
-    config value would otherwise crash startup before any FetchResult was
-    produced.
+    The registry processes every enabled source in one fail-open pass:
+    config coercion, ``fetch()`` invocation, result recording, precedence,
+    and environment application all happen behind its public ``apply_all``
+    contract.  A bad source config or backend failure yields a warning and
+    continues to the next source instead of crashing startup.
 
     The heavy lifting (source ordering, mapped-beats-bulk precedence,
     first-claim-wins conflict handling, override semantics, provenance)

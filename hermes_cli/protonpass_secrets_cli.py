@@ -263,9 +263,15 @@ def cmd_pp_setup(args: argparse.Namespace) -> int:
 
     vault = (args.vault or "").strip()
     if not vault:
-        vault = console.input(
-            "  Vault name for MODE A (Enter to skip and use MODE B refs): "
-        ).strip()
+        try:
+            vault = console.input(
+                "  Vault name for MODE A (Enter to skip and use MODE B refs): "
+            ).strip()
+        except EOFError:
+            # A piped-token setup can be non-interactive after stdin is
+            # consumed. Treat EOF the same as pressing Enter so the normal
+            # no-target path leaves the integration disabled cleanly.
+            vault = ""
 
     env_refs = parsed_cfg.env_refs
 

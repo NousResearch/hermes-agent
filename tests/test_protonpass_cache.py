@@ -183,6 +183,15 @@ def test_ttl_zero_disables_cache(hermes_home, monkeypatch, tmp_path):
     assert counter["n"] == 2
 
 
+def test_disk_cache_write_wrapper_honors_disabled_ttl(hermes_home):
+    cache_key = pp_cache.build_cache_key("svc", "V", {}, hermes_home)
+    entry = pp_cache._CachedFetch(secrets={"K_PASSWORD": "v"}, fetched_at=time.time())
+
+    pp_cache._write_disk_cache(cache_key, entry, 0, hermes_home)
+
+    assert not pp_cache._disk_cache_path(hermes_home).exists()
+
+
 def test_session_and_cache_dirs_are_0700(hermes_home, monkeypatch, tmp_path):
     binary = tmp_path / "pass-cli"
     binary.write_text("", encoding="utf-8")

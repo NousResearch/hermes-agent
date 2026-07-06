@@ -117,16 +117,17 @@ def _read_disk_cache(cache_key: _CacheKey, ttl_seconds: float,
     return _DISK_CACHE.read(cache_key, ttl_seconds, home_path)
 
 
-def _write_disk_cache(cache_key: _CacheKey, entry: _CachedFetch,
+def _write_disk_cache(cache_key: _CacheKey, entry: _CachedFetch, ttl_seconds: float,
                       home_path: Optional[Path] = None) -> None:
     """Persist a cache entry to disk atomically with mode 0600.
 
     Stores only the values and the cache key (which embeds the token
     *fingerprint*, never the token).  Best-effort: any I/O error is swallowed
     (the next invocation will just re-fetch). We never want disk cache failures
-    to break startup.
+    to break startup.  ``ttl_seconds <= 0`` is a no-op, matching reads and the
+    shared cache substrate.
     """
-    _DISK_CACHE.write(cache_key, entry, 1, home_path)
+    _DISK_CACHE.write(cache_key, entry, ttl_seconds, home_path)
 
 
 def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:

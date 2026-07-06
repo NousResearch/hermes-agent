@@ -240,6 +240,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
+    workspace_blocked:     "⚠️ Cross-workspace resume blocked. This session was created in a different project/workspace ({stored_workspace}). Resuming would inject foreign context into your current conversation. Start a new session or resume from the original workspace."
     no_named_sessions:     "找不到已命名的工作階段。\n使用 `/title 我的工作階段` 為目前工作階段命名，然後使用 `/resume 我的工作階段` 返回。"
     list_header:           "📋 **已命名工作階段**\n"
     list_item:             "• **{title}**{preview_part}"

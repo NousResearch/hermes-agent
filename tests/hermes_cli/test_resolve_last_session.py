@@ -155,3 +155,53 @@ def test_resolve_last_session_not_limited_to_newest_started_20(tmp_path, monkeyp
 
     monkeypatch.setattr("hermes_state.SessionDB", lambda: real_session_db(db_path=state_db))
     assert _resolve_last_session("cli") == target
+
+
+def test_resolve_last_session_prefers_same_workspace_over_newer_mismatch(tmp_path, monkeypatch):
+    current_repo = tmp_path / "current"
+    other_repo = tmp_path / "other"
+    current_repo.mkdir()
+    other_repo.mkdir()
+    (current_repo / ".git").mkdir()
+    (other_repo / ".git").mkdir()
+    monkeypatch.chdir(current_repo)
+
+    rows = [
+        {
+            "id": "newer_other_workspace",
+            "source": "cli",
+            "last_active": 200.0,
+            "git_repo_root": str(other_repo),
+        },
+        {
+            "id": "older_current_workspace",
+            "source": "cli",
+            "last_active": 100.0,
+            "git_repo_root": str(current_repo),
+        },
+    ]
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: _FakeDB(rows))
+
+    assert _resolve_last_session("cli") == "older_current_workspace"
+
+
+def test_resolve_last_session_does_not_auto_resume_known_mismatch(tmp_path, monkeypatch):
+    current_repo = tmp_path / "current"
+    other_repo = tmp_path / "other"
+    current_repo.mkdir()
+    other_repo.mkdir()
+    (current_repo / ".git").mkdir()
+    (other_repo / ".git").mkdir()
+    monkeypatch.chdir(current_repo)
+
+    rows = [
+        {
+            "id": "other_workspace",
+            "source": "cli",
+            "last_active": 200.0,
+            "git_repo_root": str(other_repo),
+        },
+    ]
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: _FakeDB(rows))
+
+    assert _resolve_last_session("cli") is None

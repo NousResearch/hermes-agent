@@ -213,6 +213,57 @@ class TestExtractWorkspaceFromCompaction:
         assert result == ""
 
 
+class TestAugmentSessionRowFromCompaction:
+    """Test stamped compaction metadata fallback for legacy session rows."""
+
+    def test_fills_missing_workspace_from_stamped_summary(self):
+        from hermes_cli.workspace_guard import augment_session_row_from_compaction
+
+        row: dict[str, str] = {"id": "session-1", "git_repo_root": "", "cwd": ""}
+        messages = [
+            {
+                "role": "user",
+                "content": "summary\n<!-- HERMES_WORKSPACE:/repo/from-summary -->",
+            }
+        ]
+
+        augmented = augment_session_row_from_compaction(row, messages)
+
+        assert augmented["git_repo_root"] == "/repo/from-summary"
+        assert row["git_repo_root"] == ""
+
+    def test_existing_workspace_identity_wins_over_summary_marker(self):
+        from hermes_cli.workspace_guard import augment_session_row_from_compaction
+
+        row = {"id": "session-1", "git_repo_root": "/repo/db"}
+        messages = [
+            {
+                "role": "user",
+                "content": "summary\n<!-- HERMES_WORKSPACE:/repo/from-summary -->",
+            }
+        ]
+
+        assert augment_session_row_from_compaction(row, messages) is row
+
+    def test_extracts_marker_from_multimodal_content(self):
+        from hermes_cli.workspace_guard import augment_session_row_from_compaction
+
+        row: dict[str, str] = {}
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "summary"},
+                    {"type": "text", "text": "<!-- HERMES_WORKSPACE:/repo/mm -->"},
+                ],
+            }
+        ]
+
+        augmented = augment_session_row_from_compaction(row, messages)
+
+        assert augmented["git_repo_root"] == "/repo/mm"
+
+
 class TestFormatWorkspaceMismatchError:
     """Test format_workspace_mismatch_error helper."""
 

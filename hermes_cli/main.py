@@ -1159,13 +1159,17 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
         try:
             from hermes_cli.workspace_guard import filter_sessions_by_workspace
             compatible, incompatible = filter_sessions_by_workspace(
-                sessions, current_cwd=None  # cwd resolved at resume boundary
+                sessions, current_cwd=os.getcwd()  # resolve cwd at query time
             )
             if compatible:
                 return compatible[0]["id"]
             elif incompatible:
-                # Legacy fallback: allow last resort with warning (handled at resume)
-                return incompatible[-1]["id"]
+                logger.debug(
+                    "No workspace-compatible session found for auto-continue; "
+                    "skipped %d mismatched candidate(s)",
+                    len(incompatible),
+                )
+                return None
         except Exception:
             pass
 

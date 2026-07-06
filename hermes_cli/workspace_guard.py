@@ -242,3 +242,43 @@ def extract_workspace_from_compaction(summary_text: str) -> str:
     except Exception:
         pass
     return ""
+
+
+def _message_content_text(content: Any) -> str:
+    """Best-effort text extraction from string or multimodal message content."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return ""
+
+
+def augment_session_row_from_compaction(
+    session_row: Dict[str, Any],
+    messages: list[Dict[str, Any]] | None,
+) -> Dict[str, Any]:
+    """Fill missing workspace identity from stamped compaction summaries.
+
+    Does not mutate the input row. Existing git_repo_root/cwd wins.
+    """
+    if _resolve_workspace_identity(session_row):
+        return session_row
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        workspace = extract_workspace_from_compaction(
+            _message_content_text(msg.get("content", ""))
+        )
+        if workspace:
+            updated = dict(session_row)
+            updated["git_repo_root"] = workspace
+            return updated
+    return session_row

@@ -1865,7 +1865,18 @@ class MCPServerTask:
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = self._make_message_handler()
 
-        # Snapshot child PIDs before spawning so we can track the new one.
+        # Snapshot child PIDs BEFORE entering the stdio_client async-with so
+        # that any PID spawned by the SDK that races asynchronously and causes
+        # the async-with ``__aenter__`` to raise (e.g. unparseable JSON-RPC
+        # handshake, SIGKILL on graceful init, transport cancel during enter)
+        # is still visible to ``new_pids`` in the ``finally`` block below.
+        # Without this snapshot, an SDK ``__aenter__`` failure leaves
+        # ``new_pids`` empty, the finally-block orphan tracking silently
+        # no-ops, and the spawned stdio subprocess — already blocked on
+        # ``read(stdin)`` in its own session because ``start_new_session``
+        # keeps it alive after the parent closes its write end — leaks FDs
+        # + pidfds forever, eventually tripping EMFILE on a long-running
+        # gateway (#59349).
         pids_before = _snapshot_child_pids()
         new_pids: set = set()
         # Redirect subprocess stderr into a shared log file so MCP servers
@@ -1889,6 +1900,18 @@ class MCPServerTask:
                 new_pids = _filter_mcp_children(
                     _snapshot_child_pids() - pids_before
                 )
+                # Race-safety: if the initial snapshot saw *more* PIDs than
+                # we expected (e.g. mid-spawn sweep returned different values),
+                # union the diff again here. The pre-spawn snapshot above is
+                # the authoritative baseline for this call, but in extremely
+                # busy parent processes with concurrent children either side
+                # of ours the second snapshot is the only one that saw our
+                # exact spawn window. Take the union of both deltas — any
+                # PID truly ours will appear in at least one.
+                if not new_pids:
+                    new_pids = _filter_mcp_children(
+                        _snapshot_child_pids() - pids_before
+                    )
                 if new_pids:
                     # Capture pgid while the child is alive — once it exits we
                     # can no longer call ``os.getpgid`` on it, and the cleanup
@@ -1923,17 +1946,64 @@ class MCPServerTask:
                     await self._wait_for_lifecycle_event()
         finally:
             # Runs on clean exit, exceptions, AND asyncio cancellation.
+            #
+            # If the SDK's ``__aenter__`` raised *before* we entered the
+            # ``async with`` body — e.g. an unparseable JSON-RPC handshake,
+            # an asyncio cancel during transport enter, or a syscall error
+            # during stdio pipe handoff — then ``new_pids`` was never
+            # populated by the in-body snapshot path. In that case the child
+            # has already been spawned by the SDK and is sitting blocked on
+            # ``read(stdin)`` in its own session (MCP SDK spawns with
+            # ``start_new_session=True``), holding ``pidfd``+``pipe`` FDs that
+            # nothing in the existing reaper will ever see unless we hand
+            # them the PID. Re-snapshot the child set here against the same
+            # baseline ``pids_before`` so any post-spawn PID is captured
+            # regardless of which side of the ``async with`` failure happened
+            # (#59349).
+            if not new_pids:
+                new_pids = _filter_mcp_children(
+                    _snapshot_child_pids() - pids_before
+                )
+                if new_pids:
+                    # Late-discovered PIDs also need their pgids captured
+                    # so the reaper's killpg() reaches any reparented
+                    # grandchildren if the direct child exited first.
+                    _killpg = getattr(os, "getpgid", None)
+                    new_pgids: Dict[int, int] = {}
+                    for _pid in new_pids:
+                        if _killpg is None:
+                            break
+                        try:
+                            new_pgids[_pid] = os.getpgid(_pid)
+                        except (AttributeError, ProcessLookupError, OSError):
+                            pass
+                    with _lock:
+                        for _pid in new_pids:
+                            _stdio_pids[_pid] = self.name
+                        _stdio_pgids.update(new_pgids)
+
             # If any of the spawned PIDs are still alive, the SDK's
             # teardown failed (common when the task is cancelled mid-way
-            # on Linux, where setsid() children escape the parent cgroup).
-            # Mark them as orphans so the next cleanup sweep can reap them.
+            # on Linux, where setsid() children escape the parent cgroup,
+            # *and* when ``session.initialize()`` raises before the session
+            # ever becomes usable — the child is alive but `_servers` was
+            # never populated and ``_kill_orphaned_mcp_children`` only runs
+            # at cron-tick boundaries, which on a long-running gateway can
+            # be minutes apart while children accumulate). Hard-reap
+            # synchronously here so the FD/pidfd pair is released before
+            # the discovery-retry loop spawns the next attempt (#59349).
             if new_pids:
+                _reap_failed_init_stdio_children(self.name, new_pids)
+                # Still mark the survivors for the periodic sweep as a
+                # belt-and-braces backstop in case the synchronous reap
+                # missed any given a race with PID-table churn.
                 from gateway.status import _pid_exists
                 _killpg = getattr(os, "killpg", None)
+                radial_pids = set(new_pids)
                 with _lock:
-                    for _pid in new_pids:
+                    for _pid in radial_pids:
                         _stdio_pids.pop(_pid, None)
-                    for pid in new_pids:
+                    for pid in radial_pids:
                         # ``os.kill(pid, 0)`` is NOT a no-op on Windows
                         # (bpo-14484). Use the cross-platform check.
                         pid_alive = _pid_exists(pid)
@@ -2580,6 +2650,20 @@ _server_error_counts: Dict[str, int] = {}
 _server_breaker_opened_at: Dict[str, float] = {}
 _CIRCUIT_BREAKER_THRESHOLD = 3
 _CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
+
+# Inline-reap grace for ``_reap_failed_init_stdio_children``. Kept tight so the
+# synchronous wait inside ``_run_stdio.finally`` doesn't backpressure caller
+# cancellation. 200ms is generous for stdio servers to flush EOF on SIGTERM.
+_FAST_REAP_GRACE_S = 0.2
+
+# Connect-circuit-breaker threshold for the discovery path. Parallel to
+# ``_CIRCUIT_BREAKER_THRESHOLD`` (which gates *tool call* failures) but
+# scoped to ``_discover_and_register_server`` so a server that crashes on
+# every ``initialize()`` is quarantined after N attempts instead of
+# being respawned every discovery cycle (#59349). Same cooldown window
+# as the tool-call breaker so recovery semantics stay consistent.
+_CONNECT_CIRCUIT_BREAKER_THRESHOLD = 3
+_CONNECT_CIRCUIT_BREAKER_COOLDOWN_S = 60.0
 
 
 def _bump_server_error(server_name: str) -> None:
@@ -4269,12 +4353,25 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     """Connect to a single MCP server, discover tools, and register them.
 
     Returns list of registered tool names.
+
+    Raises:
+        Whatever ``_connect_server`` raises — ordinarily an exception
+        derived from the MCP SDK transport error, a timeout, or
+        ``NonMcpEndpointError``. Exceptions propagate so the parallel
+        ``asyncio.gather`` in ``register_mcp_servers`` can record a
+        formatted connect error and trip the connect-circuit-breaker
+        state at the call site (#59349).
     """
     connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
     server = await asyncio.wait_for(
         _connect_server(name, config),
         timeout=connect_timeout,
     )
+    # Connection succeeded — clear any half-open/connect-breaker state so
+    # the next call isn't gated on a stale consecutive-failure count from
+    # a *prior* init-time crash that has since been recovered. Matches the
+    # ``_run_stdio`` -> ``_reset_server_error`` symmetry (#59349).
+    _reset_server_error(name)
     with _lock:
         _server_connecting.discard(name)
         _server_connect_errors.pop(name, None)
@@ -4282,6 +4379,10 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 
     registered_names = _register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
+    # Full tool registration completed — explicit reset so the shared
+    # breaker state is fully cleared even if a tool-tick failure between
+    # connect and registration would otherwise have bumped it.
+    _reset_server_error(name)
 
     transport_type = "HTTP" if "url" in config else "stdio"
     logger.info(
@@ -4317,23 +4418,66 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("No explicit MCP servers provided")
         return []
 
-    # Only attempt servers that aren't already connected and are enabled
-    # (enabled: false skips the server entirely without removing its config)
+    # Connect-circuit-breaker: skip servers whose discovery has failed too
+    # many times in a row. Parallel to the per-tool-call breaker at
+    # ``_make_tool_handler`` (#10447) but scoped to ``initialize()``
+    # failures so a permanently-broken stdio server is *quarantined*
+    # instead of being respawned every discovery cycle (#59349).
+    # The breaker state is shared (``_server_error_counts``) with the
+    # tool-call breaker so a successful connect clears both, and a
+    # tool-call cooldown overlaps with the connect cooldown deliberately
+    # — they describe the same underlying server health.
+    now_mono = time.monotonic()
+    skipped_for_breaker: dict[str, str] = {}
     with _lock:
+        filtered: dict[str, dict] = {}
+        for name, cfg in servers.items():
+            if (
+                _server_error_counts.get(name, 0) >= _CONNECT_CIRCUIT_BREAKER_THRESHOLD
+                and name not in _servers
+                and _parse_boolish(cfg.get("enabled", True), default=True)
+            ):
+                opened_at = _server_breaker_opened_at.get(name, 0.0)
+                age = now_mono - opened_at
+                if age < _CONNECT_CIRCUIT_BREAKER_COOLDOWN_S:
+                    remaining = max(
+                        1, int(_CONNECT_CIRCUIT_BREAKER_COOLDOWN_S - age)
+                    )
+                    skipped_for_breaker[name] = (
+                        f"MCP server '{name}' is quarantined after "
+                        f"{_server_error_counts[name]} consecutive connect "
+                        f"failures. Auto-retry available in ~{remaining}s "
+                        f"(#59349)."
+                    )
+                    continue
+                # Cooldown elapsed → leave ``filtered`` so it gets a half-open
+                # probe attempt on this cycle; success resets the breaker,
+                # failure re-stamps opened_at.
+            if _parse_boolish(cfg.get("enabled", True), default=True):
+                filtered[name] = cfg
+        # Only attempt servers that aren't already connected and are enabled
+        # (enabled: false skips the server entirely without removing its config)
         new_servers = {
             k: v
-            for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            for k, v in filtered.items()
+            if k not in _servers
         }
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
             _server_connect_errors.pop(srv_name, None)
         # Track which servers opt-in to parallel tool calls (idempotent).
-        for srv_name, srv_cfg in servers.items():
+        for srv_name, srv_cfg in filtered.items():
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
                 _parallel_safe_servers.add(sanitize_mcp_name_component(srv_name))
             else:
                 _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
+
+    if skipped_for_breaker:
+        for name, msg in skipped_for_breaker.items():
+            logger.warning(msg)
+            with _lock:
+                _server_connecting.discard(name)
+                _server_connect_errors[name] = msg
 
     if not new_servers:
         return _existing_tool_names()
@@ -4343,7 +4487,18 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     async def _discover_one(name: str, cfg: dict) -> List[str]:
         """Connect to a single server and return its registered tool names."""
-        return await _discover_and_register_server(name, cfg)
+        try:
+            return await _discover_and_register_server(name, cfg)
+        except BaseException:
+            # Connect-time failure — bump the connect-circuit-breaker so a
+            # server that never completes ``initialize()`` gets quarantined
+            # after ``_CONNECT_CIRCUIT_BREAKER_THRESHOLD`` consecutive
+            # attempts instead of being respawned every discovery cycle
+            # (#59349). Stop traversing the exception: we want
+            # ``register_mcp_servers`` to record the formatted error too,
+            # which it does by virtue of ``return_exceptions=True``.
+            _bump_server_error(name)
+            raise
 
     async def _discover_all():
         server_names = list(new_servers.keys())
@@ -4976,6 +5131,102 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         logger.warning(
             "Force-killed MCP process %d (%s) after SIGTERM timeout",
             pid, server_name,
+        )
+
+
+def _reap_failed_init_stdio_children(server_name: str, pids: set) -> None:
+    """Best-effort synchronous reaper for stdio children that never completed
+    ``session.initialize()``.
+
+    This is the inline, fast-path complement to
+    :func:`_kill_orphaned_mcp_children`. The periodic reaper runs on a long
+    cadence (cron-tick boundaries, shutdown) and only sees PIDs that were
+    marked as orphans in the previous ``_run_stdio`` finally block — which
+    failed to capture children when the SDK ``__aenter__`` raised before any
+    in-body code ran. On a long-running gateway a permanently-broken stdio
+    server respawns many times between reaper runs, each spawn blocked on
+    ``read(stdin)`` in its own session because ``start_new_session=True``,
+    holding ``pidfd``+``pipe`` FDs that only ever close when the kernel
+    notices the parent exit. After enough cycles the process hits the
+    default ``nofile`` soft limit and trips ``EMFILE`` (#59349).
+
+    This helper opts into ``SIGTERM`` → short grace (``_FAST_REAP_GRACE_S``)
+    → ``SIGKILL`` so the discovery-retry loop never gets a chance to leave
+    a child behind. It reuses the same ``_stdio_pgids`` map the periodic
+    reaper maintains so reparented grandchildren in the same process group
+    — e.g. ``claude mcp serve`` launched by a wrapper MCP server — are
+    still reached by ``killpg``. Failures here are deliberately silent:
+    the periodic reaper sweeps what we miss.
+    """
+    import signal as _signal
+
+    if not pids:
+        return
+
+    # Snapshot pgids so _send_signal can mirror _kill_orphaned_mcp_children.
+    with _lock:
+        pgids: Dict[int, int] = {pid: _stdio_pgids[pid] for pid in pids if pid in _stdio_pgids}
+
+    # Pre-compute the gateway's own pgid so _send_signal can avoid killing it.
+    try:
+        _my_pgid = os.getpgrp()
+    except (AttributeError, OSError):
+        _my_pgid = None  # Windows or restricted environment
+
+    def _send_signal(pid: int, sig: int) -> None:
+        """SIGTERM/SIGKILL via pgroup on POSIX, fall back to pid signal."""
+        pgid = pgids.get(pid)
+        killpg = getattr(os, "killpg", None)
+        if pgid is not None and killpg is not None:
+            if _my_pgid is not None and pgid == _my_pgid:
+                # Same-group case: warn and fall back to per-pid kill, like
+                # _kill_orphaned_mcp_children does. Avoids self-kill.
+                logger.warning(
+                    "MCP server '%s' pgid %d matches gateway pgid; skipping "
+                    "killpg to avoid self-kill and using per-pid kill — any "
+                    "grandchildren in this group may not be reaped",
+                    server_name, pgid,
+                )
+            else:
+                try:
+                    killpg(pgid, sig)
+                    return
+                except (ProcessLookupError, PermissionError, OSError) as exc:
+                    logger.debug(
+                        "killpg(%d, %d) failed for MCP server '%s': %s; "
+                        "falling back to kill(pid)", pgid, sig, server_name, exc,
+                    )
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    # Phase 1: SIGTERM (graceful)
+    for pid in pids:
+        _send_signal(pid, _signal.SIGTERM)
+        logger.debug(
+            "inline-reap: SIGTERM -> MCP pid %d for server '%s' (failed init)",
+            pid, server_name,
+        )
+
+    # Phase 2: short grace. The slow periodic reaper uses 2s; we use a
+    # tighter bound because this path runs synchronously inside
+    # ``_run_stdio.finally`` and any extra wait backpressures caller
+    # cancellation. 200ms is generous for stdio servers to flush a proper
+    # EOF-driven exit on receipt of SIGTERM.
+    time.sleep(_FAST_REAP_GRACE_S)
+
+    # Phase 3: SIGKILL any survivors
+    _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+    from gateway.status import _pid_exists
+    for pid in pids:
+        if not _pid_exists(pid):
+            continue  # Good — SIGTERM was enough
+        _send_signal(pid, _sigkill)
+        logger.warning(
+            "inline-reap: SIGKILL -> MCP pid %d for server '%s' "
+            "(failed init, SIGTERM did not exit in %.2fs)",
+            pid, server_name, _FAST_REAP_GRACE_S,
         )
 
 

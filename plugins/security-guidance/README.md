@@ -79,9 +79,9 @@ not a substitute for code review, SAST, dependency scanning, or pen testing.
 
 ## Attribution and licensing
 
-* `patterns.py` is a verbatim fork from
+* `patterns.py` mirrors
   [`anthropics/claude-plugins-official`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/security-guidance/hooks)
-  (commit `0bde168`, 2026-05-26), licensed under the
+  (commit `12a5376`, 2026-05-29; Hermes keeps only the attribution docstring), licensed under the
   [Apache License 2.0](./LICENSE). See [NOTICE](./NOTICE) for the full
   attribution.
 * `__init__.py`, `plugin.yaml`, `README.md`, and tests are original work by

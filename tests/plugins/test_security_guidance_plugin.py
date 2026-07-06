@@ -157,6 +157,24 @@ class TestScanContent:
         )
         assert "react_dangerously_set_html" in [n for n, _ in findings]
 
+    def test_dangerously_set_inner_html_in_md_skipped_by_path_filter(self):
+        mod = _load_plugin_init()
+        findings = mod._scan_content(
+            "/tmp/foo.md", "<div dangerouslySetInnerHTML={{__html: x}} />"
+        )
+        assert "react_dangerously_set_html" not in [n for n, _ in findings]
+
+    def test_new_function_warns_in_ts_but_not_md(self):
+        mod = _load_plugin_init()
+        ts_findings = mod._scan_content(
+            "/tmp/foo.ts", "const f = new Function('user', body)"
+        )
+        md_findings = mod._scan_content(
+            "/tmp/foo.md", "Avoid using new Function in examples."
+        )
+        assert "new_function_injection" in [n for n, _ in ts_findings]
+        assert "new_function_injection" not in [n for n, _ in md_findings]
+
     def test_github_workflow_path_check_fires_on_path_alone(self):
         """github_actions_workflow has no regex/substring — fires on path."""
         mod = _load_plugin_init()

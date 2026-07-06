@@ -7,15 +7,15 @@ licensed under the Apache License, Version 2.0.
 
     Source:    https://github.com/anthropics/claude-plugins-official
     Subpath:   plugins/security-guidance/hooks/patterns.py
-    Commit:    0bde168 (2026-05-26)
+    Commit:    12a5376 (2026-05-29)
     License:   Apache License 2.0 (see LICENSE in this directory)
 
 Forked content
 --------------
 
-The file patterns.py in this directory is a verbatim copy of the upstream
-patterns.py at the commit above, with a modified module docstring noting
-this attribution. The pattern data — 25 regex/substring rules covering
+The file patterns.py in this directory mirrors the upstream patterns.py at
+the commit above, with only the module docstring adjusted for Hermes-side
+attribution. The pattern data — 25 regex/substring rules covering
 unsafe deserialization, command injection, XSS sinks, crypto footguns,
 XXE, GitHub Actions injection, and TLS-verification disablement — is
 unmodified.

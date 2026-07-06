@@ -23,8 +23,51 @@ from tools.environments.file_sync import (
     quoted_rm_command,
     unique_parent_dirs,
 )
+from tools.environments.local import (
+    _HERMES_PROVIDER_ENV_BLOCKLIST,
+    _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _ACTIVE_VENV_MARKER_VARS,
+    _is_hermes_internal_secret,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _build_daytona_passthrough_env() -> dict[str, str]:
+    """Build a filtered env dict for Daytona sandbox command execution.
+
+    The Daytona SDK's ``process.exec()`` does not accept an ``env``
+    parameter, so allowlisted environment variables must be exported
+    inline in the shell command.  This mirrors the filtering logic in
+    ``local._make_run_env`` but drops session-context bridging (the
+    remote sandbox has no access to the host's ContextVars).
+    """
+    try:
+        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+    except Exception:
+        _is_passthrough = lambda _: False  # noqa: E731
+
+    passthrough: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            continue
+        if _is_hermes_internal_secret(key):
+            continue
+        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+            passthrough[key] = value
+
+    for marker in _ACTIVE_VENV_MARKER_VARS:
+        passthrough.pop(marker, None)
+
+    return passthrough
+
+
+def _export_env_prefix(env: dict[str, str]) -> str:
+    """Return shell statements that export *env* vars, or empty string."""
+    if not env:
+        return ""
+    parts = [f"export {k}={shlex.quote(v)}" for k, v in env.items()]
+    return " ; ".join(parts) + " ; "
 
 
 class DaytonaEnvironment(BaseEnvironment):
@@ -230,10 +273,17 @@ class DaytonaEnvironment(BaseEnvironment):
                 except Exception:
                     pass
 
+        # Build the passthrough env prefix once per call so allowlisted
+        # environment variables (terminal.env_passthrough, skill
+        # required_environment_variables) are available inside the
+        # sandbox.  The Daytona SDK's process.exec() has no env= param,
+        # so we export inline in the shell command (#59286).
+        env_prefix = _export_env_prefix(_build_daytona_passthrough_env())
+
         if login:
-            shell_cmd = f"bash -l -c {shlex.quote(cmd_string)}"
+            shell_cmd = f"bash -l -c {shlex.quote(env_prefix + cmd_string)}"
         else:
-            shell_cmd = f"bash -c {shlex.quote(cmd_string)}"
+            shell_cmd = f"bash -c {shlex.quote(env_prefix + cmd_string)}"
 
         def exec_fn() -> tuple[str, int]:
             response = sandbox.process.exec(shell_cmd, timeout=timeout, env=self.env)

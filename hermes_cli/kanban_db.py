@@ -131,10 +131,102 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # human-in-the-loop decision. Mirrors the dispatcher's ``DEFAULT_FAILURE_LIMIT``
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
+#
+# Configurable at runtime via ``kanban.block_recurrence_limit`` in
+# ``~/.hermes/config.yaml`` (issue #59333). The hard-coded value below stays
+# as the fallback default so legacy installs and external code that imports
+# ``BLOCK_RECURRENCE_LIMIT`` keep working unchanged. See
+# :func:`get_block_recurrence_limit` for the resolved-at-call-site reader.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+
+
+def get_block_recurrence_limit() -> int:
+    """Resolve the effective unblock-loop recurrence limit at call time.
+
+    Resolution order:
+
+      1. ``kanban.block_recurrence_limit`` from ``~/.hermes/config.yaml`` —
+         the user-configurable override added in #59333. A positive int wins;
+         any other value (None, missing key, non-int, string, list, <=0) is
+         ignored and falls through to the default.
+      2. :data:`BLOCK_RECURRENCE_LIMIT` — the hard-coded default (2). Keeps
+         legacy installs and external imports of the constant working
+         unchanged.
+
+    Reading the config fresh on each call (rather than caching at module
+    import) means runtime edits to ``config.yaml`` are picked up by the next
+    ``block_task`` invocation without restarting the dispatcher. The
+    underlying ``load_config()`` is itself mtime-cached, so the read cost
+    is negligible — sub-millisecond on a warm cache.
+
+    The function never raises: a broken or missing config falls back to
+    the default with a single ``_log.warning`` so a misconfigured user
+    doesn't break ``block_task``.
+    """
+    raw = None
+    try:
+        # Lazy import: ``hermes_cli.config`` pulls in YAML + a sizeable
+        # transitive set, and ``kanban_db`` is imported very early by
+        # dispatcher / gateway / dashboard / test paths. A function-level
+        # import keeps cold-start cost out of the common case where the
+        # override is absent.
+        from hermes_cli.config import load_config
+
+        kanban_cfg = (load_config().get("kanban") or {})
+        raw = kanban_cfg.get("block_recurrence_limit")
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.warning(
+            "kanban.block_recurrence_limit: failed to read config (%s); "
+            "using default %d",
+            exc, BLOCK_RECURRENCE_LIMIT,
+        )
+        return BLOCK_RECURRENCE_LIMIT
+
+    if raw is None:
+        return BLOCK_RECURRENCE_LIMIT
+
+    # bool is a subclass of int in Python — reject it explicitly so
+    # ``True``/``False`` don't silently become 1/0.
+    if isinstance(raw, bool):
+        _log.warning(
+            "kanban.block_recurrence_limit=%r is a bool; using default %d",
+            raw, BLOCK_RECURRENCE_LIMIT,
+        )
+        return BLOCK_RECURRENCE_LIMIT
+
+    # Accept ints directly. Coerce numeric strings (e.g. "5" from a
+    # hand-edited YAML) but reject anything that doesn't parse cleanly.
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str):
+        try:
+            value = int(raw.strip())
+        except (TypeError, ValueError):
+            _log.warning(
+                "kanban.block_recurrence_limit=%r is not a positive int; "
+                "using default %d",
+                raw, BLOCK_RECURRENCE_LIMIT,
+            )
+            return BLOCK_RECURRENCE_LIMIT
+    else:
+        _log.warning(
+            "kanban.block_recurrence_limit=%r is not a positive int; "
+            "using default %d",
+            raw, BLOCK_RECURRENCE_LIMIT,
+        )
+        return BLOCK_RECURRENCE_LIMIT
+
+    if value < 1:
+        _log.warning(
+            "kanban.block_recurrence_limit=%d is below 1; using default %d",
+            value, BLOCK_RECURRENCE_LIMIT,
+        )
+        return BLOCK_RECURRENCE_LIMIT
+
+    return value
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -4649,7 +4741,11 @@ def block_task(
         same_cause = prev_kind == kind
         recurrences = prev_recurrences + 1 if same_cause else 1
 
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+        # Resolve the loop-breaker threshold from config so users can raise it
+        # without editing code (#59333). Falls back to the module constant
+        # when the config key is missing / invalid.
+        recurrence_limit = get_block_recurrence_limit()
+        if recurrences >= recurrence_limit:
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.
             cur = conn.execute(
@@ -4684,7 +4780,7 @@ def block_task(
                     "reason": reason,
                     "kind": kind,
                     "recurrences": recurrences,
-                    "limit": BLOCK_RECURRENCE_LIMIT,
+                    "limit": recurrence_limit,
                 },
                 run_id=run_id,
             )

@@ -366,6 +366,35 @@ browser:
   inactivity_timeout: 120
 
 # =============================================================================
+# Kanban Board (multi-agent coordination)
+# =============================================================================
+# The kanban dispatcher coordinates workers across profiles. Most options live
+# in the in-tree defaults; only the knobs users commonly need to tune are
+# surfaced here. See `hermes_cli/kanban_db.py` for the full schema.
+#
+kanban:
+  # Auto-block a task after this many consecutive non-success attempts
+  # (spawn_failed, timed_out, crashed). Reassignment to a new profile resets
+  # the streak. Default 2.
+  # failure_limit: 2
+
+  # Unblock-loop breaker: after a task has been blocked → unblocked →
+  # re-blocked this many times for the SAME kind, route it to ``triage``
+  # instead of ``blocked`` so a cron can't keep flipping it forever. Default
+  # 2. Raise this if your pipeline legitimately needs more than two passes
+  # through the unblock↔re-block cycle (issue #59333).
+  # block_recurrence_limit: 2
+
+  # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less
+  # SQL pressure. Default 60.
+  # dispatch_interval_seconds: 60
+
+  # Stale detection: running tasks whose last heartbeat is older than this
+  # many seconds are auto-reclaimed to ``ready`` on the next tick (and the
+  # worker is terminated). 0 disables stale detection entirely.
+  # dispatch_stale_timeout_seconds: 14400
+
+# =============================================================================
 # Tool Loop Guardrails
 # =============================================================================
 # Soft warnings are enabled by default. They append guidance to repeated failed

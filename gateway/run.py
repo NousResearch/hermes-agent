@@ -19114,9 +19114,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # The callback bridges sync→async to send the approval request
             # to the user immediately.
             from tools.approval import (
+                mark_session_guest,
                 register_gateway_notify,
                 reset_current_session_key,
                 set_current_session_key,
+                unmark_session_guest,
                 unregister_gateway_notify,
             )
 
@@ -19379,6 +19381,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            # Guest-mode Telegram chats (Bot API 10.0 @mention from a chat the
+            # bot isn't a member of) can never present or resolve an
+            # interactive approval prompt -- mark the session so a dangerous
+            # command denies immediately (tools/approval.py's
+            # _await_gateway_decision short-circuit) instead of blocking the
+            # agent thread for the full gateway_timeout on an approval that
+            # can structurally never arrive.
+            _is_guest_chat_fn = getattr(_status_adapter, "_is_guest_chat", None)
+            _approval_session_is_guest = bool(
+                callable(_is_guest_chat_fn) and _is_guest_chat_fn(_status_chat_id)
+            )
+            if _approval_session_is_guest:
+                mark_session_guest(_approval_session_key)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -19430,6 +19445,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                if _approval_session_is_guest:
+                    unmark_session_guest(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,
                 # completion, gateway shutdown).  Idempotent.

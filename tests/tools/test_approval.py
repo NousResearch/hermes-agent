@@ -2324,7 +2324,7 @@ class TestApprovalTimeoutIsNotConsent:
         assert "NOT consented" in msg
         assert "Silence is not consent" in msg
         # Both forms of evasion must be named:
-        assert "do NOT retry" in msg.lower() or "Do NOT retry" in msg
+        assert "do not retry" in msg.lower() or "Do NOT retry" in msg
         assert "rephrase" in msg.lower()
         assert "different command" in msg.lower()
 
@@ -2390,6 +2390,134 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestGuestModeApprovalShortCircuit:
+    """Guest-mode chats (Telegram Bot API 10.0 @mention, bot not a member)
+    can never present or resolve an interactive approval prompt -- mirrors
+    the existing slash-command carve-out (declines at the front door with a
+    canned message) instead of depending on approval-routing/delivery being
+    fixed first. Session marked guest -> immediate BLOCKED, no queue entry,
+    no notify_cb call, no wait.
+    """
+
+    SESSION_KEY = "test-guest-session"
+
+    def setup_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._gateway_guest_sessions.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+        mod._pending.clear()
+
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                      "HERMES_YOLO_MODE",
+                      "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+        }
+        os.environ.pop("HERMES_YOLO_MODE", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ.pop("HERMES_CRON_SESSION", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+
+    def teardown_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._gateway_guest_sessions.clear()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_mark_unmark_is_session_guest_roundtrip(self):
+        from tools import approval as mod
+        assert mod.is_session_guest(self.SESSION_KEY) is False
+        mod.mark_session_guest(self.SESSION_KEY)
+        assert mod.is_session_guest(self.SESSION_KEY) is True
+        mod.unmark_session_guest(self.SESSION_KEY)
+        assert mod.is_session_guest(self.SESSION_KEY) is False
+
+    def test_terminal_guard_denies_immediately_without_notify(self):
+        """Guest session: BLOCKED without ever calling notify_cb."""
+        from tools import approval as mod
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        mod.mark_session_guest(self.SESSION_KEY)
+
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "guest_unsupported"
+        assert notified == [], "notify_cb must never be called for a guest session"
+        assert mod._gateway_queues.get(self.SESSION_KEY) in (None, []), (
+            "no queue entry should be created for a guest session"
+        )
+
+    def test_terminal_guard_denial_message_tells_agent_context_not_supported(self):
+        from tools import approval as mod
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+        mod.mark_session_guest(self.SESSION_KEY)
+
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        msg = result["message"]
+        assert "BLOCKED" in msg
+        assert "isn't supported in this context" in msg
+        assert "do not retry" in msg.lower()
+
+    def test_terminal_guard_denial_is_fast_even_with_long_timeout(self, monkeypatch):
+        """Must not pay the gateway_timeout wait -- denies before ever queuing."""
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {"mode": "manual", "gateway_timeout": 300, "timeout": 300},
+        )
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+        mod.mark_session_guest(self.SESSION_KEY)
+
+        start = time.monotonic()
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+        elapsed = time.monotonic() - start
+
+        assert result["approved"] is False
+        assert elapsed < 2.0, f"guest denial took {elapsed:.2f}s -- should be near-instant"
+
+    def test_execute_code_guard_denies_immediately_without_notify(self):
+        from tools import approval as mod
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        mod.mark_session_guest(self.SESSION_KEY)
+
+        result = mod.check_execute_code_guard("import os; os.system('rm -rf /')", "local")
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "guest_unsupported"
+        assert notified == []
+
+    def test_non_guest_session_unaffected(self, monkeypatch):
+        """Sanity check: without the guest marker, existing timeout behavior is unchanged."""
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {"mode": "manual", "gateway_timeout": 1, "timeout": 1},
+        )
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        # Deliberately NOT marking the session as guest.
+
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "timeout"
+        assert len(notified) == 1, "notify_cb should fire normally for a non-guest session"
 
 
 class TestTirithImportErrorFailOpenPolicy:

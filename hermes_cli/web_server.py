@@ -10269,7 +10269,14 @@ async def get_session_messages(
             sid = db.resolve_resume_session_id(sid)
             # Clamp limit to prevent abuse (max 500 per page)
             _limit = min(limit, 500) if limit is not None else None
-            return sid, _limit, db.get_messages(sid, limit=_limit, offset=offset)
+            # Include compression ancestors so REST prefetch matches the
+            # gateway's session.resume transcript after a rotation.
+            return sid, _limit, db.get_messages(
+                sid,
+                include_ancestors=True,
+                limit=_limit,
+                offset=offset,
+            )
         finally:
             db.close()
 

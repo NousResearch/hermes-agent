@@ -1355,8 +1355,26 @@ def _build_child_agent(
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
+    # When delegation explicitly pinned the child's provider/base_url/api_key
+    # OR its model (override_* != None or non-empty model), pass the
+    # override_*_is_set flags so the resolver returns None and the child keeps
+    # its explicit configuration verbatim (issue #58298 — without this guard,
+    # the parent's pool can leak and _swap_credential rewrites the child's
+    # base_url with whichever credential the parent pool happens to lease,
+    # effectively overwriting the configured model with whatever the leased
+    # endpoint serves — typically glm-4-flash from the zai pool).
     child_pool = _resolve_child_credential_pool(
-        effective_provider, parent_agent, effective_base_url
+        effective_provider,
+        parent_agent,
+        effective_base_url,
+        override_provider=override_provider is not None,
+        override_base_url=override_base_url is not None,
+        override_api_key=override_api_key is not None,
+        # Treat a non-empty ``model`` kwarg as an explicit delegation.model
+        # pin: when the user wrote `delegation.model: ...` in config.yaml,
+        # they meant that exact model on the parent's existing credentials,
+        # not "rotate to any credential the parent's pool has".
+        delegation_model_explicit=bool(model),
     )
     if child_pool is not None:
         child._credential_pool = child_pool
@@ -2892,6 +2910,11 @@ def _resolve_child_credential_pool(
     effective_provider: Optional[str],
     parent_agent,
     effective_base_url: Optional[str] = None,
+    *,
+    override_provider: bool = False,
+    override_base_url: bool = False,
+    override_api_key: bool = False,
+    delegation_model_explicit: bool = False,
 ):
     """Resolve a credential pool for the child agent.
 
@@ -2910,7 +2933,30 @@ def _resolve_child_credential_pool(
     We therefore resolve custom runtimes by endpoint identity (the
     ``custom:<name>`` pool key derived from the base_url) and only share the
     parent's pool when both resolve to the *same* custom endpoint.
+
+    Explicit delegation overrides (override_provider / override_base_url /
+    override_api_key OR a non-empty ``delegation.model`` in config.yaml) force
+    isolation: when the user explicitly pinned the child's behaviour, sharing
+    the parent's pool is wrong because ``_swap_credential`` would overwrite the
+    child's explicit ``base_url``/``api_key`` with whatever credential the
+    parent pool happens to lease (issue #58298 — delegation.model set, child
+    still ended up on the parent's zai credential and routed to glm-4-flash
+    instead of the configured deepseek-v4-pro). Returning ``None`` here is
+    safe: the child already has its explicit ``api_key``/``base_url``/``model``
+    from ``_build_child_agent``'s override-* kwargs + the ``model`` argument.
     """
+    if (
+        override_provider
+        or override_base_url
+        or override_api_key
+        or delegation_model_explicit
+    ):
+        # User explicitly pinned child credentials/model — do not leak parent's
+        # pool. The child uses its override base_url/api_key/model directly;
+        # no rotation (which could otherwise overwrite the pinned model by
+        # swapping base_url to an endpoint that doesn't serve that model).
+        return None
+
     if not effective_provider:
         return getattr(parent_agent, "_credential_pool", None)
 
@@ -2995,6 +3041,15 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     Raises ValueError with a user-friendly message on credential failure.
     """
     configured_model = str(cfg.get("model") or "").strip() or None
+    # ``subagent.model`` is a documented alias for ``delegation.model`` so users
+    # who think of the parent-vs-subagent split can write it under either key.
+    # When both are set, ``delegation.model`` wins (it's the canonical key).
+    if not configured_model:
+        configured_model = (
+            str(cfg.get("subagent.model") or cfg.get("subagent_model") or "")
+            .strip()
+            or None
+        )
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None

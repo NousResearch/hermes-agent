@@ -6,9 +6,11 @@ import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-co
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
-import { Bug } from '@/lib/icons'
+import { Bug, Maximize } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { PREVIEW_PANE_ID } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
+import { $paneWidthOverride, setPaneWidthOverride } from '@/store/panes'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
 
 import {
@@ -119,6 +121,25 @@ function PreviewLoadError({
 }
 
 const TITLEBAR_GROUP_ID = 'preview'
+const WIDE_PREVIEW_RATIO = 0.72
+const WIDE_PREVIEW_CHAT_RESERVE_PX = 320
+const WIDE_PREVIEW_MIN_WIDTH_PX = 720
+
+function widePreviewWidth() {
+  const viewport = typeof window === 'undefined' ? 1440 : window.innerWidth
+  const maxWithoutCrushingChat = Math.max(WIDE_PREVIEW_MIN_WIDTH_PX, viewport - WIDE_PREVIEW_CHAT_RESERVE_PX)
+
+  return Math.round(Math.min(viewport * WIDE_PREVIEW_RATIO, maxWithoutCrushingChat))
+}
+
+function isWidePreviewWidth(width: number | undefined) {
+  if (width === undefined) {
+    return false
+  }
+
+  return Math.abs(width - widePreviewWidth()) <= 16
+}
+
 
 export function PreviewPane({
   embedded = false,
@@ -140,6 +161,8 @@ export function PreviewPane({
   const previewServerRestart = useStore($previewServerRestart)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
+  const previewPaneWidthOverride = useStore($paneWidthOverride(PREVIEW_PANE_ID))
+  const widePreviewActive = isWidePreviewWidth(previewPaneWidthOverride)
   const [currentUrl, setCurrentUrl] = useState(target.url)
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -282,6 +305,16 @@ export function PreviewPane({
     setDevtoolsOpen(true)
   }, [])
 
+  const toggleWidePreview = useCallback(() => {
+    if (widePreviewActive) {
+      setPaneWidthOverride(PREVIEW_PANE_ID, undefined)
+
+      return
+    }
+
+    setPaneWidthOverride(PREVIEW_PANE_ID, widePreviewWidth())
+  }, [widePreviewActive])
+
   useEffect(() => {
     if (!setTitlebarToolGroup) {
       return
@@ -290,6 +323,13 @@ export function PreviewPane({
     const tools: TitlebarTool[] = [
       ...(isWebPreview
         ? [
+            {
+              active: widePreviewActive,
+              icon: <Maximize />,
+              id: `${TITLEBAR_GROUP_ID}-wide`,
+              label: widePreviewActive ? 'Restore preview width' : 'Widen preview',
+              onSelect: toggleWidePreview
+            },
             {
               active: consoleOpen,
               icon: <PreviewConsoleTitlebarIcon consoleState={consoleState} />,
@@ -311,7 +351,7 @@ export function PreviewPane({
     setTitlebarToolGroup(TITLEBAR_GROUP_ID, tools)
 
     return () => setTitlebarToolGroup(TITLEBAR_GROUP_ID, [])
-  }, [consoleOpen, consoleState, copy, devtoolsOpen, isWebPreview, setTitlebarToolGroup, toggleDevTools])
+  }, [consoleOpen, consoleState, copy, devtoolsOpen, isWebPreview, setTitlebarToolGroup, toggleDevTools, toggleWidePreview, widePreviewActive])
 
   useEffect(() => {
     if (!consoleOpen) {

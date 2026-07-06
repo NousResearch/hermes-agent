@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
@@ -1278,6 +1279,22 @@ def get_cute_tool_message(
         limit = _tool_preview_max_len
         return ("..." + p[-(limit-3):]) if len(p) > limit else p
 
+    def _display_url_host(url) -> str:
+        raw = str(url or "").strip()
+        if not raw:
+            return ""
+        parsed = urlparse(raw if "://" in raw else f"//{raw}")
+        host = parsed.hostname
+        if not host:
+            return raw.replace("https://", "").replace("http://", "").split("/")[0]
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        return f"{host}:{port}" if port is not None else host
+
     def _wrap(line: str) -> str:
         """Apply skin tool prefix and failure suffix."""
         if skin_prefix != "┊":
@@ -1292,7 +1309,7 @@ def get_cute_tool_message(
         urls = args.get("urls", [])
         if urls:
             url = urls[0] if isinstance(urls, list) else str(urls)
-            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+            domain = _display_url_host(url)
             extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
             return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
         return _wrap(f"┊ 📄 fetch     pages  {dur}")
@@ -1317,7 +1334,7 @@ def get_cute_tool_message(
         return _wrap(f"┊ 🔎 {verb:9} {pattern}  {dur}")
     if tool_name == "browser_navigate":
         url = args.get("url", "")
-        domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+        domain = _display_url_host(url)
         return _wrap(f"┊ 🌐 navigate  {_trunc(domain, 35)}  {dur}")
     if tool_name == "browser_snapshot":
         mode = "full" if args.get("full") else "compact"
@@ -1422,5 +1439,4 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
 

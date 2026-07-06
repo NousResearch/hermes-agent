@@ -1579,7 +1579,7 @@ class TestBuildApiKwargs:
         agent.model = "gpt-5.5"
         agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
 
-        assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
+        assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh", "summary": "auto"}
 
 
 

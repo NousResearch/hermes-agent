@@ -212,6 +212,16 @@ _LONG_HANDLERS = frozenset(
         "projects.for_cwd",
         "projects.tree",
         "projects.project_sessions",
+        # Setup readiness RPCs are polled by the Desktop frontend on connect
+        # and periodically (use-status-snapshot → evaluateRuntimeReadiness).
+        # setup.runtime_check calls resolve_runtime_provider() which reads
+        # config, checks auth state, and may probe the provider endpoint;
+        # setup.status calls _has_any_provider_configured() which scans
+        # provider config + credential files. Under GIL pressure from
+        # concurrent agent turns, either can take seconds inline, blocking
+        # the WS read loop and causing false "needs setup" (#50005 family).
+        "setup.runtime_check",
+        "setup.status",
         "session.branch",
         "session.compress",
         "session.list",
@@ -945,6 +955,24 @@ def _profile_scoped(handler):
 _CWD_PLACEHOLDERS = {".", "auto", "cwd"}
 
 
+def _configured_cwd_from_cfg(cfg: dict | None) -> str | None:
+    """Return an absolute, existing ``terminal.cwd`` from a config mapping.
+
+    Returns None for placeholders (``.``/``auto``/``cwd``), missing values, or
+    paths that don't resolve to a real directory.
+    """
+    if not isinstance(cfg, dict):
+        return None
+    terminal_cfg = cfg.get("terminal")
+    if not isinstance(terminal_cfg, dict):
+        return None
+    raw = str(terminal_cfg.get("cwd") or "").strip()
+    if not raw or raw in _CWD_PLACEHOLDERS:
+        return None
+    resolved = os.path.abspath(os.path.expanduser(raw))
+    return resolved if os.path.isdir(resolved) else None
+
+
 def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     """Resolve a non-launch profile's ``terminal.cwd`` from its own config.yaml.
 
@@ -964,13 +992,37 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
             return None
         with open(p, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        raw = str((data.get("terminal") or {}).get("cwd") or "").strip()
-        if not raw or raw in _CWD_PLACEHOLDERS:
-            return None
-        resolved = os.path.abspath(os.path.expanduser(raw))
-        return resolved if os.path.isdir(resolved) else None
+        return _configured_cwd_from_cfg(data)
     except Exception:
         return None
+
+
+def _launch_configured_cwd() -> str | None:
+    """Resolve the launch profile's ``terminal.cwd`` from config.yaml.
+
+    Dashboard ``/chat`` for the launch profile attaches to the dashboard
+    process's in-memory TUI gateway. The Node PTY child receives a bridged
+    ``TERMINAL_CWD`` env var, but this in-memory process does not — so reading
+    the process env alone leaves a fresh chat starting in ``os.getcwd()``
+    (wherever ``hermes dashboard`` was launched) instead of the configured
+    ``terminal.cwd``. Read config directly so changing ``terminal.cwd`` affects
+    new in-memory TUI sessions too.
+    """
+    try:
+        return _configured_cwd_from_cfg(_load_cfg())
+    except Exception:
+        return None
+
+
+def _default_session_cwd() -> str:
+    """Fallback cwd for a session with no explicit / stored / profile cwd.
+
+    Mirrors the launch-config-aware tail of :func:`_completion_cwd` so freshly
+    created AND resumed sessions land in the configured ``terminal.cwd`` rather
+    than ``os.getcwd()`` when the in-memory gateway's process env has no bridged
+    ``TERMINAL_CWD``.
+    """
+    return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or os.getcwd()
 
 
 def write_json(obj: dict) -> bool:
@@ -1363,6 +1415,11 @@ def _completion_cwd(params: dict | None = None) -> str:
         # A session bound to another profile resolves its workspace from THAT
         # profile's config before falling back to the launch profile's env var.
         or _profile_configured_cwd(_profile_home(params.get("profile")))
+        # The launch profile's dashboard /chat attaches to the dashboard's
+        # in-memory gateway, which does NOT inherit the PTY child's bridged
+        # TERMINAL_CWD. Read the launch profile's config.yaml directly so a
+        # configured terminal.cwd wins over a stale process env / launch dir.
+        or _launch_configured_cwd()
         or os.environ.get("TERMINAL_CWD")
         or os.getcwd()
     )
@@ -1795,10 +1852,10 @@ def _apply_managed(cfg: dict) -> dict:
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime, _cfg_path
 
-    from utils import atomic_yaml_write
+    from hermes_cli.config import atomic_config_write
 
     path = _hermes_home / "config.yaml"
-    atomic_yaml_write(path, cfg)
+    atomic_config_write(path, cfg)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
         _cfg_path = path
@@ -2318,10 +2375,12 @@ def _display_mouse_tracking(display: dict) -> str:
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
-    effort = str(
-        (_load_cfg().get("agent") or {}).get("reasoning_effort", "") or ""
-    ).strip()
-    return parse_reasoning_effort(effort)
+    # Pass the raw value through — ``or ""`` would coerce a YAML boolean
+    # False (``reasoning_effort: false``/``off``/``no``) to "", silently
+    # re-enabling thinking for users who explicitly turned it off.
+    return parse_reasoning_effort(
+        (_load_cfg().get("agent") or {}).get("reasoning_effort", "")
+    )
 
 
 def _load_service_tier() -> str | None:
@@ -2352,7 +2411,9 @@ def _load_provider_routing() -> dict:
 
 
 def _load_show_reasoning() -> bool:
-    return bool((_load_cfg().get("display") or {}).get("show_reasoning", False))
+    # Fallback True — keep in sync with DEFAULT_CONFIG display.show_reasoning
+    # (this loader reads the raw user YAML without the DEFAULT_CONFIG merge).
+    return bool((_load_cfg().get("display") or {}).get("show_reasoning", True))
 
 
 def _load_memory_notifications() -> str:
@@ -3095,11 +3156,15 @@ def _session_info(agent, session: dict | None = None) -> dict:
     personality = (session or {}).get("personality", cfg_personality)
     reasoning_config = getattr(agent, "reasoning_config", None)
     reasoning_effort = ""
-    if (
-        isinstance(reasoning_config, dict)
-        and reasoning_config.get("enabled") is not False
-    ):
-        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            # Disabled must be distinguishable from unset ("" = provider
+            # default). Reporting "" here made the desktop adopt the empty
+            # value after the first turn, wiping its sticky "thinking off"
+            # pick and re-creating every later chat at the default effort.
+            reasoning_effort = "none"
+        else:
+            reasoning_effort = str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or ""
     # Effective approval-bypass state — the same three sources that
     # check_all_command_guards() ORs together: persistent config
@@ -4055,15 +4120,21 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 def _reset_session_agent(sid: str, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
     try:
+        # Preserve this session's chosen model AND reasoning across /new so a
+        # reset doesn't silently revert to global config (or to a model
+        # another session set). See the cross-session-contamination note in
+        # _apply_model_switch.
+        reset_kw = {"model_override": session.get("model_override")}
+        old_reasoning = getattr(session.get("agent"), "reasoning_config", None)
+        if old_reasoning is None:
+            old_reasoning = session.get("create_reasoning_override")
+        if isinstance(old_reasoning, dict):
+            reset_kw["reasoning_config_override"] = old_reasoning
         new_agent = _make_agent(
             sid,
             session["session_key"],
             session_id=session["session_key"],
-            # Preserve this session's chosen model across /new so a reset
-            # doesn't silently revert to global config (or to a model another
-            # session set). See the cross-session-contamination note in
-            # _apply_model_switch.
-            model_override=session.get("model_override"),
+            **reset_kw,
         )
     finally:
         _clear_session_context(tokens)
@@ -5377,7 +5448,7 @@ def _(rid, params: dict) -> dict:
             if lease is not None:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
-        cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
+        cwd = profile_resume_cwd or _default_session_cwd()
         record = _deferred_session_record(
             target,
             cols=cols,
@@ -5450,7 +5521,7 @@ def _(rid, params: dict) -> dict:
         # the build drops the provider ("No LLM provider configured").
         overrides = _stored_session_runtime_overrides(found) or {}
         model_override = overrides.get("model_override") or {}
-        cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
+        cwd = profile_resume_cwd or _default_session_cwd()
         record = _deferred_session_record(
             target,
             cols=cols,
@@ -5736,7 +5807,7 @@ def _fallback_session_info(session: dict) -> dict:
     if agent is not None:
         return _session_info(agent)
     return {
-        "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+        "cwd": _default_session_cwd(),
         "lazy": True,
         "model": _resolve_model(),
         "skills": {},
@@ -10093,15 +10164,23 @@ def _(rid, params: dict) -> dict:
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
-            _write_config_key("agent.reasoning_effort", arg)
-            if session and session.get("agent") is not None:
-                session["agent"].reasoning_config = parsed
-                _persist_live_session_runtime(session)
-                _emit(
-                    "session.info",
-                    params.get("session_id", ""),
-                    _session_info(session["agent"], session),
-                )
+            if session is not None:
+                # Session-scoped, like the messaging gateway's `/reasoning
+                # <level>` (global persistence is `--global` / Settings →
+                # Model territory). Writing config.yaml here let every
+                # desktop model-menu selection rewrite the user's global
+                # agent.reasoning_effort to the preset default.
+                session["create_reasoning_override"] = parsed
+                if session.get("agent") is not None:
+                    session["agent"].reasoning_config = parsed
+                    _persist_live_session_runtime(session)
+                    _emit(
+                        "session.info",
+                        params.get("session_id", ""),
+                        _session_info(session["agent"], session),
+                    )
+            else:
+                _write_config_key("agent.reasoning_effort", arg)
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -10776,12 +10855,29 @@ def _(rid, params: dict) -> dict:
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = str(
-            (cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium"
-        )
+        effort = ""
+        # Prefer the session's live value — `config.set reasoning` is
+        # session-scoped, so the global key may not reflect this chat.
+        session = _sessions.get(params.get("session_id", ""))
+        live = getattr((session or {}).get("agent"), "reasoning_config", None)
+        if live is None and session is not None:
+            live = session.get("create_reasoning_override")
+        if isinstance(live, dict):
+            if live.get("enabled") is False:
+                effort = "none"
+            else:
+                effort = str(live.get("effort", "") or "")
+        if not effort:
+            raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
+            if raw_effort is False:
+                # YAML `reasoning_effort: false`/`off`/`no` — thinking
+                # disabled, not "unset, show the medium default".
+                effort = "none"
+            else:
+                effort = str(raw_effort or "medium")
         display = (
             "show"
-            if bool((cfg.get("display") or {}).get("show_reasoning", False))
+            if bool((cfg.get("display") or {}).get("show_reasoning", True))
             else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})
@@ -12278,6 +12374,7 @@ def _(rid, params: dict) -> dict:
             pricing=True,
             capabilities=True,
             refresh=bool(params.get("refresh")),
+            probe_custom_providers=bool(params.get("refresh")),
         )
         return _ok(rid, payload)
     except Exception as e:
@@ -13170,13 +13267,14 @@ def _browser_connect(rid, params: dict) -> dict:
             ok = any(_http_ok(p, timeout=2.0) for p in probes)
 
             if not ok and _is_default_local_cdp(parsed):
-                from hermes_cli.browser_connect import try_launch_chrome_debug
+                from hermes_cli.browser_connect import launch_chrome_debug
 
                 announce(
                     "Chromium-family browser isn't running with remote debugging — attempting to launch..."
                 )
 
-                if try_launch_chrome_debug(port, system):
+                launch = launch_chrome_debug(port, system)
+                if launch.launched:
                     for _ in range(20):
                         time.sleep(0.5)
                         if any(_http_ok(p, timeout=1.0) for p in probes):
@@ -13186,6 +13284,9 @@ def _browser_connect(rid, params: dict) -> dict:
                 if ok:
                     announce(f"Chromium-family browser launched and listening on port {port}")
                 else:
+                    hint = launch.hint
+                    if hint:
+                        announce(hint, level="error")
                     for line in _failure_messages(url, port, system)[1:]:
                         announce(line, level="error")
                     return _ok(

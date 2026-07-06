@@ -952,6 +952,94 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     return None
 
 
+def _resume_reason_phrase(reason: Optional[str]) -> str:
+    """Map a session ``resume_reason`` marker to its human-readable phrase."""
+    if reason == "restart_timeout":
+        return "a gateway restart"
+    if reason == "shutdown_timeout":
+        return "a gateway shutdown"
+    return "a gateway interruption"
+
+
+def _build_interruption_system_note(reason: Optional[str], has_new_message: bool) -> str:
+    """Build the ``[System note: ...]`` resume/recovery text.
+
+    Centralizes the two near-duplicate resume-note construction sites (the
+    primary ``resume_pending`` branch and the empty-message safety net) so a
+    future wording change or group-mode variant only needs one edit point.
+    ``reason`` is the session's ``resume_reason`` marker; ``has_new_message``
+    selects the guidance clause — address the user's new message, or (for the
+    synthesized empty auto-resume turn) report recovery and ask what's next.
+    Returns only the bracketed note; the caller appends any real message.
+    """
+    phrase = _resume_reason_phrase(reason)
+    if has_new_message:
+        guidance = (
+            "Address the user's NEW message below FIRST and focus "
+            "on what the user is asking now."
+        )
+    else:
+        guidance = (
+            "Report to the user that the session was restored "
+            "successfully and ask what they would like to do next."
+        )
+    return (
+        f"[System note: The previous turn was interrupted by "
+        f"{phrase}; the gateway is now back online. "
+        f"Any restart/shutdown command in the history has already "
+        f"run — do NOT re-execute or verify it. {guidance} "
+        f"Do NOT re-execute old tool calls — skip any unfinished "
+        f"work from the conversation history.]"
+    )
+
+
+def _build_tool_tail_system_note() -> str:
+    """Build the ``[System note: ...]`` text for the interrupted-tool-tail case.
+
+    Distinct wording from :func:`_build_interruption_system_note`: there is no
+    restart/shutdown reason, only pending tool outputs to ignore in favour of
+    the user's new message.  Returns only the bracketed note.
+    """
+    return (
+        "[System note: A new message has arrived. The conversation "
+        "history contains pending tool outputs from an interrupted turn. "
+        "IGNORE those pending results. Address the user's NEW message "
+        "below FIRST. Do NOT re-execute old tool calls from the history.]"
+    )
+
+
+def _resolve_resume_note_kind(
+    is_resume_pending: bool,
+    has_fresh_tool_tail: bool,
+    message_is_empty: bool,
+) -> str:
+    """Classify which auto-continue system note applies to an inbound turn.
+
+    Formalizes the historical ``if/elif/if`` dispatch at the inbound
+    auto-continue site into one table-testable predicate:
+
+    - ``"resume"``     — a fresh ``resume_pending`` session: emit the
+                         reason-aware resume/recovery note.
+    - ``"tool_tail"``  — no fresh resume mark, but the transcript ends in a
+                         fresh interrupted tool result.
+    - ``"safety_net"`` — neither fresh signal fired yet the turn carries an
+                         empty message; the caller still guards this on the raw
+                         ``resume_pending`` marker so a legitimately empty
+                         non-resume turn (e.g. a captionless image) is untouched.
+    - ``"none"``       — ordinary turn; no system note.
+
+    The ``safety_net`` vs ``resume`` split is the "two freshness signals
+    disagree" edge case documented inline at the call site.
+    """
+    if is_resume_pending:
+        return "resume"
+    if has_fresh_tool_tail:
+        return "tool_tail"
+    if message_is_empty:
+        return "safety_net"
+    return "none"
+
+
 # Tool results can contain literal MEDIA: examples in docs, logs, or other
 # ordinary outputs. Only tools that intentionally create deliverable media
 # artifacts should be eligible for automatic append when the model omits them
@@ -18213,48 +18301,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and _interruption_is_fresh
             )
 
-            if _is_resume_pending:
+            _note_kind = _resolve_resume_note_kind(
+                is_resume_pending=_is_resume_pending,
+                has_fresh_tool_tail=_has_fresh_tool_tail,
+                message_is_empty=not (isinstance(message, str) and message.strip()),
+            )
+            if _note_kind == "resume":
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
-                _reason_phrase = (
-                    "a gateway restart"
-                    if _reason == "restart_timeout"
-                    else "a gateway shutdown"
-                    if _reason == "shutdown_timeout"
-                    else "a gateway interruption"
-                )
                 _persist_user_message_override = message
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is
                 # no NEW user message to address, so tell the model to report
                 # recovery instead of the (nonexistent) "new message".
-                if message:
-                    _resume_guidance = (
-                        "Address the user's NEW message below FIRST and focus "
-                        "on what the user is asking now."
-                    )
-                else:
-                    _resume_guidance = (
-                        "Report to the user that the session was restored "
-                        "successfully and ask what they would like to do next."
-                    )
-                message = (
-                    f"[System note: The previous turn was interrupted by "
-                    f"{_reason_phrase}; the gateway is now back online. "
-                    f"Any restart/shutdown command in the history has already "
-                    f"run — do NOT re-execute or verify it. {_resume_guidance} "
-                    f"Do NOT re-execute old tool calls — skip any unfinished "
-                    f"work from the conversation history.]"
-                    + (f"\n\n{message}" if message else "")
-                )
-            elif _has_fresh_tool_tail:
+                message = _build_interruption_system_note(
+                    _reason, has_new_message=bool(message)
+                ) + (f"\n\n{message}" if message else "")
+            elif _note_kind == "tool_tail":
                 _persist_user_message_override = message
-                message = (
-                    "[System note: A new message has arrived. The conversation "
-                    "history contains pending tool outputs from an interrupted turn. "
-                    "IGNORE those pending results. Address the user's NEW message "
-                    "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
-                    + message
-                )
+                message = _build_tool_tail_system_note() + "\n\n" + message
 
             # Consume one-shot /reload-skills note (if the user ran
             # /reload-skills since their last turn in this session). Same
@@ -18285,22 +18349,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sn_reason = (
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 )
-                _sn_reason_phrase = (
-                    "a gateway restart"
-                    if _sn_reason == "restart_timeout"
-                    else "a gateway shutdown"
-                    if _sn_reason == "shutdown_timeout"
-                    else "a gateway interruption"
-                )
-                message = (
-                    f"[System note: The previous turn was interrupted by "
-                    f"{_sn_reason_phrase}; the gateway is now back online. "
-                    f"Any restart/shutdown command in the history has already "
-                    f"run — do NOT re-execute or verify it. Report to the user "
-                    f"that the session was restored successfully and ask what "
-                    f"they would like to do next. Do NOT re-execute old tool "
-                    f"calls — skip any unfinished work from the conversation "
-                    f"history.]"
+                message = _build_interruption_system_note(
+                    _sn_reason, has_new_message=False
                 )
 
             _approval_session_key = session_key or ""

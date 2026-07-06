@@ -62,7 +62,18 @@ export function createBoundedMessageStore(limit = 512) {
     return msg;
   }
 
-  return { remember, get };
+  function latestForChat(chatId) {
+    if (!chatId) return null;
+    // Map preserves insertion order; walk newest-first for the most recent
+    // remembered message in this chat (used to react without an explicit id).
+    const entries = Array.from(byId.values());
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      if (entries[i]?.key?.remoteJid === chatId) return entries[i];
+    }
+    return null;
+  }
+
+  return { remember, get, latestForChat };
 }
 
 export function pollCreationMessageSecret(pollCreation) {

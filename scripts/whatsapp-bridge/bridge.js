@@ -944,6 +944,39 @@ app.post('/send-location', async (req, res) => {
   }
 });
 
+// React to a message with an emoji (an empty emoji retracts the reaction).
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId, emoji } = req.body;
+  if (!chatId) {
+    return res.status(400).json({ error: 'chatId is required' });
+  }
+
+  try {
+    let key;
+    if (messageId) {
+      // Prefer the full stored key (carries fromMe/participant) so a reaction
+      // on an inbound group message targets the right message; fall back to a
+      // minimal key when the message predates the bounded store.
+      const stored = messageStore.get(messageId);
+      key = stored?.key || { remoteJid: chatId, id: messageId, fromMe: false };
+    } else {
+      const latest = messageStore.latestForChat(chatId);
+      if (!latest) {
+        return res.status(404).json({ error: 'No recent message to react to in this chat' });
+      }
+      key = latest.key;
+    }
+    const sent = await sendWithTimeout(chatId, { react: { text: emoji || '', key } });
+    res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Typing indicator
 app.post('/typing', async (req, res) => {
   if (!sock || connectionState !== 'connected') {

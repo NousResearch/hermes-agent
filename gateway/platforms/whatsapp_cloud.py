@@ -614,6 +614,78 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     resp.status_code, code,
                 )
 
+    # ------------------------------------------------------------------ reactions
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> bool:
+        """React to a message with an emoji via the Cloud API reaction type.
+
+        ``message_id`` is the target message's wamid; when omitted the most
+        recent inbound wamid for the chat is used (same cache as read receipts).
+        Returns True when Meta accepts the reaction.
+        """
+        return await self._post_reaction(chat_id, message_id, emoji)
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str] = None,
+    ) -> bool:
+        """Retract a reaction (Cloud API: send an empty-emoji reaction)."""
+        return await self._post_reaction(chat_id, message_id, "")
+
+    async def _post_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str],
+        emoji: str,
+    ) -> bool:
+        """POST a ``type=reaction`` message to the Graph API.
+
+        An empty ``emoji`` retracts a previously-added reaction, per Meta's
+        reaction-message contract.  Best-effort: any error returns False so a
+        reaction never blocks the main reply path.
+        """
+        if self._http_client is None:
+            return False
+        target = message_id or self._last_inbound_wamid_by_chat.get(chat_id)
+        if not target:
+            return False
+
+        url = self._graph_url("messages")
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+        payload: Dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": chat_id,
+            "type": "reaction",
+            "reaction": {"message_id": target, "emoji": emoji},
+        }
+        try:
+            resp = await self._http_client.post(url, headers=headers, json=payload)
+        except Exception:
+            logger.exception("[whatsapp_cloud] reaction failed")
+            return False
+        if resp.status_code != 200:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": resp.text[:500]}
+            logger.warning(
+                "[whatsapp_cloud] reaction rejected (status=%d): %s",
+                resp.status_code,
+                self._format_graph_error(body, resp.status_code),
+            )
+            return False
+        return True
+
     # ------------------------------------------------------------------ interactive messages
     #
     # WhatsApp Cloud supports two interactive primitives we use here:

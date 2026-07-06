@@ -251,7 +251,15 @@ SILENT_MARKER = "[SILENT]"
 # a marker is the entire response OR appears as its own first/last line — but
 # NOT when a token merely appears mid-sentence in a genuine report (e.g.
 # "I considered staying [SILENT] but here is the summary…" must deliver).
-_CRON_SILENCE_TOKENS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"})
+#
+# The token *set* is the canonical one owned by gateway.response_filters
+# (LIVE_GATEWAY_SILENT_MARKERS); only the positional matching below is
+# cron-specific.  Imported lazily so a cron-only import path does not eagerly
+# pull in the gateway package (and so no boot-order import cycle is possible).
+def _cron_silence_tokens() -> frozenset:
+    from gateway.response_filters import LIVE_GATEWAY_SILENT_MARKERS
+
+    return LIVE_GATEWAY_SILENT_MARKERS
 
 
 def _is_cron_silence_response(text: str) -> bool:
@@ -270,7 +278,7 @@ def _is_cron_silence_response(text: str) -> bool:
         return False
 
     def _is_token(line: str) -> bool:
-        return " ".join(line.strip().upper().split()) in _CRON_SILENCE_TOKENS
+        return " ".join(line.strip().upper().split()) in _cron_silence_tokens()
 
     # Whole response is exactly a token.
     if _is_token(stripped):

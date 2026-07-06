@@ -1202,7 +1202,63 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 pass
         except Exception:
             pass  # Ignore typing indicator failures
-    
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> bool:
+        """React to a message with an emoji via the bridge's ``/react`` endpoint.
+
+        ``message_id`` is the id of the message to react to; when omitted the
+        bridge targets the most recent message in the chat.  Returns True when
+        the bridge accepts the reaction.
+        """
+        return await self._post_reaction(chat_id, message_id, emoji)
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str] = None,
+    ) -> bool:
+        """Retract a reaction (WhatsApp: send an empty-emoji react)."""
+        return await self._post_reaction(chat_id, message_id, "")
+
+    async def _post_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str],
+        emoji: str,
+    ) -> bool:
+        """POST a reaction to the bridge's ``/react`` endpoint.
+
+        An empty ``emoji`` retracts a previously-added reaction, matching the
+        Baileys ``{react: {text: ''}}`` protocol.  Mirrors the transport shape
+        of the other bridge calls (loopback POST, managed-bridge exit guard).
+        """
+        if not self._running or not self._http_session:
+            return False
+        if await self._check_managed_bridge_exit():
+            return False
+        try:
+            import aiohttp
+
+            payload: Dict[str, Any] = {
+                "chatId": to_whatsapp_jid(chat_id),
+                "emoji": emoji,
+            }
+            if message_id:
+                payload["messageId"] = message_id
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/react",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a WhatsApp chat."""
         if not self._running or not self._http_session:

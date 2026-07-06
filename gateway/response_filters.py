@@ -16,6 +16,14 @@ SILENT_REPLY_TOKEN = "NO_REPLY"
 # Exact whole-response markers that mean "the agent intentionally chose not to
 # reply".  Keep this list small and explicit; arbitrary empty output remains an
 # error/empty-response path, not silence.
+#
+# Canonical silence vocabulary: this is the single source of truth for the
+# silence-marker token set.  ``cron/scheduler.py`` imports it (lazily, to avoid
+# eagerly pulling the gateway package into cron-only import paths) rather than
+# maintaining its own copy — the two suppression paths must never drift.  The
+# *matching* rules differ (the live gateway requires an exact whole response;
+# cron also accepts a marker on its own first/last line), but the token set is
+# shared.
 LIVE_GATEWAY_SILENT_MARKERS = frozenset({
     "[SILENT]",
     "SILENT",

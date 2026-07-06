@@ -747,6 +747,20 @@ try:
 except Exception:
     pass  # Skin engine is optional — default skin used if unavailable
 
+# Start the appearance watcher so an 'auto' skin follows OS light/dark changes
+try:
+    from hermes_cli.skin_engine import start_appearance_watcher
+
+    def _on_appearance_change(new_skin_name: str) -> None:
+        # Re-assert 'auto' so the active skin re-resolves and stays reactive
+        # to further OS appearance changes.
+        from hermes_cli.skin_engine import set_active_skin
+        set_active_skin("auto")
+
+    start_appearance_watcher(_on_appearance_change)
+except Exception:
+    pass  # Appearance watcher is optional
+
 # Initialize tool preview length from config
 try:
     from agent.display import set_tool_preview_max_len

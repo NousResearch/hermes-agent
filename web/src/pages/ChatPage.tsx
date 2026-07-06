@@ -904,11 +904,40 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   // Keep the live xterm theme in sync when the active theme's terminal
   // colors change (e.g. user switches to a custom YAML theme mid-session).
+  //
+  // This effect ALSO re-runs on session resume so the same xterm.js
+  // redraw path that a manual theme switch triggers is hit automatically
+  // when the user opens or switches to a different resumed session
+  // (#59591 — "Dashboard resumed session transcript appears incomplete
+  // until theme change forces refresh"). Without the explicit
+  // ``term.refresh(0, rows-1)`` call below, switching between sessions in
+  // the dashboard can leave the WebGL renderer's canvas stale even though
+  // the bytes were written to the new terminal's scrollback; toggling the
+  // theme was the only way to force a repaint. Driving the same refresh
+  // here on resume keeps the visible transcript in sync with the stored
+  // one with no user-side workaround.
+  //
+  // ``channel`` is the memoized resume-aware identity of the PTY session,
+  // so it changes exactly when the user navigates ``/chat?resume=<id>``
+  // to a different target. Reusing the existing theme-update effect keeps
+  // the redraw path identical to the user-discovered workaround (theme
+  // change) and avoids introducing a separate viewport-sync hook.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     term.options.theme = terminalTheme;
-  }, [terminalTheme]);
+    // Full repaint of the active viewport — harmless when nothing
+    // changed, and the only thing that nudges xterm.js's WebGL
+    // canvas out of its stale state when the previous frame's
+    // bytes never made it to the GPU because a context-loss /
+    // scrolled-cleared grid cycle happened during the resume
+    // handshake (#59591).
+    try {
+      if (term.rows > 0) term.refresh(0, term.rows - 1);
+    } catch {
+      /* xterm refresh on a torn-down terminal — best-effort */
+    }
+  }, [terminalTheme, channel]);
 
   // Layout:
   //   outer flex column — sits inside the dashboard's content area

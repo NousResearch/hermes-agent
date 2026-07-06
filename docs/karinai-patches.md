@@ -60,7 +60,7 @@ Behavior (each hook is marked `KarinAI` in the source):
 
 - One import block pulling the bridge entry points (`RunAttachmentInlineDedup`, `enrich_run_user_message`, `managed_toolset_override`, `parse_app_tool_gateway`, `bind_karinai_run_context`).
 - `__init__`: owns a `RunAttachmentInlineDedup` instance (per-session attachment inline-dedup state).
-- `_create_agent`: `managed_toolset_override()` — in managed mode (`KARINAI_MANAGED_RUNTIME`) the runtime-manager tool policy replaces the user-editable `platform_toolsets.api_server` resolution; a no-op pass-through otherwise.
+- `_create_agent`: `managed_toolset_override()` — in managed mode (`KARINAI_MANAGED_RUNTIME`) the runtime-manager tool policy replaces the user-editable `platform_toolsets.api_server` resolution; a no-op pass-through otherwise. The gate uses `karinai.runtime.config.parse_bool` (marginally wider than the old inline truthy set: strips whitespace, accepts `y`) — deliberate convergence with `is_managed_runtime()` and managed startup so all managed-mode detectors agree.
 - `_handle_runs`: reads the `X-KarinAI-Run-Id` header (backend PRODUCT run id) at request scope; validates `body["app_tool_gateway"]` via `parse_app_tool_gateway` (400 on error); enriches the user message from `body["attachments"]` via `enrich_run_user_message` (400 on manifest error); commits the attachment inline dedup only after the run executed.
 - `_bind_api_server_session`: appends `bind_karinai_run_context()` reset tokens to the `set_session_vars()` token list, so the KarinAI run-scoped vars share the session vars' lifecycle.
 
@@ -76,6 +76,7 @@ Behavior:
 
 - After `_VAR_MAP`: `_VAR_MAP.update(register_karinai_session_vars(_UNSET))` — registration with the gateway's own `_UNSET` sentinel keeps the os.environ fallback semantics identical.
 - `clear_session_vars`: `*KARINAI_SESSION_VARS.values(),` in the explicit clear tuple (pins to `""` on turn end — the thread-reuse leak guard).
+- `set_session_vars`: `*mask_karinai_run_context(),` in the token list — EVERY host (Telegram/cron/TUI/ACP/api_server) pins the KarinAI vars to `""` for the turn, so a bound session never falls back to `os.environ` for these names (env credentials must not enable app tools in ordinary messaging sessions). The api_server rebinds real values afterwards.
 - Binding happens via `karinai.runtime.session_bridge.bind_karinai_run_context()` (called by the api_server hook), NOT via extra `set_session_vars` parameters.
 - Tests: `tests/karinai/test_session_bridge.py`.
 

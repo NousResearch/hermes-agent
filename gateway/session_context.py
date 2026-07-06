@@ -133,7 +133,11 @@ _VAR_MAP = {
 # KarinAI request-scoped vars (see karinai/runtime/session_bridge.py); kept out
 # of this file so upstream merges stay clean. Registration here makes
 # get_session_env()/reset_session_vars() cover them.
-from karinai.runtime.session_bridge import KARINAI_SESSION_VARS, register_karinai_session_vars  # noqa: E402
+from karinai.runtime.session_bridge import (  # noqa: E402
+    KARINAI_SESSION_VARS,
+    mask_karinai_run_context,
+    register_karinai_session_vars,
+)
 
 _VAR_MAP.update(register_karinai_session_vars(_UNSET))
 
@@ -201,6 +205,9 @@ def set_session_vars(
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
+        # KarinAI vars are masked to "" for every host (no os.environ fallback
+        # during a bound turn); the api_server rebinds real values afterwards.
+        *mask_karinai_run_context(),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd

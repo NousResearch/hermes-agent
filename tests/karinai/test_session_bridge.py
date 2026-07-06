@@ -84,3 +84,34 @@ def test_clear_pins_empty_with_no_environ_fallback(monkeypatch: pytest.MonkeyPat
     for name in VAR_NAMES:
         # "explicitly cleared": empty string wins over the stale os.environ value.
         assert get_session_env(name) == ""
+
+
+def test_set_session_vars_masks_karinai_vars_for_every_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (bridge-refactor review finding): ANY host's set_session_vars
+    must pin the KarinAI vars to "" — a Telegram/cron/TUI turn in a process
+    whose environment contains e.g. KARINAI_APP_TOOL_GATEWAY_TOKEN must NOT
+    fall back to those env credentials (app-tool advertising gates on this)."""
+    from gateway.session_context import set_session_vars
+
+    for name in VAR_NAMES:
+        monkeypatch.setenv(name, "leaked_env_value")
+    tokens = set_session_vars(platform="telegram", chat_id="c1", async_delivery=True)
+    try:
+        for name in VAR_NAMES:
+            assert get_session_env(name) == ""
+    finally:
+        clear_session_vars(tokens)
+        reset_session_vars()
+
+
+def test_api_server_rebind_overrides_the_mask() -> None:
+    from gateway.session_context import set_session_vars
+
+    tokens = set_session_vars(platform="api_server", async_delivery=False)
+    tokens += bind_karinai_run_context("run_real", {"url": "u", "token": "t"})
+    try:
+        assert get_session_env("HERMES_PRODUCT_RUN_ID") == "run_real"
+        assert get_session_env("KARINAI_APP_TOOL_GATEWAY_TOKEN") == "t"
+    finally:
+        clear_session_vars(tokens)
+        reset_session_vars()

@@ -70,6 +70,23 @@ def register_karinai_session_vars(unset: Any) -> Dict[str, ContextVar]:
     return KARINAI_SESSION_VARS
 
 
+def mask_karinai_run_context() -> List:
+    """Pin every KarinAI request-scoped var to ``""`` for the current turn.
+
+    ``gateway.session_context.set_session_vars`` calls this for EVERY host
+    (Telegram/Discord/cron/TUI/ACP/api_server), restoring the pre-bridge
+    invariant that a bound session turn NEVER falls back to ``os.environ``
+    for these names: without the mask, a process whose environment happens to
+    contain e.g. ``KARINAI_APP_TOOL_GATEWAY_TOKEN`` (dev export, .env leak)
+    would advertise and execute app tools with those credentials in ordinary
+    messaging/cron sessions. The api_server rebinds real values AFTER the mask
+    via :func:`bind_karinai_run_context` (its tokens ride the same list).
+
+    Returns reset tokens for the caller's token list.
+    """
+    return [var.set("") for var in KARINAI_SESSION_VARS.values()]
+
+
 def bind_karinai_run_context(
     product_run_id: str = "",
     app_tool_gateway: Optional[Dict[str, Any]] = None,

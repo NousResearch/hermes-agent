@@ -705,9 +705,9 @@ hermes kanban unblock t_abcd --reason "backup window reached"
 
 The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
 
-### Drag-to-delete and bulk delete (dashboard)
+### Drag-to-delete and selected delete (dashboard)
 
-The dashboard exposes a **trash drop zone** on the kanban page — drag any card into it to delete the task (cascades through `task_events`, child links, and subscriptions). A confirmation prompt protects against accidents. Bulk delete is also reachable via `DELETE /api/plugins/kanban/tasks` with a JSON body `{"ids": ["t_abc", "t_def", ...]}`.
+The dashboard exposes a **trash drop zone** on the kanban page — drag any card into it to delete the task (cascades through `task_events`, child links, and subscriptions). A confirmation prompt protects against accidents. Multi-select delete uses the same confirmation flow and deletes each selected task individually.
 
 ### Worker visibility endpoints
 
@@ -717,8 +717,8 @@ The dashboard plugin API now exposes these read-only endpoints (plus a run-contr
 |----------|---------|
 | `GET /api/plugins/kanban/workers/active` | Currently spawned workers with PID, profile, task id, started-at, last heartbeat |
 | `GET /api/plugins/kanban/runs/{id}` | Single-run detail — task id, status, started/ended, exit code, log path |
+| `GET /api/plugins/kanban/runs/{run_id}/inspect` | Live PID stats for a run's worker process when available |
 | `POST /api/plugins/kanban/runs/{run_id}/terminate` | Terminate a reclaimable run — stops the worker and frees the task for re-dispatch |
-| `GET /api/plugins/kanban/inspect` | Combined dispatcher snapshot — backlog, in-progress count vs. `max_in_progress`, recent events |
 
 All of these are gated by the same dashboard plugin auth as the rest of the kanban plugin API.
 
@@ -817,7 +817,7 @@ hermes kanban create "monthly report" \
     --workspace dir:~/tenants/business-a/data/
 ```
 
-Workers receive `$HERMES_TENANT` and namespace their memory writes by prefix. The board, the dispatcher, and the profile definitions are all shared; only the data is scoped.
+Workers receive `$HERMES_TENANT`, and Kanban tool calls default to that tenant. The board, dispatcher, and profile definitions are shared; choose tenant-specific workspace paths and memory conventions yourself when you need stricter data hygiene.
 
 ## Gateway notifications
 

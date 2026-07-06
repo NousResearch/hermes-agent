@@ -626,7 +626,7 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--skill <name>]...
                                 [--json]
 hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived]
-        [--workflow-template-id <id>] [--current-step-key <key>]
+        [--workflow-template-id <id>] [--step-key <key>]
         [--sort created|created-desc|priority|priority-desc|status|assignee|title|updated]
         [--json]
 hermes kanban show <id> [--json]
@@ -889,7 +889,7 @@ The [workflow graph engine](./workflows) uses Kanban for `agent_task` nodes. Whe
 
 ```bash
 hermes kanban list --workflow-template-id code-change-review
-hermes kanban list --workflow-template-id code-change-review --current-step-key review
+hermes kanban list --workflow-template-id code-change-review --step-key review
 ```
 
 Completing the Kanban task resumes the workflow on the next workflow tick. If the task's `result` or latest summary is JSON, that object becomes the `agent_task` node output; plain text is wrapped as `{"result": "..."}`. Blocking the Kanban task blocks the workflow execution with the same reason.

@@ -424,7 +424,7 @@ You can inspect workflow-created Kanban cards directly:
 
 ```bash
 hermes kanban list --workflow-template-id code-change-review
-hermes kanban list --workflow-template-id code-change-review --current-step-key review
+hermes kanban list --workflow-template-id code-change-review --step-key review
 ```
 
 ## Examples

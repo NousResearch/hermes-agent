@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
+import pytest
+
 import tools.approval as approval_module
 from hermes_constants import get_hermes_home
 from tools.approval import (
@@ -2370,3 +2372,40 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+
+class TestRuntimeSelfPidKillGuard:
+    def test_kill_own_pid_requires_approval(self):
+        own_pid = os.getpid()
+
+        dangerous, key, desc = detect_dangerous_command(f"kill {own_pid}")
+
+        assert dangerous is True
+        assert key is not None
+        assert "self-termination" in desc
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "kill -9 {pid}",
+            "kill -TERM {pid}",
+            "kill -s TERM {pid}",
+            "kill --signal TERM {pid}",
+            "kill -- {pid}",
+        ],
+    )
+    def test_kill_own_pid_with_signal_forms_requires_approval(self, template):
+        own_pid = os.getpid()
+
+        dangerous, key, desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is True
+        assert key is not None
+        assert "self-termination" in desc
+
+    def test_kill_unrelated_pid_is_not_flagged_by_self_pid_guard(self):
+        unrelated_pid = os.getpid() + 1_000_000
+
+        dangerous, _key, _desc = detect_dangerous_command(f"kill {unrelated_pid}")
+
+        assert dangerous is False

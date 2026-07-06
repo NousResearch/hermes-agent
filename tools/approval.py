@@ -1394,6 +1394,26 @@ def detect_dangerous_command(command: str) -> tuple:
             if pattern_re.search(command_lower):
                 pattern_key = description
                 return (True, pattern_key, description)
+
+        # Dynamic self-PID guard: detect "kill <own-PID>" commands that would
+        # terminate the current Hermes process from within. Static regex cannot
+        # catch this because the PID is only known at runtime.
+        # Covers: kill PID, kill -9 PID, kill -TERM PID, kill -s TERM PID,
+        # kill -s 15 PID, kill --signal TERM PID, kill -- PID.
+        own_pid = str(os.getpid())
+        kill_pid_pattern = (
+            r"\bkill\s+"
+            r"(?:"
+            r"(?:--signal\s+\S+\s+)"       # kill --signal TERM
+            r"|(?:-s\s+\S+\s+)"            # kill -s TERM / kill -s 15
+            r"|(?:--\s+)"                   # kill -- (end of options)
+            r"|(?:-\S+\s+)"                 # kill -9 / kill -TERM / kill -s15
+            r")?"
+            + re.escape(own_pid) + r"\b"
+        )
+        if re.search(kill_pid_pattern, command_lower):
+            desc = f"kill own Hermes process (self-termination, PID {own_pid})"
+            return (True, desc, desc)
     return (False, None, None)
 
 

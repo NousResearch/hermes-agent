@@ -39,9 +39,15 @@ def _snapshot_export_command(target: str) -> str:
     # useful for PATH/HOME/etc. but do not persist credentials into /tmp-backed
     # hermes-snap-*.sh files.  Avoid a broad ``AUTH`` match so SSH_AUTH_SOCK and
     # XAUTHORITY survive; explicit AUTHORIZATION/BEARER cover HTTP credentials.
+    # Wrap the pipe in a brace group so the redirect binds to the group (run by
+    # the current shell), NOT to ``grep`` (which runs in its own pipe subshell).
+    # Otherwise ``> {target}`` expands ``$BASHPID`` to grep's subshell PID while
+    # the caller's ``mv {target}`` expands it to the outer shell PID — the temp
+    # names diverge, the mv finds nothing, and the snapshot is never updated
+    # (env stops persisting between commands).
     return (
-        "export -p | "
-        f"grep -Eiv {shlex.quote(_SNAPSHOT_SECRET_ENV_RE)} "
+        "{ export -p | "
+        f"grep -Eiv {shlex.quote(_SNAPSHOT_SECRET_ENV_RE)}; }} "
         f"> {target}"
     )
 

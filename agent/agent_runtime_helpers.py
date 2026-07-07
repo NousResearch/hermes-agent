@@ -2388,6 +2388,18 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    # --- Strip non-API properties: strict OpenAI-compatible endpoints ---
+    # (e.g. Groq) reject unknown message keys like the session-store's
+    # "timestamp" with HTTP 400 ("property 'timestamp' is unsupported").
+    # Rebuild dicts (non-mutating) rather than popping, so stored session
+    # messages keep their metadata.
+    _NON_API_KEYS = {"timestamp"}
+    if any(k in m for m in messages for k in _NON_API_KEYS):
+        messages = [
+            {k: v for k, v in m.items() if k not in _NON_API_KEYS}
+            for m in messages
+        ]
+
     # --- Drop empty / malformed tool_calls arrays on assistant messages ---
     # An assistant message carrying ``tool_calls: []`` (an empty array) — or a
     # non-list value under the key — is semantically identical to an assistant

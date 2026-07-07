@@ -86,3 +86,35 @@ class TestCLISessionRestoreFiltering:
         assert all(m["role"] != "session_meta" for m in filtered)
         assert filtered[0]["role"] == "user"
         assert filtered[1]["role"] == "assistant"
+
+
+# ---------------------------------------------------------------------------
+# Non-API property stripping — strict endpoints (e.g. Groq) reject unknown
+# message keys like "timestamp" with HTTP 400.
+# ---------------------------------------------------------------------------
+
+class TestSanitizeApiMessagesPropertyStrip:
+
+    def test_strips_timestamp_property(self):
+        msgs = [
+            {"role": "user", "content": "hello", "timestamp": "2026-07-06T21:43:12"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert all("timestamp" not in m for m in out)
+
+    def test_preserves_standard_keys(self):
+        msgs = [
+            {"role": "assistant", "content": "hi", "timestamp": "x",
+             "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "ok", "timestamp": "y"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["tool_calls"][0]["id"] == "c1"
+        assert out[1]["tool_call_id"] == "c1"
+        assert all("timestamp" not in m for m in out)
+
+    def test_non_mutating(self):
+        original = {"role": "user", "content": "hello", "timestamp": "keep-me"}
+        AIAgent._sanitize_api_messages([original])
+        assert original["timestamp"] == "keep-me"

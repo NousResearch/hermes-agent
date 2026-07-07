@@ -69,7 +69,14 @@ Usage:
 import json
 import logging
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    display_hermes_home,
+    get_skills_dir,
+    get_optional_skills_dir,
+    get_bundled_skills_dir,
+    get_default_hermes_root,
+)
 import os
 import re
 from enum import Enum
@@ -111,6 +118,116 @@ _REMOTE_ENV_BACKENDS = frozenset(
 _secret_capture_callback = None
 
 
+def _trusted_skill_roots() -> tuple:
+    """Return the directories that absolute-path skill names may resolve to.
+
+    Cron jobs sometimes store absolute paths to a skills directory
+    in ``cron/jobs.json`` when the operator is using a symlink farm
+    (``~/.hermes/profiles/<name>/skills/SKILLS -> /opt/some/skills``)
+    or a shared skills bundle outside the operator baseline. The
+    previous ``_skill_lookup_path_error`` rejected every absolute
+    path unconditionally, which meant those jobs logged
+    ``skill not found, skipping`` every tick and the audit channel
+    went silent (#59824).
+
+    The relaxed rule: an *absolute* path is allowed when it lives
+    inside any of these directories:
+      - ``~/.hermes/skills`` (``HERMES_HOME/skills``)
+      - ``~/.hermes/profiles/<name>/skills`` for any profile
+        (delegated to ``get_default_hermes_root()`` profiles scan)
+      - The bundled / wheel install dir returned by
+        :func:`hermes_constants.get_optional_skills_dir` /
+        :func:`hermes_constants.get_bundled_skills_dir` (these are
+        read-only paths Hermes ships and there is no reason to ban
+        an operator from referencing them by absolute path)
+
+    Drive paths (``C:\\skills``) and traversal components (``..``)
+    remain rejected regardless of prefix; the prefix check is a
+    deny-list escape hatch that only narrows the accept set, it
+    never widens the reject set.
+    """
+    roots: list = []
+    try:
+        roots.append(get_skills_dir().resolve())
+    except Exception:
+        pass
+    try:
+        optional = get_optional_skills_dir()
+        if optional is not None:
+            roots.append(Path(optional).resolve())
+    except Exception:
+        pass
+    try:
+        bundled = get_bundled_skills_dir()
+        if bundled is not None:
+            roots.append(Path(bundled).resolve())
+    except Exception:
+        pass
+    # Profile skills — every ``~/.hermes/profiles/<name>/skills`` dir.
+    try:
+        root = get_default_hermes_root()
+        profiles_dir = root / "profiles"
+        if profiles_dir.is_dir():
+            for child in profiles_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                skills_dir = child / "skills"
+                if skills_dir.is_dir():
+                    roots.append(skills_dir.resolve())
+    except Exception:
+        pass
+    return tuple(roots)
+
+
+def _resolve_canon(p):
+    """Resolve a path to its canonical filesystem form.
+
+    Prefers ``os.path.realpath`` over ``Path.resolve``: the latter
+    canonicalises to the *current working directory* + suffix
+    semantics that differ between Linux distributions on a strict
+    path-separator check (some sandboxes — notably Termux/Android —
+    return a different canonical form for the tempdir vs paths
+    nested inside it, defeating ``relative_to``. ``realpath`` uses
+    the kernel-level resolution which is consistent across POSIX
+    mount namespaces). Falls back to the ``Path.resolve`` result
+    if realpath fails so we still surface *something* canonical.
+    """
+    try:
+        return os.path.realpath(str(p))
+    except (OSError, ValueError):
+        try:
+            return str(Path(p).resolve())
+        except (OSError, RuntimeError, ValueError):
+            return str(p)
+
+
+def _path_starts_with_trusted_root(candidate: str) -> bool:
+    """True for an absolute ``candidate`` whose on-disk resolved
+    location sits inside one of :func:`_trusted_skill_roots`.
+
+    A path compared against trusted roots must be RESOLVED on the
+    same filesystem layer as the root — symlink resolution both
+    ways avoids an operator who symlinks ``skills/external`` to
+    ``/etc`` accidentally whitelisting ``/etc`` through this guard
+    while still letting them refer to their own redirected skills
+    by absolute path.
+    """
+    resolved = _resolve_canon(candidate)
+    for root in _trusted_skill_roots():
+        rr = _resolve_canon(str(root))
+        try:
+            rel = os.path.relpath(resolved, rr)
+        except ValueError:
+            continue
+        # Inside the root iff rel is free of '..' at the start.
+        if rel == ".":
+            return True
+        if rel.startswith(".." + os.sep) or rel == "..":
+            continue
+        return True
+    return False
+
+
 def _skill_lookup_path_error(name: str) -> Optional[str]:
     """Return an error if a local skill lookup *name* can escape search roots.
 
@@ -121,17 +238,42 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
     validation done later via ``tools.path_security``. We also reject Windows
     drive paths (e.g. ``C:\\skills``), whose ``:`` would otherwise be misread as
     a plugin namespace separator.
+
+    Absolute paths that resolve inside a trusted skills root (HERMES_HOME/skills,
+    a profile's skills dir, or a bundled/wheel skills dir) are accepted —
+    cron jobs that operate on a symlink farm often store absolute paths in
+    ``cron/jobs.json``. Drive paths and ``..`` segments remain rejected
+    (#59824).
     """
     from tools.path_security import has_traversal_component
 
     if not isinstance(name, str):
         return "Skill name must be a string."
     candidate = name.strip()
-    if (
+    if not candidate:
+        return "Skill name must not be empty."
+    is_absolute = (
         PurePosixPath(candidate).is_absolute()
         or PureWindowsPath(candidate).is_absolute()
-        or PureWindowsPath(candidate).drive
-    ):
+    )
+    has_drive = bool(PureWindowsPath(candidate).drive)
+    if is_absolute:
+        # Let absolute paths through IFF they live inside a trusted
+        # skills root. Drive-letter absolute paths stay rejected.
+        if has_drive:
+            return "Skill name must be a relative path within the skills directory."
+        if not _path_starts_with_trusted_root(candidate):
+            return (
+                "Skill name must be a relative path within the skills directory "
+                "(or an absolute path under a trusted HERMES skills root)."
+            )
+        if has_traversal_component(candidate):
+            return "Skill name cannot contain '..' path traversal components."
+        return None
+    if has_drive:
+        # A relative name with a Windows drive spec — same rejection
+        # as before, covers ``file_path`` plugins where ``:`` would be
+        # misread as a name separator.
         return "Skill name must be a relative path within the skills directory."
     if has_traversal_component(candidate):
         return "Skill name cannot contain '..' path traversal components."

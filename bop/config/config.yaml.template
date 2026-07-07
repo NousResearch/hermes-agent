@@ -1,0 +1,44 @@
+# BuiltOnPurpose Hermes v4 guardrails template.
+# Secrets belong in ~/.hermes/.env or Hermes auth stores, not in this file.
+
+model:
+  provider: "anthropic"
+  default: "claude-sonnet-5"
+
+platform_toolsets:
+  cli: [hermes-cli]
+
+approvals:
+  mode: manual
+  cron_mode: deny
+
+hooks_auto_accept: true
+
+hooks:
+  pre_tool_call:
+    - matcher: "write_file|patch"
+      command: "~/.hermes/agent-hooks/write-fence.sh"
+      timeout: 10
+    - matcher: "terminal"
+      command: "~/.hermes/agent-hooks/repo-guard.sh"
+      timeout: 10
+
+auxiliary:
+  vision:
+    provider: codex
+  web_extract:
+    provider: codex
+
+delegation:
+  provider: openai-codex
+  model: gpt-5.4-mini
+
+stt:
+  enabled: true
+  provider: local
+
+# Telegram setup is intentionally commented out. A1 fills token/chat IDs.
+# platform_toolsets:
+#   telegram: [hermes-telegram]
+# telegram:
+#   allowed_chats: "<chat-id>"

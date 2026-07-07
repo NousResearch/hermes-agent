@@ -255,6 +255,9 @@ def _child_process_main(params, event_queue, result_queue, interrupt_event) -> N
         factory = _resolve_agent_factory(params.get("agent_factory"))
         # Collect extra params (non-constructor keys) so test stub factories
         # can receive test configuration across the spawn boundary.
+        # ONLY pass keys that the real AIAgent constructor doesn't know about
+        # — the stub factory accepts **kwargs and reads what it needs, but the
+        # real AIAgent will TypeError on unknown kwargs.
         _constructor_keys = {
             "base_url", "api_key", "model", "provider", "api_mode",
             "acp_command", "acp_args", "max_iterations", "max_tokens",
@@ -262,18 +265,26 @@ def _child_process_main(params, event_queue, result_queue, interrupt_event) -> N
             "enabled_toolsets", "ephemeral_system_prompt", "session_id",
             "parent_session_id", "providers_allowed", "providers_ignored",
             "providers_order", "provider_sort", "openrouter_min_coding_score",
+            "task_index", "task_count", "subagent_id", "parent_subagent_id",
+            "child_depth", "parent_turn_id", "session_db_path",
+            "parent_reads_snapshot", "parent_session_id", "auto_approve",
+            "heartbeat_interval", "agent_factory", "role", "goal",
         }
         _extra = {
             k: v for k, v in params.items()
-            if k not in _constructor_keys and not k.startswith("_")
+            if k not in _constructor_keys
         }
-        # _test_config starts with _ but is needed by stub factories
-        _extra["_test_config"] = params.get("_test_config")
-        _extra["goal"] = goal
-        _extra["role"] = params.get("role", "leaf")
-        _extra["subagent_id"] = params.get("subagent_id")
-        _extra["parent_subagent_id"] = params.get("parent_subagent_id")
-        _extra["parent_turn_id"] = params.get("parent_turn_id")
+        # Always provide these for stub factories that need them.
+        # The real AIAgent ignores **_extra kwargs it doesn't accept IF
+        # they're not in its signature — but it DOES TypeError on unknown
+        # kwargs, so we must only add them when using a stub factory.
+        _is_stub = params.get("agent_factory") is not None
+        if _is_stub:
+            _extra["goal"] = goal
+            _extra["role"] = params.get("role", "leaf")
+            _extra["subagent_id"] = params.get("subagent_id")
+            _extra["parent_subagent_id"] = params.get("parent_subagent_id")
+            _extra["_test_config"] = params.get("_test_config")
         agent = factory(
             base_url=params.get("base_url"),
             api_key=params.get("api_key"),

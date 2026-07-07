@@ -82,6 +82,43 @@ class TestDetectDangerousRm:
         assert key is not None
         assert "delete" in desc.lower()
 
+    def test_root_delete_commands_keep_root_path_reason(self):
+        for command in [
+            "rm /",
+            "rm -rf /",
+            "rm -rf -- /",
+            "rm -rf /*",
+            "rm -- /",
+            "sudo rm -rf /",
+            "$(rm /)",
+        ]:
+            is_dangerous, key, desc = detect_dangerous_command(command)
+            assert is_dangerous is True, f"{command!r} should be dangerous"
+            assert key == "delete in root path"
+            assert desc == "delete in root path"
+
+    def test_ordinary_absolute_paths_do_not_match_root_delete(self):
+        for command in [
+            "rm /tmp/file",
+            "rm /home/me/file",
+            "rm /mnt/work/file",
+        ]:
+            is_dangerous, key, desc = detect_dangerous_command(command)
+            assert is_dangerous is False, f"{command!r} should be safe, got: {desc}"
+            assert key is None
+            assert desc is None
+
+    def test_recursive_ordinary_absolute_paths_use_recursive_reason(self):
+        for command in [
+            "rm -rf /tmp/file",
+            "rm -rf /home/me/file",
+            "rm --recursive /mnt/work/file",
+        ]:
+            is_dangerous, key, desc = detect_dangerous_command(command)
+            assert is_dangerous is True, f"{command!r} should be dangerous"
+            assert key in {"recursive delete", "recursive delete (long flag)"}
+            assert desc in {"recursive delete", "recursive delete (long flag)"}
+
 
 class TestWindowsShellDestructiveCommands:
     def test_cmd_del_requires_approval(self):

@@ -178,6 +178,18 @@ def show_status(args):
         value = _resolve_env(env_ref)
         has_key = bool(value)
         display = redact_key(value)
+        # OpenRouter key may live in the credential pool (via hermes auth add)
+        # rather than as an env var — check the pool as fallback (#60106).
+        if name == "OpenRouter" and not has_key:
+            try:
+                from agent.credential_pool import load_pool as _load_pool
+
+                pool = _load_pool("openrouter")
+                if pool and pool.has_credentials():
+                    has_key = True
+                    display = "set (auth pool)"
+            except Exception:
+                pass
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key
@@ -586,6 +598,22 @@ def show_status(args):
         
         # Check OpenRouter connectivity
         openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+        # Also check credential pool when env var is not set (#60106)
+        if not openrouter_key:
+            try:
+                from agent.credential_pool import load_pool as _load_pool
+
+                pool = _load_pool("openrouter")
+                if pool and pool.has_credentials():
+                    entry = pool.peek()
+                    if entry:
+                        openrouter_key = (
+                            getattr(entry, "access_token", "")
+                            or getattr(entry, "runtime_api_key", "")
+                            or ""
+                        )
+            except Exception:
+                pass
         if openrouter_key:
             try:
                 import httpx

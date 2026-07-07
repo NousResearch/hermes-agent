@@ -1806,7 +1806,8 @@ class APIServerAdapter(BasePlatformAdapter):
     def _session_response(session: Dict[str, Any]) -> Dict[str, Any]:
         """Return a stable, client-safe session representation."""
         safe_keys = (
-            "id", "source", "user_id", "model", "title", "started_at", "ended_at",
+            "id", "source", "user_id", "session_key", "chat_id", "chat_type",
+            "thread_id", "model", "title", "started_at", "ended_at",
             "end_reason", "message_count", "tool_call_count", "input_tokens",
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",

@@ -1098,6 +1098,41 @@ class TestWebServerEndpoints:
         row = next(s for s in rows if s["id"] == "session-no-cwd")
         assert row["cwd"] is None
 
+    def test_get_sessions_returns_session_binding(self):
+        """/api/sessions exposes session_key and the structured chat binding
+        (chat_id/chat_type/thread_id) so external consumers can map a live
+        session to the specific chat/group/thread it originated from without
+        guessing from user_id alone."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="keyed-session",
+                source="telegram",
+                session_key="agent:main:telegram:group:-1001234567890:1",
+                chat_id="-1001234567890",
+                chat_type="group",
+                thread_id="1",
+            )
+            db.create_session(session_id="unkeyed-session", source="cli")
+        finally:
+            db.close()
+
+        rows = self.client.get("/api/sessions?limit=20&offset=0").json()["sessions"]
+
+        keyed = next(s for s in rows if s["id"] == "keyed-session")
+        assert keyed["session_key"] == "agent:main:telegram:group:-1001234567890:1"
+        assert keyed["chat_id"] == "-1001234567890"
+        assert keyed["chat_type"] == "group"
+        assert keyed["thread_id"] == "1"
+
+        # Always present, nullable for rows created without a binding.
+        unkeyed = next(s for s in rows if s["id"] == "unkeyed-session")
+        for key in ("session_key", "chat_id", "chat_type", "thread_id"):
+            assert key in unkeyed
+            assert unkeyed[key] is None
+
     def test_get_sessions_forwards_min_messages(self, monkeypatch):
         """The ?min_messages= filter must reach SessionDB.
 

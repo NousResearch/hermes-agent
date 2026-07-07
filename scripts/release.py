@@ -1976,6 +1976,7 @@ AUTHOR_MAP = {
     "i@dex.moe": "dexhunter",  # PR #60339 salvage (skills snapshot manifest speedup)
     "1torhan@protonmail.com": "uzaylisak",  # PR #29988 salvage (detect_local_server_type process-lifetime cache)
     "zhchl@hermes-agent.local": "8294",  # PR #50572 salvage (honor config context_length on banner)
+    "dev@tevs.eu": "cgart",  # PR #46165 (expose session binding fields in GET /api/sessions)
 }
 
 

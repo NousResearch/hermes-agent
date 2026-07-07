@@ -71,6 +71,18 @@ hermes config set     # Set individual config values
 hermes setup          # Or run the full setup wizard to configure everything at once
 ```
 
+:::tip tmux users
+If you run Hermes inside tmux, add a small tmux baseline so scrolling and copy-mode feel normal:
+
+```tmux
+set -g mouse on
+set -g history-limit 50000
+setw -g mode-keys vi
+```
+
+Reload tmux with `tmux source-file ~/.tmux.conf` or `Prefix + r` after adding it.
+:::
+
 :::tip Fastest path: Nous Portal
 One subscription covers 300+ models plus the [Tool Gateway](/user-guide/features/tool-gateway) (web search, image generation, TTS, cloud browser). Skip the per-tool key juggling:
 

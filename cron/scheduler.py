@@ -3171,6 +3171,14 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
+        # Clear the process-global cron-session marker now that this job —
+        # whether success or failure — is done.  Without this explicit cleanup,
+        # the env var leaks from the cron background thread into subsequent
+        # interactive gateway sessions in the same process, where it falsely
+        # marks interactive code-execute/terminal calls as cron sessions and
+        # triggers the ``cron_mode: deny`` block (issue #60350).
+        os.environ.pop("HERMES_CRON_SESSION", None)
+
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
         # only ever mutate it when the job has a workdir; see the setup block
         # at the top of run_job for the serialization guarantee.

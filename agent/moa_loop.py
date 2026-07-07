@@ -212,9 +212,28 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
             out["api_key"] = rt["api_key"]
         if rt.get("api_mode"):
             out["api_mode"] = rt["api_mode"]
+        request_overrides = rt.get("request_overrides")
+        if isinstance(request_overrides, dict):
+            extra_body = request_overrides.get("extra_body")
+            if isinstance(extra_body, dict) and extra_body:
+                out["extra_body"] = dict(extra_body)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
     return out
+
+
+def _merge_slot_extra_body(
+    slot_extra_body: Any,
+    caller_extra_body: Any,
+) -> Any:
+    """Merge slot defaults with a caller override for ``call_llm``."""
+    if isinstance(slot_extra_body, dict) and slot_extra_body:
+        if isinstance(caller_extra_body, dict):
+            return {**slot_extra_body, **caller_extra_body}
+        if caller_extra_body:
+            return caller_extra_body
+        return dict(slot_extra_body)
+    return caller_extra_body
 
 
 def _maybe_apply_moa_cache_control(
@@ -976,18 +995,26 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
+        agg_runtime = _slot_runtime(aggregator)
+        # _slot_runtime may carry the provider's request_overrides.extra_body;
+        # pop it and merge with the caller's extra_body (caller wins) so the
+        # explicit kwarg below never collides with **agg_runtime.
+        agg_extra_body = _merge_slot_extra_body(
+            agg_runtime.pop("extra_body", None),
+            extra_body,
+        )
         _agg_response = call_llm(
             task="moa_aggregator",
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=max_tokens,
             tools=tools,
-            extra_body=extra_body,
+            extra_body=agg_extra_body,
             # Prepared requests must retain the acting aggregator's reasoning
             # policy exactly as the direct create() path does (#64187).
             reasoning_config=_aggregator_reasoning_config(aggregator),
             **stream_kwargs,
-            **_slot_runtime(aggregator),
+            **agg_runtime,
         )
         # Non-streaming path (quiet mode / eval / subagents): the aggregator
         # output is available inline, so capture it into the pending trace now.

@@ -120,6 +120,8 @@ async def test_auto_join_binds_configured_text_channel_for_transcript_routing(mo
 
     adapter.join_voice_channel.assert_awaited_once_with(channel)
     assert adapter._voice_text_channels[guild.id] == 123456789
+    assert "123456789" in adapter._auto_tts_enabled_chats
+    assert "123456789" not in adapter._auto_tts_disabled_chats
     assert adapter._voice_sources[guild.id]["platform"] == "discord"
     assert adapter._voice_sources[guild.id]["chat_id"] == "123456789"
     assert adapter._voice_sources[guild.id]["user_id"] == "42"

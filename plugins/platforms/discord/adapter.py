@@ -1233,6 +1233,14 @@ class DiscordAdapter(BasePlatformAdapter):
                                             )
                                         else:
                                             adapter_self._voice_text_channels[guild_id] = text_channel_int
+                                            # Treat auto-joined VC sessions like `/voice tts`:
+                                            # speech heard in the VC should always get a spoken
+                                            # reply, even if global voice.auto_tts is disabled or
+                                            # the text channel had a stale `/voice off` override.
+                                            if isinstance(getattr(adapter_self, "_auto_tts_enabled_chats", None), set):
+                                                adapter_self._auto_tts_enabled_chats.add(str(text_channel_int))
+                                            if isinstance(getattr(adapter_self, "_auto_tts_disabled_chats", None), set):
+                                                adapter_self._auto_tts_disabled_chats.discard(str(text_channel_int))
                                             adapter_self._voice_sources[guild_id] = {
                                                 "platform": Platform.DISCORD.value,
                                                 "chat_id": str(text_channel_int),

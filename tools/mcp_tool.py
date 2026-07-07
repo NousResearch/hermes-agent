@@ -303,6 +303,100 @@ def _check_logging_callback_support() -> bool:
 
 _MCP_LOGGING_CALLBACK_SUPPORTED = _check_logging_callback_support()
 
+# ---------------------------------------------------------------------------
+# SDK patch: fix _receive_loop stream ownership bug
+# ---------------------------------------------------------------------------
+# Upstream bug: BaseSession._receive_loop uses `async with (read_stream,
+# write_stream)`, which closes write_stream when the loop exits. But
+# _receive_loop does NOT own write_stream — it only reads from read_stream.
+# When the subprocess stdout goes EOF (idle pipe timeout), read_stream ends,
+# _receive_loop exits, and write_stream gets closed. The keepalive timer
+# then tries send_ping() on the now-closed write_stream, raising
+# ClosedResourceError and triggering a reconnect cascade every ~3 minutes.
+#
+# Fix: replace `async with (read_stream, write_stream)` with
+# `async with read_stream` only. This ensures _receive_loop only closes
+# the stream it owns (read_stream), leaving write_stream open for the
+# keepalive probe and other callers.
+#
+# The finally block (sending CONNECTION_CLOSED to pending response streams)
+# is preserved as-is — it doesn't use write_stream for closing.
+# ---------------------------------------------------------------------------
+
+if _MCP_AVAILABLE:
+    try:
+        from mcp.shared.session import BaseSession as _BaseSession
+        from anyio.streams.memory import MemoryObjectSendStream as _MemoryObjectSendStream
+
+        class _NonClosingStreamWrapper:
+            """Prevents an async context manager from being closed on exit.
+
+            Wraps a stream so that ``async with wrapped:`` is a no-op — the
+            real stream stays open even after the context manager exits.
+            Used to stop ``_receive_loop`` from closing ``write_stream`` when
+            it exits ``async with (read_stream, write_stream)``.
+            """
+
+            def __init__(self, stream):
+                self._stream = stream
+
+            def __getattr__(self, name):
+                return getattr(self._stream, name)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def send(self, item):
+                """Delegate send() to the underlying stream."""
+                return await self._stream.send(item)
+
+        _original_receive_loop = _BaseSession._receive_loop
+
+        async def _patched_receive_loop(self) -> None:
+            """Patched _receive_loop that does NOT close write_stream on exit.
+
+            The original code uses ``async with (self._read_stream,
+            self._write_stream)`` which closes BOTH streams when the loop
+            exits. This patch wraps write_stream so that the async-with
+            block cannot close it, because _receive_loop does not own
+            write_stream — the caller (stdio_client) does.
+
+            When the subprocess stdout goes EOF, read_stream ends,
+            _receive_loop exits, and the original code would close
+            write_stream too. This causes ClosedResourceError on the next
+            send_ping() (keepalive), triggering a reconnect cascade.
+            With this patch, write_stream stays open and the keepalive
+            can detect the failure gracefully without cascading.
+
+            NOTE: We do NOT restore the original write_stream after
+            _receive_loop exits. The keepalive timer may still probe the
+            session between _receive_loop exit and session teardown, and
+            restoring the unwrapped stream would expose it to the same
+            ClosedResourceError we're trying to prevent.
+            """
+            if isinstance(self._write_stream, _NonClosingStreamWrapper):
+                # Already wrapped (e.g., re-entry during reconnect). Skip.
+                await _original_receive_loop(self)
+                return
+
+            original_write_stream = self._write_stream
+            self._write_stream = _NonClosingStreamWrapper(original_write_stream)
+            await _original_receive_loop(self)
+            # Intentionally NOT restoring original_write_stream here.
+            # The keepalive timer can fire between _receive_loop exit and
+            # session teardown; restoring the unwrapped stream would let
+            # the original async-with __aexit__ close it.
+
+        _BaseSession._receive_loop = _patched_receive_loop
+        logger.info("MCP SDK patch applied: _receive_loop will not close write_stream on exit")
+
+    except ImportError as e:
+        logger.debug(f"MCP SDK patch not applied (import error): {e}")
+
+
 # MCP logging levels (RFC 5424 syslog severities) -> Python logging levels.
 # Port of anomalyco/opencode#34529's serverLog mapping.
 _MCP_LOG_LEVEL_MAP = {
@@ -1827,10 +1921,13 @@ class MCPServerTask:
                     try:
                         await self._keepalive_probe()
                     except Exception as exc:
+                        import traceback
+                        tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
-                            "triggering reconnect: %s",
-                            self.name, exc,
+                            "triggering reconnect: %s [type=%s]\n%s",
+                            self.name, exc, type(exc).__name__,
+                            "".join(tb),
                         )
                         self._reconnect_event.set()
                         break

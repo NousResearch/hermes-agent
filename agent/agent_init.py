@@ -1627,6 +1627,58 @@ def init_agent(
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
+    # Validate model temperature override from config
+    if isinstance(_model_cfg, dict):
+        _config_temperature = _model_cfg.get("temperature")
+    else:
+        _config_temperature = None
+    if _config_temperature is not None:
+        try:
+            if isinstance(_config_temperature, bool):
+                raise ValueError
+            _parsed_temperature = float(_config_temperature)
+            if _parsed_temperature < 0 or _parsed_temperature > 2:
+                raise ValueError
+        except (TypeError, ValueError):
+            _ra().logger.warning(
+                "Invalid model.temperature in config.yaml: %r — "
+                "must be a number between 0.0 and 2.0. "
+                "Falling back to provider default.",
+                _config_temperature,
+            )
+            print(
+                f"\n⚠ Invalid model.temperature in config.yaml: {_config_temperature!r}\n"
+                f"  Must be a number between 0.0 and 2.0.\n"
+                f"  Falling back to provider default.\n",
+                file=sys.stderr,
+            )
+
+    # Validate model top_p override from config
+    if isinstance(_model_cfg, dict):
+        _config_top_p = _model_cfg.get("top_p")
+    else:
+        _config_top_p = None
+    if _config_top_p is not None:
+        try:
+            if isinstance(_config_top_p, bool):
+                raise ValueError
+            _parsed_top_p = float(_config_top_p)
+            if _parsed_top_p < 0 or _parsed_top_p > 1:
+                raise ValueError
+        except (TypeError, ValueError):
+            _ra().logger.warning(
+                "Invalid model.top_p in config.yaml: %r — "
+                "must be a number between 0.0 and 1.0. "
+                "Falling back to provider default.",
+                _config_top_p,
+            )
+            print(
+                f"\n⚠ Invalid model.top_p in config.yaml: {_config_top_p!r}\n"
+                f"  Must be a number between 0.0 and 1.0.\n"
+                f"  Falling back to provider default.\n",
+                file=sys.stderr,
+            )
+
     # Read explicit context_length override from model config
     if isinstance(_model_cfg, dict):
         _config_context_length = _model_cfg.get("context_length")

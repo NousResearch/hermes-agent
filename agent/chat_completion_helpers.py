@@ -1896,6 +1896,31 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         return result["response"]
 
     result = {"response": None, "error": None, "partial_tool_names": []}
+
+    # ── Cross-turn stream-stale circuit breaker (#58962) ───────────────
+    # A session wedged against an unresponsive provider hits the stale-stream
+    # detector on every turn and loops forever (observed: 494 consecutive
+    # failures over 3+ days, every turn burning the full 180s×retries with
+    # no response).  After N consecutive turns end in a stale-stream kill,
+    # stop spending 180s×retries each turn and surface a clear, actionable
+    # error instead.  The streak resets only when a stream actually
+    # completes (see the success return below), so a recoverable provider
+    # resumes normally while a permanently-broken session stops silently
+    # consuming the gateway.
+    _stale_giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
+    _stale_streak = 0
+    try:
+        _stale_streak = int(getattr(agent, "_consecutive_stale_streams", 0) or 0)
+    except Exception:
+        pass
+    if _stale_giveup > 0 and _stale_streak >= _stale_giveup:
+        raise RuntimeError(
+            "Provider has been unresponsive (no stream chunks received) for "
+            f"{_stale_streak} consecutive turns — aborting this turn to avoid "
+            "an indefinite stall. Switch models or start a new session, then "
+            "retry."
+        )
+
     request_client_holder = {"client": None, "diag": None, "owner_tid": None}
     request_client_lock = threading.Lock()
     # Request-local cancellation flag — see interruptible_api_call for the full
@@ -2873,6 +2898,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _close_request_client_once("stale_stream_kill")
             except Exception:
                 pass
+            # Cross-turn circuit breaker (#58962): count consecutive
+            # stale-stream kills so a wedged session eventually stops
+            # re-attempting every turn.  Reset only on a successful stream
+            # (see the success return).  Wrapped so a weird agent object
+            # can never break the stale detector.
+            try:
+                agent._consecutive_stale_streams = (
+                    int(getattr(agent, "_consecutive_stale_streams", 0) or 0) + 1
+                )
+            except Exception:
+                pass
             # Rebuild the primary client too — its connection pool
             # may hold dead sockets from the same provider outage.
             if agent.api_mode == "anthropic_messages":
@@ -3004,6 +3040,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _stub._content_filter_terminated = True
             return _stub
         raise result["error"]
+    # Success — clear the cross-turn stream-stale circuit breaker (#58962).
+    # Only a stream that actually completed resets the streak, so a wedged
+    # session keeps short-circuiting (clear error each turn) until a real
+    # response arrives, then resumes normally.
+    try:
+        if result["response"] is not None:
+            agent._consecutive_stale_streams = 0
+    except Exception:
+        pass
     return result["response"]
 
 # ── Provider fallback ──────────────────────────────────────────────────

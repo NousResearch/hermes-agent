@@ -8201,6 +8201,47 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         db.close()
 
 
+class SessionRewind(BaseModel):
+    # Rewind point: a message id from GET /api/sessions/{id}/messages. Must be a
+    # 'user' message; it and every later message are soft-deleted (active=0).
+    target_message_id: int
+    # Mutate a session belonging to another profile (opens its state.db). Omit
+    # for the current/default profile.
+    profile: Optional[str] = None
+
+
+@app.post("/api/sessions/{session_id}/rewind")
+async def rewind_session_endpoint(session_id: str, body: SessionRewind):
+    """Rewind a session to an earlier user message, clearing later context.
+
+    Soft-deletes the target user message and every message after it (active=0,
+    kept on disk for audit, hidden from get_messages/search) so subsequent chat
+    turns no longer see the rewound messages. Wraps SessionDB.rewind_to_message
+    — the same mechanic behind the gateway /undo and /rewind commands (#21910) —
+    exposing it over HTTP for API clients (e.g. the desktop chat's "clear
+    context from here" affordance), which previously had no way to reach it.
+
+    Returns ``rewound_count`` (rows newly deactivated), ``target_message`` (the
+    rewind point, content decoded so the client can pre-fill the composer), and
+    ``new_head_id`` (last still-active message id, or null).
+    """
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        # Rewind the same resolved session id that GET /messages returns target
+        # ids from, so a target picked off that transcript resolves correctly.
+        sid = db.resolve_resume_session_id(sid)
+        try:
+            result = db.rewind_to_message(sid, body.target_message_id)
+        except ValueError as e:  # unknown id, or target isn't a 'user' message
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, **result}
+    finally:
+        db.close()
+
+
 @app.get("/api/sessions/{session_id}/export")
 async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
     """Export a single session (metadata + messages) as JSON."""

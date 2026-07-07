@@ -103,6 +103,49 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+_AUTH_STORE_PROVIDER_TYPES = {
+    "oauth_device_code",
+    "oauth_external",
+    "oauth_minimax",
+    "external_process",
+}
+
+
+def _has_provider_auth_config() -> bool:
+    """Return True when the local auth store has a logged-in model provider.
+
+    Doctor should not require a raw API key in ``.env`` when the user is using
+    Hermes-supported OAuth/device-code authentication instead. Limit probes to
+    auth-store backed providers so doctor does not accidentally trigger slower
+    API-key or SDK credential chains such as AWS metadata discovery.
+    """
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
+    except Exception:
+        return False
+
+    for provider_id, provider_config in PROVIDER_REGISTRY.items():
+        if getattr(provider_config, "auth_type", "") not in _AUTH_STORE_PROVIDER_TYPES:
+            continue
+        try:
+            if (get_auth_status(provider_id) or {}).get("logged_in"):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _doctor_enabled_toolsets_for_platform(platform: str = "cli") -> set[str] | None:
+    """Return toolsets enabled for ``platform`` or None if config cannot load."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        return set(_get_platform_tools(load_config(), platform))
+    except Exception:
+        return None
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -700,34 +743,37 @@ def run_doctor(args):
         # defaults to the system locale — which crashes on non-UTF-8 Windows
         # locales (e.g. GBK) as soon as the file contains any non-ASCII byte.
         content = env_path.read_text(encoding="utf-8")
-        if _has_provider_env_config(content):
-            check_ok("API key or custom endpoint configured")
+        if _has_provider_env_config(content) or _has_provider_auth_config():
+            check_ok("API key, custom endpoint, or auth-store provider configured")
         else:
-            check_warn(f"No API key found in {_DHH}/.env")
-            issues.append("Run 'hermes setup' to configure API keys")
+            check_warn(f"No API key or auth-store provider found in {_DHH}/.env")
+            issues.append("Run 'hermes setup' to configure API keys or OAuth auth")
     else:
-        # Also check project root as fallback
-        fallback_env = PROJECT_ROOT / '.env'
-        if fallback_env.exists():
-            check_ok(".env file exists (in project directory)")
+        if _has_provider_auth_config():
+            check_ok("Auth-store provider configured (.env file not required)")
         else:
-            check_fail(f"{_DHH}/.env file missing")
-            if should_fix:
-                env_path.parent.mkdir(parents=True, exist_ok=True)
-                env_path.touch()
-                # .env holds API keys — restrict to owner-only access from
-                # creation. touch() obeys umask which is commonly 0o022,
-                # leaving the file world-readable; tighten explicitly.
-                try:
-                    os.chmod(str(env_path), 0o600)
-                except OSError:
-                    pass
-                check_ok(f"Created empty {_DHH}/.env")
-                check_info("Run 'hermes setup' to configure API keys")
-                fixed_count += 1
+            # Also check project root as fallback
+            fallback_env = PROJECT_ROOT / '.env'
+            if fallback_env.exists():
+                check_ok(".env file exists (in project directory)")
             else:
-                check_info("Run 'hermes setup' to create one")
-                issues.append("Run 'hermes setup' to create .env")
+                check_fail(f"{_DHH}/.env file missing")
+                if should_fix:
+                    env_path.parent.mkdir(parents=True, exist_ok=True)
+                    env_path.touch()
+                    # .env holds API keys — restrict to owner-only access from
+                    # creation. touch() obeys umask which is commonly 0o022,
+                    # leaving the file world-readable; tighten explicitly.
+                    try:
+                        os.chmod(str(env_path), 0o600)
+                    except OSError:
+                        pass
+                    check_ok(f"Created empty {_DHH}/.env")
+                    check_info("Run 'hermes setup' to configure API keys")
+                    fixed_count += 1
+                else:
+                    check_info("Run 'hermes setup' to create one")
+                    issues.append("Run 'hermes setup' to create .env")
     
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'
@@ -2174,6 +2220,11 @@ def run_doctor(args):
         
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
+
+        enabled_toolsets = _doctor_enabled_toolsets_for_platform("cli")
+        if enabled_toolsets is not None:
+            available = [tid for tid in available if tid in enabled_toolsets]
+            unavailable = [item for item in unavailable if item.get("name") in enabled_toolsets]
         
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})

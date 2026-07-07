@@ -411,6 +411,44 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_delegation_override_model_label_used_for_progress_events(self):
+        parent = _make_mock_parent(depth=0)
+        parent.model = "gpt-5.5"
+        parent.provider = "openai-codex"
+        parent.base_url = "https://chatgpt.com/backend-api/codex"
+        parent.api_mode = "codex_responses"
+        parent.tool_progress_callback = MagicMock()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use fallback route",
+                context=None,
+                toolsets=None,
+                model="high-output-child-model",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="anthropic",
+                override_base_url="https://api.anthropic.com",
+                override_api_key="test-key",
+                override_api_mode="anthropic_messages",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "high-output-child-model")
+        self.assertEqual(kwargs["provider"], "anthropic")
+        self.assertEqual(kwargs["api_mode"], "anthropic_messages")
+        # The subagent UI/result metadata must not keep showing the parent's
+        # Codex model after delegation.provider routes the child elsewhere.
+        progress_cb = kwargs["tool_progress_callback"]
+        progress_cb("subagent.start", preview="Use fallback route")
+        progress_kwargs = parent.tool_progress_callback.call_args.kwargs
+        self.assertEqual(progress_kwargs["model"], "high-output-child-model")
+
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
         sink = MagicMock()

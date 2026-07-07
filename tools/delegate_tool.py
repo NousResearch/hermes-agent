@@ -1156,7 +1156,12 @@ def _build_child_agent(
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
     # Resolve the child's effective model early so it can ride on every event.
-    effective_model_for_cb = model or getattr(parent_agent, "model", None)
+    # If delegation.provider is configured, the child may intentionally route to
+    # a different model than the parent.  Use the delegation model label for UI
+    # events/results instead of misleadingly reporting the parent's model.
+    effective_model_for_cb = model or (
+        str(delegation_cfg.get("model") or "").strip() if override_provider else ""
+    ) or getattr(parent_agent, "model", None)
 
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the

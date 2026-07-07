@@ -119,6 +119,11 @@ docs/superpowers/*
 # treat it as a local edit and autostash it on every run (#38529).
 .hermes-bootstrap-complete
 
+# Install-method stamp written into the managed checkout root by the installer.
+# It is local runtime state that lets Hermes distinguish git/docker/pip installs;
+# never commit the operator-specific stamp value.
+.install_method
+
 # Interrupted-update breadcrumb + recovery lock written next to the shared venv
 # by `hermes update` / launch-time self-heal. Runtime state, never a code change
 # — ignore so `git status` stays clean and update's autostash skips them.

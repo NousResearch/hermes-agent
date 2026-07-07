@@ -739,7 +739,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
         doctor_mod.run_doctor(Namespace(fix=False))
     out = buf.getvalue()
 
-    assert "API key or custom endpoint configured" in out
+    assert "API key, custom endpoint, or auth-store provider configured" in out
     assert "Kimi / Moonshot (China)" in out
     assert "str expected, not NoneType" not in out
     assert any(url == "https://api.moonshot.cn/v1/models" for url, _, _ in calls)
@@ -1474,3 +1474,134 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     assert "build-time tooling" in out
     assert "known npm bug" in out
     assert "lockfile bump" in out
+
+
+def test_provider_auth_config_accepts_logged_in_auth_provider(monkeypatch):
+    """OAuth/device-code auth should satisfy doctor without raw .env keys."""
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod,
+        "PROVIDER_REGISTRY",
+        {
+            "nous": SimpleNamespace(auth_type="oauth_device_code"),
+            "qwen-oauth": SimpleNamespace(auth_type="oauth_external"),
+        },
+    )
+
+    def fake_status(provider_id):
+        return {"logged_in": provider_id == "qwen-oauth"}
+
+    monkeypatch.setattr(auth_mod, "get_auth_status", fake_status)
+
+    assert doctor._has_provider_auth_config() is True
+
+
+def test_provider_auth_config_ignores_provider_status_errors(monkeypatch):
+    """One broken provider status probe must not fail the whole doctor run."""
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod,
+        "PROVIDER_REGISTRY",
+        {
+            "broken": SimpleNamespace(auth_type="oauth_external"),
+            "logged-in": SimpleNamespace(auth_type="oauth_device_code"),
+        },
+    )
+
+    def fake_status(provider_id):
+        if provider_id == "broken":
+            raise RuntimeError("status probe failed")
+        return {"logged_in": provider_id == "logged-in"}
+
+    monkeypatch.setattr(auth_mod, "get_auth_status", fake_status)
+
+    assert doctor._has_provider_auth_config() is True
+
+
+def test_provider_auth_config_skips_api_key_and_aws_sdk_providers(monkeypatch):
+    """Doctor auth-store checks must not trigger API-key/AWS credential chains."""
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod,
+        "PROVIDER_REGISTRY",
+        {
+            "bedrock": SimpleNamespace(auth_type="aws_sdk"),
+            "openai-api": SimpleNamespace(auth_type="api_key"),
+            "qwen-oauth": SimpleNamespace(auth_type="oauth_external"),
+        },
+    )
+    called = []
+
+    def fake_status(provider_id):
+        called.append(provider_id)
+        return {"logged_in": provider_id == "qwen-oauth"}
+
+    monkeypatch.setattr(auth_mod, "get_auth_status", fake_status)
+
+    assert doctor._has_provider_auth_config() is True
+    assert called == ["qwen-oauth"]
+
+
+def test_run_doctor_accepts_auth_store_provider_without_env_file(monkeypatch, tmp_path):
+    """A logged-in auth-store provider should not require creating ~/.hermes/.env."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(doctor_mod, "_has_provider_auth_config", lambda: True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "Auth-store provider configured (.env file not required)" in out
+    assert f"{home}/.env file missing" not in out
+
+
+def test_doctor_enabled_toolsets_for_platform_uses_configured_platform_tools(monkeypatch):
+    """Tool availability warnings should be limited to the enabled platform toolsets."""
+    from hermes_cli import config as config_mod
+    from hermes_cli import tools_config
+
+    sentinel_config = {"tools": {"platforms": {"cli": ["terminal", "file"]}}}
+    monkeypatch.setattr(config_mod, "load_config", lambda: sentinel_config)
+
+    seen = {}
+
+    def fake_get_platform_tools(config, platform):
+        seen["config"] = config
+        seen["platform"] = platform
+        return ["terminal", "file"]
+
+    monkeypatch.setattr(tools_config, "_get_platform_tools", fake_get_platform_tools)
+
+    assert doctor._doctor_enabled_toolsets_for_platform("cli") == {"terminal", "file"}
+    assert seen == {"config": sentinel_config, "platform": "cli"}
+
+
+def test_doctor_enabled_toolsets_returns_none_when_config_unavailable(monkeypatch):
+    """Doctor should warn broadly rather than crash if tool config cannot load."""
+
+    def raise_load_config():
+        raise RuntimeError("boom")
+
+    from hermes_cli import config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", raise_load_config)
+
+    assert doctor._doctor_enabled_toolsets_for_platform("cli") is None

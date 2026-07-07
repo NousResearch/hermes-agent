@@ -2112,8 +2112,8 @@ def _summarize_child_run(
         _files_read = []
     try:
         _files_written_map = file_state.writes_since(
-            "", wall_start, []
-        )  # all writes since wall_start
+            "", wall_start, _files_read
+        )  # writes to files the subagent read during this run
     except Exception:
         _files_written_map = {}
     _files_written = sorted(

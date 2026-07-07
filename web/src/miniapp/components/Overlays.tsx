@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { ConfirmSpec } from "../context";
-import { haptic, hideMainButton, showMainButton } from "../telegram";
+import { haptic, hideMainButton, isInsideTelegram, showMainButton } from "../telegram";
 
 const PALETTES: Array<{ key: string; label: string; bg: string; mid: string; accent: string }> = [
   { key: "solarpunk", label: "Solarpunk", bg: "#f0edda", mid: "#2f5238", accent: "#a97f14" },
@@ -203,26 +203,31 @@ export function ConfirmSheet({ confirm, onClose }: { confirm: ConfirmSpec; onClo
       >
         Cancel
       </button>
-      {/* Fallback for outside-Telegram preview: Telegram's real MainButton
-          (wired above via showMainButton) is the actual control on-device. */}
-      <button
-        onClick={doConfirm}
-        style={{
-          display: "block",
-          width: "calc(100% + 32px)",
-          margin: "12px -16px 0",
-          padding: "15px 0 calc(27px + var(--sab))",
-          border: "none",
-          background: confirm.destructive ? "var(--destr)" : "var(--accent)",
-          color: confirm.destructive ? "#fff" : "var(--on-accent)",
-          fontSize: 15,
-          fontWeight: 650,
-          cursor: "pointer",
-          letterSpacing: "0.01em",
-        }}
-      >
-        {confirm.label}
-      </button>
+      {/* Fallback for outside-Telegram preview only: Telegram's real
+          MainButton (wired above via showMainButton) is the actual control
+          on-device, docked below this sheet. Rendering this unconditionally
+          used to duplicate it -- on-device the user saw both the native
+          MainButton AND this button stacked underneath the sheet. */}
+      {!isInsideTelegram() && (
+        <button
+          onClick={doConfirm}
+          style={{
+            display: "block",
+            width: "calc(100% + 32px)",
+            margin: "12px -16px 0",
+            padding: "15px 0 calc(27px + var(--sab))",
+            border: "none",
+            background: confirm.destructive ? "var(--destr)" : "var(--accent)",
+            color: confirm.destructive ? "#fff" : "var(--on-accent)",
+            fontSize: 15,
+            fontWeight: 650,
+            cursor: "pointer",
+            letterSpacing: "0.01em",
+          }}
+        >
+          {confirm.label}
+        </button>
+      )}
     </div>
   );
 }

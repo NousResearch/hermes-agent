@@ -331,6 +331,74 @@ def test_agent_task_rejects_non_string_provider_and_model_fields():
             WorkflowSpec.model_validate(raw)
 
 
+def test_agent_task_accepts_legacy_provider_and_model_override_aliases() -> None:
+    spec = WorkflowSpec.model_validate(
+        {
+            "id": "legacy_routing_demo",
+            "name": "Legacy Routing Demo",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "type": "agent_task",
+                    "profile": "reviewer",
+                    "provider_override": "xiaomi-token-plan",
+                    "model_override": "mimo-vl-7b",
+                    "prompt": "Review and return JSON.",
+                    "result_contract": {"ok": "boolean"},
+                }
+            },
+            "edges": [],
+        }
+    )
+
+    node = spec.nodes["review"]
+    assert node.provider_override == "xiaomi-token-plan"
+    assert node.model_override == "mimo-vl-7b"
+    dumped = spec.model_dump(mode="json", by_alias=True)
+    assert dumped["nodes"]["review"]["provider"] == "xiaomi-token-plan"
+    assert dumped["nodes"]["review"]["model"] == "mimo-vl-7b"
+    assert "provider_override" not in dumped["nodes"]["review"]
+    assert "model_override" not in dumped["nodes"]["review"]
+
+
+def test_agent_task_rejects_conflicting_routing_aliases():
+    with pytest.raises(ValidationError, match="provider and provider_override must match"):
+        WorkflowSpec.model_validate(
+            {
+                "id": "bad_routing_demo",
+                "name": "Bad Routing Demo",
+                "version": 1,
+                "nodes": {
+                    "review": {
+                        "type": "agent_task",
+                        "profile": "reviewer",
+                        "provider": "openai-codex",
+                        "provider_override": "minimax",
+                        "prompt": "Review.",
+                    }
+                },
+            }
+        )
+
+    with pytest.raises(ValidationError, match="model and model_override must match"):
+        WorkflowSpec.model_validate(
+            {
+                "id": "bad_model_routing_demo",
+                "name": "Bad Model Routing Demo",
+                "version": 1,
+                "nodes": {
+                    "review": {
+                        "type": "agent_task",
+                        "profile": "reviewer",
+                        "model": "gpt-5.5",
+                        "model_override": "minimax-m3",
+                        "prompt": "Review.",
+                    }
+                },
+            }
+        )
+
+
 def test_edge_from_alias_and_field_name_both_populate_from_():
     by_alias = EdgeSpec.model_validate({"from": "start", "to": "done"})
     by_name = EdgeSpec.model_validate({"from_": "start", "to": "done"})

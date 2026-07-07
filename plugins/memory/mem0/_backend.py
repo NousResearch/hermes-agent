@@ -14,10 +14,6 @@ class Mem0Backend(ABC):
         ...
 
     @abstractmethod
-    def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
-        ...
-
-    @abstractmethod
     def add(
         self,
         messages: list,
@@ -61,12 +57,6 @@ class PlatformBackend(Mem0Backend):
         response = self._client.search(query, filters=filters, top_k=top_k, rerank=rerank)
         return _unwrap_results(response)
 
-    def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
-        response = self._client.get_all(filters=filters, page=page, page_size=page_size)
-        results = response.get("results", []) if isinstance(response, dict) else response
-        count = response.get("count", len(results)) if isinstance(response, dict) else len(results)
-        return {"results": results, "count": count}
-
     def add(
         self,
         messages: list,
@@ -101,16 +91,20 @@ class SelfHostedBackend(Mem0Backend):
     ``/search`` routes.
     """
 
-    _MAX_TOP_K = 10000
-
-    def __init__(self, api_key: str, host: str):
+    def __init__(self, api_key: str, host: str, transport=None):
         import httpx
 
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["X-API-Key"] = api_key  # omitted only for AUTH_DISABLED servers
+        # Connect-level retries smooth over transient blips so a single
+        # dropped SYN doesn't count toward the provider failure breaker.
+        # ``transport`` is injectable for tests (httpx.MockTransport).
+        if transport is None:
+            transport = httpx.HTTPTransport(retries=2)
         self._client = httpx.Client(
             base_url=host.rstrip("/"), headers=headers, timeout=30.0,
+            transport=transport,
         )
 
     def _json(self, method: str, path: str, **kwargs) -> Any:
@@ -124,14 +118,6 @@ class SelfHostedBackend(Mem0Backend):
         if filters:
             body["filters"] = filters  # user_id belongs in filters (top-level is deprecated)
         return _unwrap_results(self._json("POST", "/search", json=body))
-
-    def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
-        params: dict[str, Any] = {k: v for k, v in (filters or {}).items() if v}
-        params["top_k"] = self._MAX_TOP_K
-        all_results = _unwrap_results(self._json("GET", "/memories", params=params))
-        total = len(all_results)
-        start = (page - 1) * page_size
-        return {"results": all_results[start : start + page_size], "count": total}
 
     def add(
         self,
@@ -269,14 +255,6 @@ class OSSBackend(Mem0Backend):
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         response = self._memory.search(query, filters=filters, top_k=top_k)
         return _unwrap_results(response)
-
-    def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
-        response = self._memory.get_all(filters=filters)
-        all_results = _unwrap_results(response)
-        total = len(all_results)
-        start = (page - 1) * page_size
-        results = all_results[start : start + page_size]
-        return {"results": results, "count": total}
 
     def add(
         self,

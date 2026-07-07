@@ -3788,6 +3788,15 @@ def validate_requested_model(
             "message": "Model name cannot be empty.",
         }
 
+    # MoA is a virtual provider, not a remote model. Skip API probing.
+    if requested.lower() == "moa":
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        }
+
     if normalized == "moa":
         try:
             from hermes_cli.config import load_config

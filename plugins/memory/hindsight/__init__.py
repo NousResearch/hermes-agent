@@ -87,6 +87,92 @@ def _parse_int_setting(value: Any, default: int) -> int:
         return default
 
 
+def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    score = float(value)
+    if score != score or score in (float("inf"), float("-inf")):
+        return None
+    return score
+
+
+def _parse_recall_min_score(value: Any) -> float | None:
+    """Parse optional recall score floor.
+
+    Blank/unset disables the floor. Invalid, non-finite, or negative values also
+    disable it fail-open so a bad config never silently hides memories.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        logger.warning("Invalid Hindsight recall_min_score %r; disabling score floor", value)
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid Hindsight recall_min_score %r; disabling score floor", value)
+        return None
+    if score != score or score in (float("inf"), float("-inf")) or score < 0:
+        logger.warning("Invalid Hindsight recall_min_score %r; disabling score floor", value)
+        return None
+    return score
+
+
+def _filter_results_by_trace_score(resp: Any, floor: float | None) -> list[Any]:
+    """Filter recall results by trace rerank score when complete signal exists.
+
+    The filter is fail-open. If trace is missing/malformed, a result has no id,
+    or any returned result lacks a numeric finite rerank score, all original
+    results are preserved. The opt-in floor must never infer relevance from
+    result count or partial trace data.
+    """
+    results = list(getattr(resp, "results", None) or [])
+    if floor is None or not results:
+        return results
+
+    def _fail_open(reason: str) -> list[Any]:
+        logger.warning(
+            "Hindsight recall_min_score fail-open (%s); preserving %d result(s)",
+            reason,
+            len(results),
+        )
+        return results
+
+    trace = getattr(resp, "trace", None)
+    if not isinstance(trace, dict):
+        return _fail_open("missing trace")
+    reranked = trace.get("reranked")
+    if not isinstance(reranked, list):
+        return _fail_open("missing reranked scores")
+
+    scores_by_id: dict[str, float] = {}
+    for item in reranked:
+        if not isinstance(item, dict):
+            return _fail_open("malformed reranked item")
+        node_id = item.get("node_id")
+        if node_id is None:
+            return _fail_open("missing node id")
+        score = _finite_float(item.get("rerank_score"))
+        if score is None:
+            return _fail_open("missing numeric score")
+        scores_by_id[str(node_id)] = score
+
+    for result in results:
+        result_id = getattr(result, "id", None)
+        if result_id is None:
+            return _fail_open("result missing id")
+        if str(result_id) not in scores_by_id:
+            return _fail_open("result missing score")
+
+    filtered = [result for result in results if scores_by_id[str(getattr(result, "id"))] >= floor]
+    logger.debug(
+        "Hindsight recall_min_score filtered %d -> %d result(s)",
+        len(results),
+        len(filtered),
+    )
+    return filtered
+
+
 # Env var the embedded daemon manager reads (at import time, as a module-level
 # constant) to size the grace window it waits for a slow /health before
 # declaring a daemon stale and killing it. Default upstream is 30s; on
@@ -986,6 +1072,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
             {"key": "bank_retain_mission", "description": "Custom extraction prompt for memory retention"},
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
+            {"key": "recall_min_score", "description": "Optional relevance floor for recall results. Blank/unset preserves current behavior. When set, Hermes requests Hindsight trace scores in-process and fail-opens if complete scores are unavailable.", "default": ""},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
@@ -1338,6 +1425,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
         self._recall_max_tokens = int(self._config.get("recall_max_tokens", 4096))
+        self._recall_min_score = _parse_recall_min_score(self._config.get("recall_min_score"))
         # Default narrows recall to observation-only; pass an explicit
         # `recall_types` list in config.json to broaden (e.g. include
         # "world" / "experience") or to disable the filter entirely.
@@ -1481,6 +1569,28 @@ class HindsightMemoryProvider(MemoryProvider):
         )
         return f"{header}\n\n{result}"
 
+    def _recall_with_optional_trace(self, recall_kwargs: dict) -> Any:
+        """Run recall, requesting trace only when a score floor is configured.
+
+        If trace-enabled recall is unsupported or otherwise fails, retry without
+        trace and return the unfiltered response. That preserves fail-open
+        semantics: enabling an optional score floor must not make recall fail
+        merely because a backend cannot provide the score signal.
+        """
+        if self._recall_min_score is None:
+            return self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+
+        trace_kwargs = dict(recall_kwargs)
+        trace_kwargs["trace"] = True
+        try:
+            return self._run_hindsight_operation(lambda client: client.arecall(**trace_kwargs))
+        except Exception:
+            logger.warning(
+                "Hindsight recall_min_score trace recall failed; retrying without trace fail-open",
+                exc_info=True,
+            )
+            return self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if self._memory_mode == "tools":
             logger.debug("Prefetch: skipped (tools-only mode)")
@@ -1513,10 +1623,11 @@ class HindsightMemoryProvider(MemoryProvider):
                         recall_kwargs["types"] = self._recall_types
                     logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
                                  self._bank_id, len(query), self._budget)
-                    resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                    num_results = len(resp.results) if resp.results else 0
+                    resp = self._recall_with_optional_trace(recall_kwargs)
+                    results = _filter_results_by_trace_score(resp, self._recall_min_score)
+                    num_results = len(results)
                     logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    text = "\n".join(f"- {r.text}" for r in results if r.text)
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1742,12 +1853,13 @@ class HindsightMemoryProvider(MemoryProvider):
                     recall_kwargs["types"] = self._recall_types
                 logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
                              self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                num_results = len(resp.results) if resp.results else 0
+                resp = self._recall_with_optional_trace(recall_kwargs)
+                results = _filter_results_by_trace_score(resp, self._recall_min_score)
+                num_results = len(results)
                 logger.debug("Tool hindsight_recall: %d results", num_results)
-                if not resp.results:
+                if not results:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
+                lines = [f"{i}. {r.text}" for i, r in enumerate(results, 1)]
                 return json.dumps({"result": "\n".join(lines)})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)

@@ -631,16 +631,17 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     import httpx
 
     normalized = _normalize_base_url(base_url)
+
+    # Resolve localhost to IPv4 to avoid 2s IPv6 timeout on Windows dual-stack.
+    normalized = normalized.replace("://localhost:", "://127.0.0.1:")
+    normalized = normalized.replace("://localhost/", "://127.0.0.1/")
+    if normalized.endswith("://localhost"):
+        normalized = normalized[:-len("localhost")] + "127.0.0.1"
+
     server_url = normalized
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
-    lmstudio_url = _lmstudio_server_root(base_url)
-
-    # Resolve localhost to IPv4 to avoid 2s IPv6 timeout on Windows dual-stack.
-    server_url = server_url.replace("://localhost:", "://127.0.0.1:")
-    server_url = server_url.replace("://localhost/", "://127.0.0.1/")
-    if server_url.endswith("://localhost"):
-        server_url = server_url[:-len("localhost")] + "127.0.0.1"
+    lmstudio_url = _lmstudio_server_root(normalized)
 
     headers = _auth_headers(api_key)
 

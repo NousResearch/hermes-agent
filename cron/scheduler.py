@@ -2424,7 +2424,82 @@ def run_job(
     #   - wakeAgent=false gate    → treated like empty stdout (silent), since
     #                               the whole point of no_agent is that there
     #                               is no agent to wake
-    if job.get("no_agent"):
+    # ---------------------------------------------------------------
+    # Conditional agent mode — script gates LLM invocation.
+    # ---------------------------------------------------------------
+    # no_agent="conditional": script runs first. Empty stdout → silent
+    # (like no_agent=True). Non-empty → fall through to LLM path with
+    # script output as context (like default mode). Zero token cost
+    # when healthy, LLM sanity-check when not. See issue #60256.
+    _no_agent_val = job.get("no_agent")
+    _is_conditional = (
+        isinstance(_no_agent_val, str) and _no_agent_val.lower() == "conditional"
+    )
+    prerun_script: Optional[tuple] = None
+
+    if _is_conditional:
+        script_path = job.get("script")
+        if not script_path:
+            err = 'no_agent="conditional" but no script is set for this job'
+            logger.error("Job '%s': %s", job_id, err)
+            return False, "", "", err
+
+        _job_workdir = (job.get("workdir") or "").strip() or None
+        _prior_cwd = None
+        if _job_workdir and Path(_job_workdir).is_dir():
+            _prior_cwd = os.getcwd()
+            try:
+                os.chdir(_job_workdir)
+            except OSError:
+                _prior_cwd = None
+
+        try:
+            ok, output = _run_job_script(script_path)
+        finally:
+            if _prior_cwd is not None:
+                try:
+                    os.chdir(_prior_cwd)
+                except OSError:
+                    pass
+
+        now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if not ok:
+            alert = (
+                f"⚠ Cron watchdog '{job_name}' script failed\n\n"
+                f"{output}\n\n"
+                f"Time: {now_iso}"
+            )
+            doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {now_iso}\n"
+                f"**Mode:** conditional (script failed)\n\n"
+                f"{output}\n"
+            )
+            return False, doc, alert, output
+
+        if not output.strip():
+            logger.info(
+                "Job '%s' (conditional): empty stdout — silent, no LLM",
+                job_id,
+            )
+            silent_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {now_iso}\n"
+                f"**Mode:** conditional (silent)\n"
+            )
+            return True, silent_doc, SILENT_MARKER, None
+
+        # Non-empty output — fall through to LLM path with script result
+        prerun_script = (ok, output)
+        logger.info(
+            "Job '%s' (conditional): non-empty stdout — waking LLM",
+            job_id,
+        )
+
+    if job.get("no_agent") and not _is_conditional:
         script_path = job.get("script")
         if not script_path:
             err = "no_agent=True but no script is set for this job"
@@ -2530,23 +2605,25 @@ def run_job(
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
     # the whole agent run. We pass the result into _build_job_prompt so
     # the script is only executed once.
-    prerun_script = None
-    script_path = job.get("script")
-    if script_path:
-        prerun_script = _run_job_script(script_path)
-        _ran_ok, _script_output = prerun_script
-        if _ran_ok and not _parse_wake_gate(_script_output):
-            logger.info(
-                "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
-                job_name, job_id,
-            )
-            silent_doc = (
-                f"# Cron Job: {job_name}\n\n"
-                f"**Job ID:** {job_id}\n"
-                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                "Script gate returned `wakeAgent=false` — agent skipped.\n"
-            )
-            return True, silent_doc, SILENT_MARKER, None
+    # Skip for conditional mode — script already ran above.
+    if not _is_conditional:
+        prerun_script = None
+        script_path = job.get("script")
+        if script_path:
+            prerun_script = _run_job_script(script_path)
+            _ran_ok, _script_output = prerun_script
+            if _ran_ok and not _parse_wake_gate(_script_output):
+                logger.info(
+                    "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
+                    job_name, job_id,
+                )
+                silent_doc = (
+                    f"# Cron Job: {job_name}\n\n"
+                    f"**Job ID:** {job_id}\n"
+                    f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    "Script gate returned `wakeAgent=false` — agent skipped.\n"
+                )
+                return True, silent_doc, SILENT_MARKER, None
 
     try:
         prompt = _build_job_prompt(job, prerun_script=prerun_script)

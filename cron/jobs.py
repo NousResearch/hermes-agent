@@ -909,7 +909,7 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
-    no_agent: bool = False,
+    no_agent: Union[bool, str] = False,
     attach_to_session: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """

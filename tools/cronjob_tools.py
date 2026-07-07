@@ -593,7 +593,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if job.get("script"):
         result["script"] = job["script"]
     if job.get("no_agent"):
-        result["no_agent"] = True
+        result["no_agent"] = job["no_agent"]
     if job.get("enabled_toolsets"):
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
@@ -665,7 +665,7 @@ def cronjob(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
-    no_agent: Optional[bool] = None,
+    no_agent: Optional[Union[bool, str]] = None,
     attach_to_session: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
@@ -679,10 +679,16 @@ def cronjob(
             if not schedule:
                 return tool_error("schedule is required for create", success=False)
             canonical_skills = _canonical_skills(skill, skills)
-            _no_agent = bool(no_agent)
+            _no_agent_raw = no_agent
+            _no_agent = bool(no_agent) if not isinstance(no_agent, str) else False
+            _no_agent_conditional = (
+                isinstance(no_agent, str) and no_agent.lower() == "conditional"
+            )
             # Job-shape validation differs by mode:
             #   - no_agent=True → script is the job; prompt/skills are optional
             #     (and irrelevant to execution).
+            #   - no_agent="conditional" → script required, prompt/skills needed
+            #     for the LLM path that runs when script output is non-empty.
             #   - no_agent=False (default) → at least one of prompt/skills must
             #     be set, same as before.
             if _no_agent:
@@ -690,6 +696,19 @@ def cronjob(
                     return tool_error(
                         "create with no_agent=True requires a script — "
                         "the script is the job.",
+                        success=False,
+                    )
+            elif _no_agent_conditional:
+                if not script:
+                    return tool_error(
+                        'create with no_agent="conditional" requires a script — '
+                        'the script gates whether the LLM wakes up.',
+                        success=False,
+                    )
+                if not prompt and not canonical_skills:
+                    return tool_error(
+                        'create with no_agent="conditional" requires either '
+                        'prompt or at least one skill for the LLM path',
                         success=False,
                     )
             elif not prompt and not canonical_skills:
@@ -738,7 +757,7 @@ def cronjob(
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
-                no_agent=_no_agent,
+                no_agent=(_no_agent_raw if _no_agent_conditional else _no_agent),
                 attach_to_session=attach_to_session,
             )
             _notify_provider_jobs_changed_safe()

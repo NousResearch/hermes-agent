@@ -237,9 +237,25 @@ _HERMES_CONFIG_PATH = (
 _INLINE_SCRIPT_INTERPRETER = (
     r'(?:python[23]?(?:\.\d+)?|perl[0-9]*(?:\.\d+)*|ruby(?:[0-9.]+)?|node(?:js)?)'
 )
+# Other standalone short flags that can appear BEFORE the inline-script flag
+# (e.g. `python3 -S -c "..."`, `python3 -I -B -c "..."`). A bare `\s+{flag}`
+# right after the interpreter name misses these, since real interpreter
+# invocations routinely combine several standalone flags rather than only
+# ever placing -c/-e immediately after the interpreter name.
+_OTHER_INLINE_FLAGS = r'(?:-[A-Za-z][A-Za-z0-9]*\s+)*'
+# Trailing boundary widened past whitespace/=/quote to any non-word
+# character (e.g. `-copen(...)`, gluing -c directly to a value that starts
+# with a function call rather than a quote) — the character-class portion
+# above already isolates the -c/-e pivot letter; requiring specifically a
+# quote afterward missed unquoted-but-still-glued forms.
 _INLINE_SCRIPT_FLAG = (
-    r"(?:-[A-Za-z]*[ec][A-Za-z]*(?:\s+|=|(?=['\"]))|--eval(?:\s+|=))"
+    r"(?:-[A-Za-z]*[ec][A-Za-z]*(?:\s+|=|(?=[^A-Za-z0-9_\s]))|--eval(?:\s+|=))"
 )
+# perl/ruby-only subset (no python/node -- they don't share the same -i
+# in-place-edit flag convention) for the two in-place-edit rules below,
+# with the same versioned-binary tolerance as _INLINE_SCRIPT_INTERPRETER.
+_VERSIONED_PERL_RUBY = r"(?:perl[0-9]*(?:\.\d+)*|ruby(?:[0-9.]+)?)"
+
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
@@ -566,8 +582,18 @@ DANGEROUS_PATTERNS = [
     # disabling its own approval gate, so this goes first and gets an
     # unambiguous reason instead of a generic one a reviewer might
     # rubber-stamp without realizing what it touches.
-    (rf'\b{_INLINE_SCRIPT_INTERPRETER}\s+{_INLINE_SCRIPT_FLAG}.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "interpreter script referencing Hermes config/env"),
-    (rf'\b{_INLINE_SCRIPT_INTERPRETER}\s+{_INLINE_SCRIPT_FLAG}', "script execution via -e/-c flag"),
+    # The -i flag can appear as its own token after other flags
+    # (`perl -p -i -e ... config.yaml`), combined (`perl -pi -e`), or with a
+    # backup suffix (`perl -i.bak`). Match any flag token containing `i`
+    # anywhere in the args, not just the first token — `perl -e '...'` (code
+    # eval, no -i) does not trip because it has no `-...i` flag token. This
+    # must come BEFORE the more general interpreter/config rule below —
+    # `perl -i -pe '...' config.yaml` also matches that rule (since -pe
+    # contains a real -e pivot), and a genuine in-place edit deserves its
+    # own specific, existing message rather than the more generic one.
+    (rf'\b{_VERSIONED_PERL_RUBY}\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
+    (rf'\b{_INLINE_SCRIPT_INTERPRETER}\s+{_OTHER_INLINE_FLAGS}{_INLINE_SCRIPT_FLAG}.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "interpreter script referencing Hermes config/env"),
+    (rf'\b{_INLINE_SCRIPT_INTERPRETER}\s+{_OTHER_INLINE_FLAGS}{_INLINE_SCRIPT_FLAG}', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # Remote content executed via command substitution: eval/source/. $(curl ...)
@@ -656,7 +682,7 @@ DANGEROUS_PATTERNS = [
     # ~/.ssh/authorized_keys` cannot silently plant login commands or keys.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
     (rf'\bsed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
-    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
+    (rf'\b{_VERSIONED_PERL_RUBY}\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
     (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
     # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or
@@ -666,17 +692,13 @@ DANGEROUS_PATTERNS = [
     (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
     (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
     # perl -i and ruby -i perform the same in-place mutation as sed -i but are
-    # not caught by the -e/-c script-execution pattern above (which targets code
-    # evaluation, not file mutation). Pairs the sed -i coverage from #14639.
-    # The -i flag can appear as its own token after other flags
-    # (`perl -p -i -e ... config.yaml`), combined (`perl -pi -e`), or with a
-    # backup suffix (`perl -i.bak`). Match any flag token containing `i`
-    # anywhere in the args, not just the first token — `perl -e '...'` (code
-    # eval, no -i) does not trip because it has no `-...i` flag token.
-    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
-    (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Uses the shared _INLINE_SCRIPT_INTERPRETER (versioned binaries
+    # included) rather than a separate hardcoded interpreter list —
+    # `python3.11 << EOF` is the same heredoc-based bypass as bare
+    # `python3 << EOF`, just with an unrecognized interpreter spelling.
+    (rf'\b{_INLINE_SCRIPT_INTERPRETER}\s+<<', "script execution via heredoc"),
     # Shell execution via heredoc — `bash <<'EOF' ... EOF` runs arbitrary
     # shell commands without triggering the `bash -c` pattern above. The
     # inner commands may not individually match any dangerous pattern (e.g.

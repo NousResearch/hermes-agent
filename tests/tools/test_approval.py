@@ -589,6 +589,22 @@ class TestHermesConfigWriteProtection:
         )
         assert dangerous is True
 
+    def test_versioned_perl_in_place_config(self):
+        # Self-found (not reviewer-reported) instance of the same class of
+        # bug the reviewer found elsewhere in this file: this rule used a
+        # bare (?:perl|ruby) alternation instead of a versioned-binary
+        # pattern, so it missed spellings like perl5.36.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl5.36 -i -pe 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_versioned_ruby_in_place_config(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "ruby3.2 -i -pe 'gsub(/manual/, \"off\")' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
     def test_regular_absolute_config_path_still_uses_project_rule(self):
         dangerous, key, desc = detect_dangerous_command(
             "sed -i 's/a/b/' /srv/app/config.yaml"
@@ -782,6 +798,53 @@ class TestInlineScriptInterpreterObfuscation:
     def test_plain_python_script_file_not_flagged(self):
         dangerous, key, desc = detect_dangerous_command("python3 my_server.py")
         assert dangerous is False
+
+    def test_intervening_flag_before_inline_flag(self):
+        # Regression test found in review: a bare `\s+{flag}` right after
+        # the interpreter name misses real invocations that combine
+        # several standalone short flags, e.g. `python3 -S -c "..."` (a
+        # separate -S flag before -c). The target flag no longer has to be
+        # the very first token after the interpreter.
+        dangerous, key, desc = detect_dangerous_command(
+            'python3 -S -c "print(1)"'
+        )
+        assert dangerous is True
+
+    def test_multiple_intervening_flags_before_inline_flag(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'python3 -I -S -c "print(1)"'
+        )
+        assert dangerous is True
+
+    def test_glued_flag_without_quote_boundary(self):
+        # Regression test found in review: gluing -c directly to a value
+        # that starts with something other than a quote character (e.g. a
+        # bare function call like `open(...)`) evaded detection, since the
+        # old boundary only accepted whitespace/=/a quote right after the
+        # flag cluster.
+        dangerous, key, desc = detect_dangerous_command(
+            "python3 -copen('x','a').write(1)"
+        )
+        assert dangerous is True
+
+    def test_ruby_glued_eval_flag_without_quote_boundary(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "ruby -eFile.write('x',1)"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_with_intervening_flags_keeps_specific_message(self):
+        # The broadened interpreter/flag matching must not steal the more
+        # specific, pre-existing "-i in-place edit" message for genuine
+        # in-place edits — `perl -i -pe '...'` combines -p and -e (a real
+        # inline-eval flag) after the standalone -i flag, so it also
+        # matches the general interpreter/config rule; the dedicated -i
+        # rule must still win and report its own, more actionable reason.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower()
 
 
 class TestFindExecFullPathRm:
@@ -1039,6 +1102,20 @@ class TestSensitiveInPlaceEditPattern:
         )
         assert dangerous is True
         assert key is not None
+
+    def test_versioned_perl_in_place_ssh_authorized_keys(self):
+        # Self-found (not reviewer-reported) instance of the same class of
+        # bug the reviewer found elsewhere in this file.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl5.36 -i -pe 's/old/new/' ~/.ssh/authorized_keys"
+        )
+        assert dangerous is True
+
+    def test_versioned_ruby_in_place_bashrc(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "ruby3.2 -i -pe 'gsub(/a/, \"b\")' ~/.bashrc"
+        )
+        assert dangerous is True
 
     def test_sed_in_place_regular_file_safe(self):
         dangerous, key, desc = detect_dangerous_command("sed -i 's/a/b/' notes.txt")
@@ -1487,6 +1564,26 @@ class TestHeredocScriptExecution:
 
     def test_node_heredoc_detected(self):
         cmd = "node << 'JS'\nrequire('child_process').execSync('whoami')\nJS"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_versioned_python_heredoc_detected(self):
+        # Self-found (not reviewer-reported) instance of the same class of
+        # bug the reviewer found elsewhere in this file: this rule used a
+        # separate, hardcoded (python[23]?|perl|ruby|node) alternation
+        # instead of the shared _INLINE_SCRIPT_INTERPRETER pattern, so it
+        # missed every versioned interpreter spelling.
+        cmd = "python3.11 << 'EOF'\nimport os; os.system('rm -rf /')\nEOF"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_versioned_ruby_heredoc_detected(self):
+        cmd = "ruby3.2 <<RUBY\n`rm -rf /`\nRUBY"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_versioned_perl_heredoc_detected(self):
+        cmd = "perl5.36 <<'END'\nsystem('whoami');\nEND"
         dangerous, _, desc = detect_dangerous_command(cmd)
         assert dangerous is True
 

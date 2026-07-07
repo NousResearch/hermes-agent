@@ -33,40 +33,19 @@ import re
 import shlex
 from typing import Any
 
-_SCRIPT_INTERPRETERS = frozenset({
-    # Shells.
-    "bash",
-    "sh",
-    "zsh",
-    "dash",
-    "fish",
-    "cmd",
-    "cmd.exe",
-    "powershell",
-    "powershell.exe",
-    "pwsh",
-    "pwsh.exe",
-    # General-purpose interpreters, run with an inline script (-c/-e/-r
-    # instead of a script file). These are just as capable of network
-    # egress and OS-persistence writes as a shell one-liner, so an entry
-    # shaped like ``command: python3, args: [-c, "<payload>"]`` must go
-    # through the same egress/persistence checks below rather than
-    # skipping them by virtue of not being a shell.
-    "python",
-    "python3",
-    "python3.exe",
-    "python.exe",
-    "node",
-    "nodejs",
-    "node.exe",
-    "deno",
-    "perl",
-    "perl.exe",
-    "ruby",
-    "ruby.exe",
-    "php",
-    "php.exe",
-})
+# Matches interpreter basenames including versioned binaries (python3.11,
+# python3.12, ruby3.2, perl5.36 — the norm under pyenv/homebrew/most distro
+# packaging, where the unversioned name is often just a symlink). An earlier
+# version of this check used an exact-name frozenset, which missed every
+# versioned spelling — command: python3.11 skipped the egress/persistence
+# checks below exactly like a bare, unrecognized command would, even though
+# it runs the identical inline script a bare "python3" would.
+_SCRIPT_INTERPRETER_PATTERN = re.compile(
+    r'^(?:bash|sh|zsh|dash|fish|cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh(?:\.exe)?'
+    r'|python[23]?(?:\.\d+)*(?:\.exe)?|node(?:js)?(?:\.exe)?|deno'
+    r'|perl[0-9]*(?:\.\d+)*(?:\.exe)?|ruby[0-9]*(?:\.\d+)*(?:\.exe)?|php(?:\.exe)?)$',
+    re.IGNORECASE,
+)
 
 _EGRESS_PATTERN = re.compile(
     r"(?<![\w.-])(?:curl|wget|nc|ncat|socat)(?![\w.-])"
@@ -183,7 +162,7 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
 
     command = entry.get("command")
     basename = _command_basename(command)
-    if basename not in _SCRIPT_INTERPRETERS:
+    if not _SCRIPT_INTERPRETER_PATTERN.match(basename):
         return issues
 
     script = _inline_script(entry.get("args"))

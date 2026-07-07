@@ -2256,6 +2256,48 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
             m["content"] = new_content if new_content else [{"type": "text", "text": "(tool result removed)"}]
 
 
+def _dedup_tool_blocks_within_turns(result: List[Dict[str, Any]]) -> None:
+    """Collapse duplicate tool_use / tool_result blocks *within* a single turn.
+
+    Reconstruction / context-compression paths can replay the same assistant
+    turn more than once; ``_merge_consecutive_roles`` then concatenates their
+    block lists (``prev_blocks + curr_blocks``), producing a single assistant
+    message that carries the SAME tool_use id multiple times (observed: 63
+    tool_use blocks, 18 unique). ``_strip_orphaned_tool_blocks`` cannot catch
+    this — it collects ids into a set, so a duplicated id still "has a result"
+    and survives. Anthropic then rejects the payload with HTTP 400
+    ``tool_use ids were found without tool_result blocks immediately after``.
+
+    Keep the FIRST occurrence of each id per turn; drop later duplicates.
+    Mutates ``result`` in place. Must run AFTER _merge_consecutive_roles.
+    """
+    for m in result:
+        content = m.get("content")
+        if not isinstance(content, list):
+            continue
+        role = m.get("role")
+        seen: set = set()
+        deduped: List[Any] = []
+        changed = False
+        for b in content:
+            if isinstance(b, dict):
+                if role == "assistant" and b.get("type") == "tool_use":
+                    bid = b.get("id")
+                    if bid in seen:
+                        changed = True
+                        continue
+                    seen.add(bid)
+                elif role == "user" and b.get("type") == "tool_result":
+                    bid = b.get("tool_use_id")
+                    if bid in seen:
+                        changed = True
+                        continue
+                    seen.add(bid)
+            deduped.append(b)
+        if changed:
+            m["content"] = deduped if deduped else [{"type": "text", "text": "(empty message)"}]
+
+
 def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Merge consecutive same-role messages to enforce Anthropic alternation.
 
@@ -2523,6 +2565,11 @@ def convert_messages_to_anthropic(
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
     _ensure_leading_user_turn(result)
+    # Merge may concatenate replayed turns, producing duplicate tool_use ids
+    # within one assistant message. Collapse them, then re-run the orphan strip
+    # so any pair broken by dedup is cleaned up before the payload ships.
+    _dedup_tool_blocks_within_turns(result)
+    _strip_orphaned_tool_blocks(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
 

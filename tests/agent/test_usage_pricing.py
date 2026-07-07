@@ -636,3 +636,29 @@ def test_deepseek_v4_flash_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
     assert float(result.amount_usd) == 0.28
+
+
+def test_gemini_3_5_flash_pricing_resolved():
+    """Ensure gemini-3.5-flash pricing exists and resolves correctly."""
+    entry = get_pricing_entry("gemini-3.5-flash", provider="google")
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.50
+    assert float(entry.output_cost_per_million) == 9.00
+    assert float(entry.cache_read_cost_per_million) == 0.15
+    assert float(entry.cache_write_cost_per_million) == 1.50
+
+
+def test_gemini_provider_maps_to_google():
+    """Ensure using 'gemini' as provider resolves to 'google' pricing."""
+    entry = get_pricing_entry("gemini-3.5-flash", provider="gemini")
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.50
+
+    # Also check base URL matching
+    entry_base = get_pricing_entry(
+        "gemini-3.5-flash",
+        provider="custom",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+    )
+    assert entry_base is not None
+    assert float(entry_base.input_cost_per_million) == 1.50

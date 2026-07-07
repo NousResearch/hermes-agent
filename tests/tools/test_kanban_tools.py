@@ -2179,6 +2179,192 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     assert _list_subs_for_task(d["task_id"]) == []
 
 
+def test_create_required_subscription_global_config_fails_without_delivery_target(
+    monkeypatch, worker_env
+):
+    """Profiles can require auto-subscribe for every kanban_create call.
+
+    This is useful for orchestrators that must observe all downstream work,
+    regardless of whether the new task is assigned to a coder, reviewer, or
+    QA profile.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.setattr(
+        kt,
+        "load_config",
+        lambda: {"kanban": {"require_auto_subscribe_on_create": True}},
+    )
+
+    out = kt._handle_create({
+        "title": "Coder: silent card",
+        "assignee": "coder-profile",
+    })
+    d = json.loads(out)
+    assert "error" in d
+    assert "requires a notification subscription" in d["error"]
+
+    conn = kb.connect()
+    try:
+        tasks = kb.list_tasks(
+            conn, assignee="coder-profile", include_archived=True
+        )
+    finally:
+        conn.close()
+    assert tasks == []
+
+
+def test_create_required_subscription_global_config_succeeds_with_gateway_target(
+    monkeypatch, worker_env
+):
+    """Global required-subscription mode still allows any assignee when
+    auto-subscribe can register the calling gateway session."""
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+    monkeypatch.setattr(
+        kt,
+        "load_config",
+        lambda: {"kanban": {"require_auto_subscribe_on_create": True}},
+    )
+
+    out = kt._handle_create({
+        "title": "QA: observable card",
+        "assignee": "qa-profile",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is True
+
+    subs = _sub_index(_list_subs_for_task(d["task_id"]))
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat-42"
+
+
+def test_create_required_subscription_assignee_config_fails_without_delivery_target(
+    monkeypatch, worker_env
+):
+    """Profiles can require auto-subscribe for selected human-close-loop
+    assignees without forcing every create."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.setattr(
+        kt,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "require_auto_subscribe_for_assignees": ["reviewer-profile"],
+            },
+        },
+    )
+
+    out = kt._handle_create({
+        "title": "Review: silent card",
+        "assignee": "reviewer-profile",
+    })
+    d = json.loads(out)
+    assert "error" in d
+    assert "requires a notification subscription" in d["error"]
+
+    conn = kb.connect()
+    try:
+        tasks = kb.list_tasks(
+            conn, assignee="reviewer-profile", include_archived=True
+        )
+    finally:
+        conn.close()
+    assert tasks == []
+
+
+def test_create_required_subscription_assignee_config_succeeds_with_gateway_target(
+    monkeypatch, worker_env
+):
+    """Required-subscription assignees still work when auto-subscribe can
+    actually register the calling gateway session."""
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+    monkeypatch.setattr(
+        kt,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "require_auto_subscribe_for_assignees": ["reviewer-profile"],
+            },
+        },
+    )
+
+    out = kt._handle_create({
+        "title": "Review: observable card",
+        "assignee": "reviewer-profile",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is True
+
+    subs = _sub_index(_list_subs_for_task(d["task_id"]))
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat-42"
+
+
+
+def test_create_required_subscription_blocks_task_when_subscribe_write_fails(
+    monkeypatch, worker_env
+):
+    """If required subscription passes preflight but the subscription write
+    itself fails, do not let the task keep running toward silent completion."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+    monkeypatch.setattr(
+        kt,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "require_auto_subscribe_for_assignees": ["reviewer-profile"],
+            },
+        },
+    )
+
+    def _boom(*a, **kw):
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(kb, "add_notify_sub", _boom)
+
+    out = kt._handle_create({
+        "title": "Review: write failure",
+        "assignee": "reviewer-profile",
+    })
+    d = json.loads(out)
+    assert "error" in d
+    assert "could not register a required notification subscription" in d["error"]
+
+    conn = kb.connect()
+    try:
+        tasks = kb.list_tasks(
+            conn, assignee="reviewer-profile", include_archived=True
+        )
+        assert len(tasks) == 1
+        assert tasks[0].status == "blocked"
+        events = [e.kind for e in kb.list_events(conn, tasks[0].id)]
+        assert "blocked" in events
+    finally:
+        conn.close()
+
 def test_create_partial_session_context_no_subscribe(monkeypatch, worker_env):
     """Only one of (platform, chat_id) set -> no implicit subscribe.
     Either both are set (gateway) or neither (TUI / CLI); partial is

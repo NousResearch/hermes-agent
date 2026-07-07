@@ -315,6 +315,88 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     return default, f"{name} must be a boolean or 'true'/'false'"
 
 
+def _as_config_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _subscription_required_for_create(
+    args: dict, assignee: str
+) -> tuple[bool, Optional[str]]:
+    explicit, bool_error = _parse_bool_arg(args, "require_subscription")
+    if bool_error:
+        return False, bool_error
+    required = bool(explicit)
+    try:
+        cfg = load_config()
+        required = required or bool(
+            cfg_get(
+                cfg,
+                "kanban",
+                "require_auto_subscribe_on_create",
+                default=False,
+            )
+        )
+        required_assignees = _as_config_list(
+            cfg_get(
+                cfg,
+                "kanban",
+                "require_auto_subscribe_for_assignees",
+                default=[],
+            )
+        )
+        target = str(assignee or "").strip()
+        required = required or "*" in required_assignees or target in required_assignees
+    except Exception:
+        # Config read failures should not unexpectedly force every create.
+        # An explicit require_subscription=True argument is still honored.
+        pass
+    return required, None
+
+
+def _auto_subscribe_preflight_error() -> Optional[str]:
+    try:
+        cfg = load_config()
+        if not cfg_get(cfg, "kanban", "auto_subscribe_on_create", default=True):
+            return "kanban.auto_subscribe_on_create is false"
+    except Exception:
+        # Match _maybe_auto_subscribe: config load failures fail open.
+        pass
+
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        if platform and chat_id:
+            return None
+
+        session_key = (
+            get_session_env("HERMES_SESSION_KEY", "")
+            or os.environ.get("HERMES_SESSION_KEY", "")
+        )
+        if session_key:
+            return None
+    except Exception as exc:
+        return f"could not inspect session delivery target: {exc}"
+
+    return "no gateway or TUI session delivery target is available"
+
+
+def _required_subscription_error(assignee: str, reason: str) -> str:
+    return (
+        "kanban_create requires a notification subscription for "
+        f"assignee {assignee!r}, but {reason}. Create the task from a "
+        "gateway/TUI session or relax kanban.require_auto_subscribe_* "
+        "for this profile."
+    )
+
+
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     """Belt-and-suspenders runtime guard for orchestrator-only handlers.
 
@@ -847,6 +929,14 @@ def _handle_create(args: dict, **kw) -> str:
             "task (the dispatcher will only spawn tasks with an assignee)"
         )
     body = args.get("body")
+    require_subscription, subscription_error = _subscription_required_for_create(
+        args, str(assignee)
+    )
+    if subscription_error:
+        return tool_error(subscription_error)
+    if require_subscription:
+        if preflight_error := _auto_subscribe_preflight_error():
+            return tool_error(_required_subscription_error(str(assignee), preflight_error))
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Stamp the originating session id when the agent loop runs under
@@ -936,6 +1026,25 @@ def _handle_create(args: dict, **kw) -> str:
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
+            if require_subscription and not subscribed:
+                reason = (
+                    "notification subscription was required for this task, "
+                    "but kanban_create could not register one"
+                )
+                try:
+                    kb.block_task(conn, new_tid, reason=reason, kind="capability")
+                except Exception:
+                    logger.warning(
+                        "failed to block task after required subscribe failure: %s",
+                        new_tid,
+                        exc_info=True,
+                    )
+                return tool_error(
+                    f"kanban_create created {new_tid} but could not register "
+                    "a required notification subscription; the task was "
+                    "blocked to avoid silent completion. Fix the notification "
+                    "session context, subscribe explicitly, then unblock it."
+                )
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
@@ -1539,6 +1648,16 @@ KANBAN_CREATE_SCHEMA = {
                     "continuation turns the worker may take before the task "
                     "is blocked for review. Ignored unless goal_mode is "
                     "true. Defaults to the goal-engine default (20)."
+                ),
+            },
+            "require_subscription": {
+                "type": "boolean",
+                "description": (
+                    "Require this create to register a notification "
+                    "subscription for the originating gateway/TUI session. "
+                    "If no delivery target is available, the create fails "
+                    "before writing a task. Profiles can also require this "
+                    "by config via kanban.require_auto_subscribe_*."
                 ),
             },
             "board": _board_schema_prop(),

@@ -309,6 +309,17 @@ class SimplexAdapter(BasePlatformAdapter):
                     self._last_ws_activity = time.time()
                     logger.info("SimpleX WS: connected")
 
+                    # simplex-chat >= 6.5 emits no WS event for incoming
+                    # address requests (prepared-contacts flow), so the
+                    # event-driven ``contactRequest`` handler never fires
+                    # there. Sync the daemon's own address-level
+                    # auto-accept to our config instead — it works on old
+                    # and new daemons and also covers requests that
+                    # arrived while the gateway was down.
+                    await self._send_fire_and_forget(
+                        f"/auto_accept {'on' if self.auto_accept else 'off'}"
+                    )
+
                     async for raw in ws:
                         if not self._running:
                             break

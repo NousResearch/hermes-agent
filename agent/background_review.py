@@ -18,11 +18,12 @@ for invariants and PR review criteria.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
+
+from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
 
@@ -448,10 +449,21 @@ def summarize_background_review_actions(
             data = json.loads(msg.get("content", "{}"))
         except (json.JSONDecodeError, TypeError):
             continue
+        # ``data`` may not be a dict — some memory/skill tool responses in
+        # older codepaths or wrapper MCP servers return a top-level JSON
+        # list (e.g. ``[{"success": true, ...}]``) or a scalar.  The original
+        # isinstance check below silently skips non-dict payloads, which
+        # is correct, but ``data.get("_change")`` further down can still
+        # hand back a list and break ``change.get("description", "")``.
+        # Defensively normalize everything through a dict-typed alias so
+        # the rest of the function can stay terse without per-call
+        # ``isinstance`` guards (#59437).
         if not isinstance(data, dict) or not data.get("success"):
             continue
         message = data.get("message", "")
-        detail = call_details.get(tcid, {})
+        detail = call_details.get(tcid) or {}
+        if not isinstance(detail, dict):
+            detail = {}
         target = data.get("target", "") or detail.get("target", "")
         is_skill = detail.get("tool") == "skill_manage"
 
@@ -479,12 +491,30 @@ def summarize_background_review_actions(
             content = detail.get("content", "")
             old_text = detail.get("old_text", "")
             skill_name = detail.get("name", "")
-            operations = detail.get("operations") or []
+            # ``operations`` may be anything callable put into the JSON
+            # arguments.  Anything non-iterable that isn't a list[str]
+            # of dicts becomes unusable here, so coerce defensively.
+            ops_raw = detail.get("operations")
+            operations: list = (
+                ops_raw if isinstance(ops_raw, list) else []
+            )
             max_preview = 120
             if is_skill:
-                change = data.get("_change", {})
-                old_string = change.get("old", "") or detail.get("old_string", "")
-                new_string = change.get("new", "") or detail.get("new_string", "")
+                # ``_change`` is a free-form dict the skill tool leaves in
+                # the response.  Older / wrapper MCP backends return it
+                # as a list, an int, or a JSON-shaped scalar — normalize
+                # to a dict so the .get() calls downstream don't
+                # AttributeError (#59437).
+                change_raw = data.get("_change")
+                change: dict = (
+                    change_raw if isinstance(change_raw, dict) else {}
+                )
+                old_string = (
+                    change.get("old", "") or detail.get("old_string", "")
+                )
+                new_string = (
+                    change.get("new", "") or detail.get("new_string", "")
+                )
                 description = change.get("description", "")
                 if action == "patch" and (old_string or new_string):
                     old_preview = old_string[:80].replace("\n", " ") + (
@@ -505,7 +535,13 @@ def summarize_background_review_actions(
                     actions.append(f"📝 {message}" if message else f"Skill {action}")
             elif operations:
                 for op in operations:
-                    op = op or {}
+                    # Each element must be a dict-of-fields; some
+                    # legacy codepaths serialize the entry as a bare
+                    # string and the message dict doesn't exist.  Skip
+                    # non-dict items defensively — they have no
+                    # actionable fields anyway (#59437).
+                    if not isinstance(op, dict):
+                        continue
                     op_act = op.get("action", "")
                     op_content = (op.get("content") or "")
                     op_old = (op.get("old_text") or "")
@@ -602,9 +638,15 @@ def _run_review_in_thread(
     review_agent = None
     review_messages: List[Dict] = []
     try:
-        with open(os.devnull, "w", encoding="utf-8") as _devnull, \
-             contextlib.redirect_stdout(_devnull), \
-             contextlib.redirect_stderr(_devnull):
+        # Silence stdout/stderr for THIS worker thread only.  A process-global
+        # ``contextlib.redirect_stdout(devnull)`` here would also blank
+        # ``sys.stdout``/``sys.stderr`` for every other thread — including a
+        # gateway event-loop thread driving a Telegram long-poll — for the full
+        # duration of the review (tens of seconds), swallowing their console
+        # output (#55769 / #55925).  ``thread_scoped_silence`` routes only this
+        # thread's writes to devnull and leaves all other threads on the real
+        # streams.
+        with thread_scoped_silence():
             # Inherit the parent agent's live runtime (provider, model,
             # base_url, api_key, api_mode) so the fork uses the exact
             # same credentials the main turn is using.  Without this,
@@ -667,6 +709,20 @@ def _run_review_in_thread(
             review_agent._user_profile_enabled = agent._user_profile_enabled
             review_agent._memory_nudge_interval = 0
             review_agent._skill_nudge_interval = 0
+            # PERSISTENCE ISOLATION (the curator-takeover root cause): the fork
+            # shares the parent's session_id (set below, for prompt-cache
+            # warmth), so without this it would write its harness turn ("Review
+            # the conversation above and update the skill library…") + its own
+            # response straight into the user's REAL session in state.db. On the
+            # user's next live turn the agent re-reads that injected user message
+            # as a standing instruction and "becomes" the curator, refusing the
+            # actual task. _persist_disabled hard-stops every DB write/lazy-open
+            # path (_flush_messages_to_session_db, _ensure_db_session,
+            # _get_session_db_for_recall); the review writes only to the skill
+            # and memory stores via its tools, which is all it needs.
+            review_agent._persist_disabled = True
+            review_agent._session_db = None
+            review_agent._session_json_enabled = False
             # Suppress all status/warning emits from the fork so the
             # user only sees the final successful-action summary.
             # Without this, mid-review "Iteration budget exhausted",
@@ -725,10 +781,17 @@ def _run_review_in_thread(
                 clear_thread_tool_whitelist,
             )
 
+            # Gate the built-in memory tool on the profile's memory_enabled flag.
+            # Hardcoding ["memory", "skills"] granted the review LLM the MEMORY.md
+            # read/write tool even when a profile set memory_enabled: false,
+            # contaminating a memory-disabled profile (#54937 layer 2).
+            review_toolsets = ["skills"]
+            if review_agent._memory_enabled or review_agent._user_profile_enabled:
+                review_toolsets.insert(0, "memory")
             review_whitelist = {
                 t["function"]["name"]
                 for t in get_tool_definitions(
-                    enabled_toolsets=["memory", "skills"],
+                    enabled_toolsets=review_toolsets,
                     quiet_mode=True,
                 )
             }
@@ -739,6 +802,13 @@ def _run_review_in_thread(
                     "{tool_name}. Only memory/skill tools are allowed."
                 ),
             )
+            try:
+                from tools.skill_manager_tool import _reset_background_review_read_marks
+
+                _reset_background_review_read_marks()
+            except Exception:
+                pass
+
             try:
                 # Routed to a different model -> replay a digest (cache is cold
                 # on that model anyway, so minimise cold-written tokens). Same
@@ -784,11 +854,29 @@ def _run_review_in_thread(
         # the review agent inherits that history and would otherwise
         # re-surface stale "created"/"updated" messages from the prior
         # conversation as if they just happened (issue #14944).
-        actions = summarize_background_review_actions(
-            review_messages,
-            messages_snapshot,
-            notification_mode=getattr(agent, "memory_notifications", "on"),
-        )
+        #
+        # Wrapped in try/except: a buggy/legacy tool response shape
+        # (e.g. ``_change`` returned as a list instead of a dict, #59437)
+        # must NOT take down the whole review with an AttributeError,
+        # since the caller's outer except logs only "Background
+        # memory/skill review failed" and discards every successful
+        # action the fork DID complete before the crash. Coerce an
+        # exception into an empty actions list so the partial valid
+        # actions from earlier in the messages are returned instead.
+        try:
+            actions = summarize_background_review_actions(
+                review_messages,
+                messages_snapshot,
+                notification_mode=getattr(agent, "memory_notifications", "on"),
+            )
+        except Exception as e:
+            logger.warning(
+                "summarize_background_review_actions returned partial results "
+                "after exception (treating as empty); suppressing AttributeError "
+                "that previously aborted the entire review (#59437): %s",
+                e,
+            )
+            actions = []
 
         if actions:
             summary = " · ".join(dict.fromkeys(actions))
@@ -808,16 +896,14 @@ def _run_review_in_thread(
         logger.warning("Background memory/skill review failed: %s", e)
         agent._emit_auxiliary_failure("background review", e)
     finally:
-        # Safety-net cleanup for the exception path.  Normal
-        # completion already shut down inside redirect_stdout above.
-        # Re-open devnull here so any teardown output (Honcho flush,
-        # Hindsight sync, background thread joins) stays silent even
-        # on the exception path where redirect_stdout already exited.
+        # Safety-net cleanup for the exception path.  Normal completion already
+        # shut down inside the thread-scoped silence above.  Re-enter the
+        # thread-scoped silence here so teardown output (Honcho flush, Hindsight
+        # sync, background thread joins) stays quiet even on the exception path,
+        # without blanking other threads' streams.
         if review_agent is not None:
             try:
-                with open(os.devnull, "w", encoding="utf-8") as _fn, \
-                     contextlib.redirect_stdout(_fn), \
-                     contextlib.redirect_stderr(_fn):
+                with thread_scoped_silence():
                     try:
                         review_agent.shutdown_memory_provider()
                     except Exception:

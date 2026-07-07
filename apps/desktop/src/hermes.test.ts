@@ -1,6 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import {
+  getCronJobs,
+  getGlobalModelInfo,
+  getGlobalModelOptions,
+  getHermesConfig,
+  getHermesConfigDefaults,
+  getProfiles,
+  getSessionMessages,
+  getStatus,
+  listAllProfileSessions,
+  listSessions
+} from './hermes'
+import { refreshActiveProfile } from './store/profile'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -45,6 +57,71 @@ describe('Hermes REST session helpers', () => {
         timeoutMs: 60_000
       })
     )
+  })
+
+  it('uses a longer timeout for profile listing during desktop startup', async () => {
+    api.mockResolvedValue({ profiles: [] })
+
+    await getProfiles()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/profiles',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
+  it('uses a longer timeout for active profile refresh during desktop startup', async () => {
+    api.mockResolvedValueOnce({ current: 'default' }).mockResolvedValueOnce({ profiles: [] })
+
+    await refreshActiveProfile()
+
+    expect(api).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        path: '/api/profiles/active',
+        timeoutMs: 60_000
+      })
+    )
+    expect(api).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        path: '/api/profiles',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
+  it('gives the whole startup data burst the long timeout, not just profiles', async () => {
+    api.mockResolvedValue({})
+
+    const bootCalls: [() => Promise<unknown>, string][] = [
+      [getHermesConfig, '/api/config'],
+      [getHermesConfigDefaults, '/api/config/defaults'],
+      [getGlobalModelInfo, '/api/model/info'],
+      [() => getGlobalModelOptions(), '/api/model/options'],
+      [getCronJobs, '/api/cron/jobs']
+    ]
+
+    for (const [call, path] of bootCalls) {
+      api.mockClear()
+      await call()
+      expect(api).toHaveBeenCalledWith(expect.objectContaining({ path, timeoutMs: 60_000 }))
+    }
+  })
+
+  it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {
+    api.mockResolvedValue({})
+    api.mockClear()
+
+    await getStatus()
+
+    // /api/status must NOT carry the long startup timeout — it is the runtime
+    // liveness probe and has to fail quickly when the backend drops.
+    const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
+    expect(call.path).toBe('/api/status')
+    expect(call.timeoutMs).toBeUndefined()
   })
 
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {

@@ -12,6 +12,7 @@ Coverage levels:
 
 import time
 
+import pytest
 import yaml
 from unittest.mock import patch, MagicMock
 
@@ -1372,6 +1373,43 @@ class TestParseContextLimitFromError:
     def test_lmstudio_format(self):
         msg = "Error: context window of 4096 tokens exceeded"
         assert parse_context_limit_from_error(msg) == 4096
+
+    def test_vllm_max_model_len_format(self):
+        msg = (
+            "The engine prompt length 1327246 exceeds the max_model_len 32768. "
+            "Please reduce prompt."
+        )
+        assert parse_context_limit_from_error(msg) == 32768
+
+    def test_vllm_maximum_model_length_format(self):
+        msg = "prompt length 200000 exceeds maximum model length 131072"
+        assert parse_context_limit_from_error(msg) == 131072
+
+    @pytest.mark.parametrize("msg,expected", [
+        ("max_model_len 32768", 32768),
+        ("max_model_len: 32768", 32768),
+        ("max_model_len=32768", 32768),
+        ("max_model_len (32768)", 32768),
+        ("max_model_len is 32768", 32768),
+        ("maximum model length 131072", 131072),
+        ("maximum model length is 131072", 131072),
+        ("maximum model length: 131072", 131072),
+    ])
+    def test_vllm_delimiter_variants(self, msg, expected):
+        """vLLM emits the limit with various delimiters (space/colon/equals/
+        paren/'is'). The parser must catch all of them — the original
+        space-only patterns silently missed ':', '=', '(' and 'is' forms and
+        fell through to None."""
+        assert parse_context_limit_from_error(msg) == expected
+
+    def test_get_context_length_from_vllm_max_model_len_error(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        msg = (
+            "The engine prompt length 90000 exceeds the max_model_len 32768. "
+            "Please reduce prompt."
+        )
+        assert get_context_length_from_provider_error(msg, 131072) == 32768
 
     def test_minimax_delta_only_message_returns_none(self):
         msg = "invalid params, context window exceeds limit (2013)"

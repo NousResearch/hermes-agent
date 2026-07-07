@@ -445,6 +445,86 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
     return text or None
 
 
+def _validate_cron_base_url(
+    provider: Optional[Any], base_url: Optional[Any]
+) -> Optional[str]:
+    """Reject pairing a named provider's stored credential with an off-host base_url.
+
+    The cron tool is model-callable, so a prompt-injected job could set a real
+    provider plus an attacker ``base_url``; on fire the scheduler resolves that
+    provider's stored API key and sends it to the URL, exfiltrating the
+    credential (CWE-200/CWE-522). Allow a ``base_url`` override only when it
+    cannot leak a stored secret: no override at all, a configured custom/byok
+    provider that carries its own endpoint+key, or an override whose host
+    matches the named provider's own endpoint.
+
+    Returns an error string if blocked, else None (valid).
+    """
+    bu = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+    if not bu:
+        return None
+    prov = _normalize_optional_job_value(provider)
+    if not prov:
+        # A base_url with no explicit provider inherits the default/session
+        # provider's stored key — the same exfil primitive without naming a
+        # provider. Require an explicit (custom) provider for custom endpoints.
+        return (
+            "base_url override requires an explicit provider. Set provider to a "
+            "configured custom provider to use a custom endpoint."
+        )
+    try:
+        from hermes_cli.runtime_provider import (
+            has_named_custom_provider,
+            resolve_requested_provider,
+            _get_named_custom_provider,
+        )
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from utils import base_url_host_matches, base_url_hostname
+    except Exception:
+        # Can't resolve provider metadata -> fail closed.
+        return f"Unable to validate base_url override for provider {prov!r}; refused."
+
+    if prov.lower() == "custom":
+        # Bare/inline 'custom' (and aliases that resolve to it) is pure BYOK: the
+        # runtime derives the key from a pool keyed by THIS base_url or from
+        # host-gated env vars, never an arbitrary stored secret. Safe to allow.
+        return None
+    if has_named_custom_provider(prov):
+        # A NAMED custom provider carries a STORED key, and
+        # _resolve_named_custom_runtime prefers the override base_url while still
+        # sending that stored key — so an off-host override exfiltrates it.
+        # Require the override host to match the provider's CONFIGURED endpoint.
+        try:
+            cp = _get_named_custom_provider(prov)
+        except Exception:
+            cp = None
+        cfg_host = base_url_hostname((cp or {}).get("base_url", "")) if cp else ""
+        if cfg_host and base_url_host_matches(bu, cfg_host):
+            return None
+        return (
+            f"base_url {bu!r} is not allowed for provider {prov!r}. A named "
+            f"custom provider's stored credential may only be sent to its own "
+            f"configured endpoint ({cfg_host or 'unknown'})."
+        )
+    try:
+        resolved = resolve_requested_provider(prov)
+    except Exception:
+        resolved = prov
+    pconfig = PROVIDER_REGISTRY.get(resolved) if isinstance(resolved, str) else None
+    known_host = base_url_hostname(getattr(pconfig, "inference_base_url", "") if pconfig else "")
+    if known_host and base_url_host_matches(bu, known_host):
+        return None
+    # Fail closed: any non-custom provider we cannot host-match to its own
+    # endpoint is refused. This covers named providers with a stored credential
+    # AND aliases/unknown names we can't resolve to a known host (e.g. "openai",
+    # "google"), which would otherwise pair a stored key with the override URL.
+    return (
+        f"base_url {bu!r} is not allowed for provider {prov!r}. A named "
+        f"provider's stored credential may only be sent to its own endpoint; "
+        f'use a configured custom provider (provider="custom") for a custom base_url.'
+    )
+
+
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
@@ -625,6 +705,12 @@ def cronjob(
                 script_error = _validate_cron_script_path(script)
                 if script_error:
                     return tool_error(script_error, success=False)
+
+            # Reject a model-supplied base_url that would route a named
+            # provider's stored credential to an attacker endpoint (F8).
+            base_url_error = _validate_cron_base_url(provider, base_url)
+            if base_url_error:
+                return tool_error(base_url_error, success=False)
 
             # Validate context_from references existing jobs
             if context_from:
@@ -868,6 +954,25 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
+            # only when this update supplies provider/base_url. A job persisted
+            # before this guard (or written directly to the jobs store) may
+            # already hold an unsafe named-provider + off-host base_url pair;
+            # if we only checked when the update touches those axes, editing any
+            # unrelated field (name, schedule, ...) would succeed and leave that
+            # exfil-capable pair active and schedulable (F8). The effective pair
+            # merges this update's normalized values over the stored job; an
+            # operator can still remediate in the same update by clearing
+            # base_url or pointing provider/base_url at a safe pair.
+            eff_provider = (
+                updates["provider"] if "provider" in updates else job.get("provider")
+            )
+            eff_base_url = (
+                updates["base_url"] if "base_url" in updates else job.get("base_url")
+            )
+            base_url_error = _validate_cron_base_url(eff_provider, eff_base_url)
+            if base_url_error:
+                return tool_error(base_url_error, success=False)
             if script is not None:
                 # Pass empty string to clear an existing script
                 if script:

@@ -4,7 +4,10 @@ import logging
 import os
 from unittest.mock import patch
 
+from agent.secret_scope import reset_secret_scope, set_secret_scope
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import (
+    ChannelOverride,
     GatewayConfig,
     HomeChannel,
     Platform,
@@ -70,6 +73,73 @@ class TestPlatformConfigRoundtrip:
     def test_gateway_restart_notification_coerces_quoted_false(self):
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
+
+    def test_typing_indicator_defaults_true(self):
+        assert PlatformConfig().typing_indicator is True
+        assert PlatformConfig.from_dict({}).typing_indicator is True
+
+    def test_typing_indicator_roundtrip_false(self):
+        pc = PlatformConfig(enabled=True, typing_indicator=False)
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.typing_indicator is False
+
+    def test_typing_indicator_coerces_quoted_false(self):
+        restored = PlatformConfig.from_dict({"typing_indicator": "false"})
+        assert restored.typing_indicator is False
+
+    def test_typing_indicator_resolved_from_extra(self):
+        # The shared-key loop in load_gateway_config bridges the flag into
+        # extra; from_dict must honor it there too (mirrors _grn fallback).
+        restored = PlatformConfig.from_dict({"extra": {"typing_indicator": False}})
+        assert restored.typing_indicator is False
+    def test_channel_overrides_roundtrip(self):
+        pc = PlatformConfig(
+            enabled=True,
+            channel_overrides={
+                "1234567890": ChannelOverride(
+                    model="openrouter/healer-alpha",
+                    provider="openrouter",
+                    system_prompt="You are a daily news summarizer.",
+                ),
+                "9876543210": ChannelOverride(
+                    model="anthropic/claude-opus-4.6",
+                    provider="anthropic",
+                    system_prompt="You are a coding assistant.",
+                ),
+            },
+        )
+        d = pc.to_dict()
+        assert "channel_overrides" in d
+        assert d["channel_overrides"]["1234567890"]["model"] == "openrouter/healer-alpha"
+        assert d["channel_overrides"]["9876543210"]["system_prompt"] == "You are a coding assistant."
+        restored = PlatformConfig.from_dict(d)
+        assert restored.channel_overrides["1234567890"].model == "openrouter/healer-alpha"
+        assert restored.channel_overrides["9876543210"].provider == "anthropic"
+
+    def test_channel_overrides_from_dict_normalizes_channel_id_to_str(self):
+        """YAML may have numeric channel IDs; we store as str."""
+        data = {
+            "enabled": True,
+            "channel_overrides": {
+                1234567890: {"model": "openrouter/healer-alpha"},
+            },
+        }
+        pc = PlatformConfig.from_dict(data)
+        assert "1234567890" in pc.channel_overrides
+        assert pc.channel_overrides["1234567890"].model == "openrouter/healer-alpha"
+
+
+class TestChannelOverride:
+    def test_from_dict_empty(self):
+        assert ChannelOverride.from_dict({}).model is None
+        assert ChannelOverride.from_dict(None).model is None
+
+    def test_to_dict_omits_none(self):
+        ov = ChannelOverride(model="gpt-4", provider=None, system_prompt="Hi")
+        d = ov.to_dict()
+        assert d["model"] == "gpt-4"
+        assert "provider" not in d
+        assert d["system_prompt"] == "Hi"
 
 
 class TestGetConnectedPlatforms:
@@ -138,26 +208,31 @@ class TestGetConnectedPlatforms:
 
 class TestSessionResetPolicy:
     def test_roundtrip(self):
-        policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120)
+        policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120,
+                                    bg_process_max_age_hours=48)
         d = policy.to_dict()
         restored = SessionResetPolicy.from_dict(d)
         assert restored.mode == "idle"
         assert restored.at_hour == 6
         assert restored.idle_minutes == 120
+        assert restored.bg_process_max_age_hours == 48
 
     def test_defaults(self):
         policy = SessionResetPolicy()
-        assert policy.mode == "both"
+        assert policy.mode == "none"
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
+        assert policy.bg_process_max_age_hours == 24
 
     def test_from_dict_treats_null_values_as_defaults(self):
         restored = SessionResetPolicy.from_dict(
-            {"mode": None, "at_hour": None, "idle_minutes": None}
+            {"mode": None, "at_hour": None, "idle_minutes": None,
+             "bg_process_max_age_hours": None}
         )
-        assert restored.mode == "both"
+        assert restored.mode == "none"
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
+        assert restored.bg_process_max_age_hours == 24
 
     def test_from_dict_coerces_quoted_false_notify(self):
         restored = SessionResetPolicy.from_dict({"notify": "false"})
@@ -330,6 +405,32 @@ class TestLoadGatewayConfig:
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
 
+    def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """``gateway.multiplex_profiles: true`` (the nested form written by
+        ``hermes config set gateway.multiplex_profiles true``) must enable
+        multiplexing when loaded via load_gateway_config().
+
+        Regression: load_gateway_config() only surfaced the *top-level*
+        ``multiplex_profiles`` key into gw_data, so a config.yaml that pinned
+        the flag under the nested ``gateway:`` section silently loaded with
+        multiplex_profiles=False. (from_dict honors the nested fallback, but
+        load_gateway_config builds gw_data from the top-level keys before
+        calling from_dict, so the nested value never reached it.)
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
+
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so
         start_gateway()'s connect loop actually dials the connector. Registering
@@ -496,6 +597,42 @@ class TestLoadGatewayConfig:
 
         # Env value preserved, not clobbered by yaml.
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
+
+    def test_bridges_discord_bots_require_inline_mention_from_config_yaml(self, tmp_path, monkeypatch):
+        """discord.bots_require_inline_mention should reach the runtime env var."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  bots_require_inline_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "true"
+
+    def test_bots_require_inline_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        """Explicit env var should win over config.yaml for inline bot mention gating."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  bots_require_inline_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "true"
 
     def test_bridges_discord_allow_from_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.allow_from should populate DISCORD_ALLOWED_USERS for auth."""
@@ -722,6 +859,31 @@ class TestLoadGatewayConfig:
 
         assert config.always_log_local is False
 
+    def test_bridges_discord_channel_overrides_from_top_level_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  channel_overrides:\n"
+            '    "1234567890":\n'
+            "      model: openrouter/healer-alpha\n"
+            "      provider: openrouter\n"
+            "      system_prompt: Daily news summarizer\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        discord = config.platforms[Platform.DISCORD]
+        assert "1234567890" in discord.channel_overrides
+        ov = discord.channel_overrides["1234567890"]
+        assert ov.model == "openrouter/healer-alpha"
+        assert ov.provider == "openrouter"
+        assert ov.system_prompt == "Daily news summarizer"
+
     def test_bridges_discord_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -834,6 +996,38 @@ class TestLoadGatewayConfig:
         load_gateway_config()
 
         assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
+
+    def test_bridges_telegram_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n  allow_bots: mentions\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_ALLOW_BOTS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("TELEGRAM_ALLOW_BOTS") == "mentions"
+
+    def test_telegram_allow_bots_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n  allow_bots: all\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "none")
+
+        load_gateway_config()
+
+        assert os.environ.get("TELEGRAM_ALLOW_BOTS") == "none"
 
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -1003,6 +1197,43 @@ class TestLoadGatewayConfig:
 
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
+
+    def test_profile_scoped_env_overrides_do_not_fall_back_to_default_profile_env(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        default_home = tmp_path / "default-home"
+        default_home.mkdir()
+        default_config = default_home / "config.yaml"
+        default_config.write_text(
+            "multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        secondary_home = tmp_path / "secondary-home"
+        secondary_home.mkdir()
+        secondary_config = secondary_home / "config.yaml"
+        secondary_config.write_text(
+            "multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "default-token")
+
+        home_token = set_hermes_home_override(str(secondary_home))
+        secret_token = set_secret_scope({"DISCORD_BOT_TOKEN": "worker-token"})
+        try:
+            config = load_gateway_config()
+        finally:
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
+
+        assert config.multiplex_profiles is True
+        assert config.platforms[Platform.DISCORD].token == "worker-token"
+        assert Platform.API_SERVER not in config.platforms
 
 
 class TestHomeChannelEnvOverrides:

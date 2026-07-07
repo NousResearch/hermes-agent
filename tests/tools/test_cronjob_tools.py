@@ -336,6 +336,81 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["provider"] == "openrouter"
         assert updated["job"]["base_url"] is None
 
+    @staticmethod
+    def _patch_named_legit(monkeypatch):
+        import hermes_cli.runtime_provider as rp
+        monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
+        monkeypatch.setattr(
+            rp, "_get_named_custom_provider",
+            lambda n: {"name": "legit", "base_url": "https://legit.example/v1",
+                       "api_key": "sk-legit"},
+        )
+
+    @staticmethod
+    def _save_legacy_unsafe_job():
+        """Write a job with an unsafe named-provider + off-host base_url pair
+        DIRECTLY to the store, bypassing the create-time tool guard (mirrors a
+        job persisted before the guard existed)."""
+        from cron.jobs import save_jobs
+        save_jobs([
+            {
+                "id": "legacyunsafe1",
+                "name": "legacy",
+                "prompt": "x",
+                "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
+                "schedule_display": "every 5m",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "provider": "custom:legit",
+                "base_url": "https://evil.example/v1",
+            }
+        ])
+        return "legacyunsafe1"
+
+    def test_legacy_unsafe_job_blocked_on_unrelated_update(self, monkeypatch):
+        """F8 stored-job path: editing an UNRELATED field on a job that already
+        holds an unsafe provider/base_url pair must be rejected, so the pair
+        cannot be left active/schedulable by sidestepping validation."""
+        self._patch_named_legit(monkeypatch)
+        job_id = self._save_legacy_unsafe_job()
+
+        result = json.loads(cronjob(action="update", job_id=job_id, name="renamed"))
+        assert result["success"] is False
+        assert "not allowed" in json.dumps(result)
+
+        # The rejected update must not have mutated the stored job at all.
+        from cron.jobs import get_job
+        stored = get_job(job_id)
+        assert stored["name"] == "legacy"
+        assert stored["base_url"] == "https://evil.example/v1"
+
+    def test_legacy_unsafe_job_remediated_by_clearing_base_url(self, monkeypatch):
+        """The operator can still fix a legacy unsafe job in a single update by
+        clearing base_url (the effective pair becomes safe)."""
+        self._patch_named_legit(monkeypatch)
+        job_id = self._save_legacy_unsafe_job()
+
+        result = json.loads(
+            cronjob(action="update", job_id=job_id, name="renamed", base_url="")
+        )
+        assert result["success"] is True
+        assert result["job"]["base_url"] is None
+        assert result["job"]["name"] == "renamed"
+
+    def test_legacy_unsafe_job_remediated_by_matching_host(self, monkeypatch):
+        """Repointing base_url at the named provider's own configured host also
+        remediates the job (no off-host exfil)."""
+        self._patch_named_legit(monkeypatch)
+        job_id = self._save_legacy_unsafe_job()
+
+        result = json.loads(
+            cronjob(action="update", job_id=job_id,
+                    base_url="https://legit.example/v1")
+        )
+        assert result["success"] is True
+        assert result["job"]["base_url"] == "https://legit.example/v1"
+
     def test_create_skill_backed_job(self):
         result = json.loads(
             cronjob(
@@ -640,3 +715,51 @@ class TestLocalDeliveryNotice:
         )
         assert created["deliver"] == "origin"
         assert "local-only cron job" not in created["message"]
+
+
+class TestValidateCronBaseUrl:
+    """The cron base_url guard must not let a NAMED custom provider's stored
+    credential be sent to an off-host endpoint (CWE-200/CWE-522)."""
+
+    @staticmethod
+    def _v(*args):
+        from tools.cronjob_tools import _validate_cron_base_url
+        return _validate_cron_base_url(*args)
+
+    @staticmethod
+    def _patch_named_legit(monkeypatch):
+        import hermes_cli.runtime_provider as rp
+        monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
+        monkeypatch.setattr(
+            rp, "_get_named_custom_provider",
+            lambda n: {"name": "legit", "base_url": "https://legit.example/v1", "api_key": "sk-legit"},
+        )
+
+    def test_named_custom_offhost_base_url_blocked(self, monkeypatch):
+        self._patch_named_legit(monkeypatch)
+        err = self._v("custom:legit", "https://evil.example/v1")
+        assert err and "not allowed" in err
+
+    def test_named_custom_matching_host_allowed(self, monkeypatch):
+        self._patch_named_legit(monkeypatch)
+        assert self._v("custom:legit", "https://legit.example/v1") is None
+        # subdomain of the configured host is still the provider's own endpoint
+        assert self._v("custom:legit", "https://eu.legit.example/v1") is None
+
+    def test_named_custom_lookalike_host_blocked(self, monkeypatch):
+        self._patch_named_legit(monkeypatch)
+        assert self._v("custom:legit", "https://legit.example.attacker.test/v1") is not None
+
+    def test_bare_custom_allows_any_base_url(self):
+        # Bare 'custom' is inline/host-derived BYOK — no stored secret to leak.
+        assert self._v("custom", "https://anything.example/v1") is None
+
+    def test_no_base_url_is_allowed(self):
+        assert self._v("custom:legit", None) is None
+
+    def test_named_registry_offhost_blocked(self):
+        # A named registry provider (stored key) + off-host override is refused.
+        assert self._v("anthropic", "https://evil.example/v1") is not None
+
+    def test_base_url_without_provider_rejected(self):
+        assert self._v(None, "https://x.example/v1") is not None

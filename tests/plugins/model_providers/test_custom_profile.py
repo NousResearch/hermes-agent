@@ -188,6 +188,32 @@ class TestCustomReasoningModelAware:
         )
         assert tl == {"reasoning_effort": "max"}
 
+    @pytest.mark.parametrize(
+        "reasoning_model",
+        [
+            "gemma-3-9b",               # Google Gemma 3 (reasoning-capable)
+            "gemma-4-26b-a4b-it",       # Gemma 4 (per user-reported repro)
+            "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",  # full HF repo id w/ tag
+            "ollama:gemma-3-27b",        # ollama-prefixed variant
+        ],
+    )
+    def test_gemma_3_and_gemma_4_are_reasoning_capable(
+        self, custom_profile, reasoning_model
+    ):
+        """Gemma 3 and Gemma 4 must be allowed through.
+
+        Added per PR #59678 review comment from @nitinthewiz who reported
+        Gemma-3 and Gemma-4 supporting thinking via ollama. Without these
+        entries the user's reasoning-effort preference would be silently
+        dropped on those models — a regression vs. the pre-fix behavior
+        (where the field was unconditionally sent, which 400'd instead).
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model=reasoning_model,
+        )
+        assert tl == {"reasoning_effort": "medium"}
+
     def test_unknown_model_defaults_to_omitting_reasoning_effort(self, custom_profile):
         """An unknown model name (custom OpenAI-compatible endpoint) must
         default to NOT sending ``reasoning_effort`` — the safe choice when

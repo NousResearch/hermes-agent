@@ -31,6 +31,9 @@ _REASONING_MODEL_TOKENS: tuple = (
     "deepseek-r",                       # DeepSeek-R
     "claude-sonnet-4.5", "claude-opus-4.5",  # Claude 4.5+
     "magistral",                        # Mistral reasoning
+    "gemma-3", "gemma-4",               # Gemma 3/4 — reasoning-capable per user
+                                       # testing on ollama/unsloth/gemma-4-26B
+                                       # (added per PR #59678 review comment)
 )
 
 

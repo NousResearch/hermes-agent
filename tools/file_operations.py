@@ -1124,7 +1124,7 @@ class ShellFileOperations(FileOperations):
         # regardless of trailing-newline convention (#59999).
         py_cmd = (
             "python -c \"import sys; "
-            "print(sum(1 for _ in open(sys.argv[1], errors='replace')))\" "
+            "print(sum(1 for _ in open(sys.argv[1], encoding='utf-8', errors='replace')))\" "
             + self._escape_shell_arg(path)
         )
         py_result = self._exec(py_cmd)

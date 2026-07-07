@@ -2302,6 +2302,46 @@ class TestAuxiliaryFallbackLayering:
         mock_main.assert_not_called()
 
 
+    def test_explicit_provider_model_incompatible_triggers_configured_fallback(self, monkeypatch):
+        """Compression must skip a route/model mismatch instead of aborting.
+
+        Regression for Telegram context collapse: Codex/ChatGPT cannot serve an
+        explicitly configured aux model like fugu-ultra, so the compression
+        route must continue to the configured fallback chain.
+        """
+        primary_client = MagicMock()
+        err = Exception(
+            "Error code: 400 - {'detail': \"The 'fugu-ultra' model is not "
+            "supported when using Codex with a ChatGPT account.\"}"
+        )
+        err.status_code = 400
+        primary_client.chat.completions.create.side_effect = err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="compressed by fallback"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "fugu-ultra")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openai-codex", "fugu-ultra", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "gpt-5.4-mini", "fallback_chain[0](openrouter)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "compress this"}],
+            )
+
+        assert result.choices[0].message.content == "compressed by fallback"
+        mock_chain.assert_called_once_with(
+            "compression",
+            "openai-codex",
+            reason="model incompatible with route",
+        )
+        mock_main.assert_not_called()
+
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

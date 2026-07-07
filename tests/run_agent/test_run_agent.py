@@ -2358,9 +2358,11 @@ class TestExecuteToolCalls:
         big_result = "x" * 150_000
         with patch("run_agent.handle_function_call", return_value=big_result):
             agent._execute_tool_calls(mock_msg, messages, "task-1")
-        # Content should be replaced with persisted-output or truncation
+        # Content should be replaced with a capped, recoverable envelope.
         assert len(messages[0]["content"]) < 150_000
-        assert ("Truncated" in messages[0]["content"] or "<persisted-output>" in messages[0]["content"])
+        assert "hermes_tool_output_envelope" in messages[0]["content"]
+        assert "full_ref" in messages[0]["content"]
+        assert "full_hash" in messages[0]["content"]
 
     def test_quiet_tool_output_suppressed_when_progress_callback_present(self, agent):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
@@ -2835,7 +2837,7 @@ class TestConcurrentToolExecution:
         assert "cancelled" in messages[1]["content"].lower() or "skipped" in messages[1]["content"].lower()
 
     def test_concurrent_truncates_large_results(self, agent, tmp_path, monkeypatch):
-        """Concurrent path should save oversized results to file."""
+        """Concurrent path should envelope oversized results with recoverable refs."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes").mkdir()
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
@@ -2850,7 +2852,9 @@ class TestConcurrentToolExecution:
         assert len(messages) == 2
         for m in messages:
             assert len(m["content"]) < 150_000
-            assert ("Truncated" in m["content"] or "<persisted-output>" in m["content"])
+            assert "hermes_tool_output_envelope" in m["content"]
+            assert "full_ref" in m["content"]
+            assert "full_hash" in m["content"]
 
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""

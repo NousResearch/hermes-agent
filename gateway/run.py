@@ -14873,10 +14873,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
     async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
-        """Inject a watch-pattern notification as a synthetic message event.
+        """Deliver a synthetic background notification.
 
-        Routing must come from the queued watch event itself, not from whatever
-        foreground message happened to be active when the queue was drained.
+        Process/watch notifications are telemetry: send them to the platform as
+        non-conversational status text so they never re-enter the agent as user
+        intent. Async delegation completions are different: they are child-agent
+        results and intentionally continue through ``handle_message`` as an
+        internal follow-up turn.
         """
         source = self._build_process_event_source(evt)
         if not source:
@@ -14894,6 +14897,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter:
             return
         try:
+            if evt.get("type") != "async_delegation":
+                send_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                await adapter.send(
+                    source.chat_id,
+                    synth_text,
+                    metadata=_non_conversational_metadata(send_meta, platform=platform_name),
+                )
+                return
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
@@ -14902,14 +14913,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_id=str(evt.get("message_id") or "").strip() or None,
             )
             logger.info(
-                "Watch pattern notification — injecting for %s chat=%s thread=%s",
+                "Async delegation notification — injecting for %s chat=%s thread=%s",
                 platform_name,
                 source.chat_id,
                 source.thread_id,
             )
             await adapter.handle_message(synth_event)
         except Exception as e:
-            logger.error("Watch notification injection error: %s", e)
+            logger.error("Watch notification delivery error: %s", e)
 
     def _enrich_async_delegation_routing(self, evt: dict) -> None:
         """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
@@ -15087,23 +15098,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             break
                     if adapter and source.chat_id:
                         try:
-                            synth_event = MessageEvent(
-                                text=synth_text,
-                                message_type=MessageType.TEXT,
-                                source=source,
-                                internal=True,
-                                message_id=message_id,
-                            )
+                            send_meta = {"thread_id": source.thread_id} if source.thread_id else None
                             logger.info(
-                                "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
+                                "Process %s finished — sending telemetry notification for session %s chat=%s thread=%s",
                                 session_id,
                                 session_key,
                                 source.chat_id,
                                 source.thread_id,
                             )
-                            await adapter.handle_message(synth_event)
+                            await adapter.send(
+                                source.chat_id,
+                                synth_text,
+                                metadata=_non_conversational_metadata(send_meta, platform=platform_name),
+                            )
                         except Exception as e:
-                            logger.error("Agent notify injection error: %s", e)
+                            logger.error("Agent notify delivery error: %s", e)
                     break
 
                 # --- Normal text-only notification ---

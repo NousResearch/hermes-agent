@@ -32,6 +32,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.tool_output_envelope import compact_envelope_receipt, is_tool_output_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -1298,6 +1299,12 @@ class ContextCompressor(ContextEngine):
             if not isinstance(content, str):
                 continue
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
+                continue
+            if is_tool_output_envelope(content):
+                receipt = compact_envelope_receipt(content)
+                if receipt != content:
+                    result[i] = {**msg, "content": receipt}
+                    pruned += 1
                 continue
             # Skip already-deduplicated or previously-summarized results
             if content.startswith("[Duplicate tool output"):

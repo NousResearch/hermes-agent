@@ -601,6 +601,10 @@ _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
 _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
+_allow_file_urls_resolved = False
+_cached_allow_file_urls: Optional[bool] = None
+_enforce_private_urls_on_local_backend_resolved = False
+_cached_enforce_private_urls_on_local_backend: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
 
@@ -1348,7 +1352,7 @@ def _allow_private_urls() -> bool:
     """
     global _cached_allow_private_urls, _allow_private_urls_resolved
     if _allow_private_urls_resolved:
-        return _cached_allow_private_urls
+        return bool(_cached_allow_private_urls)
 
     _allow_private_urls_resolved = True
     _cached_allow_private_urls = False  # safe default
@@ -1362,7 +1366,87 @@ def _allow_private_urls() -> bool:
             )
     except Exception as e:
         logger.debug("Could not read allow_private_urls from config: %s", e)
-    return _cached_allow_private_urls
+    return bool(_cached_allow_private_urls)
+
+
+def _allow_file_urls() -> bool:
+    """Return whether browser_navigate may open local ``file://`` URLs.
+
+    ``file://`` is not an SSRF/private-host problem; it is direct local
+    filesystem read capability through Chromium's directory/file renderer.
+    Keep it behind a separate default-off browser config gate.
+    """
+    global _cached_allow_file_urls, _allow_file_urls_resolved
+    if _allow_file_urls_resolved:
+        return bool(_cached_allow_file_urls)
+
+    _allow_file_urls_resolved = True
+    _cached_allow_file_urls = False  # safe default
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            _cached_allow_file_urls = is_truthy_value(
+                browser_cfg.get("allow_file_urls"), default=False
+            )
+    except Exception as e:
+        logger.debug("Could not read allow_file_urls from config: %s", e)
+    return bool(_cached_allow_file_urls)
+
+
+def _enforce_private_url_block_on_local_backend() -> bool:
+    """Return whether private/LAN URL blocking also applies to local browsers.
+
+    Historical Hermes behavior skips SSRF checks for local Chromium/Camofox
+    because a fully trusted local agent often has terminal/file tools anyway.
+    Locked-down profiles can enable this to prevent the browser tool from
+    becoming a local network/LAN escape hatch when terminal/file are disabled.
+    """
+    global _cached_enforce_private_urls_on_local_backend
+    global _enforce_private_urls_on_local_backend_resolved
+    if _enforce_private_urls_on_local_backend_resolved:
+        return bool(_cached_enforce_private_urls_on_local_backend)
+
+    _enforce_private_urls_on_local_backend_resolved = True
+    _cached_enforce_private_urls_on_local_backend = False  # preserve legacy default
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            _cached_enforce_private_urls_on_local_backend = is_truthy_value(
+                browser_cfg.get("enforce_private_url_block_on_local_backend"),
+                default=False,
+            )
+    except Exception as e:
+        logger.debug(
+            "Could not read enforce_private_url_block_on_local_backend from config: %s", e
+        )
+    return bool(_cached_enforce_private_urls_on_local_backend)
+
+
+def _url_has_file_scheme(url: str) -> bool:
+    """Return True for local file URLs, case-insensitively."""
+    try:
+        import urllib.parse
+        return urllib.parse.urlparse(str(url).strip()).scheme.lower() == "file"
+    except Exception:
+        return False
+
+
+def _private_url_block_applies_to_browser(auto_local_this_nav: bool = False) -> bool:
+    """Return whether private/internal URL blocking should run for this nav.
+
+    Cloud backends are always checked. Local backends and hybrid local sidecars
+    are checked only when ``browser.enforce_private_url_block_on_local_backend``
+    is enabled.
+    """
+    if auto_local_this_nav:
+        return _enforce_private_url_block_on_local_backend()
+    if _is_local_backend():
+        return _enforce_private_url_block_on_local_backend()
+    return True
 
 
 def _socket_safe_tmpdir() -> str:
@@ -2736,6 +2820,16 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     nav_session_key = _navigation_session_key(effective_task_id, url)
     auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
 
+    if _url_has_file_scheme(url) and not _allow_file_urls():
+        return json.dumps({
+            "success": False,
+            "error": (
+                "Blocked: file:// navigation is disabled. Local filesystem URLs "
+                "expose direct file-read capability through the browser; enable "
+                "browser.allow_file_urls only for trusted sessions."
+            ),
+        })
+
     sensitive_query_key = _sensitive_query_param_name(url)
     if sensitive_query_key and not _is_local_backend() and not auto_local_this_nav:
         return json.dumps({
@@ -2764,8 +2858,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         })
 
     if (
-        not _is_local_backend()
-        and not auto_local_this_nav
+        _private_url_block_applies_to_browser(auto_local_this_nav)
         and not _allow_private_urls()
         and not _is_safe_url(url)
     ):
@@ -2840,8 +2933,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             })
 
         if (
-            not _is_local_backend()
-            and not auto_local_this_nav
+            _private_url_block_applies_to_browser(auto_local_this_nav)
             and not _allow_private_urls()
             and final_url and final_url != url and not _is_safe_url(final_url)
         ):
@@ -2956,8 +3048,7 @@ def browser_snapshot(
         # private/internal address, the snapshot would expose private page content.
         # Re-check the current URL before returning the snapshot.
         if (
-            not _is_local_backend()
-            and not _is_local_sidecar_key(effective_task_id)
+            _private_url_block_applies_to_browser(_is_local_sidecar_key(effective_task_id))
             and not _allow_private_urls()
         ):
             try:
@@ -3354,8 +3445,7 @@ def _eval_ssrf_guard_active(effective_task_id: str) -> bool:
     sidecar sessions and when ``allow_private_urls`` is set.
     """
     return (
-        not _is_local_backend()
-        and not _is_local_sidecar_key(effective_task_id)
+        _private_url_block_applies_to_browser(_is_local_sidecar_key(effective_task_id))
         and not _allow_private_urls()
     )
 
@@ -3924,8 +4014,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     # private/internal address, the screenshot would expose private page content
     # to the vision model.  Re-check the current URL before capturing anything.
     if (
-        not _is_local_backend()
-        and not _is_local_sidecar_key(effective_task_id)
+        _private_url_block_applies_to_browser(_is_local_sidecar_key(effective_task_id))
         and not _allow_private_urls()
     ):
         try:

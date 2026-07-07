@@ -8666,7 +8666,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
                 if _mode == "native":
                     try:
-                        _parts, _skipped = build_native_content_parts(
+                        _parts, _skipped, _ = build_native_content_parts(
                             prompt,
                             images,
                         )

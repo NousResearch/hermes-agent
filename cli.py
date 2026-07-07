@@ -12061,7 +12061,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     _text_for_parts = message if isinstance(message, str) else ""
                     _img_str_paths = [str(p) for p in images]
-                    _parts, _skipped = build_native_content_parts(
+                    _parts, _skipped, _ = build_native_content_parts(
                         _text_for_parts,
                         _img_str_paths,
                     )
@@ -16027,7 +16027,7 @@ def main(
 
                         if _img_mode == "native" and _build_parts is not None:
                             try:
-                                _parts, _skipped = _build_parts(
+                                _parts, _skipped, _ = _build_parts(
                                     query if isinstance(query, str) else "",
                                     [str(p) for p in single_query_images],
                                     image_urls=list(single_query_image_urls) or None,

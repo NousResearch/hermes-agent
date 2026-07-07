@@ -18516,7 +18516,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _native_imgs:
                     try:
                         from agent.image_routing import build_native_content_parts
-                        _parts, _skipped = build_native_content_parts(
+                        _parts, _skipped, _attachments = build_native_content_parts(
                             message,
                             _native_imgs,
                         )
@@ -18530,14 +18530,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         else:
                             # All images failed to read — fall back to plain text.
                             _run_message = message
+                            _attachments = []
                     except Exception as _img_exc:
                         logger.warning(
                             "Native image attachment failed, falling back to text: %s",
                             _img_exc,
                         )
                         _run_message = message
+                        _attachments = []
                 else:
                     _run_message = message
+                    _attachments = []
 
                 _api_run_message = _wrap_current_message_with_observed_context(
                     _run_message,
@@ -18547,6 +18550,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "conversation_history": agent_history,
                     "task_id": session_id,
                 }
+                if _attachments:
+                    _conversation_kwargs["attachments"] = _attachments
                 if _persist_user_message_override is not None:
                     _conversation_kwargs["persist_user_message"] = _persist_user_message_override
                 elif observed_group_context:

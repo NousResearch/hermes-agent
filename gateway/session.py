@@ -2280,6 +2280,7 @@ class SessionStore:
                         message.get("platform_message_id") or message.get("message_id")
                     ),
                     observed=bool(message.get("observed")),
+                    attachments=message.get("attachments"),
                     timestamp=message.get("timestamp"),
                 )
             except Exception as e:

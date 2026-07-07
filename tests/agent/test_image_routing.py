@@ -370,7 +370,7 @@ class TestBuildNativeContentParts:
     def test_text_then_image(self, tmp_path: Path):
         img = tmp_path / "cat.png"
         img.write_bytes(_png_bytes())
-        parts, skipped = build_native_content_parts("hello", [str(img)])
+        parts, skipped, _ = build_native_content_parts("hello", [str(img)])
         assert skipped == []
         assert len(parts) == 2
         assert parts[0]["type"] == "text"
@@ -384,7 +384,7 @@ class TestBuildNativeContentParts:
     def test_empty_text_inserts_default_prompt(self, tmp_path: Path):
         img = tmp_path / "cat.jpg"
         img.write_bytes(_png_bytes())
-        parts, skipped = build_native_content_parts("", [str(img)])
+        parts, skipped, _ = build_native_content_parts("", [str(img)])
         assert skipped == []
         # Even with empty user text, we insert a neutral prompt so the turn
         # isn't just pixels, and the path hint is appended after.
@@ -395,7 +395,7 @@ class TestBuildNativeContentParts:
         assert parts[1]["type"] == "image_url"
 
     def test_missing_file_is_skipped(self, tmp_path: Path):
-        parts, skipped = build_native_content_parts("hi", [str(tmp_path / "missing.png")])
+        parts, skipped, _ = build_native_content_parts("hi", [str(tmp_path / "missing.png")])
         assert skipped == [str(tmp_path / "missing.png")]
         # Skipped paths are NOT advertised in the path hints — the model
         # would otherwise be told a non-existent file is attached.
@@ -409,7 +409,7 @@ class TestBuildNativeContentParts:
         """
         img = tmp_path / "scan.png"
         img.write_bytes(_png_bytes())
-        parts, _ = build_native_content_parts("attach this", [str(img)])
+        parts, _, _ = build_native_content_parts("attach this", [str(img)])
         text_part = next(p for p in parts if p.get("type") == "text")
         assert "[Image attached at:" in text_part["text"]
         assert str(img) in text_part["text"]
@@ -423,7 +423,7 @@ class TestBuildNativeContentParts:
         good = tmp_path / "good.png"
         good.write_bytes(_png_bytes())
         missing = tmp_path / "missing.png"  # never created
-        parts, skipped = build_native_content_parts(
+        parts, skipped, _ = build_native_content_parts(
             "see attached", [str(good), str(missing)]
         )
         assert skipped == [str(missing)]
@@ -437,7 +437,7 @@ class TestBuildNativeContentParts:
         img2 = tmp_path / "b.png"
         img1.write_bytes(_png_bytes())
         img2.write_bytes(_png_bytes())
-        parts, skipped = build_native_content_parts("compare these", [str(img1), str(img2)])
+        parts, skipped, _ = build_native_content_parts("compare these", [str(img1), str(img2)])
         assert skipped == []
         image_parts = [p for p in parts if p.get("type") == "image_url"]
         assert len(image_parts) == 2
@@ -451,7 +451,7 @@ class TestBuildNativeContentParts:
         # Real JPEG bytes (SOI marker FF D8 FF): sniffing now wins over suffix.
         img = tmp_path / "photo.jpg"
         img.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01" + b"\x00" * 32)
-        parts, _ = build_native_content_parts("x", [str(img)])
+        parts, _, _ = build_native_content_parts("x", [str(img)])
         url = parts[1]["image_url"]["url"]
         assert url.startswith("data:image/jpeg;base64,")
 
@@ -459,7 +459,7 @@ class TestBuildNativeContentParts:
         # Real WEBP bytes (RIFF....WEBP): sniffing now wins over suffix.
         img = tmp_path / "pic.webp"
         img.write_bytes(b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 32)
-        parts, _ = build_native_content_parts("", [str(img)])
+        parts, _, _ = build_native_content_parts("", [str(img)])
         url = parts[1]["image_url"]["url"]
         assert url.startswith("data:image/webp;base64,")
 
@@ -470,7 +470,7 @@ class TestBuildNativeContentParts:
         """
         img = tmp_path / "discord_cached.webp"
         img.write_bytes(_png_bytes())  # bytes are PNG, suffix lies
-        parts, _ = build_native_content_parts("", [str(img)])
+        parts, _, _ = build_native_content_parts("", [str(img)])
         url = parts[1]["image_url"]["url"]
         assert url.startswith("data:image/png;base64,"), (
             f"Expected MIME sniffing to detect PNG bytes regardless of .webp suffix, got: {url[:60]}"
@@ -510,7 +510,7 @@ class TestLargeImageHandling:
 
         img = tmp_path / "cat.png"
         img.write_bytes(_png_bytes())
-        parts, skipped = _ir.build_native_content_parts("hi", [str(img)])
+        parts, skipped, _ = _ir.build_native_content_parts("hi", [str(img)])
         assert skipped == []
         assert len(parts) == 2
         assert parts[0]["type"] == "text"
@@ -647,7 +647,7 @@ class TestBuildNativeContentPartsURLs:
     inbound surfaces) can route remote image URLs straight to the model."""
 
     def test_url_only_no_local_paths(self):
-        parts, skipped = build_native_content_parts(
+        parts, skipped, _ = build_native_content_parts(
             "what is this?",
             [],
             image_urls=["https://example.com/diagram.png"],
@@ -665,7 +665,7 @@ class TestBuildNativeContentPartsURLs:
     def test_mixed_path_and_url(self, tmp_path: Path):
         img = tmp_path / "local.png"
         img.write_bytes(_png_bytes())
-        parts, skipped = build_native_content_parts(
+        parts, skipped, _ = build_native_content_parts(
             "compare these",
             [str(img)],
             image_urls=["https://example.com/remote.jpg"],
@@ -689,7 +689,7 @@ class TestBuildNativeContentPartsURLs:
         assert parts_no_urls == parts_empty_urls
 
     def test_blank_url_strings_are_dropped(self):
-        parts, _ = build_native_content_parts(
+        parts, _, _ = build_native_content_parts(
             "x", [], image_urls=["", "  ", "https://example.com/a.png"]
         )
         image_parts = [p for p in parts if p.get("type") == "image_url"]
@@ -697,7 +697,7 @@ class TestBuildNativeContentPartsURLs:
         assert image_parts[0]["image_url"]["url"] == "https://example.com/a.png"
 
     def test_url_only_inserts_default_prompt_when_text_empty(self):
-        parts, _ = build_native_content_parts(
+        parts, _, _ = build_native_content_parts(
             "", [], image_urls=["https://example.com/a.png"]
         )
         assert parts[0]["type"] == "text"
@@ -795,7 +795,7 @@ class TestFormatCompatibility:
         img_path = tmp_path / ".env.local"
         img_path.write_bytes(_png_bytes())
 
-        parts, skipped = build_native_content_parts("inspect this", [str(img_path)])
+        parts, skipped, _ = build_native_content_parts("inspect this", [str(img_path)])
 
         assert skipped == [str(img_path)]
         assert all(part.get("type") != "image_url" for part in parts)
@@ -813,7 +813,7 @@ class TestFormatCompatibility:
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"symlinks unavailable: {exc}")
 
-        parts, skipped = build_native_content_parts("inspect this", [str(img_link)])
+        parts, skipped, _ = build_native_content_parts("inspect this", [str(img_link)])
 
         assert skipped == [str(img_link)]
         assert all(part.get("type") != "image_url" for part in parts)

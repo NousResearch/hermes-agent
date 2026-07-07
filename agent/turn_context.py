@@ -125,6 +125,7 @@ def build_turn_context(
     stream_callback,
     persist_user_message: Optional[str],
     persist_user_timestamp: Optional[float] = None,
+    attachments: Optional[List[str]] = None,
     *,
     restore_or_build_system_prompt,
     install_safe_stdio,
@@ -315,6 +316,8 @@ def build_turn_context(
 
     # Add user message.
     user_msg = {"role": "user", "content": user_message}
+    if attachments:
+        user_msg["attachments"] = attachments
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx

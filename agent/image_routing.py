@@ -673,7 +673,7 @@ def build_native_content_parts(
     user_text: str,
     image_paths: List[str],
     image_urls: Optional[List[str]] = None,
-) -> Tuple[List[Dict[str, Any]], List[str]]:
+) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
     """Build an OpenAI-style ``content`` list for a user turn.
 
     Shape:
@@ -703,9 +703,10 @@ def build_native_content_parts(
     ceiling), the agent's retry loop transparently shrinks and retries
     once — see ``run_agent._try_shrink_image_parts_in_messages``.
 
-    Returns (content_parts, skipped). Skipped entries are local paths
-    that couldn't be read from disk; URLs are never skipped (they're
-    not validated here).
+    Returns (content_parts, skipped, attachments). Skipped entries are local
+    paths that couldn't be read from disk; URLs are never skipped (they're
+    not validated here). Attachments are the successfully resolved local
+    file paths, stored for follow-up re-analysis.
     """
     skipped: List[str] = []
     image_parts: List[Dict[str, Any]] = []
@@ -749,13 +750,13 @@ def build_native_content_parts(
         combined_text = f"{base_text}\n\n" + "\n".join(hint_lines)
         parts: List[Dict[str, Any]] = [{"type": "text", "text": combined_text}]
         parts.extend(image_parts)
-        return parts, skipped
+        return parts, skipped, attached_paths
 
     # No images successfully attached — fall back to plain text-only behaviour.
     parts = []
     if text:
         parts.append({"type": "text", "text": text})
-    return parts, skipped
+    return parts, skipped, []
 
 
 __all__ = [

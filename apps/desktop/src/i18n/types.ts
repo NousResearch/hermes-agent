@@ -1297,6 +1297,10 @@ export interface Translations {
     // Repository, Venv, …). Keyed by the raw stage name from the bootstrap
     // protocol; unknown ids fall back to formatStageName() in the overlay.
     stageLabels: Record<string, string>
+    /** hc-452: rough per-step duration hint shown next to a PENDING stage row
+     *  (first-install ballpark; an incremental update skips most of these).
+     *  Same key space as stageLabels; an id with no entry renders no hint. */
+    stageDurationHints: Record<string, string>
     oneTimeTitle: string
     unsupportedDesc: (platform: string) => string
     installCommand: string
@@ -1306,9 +1310,18 @@ export interface Translations {
     retryAfterRun: string
     failedTitle: string
     settingUpTitle: string
+    /** hc-452: shown instead of settingUpTitle when this run is an opt-in
+     *  runtime version update rather than a first-ever install. `version` may
+     *  be null before the target version resolves. */
+    settingUpTitleUpdate: (version: string | null) => string
     finishingTitle: string
     failedDesc: string
     activeDesc: string
+    /** hc-452: update-flow counterpart to activeDesc -- must NOT claim this is
+     *  a one-time thing or that future launches skip this step (both false
+     *  for a recurring runtime update). `version` may be null; see
+     *  settingUpTitleUpdate. */
+    activeDescUpdate: (version: string | null) => string
     progress: (completed: number, total: number) => string
     currentStage: (stage: string) => string
     fetchingManifest: string

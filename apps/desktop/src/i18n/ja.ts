@@ -1629,6 +1629,34 @@ export const ja = defineLocale({
       complete: '完了',
       'bootstrap-marker': '完了'
     },
+    // hc-452: まだ開始していない（pending）ステップ行の右側に表示するおおよ
+    // その所要時間（この欄は元々空欄だった箇所）。数値は Kael の 2026-07-08
+    // 実機計測（前提環境 8.6 秒／venv+python 依存関係 合計 6.3 秒／node 依存
+    // 関係 43 秒以上——いずれもゼロからの新規インストールでの計測）に基づく
+    // 概算値。差分更新（依存関係が変わっていない場合）はほとんどのステップが
+    // 1 秒未満で終わり「スキップ」と表示される——それ自体が十分な説明になる。
+    // 対応する id が無いステップにはヒントを表示しない。
+    stageDurationHints: {
+      prerequisites: '約 10 秒',
+      uv: '約 3 秒',
+      python: '約 3 秒',
+      git: '約 2 秒',
+      node: '約 3 秒',
+      'system-packages': '約 2 秒',
+      repository: '約 5 秒',
+      venv: '約 3 秒',
+      'python-deps': '約 5 秒',
+      dependencies: '約 5 秒',
+      'node-deps': '約 45 秒',
+      desktop: '約 2 分',
+      path: '約 1 秒',
+      config: '約 1 秒',
+      'config-templates': '約 1 秒',
+      'platform-sdks': '約 2 秒',
+      setup: '約 1 秒',
+      configure: '約 1 秒',
+      gateway: '約 3 秒'
+    },
     oneTimeTitle: 'APEX には一度限りのインストールが必要です',
     unsupportedDesc: platform =>
       `${platform} では自動の初回インストールはまだ利用できません。ターミナルを開いて以下のコマンドを実行し、このアプリを再起動してください。以降の起動ではこの手順はスキップされます。`,
@@ -1639,11 +1667,26 @@ export const ja = defineLocale({
     retryAfterRun: '実行しました — 再試行',
     failedTitle: 'インストールに失敗しました',
     settingUpTitle: 'APEX を設定中',
+    // hc-452: 今回の bootstrap が「オプトインの runtime バージョン更新」で
+    // あり、本当の意味での初回インストールではない場合に settingUpTitle の
+    // 代わりに表示する。version は null になることがある（対象バージョンが
+    // 解決される前に送られる合成 manifest イベントなど）。
+    settingUpTitleUpdate: version => (version ? `${version} に更新中` : 'APEX を更新中'),
     finishingTitle: '仕上げ中',
     failedDesc:
       'インストール手順のいずれかが失敗しました。Windows では、別の APEX CLI またはデスクトップインスタンスが実行中の場合に発生することがあります。実行中の APEX インスタンスをすべて停止してから再試行してください。詳細は以下またはデスクトップログで確認できます。',
     activeDesc:
       'これは一回限りのセットアップです。インストーラーが依存関係をダウンロードしてマシンを設定しています。以降の起動ではこの手順はスキップされます。',
+    // hc-452: 更新フロー用の activeDesc に対応する文言。「一回限りのセット
+    // アップ」「以降の起動ではスキップされます」という表現はあえて繰り返さ
+    // ない——Kael の実機レポートが、まさにこの表現が更新時には誤解を招くと
+    // 指摘した箇所（更新のたびに繰り返されるものであり、一回限りではない）。
+    // 変更のない依存関係は自動的にスキップされるため、多くの更新は数秒から
+    // 数十秒程度で完了する。
+    activeDescUpdate: version =>
+      version
+        ? `${version} に更新中です。変更のない依存関係は自動的にスキップされるため、通常は数秒から数十秒程度で完了します。`
+        : 'APEX を更新中です。変更のない依存関係は自動的にスキップされるため、通常は数秒から数十秒程度で完了します。',
     progress: (completed, total) => `${total} ステップ中 ${completed} 完了`,
     currentStage: stage => ` — 現在: ${stage}`,
     fetchingManifest: 'インストーラーマニフェストを取得中...',

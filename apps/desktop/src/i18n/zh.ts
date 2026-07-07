@@ -1833,6 +1833,37 @@ export const zh: Translations = {
       complete: '完成',
       'bootstrap-marker': '完成'
     },
+    // hc-452: rough per-step duration hints shown next to a PENDING stage row
+    // (before it starts, when there's nothing else to show there) so the user
+    // has a sense of what's coming instead of a blank space. Based on Kael's
+    // 2026-07-08 real-machine measurement (前置 8.6s / venv+python-deps 6.3s /
+    // node-deps 43s+ on a from-scratch bootstrap) -- these are first-install
+    // ballparks; an up-to-date incremental re-run (hc-452's skip logic) finishes
+    // most of these in under a second instead, which the "已跳过 · <1s" duration
+    // already visible on a SKIPPED row communicates on its own. Unknown/未列出
+    // stage ids simply render no hint (stageLabel's formatStageName fallback
+    // has no matching hint entry either, which is fine -- purely cosmetic).
+    stageDurationHints: {
+      prerequisites: '约 10 秒',
+      uv: '约 3 秒',
+      python: '约 3 秒',
+      git: '约 2 秒',
+      node: '约 3 秒',
+      'system-packages': '约 2 秒',
+      repository: '约 5 秒',
+      venv: '约 3 秒',
+      'python-deps': '约 5 秒',
+      dependencies: '约 5 秒',
+      'node-deps': '约 45 秒',
+      desktop: '约 2 分钟',
+      path: '约 1 秒',
+      config: '约 1 秒',
+      'config-templates': '约 1 秒',
+      'platform-sdks': '约 2 秒',
+      setup: '约 1 秒',
+      configure: '约 1 秒',
+      gateway: '约 3 秒'
+    },
     oneTimeTitle: 'APEX 需要一次性安装',
     unsupportedDesc: platform =>
       `${platform} 暂不支持自动首次启动安装。请打开终端并运行下面的命令，然后重新启动此应用。之后启动会跳过此步骤。`,
@@ -1843,10 +1874,26 @@ export const zh: Translations = {
     retryAfterRun: '我已运行 -- 重试',
     failedTitle: '安装失败',
     settingUpTitle: '正在设置 APEX',
+    // hc-452: shown instead of settingUpTitle when this bootstrap run is an
+    // opt-in runtime version UPDATE, not a first-ever install (state.manifest
+    // .updateInfo.isUpdate). version may be null (e.g. the eager synthetic
+    // manifest frame shown before the target version resolves) -- falls back
+    // to a version-less "更新中" phrasing rather than printing "undefined".
+    settingUpTitleUpdate: version => (version ? `正在更新到 ${version}` : '正在更新 APEX'),
     finishingTitle: '正在收尾',
     failedDesc:
       '某个安装步骤失败。在 Windows 上，如果另一个 APEX CLI 或桌面实例正在运行，可能会出现这种情况。请停止正在运行的 APEX 实例后重试。可查看下面的详情或 desktop 日志中的完整记录。',
     activeDesc: '这是一次性设置。安装器正在下载依赖并配置你的机器。之后启动会跳过此步骤。',
+    // hc-452: update-flow counterpart to activeDesc. Deliberately does NOT
+    // repeat "一次性"/"之后启动会跳过此步骤" -- those phrases are what
+    // Kael's report flagged as actively misleading during a version update
+    // (this is not a one-time thing; it recurs on every future update too).
+    // Unchanged dependencies are skipped automatically (hc-452's hash-marker
+    // judge) so most updates finish in well under a minute.
+    activeDescUpdate: version =>
+      version
+        ? `正在更新到 ${version}。未变化的依赖会自动跳过，通常几秒到几十秒内完成。`
+        : '正在更新 APEX。未变化的依赖会自动跳过，通常几秒到几十秒内完成。',
     progress: (completed, total) => `${completed}/${total} 个步骤已完成`,
     currentStage: stage => ` -- 当前：${stage}`,
     fetchingManifest: '正在获取安装器 manifest...',

@@ -2271,6 +2271,97 @@ You are Hermes Agent, an intelligent AI assistant created by Nous Research. You 
     }
 }
 
+# Fingerprint the file(s) that determine whether `npm install` in $Dir would
+# change anything: package.json always; package-lock.json too when present
+# (repo root has one, ui-tui does not). Returns $null when neither exists (
+# fingerprint undefined -> caller must treat as "needs install").
+#
+# Built on System.Security.Cryptography.SHA256 (BCL, available since
+# PowerShell 5.1) fed via TransformBlock/TransformFinalBlock so both files
+# hash as ONE stream without a temp concatenation file -- this is what lets
+# order-sensitive semantics match install.sh's `cat file1 file2 | cksum`
+# (package.json, then package-lock.json). On Windows there is no cross-
+# platform-portability concern with using a strong hash here (unlike
+# install.sh, which avoids GNU/Perl-only hash tools for its POSIX targets),
+# so this is the simpler choice over hand-rolling a CRC. Hashing the
+# concatenation (not each file independently) mirrors
+# scripts/install.sh::node_deps_fingerprint so a package.json-only edit still
+# invalidates the marker even when the lockfile update lags in the same commit.
+function Get-NodeDepsFingerprint {
+    param([string]$Dir)
+    $inputs = @()
+    foreach ($name in @("package.json", "package-lock.json")) {
+        $candidate = Join-Path $Dir $name
+        if (Test-Path $candidate) { $inputs += $candidate }
+    }
+    if ($inputs.Count -eq 0) { return $null }
+    # Concatenate bytes from every input file into one stream, then hash once
+    # -- matches install.sh's `cat file1 file2 | cksum` semantics (order
+    # matters and is fixed: package.json, then package-lock.json).
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        foreach ($path in $inputs) {
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            [void]$hasher.TransformBlock($bytes, 0, $bytes.Length, $null, 0)
+        }
+        [void]$hasher.TransformFinalBlock(@(), 0, 0)
+        return [System.BitConverter]::ToString($hasher.Hash) -replace '-', ''
+    } finally {
+        $hasher.Dispose()
+    }
+}
+
+# Marker lives INSIDE the npm project dir it describes (repo-local), same
+# placement rationale as Write-BootstrapMarker: removing the checkout or
+# deleting node_modules by hand naturally invalidates it.
+function Get-NodeDepsMarkerPath {
+    param([string]$Dir)
+    return (Join-Path $Dir ".node-deps-installed")
+}
+
+# True when `npm install` in $Dir would be a no-op: package.json/
+# package-lock.json are unchanged since the last successful install of THIS
+# checkout AND node_modules actually has real content beyond npm's own
+# bookkeeping file. That second check is load-bearing -- Install-Desktop's
+# npm-ci comment (below) documents a real flake where node_modules\
+# .package-lock.json can be stale while node_modules is actually empty
+# (Windows workspace-hoisting), so trusting our own marker file in isolation
+# would risk skipping an install that's actually needed. Fail-open by
+# construction: any missing piece (no marker yet, empty node_modules,
+# fingerprint mismatch) returns $false and the caller does a real install.
+function Test-NodeDepsUpToDate {
+    param([string]$Dir)
+    $marker = Get-NodeDepsMarkerPath $Dir
+    if (-not (Test-Path $marker)) { return $false }
+
+    $nodeModules = Join-Path $Dir "node_modules"
+    if (-not (Test-Path $nodeModules)) { return $false }
+    $realEntries = Get-ChildItem $nodeModules -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne ".package-lock.json" }
+    if (-not $realEntries -or @($realEntries).Count -eq 0) { return $false }
+
+    $current = Get-NodeDepsFingerprint $Dir
+    if (-not $current) { return $false }
+
+    $stored = $null
+    try { $stored = (Get-Content $marker -Raw -ErrorAction Stop).Trim() } catch { return $false }
+    return ($stored -eq $current)
+}
+
+# Record success so the next run's Test-NodeDepsUpToDate can skip. Best-effort
+# -- a write failure (read-only FS, permissions) just means the next run
+# reinstalls instead of skipping; never treated as a stage failure.
+function Set-NodeDepsInstalled {
+    param([string]$Dir)
+    $current = Get-NodeDepsFingerprint $Dir
+    if (-not $current) { return }
+    try {
+        Set-Content -Path (Get-NodeDepsMarkerPath $Dir) -Value $current -NoNewline -ErrorAction Stop
+    } catch {
+        # Best-effort; see doc comment above.
+    }
+}
+
 function Install-NodeDeps {
     if (-not $HasNode) {
         # Cross-process driver mode (Hermes-Setup.exe runs each -Stage NAME
@@ -2384,11 +2475,24 @@ function Install-NodeDeps {
         }
     }
 
+    # Track whether every sub-check below was a no-op, so this stage can
+    # surface skipped=true (via $script:_StageSkippedReason, same channel
+    # Stage-Node already uses) when there was truly nothing to install --
+    # mirrors scripts/install.sh::install_node_deps's mark_stage_skipped call.
+    $nodeDepsAnySkipped = $true
+
     # Browser tools
     if (Test-Path "$InstallDir\package.json") {
-        Write-Info "Installing Node.js dependencies (browser tools)..."
-        $browserLog = "$env:TEMP\hermes-npm-browser-$(Get-Random).log"
-        $browserNpmOk = _Run-NpmInstall "Browser tools" $InstallDir $browserLog $npmExe
+        if (Test-NodeDepsUpToDate $InstallDir) {
+            Write-Success "Node.js dependencies already up to date (package.json/package-lock.json unchanged) -- skipping"
+            $browserNpmOk = $true
+        } else {
+            $nodeDepsAnySkipped = $false
+            Write-Info "Installing Node.js dependencies (browser tools)..."
+            $browserLog = "$env:TEMP\hermes-npm-browser-$(Get-Random).log"
+            $browserNpmOk = _Run-NpmInstall "Browser tools" $InstallDir $browserLog $npmExe
+            if ($browserNpmOk) { Set-NodeDepsInstalled $InstallDir }
+        }
 
         # Install Playwright Chromium (mirrors scripts/install.sh behaviour for
         # Linux).  Without this, tools/browser_tool.py::check_browser_requirements
@@ -2487,12 +2591,31 @@ function Install-NodeDeps {
         }
     }
 
-    # TUI
+    # TUI. ui-tui has no package-lock.json (see Get-NodeDepsFingerprint), so
+    # the fingerprint here is package.json-only -- weaker than the browser-
+    # tools lock-verified check, but still fail-open and still catches the
+    # common case (a dependency version bump in package.json).
     $tuiDir = "$InstallDir\ui-tui"
     if (Test-Path "$tuiDir\package.json") {
-        Write-Info "Installing TUI dependencies..."
-        $tuiLog = "$env:TEMP\hermes-npm-tui-$(Get-Random).log"
-        [void](_Run-NpmInstall "TUI" $tuiDir $tuiLog $npmExe)
+        if (Test-NodeDepsUpToDate $tuiDir) {
+            Write-Success "TUI dependencies already up to date (package.json unchanged) -- skipping"
+        } else {
+            $nodeDepsAnySkipped = $false
+            Write-Info "Installing TUI dependencies..."
+            $tuiLog = "$env:TEMP\hermes-npm-tui-$(Get-Random).log"
+            $tuiNpmOk = _Run-NpmInstall "TUI" $tuiDir $tuiLog $npmExe
+            if ($tuiNpmOk) { Set-NodeDepsInstalled $tuiDir }
+        }
+    }
+
+    # Surface "nothing to do" to Invoke-Stage the same way Stage-Node already
+    # does, so the desktop bootstrap UI shows this stage as skipped=true
+    # instead of succeeded=true when every sub-check above was a no-op. Only
+    # fires when BOTH browser-tools and TUI (when present) were already up to
+    # date -- a real install anywhere in this stage correctly keeps it a plain
+    # "succeeded".
+    if ($nodeDepsAnySkipped) {
+        $script:_StageSkippedReason = "Node.js dependencies already up to date"
     }
 }
 

@@ -1008,7 +1008,55 @@ install_node() {
     HAS_NODE=true
 }
 
+# A lightweight, non-cryptographic identity for "this machine + this app
+# build", used only to decide whether a cached network-check result still
+# applies -- NOT a security boundary. OS/DISTRO/hostname changes (new box,
+# reimaged VM, WSL distro swap) invalidate the cache; anything else about the
+# network path (DNS, proxy, firewall) is intentionally NOT part of this key,
+# which is why the cache also carries a freshness window (see
+# NETWORK_CHECK_CACHE_TTL_SECONDS below) rather than living forever.
+_network_check_fingerprint() {
+    printf '%s|%s|%s' "$OS" "$DISTRO" "$(hostname 2>/dev/null || echo unknown)"
+}
+
+# How long a cached "connectivity looks good" result is trusted before we
+# probe again. A desktop runtime update re-runs the prerequisites stage on
+# every version bump; re-probing pypi.org + duckduckgo.com each time adds two
+# network round-trips (up to --max-time 8s each) to every update even though
+# connectivity essentially never changes between two updates minutes or hours
+# apart. 1 hour balances "don't nag the network on every update" against
+# "don't trust a cache from a stale, possibly-disconnected past session."
+# Override for testing / unusual environments via HERMES_NETWORK_CHECK_CACHE_TTL_SECONDS.
+NETWORK_CHECK_CACHE_TTL_SECONDS="${HERMES_NETWORK_CHECK_CACHE_TTL_SECONDS:-3600}"
+
 check_network_prerequisites() {
+    local cache_dir="$HERMES_HOME/bootstrap-cache"
+    local cache_file="$cache_dir/network-check.marker"
+    local fingerprint
+    fingerprint="$(_network_check_fingerprint)"
+
+    # Fast path: a fresh, matching cache entry means connectivity was already
+    # confirmed good for this machine recently -- skip both curl probes.
+    # Fail-open by construction: any read/parse hiccup (missing file, `date`
+    # unavailable, unexpected format) simply falls through to a real probe
+    # below, it never fabricates a pass.
+    if [ -f "$cache_file" ]; then
+        local cached_fingerprint cached_epoch now_epoch age
+        cached_fingerprint="$(sed -n '1p' "$cache_file" 2>/dev/null || true)"
+        cached_epoch="$(sed -n '2p' "$cache_file" 2>/dev/null || true)"
+        now_epoch="$(date +%s 2>/dev/null || true)"
+        if [ -n "$cached_fingerprint" ] && [ -n "$cached_epoch" ] && [ -n "$now_epoch" ] \
+            && [ "$cached_fingerprint" = "$fingerprint" ] \
+            && case "$cached_epoch" in ''|*[!0-9]*) false ;; *) true ;; esac; then
+            age=$((now_epoch - cached_epoch))
+            if [ "$age" -ge 0 ] && [ "$age" -lt "$NETWORK_CHECK_CACHE_TTL_SECONDS" ]; then
+                log_success "Internet connectivity looks good (cached ${age}s ago)"
+                mark_stage_skipped
+                return 0
+            fi
+        fi
+    fi
+
     log_info "Checking internet connectivity for package install and web tools..."
 
     local url
@@ -1029,8 +1077,20 @@ check_network_prerequisites() {
 
     if [ "$failed" = false ]; then
         log_success "Internet connectivity looks good"
+        # Best-effort cache write for the next run. Never fail the stage over
+        # a cache-write problem (read-only $HERMES_HOME, disk full, etc.) --
+        # the connectivity check itself already succeeded either way.
+        if mkdir -p "$cache_dir" 2>/dev/null; then
+            { printf '%s\n' "$fingerprint"; date +%s 2>/dev/null || echo 0; } > "$cache_file.tmp" 2>/dev/null \
+                && mv "$cache_file.tmp" "$cache_file" 2>/dev/null || true
+        fi
         return 0
     fi
+
+    # Networking looks broken -- never cache a failure. A transient blip
+    # (VPN reconnecting, captive portal) should be re-probed on the very next
+    # attempt, not suppressed for the rest of the TTL window.
+    rm -f "$cache_file" 2>/dev/null || true
 
     if [ "$DISTRO" = "termux" ]; then
         log_warn "Termux network prerequisites may be incomplete."
@@ -2220,6 +2280,85 @@ configure_browser_env_from_system_browser() {
     log_success "Configured browser tools to use $browser_path"
 }
 
+# Fingerprint the file(s) that determine whether `npm install` in $1 would
+# change anything: package.json always; package-lock.json too when present
+# (root has one, ui-tui does not -- see node_deps_marker_path). Builds a bash
+# array (not a newline/space-joined string) so this never has to word-split a
+# path list -- a path containing a space (uncommon but real on Windows/
+# "C:\Program Files\...\Hermes" style installs) would silently corrupt a
+# string-based join. A missing optional file is skipped rather than erroring,
+# so ui-tui's no-lockfile layout degrades to a package.json-only fingerprint
+# instead of failing the whole check.
+#
+# cksum(1) is POSIX (unlike sha256sum/shasum, which are GNU-coreutils- or
+# Perl-specific respectively and not guaranteed present on every target,
+# including Termux) -- this keeps the fingerprint check dependency-free on
+# every platform install.sh already supports. Not a security boundary: this
+# only decides whether to skip a redundant `npm install`, never a trust
+# boundary. cat'ing multiple files through one cksum keeps package.json edits
+# (e.g. a version bump with unrelated dep list) part of the fingerprint even
+# when the lockfile update lags behind it in the same commit.
+node_deps_fingerprint() {
+    local dir="$1"
+    local inputs=()
+    local f
+    for f in "$dir/package.json" "$dir/package-lock.json"; do
+        [ -f "$f" ] && inputs+=("$f")
+    done
+    [ "${#inputs[@]}" -gt 0 ] || return 1
+    cat "${inputs[@]}" 2>/dev/null | cksum
+}
+
+# Marker lives INSIDE the npm project dir it describes (repo-local, like
+# BOOTSTRAP_COMPLETE_MARKER's placement rationale): removing the checkout or
+# `rm -rf node_modules` by hand naturally invalidates it, no separate cleanup
+# path needed.
+node_deps_marker_path() {
+    printf '%s/.node-deps-installed' "$1"
+}
+
+# True (rc 0) when `npm install` in $dir would be a no-op: package.json/
+# package-lock.json are unchanged since the last successful install of THIS
+# checkout AND node_modules actually has real content. That second half is
+# load-bearing -- Windows workspace-hoisting can leave a stale
+# node_modules/.package-lock.json marker while node_modules itself is empty
+# (see Install-Desktop's npm-ci comment in install.ps1 for the same flake
+# documented independently), so trusting our own marker file alone without also
+# checking node_modules would risk skipping an install that's actually needed.
+# Fail-open by construction: any missing piece (no marker yet, cksum tool
+# absent, empty node_modules, fingerprint mismatch) returns non-zero and the
+# caller falls through to a real npm install.
+node_deps_up_to_date() {
+    local dir="$1"
+    local marker
+    marker="$(node_deps_marker_path "$dir")"
+
+    [ -f "$marker" ] || return 1
+    [ -d "$dir/node_modules" ] || return 1
+    # node_modules must have more than just npm's own bookkeeping file in it --
+    # an empty/aborted install can leave that one file behind with no packages.
+    local entry_count
+    entry_count="$(find "$dir/node_modules" -mindepth 1 -maxdepth 1 2>/dev/null | grep -vc '^.*/\.package-lock\.json$' || true)"
+    [ "${entry_count:-0}" -gt 0 ] || return 1
+
+    local current
+    current="$(node_deps_fingerprint "$dir" 2>/dev/null)" || return 1
+    [ -n "$current" ] || return 1
+    [ "$(cat "$marker" 2>/dev/null)" = "$current" ]
+}
+
+# Record success so the next run's node_deps_up_to_date can skip. Best-effort:
+# a write failure (read-only FS, disk full) just means the next run reinstalls
+# instead of skipping -- never treated as a stage failure.
+node_deps_mark_installed() {
+    local dir="$1"
+    local current
+    current="$(node_deps_fingerprint "$dir" 2>/dev/null)" || return 0
+    [ -n "$current" ] || return 0
+    printf '%s' "$current" > "$(node_deps_marker_path "$dir").tmp" 2>/dev/null \
+        && mv "$(node_deps_marker_path "$dir").tmp" "$(node_deps_marker_path "$dir")" 2>/dev/null || true
+}
+
 install_node_deps() {
     if [ "$HAS_NODE" = false ]; then
         log_info "Skipping Node.js dependencies (Node not installed)"
@@ -2233,15 +2372,24 @@ install_node_deps() {
         return 0
     fi
 
+    local _node_deps_any_skipped=true
+
     if [ -f "$INSTALL_DIR/package.json" ]; then
-        log_info "Installing Node.js dependencies (browser tools)..."
-        cd "$INSTALL_DIR"
-        # Time-boxed: a stalled registry fetch would otherwise hang here with no
-        # progress (same #39219 stall class as the desktop build below).
-        run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent || {
-            log_warn "npm install failed or timed out (browser tools may not work)"
-        }
-        log_success "Node.js dependencies installed"
+        if node_deps_up_to_date "$INSTALL_DIR"; then
+            log_success "Node.js dependencies already up to date (package.json/package-lock.json unchanged) — skipping"
+        else
+            _node_deps_any_skipped=false
+            log_info "Installing Node.js dependencies (browser tools)..."
+            cd "$INSTALL_DIR"
+            # Time-boxed: a stalled registry fetch would otherwise hang here with no
+            # progress (same #39219 stall class as the desktop build below).
+            if run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent; then
+                node_deps_mark_installed "$INSTALL_DIR"
+            else
+                log_warn "npm install failed or timed out (browser tools may not work)"
+            fi
+            log_success "Node.js dependencies installed"
+        fi
 
         # Install Playwright browser + system dependencies.
         # Playwright's --with-deps only supports apt-based systems natively.
@@ -2335,19 +2483,39 @@ install_node_deps() {
         log_success "Browser engine setup complete"
     fi
 
-    # Install TUI dependencies
+    # Install TUI dependencies. ui-tui has no package-lock.json (see
+    # node_deps_fingerprint), so the fingerprint here is package.json-only
+    # -- weaker than the root's lock-verified check, but still fail-open and
+    # still catches the common case (a dependency version bump in package.json).
     if [ -f "$INSTALL_DIR/ui-tui/package.json" ]; then
-        log_info "Installing TUI dependencies..."
-        cd "$INSTALL_DIR/ui-tui"
-        # Time-boxed: a stalled registry fetch would otherwise hang here (#39219).
-        run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent || {
-            log_warn "TUI npm install failed or timed out (hermes --tui may not work)"
-        }
-        log_success "TUI dependencies installed"
+        if node_deps_up_to_date "$INSTALL_DIR/ui-tui"; then
+            log_success "TUI dependencies already up to date (package.json unchanged) — skipping"
+        else
+            _node_deps_any_skipped=false
+            log_info "Installing TUI dependencies..."
+            cd "$INSTALL_DIR/ui-tui"
+            # Time-boxed: a stalled registry fetch would otherwise hang here (#39219).
+            if run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent; then
+                node_deps_mark_installed "$INSTALL_DIR/ui-tui"
+            else
+                log_warn "TUI npm install failed or timed out (hermes --tui may not work)"
+            fi
+            log_success "TUI dependencies installed"
+        fi
     fi
 
     # Keep the checkout clean so `hermes update` doesn't autostash every run.
     restore_dirty_lockfiles "$INSTALL_DIR"
+
+    # Surface "nothing to do" to the stage-protocol wrapper (run_stage_protocol)
+    # the same way setup_venv/install_deps already do, so the desktop bootstrap
+    # UI shows this stage as skipped=true instead of succeeded=true when every
+    # sub-check above was a no-op. Only fires when BOTH root and TUI (when
+    # present) were already up to date -- a real install anywhere in this stage
+    # correctly keeps it as a plain "succeeded".
+    if [ "$_node_deps_any_skipped" = true ]; then
+        mark_stage_skipped
+    fi
 }
 
 run_setup_wizard() {

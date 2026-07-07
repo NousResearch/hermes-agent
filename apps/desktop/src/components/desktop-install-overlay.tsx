@@ -8,7 +8,8 @@ import type {
   DesktopBootstrapStageDescriptor,
   DesktopBootstrapStageResult,
   DesktopBootstrapStageState,
-  DesktopBootstrapState
+  DesktopBootstrapState,
+  DesktopBootstrapUpdateInfo
 } from '@/global'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from '@/lib/icons'
@@ -141,6 +142,11 @@ function StageRow({ descriptor, result, isCurrent, now }: StageRowProps) {
               : null}
             {state === 'succeeded' || state === 'skipped' ? formatDuration(result?.durationMs) : null}
             {state === 'failed' ? copy.stageStates[state] : null}
+            {/* hc-452: rough duration hint for a step that hasn't started yet
+                -- this slot is otherwise blank while pending. Once the step
+                starts/finishes the real elapsed/duration above takes over, so
+                this only ever shows for genuinely-not-yet-run steps. */}
+            {state === 'pending' ? copy.stageDurationHints[descriptor.name] : null}
           </span>
         </div>
         {reason && state !== 'pending' && <p className="mt-0.5 truncate text-xs text-muted-foreground">{reason}</p>}
@@ -160,6 +166,15 @@ const EMPTY_STATE: DesktopBootstrapState = {
   unsupportedPlatform: null
 }
 
+// hc-452: default when an event omits updateInfo (older main.cjs build ahead
+// of a renderer that already expects the field, or the rare synthetic frame
+// a future caller forgets to set it on). Defaulting to "not an update" is the
+// safe fail-open direction here -- worst case a genuine update briefly shows
+// the more conservative "one-time setup" copy, never the reverse (a real
+// first install never gets mislabeled as an update, which would be the more
+// confusing failure mode).
+const DEFAULT_UPDATE_INFO: DesktopBootstrapUpdateInfo = { isUpdate: false, toVersion: null, fromVersion: null }
+
 function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): DesktopBootstrapState {
   if (ev.type === 'manifest') {
     const stages: Record<string, DesktopBootstrapStageResult> = {}
@@ -171,7 +186,12 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
     return {
       ...state,
       active: true,
-      manifest: { type: 'manifest', stages: ev.stages, protocolVersion: ev.protocolVersion },
+      manifest: {
+        type: 'manifest',
+        stages: ev.stages,
+        protocolVersion: ev.protocolVersion,
+        updateInfo: ev.updateInfo ?? DEFAULT_UPDATE_INFO
+      },
       stages,
       error: null,
       startedAt: state.startedAt || Date.now()
@@ -401,17 +421,36 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   const currentStartedAt = currentStage ? state.stages[currentStage]?.startedAt : null
   const currentElapsed = typeof currentStartedAt === 'number' ? formatElapsed(now - currentStartedAt) : ''
 
+  // hc-452: an opt-in runtime version update runs the exact same 10-stage
+  // bootstrap protocol as a first install, but must NOT be introduced as a
+  // "one-time install" -- that phrasing is what Kael's real-machine report
+  // flagged as actively misleading (it recurs on every future update too).
+  // updateInfo defaults to isUpdate=false (see DEFAULT_UPDATE_INFO) so a
+  // first install / an older main.cjs build that hasn't sent the field yet
+  // both correctly fall through to the existing first-install copy.
+  const updateInfo = state.manifest?.updateInfo ?? DEFAULT_UPDATE_INFO
+
+  const headerTitle = failed
+    ? copy.failedTitle
+    : state.active
+      ? updateInfo.isUpdate
+        ? copy.settingUpTitleUpdate(updateInfo.toVersion)
+        : copy.settingUpTitle
+      : copy.finishingTitle
+
+  const headerDesc = failed
+    ? copy.failedDesc
+    : updateInfo.isUpdate
+      ? copy.activeDescUpdate(updateInfo.toVersion)
+      : copy.activeDesc
+
   return (
     <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 backdrop-blur-md p-4">
       <div className="flex w-full max-w-2xl max-h-[90vh] flex-col rounded-xl border border-(--stroke-nous) bg-card shadow-nous">
         {/* Header -- always visible, never scrolls */}
         <div className="flex-shrink-0 p-8 pb-4">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            {failed ? copy.failedTitle : state.active ? copy.settingUpTitle : copy.finishingTitle}
-          </h2>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            {failed ? copy.failedDesc : copy.activeDesc}
-          </p>
+          <h2 className="text-2xl font-semibold tracking-tight">{headerTitle}</h2>
+          <p className="mt-1.5 text-sm text-muted-foreground">{headerDesc}</p>
         </div>
 
         {/* Scrollable middle: progress, stages, error block, log */}

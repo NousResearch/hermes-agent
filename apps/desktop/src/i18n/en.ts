@@ -1666,6 +1666,35 @@ export const en: Translations = {
       complete: 'Complete',
       'bootstrap-marker': 'Complete'
     },
+    // hc-452: rough per-step duration hints shown next to a PENDING stage row
+    // (before it starts, when there's nothing else to show there). Based on
+    // Kael's 2026-07-08 real-machine measurement (prerequisites 8.6s / venv+
+    // python-deps 6.3s / node-deps 43s+ on a from-scratch bootstrap) -- these
+    // are first-install ballparks; an up-to-date incremental re-run (hc-452's
+    // skip logic) finishes most of these in under a second instead, which the
+    // "Skipped · <1s" duration already visible on a SKIPPED row communicates
+    // on its own. An id with no entry here simply renders no hint.
+    stageDurationHints: {
+      prerequisites: '~10s',
+      uv: '~3s',
+      python: '~3s',
+      git: '~2s',
+      node: '~3s',
+      'system-packages': '~2s',
+      repository: '~5s',
+      venv: '~3s',
+      'python-deps': '~5s',
+      dependencies: '~5s',
+      'node-deps': '~45s',
+      desktop: '~2 min',
+      path: '~1s',
+      config: '~1s',
+      'config-templates': '~1s',
+      'platform-sdks': '~2s',
+      setup: '~1s',
+      configure: '~1s',
+      gateway: '~3s'
+    },
     oneTimeTitle: 'APEX needs a one-time install',
     unsupportedDesc: platform =>
       `Automated first-launch install isn’t available on ${platform} yet. Open Terminal and run the command below, then relaunch this app. Subsequent launches will skip this step.`,
@@ -1676,11 +1705,26 @@ export const en: Translations = {
     retryAfterRun: 'I’ve run it -- retry',
     failedTitle: 'Installation failed',
     settingUpTitle: 'Setting up APEX',
+    // hc-452: shown instead of settingUpTitle when this bootstrap run is an
+    // opt-in runtime version UPDATE, not a first-ever install. version may be
+    // null (e.g. the eager synthetic manifest frame shown before the target
+    // version resolves).
+    settingUpTitleUpdate: version => (version ? `Updating to ${version}` : 'Updating APEX'),
     finishingTitle: 'Finishing up',
     failedDesc:
       'One of the install steps failed. On Windows, this can happen if another APEX CLI or desktop instance is running. Stop any running APEX instances, then retry. Check the details below or the desktop log for the full transcript.',
     activeDesc:
       'This is a one-time setup. The installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.',
+    // hc-452: update-flow counterpart to activeDesc. Deliberately does NOT
+    // repeat "one-time setup" / "subsequent launches skip this" -- Kael's
+    // real-machine report flagged that exact phrasing as misleading during a
+    // version update (it recurs on every future update too, it's not a
+    // one-time thing). Unchanged dependencies are skipped automatically so
+    // most updates finish in well under a minute.
+    activeDescUpdate: version =>
+      version
+        ? `Updating to ${version}. Unchanged dependencies are skipped automatically, so this usually takes seconds to under a minute.`
+        : 'Updating APEX. Unchanged dependencies are skipped automatically, so this usually takes seconds to under a minute.',
     progress: (completed, total) => `${completed} of ${total} steps complete`,
     currentStage: stage => ` -- now: ${stage}`,
     fetchingManifest: 'Fetching installer manifest...',

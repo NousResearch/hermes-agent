@@ -1596,6 +1596,33 @@ export const zhHant = defineLocale({
       complete: '完成',
       'bootstrap-marker': '完成'
     },
+    // hc-452: 各步驟粗略預估時長，顯示在尚未開始（pending）的步驟列右側（此時
+    // 該欄位原本是空白）。數字取自 Kael 2026-07-08 真機實測（前置環境 8.6 秒／
+    // venv+python 相依套件合計 6.3 秒／node 相依套件 43 秒以上，皆為從零全新
+    // 安裝的量級）——這些是首次安裝的粗估值；增量更新（deps 未變）多數步驟會在
+    // 一秒內完成並顯示「已略過」，該狀態本身已足夠說明。找不到對應 id 時不顯示
+    // 提示。
+    stageDurationHints: {
+      prerequisites: '約 10 秒',
+      uv: '約 3 秒',
+      python: '約 3 秒',
+      git: '約 2 秒',
+      node: '約 3 秒',
+      'system-packages': '約 2 秒',
+      repository: '約 5 秒',
+      venv: '約 3 秒',
+      'python-deps': '約 5 秒',
+      dependencies: '約 5 秒',
+      'node-deps': '約 45 秒',
+      desktop: '約 2 分鐘',
+      path: '約 1 秒',
+      config: '約 1 秒',
+      'config-templates': '約 1 秒',
+      'platform-sdks': '約 2 秒',
+      setup: '約 1 秒',
+      configure: '約 1 秒',
+      gateway: '約 3 秒'
+    },
     oneTimeTitle: 'APEX 需要一次性安裝',
     unsupportedDesc: platform =>
       `${platform} 暫不支援自動首次啟動安裝。請開啟終端機並執行下面的指令，然後重新啟動此應用程式。之後啟動會略過此步驟。`,
@@ -1606,10 +1633,22 @@ export const zhHant = defineLocale({
     retryAfterRun: '我已執行 -- 重試',
     failedTitle: '安裝失敗',
     settingUpTitle: '正在設定 APEX',
+    // hc-452: 當本次 bootstrap 是「選用的 runtime 版本更新」而非真正的首次
+    // 安裝時，取代 settingUpTitle 顯示。version 可能為 null（例如網路請求尚未
+    // 解析出目標版本前，先送出的合成 manifest 事件）。
+    settingUpTitleUpdate: version => (version ? `正在更新至 ${version}` : '正在更新 APEX'),
     finishingTitle: '正在收尾',
     failedDesc:
       '某個安裝步驟失敗。在 Windows 上，如果另一個 APEX CLI 或桌面執行個體正在執行，可能會出現這種情況。請停止正在執行的 APEX 執行個體後重試。可查看下方的詳細資訊或 desktop 記錄中的完整記錄。',
     activeDesc: '這是一次性設定。安裝程式正在下載相依套件並設定您的電腦。之後啟動會略過此步驟。',
+    // hc-452: 更新流程對應 activeDesc 的文案。刻意不再重複「一次性」／「之後
+    // 啟動會略過此步驟」——Kael 真機報告指出這正是誤導使用者的措辭（更新每次
+    // 都會重演，並非一次性）。deps 未變的部分會自動略過，多數更新在幾秒到數十
+    // 秒內即可完成。
+    activeDescUpdate: version =>
+      version
+        ? `正在更新至 ${version}。未變化的相依套件會自動略過，通常幾秒到數十秒內即可完成。`
+        : '正在更新 APEX。未變化的相依套件會自動略過，通常幾秒到數十秒內即可完成。',
     progress: (completed, total) => `${completed}/${total} 個步驟已完成`,
     currentStage: stage => ` -- 目前：${stage}`,
     fetchingManifest: '正在取得安裝程式 manifest...',

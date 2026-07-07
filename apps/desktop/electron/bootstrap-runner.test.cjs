@@ -239,3 +239,107 @@ test('cnInstallEnv decouples the COS base from the mirror flag for auto-detectio
     else process.env.HERMES_RUNTIME_COS_BASE = savedBase
   }
 })
+
+// ---------------------------------------------------------------------------
+// hc-452: updateInfo threading. main.cjs resolves {isUpdate, toVersion,
+// fromVersion} BEFORE calling runBootstrap (from whether a runtime-pin
+// override is pending) and expects it to ride along on the 'manifest' event
+// unmodified, so the renderer can show "updating to vX" instead of "one-time
+// install" during an opt-in runtime version update. These tests drive
+// runBootstrap end-to-end against a minimal fake install.sh stub (posix-only;
+// the real install.sh/.ps1 protocol is exercised by the Python test suite
+// under tests/test_install_sh_*.py and tests/test_install_ps1_*.py) so the
+// threading is verified through the real spawn/parse path, not just a direct
+// function call.
+//
+// Skipped on win32: bootstrap-runner spawns 'bash' unconditionally for a
+// posix-kind installer (see spawnBash/resolveInstallScript), which isn't
+// necessarily on PATH in a bare Windows CI shell -- this whole file's other
+// tests already run cross-platform via runBootstrap's OTHER code paths
+// (resolveInstallScript, cnInstallEnv) that don't spawn anything.
+const describeManifestFlow = process.platform === 'win32' ? test.skip : test
+
+function writeFakeInstallSh(sourceRepoRoot) {
+  // Minimal posix installer stub: understands --manifest (one stage) and
+  // --stage complete --non-interactive --json (immediately succeeds). Enough
+  // to drive runBootstrap's real fetchManifest -> runStage -> writeMarker
+  // path without needing the full 3000+-line real install.sh.
+  //
+  // Must live at <sourceRepoRoot>/scripts/install.sh -- resolveLocalInstallScript
+  // (the "dev shortcut" resolution tier runBootstrap tries first) hardcodes that
+  // relative path.
+  const scriptsDir = path.join(sourceRepoRoot, 'scripts')
+  fs.mkdirSync(scriptsDir, { recursive: true })
+  const scriptPath = path.join(scriptsDir, 'install.sh')
+  fs.writeFileSync(
+    scriptPath,
+    [
+      '#!/bin/bash',
+      'set -e',
+      'if [ "$1" = "--manifest" ]; then',
+      '  echo \'{"protocol_version":1,"stages":[{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}\'',
+      '  exit 0',
+      'fi',
+      'if [ "$1" = "--stage" ] && [ "$2" = "complete" ]; then',
+      '  echo \'{"ok":true,"stage":"complete","skipped":false}\'',
+      '  exit 0',
+      'fi',
+      'echo "unexpected args: $*" >&2',
+      'exit 1',
+      ''
+    ].join('\n'),
+    { mode: 0o755 }
+  )
+  return scriptPath
+}
+
+describeManifestFlow('runBootstrap threads updateInfo through onto the manifest event (update)', async () => {
+  const home = mkTmpHome()
+  try {
+    writeFakeInstallSh(home)
+    const events = []
+    const result = await runBootstrap({
+      installStamp: null,
+      activeRoot: path.join(home, 'hermes-agent'),
+      sourceRepoRoot: home, // resolveLocalInstallScript looks for scripts/install.sh under here
+      hermesHome: home,
+      logRoot: home,
+      updateInfo: { isUpdate: true, toVersion: '2026.7.2', fromVersion: '2026.7.1' },
+      onEvent: ev => events.push(ev),
+      writeMarker: payload => payload
+    })
+
+    assert.equal(result.ok, true, `bootstrap should succeed against the fake stub: ${JSON.stringify(result)}`)
+    const manifestEvents = events.filter(ev => ev.type === 'manifest')
+    assert.equal(manifestEvents.length, 1)
+    assert.deepEqual(manifestEvents[0].updateInfo, { isUpdate: true, toVersion: '2026.7.2', fromVersion: '2026.7.1' })
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+describeManifestFlow('runBootstrap defaults updateInfo to a first-install shape when the caller omits it', async () => {
+  const home = mkTmpHome()
+  try {
+    writeFakeInstallSh(home)
+    const events = []
+    const result = await runBootstrap({
+      installStamp: null,
+      activeRoot: path.join(home, 'hermes-agent'),
+      sourceRepoRoot: home,
+      hermesHome: home,
+      logRoot: home,
+      // updateInfo intentionally omitted -- covers a caller (test, dev
+      // shortcut, or an older code path) that hasn't been updated to pass it.
+      onEvent: ev => events.push(ev),
+      writeMarker: payload => payload
+    })
+
+    assert.equal(result.ok, true, `bootstrap should succeed against the fake stub: ${JSON.stringify(result)}`)
+    const manifestEvents = events.filter(ev => ev.type === 'manifest')
+    assert.equal(manifestEvents.length, 1)
+    assert.deepEqual(manifestEvents[0].updateInfo, { isUpdate: false, toVersion: null, fromVersion: null })
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})

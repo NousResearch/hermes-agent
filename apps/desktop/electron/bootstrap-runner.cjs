@@ -15,11 +15,16 @@
  *     sourceRepoRoot,      // SOURCE_REPO_ROOT (for dev install.ps1 lookup)
  *     hermesHome,          // HERMES_HOME
  *     logRoot,             // HERMES_HOME/logs
+ *     updateInfo,          // hc-452: {isUpdate, toVersion, fromVersion} -- caller
+ *                          // resolves this from whether a runtime-pin override is
+ *                          // pending (an opt-in update re-bootstrap) vs a genuine
+ *                          // first install. Defaults to a first-install shape.
  *     emit: ev => {...}    // event sink (sender.send or similar)
  *   })
  *
  * Emits events with shape:
- *   { type: 'manifest',  stages: [{name, title, category, needs_user_input}, ...] }
+ *   { type: 'manifest',  stages: [{name, title, category, needs_user_input}, ...],
+ *                        updateInfo: {isUpdate, toVersion, fromVersion} }
  *   { type: 'stage',     name, state: 'running'|'succeeded'|'skipped'|'failed',
  *                        json?, durationMs?, error? }
  *   { type: 'log',       stage?, line, stream: 'stdout'|'stderr' } // raw line from install.ps1
@@ -708,7 +713,15 @@ async function runBootstrap(opts) {
     abortSignal,
     cnMirrors, // true -> activate install.sh CN mirror mode (packaged ApexNodes)
     runtimeCosBase, // public-read COS base hosting the runtime tarball + uv
-    writeMarker // callback to write the bootstrap-complete marker; main.cjs provides
+    writeMarker, // callback to write the bootstrap-complete marker; main.cjs provides
+    // hc-452: { isUpdate, toVersion, fromVersion } -- main.cjs resolves this
+    // BEFORE calling runBootstrap (from whether a runtime-pin override is
+    // pending) and threads it through so the renderer can show "updating to
+    // vX" instead of "one-time setup" on every runtime version bump, not just
+    // a genuine first install. Defaults to a plain first-install shape so
+    // every existing caller (tests, dev shortcuts) that doesn't pass this
+    // keeps working unchanged.
+    updateInfo = { isUpdate: false, toVersion: null, fromVersion: null }
   } = opts
 
   // Where the bundled installer lives (process.resourcesPath in a packaged
@@ -784,7 +797,8 @@ async function runBootstrap(opts) {
     emit({
       type: 'manifest',
       stages: manifest.stages,
-      protocolVersion: manifest.protocol_version || manifest.protocolVersion || null
+      protocolVersion: manifest.protocol_version || manifest.protocolVersion || null,
+      updateInfo
     })
 
     // 3. Iterate stages in order. Stages flagged needs_user_input are still

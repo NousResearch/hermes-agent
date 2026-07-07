@@ -3052,6 +3052,33 @@ async function ensureRuntime(backend) {
       throw handoffError
     }
 
+    // hc-452: is this a re-bootstrap for an opt-in runtime UPDATE (marker
+    // dropped by hermes:runtime:apply-update, an override pin waiting to be
+    // installed), or a genuine first-ever install (no prior runtime, no
+    // override)? Same signal the fail-open/rollback logic below already reads
+    // via readRuntimePinOverride() !== null (see wasOptInUpdate at the ok===false
+    // branch). Read synchronously and early (before the eager synthetic-manifest
+    // broadcast just below) so even the very first UI frame — shown before the
+    // real manifest fetch resolves — carries the right "updating" vs
+    // "first-time setup" signal instead of flashing the wrong copy on a slow
+    // network. override.previousMarker (persisted by hermes:runtime:apply-update
+    // right before it drops the marker) carries the version being replaced.
+    const runtimeUpdateOverride = readRuntimePinOverride()
+    const isRuntimeUpdate = runtimeUpdateOverride !== null
+    const bootstrapUpdateInfoEarly = isRuntimeUpdate
+      ? {
+          isUpdate: true,
+          // The resolved target version isn't known yet at this point
+          // (resolveBootstrapStamp hasn't run) — the real 'manifest' event
+          // fills this in once bootstrapStamp resolves, just below.
+          toVersion: null,
+          fromVersion:
+            runtimeUpdateOverride.previousMarker && runtimeUpdateOverride.previousMarker.version
+              ? runtimeUpdateOverride.previousMarker.version
+              : null
+        }
+      : { isUpdate: false, toVersion: null, fromVersion: null }
+
     // Eagerly flip the bootstrap UI state to 'active' so the renderer
     // shows the install overlay BEFORE the runner finishes fetching the
     // manifest (which on slow networks can take tens of seconds and would
@@ -3062,7 +3089,8 @@ async function ensureRuntime(backend) {
       broadcastBootstrapEvent({
         type: 'manifest',
         stages: [],
-        protocolVersion: null
+        protocolVersion: null,
+        updateInfo: bootstrapUpdateInfoEarly
       })
     } catch {
       void 0
@@ -3077,6 +3105,14 @@ async function ensureRuntime(backend) {
     // stamp, so a fresh install proceeds even when the cloud is unreachable.
     const bootstrapStamp = await resolveBootstrapStamp(backend.installStamp)
 
+    // Now that bootstrapStamp is resolved, fill in the target version the
+    // real bootstrap run (and its 'manifest' event, emitted from inside
+    // runBootstrap once install.ps1/.sh -Manifest returns) will carry.
+    const bootstrapUpdateInfo = {
+      ...bootstrapUpdateInfoEarly,
+      toVersion: bootstrapStamp && bootstrapStamp.version ? bootstrapStamp.version : null
+    }
+
     const bootstrapResult = await runBootstrap({
       installStamp: bootstrapStamp,
       activeRoot: backend.activeRoot,
@@ -3085,6 +3121,7 @@ async function ensureRuntime(backend) {
       hermesHome: HERMES_HOME,
       logRoot: path.join(HERMES_HOME, 'logs'),
       abortSignal: bootstrapAbortController.signal,
+      updateInfo: bootstrapUpdateInfo,
       // Region (CN mirrors vs upstream defaults) is auto-detected per machine by
       // install.sh / install.ps1 themselves (IP/timezone heuristic), so a
       // packaged build serves both foreign and mainland-China users correctly —

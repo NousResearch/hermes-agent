@@ -179,6 +179,22 @@ class TestPostSetup:
         mem0_json = json.loads((tmp_path / "mem0.json").read_text())
         assert mem0_json["mode"] == "platform"
 
+    def test_platform_setup_clears_stale_host(self, tmp_path, monkeypatch):
+        # A user who previously ran self-hosted has host in mem0.json. Switching
+        # to platform must drop host — otherwise routing (host > platform) keeps
+        # sending them to the self-hosted server despite --mode platform.
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"mode": "platform", "host": "http://old-selfhosted:8888"})
+        )
+        monkeypatch.setattr("sys.argv", ["hermes", "--mode", "platform", "--api-key", "sk-test"])
+        monkeypatch.setattr("plugins.memory.mem0._setup.get_hermes_home", lambda: tmp_path)
+        _inject_fake_hermes_cli(monkeypatch)
+        config = {"memory": {}}
+        post_setup(str(tmp_path), config)
+        mem0_json = json.loads((tmp_path / "mem0.json").read_text())
+        assert mem0_json["mode"] == "platform"
+        assert not mem0_json.get("host")  # cleared to falsy so routing → platform
+
     def test_oss_flag_mode(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sys.argv", [
             "hermes", "--mode", "oss", "--oss-llm-key", "sk-oai",

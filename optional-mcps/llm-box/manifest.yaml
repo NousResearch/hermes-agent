@@ -1,0 +1,48 @@
+manifest_version: 1
+
+name: llm-box
+description: Terminal-first workflow automation engine. Generate and execute YAML workflows from plain English descriptions.
+source: https://github.com/alib8b8/llm-box
+
+transport:
+  type: stdio
+  command: "llm-box"
+  args:
+    - "--mcp-server"
+
+install:
+  type: git
+  url: https://github.com/alib8b8/llm-box.git
+  ref: main
+  bootstrap:
+    - "./install.sh"
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - create_workflow
+    - run_workflow
+    - run_workflow_yaml
+    - list_nodes
+    - validate_workflow
+
+post_install: |
+  llm-box is a terminal-first workflow automation engine. To use:
+  
+  1. Start llm-box MCP server: llm-box --mcp-server
+  2. Create workflows from natural language: "Create a backup workflow"
+  3. Execute workflows: llm-box run --file backup.yaml
+  
+  Features:
+  - 20+ built-in nodes (fetch_url, http_request, execute, json_parse, etc.)
+  - 15+ LLM providers (Ollama, DeepSeek, OpenAI-compatible)
+  - MCP server mode for Hermes, Claude Code, Grok integration
+  
+  Security:
+  - SSRF protection on URL fetching
+  - Path traversal protection on file operations
+  - Safe mode available to disable execute node
+
+  Start a new Hermes session to load the llm-box tools.

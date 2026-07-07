@@ -15436,32 +15436,17 @@ def start_server(
                 _log.debug("loop noise filter install skipped: %s", exc)
 
             # ── Loop heartbeat watchdog (CF-1) ───────────────────────────
-            # Confirm the GIL-pressure hypothesis in production. Re-arm a 2s
-            # tick and measure the drift between when it *should* fire and
-            # when it actually does: a healthy loop drifts ~0, but a turn that
-            # holds the GIL blocks the loop and the next tick fires late by the
-            # stall duration. We log that so a stalled-loop WS drop is
-            # diagnosable from the gateway log. Uses loop.time() (monotonic)
-            # for drift, and call_later (not a task) so it dies with the loop —
-            # nothing to cancel on shutdown.
-            _hb_interval = 2.0
-            _hb_stall_threshold = 5.0
-            _hb_loop = asyncio.get_running_loop()
+            # Confirm the GIL-pressure hypothesis in production. A shared
+            # call_later watchdog logs when the dashboard loop wakes late; this
+            # keeps stalled-loop WS drops diagnosable without adding a task per
+            # connection.
+            from tui_gateway.loop_monitor import install_event_loop_lag_watchdog
 
-            def _loop_heartbeat(expected: float) -> None:
-                now = _hb_loop.time()
-                drift = now - expected
-                if drift > _hb_stall_threshold:
-                    _log.warning(
-                        "event loop stalled %.1fs (GIL pressure suspected)",
-                        drift,
-                    )
-                _hb_loop.call_later(
-                    _hb_interval, _loop_heartbeat, now + _hb_interval
-                )
-
-            _hb_loop.call_later(
-                _hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval
+            install_event_loop_lag_watchdog(
+                loop=asyncio.get_running_loop(),
+                logger=_log,
+                interval_s=2.0,
+                warn_after_s=5.0,
             )
 
             await server.main_loop()

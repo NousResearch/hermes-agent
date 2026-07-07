@@ -46,6 +46,20 @@ export function inlineErrorMessage(error: unknown, fallback: string): string {
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
 }
 
+export function isPromptSubmitTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /request timed out:\s*prompt\.submit/i.test(message)
+}
+
+export function submitErrorMessage(error: unknown, copy: Translations['desktop']): string {
+  if (isPromptSubmitTimeoutError(error)) {
+    return copy.promptSubmitTimedOut
+  }
+
+  return inlineErrorMessage(error, copy.promptFailed)
+}
+
 export function isSessionNotFoundError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 

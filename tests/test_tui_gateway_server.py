@@ -16,6 +16,47 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
+def test_agent_terminal_output_is_capped_before_desktop_ws(monkeypatch):
+    """Live background-process terminal output must not flood Desktop WS.
+
+    Large stdout chunks are still retained by the process registry for explicit
+    process(log) reads, but the live read-only terminal stream is best-effort UI
+    telemetry. It must be bounded before _emit/write_json so a noisy background
+    worker cannot stall the renderer WebSocket and trigger lost-gateway overlays.
+    """
+    from tools.process_registry import process_registry
+
+    emitted = []
+    prior_output = process_registry.on_output
+    prior_close = process_registry.on_close
+    server._sessions.clear()
+    server._sessions["sid-1"] = {"session_key": "session-key-1"}
+
+    class FakeSession:
+        id = "proc-big"
+        session_key = "session-key-1"
+
+    try:
+        process_registry.on_output = None
+        process_registry.on_close = None
+        monkeypatch.setattr(server, "_emit", lambda event, sid, payload: emitted.append((event, sid, payload)))
+
+        server._wire_agent_terminal_output()
+        process_registry.on_output(FakeSession(), "x" * 80_000)
+    finally:
+        process_registry.on_output = prior_output
+        process_registry.on_close = prior_close
+        server._sessions.clear()
+
+    assert emitted
+    event, sid, payload = emitted[0]
+    assert event == "agent.terminal.output"
+    assert sid == "sid-1"
+    assert payload["process_id"] == "proc-big"
+    assert len(payload["chunk"]) <= 16_384
+    assert "omitted" in payload["chunk"]
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -363,11 +404,16 @@ def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
         raise RuntimeError("redaction unavailable")
 
     setattr(redact_module, "redact_sensitive_text", fail_redaction)
-    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+    original_display = sys.modules.get("agent.display")
+    with monkeypatch.context() as redaction_patch:
+        redaction_patch.setitem(sys.modules, "agent.redact", redact_module)
 
-    assert server._redact_tui_verbose_text("api_key=secret") == ""
-    assert server._tool_args_text({"api_key": "secret"}) == ""
-    assert server._tool_result_text("token=secret") == ""
+        assert server._redact_tui_verbose_text("api_key=secret") == ""
+        assert server._tool_args_text({"api_key": "secret"}) == ""
+        assert server._tool_result_text("token=secret") == ""
+    if original_display is None:
+        sys.modules.pop("agent.display", None)
+
 
 
 def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
@@ -402,7 +448,6 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
         raise RuntimeError("redaction unavailable")
 
     setattr(redact_module, "redact_sensitive_text", fail_redaction)
-    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
 
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
@@ -414,8 +459,13 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
         {"tool_progress_mode": "verbose", "tool_started_at": {}},
     )
 
-    server._on_tool_start("redaction-test", "tool-1", "terminal", {"command": "pwd"})
-    server._on_tool_complete("redaction-test", "tool-1", "terminal", {"command": "pwd"}, "done")
+    original_display = sys.modules.get("agent.display")
+    with monkeypatch.context() as redaction_patch:
+        redaction_patch.setitem(sys.modules, "agent.redact", redact_module)
+        server._on_tool_start("redaction-test", "tool-1", "terminal", {"command": "pwd"})
+        server._on_tool_complete("redaction-test", "tool-1", "terminal", {"command": "pwd"}, "done")
+    if original_display is None:
+        sys.modules.pop("agent.display", None)
 
     assert events[0][0] == "tool.start"
     assert events[1][0] == "tool.complete"
@@ -5259,6 +5309,148 @@ def test_respond_unpacks_sid_tuple_correctly():
     finally:
         server._pending.pop("rid-x", None)
         server._answers.pop("rid-x", None)
+
+
+def test_clarify_respond_rejects_custom_answer_when_other_disallowed():
+    ev = threading.Event()
+    server._pending["rid-no-other"] = ("sid_x", ev)
+    server._pending_prompt_payloads["rid-no-other"] = (
+        "clarify.request",
+        {
+            "question": "Pick one",
+            "choices": ["Alpha", "Beta"],
+            "multi_select": False,
+            "allow_other": False,
+        },
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-no-other", "answer": "Alpha, Beta"},
+            }
+        )
+        assert resp.get("error")
+        assert resp["error"]["code"] == 4010
+        assert not ev.is_set()
+        assert "rid-no-other" not in server._answers
+    finally:
+        server._pending.pop("rid-no-other", None)
+        server._pending_prompt_payloads.pop("rid-no-other", None)
+        server._answers.pop("rid-no-other", None)
+
+
+def test_clarify_respond_rejects_empty_single_select_when_other_disallowed():
+    ev = threading.Event()
+    server._pending["rid-required-choice"] = ("sid_x", ev)
+    server._pending_prompt_payloads["rid-required-choice"] = (
+        "clarify.request",
+        {
+            "question": "Pick one",
+            "choices": ["Alpha", "Beta"],
+            "multi_select": False,
+            "allow_other": False,
+        },
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-required-choice", "answer": ""},
+            }
+        )
+        assert resp.get("error")
+        assert resp["error"]["code"] == 4010
+        assert not ev.is_set()
+        assert "rid-required-choice" not in server._answers
+    finally:
+        server._pending.pop("rid-required-choice", None)
+        server._pending_prompt_payloads.pop("rid-required-choice", None)
+        server._answers.pop("rid-required-choice", None)
+
+
+def test_clarify_respond_normalizes_allowed_choice_text():
+    ev = threading.Event()
+    server._pending["rid-choice"] = ("sid_x", ev)
+    server._pending_prompt_payloads["rid-choice"] = (
+        "clarify.request",
+        {
+            "question": "Pick one",
+            "choices": ["Alpha", "Beta"],
+            "multi_select": False,
+            "allow_other": False,
+        },
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-choice", "answer": "2"},
+            }
+        )
+        assert resp.get("result")
+        assert ev.is_set()
+        assert server._answers.get("rid-choice") == "Beta"
+    finally:
+        server._pending.pop("rid-choice", None)
+        server._pending_prompt_payloads.pop("rid-choice", None)
+        server._answers.pop("rid-choice", None)
+
+
+def test_clarify_respond_enforces_multi_select_bounds():
+    ev = threading.Event()
+    server._pending["rid-ms"] = ("sid_x", ev)
+    server._pending_prompt_payloads["rid-ms"] = (
+        "clarify.request",
+        {
+            "question": "Pick two",
+            "choices": ["Alpha", "Beta", "Gamma"],
+            "multi_select": True,
+            "min_selections": 2,
+            "max_selections": 2,
+            "allow_other": False,
+        },
+    )
+    try:
+        empty = server.handle_request(
+            {
+                "id": "0",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-ms", "answer": ""},
+            }
+        )
+        assert empty.get("error")
+        assert empty["error"]["code"] == 4010
+        assert "Select at least 2 choices" in empty["error"]["message"]
+        assert not ev.is_set()
+
+        too_few = server.handle_request(
+            {
+                "id": "1",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-ms", "answer": "1"},
+            }
+        )
+        assert too_few.get("error")
+        assert not ev.is_set()
+
+        ok = server.handle_request(
+            {
+                "id": "2",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-ms", "answer": "1,3"},
+            }
+        )
+        assert ok.get("result")
+        assert ev.is_set()
+        assert server._answers.get("rid-ms") == "Alpha, Gamma"
+    finally:
+        server._pending.pop("rid-ms", None)
+        server._pending_prompt_payloads.pop("rid-ms", None)
+        server._answers.pop("rid-ms", None)
 
 
 # ---------------------------------------------------------------------------

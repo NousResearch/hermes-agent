@@ -195,22 +195,41 @@ class PairingStore:
       - {platform}-pending.json   : pending pairing requests
       - {platform}-approved.json  : approved (paired) users
       - _rate_limits.json         : rate limit tracking
+
+    When constructed with ``profile="<name>"``, storage lives under
+    ``<HERMES_HOME>/profiles/<name>/pairing/`` (per-profile, used by
+    multiplexing gateways so each profile has its own whitelist).
+    Without a profile, storage is the global ``<HERMES_HOME>/pairing/``
+    directory (backward-compat for the ``hermes pairing`` CLI).
     """
 
-    def __init__(self):
-        PAIRING_DIR.mkdir(parents=True, exist_ok=True)
+    def __init__(self, profile: Optional[str] = None):
+        # Resolve storage directory lazily — tests use a temp HERMES_HOME
+        # and PairingStore may be constructed before the env is set.
+        if profile:
+            from hermes_constants import get_hermes_home
+            self._dir = get_hermes_home() / "profiles" / profile / "pairing"
+        else:
+            self._dir = PAIRING_DIR
+        self._dir.mkdir(parents=True, exist_ok=True)
         # Protects all read-modify-write cycles. The gateway runs multiple
         # platform adapters concurrently in threads sharing one PairingStore.
         self._lock = threading.RLock()
+        self._profile = profile  # for diagnostics / log lines
+
+    @property
+    def profile(self) -> Optional[str]:
+        """Profile name this store is scoped to, or None for the global store."""
+        return self._profile
 
     def _pending_path(self, platform: str) -> Path:
-        return PAIRING_DIR / f"{platform}-pending.json"
+        return self._dir / f"{platform}-pending.json"
 
     def _approved_path(self, platform: str) -> Path:
-        return PAIRING_DIR / f"{platform}-approved.json"
+        return self._dir / f"{platform}-approved.json"
 
     def _rate_limit_path(self) -> Path:
-        return PAIRING_DIR / "_rate_limits.json"
+        return self._dir / "_rate_limits.json"
 
     def _load_json(self, path: Path) -> dict:
         if path.exists():

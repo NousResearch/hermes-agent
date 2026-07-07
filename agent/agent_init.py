@@ -1318,8 +1318,15 @@ def init_agent(
     # fall back to stateless continuity.  See
     # agent/conversation_loop.py's invalid_encrypted_content retry branch.
     agent._codex_reasoning_replay_enabled = True
-    agent._memory_write_origin = "assistant_tool"
-    agent._memory_write_context = "foreground"
+    # Honor a pre-seeded write origin/context (the background_review fork sets
+    # them before __init__ so the LCM engine's auxiliary-frame detection can
+    # see them during on_session_start) instead of clobbering to the defaults.
+    agent._memory_write_origin = (
+        getattr(agent, "_memory_write_origin", "") or "assistant_tool"
+    )
+    agent._memory_write_context = (
+        getattr(agent, "_memory_write_context", "") or "foreground"
+    )
     
     # Cached system prompt -- built once per session, only rebuilt on compression
     agent._cached_system_prompt: Optional[str] = None

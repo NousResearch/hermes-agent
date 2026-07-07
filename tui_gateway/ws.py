@@ -280,7 +280,7 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-async def handle_ws(ws: Any) -> None:
+async def handle_ws(ws: Any, *, dashboard_identity: dict | None = None) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
     transport: WSTransport | None = None
@@ -385,7 +385,12 @@ async def handle_ws(ws: Any) -> None:
             req_id = req.get("id") if isinstance(req, dict) else None
             req_method = req.get("method") if isinstance(req, dict) else None
             try:
-                resp = await asyncio.to_thread(server.dispatch, req, transport)
+                resp = await asyncio.to_thread(
+                    server.dispatch,
+                    req,
+                    transport,
+                    dashboard_identity=dashboard_identity,
+                )
             except Exception:
                 dispatch_crashes += 1
                 _log.exception(

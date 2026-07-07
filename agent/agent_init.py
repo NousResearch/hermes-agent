@@ -59,6 +59,20 @@ from utils import base_url_host_matches, is_truthy_value
 logger = logging.getLogger("run_agent")
 
 
+def _dashboard_env_identity() -> dict[str, str]:
+    """Read non-secret dashboard user identity bridged into child processes."""
+    if os.environ.get("HERMES_SESSION_SOURCE", "").strip() != "dashboard":
+        return {}
+    user_id = os.environ.get("HERMES_SESSION_USER_ID", "").strip()
+    if not user_id or user_id == "server-internal":
+        return {}
+    identity = {"user_id": user_id}
+    user_name = os.environ.get("HERMES_SESSION_USER_NAME", "").strip()
+    if user_name and user_name != user_id:
+        identity["user_name"] = user_name
+    return identity
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.OpenAI`` / ``run_agent.cleanup_vm`` / ... and have those
@@ -391,11 +405,14 @@ def init_agent(
     agent.verbose_logging = verbose_logging
     agent.quiet_mode = quiet_mode
     agent.tool_progress_mode = tool_progress_mode
+    dashboard_identity = _dashboard_env_identity()
+    effective_user_id = user_id or dashboard_identity.get("user_id")
+    effective_user_name = user_name or dashboard_identity.get("user_name")
     agent.ephemeral_system_prompt = ephemeral_system_prompt
     agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
-    agent._user_id = user_id  # Platform user identifier (gateway sessions)
+    agent._user_id = effective_user_id  # Platform user identifier (gateway sessions)
     agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
-    agent._user_name = user_name
+    agent._user_name = effective_user_name
     agent._chat_id = chat_id
     agent._chat_name = chat_name
     agent._chat_type = chat_type

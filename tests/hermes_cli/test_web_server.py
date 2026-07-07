@@ -5919,6 +5919,43 @@ class TestPtyWebSocket:
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
 
+    def test_resolve_chat_argv_forwards_dashboard_identity(self, monkeypatch):
+        import hermes_cli.main as main_mod
+
+        monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv(
+            dashboard_identity={"user_id": "alice", "display_name": "Alice Example"}
+        )
+
+        assert env["HERMES_SESSION_PLATFORM"] == "tui"
+        assert env["HERMES_SESSION_SOURCE"] == "dashboard"
+        assert env["HERMES_SESSION_USER_ID"] == "alice"
+        assert env["HERMES_SESSION_USER_NAME"] == "Alice Example"
+
+    def test_resolve_chat_argv_leaves_identity_unset_without_ticket(self, monkeypatch):
+        import hermes_cli.main as main_mod
+
+        monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert "HERMES_SESSION_USER_ID" not in env
+        assert "HERMES_SESSION_USER_NAME" not in env
+        assert "HERMES_SESSION_SOURCE" not in env
+
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home
     ):
@@ -6045,6 +6082,83 @@ class TestPtyWebSocket:
                 pass
 
         assert captured["resume"] == "sess-99"
+
+    def test_pty_ws_passes_ticket_identity_to_resolver(self, monkeypatch):
+        from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+
+        captured: dict = {}
+        monkeypatch.setattr(self.ws_module.app.state, "auth_required", True, raising=False)
+        monkeypatch.setattr(
+            self.ws_module.app.state, "bound_host", "example.test", raising=False
+        )
+        monkeypatch.setattr(self.ws_module.app.state, "bound_port", 443, raising=False)
+
+        async def fake_resolve_async(
+            resume=None,
+            sidecar_url=None,
+            profile=None,
+            active_session_file=None,
+            dashboard_identity=None,
+        ):
+            captured["dashboard_identity"] = dashboard_identity
+            return (["/bin/sh", "-c", "printf ticket-identity-ok"], None, None)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv_async", fake_resolve_async)
+        ticket = mint_ticket(
+            user_id="alice",
+            provider="stub",
+            display_name="Alice Example",
+        )
+
+        with self.client.websocket_connect(
+            f"/api/pty?ticket={ticket}",
+            headers={"host": "example.test", "origin": "https://example.test"},
+        ) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        assert captured["dashboard_identity"] == {
+            "user_id": "alice",
+            "provider": "stub",
+            "display_name": "Alice Example",
+        }
+
+    def test_gateway_ws_passes_ticket_identity_to_tui_ws(self, monkeypatch):
+        from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+        from tui_gateway import ws as tui_ws
+
+        captured: dict = {}
+        monkeypatch.setattr(self.ws_module.app.state, "auth_required", True, raising=False)
+        monkeypatch.setattr(
+            self.ws_module.app.state, "bound_host", "example.test", raising=False
+        )
+        monkeypatch.setattr(self.ws_module.app.state, "bound_port", 443, raising=False)
+
+        async def fake_handle(ws, *, dashboard_identity=None):
+            captured["dashboard_identity"] = dashboard_identity
+            await ws.accept()
+            await ws.close()
+
+        monkeypatch.setattr(tui_ws, "handle_ws", fake_handle)
+        ticket = mint_ticket(
+            user_id="alice",
+            provider="stub",
+            display_name="Alice Example",
+        )
+
+        with self.client.websocket_connect(
+            f"/api/ws?ticket={ticket}",
+            headers={"host": "example.test", "origin": "https://example.test"},
+        ):
+            pass
+
+        assert captured["dashboard_identity"] == {
+            "user_id": "alice",
+            "provider": "stub",
+            "display_name": "Alice Example",
+        }
 
     def _assert_pty_propagates(self, monkeypatch, raising_resolver, *, profile=None, expect_detail=None):
         """Drive /api/pty with a resolver that raises, and assert the error

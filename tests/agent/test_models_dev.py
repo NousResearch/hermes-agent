@@ -401,3 +401,45 @@ class TestGetModelCapabilities:
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "nonexistent-model")
         assert caps is None
+
+
+class TestGetModelInfoCustomSlug:
+    """A ``custom:<name>`` provider slug must resolve to the same models.dev
+    entry as the bare name when ``<name>`` is a known provider, so custom
+    endpoints that mirror a catalog provider (e.g. Friendli) get real pricing
+    instead of falling through to the per-endpoint pricing path.
+    """
+
+    REGISTRY = {
+        "friendli": {
+            "id": "friendli",
+            "name": "Friendli",
+            "models": {
+                "zai-org/GLM-5.2": {
+                    "id": "zai-org/GLM-5.2",
+                    "cost": {"input": 1.4, "output": 4.4},
+                    "limit": {"context": 1048576, "output": 1048576},
+                },
+            },
+        },
+    }
+
+    def test_custom_slug_resolves_to_bare_provider(self):
+        from agent.models_dev import get_model_info
+
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            bare = get_model_info("friendli", "zai-org/GLM-5.2")
+            slugged = get_model_info("custom:friendli", "zai-org/GLM-5.2")
+
+        assert bare is not None
+        assert slugged is not None
+        # Invariant: the custom slug yields identical pricing to the bare name.
+        assert slugged.cost_input == bare.cost_input
+        assert slugged.cost_output == bare.cost_output
+        assert slugged.provider_id == bare.provider_id
+
+    def test_custom_slug_unknown_provider_returns_none(self):
+        from agent.models_dev import get_model_info
+
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            assert get_model_info("custom:not-a-provider", "zai-org/GLM-5.2") is None

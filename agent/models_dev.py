@@ -704,6 +704,13 @@ def get_model_info(
 
     data = fetch_models_dev()
     pdata = data.get(mdev_id)
+    if not isinstance(pdata, dict) and provider_id.startswith("custom:"):
+        # Custom providers are slugged "custom:<name>"; retry with the bare
+        # name so a custom endpoint that mirrors a known models.dev provider
+        # (e.g. "custom:friendli" -> "friendli") resolves to real pricing.
+        bare = provider_id.split(":", 1)[1]
+        mdev_id = PROVIDER_TO_MODELS_DEV.get(bare, bare)
+        pdata = data.get(mdev_id)
     if not isinstance(pdata, dict):
         return None
 

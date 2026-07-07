@@ -2412,7 +2412,9 @@ class TestConcurrencyDefaults(unittest.TestCase):
         }
 
         with patch.dict("sys.modules", {"cli": stale_cli}):
-            with patch("hermes_cli.config.load_config", return_value=active_config):
+            with patch(
+                "hermes_cli.config.load_config_readonly", return_value=active_config
+            ):
                 self.assertEqual(_load_config()["max_concurrent_children"], 50)
                 self.assertEqual(_get_max_concurrent_children(), 50)
 
@@ -2426,8 +2428,34 @@ class TestConcurrencyDefaults(unittest.TestCase):
         }
 
         with patch.dict("sys.modules", {"cli": fallback_cli}):
-            with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+            with patch(
+                "hermes_cli.config.load_config_readonly",
+                side_effect=RuntimeError("boom"),
+            ):
                 self.assertEqual(_load_config()["max_concurrent_children"], 8)
+
+    def test_load_config_prefers_cli_config_when_user_config_ignored(self):
+        # `hermes chat --ignore-user-config` sets HERMES_IGNORE_USER_CONFIG=1,
+        # which only load_cli_config() honors. The delegation loader must keep
+        # CLI_CONFIG authoritative under the flag so user config.yaml
+        # delegation keys stay suppressed.
+        ignoring_cli = types.ModuleType("cli")
+        ignoring_cli.CLI_CONFIG = {
+            "delegation": {
+                "max_iterations": 45,
+                "max_concurrent_children": 4,
+            }
+        }
+        user_config = {"delegation": {"max_concurrent_children": 50}}
+
+        with patch.dict("sys.modules", {"cli": ignoring_cli}):
+            with patch.dict(os.environ, {"HERMES_IGNORE_USER_CONFIG": "1"}):
+                with patch(
+                    "hermes_cli.config.load_config_readonly",
+                    return_value=user_config,
+                ) as mock_loader:
+                    self.assertEqual(_load_config()["max_concurrent_children"], 4)
+                    mock_loader.assert_not_called()
 
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_default_is_three(self, mock_cfg):

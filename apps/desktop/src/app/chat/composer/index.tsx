@@ -7,9 +7,11 @@ import { Button } from '@/components/ui/button'
 import { getHermesConfigRecord } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
+import { respondToClarifyRequest } from '@/lib/clarify-response'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { $clarifyRequest } from '@/store/clarify'
 import { $composerAttachments } from '@/store/composer'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
@@ -105,6 +107,7 @@ export function ChatBar({
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore($activeSessionAwaitingInput)
+  const clarifyRequest = useStore($clarifyRequest)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
   const sendBlocked = busy || compacting
 
@@ -249,6 +252,17 @@ export function ChatBar({
 
   const showHelpHint = isHelpHint
 
+  const submitClarifyAnswer = useCallback(
+    (answer: string) =>
+      respondToClarifyRequest({
+        answer,
+        copy: t.assistant.clarify,
+        gateway,
+        request: clarifyRequest
+      }),
+    [clarifyRequest, gateway, t.assistant.clarify]
+  )
+
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
   const { steerDraft, submitDraft } = useComposerSubmit({
@@ -271,6 +285,7 @@ export function ChatBar({
     onSteer,
     onSubmit,
     onSubmitAccepted: replyActive ? clearMessageReply : undefined,
+    onSubmitClarifyAnswer: clarifyRequest ? submitClarifyAnswer : undefined,
     queueCurrentDraft,
     queueEdit,
     sendBlocked,

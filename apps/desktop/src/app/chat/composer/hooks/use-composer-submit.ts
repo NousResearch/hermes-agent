@@ -31,6 +31,7 @@ interface UseComposerSubmitArgs {
   onSteer: ChatBarProps['onSteer']
   onSubmit: ChatBarProps['onSubmit']
   onSubmitAccepted?: () => void
+  onSubmitClarifyAnswer?: (answer: string) => Promise<boolean> | boolean
   queueCurrentDraft: () => boolean
   queueEdit: QueueEditState | null
   sendBlocked: boolean
@@ -69,6 +70,7 @@ export function useComposerSubmit({
   onSteer,
   onSubmit,
   onSubmitAccepted,
+  onSubmitClarifyAnswer,
   queueCurrentDraft,
   queueEdit,
   sendBlocked,
@@ -106,6 +108,34 @@ export function useComposerSubmit({
   // while always calling the latest dispatchSubmit closure.
   const dispatchSubmitRef = useRef(dispatchSubmit)
   dispatchSubmitRef.current = dispatchSubmit
+
+  const dispatchClarifyAnswer = (text: string) => {
+    if (!onSubmitClarifyAnswer) {
+      return false
+    }
+
+    const submittedScope = activeQueueSessionKeyRef.current
+
+    const restore = () => {
+      loadIntoComposer(text, [])
+      stashAt(activeQueueSessionKeyRef.current, text, [])
+    }
+
+    clearDraft()
+
+    void Promise.resolve(onSubmitClarifyAnswer(text.trim()))
+      .then(accepted => {
+        if (accepted === false) {
+          restore()
+        } else {
+          clearSessionDraft(submittedScope)
+          onSubmitAccepted?.()
+        }
+      })
+      .catch(restore)
+
+    return true
+  }
 
   useEffect(
     () =>
@@ -154,7 +184,9 @@ export function useComposerSubmit({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (busy && !attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
+      if (onSubmitClarifyAnswer && payloadPresent && !attachments.length && text.trim()) {
+        dispatchClarifyAnswer(text)
+      } else if (busy && !attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)

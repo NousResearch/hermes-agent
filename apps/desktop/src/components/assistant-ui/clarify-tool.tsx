@@ -18,12 +18,11 @@ import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
-import { triggerHaptic } from '@/lib/haptics'
+import { respondToClarifyRequest } from '@/lib/clarify-response'
 import { Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import { $clarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
-import { notifyError } from '@/store/notifications'
 
 import { selectMessageRunning } from './tool/fallback-model'
 
@@ -154,35 +153,18 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const respond = useCallback(
     async (answer: string) => {
-      if (!ready || !matchingRequest) {
-        notifyError(new Error(copy.notReady), copy.sendFailed)
-
-        return
-      }
-
-      if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
-
-        return
-      }
-
-      setSubmitting(true)
-
-      try {
-        await gateway.request<{ ok?: boolean }>('clarify.respond', {
-          request_id: matchingRequest.requestId,
-          answer
-        })
-        triggerHaptic('submit')
-        clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
-        // The matching tool.complete will land shortly after, swapping this
-        // panel for the ToolFallback view above.
-      } catch (error) {
-        notifyError(error, copy.sendFailed)
-        setSubmitting(false)
-      }
+      await respondToClarifyRequest({
+        answer,
+        copy,
+        gateway,
+        onBeforeSend: () => setSubmitting(true),
+        onError: () => setSubmitting(false),
+        request: ready ? matchingRequest : null
+      })
+      // The matching tool.complete will land shortly after, swapping this panel
+      // for the ToolFallback view above.
     },
-    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, ready]
+    [copy, gateway, matchingRequest, ready]
   )
 
   const trimmedDraft = draft.trim()

@@ -616,6 +616,8 @@ class TestMediaExtensionAllowlistParity:
     DROPPED_BEFORE = ["md", "json", "yaml", "yml", "xml", "html", "htm",
                       "tsv", "svg"]
 
+    NEVER_COVERED = ["py", "markdown", "stl", "3mf"]
+
     def test_previously_dropped_extensions_now_extract(self):
         for ext in self.DROPPED_BEFORE:
             path = f"/tmp/report.{ext}"
@@ -626,7 +628,8 @@ class TestMediaExtensionAllowlistParity:
         from gateway.platforms.base import MEDIA_DELIVERY_EXTS
         # Both functions reference MEDIA_DELIVERY_EXTS; assert the documents
         # that motivated the bug are present in the shared set.
-        for ext in (".md", ".json", ".yaml", ".yml", ".xml", ".html", ".htm"):
+        for ext in (".md", ".json", ".yaml", ".yml", ".xml", ".html", ".htm",
+                    ".py", ".markdown", ".stl", ".3mf"):
             assert ext in MEDIA_DELIVERY_EXTS
 
     def test_unknown_extension_not_black_holed_by_cleanup(self):
@@ -647,6 +650,26 @@ class TestMediaExtensionAllowlistParity:
         assert "MEDIA:" not in stripped
         assert "/tmp/report.md" not in stripped
         assert "Here is your report:" in stripped
+
+
+    def test_new_media_extensions_extract_via_media_tag(self):
+        """.py, .markdown, .stl, and .3mf are deliverable via MEDIA: tag (covers
+        issues #42206, #35474, #53249). MEDIA: tag for these should yield a
+        matched path — not silently dropped."""
+        for ext in self.NEVER_COVERED:
+            path = f"/tmp/artifact.{ext}"
+            media, _ = BasePlatformAdapter.extract_media(f"Here: MEDIA:{path}")
+            assert media == [(path, False)], f".{ext} should extract via MEDIA:"
+
+
+    def test_new_extensions_stripped_from_body(self):
+        """A MEDIA: tag with .py/.markdown/.stl/.3mf is cleaned from the body
+        (not left as orphan text)."""
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        for ext in self.NEVER_COVERED:
+            text = f"See MEDIA:/tmp/artifact.{ext} attached"
+            stripped = MEDIA_TAG_CLEANUP_RE.sub("", text).strip()
+            assert "MEDIA:" not in stripped, f".{ext} tag not stripped"
 
 
 class TestExtensionlessMediaDelivery:

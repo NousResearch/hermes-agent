@@ -1333,6 +1333,7 @@ def _log_safe_path(path: str) -> str:
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
+    ".markdown": "text/markdown",
     ".txt": "text/plain",
     ".csv": "text/csv",
     ".log": "text/plain",
@@ -1353,6 +1354,8 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ts": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",
+    ".stl": "model/stl",
+    ".3mf": "model/3mf",
 }
 
 
@@ -1437,11 +1440,13 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Audio (delivered as voice/audio where supported)
     ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
-    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
+    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".markdown", ".py", ".epub",
     # Spreadsheets / data
     ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
     # Presentations
     ".pptx", ".ppt", ".odp", ".key",
+    # 3D models
+    ".stl", ".3mf",
     # Archives
     ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".apk", ".ipa",
     # Web / rendered output

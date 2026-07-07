@@ -117,7 +117,7 @@ async def test_inbound_frame_reaches_handler(server):
             "event": {
                 "text": "hello from connector",
                 "message_type": "text",
-                "source": {"platform": "discord", "chat_id": "chan1", "chat_type": "group", "guild_id": "guildA"},
+                "source": {"platform": "discord", "chat_id": "chan1", "chat_type": "group", "scope_id": "guildA"},
             },
             "bufferId": "buf-1",
         }
@@ -132,7 +132,7 @@ async def test_inbound_frame_reaches_handler(server):
         await asyncio.sleep(0.05)
         assert len(received) == 1
         assert received[0].text == "hello from connector"
-        assert received[0].source.guild_id == "guildA"
+        assert received[0].source.scope_id == "guildA"
     finally:
         await t.disconnect()
 

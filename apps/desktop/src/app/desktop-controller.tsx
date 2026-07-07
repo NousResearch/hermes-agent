@@ -5,8 +5,8 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 're
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
-import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
+import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -15,9 +15,10 @@ import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, triggerCronJob } from '../hermes'
+import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { storedSessionIdForNotification } from '../lib/session-ids'
+import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId } from '../store/cron'
 import {
@@ -45,12 +46,7 @@ import {
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import {
-  $activeGatewayProfile,
-  $freshSessionRequest,
-  $profileScope,
-  refreshActiveProfile
-} from '../store/profile'
+import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
@@ -60,6 +56,7 @@ import {
   $freshDraftReady,
   $gatewayState,
   $messages,
+  $messagingSessions,
   $resumeExhaustedSessionId,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
@@ -76,7 +73,7 @@ import {
   setRememberedSessionId
 } from '../store/session'
 import { onSessionsChanged } from '../store/session-sync'
-import { clearSessionTodos, setSessionTodos, todoListActive } from '../store/todos'
+import { clearSessionTodos, setSessionTodos, todosForHydration } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
 
@@ -134,6 +131,7 @@ const AgentsView = lazy(async () => ({ default: (await import('./agents')).Agent
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
+const StarmapView = lazy(async () => ({ default: (await import('./starmap')).StarmapView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
@@ -145,6 +143,39 @@ const SkillsView = lazy(async () => ({ default: (await import('./skills')).Skill
 // this cadence while the app is open + visible so new runs surface promptly
 // instead of waiting for the next user-triggered refreshSessions().
 const CRON_POLL_INTERVAL_MS = 30_000
+// Messaging-platform turns are written by the background gateway (WeChat,
+// Telegram, Discord, …), not the desktop websocket that drives local chats.
+// Poll the bounded messaging slice while visible so inbound platform traffic
+// appears without requiring a manual refresh or route change.
+const MESSAGING_POLL_INTERVAL_MS = 10_000
+const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
+
+function sessionMatchesStoredId(session: { id: string; _lineage_root_id?: null | string }, id: string): boolean {
+  return session.id === id || session._lineage_root_id === id
+}
+
+function hashString(hash: number, value: string): number {
+  let next = hash
+
+  for (let i = 0; i < value.length; i++) {
+    next ^= value.charCodeAt(i)
+    next = Math.imul(next, 16777619)
+  }
+
+  return next >>> 0
+}
+
+function sessionMessagesSignature(messages: SessionMessage[]): string {
+  let hash = 2166136261
+
+  for (const m of messages) {
+    hash = hashString(hash, m.role)
+    hash = hashString(hash, String(m.timestamp ?? ''))
+    hash = hashString(hash, typeof m.content === 'string' ? m.content : (JSON.stringify(m.content) ?? ''))
+  }
+
+  return `${messages.length}:${hash}`
+}
 
 export function DesktopController() {
   const queryClient = useQueryClient()
@@ -153,6 +184,7 @@ export function DesktopController() {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
+  const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
@@ -163,6 +195,7 @@ export function DesktopController() {
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const messagingSessions = useStore($messagingSessions)
   const terminalTakeover = useStore($terminalTakeover)
   const reviewOpen = useStore($reviewOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
@@ -190,8 +223,10 @@ export function DesktopController() {
     currentView,
     openAgents,
     openCommandCenterSection,
+    openStarmap,
     profilesOpen,
     settingsOpen,
+    starmapOpen,
     toggleCommandCenter
   } = useOverlayRouting()
 
@@ -361,6 +396,7 @@ export function DesktopController() {
     loadMoreSessions,
     loadMoreSessionsForProfile,
     refreshCronJobs,
+    refreshMessagingSessions,
     refreshSessions
   } = useSessionListActions({ profileScope })
 
@@ -481,13 +517,17 @@ export function DesktopController() {
             storedSessionId
           )
 
-          // Seed the status stack's todo group from history — but only while
-          // the plan is still in flight, so reopening an old chat doesn't pin
-          // its finished todo list above the composer forever.
-          const todos = latestSessionTodos(messages)
+          // Rehydration runs *after* a turn completes, so an "active" stored
+          // list (last `todo` still pending/in_progress) means the turn ended
+          // without a final update — it's stale, not in-flight. Re-seeding it
+          // would re-pin "Tasks N/M" above the composer and undo the turn-end
+          // clear (and survive restarts, since it's read back from history).
+          // todosForHydration restores only a *finished* list (its short linger
+          // shows the last checkmark); anything still active is dropped.
+          const restored = todosForHydration(latestSessionTodos(messages))
 
-          if (todos && todoListActive(todos)) {
-            setSessionTodos(runtimeSessionId, todos)
+          if (restored) {
+            setSessionTodos(runtimeSessionId, restored)
           } else {
             clearSessionTodos(runtimeSessionId)
           }
@@ -504,6 +544,42 @@ export function DesktopController() {
     },
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
+
+  const refreshActiveMessagingTranscript = useCallback(async () => {
+    const storedSessionId = selectedStoredSessionIdRef.current
+    const runtimeSessionId = activeSessionIdRef.current
+
+    if (!storedSessionId || !runtimeSessionId || busyRef.current) {
+      return
+    }
+
+    const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+
+    if (!stored || !isMessagingSource(stored.source)) {
+      return
+    }
+
+    try {
+      const latest = await getSessionMessages(storedSessionId, stored.profile)
+      const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
+      const sig = sessionMessagesSignature(latest.messages)
+
+      if (messagingTranscriptSignatureRef.current.get(signatureKey) === sig) {
+        return
+      }
+
+      messagingTranscriptSignatureRef.current.set(signatureKey, sig)
+      const messages = toChatMessages(latest.messages)
+
+      updateSessionState(
+        runtimeSessionId,
+        state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
+        storedSessionId
+      )
+    } catch {
+      // Non-fatal: next poll or manual refresh can hydrate.
+    }
+  }, [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState])
 
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,
@@ -737,6 +813,7 @@ export function DesktopController() {
     busyRef,
     createBackendSessionForSend,
     handleSkinCommand,
+    openMemoryGraph: openStarmap,
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeSession,
@@ -841,6 +918,58 @@ export function DesktopController() {
       document.removeEventListener('visibilitychange', tick)
     }
   }, [gatewayState, refreshCronJobs])
+
+  // Keep messaging-platform session lists live: inbound Telegram/WeChat/Discord
+  // turns are written by the gateway, not the desktop websocket, so they won't
+  // appear without polling.
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshMessagingSessions()
+      }
+    }
+
+    const intervalId = window.setInterval(tick, MESSAGING_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [gatewayState, refreshMessagingSessions])
+
+  // Only the open messaging transcript needs a poll — local chats are already
+  // live over the websocket, so arming a timer for them would just no-op every
+  // tick. Gate on the active session actually being a messaging source.
+  const activeIsMessaging =
+    !!selectedStoredSessionId &&
+    isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
+
+  // Keep the currently-viewed messaging transcript live.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !activeIsMessaging) {
+      return
+    }
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshActiveMessagingTranscript()
+      }
+    }
+
+    const intervalId = window.setInterval(tick, ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+    tick()
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [activeIsMessaging, gatewayState, refreshActiveMessagingTranscript])
 
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {
@@ -992,6 +1121,12 @@ export function DesktopController() {
       {profilesOpen && (
         <Suspense fallback={null}>
           <ProfilesView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {starmapOpen && (
+        <Suspense fallback={null}>
+          <StarmapView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
     </>

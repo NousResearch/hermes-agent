@@ -333,3 +333,45 @@ class TestSkillMatchesPlatformTermux:
             "agent.skill_utils.is_termux", return_value=False
         ):
             assert skill_matches_platform(fm) is True
+
+
+class TestNormalizeSkillLookupName:
+    def test_relative_path_unchanged(self, tmp_path, monkeypatch):
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        # Relative identifiers early-return before any root lookup.
+        assert normalize_skill_lookup_name("foo/bar") == "foo/bar"
+
+    def test_absolute_under_skills_dir_becomes_relative(self, tmp_path, monkeypatch):
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "category" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        # Patch the root skill_view() itself enforces — normalization reads
+        # tools.skills_tool.SKILLS_DIR at call time so the two stay in sync.
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+        assert normalize_skill_lookup_name(str(skill_dir)) == "category/my-skill"
+
+    def test_absolute_via_symlink_uses_lexical_relative_path(self, tmp_path, monkeypatch):
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        external = tmp_path / "external" / "my-skill"
+        external.mkdir(parents=True)
+        link = skills_dir / "my-skill"
+        try:
+            link.symlink_to(external)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+        assert normalize_skill_lookup_name(str(link)) == "my-skill"
+
+    def test_untrusted_absolute_returned_unchanged(self, tmp_path, monkeypatch):
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "skills")
+        monkeypatch.setattr("agent.skill_utils.get_skills_dir", lambda: tmp_path / "skills")
+        outside = str(tmp_path / "outside" / "skill")
+        assert normalize_skill_lookup_name(outside) == outside

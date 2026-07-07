@@ -69,6 +69,13 @@ try:
 except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 
+
+class PluginToolOverrideError(PermissionError):
+    """Raised when a plugin attempts to override a built-in tool without
+    operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override``.
+    """
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -398,7 +405,24 @@ class PluginContext:
         same name (e.g. swap the default ``browser_navigate`` for a custom
         CDP-backed implementation). Without it, attempting to register a name
         already claimed by a different toolset is rejected.
+
+        ``override=True`` against a built-in tool requires the operator to
+        opt in via ``plugins.entries.<plugin_id>.allow_tool_override: true``
+        in config.yaml — mirrors the trust gate pattern used for
+        ``ctx.llm`` provider/model overrides (#23194). Without that gate,
+        any enabled plugin could silently replace a privileged built-in
+        like ``shell_exec`` or ``write_file`` and exfiltrate everything
+        the model invokes through it.
         """
+        if override and not self._tool_override_allowed(name):
+            plugin_id = self.manifest.key or self.manifest.name
+            raise PluginToolOverrideError(
+                f"Plugin {self.manifest.name!r} cannot override built-in tool "
+                f"{name!r}. Set "
+                f"plugins.entries.{plugin_id}.allow_tool_override: true "
+                f"in config.yaml to allow this plugin to replace built-in tools."
+            )
+
         from tools.registry import registry
 
         registry.register(
@@ -418,6 +442,32 @@ class PluginContext:
             "Plugin %s registered tool: %s%s",
             self.manifest.name, name, " (override)" if override else "",
         )
+
+    # -- override trust gate ------------------------------------------------
+
+    def _tool_override_allowed(self, tool_name: str) -> bool:
+        """Return True if this plugin is configured to override built-in tools.
+
+        Bundled plugins (shipped with Hermes core) are trusted by default —
+        an override there is a deliberate maintainer choice, not a third-party
+        plugin trying to elevate privilege. For every other source, require
+        ``allow_tool_override: true`` under
+        ``plugins.entries.<plugin_id>`` in config.yaml.
+        """
+        source = getattr(self.manifest, "source", "") or ""
+        if source == "bundled":
+            return True
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+        except Exception:
+            # If we can't load config, fail closed — better to break the
+            # override than silently grant it.
+            return False
+        plugin_id = self.manifest.key or self.manifest.name
+        entries = (cfg.get("plugins") or {}).get("entries") or {}
+        entry = entries.get(plugin_id) or {}
+        return bool(entry.get("allow_tool_override", False))
 
     # -- message injection --------------------------------------------------
 
@@ -744,6 +794,53 @@ class PluginContext:
             "Plugin '%s' registered browser provider: %s",
             self.manifest.name, provider.name,
         )
+
+    # -- secret source registration -------------------------------------------
+
+    def register_secret_source(self, source) -> None:
+        """Register an external secret-manager backend.
+
+        ``source`` must be an instance of
+        :class:`agent.secret_sources.base.SecretSource`.  Registered
+        sources run during ``load_hermes_dotenv()`` startup — after
+        ``~/.hermes/.env`` loads, before Hermes reads credentials — when
+        their ``secrets.<source.name>`` config section is enabled.  The
+        orchestrator (``agent.secret_sources.registry.apply_all``) owns
+        ordering, mapped-vs-bulk precedence, conflict warnings, and
+        provenance; the source only fetches.
+
+        NOTE ON TIMING: plugin discovery happens later in startup than
+        the first ``load_hermes_dotenv()`` call, so a plugin-registered
+        source is not consulted by the initial env load of the process
+        that discovers it.  It IS consulted by every subsequently
+        spawned Hermes process (gateway children, cron sessions,
+        subagents), and immediately after a
+        ``reset_secret_source_cache()`` re-pull.  Plugin sources are
+        therefore best for supplying credentials to the running fleet;
+        the bundled sources cover first-process bootstrap.
+
+        Contract requirements (rejected with a warning otherwise):
+        inherit from ``SecretSource``, ``api_version`` matching
+        ``SECRET_SOURCE_API_VERSION``, lowercase unique ``name``,
+        ``shape`` of ``"mapped"`` or ``"bulk"``, unique ``scheme`` (when
+        set), and a ``fetch()`` that never raises and never prompts.
+        See the base-module docstring for the full contract.
+        """
+        from agent.secret_sources.base import SecretSource
+        from agent.secret_sources.registry import register_source
+
+        if not isinstance(source, SecretSource):
+            logger.warning(
+                "Plugin '%s' tried to register a secret source that does "
+                "not inherit from SecretSource. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        if register_source(source):
+            logger.info(
+                "Plugin '%s' registered secret source: %s",
+                self.manifest.name, source.name,
+            )
 
     # -- TTS provider registration -------------------------------------------
 
@@ -1186,10 +1283,6 @@ class PluginManager:
         """
         if self._discovered and not force:
             return
-        # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
-        # with all customizations disabled. Skip plugin discovery entirely so
-        # no third-party code (hooks, tools, platforms) loads. Mark as
-        # discovered so callers see a clean empty registry, not a retry loop.
         if env_var_enabled("HERMES_SAFE_MODE"):
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True
@@ -1658,6 +1751,13 @@ class PluginManager:
             manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,
         )
 
+        from tools.registry import registry as _registry
+        _plugin_id = manifest.key or manifest.name
+        _slug = _plugin_id.replace("/", "__").replace("-", "_")
+        _registry.register_plugin_override_policy(
+            f"{_NS_PARENT}.{_slug}",
+            PluginContext(manifest, self)._tool_override_allowed(""),
+        )
         try:
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
@@ -1725,7 +1825,6 @@ class PluginManager:
                 "Failed to load plugin '%s': %s",
                 manifest.name, exc, exc_info=_PLUGINS_DEBUG,
             )
-
         self._plugins[manifest.key or manifest.name] = loaded
 
     def _load_directory_module(self, manifest: PluginManifest) -> types.ModuleType:

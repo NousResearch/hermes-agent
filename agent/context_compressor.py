@@ -84,6 +84,46 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # poisoning every subsequent request in the session — a bare key like
 # "is_compressed_summary" would reach the wire and trip exactly that.
 COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+_DB_PERSISTED_MARKER = "_db_persisted"
+
+
+def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy a message for compaction assembly without persistence markers.
+
+    Live cached-gateway transcripts stamp ``_db_persisted`` during incremental
+    flushes.  Shallow ``.copy()`` propagates that marker into the post-rotation
+    compressed list, so ``_flush_messages_to_session_db`` skips every row when
+    writing to the new child session (#57491).
+
+    This strips at the copy site (clearest intent, and cheap), but the
+    authoritative guarantee is the single terminal sweep in ``compress()``
+    (``_strip_persistence_markers``): no message may leave ``compress()``
+    carrying ``_db_persisted`` regardless of how many intermediate copy sites
+    a future refactor adds.
+    """
+    fresh = msg.copy()
+    fresh.pop(_DB_PERSISTED_MARKER, None)
+    return fresh
+
+
+def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
+    """Enforce the compaction invariant: no assembled message carries a
+    session-store persistence marker.
+
+    ``compress()`` copies protected head/tail messages out of the live
+    cached-gateway transcript, which stamps ``_db_persisted`` on every message
+    over the life of the session.  If any copied dict keeps that marker, the
+    rotation flush to the child session skips it and the compacted transcript is
+    lost from ``state.db`` (#57491).  Stripping at each copy site is necessary
+    but *positional* — a copy site added after the assembly loops would re-leak.
+    This single terminal sweep makes the guarantee structural instead: run it
+    once on the fully-assembled list so the invariant holds no matter where the
+    copies happened.  Mutates in place (the dicts are compaction-local copies).
+    """
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg.pop(_DB_PERSISTED_MARKER, None)
+
 
 # Appended to every standalone summary message (and to the merged-into-tail
 # prefix) so the model has an unambiguous "summary ends here" boundary.
@@ -94,6 +134,15 @@ _SUMMARY_END_MARKER = (
     "--- END OF CONTEXT SUMMARY — "
     "respond to the message below, not the summary above ---"
 )
+
+# When the summary must be merged into the first tail message (the alternation
+# corner case where a standalone summary role would collide with both head and
+# tail), the tail message's own prior content is preserved BEFORE the summary,
+# wrapped in these delimiters so the model doesn't read it as a fresh message.
+# The summary prefix therefore lands AFTER _MERGED_SUMMARY_DELIMITER rather than
+# at the start of the message, so _is_context_summary_content must look past it.
+_MERGED_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT — for reference only; not a new message]"
+_MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
 
 # Handoff prefixes that shipped in earlier releases. A summary persisted under
 # one of these can be inherited into a resumed lineage (#35344); when it is
@@ -249,6 +298,32 @@ def _content_length_for_budget(raw_content: Any) -> int:
     return total
 
 
+def _serialized_length_for_budget(value: Any) -> int:
+    """Return a stable char-length for non-content replay/metadata fields."""
+    if value is None or value == "":
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+# Provider replay/metadata fields that ride the wire on every request but are
+# invisible to ``msg["content"]``/``msg["tool_calls"]`` accounting.  Codex
+# Responses sessions in particular carry ``codex_reasoning_items`` blobs of
+# ``encrypted_content`` that can dominate the serialized session (a measured
+# 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+_REPLAY_BUDGET_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
+
+
 def _estimate_msg_budget_tokens(msg: dict) -> int:
     """Token estimate for one message in the tail-protection budget walks.
 
@@ -259,12 +334,23 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     4-tool-call turn measures ~73 vs ~1,090 real tokens), so the protected
     tail overshot ``tail_token_budget`` and compression became ineffective.
     See issue #28053.
+
+    Also counts provider replay fields (``codex_reasoning_items`` etc. —
+    see ``_REPLAY_BUDGET_KEYS``).  The preflight "should I compress?"
+    estimator sees the full message shape, so the tail walk must use the
+    same size class; otherwise an assistant message with tiny visible
+    content but large hidden replay blobs is protected as if it were small,
+    the post-compression session stays near the context limit, and
+    compaction re-fires continuously (#55572).  Accounting-only: replay
+    fields are never mutated or pruned here.
     """
     content_len = _content_length_for_budget(msg.get("content") or "")
     tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/key overhead
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += len(str(tc)) // _CHARS_PER_TOKEN
+    for key in _REPLAY_BUDGET_KEYS:
+        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     return tokens
 
 
@@ -640,26 +726,47 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self._last_summary_error = None
+        self._last_compress_aborted = False
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
-        """Clear per-session compaction state at a real session boundary.
+        """Clear all per-session compaction state at a real session boundary.
 
-        ``_previous_summary`` is per-session iterative-summary state. It is
-        cleared on ``on_session_reset()`` (/new, /reset), but session *end*
-        (CLI exit, gateway expiry, session-id rotation) goes through
-        ``on_session_end()`` instead — which inherited a no-op from
-        ``ContextEngine``. Without clearing here, a cron/background session's
-        summary could survive on a reused compressor instance and leak into the
-        next live session via the ``_generate_summary()`` iterative-update path
-        (#38788). ``compress()`` already guards the leak at the point of use;
-        this is defense-in-depth that drops the stale summary the moment the
-        owning session ends.
+        Session end (CLI exit, gateway expiry, session-id rotation) goes
+        through this method rather than ``on_session_reset()`` (/new, /reset).
+        The original fix (#38788) only cleared ``_previous_summary``, but the
+        same cross-session contamination risk applies to every per-session
+        variable that ``on_session_reset()`` clears: stale
+        ``_ineffective_compression_count`` can suppress compression in a
+        subsequent live session; ``_summary_failure_cooldown_until`` can block
+        summary generation; ``_last_compress_aborted`` can make callers think
+        compression is still aborted; ``_last_aux_model_failure_*`` can surface
+        stale error warnings; ``_last_summary_dropped_count`` /
+        ``_last_summary_fallback_used`` can produce misleading user warnings.
+
+        ``compress()`` already guards ``_previous_summary`` leakage at the
+        point of use; this is defense-in-depth that resets the full per-session
+        surface the moment the owning session ends.
         """
         self._previous_summary = None
+        self._last_summary_error = None
+        self._last_summary_dropped_count = 0
+        self._last_summary_fallback_used = False
+        self._last_aux_model_failure_error = None
+        self._last_aux_model_failure_model = None
+        self._last_compression_savings_pct = 100.0
+        self._ineffective_compression_count = 0
+        self._summary_failure_cooldown_until = 0.0
+        self._last_compress_aborted = False
+        self._context_probed = False
+        self._context_probe_persistable = False
+        self.last_real_prompt_tokens = 0
+        self.last_compression_rough_tokens = 0
+        self.last_rough_tokens_when_real_prompt_fit = 0
+        self.awaiting_real_usage_after_compression = False
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
@@ -1072,6 +1179,23 @@ class ContextCompressor(ContextEngine):
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
+            return False
+        # Do not trigger compression while the summary LLM is in cooldown.
+        # On a 429/transient failure _generate_summary() sets a cooldown and
+        # returns None; compress() then inserts a static fallback marker and
+        # returns. Tokens stay above threshold, so without this guard every
+        # subsequent turn re-fires _compress_context() — re-inserting the
+        # marker and re-entering the loop, making the CLI appear frozen until
+        # the cooldown expires (issue #11529). Manual /compress passes
+        # force=True, which clears this cooldown in compress() before running,
+        # so it still retries immediately.
+        _cooldown_remaining = self._summary_failure_cooldown_until - time.monotonic()
+        if _cooldown_remaining > 0:
+            if not self.quiet_mode:
+                logger.debug(
+                    "Compression deferred — summary LLM in cooldown for %.0fs more",
+                    _cooldown_remaining,
+                )
             return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
@@ -1768,7 +1892,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             # retry (_generate_summary recursion) re-enters harmlessly.
             with aux_interrupt_protection():
                 response = call_llm(**call_kwargs)
-            content = response.choices[0].message.content
+            # ``_validate_llm_response`` only guarantees ``choices[0].message``
+            # exists, not that it's an object with ``.content``. Some
+            # OpenAI-compatible proxies / local backends return a dict- or
+            # str-shaped message; coerce defensively instead of crashing.
+            message = response.choices[0].message
+            if isinstance(message, dict):
+                content = message.get("content")
+            else:
+                content = getattr(message, "content", message)
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
                 content = str(content) if content else ""
@@ -1961,6 +2093,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         stale directive it carried stays embedded in the body.
         """
         text = (summary or "").strip()
+        # Merge-into-tail summaries wrap prior tail content before the summary
+        # body. Drop everything up to and including the delimiter so only the
+        # real summary body is carried forward on re-compaction — otherwise the
+        # [PRIOR CONTEXT] header and stale tail content leak into the next
+        # summarizer prompt.
+        if _MERGED_SUMMARY_DELIMITER in text:
+            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].strip()
         for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
@@ -1981,6 +2120,13 @@ This compaction should PRIORITISE preserving all information related to the focu
     @staticmethod
     def _is_context_summary_content(content: Any) -> bool:
         text = _content_text_for_contains(content).lstrip()
+        # Merge-into-tail summaries wrap prior tail content before the summary,
+        # so the handoff prefix lands after _MERGED_SUMMARY_DELIMITER rather than
+        # at the start. Detect the summary in that region too, otherwise callers
+        # (auto-focus skip, carry-forward summary find, last-real-user anchor)
+        # mistake a merged summary message for a real user turn.
+        if _MERGED_SUMMARY_DELIMITER in text:
+            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
         if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
@@ -2067,8 +2213,16 @@ This compaction should PRIORITISE preserving all information related to the focu
            The API rejects this because every tool_call must be followed by
            a tool result with the matching call_id.
 
-        This method removes orphaned results and inserts stub results for
-        orphaned calls so the message list is always well-formed.
+        This method removes orphaned results and strips orphaned tool_calls
+        from assistant messages so the message list is always well-formed.
+
+        Previous approach inserted stub ``role="tool"`` results for orphaned
+        tool_calls.  That caused a secondary failure: the pre-API
+        ``repair_message_sequence()`` uses ``tc.get("id")`` to track known
+        call IDs while this sanitizer uses ``call_id || id``.  When the two
+        disagree (Codex Responses API format: ``id != call_id``), stubs get
+        silently dropped by the repair pass, re-exposing the original orphans.
+        Stripping at the source avoids this entire class of mismatch.
         """
         surviving_call_ids: set = set()
         for msg in messages:
@@ -2095,24 +2249,34 @@ This compaction should PRIORITISE preserving all information related to the focu
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
 
-        # 2. Add stub results for assistant tool_calls whose results were dropped
+        # 2. Strip orphaned tool_calls from assistant messages whose results
+        #    were dropped.  Stripping is preferred over inserting stub results
+        #    because stubs can be dropped by downstream repair_message_sequence
+        #    when call_id != id (Codex Responses API format), re-exposing orphans.
         missing_results = surviving_call_ids - result_call_ids
         if missing_results:
-            patched: List[Dict[str, Any]] = []
             for msg in messages:
-                patched.append(msg)
-                if msg.get("role") == "assistant":
-                    for tc in msg.get("tool_calls") or []:
-                        cid = self._get_tool_call_id(tc)
-                        if cid in missing_results:
-                            patched.append({
-                                "role": "tool",
-                                "content": "[Result from earlier conversation — see context summary above]",
-                                "tool_call_id": cid,
-                            })
-            messages = patched
+                if msg.get("role") != "assistant":
+                    continue
+                tcs = msg.get("tool_calls")
+                if not tcs:
+                    continue
+                kept = [tc for tc in tcs if self._get_tool_call_id(tc) not in missing_results]
+                if len(kept) != len(tcs):
+                    if kept:
+                        msg["tool_calls"] = kept
+                    else:
+                        msg.pop("tool_calls", None)
+                        # Ensure the assistant message still has visible
+                        # content so the API does not reject an empty turn.
+                        content = msg.get("content")
+                        if not content or (isinstance(content, str) and not content.strip()):
+                            msg["content"] = "(tool call removed)"
             if not self.quiet_mode:
-                logger.info("Compression sanitizer: added %d stub tool result(s)", len(missing_results))
+                logger.info(
+                    "Compression sanitizer: stripped %d orphaned tool_call(s) from assistant messages",
+                    len(missing_results),
+                )
 
         return messages
 
@@ -2199,9 +2363,21 @@ This compaction should PRIORITISE preserving all information related to the focu
     def _find_last_user_message_idx(
         self, messages: List[Dict[str, Any]], head_end: int
     ) -> int:
-        """Return the index of the last user-role message at or after *head_end*, or -1."""
+        """Return the index of the last user-role message at or after *head_end*, or -1.
+
+        A context-compaction handoff banner can be inserted as a ``role="user"``
+        message (see the summary-role selection in ``compress``). It is internal
+        continuity state, not a real user turn, so it must not be picked as the
+        tail anchor — otherwise ``_ensure_last_user_message_in_tail`` protects
+        the summary and rolls the genuine last user message into the next
+        compaction, re-triggering the active-task loss the anchor exists to
+        prevent.
+        """
         for i in range(len(messages) - 1, head_end - 1, -1):
-            if messages[i].get("role") == "user":
+            msg = messages[i]
+            if msg.get("role") == "user" and not self._is_context_summary_content(
+                msg.get("content")
+            ):
                 return i
         return -1
 
@@ -2325,6 +2501,17 @@ This compaction should PRIORITISE preserving all information related to the focu
         (``messages[cut_idx:]``), walk ``cut_idx`` back to include it.  We
         then re-align backward one more time to avoid splitting any
         tool_call/result group that immediately precedes the user message.
+
+        Causal Coupling guard (#22523): the final ``max(last_user_idx,
+        head_end + 1)`` clamp can push the cut *past* the user message when
+        the user sits at ``head_end`` (the first compressible index) — the
+        only case where ``head_end + 1 > last_user_idx``.  That splits the
+        turn-pair: the user lands in the compressed region without its
+        assistant reply, so the summariser records it as a pending ask and
+        the next session re-executes the already-completed task.  When this
+        split is unavoidable, push the cut *forward* to ``pair_end`` so the
+        full pair (user + reply + tool results) is summarised together and
+        correctly marked as completed.
         """
         last_user_idx = self._find_last_user_message_idx(messages, head_end)
         if last_user_idx < 0:
@@ -2349,7 +2536,50 @@ This compaction should PRIORITISE preserving all information related to the focu
                 cut_idx,
             )
         # Safety: never go back into the head region.
-        return max(last_user_idx, head_end + 1)
+        adjusted = max(last_user_idx, head_end + 1)
+        if adjusted > last_user_idx:
+            # The clamp would leave the user in the compressed region without
+            # its reply.  Keep the pair intact by pushing the cut forward past
+            # the whole (user + assistant + tool results) turn-pair so it is
+            # summarised as a completed unit rather than a dangling ask.
+            pair_end = self._find_turn_pair_end(messages, last_user_idx)
+            if not self.quiet_mode:
+                logger.debug(
+                    "Causal Coupling: cut would split turn-pair at user %d; "
+                    "pushing cut forward to pair_end %d so the completed pair "
+                    "is summarised together (#22523)",
+                    last_user_idx,
+                    pair_end,
+                )
+            return max(pair_end, head_end + 1)
+        return adjusted
+
+    def _find_turn_pair_end(
+        self,
+        messages: List[Dict[str, Any]],
+        user_idx: int,
+    ) -> int:
+        """Return the index *after* the complete turn-pair starting at *user_idx*.
+
+        A turn-pair is: ``user`` -> ``assistant`` [-> zero-or-more ``tool``
+        results].  Returns the index of the first message that does *not*
+        belong to the pair, i.e. the natural cut point that keeps the pair
+        intact on one side of the boundary.
+
+        If *user_idx* is the last message (no assistant reply yet), returns
+        ``user_idx + 1`` so the user message itself is minimally covered.
+        """
+        n = len(messages)
+        idx = user_idx + 1
+        if idx >= n:
+            return idx  # user is the very last message — no reply yet
+        if messages[idx].get("role") != "assistant":
+            return idx  # no assistant reply immediately following
+        idx += 1
+        # Include any tool results that belong to this assistant turn.
+        while idx < n and messages[idx].get("role") == "tool":
+            idx += 1
+        return idx
 
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
@@ -2504,8 +2734,16 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
-        self._last_summary_auth_failure = False
-        self._last_summary_network_failure = False
+        # NOTE: do NOT reset _last_summary_auth_failure or
+        # _last_summary_network_failure here.  These flags are set by
+        # _generate_summary() on a terminal failure and are already cleared on
+        # a successful summary.  Resetting them eagerly defeats the cooldown
+        # protection: _generate_summary() returns None from the cooldown
+        # early-return without re-asserting these flags, so the abort guard
+        # below would see False and fall through to the destructive
+        # static-fallback — the exact data-loss #29559 describes.  Letting them
+        # persist across compress() calls is safe because a successful summary
+        # always clears both.
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -2673,7 +2911,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Phase 4: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
-            msg = messages[i].copy()
+            msg = _fresh_compaction_message_copy(messages[i])
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")
                 _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
@@ -2701,9 +2939,44 @@ This compaction should PRIORITISE preserving all information related to the focu
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
+        # When the only protected head message is the system prompt, the
+        # summary becomes the first *visible* message in the API request
+        # (most adapters — Anthropic, Bedrock — send the system prompt as
+        # a separate ``system`` parameter, not inside ``messages[]``).
+        # Anthropic unconditionally rejects requests whose first message
+        # is not role=user, so we must pin the summary to "user" and
+        # prevent the flip logic below from reverting it (#52160).
+        _force_user_leading = last_head_role == "system"
+        # Zero-user-turn guard (#58753). The #52160 guard above only fires
+        # when the system prompt sits *inside* ``messages`` (the gateway
+        # ``/compress`` path). The main auto-compression path passes the
+        # transcript WITHOUT the system prompt (it is prepended at
+        # request-build time), so ``last_head_role`` defaults to "user" and
+        # the summary is emitted as role="assistant". On a session whose only
+        # genuine user turn falls into the compressed middle — e.g. a
+        # ``hermes kanban`` worker seeded with a single short
+        # ``"work kanban task <id>"`` prompt followed by nothing but
+        # assistant/tool turns — that leaves the compressed transcript with
+        # ZERO user-role messages. OpenAI-compatible backends (vLLM/Qwen)
+        # reject such a request with a non-retryable
+        # ``400 No user query found in messages``, crashing the worker with no
+        # possible recovery (every resume replays the same poisoned history).
+        # If no user-role message survives in either the protected head or the
+        # preserved tail, the summary MUST carry role="user" so the request
+        # always has at least one user turn.
+        if not _force_user_leading:
+            _user_survives = any(
+                messages[i].get("role") == "user"
+                for i in range(0, compress_start)
+            ) or any(
+                messages[i].get("role") == "user"
+                for i in range(compress_end, n_messages)
+            )
+            if not _user_survives:
+                _force_user_leading = True
         # Pick a role that avoids consecutive same-role with both neighbors.
         # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in {"assistant", "tool"}:
+        if last_head_role in {"assistant", "tool"} or _force_user_leading:
             summary_role = "user"
         else:
             summary_role = "assistant"
@@ -2711,7 +2984,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # collide with the head, flip it.
         if summary_role == first_tail_role:
             flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role:
+            if flipped != last_head_role and not _force_user_leading:
                 summary_role = flipped
             else:
                 # Both roles would create consecutive same-role messages
@@ -2738,12 +3011,27 @@ This compaction should PRIORITISE preserving all information related to the focu
             })
 
         for i in range(compress_end, n_messages):
-            msg = messages[i].copy()
+            msg = _fresh_compaction_message_copy(messages[i])
             if _merge_summary_into_tail and i == compress_end:
-                merged_prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
+                # Merge the summary into the first tail message, but place
+                # the END MARKER at the very end so the model sees an
+                # unambiguous boundary. Old tail content is preserved as
+                # reference material BEFORE the summary, clearly delimited
+                # so it is not mistaken for a new message to respond to.
+                # Uses _append_text_to_content to safely handle both
+                # string and multimodal-list content types.
+                # Fixes ghost-message leakage across compaction boundaries
+                # where old head messages survived verbatim and appeared
+                # before the summary.
+                old_content = msg.get("content", "")
+                suffix = (
+                    "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n"
+                    + summary + "\n\n"
+                    + _SUMMARY_END_MARKER
+                )
                 msg["content"] = _append_text_to_content(
-                    msg.get("content"),
-                    merged_prefix,
+                    _append_text_to_content(old_content, suffix, prepend=False),
+                    _MERGED_PRIOR_CONTEXT_HEADER + "\n",
                     prepend=True,
                 )
                 # Mark the merged message so frontends can identify it as
@@ -2784,5 +3072,11 @@ This compaction should PRIORITISE preserving all information related to the focu
                 savings_pct,
             )
             logger.info("Compression #%d complete", self.compression_count)
+
+        # Enforced invariant (#57491): no compacted message may leave compress()
+        # carrying a session-store persistence marker. The per-site strips above
+        # are positional; this single terminal sweep makes it structural so a
+        # future copy site cannot re-leak the marker into the child-session flush.
+        _strip_persistence_markers(compressed)
 
         return compressed

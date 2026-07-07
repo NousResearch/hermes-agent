@@ -69,11 +69,21 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", props)
         self.assertIn("tasks", props)
         self.assertIn("context", props)
-        self.assertIn("toolsets", props)
+        # toolsets is intentionally NOT exposed to the model — subagents always
+        # inherit the parent's toolsets. Letting the model name toolsets was a
+        # capability-selection surface the model should not control.
+        self.assertNotIn("toolsets", props)
+        self.assertNotIn("toolsets", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
         self.assertNotIn("max_iterations", props)
+        # ACP subprocess transport is operator-controlled via config.yaml, not
+        # model-controlled via delegate_task arguments.
+        self.assertNotIn("acp_command", props)
+        self.assertNotIn("acp_args", props)
+        self.assertNotIn("acp_command", props["tasks"]["items"]["properties"])
+        self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
     def test_schema_description_advertises_runtime_limits(self):
@@ -517,6 +527,97 @@ class TestToolNamePreservation(unittest.TestCase):
                     f"_saved_tool_names leaked back into wrong scope: {exc}"
                 )
 
+    def test_build_child_agent_ignores_acp_command_when_binary_missing(self):
+        """Stale delegation.command config must not force ACP subprocess mode."""
+        parent = _make_mock_parent(depth=0)
+        # The crash scenario is a TG/cron agent on a host with no ACP CLI —
+        # parent itself has no acp_command, so clearing the override must NOT
+        # fall through to a stray parent value.
+        parent.acp_command = None
+        parent.acp_args = []
+        captured = {}
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("shutil.which", return_value=None) as mock_which:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="search X for crypto twitter",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_acp_command="copilot",
+                override_acp_args=["--foo"],
+            )
+
+            _, kwargs = MockAgent.call_args
+            captured["provider"] = kwargs.get("provider")
+            captured["acp_command"] = kwargs.get("acp_command")
+            captured["acp_args"] = kwargs.get("acp_args")
+
+        mock_which.assert_called_with("copilot")
+        self.assertNotEqual(
+            captured["provider"],
+            "copilot-acp",
+            "missing acp_command binary must NOT force copilot-acp provider",
+        )
+        self.assertIsNone(captured["acp_command"])
+        self.assertEqual(captured["acp_args"], [])
+
+    def test_build_child_agent_honors_acp_command_when_binary_present(self):
+        """When the acp_command binary exists on PATH, behavior is unchanged:
+        provider is forced to copilot-acp and command/args propagate to the
+        child agent. Guards against the missing-binary check accidentally
+        breaking working ACP delegation setups.
+        """
+        parent = _make_mock_parent(depth=0)
+        captured = {}
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("shutil.which", return_value="/usr/local/bin/copilot"):
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="copilot path",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_acp_command="copilot",
+                override_acp_args=["--foo"],
+            )
+
+            _, kwargs = MockAgent.call_args
+            captured["provider"] = kwargs.get("provider")
+            captured["acp_command"] = kwargs.get("acp_command")
+
+        self.assertEqual(captured["provider"], "copilot-acp")
+        self.assertEqual(captured["acp_command"], "copilot")
+
+    def test_schema_never_exposes_acp_transport_fields(self):
+        """delegate_task must never make ACP transport model-facing."""
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+
+        with patch("shutil.which", return_value="/usr/local/bin/copilot"):
+            overrides = _build_dynamic_schema_overrides()
+
+        props = overrides["parameters"]["properties"]
+        self.assertNotIn("acp_command", props)
+        self.assertNotIn("acp_args", props)
+
+        task_item_props = props["tasks"]["items"]["properties"]
+        self.assertNotIn("acp_command", task_item_props)
+        self.assertNotIn("acp_args", task_item_props)
+
     def test_saved_tool_names_set_on_child_before_run(self):
         """_run_single_child must set _delegate_saved_tool_names on the child
         from model_tools._last_resolved_tool_names before run_conversation."""
@@ -769,6 +870,31 @@ class TestDelegateObservability(unittest.TestCase):
 
             result = json.loads(delegate_task(goal="Test max iter", parent_agent=parent))
             self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
+
+    def test_empty_sentinel_marks_status_failed(self):
+        """Regression: a child that returns the literal '(empty)' sentinel
+        (emitted by run_agent.py when the LLM returns empty responses after
+        retries — e.g. transport misrouting) must be reported as failed, not
+        silently accepted as a completed delegation. Otherwise the parent
+        surfaces an empty string as if the subagent succeeded."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "(empty)",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 4,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test empty sentinel", parent_agent=parent))
+            self.assertEqual(result["results"][0]["status"], "failed")
 
 
 class TestSubagentCostRollup(unittest.TestCase):
@@ -1192,6 +1318,32 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         cfg = {"model": "some-model", "provider": "crof.ai"}
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertIsNone(creds["provider"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_bedrock_provider_with_base_url_uses_runtime_resolver(self, mock_resolve):
+        """Regression: provider=bedrock + base_url set must NOT fall through the
+        direct-base_url branch (which would force provider='custom' +
+        chat_completions and silently misroute OpenAI JSON to the Bedrock
+        native endpoint, returning empty responses)."""
+        mock_resolve.return_value = {
+            "provider": "bedrock",
+            "base_url": "https://bedrock-runtime.us-west-2.amazonaws.com",
+            "api_key": "aws-resolved-key",
+            "api_mode": "bedrock_converse",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "provider": "bedrock",
+            "base_url": "https://bedrock-runtime.us-west-2.amazonaws.com",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        # Must use Bedrock, not 'custom'
+        self.assertEqual(creds["provider"], "bedrock")
+        self.assertEqual(creds["api_mode"], "bedrock_converse")
+        mock_resolve.assert_called_once()
+        self.assertEqual(mock_resolve.call_args.kwargs.get("requested"), "bedrock")
+
 
 
 class TestDelegationProviderIntegration(unittest.TestCase):
@@ -2078,37 +2230,39 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 class TestDispatchDelegateTask(unittest.TestCase):
     """Tests for the _dispatch_delegate_task helper and full param forwarding."""
 
-    @patch("tools.delegate_tool._load_config", return_value={})
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
-    def test_acp_args_forwarded(self, mock_creds, mock_cfg):
-        """Both acp_command and acp_args reach delegate_task via the helper."""
-        mock_creds.return_value = {
-            "provider": None, "base_url": None,
-            "api_key": None, "api_mode": None, "model": None,
-        }
-        parent = _make_mock_parent(depth=0)
-        with patch("tools.delegate_tool._build_child_agent") as mock_build:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True,
-                "api_calls": 1, "messages": [],
-            }
-            mock_child._delegate_saved_tool_names = []
-            mock_child._credential_pool = None
-            mock_child.session_prompt_tokens = 0
-            mock_child.session_completion_tokens = 0
-            mock_child.model = "test"
-            mock_build.return_value = mock_child
+    def test_model_acp_args_not_forwarded(self):
+        """The live model dispatch path strips hidden ACP transport args."""
+        import run_agent
 
-            delegate_task(
-                goal="test",
-                acp_command="claude",
-                acp_args=["--acp", "--stdio"],
-                parent_agent=parent,
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "goal": "test",
+                    "acp_command": "claude",
+                    "acp_args": ["--acp", "--stdio"],
+                    "tasks": [
+                        {
+                            "goal": "nested",
+                            "acp_command": "codex",
+                            "acp_args": ["--acp"],
+                        },
+                    ],
+                },
             )
-            _, kwargs = mock_build.call_args
-            self.assertEqual(kwargs["override_acp_command"], "claude")
-            self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
+
+        self.assertNotIn("acp_command", captured)
+        self.assertNotIn("acp_args", captured)
+        self.assertEqual(captured["goal"], "test")
+        self.assertNotIn("acp_command", captured["tasks"][0])
+        self.assertNotIn("acp_args", captured["tasks"][0])
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
@@ -2270,6 +2424,29 @@ class TestConcurrencyDefaults(unittest.TestCase):
         self.assertEqual(_get_max_concurrent_children(), 6)
 
 
+class TestAsyncCapUnified(unittest.TestCase):
+    """max_async_children is deprecated: the async cap IS max_concurrent_children."""
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_concurrent_children": 15})
+    def test_async_cap_follows_concurrent_children(self, mock_cfg):
+        from tools.delegate_tool import _get_max_async_children
+        self.assertEqual(_get_max_async_children(), 15)
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_concurrent_children": 15, "max_async_children": 3})
+    def test_stale_max_async_children_ignored(self, mock_cfg):
+        """A leftover max_async_children in config must not shrink the cap."""
+        from tools.delegate_tool import _get_max_async_children
+        self.assertEqual(_get_max_async_children(), 15)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_default_matches_concurrent_children_default(self, mock_cfg):
+        from tools.delegate_tool import _get_max_async_children
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_get_max_async_children(), _get_max_concurrent_children())
+
+
 # =========================================================================
 # max_spawn_depth clamping
 # =========================================================================
@@ -2374,31 +2551,15 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         self.assertIn("role", task_props)
         self.assertEqual(task_props["role"]["enum"], ["leaf", "orchestrator"])
 
-    def test_acp_command_description_has_do_not_set_guidance(self):
-        # acp_command/acp_args descriptions must NOT bias the model toward
-        # assuming an ACP CLI (Claude, Copilot, etc.) is installed. They must
-        # carry explicit "do not set unless told" guidance so the model doesn't
-        # hallucinate ACP availability (#22013).
+    def test_schema_omits_acp_transport_fields(self):
         from tools.delegate_tool import DELEGATE_TASK_SCHEMA
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-
-        top_acp_desc = props["acp_command"]["description"]
-        self.assertIn("Do NOT set", top_acp_desc)
-        self.assertIn("explicitly told you", top_acp_desc)
 
         task_props = props["tasks"]["items"]["properties"]
-        per_task_acp_desc = task_props["acp_command"]["description"]
-        self.assertIn("Do NOT set", per_task_acp_desc)
-
-    def test_acp_command_description_has_no_claude_as_example(self):
-        # Descriptions must not list 'claude' as a canonical example value —
-        # that directly primes the model to attempt Claude ACP even when it is
-        # not installed (#22013).
-        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
-        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        top_acp_desc = props["acp_command"]["description"].lower()
-        self.assertNotIn("e.g. 'claude'", top_acp_desc)
-        self.assertNotIn("e.g. \"claude\"", top_acp_desc)
+        self.assertNotIn("acp_command", props)
+        self.assertNotIn("acp_args", props)
+        self.assertNotIn("acp_command", task_props)
+        self.assertNotIn("acp_args", task_props)
 
 
 # Sentinel used to distinguish "role kwarg omitted" from "role=None".

@@ -6,6 +6,7 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
+import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
   type ComposerAttachment,
@@ -30,13 +31,36 @@ const BLOB_MIME_EXTENSION: Record<string, string> = {
 }
 
 function blobExtension(blob: Blob): string {
-  const mime = blob.type.split(';')[0]?.trim().toLowerCase()
+  const mime = normalize(blob.type.split(';')[0])
 
-  return (mime && BLOB_MIME_EXTENSION[mime]) || '.png'
+  return BLOB_MIME_EXTENSION[mime] || '.png'
 }
 
 export function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSION_PATTERN.test(filePath)
+}
+
+/**
+ * Read an attachment's thumbnail preview, local disk first. Paperclip picks,
+ * clipboard saves, and OS drops always hand us paths on THIS machine — the
+ * remote-routed fs facade would 404 them against the gateway and toast a bogus
+ * "preview failed" even though the attach itself works (upload reads local
+ * bytes too). In-app drags from the remote project tree are the opposite case:
+ * the local read fails there, so fall back to the facade (remote fs bridge).
+ * In local mode the facade IS the local bridge, so this stays a single read.
+ */
+export async function attachmentPreviewDataUrl(filePath: string): Promise<string> {
+  try {
+    const local = await window.hermesDesktop?.readFileDataUrl?.(filePath)
+
+    if (local) {
+      return local
+    }
+  } catch {
+    // Not on this machine (or unreadable locally) — try the gateway.
+  }
+
+  return readDesktopFileDataUrl(filePath)
 }
 
 export interface DroppedFile {
@@ -44,7 +68,8 @@ export interface DroppedFile {
   file?: File
   /** Absolute filesystem path. Empty when an OS drop didn't carry one. */
   path: string
-  /** True if the entry is a directory. Currently only set by in-app drags. */
+  /** True if the entry is a directory. Set by in-app drags, and by OS drops via
+   * DataTransferItem.webkitGetAsEntry(). */
   isDirectory?: boolean
   /** First line number for in-app line-ref drags (source view gutter). */
   line?: number
@@ -108,39 +133,50 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
     // Malformed payload — fall through to native files.
   }
 
-  const fileList = transfer.files
-
-  if (fileList) {
-    for (let i = 0; i < fileList.length; i += 1) {
-      const file = fileList.item(i)
-
-      if (!file || seenFiles.has(file)) {
-        continue
-      }
-
-      seenFiles.add(file)
-      let path = ''
-
-      if (getPath) {
-        try {
-          path = getPath(file) || ''
-        } catch {
-          path = ''
-        }
-      }
-
-      if (path && seenPaths.has(path)) {
-        continue
-      }
-
-      if (path) {
-        seenPaths.add(path)
-      }
-
-      result.push({ file, path })
+  // Add a native OS-drop entry. A dropped directory has no byte content to
+  // upload, so it's emitted as a path-only entry with `isDirectory: true` —
+  // that routes it to a `@folder:` ref / folder attachment (like the folder
+  // picker) instead of the file-upload pipeline, which can't stage a directory
+  // (the gateway can't read its bytes and there's no data_url to send).
+  const pushNativeEntry = (file: File, isDirectory: boolean) => {
+    if (seenFiles.has(file)) {
+      return
     }
+
+    seenFiles.add(file)
+    let path = ''
+
+    if (getPath) {
+      try {
+        path = getPath(file) || ''
+      } catch {
+        path = ''
+      }
+    }
+
+    if (path && seenPaths.has(path)) {
+      return
+    }
+
+    if (path) {
+      seenPaths.add(path)
+    }
+
+    if (isDirectory) {
+      if (path) {
+        result.push({ isDirectory: true, path })
+      }
+
+      return
+    }
+
+    result.push({ file, path })
   }
 
+  // Process items first: DataTransferItem.webkitGetAsEntry() is the only
+  // synchronous way to tell a dropped folder from a file, and it lives only on
+  // items (not transfer.files). Must be read here, inside the drop handler,
+  // before the DataTransfer detaches.
   const items = transfer.items
 
   if (items) {
@@ -151,32 +187,39 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
         continue
       }
 
+      let isDirectory = false
+
+      try {
+        const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
+        isDirectory = entry?.isDirectory === true
+      } catch {
+        isDirectory = false
+      }
+
       const file = item.getAsFile()
 
-      if (!file || seenFiles.has(file)) {
+      if (!file) {
         continue
       }
 
-      seenFiles.add(file)
-      let path = ''
+      pushNativeEntry(file, isDirectory)
+    }
+  }
 
-      if (getPath) {
-        try {
-          path = getPath(file) || ''
-        } catch {
-          path = ''
-        }
-      }
+  // Fallback for environments that populate transfer.files but not items.
+  // webkitGetAsEntry isn't available on this path, so directory detection
+  // relies on the items pass above; anything reaching here is treated as a file.
+  const fileList = transfer.files
 
-      if (path && seenPaths.has(path)) {
+  if (fileList) {
+    for (let i = 0; i < fileList.length; i += 1) {
+      const file = fileList.item(i)
+
+      if (!file) {
         continue
       }
 
-      if (path) {
-        seenPaths.add(path)
-      }
-
-      result.push({ file, path })
+      pushNativeEntry(file, false)
     }
   }
 
@@ -348,7 +391,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       attachToMain(baseAttachment)
 
       try {
-        const previewUrl = await readDesktopFileDataUrl(filePath)
+        const previewUrl = await attachmentPreviewDataUrl(filePath)
 
         if (previewUrl) {
           addComposerAttachment({ ...baseAttachment, previewUrl })

@@ -17,7 +17,10 @@ from pathlib import Path
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment, _popen_bash
-from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+from tools.environments.local import (
+    _HERMES_PROVIDER_ENV_BLOCKLIST,
+    _is_hermes_internal_secret,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -896,6 +899,45 @@ class DockerEnvironment(BaseEnvironment):
             existing = self._find_reusable_container(task_label, profile_name)
             if existing is not None:
                 container_id, state = existing
+                # Network-mode guard: reuse must not silently defeat an
+                # egress lockdown.  A container created before the operator
+                # set ``docker_network: false`` keeps its original bridge
+                # NetworkMode, so label-only reuse would hand the agent a
+                # networked container despite the config.  On mismatch we
+                # remove the stale container and start fresh — leaving it in
+                # place would let the next label-based reuse pick it up again.
+                # Only the lockdown direction is guarded: a ``none``-mode
+                # container under a default-network config is left alone so
+                # operators using ``docker_extra_args: ["--network=none"]``
+                # don't get their container churned on every startup.
+                mode_mismatch = False
+                actual_mode = None
+                if not network:
+                    actual_mode = self._container_network_mode(container_id)
+                    mode_mismatch = actual_mode != "none"
+                if mode_mismatch:
+                    logger.warning(
+                        "Existing container %s has NetworkMode=%s but "
+                        "docker_network=false requests an air-gapped "
+                        "container — removing it and starting fresh "
+                        "(task=%s, profile=%s).",
+                        container_id[:12], actual_mode or "unknown",
+                        task_label, profile_name,
+                    )
+                    try:
+                        subprocess.run(
+                            [self._docker_exe, "rm", "-f", container_id],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            check=False,
+                            stdin=subprocess.DEVNULL,
+                        )
+                    except (subprocess.TimeoutExpired, OSError) as e:
+                        logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
+                    existing = None
+            if existing is not None:
+                container_id, state = existing
                 self._container_id = container_id
                 if state != "running":
                     try:
@@ -992,8 +1034,13 @@ class DockerEnvironment(BaseEnvironment):
             pass
         # Explicit docker_forward_env entries are an intentional opt-in and must
         # win over the generic Hermes secret blocklist. Only implicit passthrough
-        # keys are filtered.
-        forward_keys = explicit_forward_keys | (passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST)
+        # keys are filtered. Also strip Hermes-internal dynamic secrets
+        # (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_* auth) that the
+        # name-based blocklist doesn't cover — see _is_hermes_internal_secret.
+        _implicit_forward = {
+            k for k in passthrough_keys if not _is_hermes_internal_secret(k)
+        }
+        forward_keys = explicit_forward_keys | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         for key in sorted(forward_keys):
             value = os.getenv(key)
@@ -1185,6 +1232,40 @@ class DockerEnvironment(BaseEnvironment):
             _storage_opt_ok = False
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok
+
+    def _container_network_mode(self, container_id: str) -> Optional[str]:
+        """Return the container's ``HostConfig.NetworkMode`` (e.g. ``bridge``,
+        ``none``, ``host``), or ``None`` when inspection fails.
+
+        Used by the reuse path to make sure a persisted container's network
+        mode still matches the operator's ``docker_network`` setting; callers
+        treat ``None`` (unknown) as a mismatch when lockdown was requested,
+        so a failed inspect fails closed rather than open.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    self._docker_exe, "inspect",
+                    "--format", "{{.HostConfig.NetworkMode}}",
+                    container_id,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker inspect NetworkMode failed: %s", e)
+            return None
+        if result.returncode != 0:
+            logger.debug(
+                "docker inspect NetworkMode returned %d: %s",
+                result.returncode, result.stderr.strip(),
+            )
+            return None
+        mode = result.stdout.strip()
+        return mode or None
 
     def _find_reusable_container(self, task_label: str, profile_label: str) -> Optional[tuple[str, str]]:
         """Look for an existing container labeled for this (task, profile).

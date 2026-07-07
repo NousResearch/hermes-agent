@@ -97,8 +97,11 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     """Two AIAgents that share a session_id MUST NOT both rotate it.
 
     Without the per-session compression lock this fixture deterministically
-    produces 2 child sessions (transcript fork).  With the lock the second
-    path aborts cleanly, leaving exactly 1 canonical child.
+    produces 2 child sessions (transcript fork). With the lock at most one
+    path rotates: normally exactly 1 canonical child, or — under heavy DB
+    write contention that makes the winner's child create_session exhaust its
+    retries — 0, because _compress_context safely rolls back to the parent
+    instead of orphaning a child. The forbidden outcome is 2+ (the fork).
     """
     db = SessionDB(db_path=tmp_path / "state.db")
 
@@ -126,25 +129,47 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     t_a.join(timeout=10)
     t_b.join(timeout=10)
 
-    # Exactly one canonical child — not two orphans.
-    assert _count_children(db, parent_sid) == 1, (
-        "Compression lock failed: parent session has multiple children in state.db "
-        "(transcript fork). This is Damien's incident shape — see the test docstring."
+    # The invariant Damien's incident is about: the parent must NEVER end up
+    # with two (or more) children — that is the transcript fork. The lock
+    # guarantees only one path rotates.
+    #
+    # Zero children is also a valid, non-forking outcome: under heavy DB write
+    # contention the winner's child ``create_session`` can exhaust its retry
+    # budget, and ``_compress_context`` deliberately rolls the live id back to
+    # the (still-indexed) parent rather than stranding an orphan child — see
+    # the create-failure rollback in agent/conversation_compression.py. That
+    # safe rollback leaves 0 children and is correct. So the contract is
+    # ``children <= 1``; only ``>= 2`` is the bug. Asserting an exact ``== 1``
+    # made this test flaky under the concurrent CI load that triggers the
+    # contention rollback (#54465 churn surfaced it).
+    n_children = _count_children(db, parent_sid)
+    assert n_children <= 1, (
+        f"Compression lock failed: parent session has {n_children} children in "
+        "state.db (transcript fork). This is Damien's incident shape — see the "
+        "test docstring. Two or more children means the lock did not serialize "
+        "the concurrent rotations."
     )
 
-    # And exactly one of the two agents actually rotated its session_id; the
-    # other should still hold the parent_sid (its compression was skipped).
+    # The number of agents that rotated their session_id must match the number
+    # of children created — and must never exceed one. (Both rotating would be
+    # the fork; the winner rolling back to parent under contention yields zero,
+    # which agrees with zero children.)
     rotated = sum(
         1 for a in (agent_a, agent_b) if a.session_id != parent_sid
     )
-    assert rotated == 1, (
-        f"Expected exactly one agent to rotate session_id, got {rotated}. "
-        "Both agents rotating means the lock didn't serialize them."
+    assert rotated <= 1, (
+        f"Expected at most one agent to rotate session_id, got {rotated}. "
+        "More than one rotating means the lock didn't serialize them."
+    )
+    assert rotated == n_children, (
+        f"Inconsistent state: {rotated} agent(s) rotated but {n_children} "
+        "child session(s) exist — rotation and child creation diverged."
     )
 
-    # The lock must be released after the winner finished.
+    # The lock must be released after both paths finished, regardless of
+    # whether the winner committed a child or rolled back.
     assert db.get_compression_lock_holder(parent_sid) is None, (
-        "Compression lock leaked: still held after both rotations completed."
+        "Compression lock leaked: still held after both paths completed."
     )
 
 
@@ -175,6 +200,40 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     assert agent.session_id == parent_sid
     # Compressor was never called (the skip happens before .compress())
     agent.context_compressor.compress.assert_not_called()
+
+
+def test_compression_restores_user_turn_when_compressor_drops_all_users(tmp_path: Path) -> None:
+    """Provider chat templates need at least one user message after compaction.
+
+    A plugin or future compressor can legally return a compacted context made
+    only of assistant/tool summary rows.  Before the guard in
+    ``compress_context``, that transcript went straight into the next API call;
+    LM Studio / llama.cpp Jinja templates then failed with "No user query found
+    in messages."  Preserve the last real user turn from the pre-compression
+    transcript instead of inventing a new active request.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "NO_USER_AFTER_COMPRESS"
+    db.create_session(parent_sid, source="cli")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: [
+        {
+            "role": "assistant",
+            "content": "[CONTEXT COMPACTION] earlier work was summarized",
+        }
+    ]
+    messages = [
+        {"role": "user", "content": "first request"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "please continue from here"},
+        {"role": "assistant", "content": "working"},
+    ]
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    user_messages = [msg for msg in compressed if msg.get("role") == "user"]
+    assert user_messages == [{"role": "user", "content": "please continue from here"}]
 
 
 def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypatch) -> None:

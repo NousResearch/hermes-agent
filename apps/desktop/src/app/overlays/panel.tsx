@@ -81,7 +81,19 @@ export function PanelHeader({ actions, subtitle, title }: PanelHeaderProps) {
 }
 
 export function PanelBody({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn('flex min-h-0 flex-1 gap-5 overflow-hidden', className)}>{children}</div>
+  return (
+    <div
+      className={cn(
+        // Side-by-side master/detail on a wide card; once it narrows (same
+        // threshold the other overlays collapse at) stack the list above the
+        // detail so the detail keeps full width instead of being squished.
+        'flex min-h-0 flex-1 flex-col gap-4 overflow-hidden min-[47.5rem]:flex-row min-[47.5rem]:gap-5',
+        className
+      )}
+    >
+      {children}
+    </div>
+  )
 }
 
 interface PanelListProps {
@@ -92,6 +104,8 @@ interface PanelListProps {
   onSearchChange?: (value: string) => void
   searchLabel?: string
   searchPlaceholder?: string
+  /** Data-derived rotating placeholder nudges (see SearchField.hints). */
+  searchHints?: string[]
   searchValue?: string
 }
 
@@ -104,14 +118,18 @@ export function PanelList({
   onSearchChange,
   searchLabel,
   searchPlaceholder,
+  searchHints,
   searchValue
 }: PanelListProps) {
   return (
-    <div className={cn('flex w-52 shrink-0 flex-col', className)}>
+    // Full-width and height-capped when stacked (narrow); a fixed 13rem rail
+    // beside the detail when wide.
+    <div className={cn('flex w-full shrink-0 flex-col max-[47.5rem]:max-h-[40%] min-[47.5rem]:w-52', className)}>
       {onSearchChange ? (
         <SearchField
           aria-label={searchLabel ?? searchPlaceholder ?? ''}
           containerClassName="mb-1 w-full shrink-0"
+          hints={searchHints}
           onChange={onSearchChange}
           placeholder={searchPlaceholder ?? ''}
           value={searchValue ?? ''}
@@ -156,10 +174,8 @@ export function PanelListRow({
   return (
     <div
       className={cn(
-        'group/row relative flex h-7 w-full items-center rounded-md text-[0.78rem] transition-colors duration-100 ease-out',
-        active
-          ? 'bg-(--ui-row-active-background) text-foreground'
-          : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background) hover:text-foreground'
+        'group/row row-hover relative flex h-7 w-full items-center rounded-md text-[0.78rem] hover:text-foreground',
+        active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}
       data-panel-row={rowKey}
     >

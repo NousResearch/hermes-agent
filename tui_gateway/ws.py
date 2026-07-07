@@ -33,6 +33,26 @@ from typing import Any
 
 from tui_gateway import server
 
+# Fast JSON serialization: orjson (Rust, releases GIL) if available,
+# falls back to stdlib json.  orjson is ~5-10x faster for large payloads
+# and holds the GIL for shorter periods — critical when multiple agent
+# sessions serialize WebSocket frames concurrently.
+try:
+    import orjson as _orjson
+
+    def _dumps(obj: Any) -> str:
+        return _orjson.dumps(obj).decode("utf-8")
+
+    def _loads(raw: str | bytes) -> Any:
+        return _orjson.loads(raw)
+
+except ImportError:
+    def _dumps(obj: Any) -> str:  # type: ignore[misc]
+        return json.dumps(obj, ensure_ascii=False)
+
+    def _loads(raw: str | bytes) -> Any:  # type: ignore[misc]
+        return json.loads(raw)
+
 _log = logging.getLogger(__name__)
 
 # Max seconds a pool-dispatched handler will block waiting for the event loop
@@ -115,7 +135,7 @@ class WSTransport:
         if self._closed:
             return False
 
-        line = json.dumps(obj, ensure_ascii=False)
+        line = _dumps(obj)
 
         try:
             on_loop = asyncio.get_running_loop() is self._loop
@@ -217,7 +237,7 @@ class WSTransport:
             self._pending_tokens = []
         if pending:
             await self._safe_send_many(pending)
-        await self._safe_send(json.dumps(obj, ensure_ascii=False))
+        await self._safe_send(_dumps(obj))
         return not self._closed
 
     async def _safe_send(self, line: str) -> None:
@@ -353,7 +373,7 @@ async def handle_ws(ws: Any) -> None:
             messages += 1
 
             try:
-                req = json.loads(line)
+                req = _loads(line)
             except json.JSONDecodeError as exc:
                 parse_errors += 1
                 _log.warning(

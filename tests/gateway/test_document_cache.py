@@ -242,3 +242,67 @@ class TestCacheMediaBytes:
         from gateway.platforms.base import cache_media_bytes
         result = cache_media_bytes(b"<html>not an image</html>", filename="x.png", mime_type="image/png")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# TestCacheDocumentFilenameLength — regression tests for URL-encoded CJK
+# filenames overflowing the 255-byte NAME_MAX limit on macOS/ext4.
+# ---------------------------------------------------------------------------
+
+class TestCacheDocumentFilenameLength:
+    def test_url_encoded_cjk_filename_is_decoded(self):
+        """WeCom-style %E5%B8%82... escapes are unquoted so the on-disk name
+        stays human-readable."""
+        # "报告.pdf" percent-encoded (utf-8): %E6%8A%A5%E5%91%8A.pdf
+        encoded = "%E6%8A%A5%E5%91%8A.pdf"
+        path = cache_document_from_bytes(b"data", encoded)
+        basename = os.path.basename(path)
+        # Percent escapes should not survive intact.
+        assert "%E6%8A%A5" not in basename
+        # Decoded CJK form appears.
+        assert "报告.pdf" in basename
+
+    def test_long_url_encoded_filename_truncated_under_255_bytes(self):
+        """A 40-char CJK filename URL-encodes to 360+ bytes; without
+        truncation the write fails with OSError [Errno 63]."""
+        long_cjk = "特" * 60 + ".pdf"  # 60 CJK + ".pdf" = ~184 bytes utf-8
+        # Simulate what WeCom would send: percent-encoded
+        from urllib.parse import quote
+        encoded = quote(long_cjk)  # ~540 bytes ASCII
+        assert len(encoded.encode("utf-8")) > 255
+
+        path = cache_document_from_bytes(b"data", encoded)
+        basename = os.path.basename(path)
+        # macOS HFS+/APFS NAME_MAX = 255 bytes per path component.
+        assert len(basename.encode("utf-8")) <= 255
+        # Extension is preserved.
+        assert basename.endswith(".pdf")
+        # File actually exists on disk (the whole point of the fix).
+        assert os.path.exists(path)
+
+    def test_ascii_long_filename_truncated(self):
+        """Non-CJK long filenames are also truncated to keep the cache
+        prefix ('doc_<uuid12>_') within budget."""
+        long_ascii = "a" * 400 + ".txt"
+        path = cache_document_from_bytes(b"data", long_ascii)
+        basename = os.path.basename(path)
+        assert len(basename.encode("utf-8")) <= 255
+        assert basename.endswith(".txt")
+        assert os.path.exists(path)
+
+    def test_truncation_preserves_utf8_boundary(self):
+        """Byte-level truncation must not split a multi-byte codepoint —
+        otherwise the resulting name would be undecodable."""
+        long_cjk_name = ("特殊设备使用管理规则若干问题的通知" * 12) + ".pdf"
+        path = cache_document_from_bytes(b"data", long_cjk_name)
+        basename = os.path.basename(path)
+        # Basename must be valid UTF-8.
+        basename.encode("utf-8").decode("utf-8")  # raises if broken
+        assert basename.endswith(".pdf")
+
+    def test_short_filename_untouched(self):
+        """Names already under the limit are left alone (except the uuid
+        prefix that cache_document_from_bytes always adds)."""
+        path = cache_document_from_bytes(b"data", "short.pdf")
+        basename = os.path.basename(path)
+        assert "short.pdf" in basename

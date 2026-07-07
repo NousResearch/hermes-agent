@@ -7819,6 +7819,52 @@ class TelegramAdapter(BasePlatformAdapter):
         if not chat_id_str:
             return
 
+        # Caller authorization (fail-closed). Guest mode lets ANY chat that
+        # @mentions the bot reach it — _should_process_message only gates the
+        # chat/mention, never the person — so without this an unauthorized
+        # stranger who knows the @handle could drive the full LLM + tools from
+        # any group (cost, abuse, prompt-injection surface). Approval gating
+        # only stops dangerous *commands*; it does nothing about this door.
+        #
+        # The human caller for a guest update is carried in the raw
+        # ``guest_bot_caller_user`` field, NOT ``from_user`` (absent/unreliable
+        # for guest messages). PTB's ``Message.de_json`` drops fields it doesn't
+        # model, so this is read from the raw payload, not off ``msg``. Routed
+        # through the same ``_is_callback_user_authorized`` the exec-approval
+        # buttons use, so there is ONE definition of "who's allowed" — the env
+        # allowlists (``TELEGRAM_ALLOWED_USERS`` / group variants /
+        # ``GATEWAY_ALLOWED_USERS``) unioned with the pairing store, with ``*``
+        # as the explicit open-to-everyone opt-out. Empty allowlist or unknown
+        # caller => deny. Placed before the busy-reply, guest-state registration
+        # AND the deliver_<token> branch so token redemption is gated too.
+        _guest_caller = raw_gm.get("guest_bot_caller_user")
+        if not isinstance(_guest_caller, dict):
+            _guest_caller = {}
+        _guest_caller_id = str(_guest_caller.get("id") or "").strip()
+        if not _guest_caller_id:
+            # Defensive fallback; still denies below if neither yields an id.
+            _guest_caller_id = str(
+                getattr(getattr(msg, "from_user", None), "id", "") or ""
+            ).strip()
+        _guest_chat_type = getattr(getattr(msg, "chat", None), "type", None)
+        if not self._is_callback_user_authorized(
+            _guest_caller_id,
+            chat_id=chat_id_str,
+            chat_type=str(_guest_chat_type) if _guest_chat_type is not None else "group",
+            user_name=(_guest_caller.get("username") or _guest_caller.get("first_name")),
+        ):
+            # Loud + diagnostic: if ``guest_bot_caller_user`` is ever absent
+            # (e.g. a Bot API field-name drift), logging the payload keys makes a
+            # silent deny-all instantly traceable to the missing caller field
+            # rather than looking like a backend outage.
+            logger.warning(
+                "[%s] Guest caller not authorized (caller_id=%r chat=%s); denying. "
+                "caller_field_present=%s raw_keys=%s",
+                self.name, _guest_caller_id, chat_id_str,
+                bool(_guest_caller), sorted(raw_gm.keys()),
+            )
+            return
+
         # Guest state (_pending_guest_queries, _guest_reply_buffer,
         # _guest_inline_message_ids) is keyed by chat_id, not guest_query_id —
         # a second @mention from the same chat while a turn is still in flight

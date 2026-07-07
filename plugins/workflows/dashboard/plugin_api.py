@@ -11,8 +11,10 @@ import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ValidationError
 
+from hermes_cli import workflows_assistant
 from hermes_cli import workflows_db as wfdb
 from hermes_cli import workflows_dispatcher
+from hermes_cli.workflows_capabilities import workflow_capabilities
 from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
 
 router = APIRouter()
@@ -40,6 +42,10 @@ def _http_400(exc: BaseException) -> HTTPException:
 
 def _http_404(exc: BaseException) -> HTTPException:
     return HTTPException(status_code=404, detail=_error_text(exc))
+
+
+def _http_500(message: str = "workflow assistant failed") -> HTTPException:
+    return HTTPException(status_code=500, detail=message)
 
 
 async def _read_body(request: Request) -> Any:
@@ -194,6 +200,17 @@ class PromptAssistantDraftRequest(BaseModel):
     constraints: list[str] = Field(default_factory=list)
 
 
+class WorkflowDraftRequest(BaseModel):
+    goal: str
+
+
+class WorkflowRefineRequest(BaseModel):
+    instruction: str
+    spec: dict[str, Any] | None = None
+    workflow_id: str | None = None
+    version: int | None = None
+
+
 class PromptAssistantDraftResponse(BaseModel):
     prompt_text: str
     result_contract: dict[str, Any]
@@ -239,6 +256,52 @@ Return JSON only matching this contract:
 @router.post("/prompt-assistant/draft")
 def prompt_assistant_draft(req: PromptAssistantDraftRequest) -> dict[str, Any]:
     return _draft_cell_prompt(req).model_dump()
+
+
+@router.get("/capabilities")
+def capabilities() -> dict[str, Any]:
+    return workflow_capabilities()
+
+
+@router.post("/definitions/draft")
+def draft_definition(req: WorkflowDraftRequest) -> dict[str, Any]:
+    try:
+        result = workflows_assistant.draft_workflow_with_default_runner(req.goal)
+    except HTTPException:
+        raise
+    except (workflows_assistant.AssistantValidationError, ValueError, ValidationError) as exc:
+        raise _http_400(exc) from exc
+    except Exception as exc:
+        logger.exception("workflow draft failed")
+        raise _http_500() from exc
+    return {"draft": result.to_dict()}
+
+
+@router.post("/definitions/refine")
+def refine_definition(req: WorkflowRefineRequest) -> dict[str, Any]:
+    try:
+        if req.spec is not None:
+            spec = WorkflowSpec.model_validate(req.spec)
+            validate_graph(spec)
+        elif req.workflow_id:
+            with _connect_initialized() as conn:
+                record = _definition_record(conn, req.workflow_id, req.version)
+                spec = record.spec
+        else:
+            raise ValueError("spec or workflow_id is required")
+        result = workflows_assistant.refine_workflow_with_default_runner(
+            spec, req.instruction
+        )
+    except KeyError as exc:
+        raise _http_404(exc) from exc
+    except HTTPException:
+        raise
+    except (ValueError, ValidationError) as exc:
+        raise _http_400(exc) from exc
+    except Exception as exc:
+        logger.exception("workflow refine failed")
+        raise _http_500() from exc
+    return {"draft": result.to_dict()}
 
 
 @router.get("/definitions")

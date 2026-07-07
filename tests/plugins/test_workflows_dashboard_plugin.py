@@ -108,6 +108,149 @@ def test_prompt_assistant_drafts_text_prompt(client):
     assert body["result_contract"]["verdict"] == "approved|changes_requested"
 
 
+def test_capabilities_endpoint_lists_implemented_and_unsupported_primitives(client):
+    r = client.get("/api/plugins/workflows/capabilities")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["triggers"]["implemented"] == ["manual", "schedule"]
+    assert "webhook" in body["triggers"]["unsupported"]
+    assert "agent_task" in body["nodes"]["implemented"]
+    assert "send_message" in body["nodes"]["unsupported"]
+
+
+def test_definition_draft_endpoint_returns_validated_spec(client, monkeypatch):
+    import hermes_dashboard_plugin_workflows_test as plugin
+
+    def fake_draft(goal):
+        assert goal == "Build demo"
+        from hermes_cli.workflows_assistant import parse_assistant_payload
+
+        return parse_assistant_payload(
+            {
+                "spec": PASS_SPEC,
+                "summary": "Drafted dashboard demo.",
+                "assumptions": ["Manual trigger."],
+                "questions": [],
+                "warnings": [],
+                "unsupported_requests": [],
+            }
+        )
+
+    monkeypatch.setattr(plugin.workflows_assistant, "draft_workflow_with_default_runner", fake_draft)
+
+    r = client.post("/api/plugins/workflows/definitions/draft", json={"goal": "Build demo"})
+
+    assert r.status_code == 200, r.text
+    body = r.json()["draft"]
+    assert body["spec"]["id"] == PASS_SPEC["id"]
+    assert body["summary"] == "Drafted dashboard demo."
+
+
+def test_definition_draft_endpoint_redacts_unexpected_runtime_errors(client, monkeypatch):
+    import hermes_dashboard_plugin_workflows_test as plugin
+
+    def fake_draft(goal):
+        raise RuntimeError("secret provider token abc123")
+
+    monkeypatch.setattr(plugin.workflows_assistant, "draft_workflow_with_default_runner", fake_draft)
+
+    r = client.post("/api/plugins/workflows/definitions/draft", json={"goal": "Build demo"})
+
+    assert r.status_code == 500
+    assert r.json()["detail"] == "workflow assistant failed"
+    assert "secret" not in r.text
+    assert "abc123" not in r.text
+
+
+def test_definition_refine_endpoint_uses_existing_spec(client, monkeypatch):
+    import hermes_dashboard_plugin_workflows_test as plugin
+
+    calls = []
+
+    def fake_refine(spec, instruction):
+        calls.append((spec.id, instruction))
+        from hermes_cli.workflows_assistant import parse_assistant_payload
+
+        return parse_assistant_payload(
+            {
+                "spec": PASS_SPEC,
+                "summary": "Refined spec.",
+                "assumptions": [],
+                "questions": [],
+                "warnings": [],
+                "unsupported_requests": [],
+            }
+        )
+
+    monkeypatch.setattr(plugin.workflows_assistant, "refine_workflow_with_default_runner", fake_refine)
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/refine",
+        json={"spec": PASS_SPEC, "instruction": "Rename it"},
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["draft"]["summary"] == "Refined spec."
+    assert calls == [(PASS_SPEC["id"], "Rename it")]
+
+
+def test_definition_refine_endpoint_uses_deployed_workflow_id(client, monkeypatch):
+    import hermes_dashboard_plugin_workflows_test as plugin
+
+    _deploy(client, PASS_SPEC)
+    calls = []
+
+    def fake_refine(spec, instruction):
+        calls.append((spec.id, instruction))
+        from hermes_cli.workflows_assistant import parse_assistant_payload
+
+        return parse_assistant_payload(
+            {
+                "spec": PASS_SPEC,
+                "summary": "Refined deployed spec.",
+                "assumptions": [],
+                "questions": [],
+                "warnings": [],
+                "unsupported_requests": [],
+            }
+        )
+
+    monkeypatch.setattr(plugin.workflows_assistant, "refine_workflow_with_default_runner", fake_refine)
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/refine",
+        json={
+            "workflow_id": PASS_SPEC["id"],
+            "version": PASS_SPEC["version"],
+            "instruction": "Rename it",
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["draft"]["summary"] == "Refined deployed spec."
+    assert calls == [(PASS_SPEC["id"], "Rename it")]
+
+
+def test_definition_refine_endpoint_redacts_unexpected_runtime_errors(client, monkeypatch):
+    import hermes_dashboard_plugin_workflows_test as plugin
+
+    def fake_refine(spec, instruction):
+        raise RuntimeError("secret provider token abc123")
+
+    monkeypatch.setattr(plugin.workflows_assistant, "refine_workflow_with_default_runner", fake_refine)
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/refine",
+        json={"spec": PASS_SPEC, "instruction": "Rename it"},
+    )
+
+    assert r.status_code == 500
+    assert r.json()["detail"] == "workflow assistant failed"
+    assert "secret" not in r.text
+    assert "abc123" not in r.text
+
+
 def test_manifest_points_to_plugin_api():
     manifest_file = PLUGIN_DIR / "manifest.json"
     assert manifest_file.exists(), f"manifest missing: {manifest_file}"

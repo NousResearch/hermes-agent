@@ -11,10 +11,7 @@ AIAgent = None
 
 from pydantic import BaseModel, Field, ValidationError
 
-from hermes_cli.workflows_capabilities import (
-    IMPLEMENTED_NODE_TYPES,
-    IMPLEMENTED_TRIGGER_TYPES,
-)
+from hermes_cli.workflows_capabilities import require_implemented_primitives
 from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
@@ -92,15 +89,10 @@ def _json_object_candidates(text: str) -> list[dict[str, Any]]:
 
 
 def _ensure_supported_primitives(spec: WorkflowSpec) -> None:
-    errors: list[str] = []
-    for trigger in spec.triggers:
-        if trigger.type not in IMPLEMENTED_TRIGGER_TYPES:
-            errors.append(f"unsupported trigger type {trigger.type}")
-    for node_id, node in spec.nodes.items():
-        if node.type not in IMPLEMENTED_NODE_TYPES:
-            errors.append(f"unsupported node type {node.type} on node {node_id}")
-    if errors:
-        raise AssistantValidationError("; ".join(errors))
+    try:
+        require_implemented_primitives(spec)
+    except ValueError as exc:
+        raise AssistantValidationError(str(exc)) from exc
 
 
 def _ensure_agent_task_contracts(spec: WorkflowSpec) -> None:

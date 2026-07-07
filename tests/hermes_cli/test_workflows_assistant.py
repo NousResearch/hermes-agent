@@ -56,11 +56,11 @@ def test_parse_assistant_payload_rejects_unsupported_runtime_primitives():
     payload["spec"]["nodes"]["notify"] = {"type": "send_message", "output": {}}
     payload["spec"]["edges"].append({"from": "done", "to": "notify"})
 
-    with pytest.raises(AssistantValidationError) as exc:
+    with pytest.raises(
+        AssistantValidationError,
+        match="unsupported node type: send_message on node notify",
+    ):
         parse_assistant_payload(payload)
-
-    assert "unsupported node type" in str(exc.value)
-    assert "send_message" in str(exc.value)
 
 
 @pytest.mark.parametrize("contract", [None, {}])

@@ -18,6 +18,7 @@ import {
   clearSessionNotifications,
   clearSessionReplyReady,
   getRecentlySettledSessionIds,
+  isOpenableSessionListRow,
   mergeSessionPage,
   sessionPinId,
   setCurrentCwd,
@@ -241,6 +242,17 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('isOpenableSessionListRow', () => {
+  it('hides compression-ended ancestors from openable sidebar lists', () => {
+    expect(isOpenableSessionListRow(session({ end_reason: 'compression' }))).toBe(false)
+  })
+
+  it('keeps normal and manually-ended sessions openable', () => {
+    expect(isOpenableSessionListRow(session({ end_reason: null }))).toBe(true)
+    expect(isOpenableSessionListRow(session({ end_reason: 'user' }))).toBe(true)
   })
 })
 

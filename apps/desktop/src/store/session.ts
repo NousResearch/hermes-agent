@@ -140,6 +140,9 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+export const isOpenableSessionListRow = (session: Pick<SessionInfo, 'end_reason'>): boolean =>
+  session.end_reason !== 'compression'
+
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
  *  sessions and pinned sessions.
@@ -201,7 +204,7 @@ export function mergeSessionPage(
 
   const survivors = previous.filter(
     session =>
-      session.end_reason !== 'compression' &&
+      isOpenableSessionListRow(session) &&
       !incomingIds.has(session.id) &&
       !incomingLineageKeys.has(session._lineage_root_id ?? session.id) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))

@@ -100,6 +100,7 @@ import {
   $sessionsLoading,
   $sessionsTotal,
   $workingSessionIds,
+  isOpenableSessionListRow,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
@@ -362,7 +363,10 @@ export function ChatSidebar({
   // profile in, grouped by profile below. Single-profile users land here with
   // scope === their only profile, so nothing is filtered out.
   const visibleSessions = useMemo(
-    () => (showAllProfiles ? sessions : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope)),
+    () =>
+      (showAllProfiles ? sessions : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope)).filter(
+        isOpenableSessionListRow
+      ),
     [sessions, showAllProfiles, profileScope]
   )
 

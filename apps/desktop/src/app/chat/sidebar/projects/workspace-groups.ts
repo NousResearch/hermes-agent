@@ -442,7 +442,7 @@ export function overlayRepoLanes(
   for (const session of live) {
     const cwd = (session.cwd || '').trim()
 
-    if (removed.has(session.id) || !cwd) {
+    if (session.end_reason === 'compression' || removed.has(session.id) || !cwd) {
       continue
     }
 
@@ -566,8 +566,10 @@ export function overlayLivePreviews(
       continue
     }
 
-    const liveRows = byProject.get(node.id) ?? []
-    const base = (node.previewSessions ?? []).filter(session => !removed.has(session.id))
+    const liveRows = (byProject.get(node.id) ?? []).filter(session => session.end_reason !== 'compression')
+    const base = (node.previewSessions ?? []).filter(
+      session => session.end_reason !== 'compression' && !removed.has(session.id)
+    )
 
     if (!liveRows.length && !base.length) {
       continue
@@ -577,8 +579,10 @@ export function overlayLivePreviews(
     const map = new Map<string, SessionInfo>()
 
     for (const session of [...liveRows, ...base]) {
-      if (!map.has(session.id)) {
-        map.set(session.id, session)
+      const key = session._lineage_root_id ?? session.id
+
+      if (!map.has(key)) {
+        map.set(key, session)
       }
     }
 

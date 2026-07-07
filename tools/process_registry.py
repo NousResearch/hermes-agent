@@ -1348,6 +1348,11 @@ class ProcessRegistry:
         requested_timeout = timeout
         timeout_note = None
 
+        # Reject non-positive timeout values — schema says minimum=1
+        # but the handler should enforce this, not just rely on the schema.
+        if requested_timeout is not None and requested_timeout <= 0:
+            return {"status": "error", "error": f"timeout must be positive (got {requested_timeout})"}
+
         if requested_timeout and requested_timeout > max_timeout:
             effective_timeout = max_timeout
             timeout_note = (

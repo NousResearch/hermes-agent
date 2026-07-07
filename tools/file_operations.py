@@ -1139,7 +1139,18 @@ class ShellFileOperations(FileOperations):
         hint = None
         if truncated:
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
-        
+
+        # When offset exceeds total lines, return a clear message instead
+        # of a misleading empty line with just the line-number prefix.
+        if offset > total_lines and not read_output.strip():
+            return ReadResult(
+                content="",
+                total_lines=total_lines,
+                file_size=file_size,
+                truncated=False,
+                hint=f"Offset {offset} exceeds file length ({total_lines} lines)",
+            )
+
         return ReadResult(
             content=self._add_line_numbers(read_output, offset),
             total_lines=total_lines,

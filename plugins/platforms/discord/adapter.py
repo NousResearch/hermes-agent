@@ -4600,7 +4600,17 @@ class DiscordAdapter(BasePlatformAdapter):
         """Create a Discord thread from a slash command and start a session in it."""
         if not await self._check_slash_authorization(interaction, "/thread"):
             return
-        await interaction.response.defer(ephemeral=True)
+        deferred_response = False
+        try:
+            await interaction.response.defer(ephemeral=True)
+            deferred_response = True
+        except Exception as e:
+            if not self._is_discord_unknown_interaction(e):
+                raise
+            logger.warning(
+                "[Discord] /thread: interaction expired before defer. "
+                "Creating the thread anyway, skipping interaction followups.",
+            )
         result = await self._create_thread(
             interaction,
             name=name,
@@ -4610,7 +4620,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not result.get("success"):
             error = result.get("error", "unknown error")
-            await interaction.followup.send(f"Failed to create thread: {error}", ephemeral=True)
+            if deferred_response:
+                await interaction.followup.send(f"Failed to create thread: {error}", ephemeral=True)
             return
 
         thread_id = result.get("thread_id")
@@ -4618,7 +4629,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Tell the user where the thread is
         link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
-        await interaction.followup.send(f"Created thread {link}", ephemeral=True)
+        if deferred_response:
+            await interaction.followup.send(f"Created thread {link}", ephemeral=True)
 
         # Track thread participation so follow-ups don't require @mention
         if thread_id:

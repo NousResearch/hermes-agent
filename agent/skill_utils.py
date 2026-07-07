@@ -528,11 +528,14 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     # (not via get_skills_dir()): callers and tests patch
     # ``tools.skills_tool.SKILLS_DIR`` and skill_view() itself resolves
     # against that module attribute, so normalization must agree with the
-    # exact root skill_view() will enforce.  Import deferred to avoid a
+    # exact root skill_view() will enforce.  Use _skills_dir() (not the
+    # module-level SKILLS_DIR) so the live profile-scoped HERMES_HOME is
+    # always respected in long-lived multi-profile runtimes (#40677).
+    # Import deferred to avoid a
     # module cycle (tools.skills_tool imports agent.skill_utils).
     try:
         from tools import skills_tool as _skills_tool
-        primary_root = Path(_skills_tool.SKILLS_DIR)
+        primary_root = Path(_skills_tool._skills_dir())
     except Exception:
         primary_root = get_skills_dir()
 

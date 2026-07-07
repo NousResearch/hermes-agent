@@ -126,6 +126,16 @@ _DISCOVERY_CACHE_TTL_SEC = 3600
 # provider's 5-minute lifespan so key rotation is picked up promptly).
 _JWKS_CACHE_SECONDS = 300
 
+# HTTP headers for JWKS fetches. PyJWKClient defaults to a urllib-style
+# User-Agent ("Python-urllib/*") which some WAFs/CDNs (notably Cloudflare
+# in front of Authelia and similar self-hosted IdPs) block with HTTP 403.
+# Sending an explicit, non-urllib UA defeats the block. See skill
+# hermes-oidc-cloudflare-jwks-fix for the full diagnosis.
+_JWKS_HTTP_HEADERS = {
+    "User-Agent": "Hermes-Agent (+https://hermes-agent.nousresearch.com)",
+    "Accept": "application/json",
+}
+
 
 # ---------------------------------------------------------------------------
 # Skip-reason channel (mirrors the nous plugin)
@@ -601,6 +611,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 disco["jwks_uri"],
                 cache_keys=True,
                 lifespan=_JWKS_CACHE_SECONDS,
+                headers=_JWKS_HTTP_HEADERS,
             )
         return self._jwks_client
 

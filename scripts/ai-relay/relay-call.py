@@ -3,7 +3,7 @@
 
 ส่วนของ Use AI Relay (Memory Schema v1.1) · LLM อ่านแค่ช่อง status ที่ตัวนี้คืน ไม่ parse stderr เอง
 ใช้:  python relay-call.py --tool grok --task-id P1-I2 --prompt-file brief.md --cwd <worktree>
-คืน: JSON บรรทัดเดียว + exit (ok=0 not_found=10 auth=20 quota=30 crash=40 limit_exceeded=50)
+คืน: JSON บรรทัดเดียว + exit (ok=0 not_found=10 auth=20 quota=30 crash=40 limit_exceeded=50 off_plan=60)
 
 หมายเหตุ: คำสั่งเรียก coder อ่านจาก .hermes/ai-relay/adapters.yaml
           บัญชี/สาย/เพดาน อ่านจาก .hermes/ai-relay/accounts.yaml
@@ -519,6 +519,38 @@ def save_cooldown(cwd: Path, state: dict):
 def in_cooldown(state: dict, tool: str, now: float):
     return float(state.get(tool, {}).get("until", 0)) > now
 
+OFF_PLAN_REASON = (
+    "เลขงานไม่อยู่ในแผน .project/plan.md — ตรวจแผนก่อน "
+    "หรือใช้ --no-plan สำหรับงานจรนอกแผน"
+)
+
+def check_plan_anchor(cwd: Path, task_id: str, no_plan: bool) -> tuple[str, str | None]:
+    """คืน (action, plan_check) · action = proceed|off_plan · plan_check = error เมื่อ anchor พัง"""
+    if no_plan:
+        return "proceed", None
+    anchor = SCRIPT_DIR / "plan-anchor.py"
+    if not anchor.exists():
+        return "proceed", None
+    plan_path = cwd / ".project" / "plan.md"
+    if not plan_path.exists():
+        return "proceed", None
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(anchor), "--task-id", task_id, "--plan", str(plan_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return "proceed", "error"
+    if proc.returncode == 0:
+        return "proceed", None
+    if proc.returncode == 1:
+        return "off_plan", None
+    if proc.returncode == 2:
+        return "proceed", None
+    return "proceed", "error"
+
 def record_fail(cwd: Path, tool: str, cd: dict, now: float):
     # อ่าน-แก้-เขียน ใต้ล็อกเดียว กันสองโปรเซสทับสถานะกัน
     lockf = cfg_dir(cwd)/".cooldown.lock"; lockf.parent.mkdir(parents=True, exist_ok=True)
@@ -544,9 +576,25 @@ def main():
         default=os.environ.get("AI_RELAY_ROOT") or str(Path.home()),
         help="โฟลเดอร์ทำงานและที่เก็บ .hermes/ai-relay; ค่าเริ่มต้นคือ $AI_RELAY_ROOT หรือ home ของผู้ใช้",
     )
+    ap.add_argument(
+        "--no-plan",
+        action="store_true",
+        help="ข้ามการตรวจแผน (จด [no-plan] ใน ledger)",
+    )
     a = ap.parse_args()
 
     cwd = Path(a.cwd).expanduser().resolve()
+    plan_check_error = None
+
+    def with_plan_check(payload: dict) -> dict:
+        if plan_check_error:
+            payload = dict(payload)
+            payload["plan_check"] = plan_check_error
+        return payload
+
+    def emit(payload: dict, code: int):
+        print(json.dumps(with_plan_check(payload), ensure_ascii=False))
+        sys.exit(code)
     load_relay_env(cwd)
     prompt = Path(a.prompt_file).read_text(encoding="utf-8") if Path(a.prompt_file).exists() else a.prompt_file
     adapters = {**DEFAULT_ADAPTERS, **(load_yaml(cfg_dir(cwd)/"adapters.yaml").get("tools") or {})}
@@ -563,12 +611,22 @@ def main():
     is_brain = bool(adapters.get(a.tool, {}).get("brain"))
     session_hours = limits.get("session_hours", DEFAULT_ACCOUNTS["limits"]["session_hours"])
 
+    plan_action, plan_check_error = check_plan_anchor(cwd, a.task_id, a.no_plan)
+
+    ledger_issue_id = f"{a.task_id} [no-plan]" if a.no_plan else a.task_id
+
+    if plan_action == "off_plan":
+        write_ledger(cwd, {"timestamp":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "issue_id":ledger_issue_id,"tool":a.tool,"account_used":a.tool,"rotated_from":"",
+            "status":"off_plan","calls_used":0,"output_ref":""})
+        emit({"status":"off_plan","tool":a.tool,"reason_human":OFF_PLAN_REASON,
+               "task_id":a.task_id,"ledger_written":True}, 60)
+
     # เพดาน session
     calls = bump_calls(cwd, session_hours=session_hours)
     if limits.get("max_calls_per_session") and calls > limits["max_calls_per_session"]:
-        out = {"status":"limit_exceeded","tool":a.tool,"reason_human":"เกินเพดานจำนวนครั้งต่อรอบงาน หยุดเพื่อกันค่าใช้จ่ายบาน",
-               "calls_used":calls,"ledger_written":False}
-        print(json.dumps(out, ensure_ascii=False)); sys.exit(50)
+        emit({"status":"limit_exceeded","tool":a.tool,"reason_human":"เกินเพดานจำนวนครั้งต่อรอบงาน หยุดเพื่อกันค่าใช้จ่ายบาน",
+               "calls_used":calls,"ledger_written":False}, 50)
 
     # (Fable ถอดออกแล้ว — ไม่มีสมองพิเศษ premium · สมองหลัก = Opus 4.8 ตัวเดียว)
 
@@ -578,10 +636,9 @@ def main():
     if not is_brain:
         rounds = bump_counter(cwd, f".rounds-{safe_task}", session_hours=session_hours)
         if limits.get("max_rounds_per_issue") and rounds > limits["max_rounds_per_issue"]:
-            out = {"status":"limit_exceeded","tool":a.tool,
+            emit({"status":"limit_exceeded","tool":a.tool,
                    "reason_human":f"issue {a.task_id} แก้เกิน {limits['max_rounds_per_issue']} รอบแล้ว หยุดเพื่อกันวนไหม้เงิน ให้ยกขึ้นสมองคิดใหม่หรือถามเจ้าของ",
-                   "rounds_used":rounds,"calls_used":calls,"ledger_written":False}
-            print(json.dumps(out, ensure_ascii=False)); sys.exit(50)
+                   "rounds_used":rounds,"calls_used":calls,"ledger_written":False}, 50)
 
     # สายลำดับ:
     #  - สมอง (brain): opus + สมองสำรองในทะเบียน (ถ้ามี) · พัง = รายงานกลับ ไม่ไหลลง coder
@@ -600,13 +657,13 @@ def main():
     tried = [f"{t}:cooldown-skip" for t in chain if in_cooldown(cooldown_state, t, now)]
     chain = [t for t in chain if not in_cooldown(cooldown_state, t, now)]
     if not chain:
-        print(json.dumps({"status":"crash","tool":a.tool,
+        emit({"status":"crash","tool":a.tool,
             "reason_human":"ทุกตัวในสายติด cooldown (พังซ้ำเมื่อสักครู่) รอครบเวลาพักหรือถามเจ้าของ",
-            "tried":tried}, ensure_ascii=False)); sys.exit(40)
+            "tried":tried}, 40)
 
     def attempt_row(tool, st, rotated_from, output_ref=""):
         return write_ledger(cwd, {"timestamp":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "issue_id":a.task_id,"tool":tool,"account_used":tool,"rotated_from":rotated_from,
+            "issue_id":ledger_issue_id,"tool":tool,"account_used":tool,"rotated_from":rotated_from,
             "status":st,"calls_used":calls,"output_ref":output_ref})
 
     rotated_from = ""
@@ -631,12 +688,11 @@ def main():
             ofile.write_text(redact(out), encoding="utf-8")
             relay_now("clear")
             ledger = write_ledger(cwd, {"timestamp":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "issue_id":a.task_id,"tool":tool,"account_used":tool,"rotated_from":rotated_from,
+                "issue_id":ledger_issue_id,"tool":tool,"account_used":tool,"rotated_from":rotated_from,
                 "status":"ok","calls_used":calls,"output_ref":str(ofile)})
-            print(json.dumps({"status":"ok","tool":tool,"account_used":tool,"rotated_from":rotated_from,
+            emit({"status":"ok","tool":tool,"account_used":tool,"rotated_from":rotated_from,
                 "reason_human":REASON["ok"],"output_ref":str(ofile),"ledger_written":True,"calls_used":calls,
-                "rounds_used":rounds,"tried":tried}, ensure_ascii=False))
-            sys.exit(0)
+                "rounds_used":rounds,"tried":tried}, 0)
 
         # ไม่ ok → เก็บ output ดิบตอนพังไว้วินิจฉัย (เคสจริง: auth ปลอม 4 ครั้งแต่ไม่มีหลักฐานให้ดูย้อน)
         # แล้วจดความพยายามลง ledger (relay-report จะได้เห็นครั้งที่พัง/ชนโควต้าด้วย) ค่อยตัดสินว่าสลับหรือหยุด
@@ -659,17 +715,15 @@ def main():
                 rotated_from = tool
                 continue
             relay_now("clear")
-            print(json.dumps({"status":"auth","tool":tool,"reason_human":REASON["auth"],
-                "hint":f"ล็อกอินใหม่: {tool} login","tried":tried,"ledger_written":True}, ensure_ascii=False)); sys.exit(20)
+            emit({"status":"auth","tool":tool,"reason_human":REASON["auth"],
+                "hint":f"ล็อกอินใหม่: {tool} login","tried":tried,"ledger_written":True}, 20)
         if st == "not_found":
             rotated_from = tool
             continue   # ไม่มีตัวนี้ → ลองตัวถัดไป
 
     relay_now("clear")
     status, reason, exit_code = summarize_final_failure(tried)
-    print(json.dumps({"status":status,"reason_human":reason,"tried":tried},
-                     ensure_ascii=False))
-    sys.exit(exit_code)
+    emit({"status":status,"reason_human":reason,"tried":tried}, exit_code)
 
 if __name__ == "__main__":
     main()

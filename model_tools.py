@@ -22,6 +22,7 @@ Public API (signatures preserved from the original 2,400-line version):
 
 import os
 import json
+import copy
 import re
 import asyncio
 import logging
@@ -672,7 +673,27 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if not schema:
         return args
 
-    properties = (schema.get("parameters") or {}).get("properties")
+    return coerce_args_with_schema(args, schema.get("parameters") or {}, tool_name=tool_name)
+
+
+def coerce_args_with_schema(
+    args: Dict[str, Any],
+    parameters_schema: Dict[str, Any],
+    *,
+    tool_name: str = "<schema>",
+) -> Dict[str, Any]:
+    """Coerce an argument dict using a JSON-Schema parameters object.
+
+    This is the schema-first implementation behind :func:`coerce_tool_args`,
+    exposed so dynamic MCP dispatchers can prepare nested ``arguments`` with
+    the real target-tool schema instead of the outer meta-tool schema.
+    """
+    if not args or not isinstance(args, dict):
+        return args
+    if not isinstance(parameters_schema, dict):
+        return args
+
+    properties = (parameters_schema or {}).get("properties")
     if not properties:
         return args
 
@@ -695,7 +716,7 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 if coerced is not value:
                     # _coerce_value handled it (JSON-parsed list or
                     # nullable "null" → None).
-                    args[key] = coerced
+                    args[key] = _coerce_schema_value(coerced, prop_schema)
                     continue
                 # If the string looks like a JSON array but _coerce_value
                 # failed to parse it, warn clearly instead of silently wrapping.
@@ -728,21 +749,123 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             # a JSON string. The top-level coercion above only repairs the
             # outermost value.
             if expected == "array" and isinstance(value, (list, tuple)):
-                args[key] = _normalize_json_strings_for_schema(value, prop_schema)
+                args[key] = _coerce_schema_value(value, prop_schema)
             elif expected == "object" and isinstance(value, dict):
-                args[key] = _normalize_json_strings_for_schema(value, prop_schema)
+                args[key] = _coerce_schema_value(value, prop_schema)
             continue
         if not expected and not _schema_allows_null(prop_schema):
             continue
-        coerced = _coerce_value(value, expected, schema=prop_schema)
+        coerced = _coerce_schema_value(value, prop_schema)
         if coerced is not value:
             args[key] = coerced
             # If we just JSON-parsed a string into a container, recurse so
             # nested JSON-encoded elements/fields get normalized as well.
             if isinstance(coerced, (list, tuple, dict)):
-                args[key] = _normalize_json_strings_for_schema(coerced, prop_schema)
+                args[key] = _coerce_schema_value(coerced, prop_schema)
 
     return args
+
+
+def _schema_type(schema: dict | None):
+    if not isinstance(schema, dict):
+        return None
+    return schema.get("type")
+
+
+def _schema_has_string_branch(schema: dict | None) -> bool:
+    if not isinstance(schema, dict):
+        return False
+    t = schema.get("type")
+    if t == "string" or (isinstance(t, list) and "string" in t):
+        return True
+    for union_key in ("anyOf", "oneOf"):
+        branches = schema.get(union_key)
+        if isinstance(branches, list) and any(_schema_has_string_branch(b) for b in branches):
+            return True
+    return False
+
+
+def _coerce_schema_value(value: Any, schema: Any) -> Any:
+    """Recursively coerce *value* according to a JSON-Schema fragment.
+
+    String parsing remains schema-guided: JSON-looking text is parsed only
+    when the schema expects an object/array, and numeric/bool coercion only
+    happens when the schema explicitly asks for that scalar type.
+    """
+    if not isinstance(schema, dict):
+        return value
+
+    # Meaningful unions: choose conservatively. If a string branch is allowed
+    # and the value is already a string, preserve it rather than guessing that
+    # "001" should become 1.
+    for union_key in ("anyOf", "oneOf"):
+        branches = schema.get(union_key)
+        if isinstance(branches, list) and branches:
+            if isinstance(value, str) and _schema_has_string_branch(schema):
+                return value
+            for branch in branches:
+                if not isinstance(branch, dict):
+                    continue
+                coerced = _coerce_schema_value(value, branch)
+                if coerced is not value:
+                    return coerced
+            return value
+
+    branches = schema.get("allOf")
+    if isinstance(branches, list) and branches:
+        out = value
+        for branch in branches:
+            if isinstance(branch, dict):
+                out = _coerce_schema_value(out, branch)
+        return out
+
+    expected = _schema_type(schema)
+
+    if isinstance(value, str):
+        if _schema_allows_null(schema) and value.strip().lower() == "null":
+            return None
+        if expected == "string":
+            return value
+        coerced = _coerce_value(value, expected, schema=schema)
+        if coerced is not value:
+            return _coerce_schema_value(coerced, schema)
+        return value
+
+    if expected == "array" and value is not None and not isinstance(value, (list, tuple)):
+        return [_coerce_schema_value(value, schema.get("items"))]
+
+    if isinstance(value, list):
+        items_schema = schema.get("items")
+        if not isinstance(items_schema, dict):
+            return value
+        changed = False
+        out = []
+        for item in value:
+            nxt = _coerce_schema_value(item, items_schema)
+            changed = changed or (nxt is not item)
+            out.append(nxt)
+        return out if changed else value
+
+    if isinstance(value, dict):
+        props = schema.get("properties")
+        additional = schema.get("additionalProperties")
+        if not isinstance(props, dict) and not isinstance(additional, dict):
+            return value
+        changed = False
+        out = dict(value)
+        for key, item in value.items():
+            prop_schema = props.get(key) if isinstance(props, dict) else None
+            if not isinstance(prop_schema, dict) and isinstance(additional, dict):
+                prop_schema = additional
+            if not isinstance(prop_schema, dict):
+                continue
+            nxt = _coerce_schema_value(item, prop_schema)
+            if nxt is not item:
+                out[key] = nxt
+                changed = True
+        return out if changed else value
+
+    return value
 
 
 def _schema_accepts_kind(schema: Any, kind: str) -> bool:
@@ -1057,9 +1180,40 @@ def handle_function_call(
         Function result as a JSON string.
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
+    _debug_args = False
+    _debug_before_coerce = None
+    try:
+        from tools.mcp_debug import (
+            changed_type_paths as _mcp_debug_changed_type_paths,
+            debug_args_enabled as _mcp_debug_enabled,
+            debug_args_log as _mcp_debug_log,
+            type_shape as _mcp_debug_type_shape,
+        )
+        _debug_args = _mcp_debug_enabled()
+        if _debug_args:
+            _debug_before_coerce = copy.deepcopy(function_args)
+            _mcp_debug_log(
+                "TOOL_SCHEMA",
+                tool=function_name,
+                input_schema=(registry.get_schema(function_name) or {}).get("parameters"),
+            )
+    except Exception:
+        _debug_args = False
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+    if _debug_args:
+        try:
+            _mcp_debug_log(
+                "COERCION",
+                tool=function_name,
+                before=_debug_before_coerce,
+                after=function_args,
+                types=_mcp_debug_type_shape(function_args),
+                changed_paths=_mcp_debug_changed_type_paths(_debug_before_coerce, function_args),
+            )
+        except Exception:
+            pass
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
@@ -1120,6 +1274,18 @@ def handle_function_call(
                         "Use tool_search to find tools you can call."
                     ),
                 }, ensure_ascii=False)
+            if _debug_args:
+                try:
+                    _mcp_debug_log(
+                        "HERMES_TOOL_RESOLVED",
+                        original_name=function_name,
+                        resolved_name=underlying_name,
+                        arguments_before=function_args,
+                        arguments_after=underlying_args,
+                        types=_mcp_debug_type_shape(underlying_args),
+                    )
+                except Exception:
+                    pass
             # Recurse with the underlying tool. All hooks fire against the
             # real tool name. The bridge is invisible to hooks by design.
             return handle_function_call(

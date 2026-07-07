@@ -88,6 +88,8 @@ Thread safety:
 import asyncio
 import contextvars
 import concurrent.futures
+import copy
+import hashlib
 import inspect
 import json
 import logging
@@ -2413,6 +2415,7 @@ class MCPServerTask:
             if hasattr(tools_result, "tools")
             else []
         )
+        await _discover_dynamic_dispatch_tools(self.name, self)
         self._register_discovered_tools_if_needed()
 
     def _register_discovered_tools_if_needed(self) -> None:
@@ -3214,12 +3217,26 @@ _parallel_safe_servers: set = set()
 # guessing.
 _mcp_tool_server_names: Dict[str, str] = {}
 
+# MCP servers such as Unreal can expose a dynamic-dispatch tool surface:
+# list_toolsets -> describe_toolset -> call_tool.  The real target schemas
+# live behind describe_toolset, so cache those descriptions and optionally
+# register virtual Hermes tools that call the meta-tool internally.
+_DYNAMIC_DISPATCH_META_TOOLS = frozenset({
+    "list_toolsets",
+    "describe_toolset",
+    "call_tool",
+})
+_dynamic_dispatch_tools_by_server: Dict[str, List[dict]] = {}
+
+_DEFAULT_DYNAMIC_DISPATCH_DISCOVERY_TIMEOUT_S = 5.0
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
 # Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
-# _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
+# _parallel_safe_servers, _mcp_tool_server_names,
+# _dynamic_dispatch_tools_by_server, and _stdio_pids.
 _lock = threading.Lock()
 
 # PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
@@ -3577,6 +3594,549 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 
 
 # ---------------------------------------------------------------------------
+# Dynamic-dispatch MCP tools (list_toolsets / describe_toolset / call_tool)
+# ---------------------------------------------------------------------------
+
+def _mcp_tool_names(server: MCPServerTask) -> set[str]:
+    """Return the raw MCP tool names advertised by *server*."""
+    return {
+        str(getattr(mcp_tool, "name", ""))
+        for mcp_tool in getattr(server, "_tools", []) or []
+        if getattr(mcp_tool, "name", None)
+    }
+
+
+def _supports_dynamic_dispatch(server: MCPServerTask) -> bool:
+    """Detect the generic dynamic-dispatch MCP meta-tool pattern."""
+    return _DYNAMIC_DISPATCH_META_TOOLS.issubset(_mcp_tool_names(server))
+
+
+def _dynamic_dispatch_discovery_timeout(server: MCPServerTask) -> float:
+    """Return the startup budget for dynamic toolset discovery.
+
+    Keep this small and best-effort: MCP connection readiness should not depend
+    on describing every dynamic toolset.  Operators can tune per server with
+    ``dynamic_tool_discovery_timeout`` or globally with
+    ``HERMES_MCP_DYNAMIC_DISCOVERY_TIMEOUT``; ``0`` disables eager discovery.
+    """
+    raw = (
+        getattr(server, "_config", {}) or {}
+    ).get(
+        "dynamic_tool_discovery_timeout",
+        os.getenv(
+            "HERMES_MCP_DYNAMIC_DISCOVERY_TIMEOUT",
+            str(_DEFAULT_DYNAMIC_DISPATCH_DISCOVERY_TIMEOUT_S),
+        ),
+    )
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "MCP server '%s': invalid dynamic_tool_discovery_timeout=%r; using %.1fs",
+            server.name,
+            raw,
+            _DEFAULT_DYNAMIC_DISPATCH_DISCOVERY_TIMEOUT_S,
+        )
+        return _DEFAULT_DYNAMIC_DISPATCH_DISCOVERY_TIMEOUT_S
+
+
+def _mcp_result_text(result: Any) -> str:
+    """Extract text content from an MCP CallToolResult-like object."""
+    parts: list[str] = []
+    for block in (getattr(result, "content", None) or []):
+        text = getattr(block, "text", None)
+        if text:
+            parts.append(text)
+    if parts:
+        return "\n".join(parts)
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        try:
+            return json.dumps(structured, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(structured)
+    return ""
+
+
+def _loads_jsonish_text(text: str) -> Any:
+    """Best-effort parse for tool metadata returned as text.
+
+    Some MCP servers return pure JSON; others return prose with an embedded
+    JSON object.  This intentionally only runs on server metadata responses,
+    never on arbitrary model argument strings.
+    """
+    if not isinstance(text, str):
+        return text
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        return json.loads(stripped)
+    except (TypeError, ValueError):
+        pass
+
+    candidates = []
+    obj_start, obj_end = stripped.find("{"), stripped.rfind("}")
+    if obj_start >= 0 and obj_end > obj_start:
+        candidates.append(stripped[obj_start:obj_end + 1])
+    arr_start, arr_end = stripped.find("["), stripped.rfind("]")
+    if arr_start >= 0 and arr_end > arr_start:
+        candidates.append(stripped[arr_start:arr_end + 1])
+
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+    return stripped
+
+
+def _mcp_result_payload(result: Any) -> Any:
+    text = _mcp_result_text(result)
+    payload = _loads_jsonish_text(text)
+    if payload is not None:
+        return payload
+    return getattr(result, "structuredContent", None)
+
+
+def _parse_dynamic_toolsets(payload: Any) -> list[dict]:
+    """Parse list_toolsets output into ``[{name, description}]`` entries."""
+    if isinstance(payload, str):
+        parsed = _loads_jsonish_text(payload)
+        if parsed is not payload:
+            return _parse_dynamic_toolsets(parsed)
+        toolsets: list[dict] = []
+        for line in payload.splitlines():
+            match = re.match(r"\s*[-*]\s+`?([^`:\s]+)`?\s*(?::\s*(.*))?$", line)
+            if match:
+                toolsets.append({
+                    "name": match.group(1),
+                    "description": (match.group(2) or "").strip(),
+                })
+        return toolsets
+
+    if isinstance(payload, list):
+        toolsets = []
+        for item in payload:
+            if isinstance(item, str):
+                toolsets.append({"name": item, "description": ""})
+            elif isinstance(item, dict):
+                name = item.get("name") or item.get("toolset_name") or item.get("id")
+                if name:
+                    toolsets.append({
+                        "name": str(name),
+                        "description": str(item.get("description") or ""),
+                    })
+        return toolsets
+
+    if isinstance(payload, dict):
+        for key in ("toolsets", "tool_sets", "groups"):
+            if key in payload:
+                return _parse_dynamic_toolsets(payload.get(key))
+        if "result" in payload:
+            return _parse_dynamic_toolsets(payload.get("result"))
+        name = payload.get("name") or payload.get("toolset_name") or payload.get("id")
+        if name:
+            return [{
+                "name": str(name),
+                "description": str(payload.get("description") or ""),
+            }]
+
+    return []
+
+
+def _parse_dynamic_tools(payload: Any, fallback_toolset_name: str) -> list[dict]:
+    """Parse describe_toolset output into virtual tool descriptors."""
+    if isinstance(payload, str):
+        parsed = _loads_jsonish_text(payload)
+        if parsed is not payload:
+            return _parse_dynamic_tools(parsed, fallback_toolset_name)
+        return []
+
+    if isinstance(payload, dict):
+        if "result" in payload:
+            return _parse_dynamic_tools(payload.get("result"), fallback_toolset_name)
+        if "toolset" in payload and isinstance(payload.get("toolset"), dict):
+            return _parse_dynamic_tools(payload["toolset"], fallback_toolset_name)
+        toolset_name = str(
+            payload.get("name")
+            or payload.get("toolset_name")
+            or fallback_toolset_name
+        )
+        tools_payload = (
+            payload.get("tools")
+            or payload.get("tool_defs")
+            or payload.get("toolDefinitions")
+            or []
+        )
+    elif isinstance(payload, list):
+        toolset_name = fallback_toolset_name
+        tools_payload = payload
+    else:
+        return []
+
+    descriptors: list[dict] = []
+    if not isinstance(tools_payload, list):
+        return descriptors
+    for item in tools_payload:
+        if not isinstance(item, dict):
+            continue
+        tool_name = item.get("name") or item.get("tool_name") or item.get("id")
+        if not tool_name:
+            continue
+        input_schema = (
+            item.get("inputSchema")
+            or item.get("input_schema")
+            or item.get("parameters")
+            or item.get("schema")
+        )
+        descriptors.append({
+            "toolset_name": toolset_name,
+            "tool_name": str(tool_name),
+            "description": str(item.get("description") or ""),
+            "input_schema": _normalize_mcp_input_schema(input_schema),
+        })
+    return descriptors
+
+
+def _cache_dynamic_dispatch_tools(server_name: str, descriptors: list[dict]) -> None:
+    """Merge dynamic-dispatch descriptors into the per-server cache."""
+    if not descriptors:
+        return
+    with _lock:
+        existing = list(_dynamic_dispatch_tools_by_server.get(server_name, []))
+        by_key = {
+            (d.get("toolset_name"), d.get("tool_name")): d
+            for d in existing
+        }
+        for descriptor in descriptors:
+            by_key[(descriptor.get("toolset_name"), descriptor.get("tool_name"))] = descriptor
+        _dynamic_dispatch_tools_by_server[server_name] = list(by_key.values())
+
+
+def _dynamic_component_short_name(value: str) -> str:
+    """Keep virtual tool names readable while preserving uniqueness elsewhere."""
+    text = str(value or "")
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return sanitize_mcp_name_component(text) or "tool"
+
+
+def _dynamic_virtual_tool_name(
+    server_name: str,
+    toolset_name: str,
+    tool_name: str,
+    used_names: set[str] | None = None,
+) -> str:
+    """Build a Hermes virtual tool name for a described dynamic MCP tool."""
+    used_names = used_names or set()
+    stripped_tool = str(tool_name or "")
+    prefix = f"{toolset_name}."
+    if stripped_tool.startswith(prefix):
+        stripped_tool = stripped_tool[len(prefix):]
+    toolset_component = _dynamic_component_short_name(toolset_name)
+    tool_component = _dynamic_component_short_name(stripped_tool)
+    raw_tool = f"{toolset_component}{_MCP_NAME_DELIM}{tool_component}"
+    candidate = mcp_prefixed_tool_name(server_name, raw_tool)
+    if candidate not in used_names:
+        return candidate
+    digest = hashlib.sha1(
+        f"{server_name}\0{toolset_name}\0{tool_name}".encode("utf-8")
+    ).hexdigest()[:8]
+    return mcp_prefixed_tool_name(server_name, f"{raw_tool}_{digest}")
+
+
+def _dynamic_toolset_matches(requested: Any, described: Any) -> bool:
+    if requested is None or described is None:
+        return False
+    requested_s = str(requested)
+    described_s = str(described)
+    if requested_s == described_s:
+        return True
+    return _dynamic_component_short_name(requested_s) == _dynamic_component_short_name(described_s)
+
+
+def _dynamic_tool_matches(requested: Any, described: Any) -> bool:
+    if requested is None or described is None:
+        return False
+    requested_s = str(requested)
+    described_s = str(described)
+    if requested_s == described_s:
+        return True
+    if described_s.endswith("." + requested_s) or requested_s.endswith("." + described_s):
+        return True
+    return _dynamic_component_short_name(requested_s) == _dynamic_component_short_name(described_s)
+
+
+def _lookup_dynamic_dispatch_schema(
+    server_name: str,
+    toolset_name: Any,
+    tool_name: Any,
+) -> dict | None:
+    with _lock:
+        descriptors = list(_dynamic_dispatch_tools_by_server.get(server_name, []))
+    for descriptor in descriptors:
+        if not _dynamic_toolset_matches(toolset_name, descriptor.get("toolset_name")):
+            continue
+        if not _dynamic_tool_matches(tool_name, descriptor.get("tool_name")):
+            continue
+        schema = descriptor.get("input_schema")
+        if isinstance(schema, dict):
+            return schema
+    return None
+
+
+async def _describe_dynamic_toolset(
+    server_name: str,
+    server: MCPServerTask,
+    toolset_name: str,
+) -> list[dict]:
+    """Describe one dynamic toolset and update the schema cache."""
+    if not server.session:
+        return []
+    async with server._rpc_lock:
+        result = await server.session.call_tool(
+            "describe_toolset",
+            arguments={"toolset_name": toolset_name},
+        )
+    if getattr(result, "isError", False):
+        logger.debug(
+            "MCP server '%s': describe_toolset(%s) returned an error: %.300s",
+            server_name,
+            toolset_name,
+            _mcp_result_text(result),
+        )
+        return []
+    descriptors = _parse_dynamic_tools(_mcp_result_payload(result), toolset_name)
+    _cache_dynamic_dispatch_tools(server_name, descriptors)
+    return descriptors
+
+
+def _ensure_dynamic_dispatch_schema(
+    server_name: str,
+    server: MCPServerTask,
+    toolset_name: Any,
+    tool_name: Any,
+    timeout: float,
+) -> dict | None:
+    """Return the real target schema for a dynamic call_tool payload."""
+    schema = _lookup_dynamic_dispatch_schema(server_name, toolset_name, tool_name)
+    if schema is not None:
+        return schema
+    if not toolset_name or not server.session or not _supports_dynamic_dispatch(server):
+        return None
+
+    async def _call():
+        return await _describe_dynamic_toolset(server_name, server, str(toolset_name))
+
+    try:
+        _run_on_mcp_loop(_call, timeout=min(float(timeout or 30.0), 30.0))
+    except Exception as exc:
+        logger.debug(
+            "MCP server '%s': dynamic describe_toolset(%s) failed: %s",
+            server_name,
+            toolset_name,
+            exc,
+        )
+        return None
+    return _lookup_dynamic_dispatch_schema(server_name, toolset_name, tool_name)
+
+
+def _prepare_dynamic_dispatch_arguments(
+    server_name: str,
+    server: MCPServerTask,
+    tool_name: str,
+    args: dict,
+    tool_timeout: float,
+) -> dict:
+    """Schema-prepare nested args for dynamic-dispatch MCP meta-tools.
+
+    This is generic to servers exposing ``call_tool`` with a nested
+    ``arguments`` object.  It does not parse arbitrary strings: nested JSON
+    text is parsed only at the dynamic-dispatch argument boundary, and nested
+    scalar/container coercion is delegated to the described target schema.
+    """
+    if (
+        tool_name != "call_tool"
+        or not isinstance(args, dict)
+        or "arguments" not in args
+        or "tool_name" not in args
+    ):
+        return args
+
+    prepared = copy.deepcopy(args)
+    nested = prepared.get("arguments")
+    if isinstance(nested, str):
+        parsed = _loads_jsonish_text(nested)
+        if isinstance(parsed, dict):
+            nested = parsed
+            prepared["arguments"] = nested
+
+    schema = _ensure_dynamic_dispatch_schema(
+        server_name,
+        server,
+        prepared.get("toolset_name"),
+        prepared.get("tool_name"),
+        tool_timeout,
+    )
+    if isinstance(schema, dict) and isinstance(nested, dict):
+        before = copy.deepcopy(nested)
+        try:
+            from model_tools import coerce_args_with_schema
+
+            prepared["arguments"] = coerce_args_with_schema(
+                copy.deepcopy(nested),
+                schema,
+                tool_name=(
+                    f"{server_name}:{prepared.get('toolset_name')}:"
+                    f"{prepared.get('tool_name')}"
+                ),
+            )
+        except Exception as exc:
+            logger.debug(
+                "MCP server '%s': dynamic argument coercion failed for %s/%s: %s",
+                server_name,
+                prepared.get("toolset_name"),
+                prepared.get("tool_name"),
+                exc,
+            )
+        else:
+            try:
+                from tools.mcp_debug import (
+                    changed_type_paths as _debug_changed_paths,
+                    debug_args_enabled as _debug_enabled,
+                    debug_args_log as _debug_log,
+                    type_shape as _debug_type_shape,
+                )
+
+                if _debug_enabled():
+                    _debug_log(
+                        "MCP_DYNAMIC_DISPATCH_COERCION",
+                        server=server_name,
+                        toolset_name=prepared.get("toolset_name"),
+                        tool_name=prepared.get("tool_name"),
+                        input_schema=schema,
+                        before=before,
+                        after=prepared.get("arguments"),
+                        before_types=_debug_type_shape(before),
+                        after_types=_debug_type_shape(prepared.get("arguments")),
+                        changed_paths=_debug_changed_paths(
+                            before,
+                            prepared.get("arguments"),
+                        ),
+                    )
+            except Exception:
+                pass
+
+    return prepared
+
+
+async def _discover_dynamic_dispatch_tools(
+    server_name: str,
+    server: MCPServerTask,
+) -> list[dict]:
+    """Discover and cache virtual tools behind a dynamic-dispatch MCP server."""
+    if not server.session or not _supports_dynamic_dispatch(server):
+        with _lock:
+            _dynamic_dispatch_tools_by_server.pop(server_name, None)
+        return []
+
+    budget = _dynamic_dispatch_discovery_timeout(server)
+    if budget <= 0:
+        logger.debug(
+            "MCP server '%s': eager dynamic tool discovery disabled",
+            server_name,
+        )
+        return []
+    deadline = time.monotonic() + budget
+
+    def _remaining_timeout() -> float:
+        return max(0.1, deadline - time.monotonic())
+
+    try:
+        async with server._rpc_lock:
+            result = await asyncio.wait_for(
+                server.session.call_tool("list_toolsets", arguments={}),
+                timeout=min(float(server.tool_timeout or 30.0), _remaining_timeout()),
+            )
+    except Exception as exc:
+        logger.debug(
+            "MCP server '%s': list_toolsets dynamic discovery failed: %s",
+            server_name,
+            exc,
+        )
+        return []
+
+    if getattr(result, "isError", False):
+        logger.debug(
+            "MCP server '%s': list_toolsets returned an error: %.300s",
+            server_name,
+            _mcp_result_text(result),
+        )
+        return []
+
+    toolsets = _parse_dynamic_toolsets(_mcp_result_payload(result))
+    descriptors: list[dict] = []
+    described_toolsets = 0
+    for toolset in toolsets:
+        if time.monotonic() >= deadline:
+            logger.info(
+                "MCP server '%s': dynamic discovery budget %.1fs exhausted "
+                "after %d/%d toolset(s); remaining schemas will be fetched lazily",
+                server_name,
+                budget,
+                described_toolsets,
+                len(toolsets),
+            )
+            break
+        toolset_name = toolset.get("name")
+        if not toolset_name:
+            continue
+        try:
+            described = await asyncio.wait_for(
+                _describe_dynamic_toolset(server_name, server, str(toolset_name)),
+                timeout=min(float(server.tool_timeout or 30.0), _remaining_timeout()),
+            )
+        except Exception as exc:
+            logger.debug(
+                "MCP server '%s': describe_toolset(%s) dynamic discovery failed: %s",
+                server_name,
+                toolset_name,
+                exc,
+            )
+            continue
+        described_toolsets += 1
+        descriptors.extend(described)
+
+    if descriptors:
+        logger.info(
+            "MCP server '%s': discovered %d dynamic tool(s) via toolsets",
+            server_name,
+            len(descriptors),
+        )
+    return descriptors
+
+
+def _make_dynamic_tool_handler(
+    server_name: str,
+    toolset_name: str,
+    target_tool_name: str,
+    tool_timeout: float,
+):
+    """Return a handler for a virtual dynamic MCP target tool."""
+    meta_handler = _make_tool_handler(server_name, "call_tool", tool_timeout)
+
+    def _handler(args: dict, **kwargs) -> str:
+        return meta_handler({
+            "toolset_name": toolset_name,
+            "tool_name": target_tool_name,
+            "arguments": copy.deepcopy(args) if isinstance(args, dict) else args,
+        }, **kwargs)
+
+    return _handler
+
+
+# ---------------------------------------------------------------------------
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
@@ -3656,6 +4216,32 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     "error": f"MCP server '{server_name}' is not connected"
                 }, ensure_ascii=False)
 
+        try:
+            from tools.mcp_debug import (
+                debug_args_enabled as _mcp_debug_enabled,
+                debug_args_log as _mcp_debug_log,
+                type_shape as _mcp_debug_type_shape,
+            )
+            _debug_args = _mcp_debug_enabled()
+        except Exception:
+            _debug_args = False
+
+        try:
+            args = _prepare_dynamic_dispatch_arguments(
+                server_name,
+                server,
+                tool_name,
+                args,
+                tool_timeout,
+            )
+        except Exception as exc:
+            logger.debug(
+                "MCP server '%s': dynamic argument preparation failed for %s: %s",
+                server_name,
+                tool_name,
+                exc,
+            )
+
         async def _call():
             async with server._rpc_lock:
                 # Snapshot the agent's context so an elicitation callback
@@ -3664,9 +4250,54 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
+                    if _debug_args:
+                        try:
+                            from tools.registry import registry as _tool_registry
+
+                            _prefixed = mcp_prefixed_tool_name(server_name, tool_name)
+                            _schema = _tool_registry.get_schema(_prefixed)
+                            _mcp_debug_log(
+                                "MCP_CALL",
+                                server=server_name,
+                                tool=tool_name,
+                                registered_tool=_prefixed,
+                                input_schema=(_schema or {}).get("parameters"),
+                                arguments=args,
+                                types=_mcp_debug_type_shape(args),
+                            )
+                            if (
+                                tool_name == "call_tool"
+                                and isinstance(args, dict)
+                                and "arguments" in args
+                            ):
+                                _mcp_debug_log(
+                                    "MCP_DYNAMIC_DISPATCH_ARGUMENTS",
+                                    server=server_name,
+                                    tool=tool_name,
+                                    nested_arguments=args.get("arguments"),
+                                    nested_type=type(args.get("arguments")).__name__,
+                                    types=_mcp_debug_type_shape(args.get("arguments")),
+                                )
+                        except Exception:
+                            pass
                     result = await server.session.call_tool(tool_name, arguments=args)
                 finally:
                     server._pending_call_context = None
+            if _debug_args:
+                try:
+                    _mcp_debug_log(
+                        "MCP_RESULT_OR_ERROR",
+                        server=server_name,
+                        tool=tool_name,
+                        is_error=getattr(result, "isError", None),
+                        content_types=[
+                            type(block).__name__
+                            for block in (getattr(result, "content", None) or [])
+                        ],
+                        structuredContent=getattr(result, "structuredContent", None),
+                    )
+                except Exception:
+                    pass
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""
@@ -3732,6 +4363,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            if _debug_args:
+                try:
+                    _mcp_debug_log(
+                        "MCP_RESULT_OR_ERROR",
+                        server=server_name,
+                        tool=tool_name,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                except Exception:
+                    pass
             # Auth-specific recovery path: consult the manager, signal
             # reconnect if viable, retry once. Returns None to fall
             # through for non-auth exceptions.
@@ -4498,6 +5140,78 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         )
         _track_mcp_tool_server(tool_name_prefixed, name)
         registered_names.append(tool_name_prefixed)
+
+    with _lock:
+        dynamic_descriptors = list(_dynamic_dispatch_tools_by_server.get(name, []))
+    used_names = set(registered_names)
+    for descriptor in dynamic_descriptors:
+        target_tool_name = descriptor.get("tool_name")
+        toolset_for_target = descriptor.get("toolset_name")
+        if not target_tool_name or not toolset_for_target:
+            continue
+        if include_set and target_tool_name not in include_set:
+            logger.debug(
+                "MCP server '%s': skipping dynamic tool '%s' (filtered by include)",
+                name,
+                target_tool_name,
+            )
+            continue
+        if exclude_set and target_tool_name in exclude_set:
+            logger.debug(
+                "MCP server '%s': skipping dynamic tool '%s' (filtered by exclude)",
+                name,
+                target_tool_name,
+            )
+            continue
+
+        virtual_name = _dynamic_virtual_tool_name(
+            name,
+            str(toolset_for_target),
+            str(target_tool_name),
+            used_names,
+        )
+        used_names.add(virtual_name)
+        schema = {
+            "name": virtual_name,
+            "description": (
+                descriptor.get("description")
+                or f"MCP dynamic tool {target_tool_name} from {name}"
+            ),
+            "parameters": descriptor.get("input_schema") or {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": True,
+            },
+        }
+
+        existing_toolset = registry.get_toolset_for_tool(virtual_name)
+        if existing_toolset and not existing_toolset.startswith("mcp-"):
+            logger.warning(
+                "MCP server '%s': dynamic tool '%s' (в†’ '%s') collides with "
+                "built-in tool in toolset '%s' вЂ” skipping to preserve built-in",
+                name,
+                target_tool_name,
+                virtual_name,
+                existing_toolset,
+            )
+            continue
+
+        registry.register(
+            name=virtual_name,
+            toolset=toolset_name,
+            schema=schema,
+            handler=_make_dynamic_tool_handler(
+                name,
+                str(toolset_for_target),
+                str(target_tool_name),
+                server.tool_timeout,
+            ),
+            check_fn=_make_check_fn(name),
+            is_async=False,
+            description=schema["description"],
+        )
+        _track_mcp_tool_server(virtual_name, name)
+        registered_names.append(virtual_name)
 
     # Register MCP Resources & Prompts utility tools, filtered by config and
     # only when the server actually supports the corresponding capability.

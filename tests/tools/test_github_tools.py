@@ -574,6 +574,13 @@ def test_github_list_workflow_runs_success(mock_api_req):
     )
 
 
+def test_github_list_workflow_runs_invalid_repo():
+    res_str = github_list_workflow_runs_tool("invalidrepo")
+    res = json.loads(res_str)
+    assert "error" in res
+    assert "Invalid repository identifier" in res["error"]
+
+
 @patch("tools.github_tools.github_api_request")
 def test_github_get_workflow_run_success(mock_api_req):
     mock_api_req.return_value = json.dumps({
@@ -614,6 +621,13 @@ def test_github_get_workflow_run_success(mock_api_req):
     )
 
 
+def test_github_get_workflow_run_invalid_repo():
+    res_str = github_get_workflow_run_tool("invalidrepo", 1001)
+    res = json.loads(res_str)
+    assert "error" in res
+    assert "Invalid repository identifier" in res["error"]
+
+
 @patch("tools.github_tools.github_api_request")
 def test_github_rerun_workflow_success(mock_api_req):
     mock_api_req.return_value = json.dumps({
@@ -634,6 +648,13 @@ def test_github_rerun_workflow_success(mock_api_req):
         "POST",
         "/repos/octocat/hello-world/actions/runs/1001/rerun",
     )
+
+
+def test_github_rerun_workflow_invalid_repo():
+    res_str = github_rerun_workflow_tool("invalidrepo", 1001)
+    res = json.loads(res_str)
+    assert "error" in res
+    assert "Invalid repository identifier" in res["error"]
 
 
 @patch("tools.github_tools.github_api_request")

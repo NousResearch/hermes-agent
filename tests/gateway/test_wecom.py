@@ -983,3 +983,150 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestStandaloneSendMedia — regression for MEDIA delivery on WeCom.
+#
+# _standalone_send is the standalone_sender_fn wired to WeCom in the platform
+# registry. Before the fix it accepted the ``media_files`` kwarg but ignored
+# it, so send_message_tool's MEDIA attachments were silently dropped for
+# every WeCom target. The tests below lock in the three behaviours the fix
+# introduces: text-only unchanged, text+media both delivered, media-only
+# skips the empty text send.
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneSendMedia:
+    @staticmethod
+    def _mock_adapter(send_ok: bool = True, media_ok: bool = True):
+        adapter = MagicMock()
+        adapter.connect = AsyncMock(return_value=True)
+        adapter.disconnect = AsyncMock(return_value=None)
+        adapter.fatal_error_message = None
+        adapter.send = AsyncMock(
+            return_value=SendResult(
+                success=send_ok,
+                message_id="msg-text" if send_ok else None,
+                error=None if send_ok else "text failure",
+            )
+        )
+        adapter._send_media_source = AsyncMock(
+            return_value=SendResult(
+                success=media_ok,
+                message_id="msg-media" if media_ok else None,
+                error=None if media_ok else "upload timeout",
+            )
+        )
+        return adapter
+
+    def _run(self, adapter, *args, **kwargs):
+        from plugins.platforms.wecom import adapter as wc_mod
+
+        with patch.object(wc_mod, "WeComAdapter", return_value=adapter), patch.object(
+            wc_mod, "check_wecom_requirements", return_value=True
+        ):
+            return asyncio.run(wc_mod._standalone_send(*args, **kwargs))
+
+    def test_text_only_still_uses_adapter_send(self):
+        adapter = self._mock_adapter()
+        result = self._run(adapter, PlatformConfig(enabled=True), "chat-1", "hello")
+        assert result == {
+            "success": True,
+            "platform": "wecom",
+            "chat_id": "chat-1",
+            "message_id": "msg-text",
+        }
+        adapter.send.assert_awaited_once_with("chat-1", "hello")
+        adapter._send_media_source.assert_not_called()
+
+    def test_text_plus_media_delivers_both(self, tmp_path):
+        pdf = tmp_path / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4 test")
+        adapter = self._mock_adapter()
+
+        result = self._run(
+            adapter,
+            PlatformConfig(enabled=True),
+            "chat-1",
+            "caption",
+            media_files=[(str(pdf), False)],
+        )
+        assert result["success"] is True
+        assert result["platform"] == "wecom"
+        # Text was sent first, media after.
+        adapter.send.assert_awaited_once_with("chat-1", "caption")
+        adapter._send_media_source.assert_awaited_once()
+        call_kwargs = adapter._send_media_source.await_args.kwargs
+        assert call_kwargs["chat_id"] == "chat-1"
+        assert call_kwargs["media_source"] == str(pdf)
+        assert call_kwargs["file_name"] == "report.pdf"
+        # Result reports the last message id (media), not the text one.
+        assert result["message_id"] == "msg-media"
+
+    def test_media_only_skips_text_send(self, tmp_path):
+        pdf = tmp_path / "invoice.pdf"
+        pdf.write_bytes(b"%PDF-1.4 x")
+        adapter = self._mock_adapter()
+
+        result = self._run(
+            adapter,
+            PlatformConfig(enabled=True),
+            "chat-1",
+            "   ",  # whitespace-only body: nothing to send as text
+            media_files=[(str(pdf), False)],
+        )
+        assert result["success"] is True
+        adapter.send.assert_not_called()
+        adapter._send_media_source.assert_awaited_once()
+
+    def test_bare_path_entries_supported(self, tmp_path):
+        """media_files entries may be bare strings, not just (path, is_voice)."""
+        pdf = tmp_path / "raw.pdf"
+        pdf.write_bytes(b"%PDF-1.4 y")
+        adapter = self._mock_adapter()
+
+        result = self._run(
+            adapter,
+            PlatformConfig(enabled=True),
+            "chat-1",
+            "",
+            media_files=[str(pdf)],
+        )
+        assert result["success"] is True
+        adapter._send_media_source.assert_awaited_once()
+        call_kwargs = adapter._send_media_source.await_args.kwargs
+        assert call_kwargs["media_source"] == str(pdf)
+
+    def test_multiple_media_files_each_uploaded(self, tmp_path):
+        adapter = self._mock_adapter()
+        files = []
+        for name in ("a.pdf", "b.png", "c.jpg"):
+            p = tmp_path / name
+            p.write_bytes(b"data")
+            files.append((str(p), False))
+
+        result = self._run(
+            adapter,
+            PlatformConfig(enabled=True),
+            "chat-1",
+            "",
+            media_files=files,
+        )
+        assert result["success"] is True
+        assert adapter._send_media_source.await_count == 3
+
+    def test_media_upload_failure_short_circuits(self, tmp_path):
+        pdf = tmp_path / "err.pdf"
+        pdf.write_bytes(b"data")
+        adapter = self._mock_adapter(media_ok=False)
+
+        result = self._run(
+            adapter,
+            PlatformConfig(enabled=True),
+            "chat-1",
+            "",
+            media_files=[(str(pdf), False)],
+        )
+        assert "error" in result
+        assert "upload timeout" in result["error"]

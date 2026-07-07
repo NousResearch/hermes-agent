@@ -1401,6 +1401,44 @@ def _dispatch_to_plugin_provider(
     return json.dumps(result)
 
 
+def _fuelix_api_key() -> str:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        return str(
+            cfg.get("providers", {})
+            .get("api.fuelix.ai", {})
+            .get("api_key", "")
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _fuelix_image_generate(prompt: str, aspect_ratio: str) -> str:
+    import base64
+    import requests
+
+    api_key = _fuelix_api_key()
+    if not api_key:
+        return json.dumps({"success": False, "image": None, "error": "FuelIX API key missing", "error_type": "provider_error"})
+    response = requests.post(
+        "https://api.fuelix.ai/v1/images/generations",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={"model": "imagen-4", "prompt": prompt, "n": 1},
+        timeout=60,
+    )
+    response.raise_for_status()
+    data = response.json()
+    b64_json = data["data"][0]["b64_json"]
+    raw = base64.b64decode(b64_json)
+    from hermes_constants import get_hermes_home
+    out = get_hermes_home() / "cache" / "images" / "fuelix_imagen4.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(raw)
+    return json.dumps({"success": True, "image": str(out), "provider": "fuelix", "model": "imagen-4", "prompt": prompt, "aspect_ratio": aspect_ratio, "modality": "text"})
+
+
 # ---------------------------------------------------------------------------
 # Managed-mode Krea routing
 # ---------------------------------------------------------------------------
@@ -1522,11 +1560,15 @@ def _handle_image_generate(args, **kw):
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path). When ``image_gen.provider == "krea"`` this
     # already reaches the Krea plugin's managed gateway path.
-    dispatched = _dispatch_to_plugin_provider(
-        prompt, aspect_ratio,
-        image_url=image_url,
-        reference_image_urls=reference_image_urls,
-    )
+    dispatched = None
+    try:
+        dispatched = _dispatch_to_plugin_provider(
+            prompt, aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls,
+        )
+    except Exception as exc:
+        logger.warning("Primary image provider raised; will consider FuelIX fallback: %s", exc, exc_info=True)
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
 
@@ -1543,13 +1585,17 @@ def _handle_image_generate(args, **kw):
     if krea_routed is not None:
         return _postprocess_image_generate_result(krea_routed, task_id=task_id)
 
-    raw = image_generate_tool(
-        prompt=prompt,
-        aspect_ratio=aspect_ratio,
-        image_url=image_url,
-        reference_image_urls=reference_image_urls,
-    )
-    return _postprocess_image_generate_result(raw, task_id=task_id)
+    try:
+        raw = image_generate_tool(
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls,
+        )
+        return _postprocess_image_generate_result(raw, task_id=task_id)
+    except Exception as exc:
+        logger.warning("Primary image generation failed; using FuelIX fallback: %s", exc, exc_info=True)
+        return _postprocess_image_generate_result(_fuelix_image_generate(prompt, aspect_ratio), task_id=task_id)
 
 
 # ---------------------------------------------------------------------------

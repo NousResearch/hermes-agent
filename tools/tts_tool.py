@@ -394,6 +394,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "xai",
     "mistral",
     "gemini",
+    "fuelix",
     "neutts",
     "kittentts",
     "piper",
@@ -2318,6 +2319,12 @@ def text_to_speech_tool(
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
 
+        elif provider == "fuelix":
+            from agent.tts_provider import FuelIXTTSProvider
+
+            logger.info("Generating speech with FuelIX TTS (tts-1)...")
+            file_str = FuelIXTTSProvider().synthesize(text, file_str)
+
         elif provider == "neutts":
             if not _check_neutts_available():
                 return json.dumps({
@@ -2449,22 +2456,80 @@ def text_to_speech_tool(
         # Configuration errors (missing API keys, etc.)
         error_msg = f"TTS configuration error ({provider}): {e}"
         logger.error("%s", error_msg)
+        fallback = _tts_fuelix_fallback(text, file_str, provider, error_msg)
+        if fallback is not None:
+            return fallback
         return tool_error(error_msg, success=False)
     except FileNotFoundError as e:
         # Missing dependencies or files
         error_msg = f"TTS dependency missing ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
+        fallback = _tts_fuelix_fallback(text, file_str, provider, error_msg)
+        if fallback is not None:
+            return fallback
         return tool_error(error_msg, success=False)
     except Exception as e:
         # Unexpected errors
         error_msg = f"TTS generation failed ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
+        fallback = _tts_fuelix_fallback(text, file_str, provider, error_msg)
+        if fallback is not None:
+            return fallback
         return tool_error(error_msg, success=False)
 
 
 # ===========================================================================
 # Requirements check
 # ===========================================================================
+def _tts_fuelix_fallback(
+    text: str, file_str: str, failed_provider: str, primary_error: str
+) -> Optional[str]:
+    """Retry speech synthesis via the FuelIX ``tts-1`` fallback (Phase 4).
+
+    Returns the standard JSON success envelope on success, or ``None`` when
+    the fallback isn't applicable (fuelix already was the primary, no API
+    key configured, or local/free providers where a FuelIX retry wouldn't
+    be a meaningful substitute). Callers fall through to the normal error
+    response when ``None`` is returned.
+    """
+    if failed_provider == "fuelix":
+        return None
+    if failed_provider in {"edge", "neutts", "kittentts", "piper"}:
+        # Local/free providers — a config or dependency issue here isn't
+        # something a cloud fallback meaningfully fixes, and we don't want
+        # to silently start burning FuelIX quota for what's usually a
+        # missing local package.
+        return None
+
+    try:
+        from agent.tts_provider import FuelIXTTSProvider
+
+        fuelix = FuelIXTTSProvider()
+        if not fuelix.is_available():
+            return None
+
+        logger.warning(
+            "Primary TTS provider '%s' failed (%s); retrying via FuelIX fallback",
+            failed_provider, primary_error,
+        )
+        out_path = fuelix.synthesize(text, file_str)
+        if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+            return None
+
+        media_tag = f"MEDIA:{out_path}"
+        return json.dumps({
+            "success": True,
+            "file_path": out_path,
+            "media_tag": media_tag,
+            "provider": "fuelix",
+            "voice_compatible": False,
+            "fallback_from": failed_provider,
+        }, ensure_ascii=False)
+    except Exception as exc:
+        logger.error("FuelIX TTS fallback also failed: %s", exc, exc_info=True)
+        return None
+
+
 def check_tts_requirements() -> bool:
     """
     Check if at least one TTS provider is available.

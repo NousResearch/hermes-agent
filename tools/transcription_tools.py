@@ -242,6 +242,8 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "openai",
     "mistral",
     "xai",
+    "elevenlabs",
+    "fuelix",
 })
 
 
@@ -1621,6 +1623,60 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _fuelix_available() -> bool:
+    """Cheap availability check so we don't attempt a fallback call that
+    will just fail on a missing API key (would double the error noise)."""
+    try:
+        from agent.transcription_provider import FuelIXTranscriptionProvider
+
+        return FuelIXTranscriptionProvider().is_available()
+    except Exception:
+        return False
+
+
+def _transcribe_with_fuelix_fallback(
+    primary_call, file_path: str, model: Optional[str]
+) -> Dict[str, Any]:
+    """Run a primary STT provider call; on exception or a ``success: False``
+    result, retry once via the FuelIX ``whisper-1`` fallback (Phase 4).
+
+    Scoped to the paid-cloud-API providers (OpenAI, Mistral, xAI,
+    ElevenLabs) — ``local``/``local_command``/``groq`` are intentionally
+    excluded so a free/local STT hiccup doesn't silently start consuming
+    FuelIX API quota. Only fires when a FuelIX API key is actually
+    configured; otherwise the primary provider's own result/error is
+    returned unchanged.
+    """
+    try:
+        result = primary_call()
+    except Exception as exc:
+        logger.warning(
+            "Primary STT provider raised; considering FuelIX fallback: %s",
+            exc, exc_info=True,
+        )
+        result = {"success": False, "transcript": "", "error": str(exc)}
+
+    if result.get("success"):
+        return result
+
+    if not _fuelix_available():
+        return result
+
+    logger.warning(
+        "Primary STT transcription failed (%s); retrying via FuelIX fallback",
+        result.get("error", "unknown error"),
+    )
+    from agent.transcription_provider import FuelIXTranscriptionProvider
+
+    fallback_result = FuelIXTranscriptionProvider().transcribe(file_path, model=model)
+    if fallback_result.get("success"):
+        return fallback_result
+    # Both failed — surface the primary's error as the more actionable one,
+    # but note the fallback also failed.
+    result["fallback_error"] = fallback_result.get("error")
+    return result
+
+
 def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
@@ -1677,22 +1733,34 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     if provider == "openai":
         openai_cfg = stt_config.get("openai", {})
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
-        return _transcribe_openai(file_path, model_name)
+        return _transcribe_with_fuelix_fallback(
+            lambda: _transcribe_openai(file_path, model_name), file_path, model
+        )
 
     if provider == "mistral":
         mistral_cfg = stt_config.get("mistral", {})
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
-        return _transcribe_mistral(file_path, model_name)
+        return _transcribe_with_fuelix_fallback(
+            lambda: _transcribe_mistral(file_path, model_name), file_path, model
+        )
 
     if provider == "xai":
         # xAI Grok STT doesn't use a model parameter — pass through for logging
         model_name = model or "grok-stt"
-        return _transcribe_xai(file_path, model_name)
+        return _transcribe_with_fuelix_fallback(
+            lambda: _transcribe_xai(file_path, model_name), file_path, model
+        )
 
     if provider == "elevenlabs":
         elevenlabs_cfg = stt_config.get("elevenlabs", {})
         model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
-        return _transcribe_elevenlabs(file_path, model_name)
+        return _transcribe_with_fuelix_fallback(
+            lambda: _transcribe_elevenlabs(file_path, model_name), file_path, model
+        )
+
+    if provider == "fuelix":
+        from agent.transcription_provider import FuelIXTranscriptionProvider
+        return FuelIXTranscriptionProvider().transcribe(file_path, model=model)
 
     # User-declared command-type provider
     # (``stt.providers.<name>: type: command``). Fires after the built-in

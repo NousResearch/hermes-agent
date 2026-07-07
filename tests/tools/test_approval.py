@@ -57,7 +57,9 @@ class TestApprovalModeParsing:
 class TestSmartApproval:
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"verdict": "APPROVE", "reason": "harmless print"}'
+            ))]
         )
         with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
             result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
@@ -66,7 +68,13 @@ class TestSmartApproval:
         mock_call.assert_called_once()
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
-        assert mock_call.call_args.kwargs["max_tokens"] == 16
+        # Enough headroom for a structured {"verdict": ..., "reason": ...}
+        # response — not just a bare one-word answer.
+        assert mock_call.call_args.kwargs["max_tokens"] >= 64
+        # Requests structured JSON output so providers that honor
+        # response_format skip free-text ambiguity entirely.
+        response_format = mock_call.call_args.kwargs["extra_body"]["response_format"]
+        assert response_format["type"] == "json_schema"
 
 
 class TestDetectDangerousRm:

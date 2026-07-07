@@ -73,6 +73,61 @@ from tools.tool_backend_helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _get_fal_proxy_url() -> Optional[str]:
+    """Return proxy URL for downloading FAL results, or None.
+
+    Checks, in order:
+    1. ``FAL_PROXY_URL`` env var
+    2. ``image_gen.proxy_url`` in config.yaml
+    """
+    env_proxy = os.environ.get("FAL_PROXY_URL", "").strip()
+    if env_proxy:
+        return env_proxy
+    try:
+        from hermes_cli.config import get_config
+        cfg = get_config()
+        cfg_proxy = (cfg.get("image_gen") or {}).get("proxy_url", "").strip()
+        if cfg_proxy:
+            return cfg_proxy
+    except Exception:
+        pass
+    return None
+
+
+def _download_image_locally(url: str) -> Optional[str]:
+    """Download image from *url* to a local temp file, return the path.
+
+    Uses a SOCKS/HTTP proxy when ``_get_fal_proxy_url()`` returns one.
+    Returns ``None`` on failure so callers can fall back to the original URL.
+    """
+    import subprocess
+    import tempfile
+
+    proxy = _get_fal_proxy_url()
+    suffix = ".png"
+    lower = url.lower().split("?")[0]
+    if lower.endswith(".jpg") or lower.endswith(".jpeg"):
+        suffix = ".jpg"
+    elif lower.endswith(".webp"):
+        suffix = ".webp"
+
+    try:
+        fd, path = tempfile.mkstemp(suffix=suffix, prefix="fal_gen_")
+        os.close(fd)
+        cmd = ["curl", "-sL", "--max-time", "30", "-o", path]
+        if proxy:
+            cmd += ["--proxy", proxy]
+        cmd.append(url)
+        result = subprocess.run(cmd, capture_output=True, timeout=45)
+        if result.returncode == 0 and os.path.getsize(path) > 0:
+            logger.info("Downloaded FAL image to %s (%d bytes)", path, os.path.getsize(path))
+            return path
+        os.unlink(path)
+    except Exception as exc:
+        logger.warning("Failed to download FAL image locally: %s", exc)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # FAL model catalog
 # ---------------------------------------------------------------------------
@@ -1003,9 +1058,14 @@ def image_generate_tool(
             modality,
         )
 
+        # Try to download the image locally so Desktop can display it
+        # even when fal.media is not directly reachable (e.g. behind a firewall).
+        primary_url = formatted_images[0]["url"] if formatted_images else None
+        local_path = _download_image_locally(primary_url) if primary_url else None
+
         response_data = {
             "success": True,
-            "image": formatted_images[0]["url"] if formatted_images else None,
+            "image": local_path or primary_url,
             "modality": modality,
         }
 

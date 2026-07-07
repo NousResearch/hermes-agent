@@ -56,6 +56,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
+from hermes_constants import positive_float_from_env, positive_int_from_env
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -64,8 +65,13 @@ from hermes_cli.fallback_config import get_fallback_chain
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
 # memory providers, etc.).  LRU order + idle TTL eviction are enforced
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
-_AGENT_CACHE_MAX_SIZE = 128
-_AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+_AGENT_CACHE_MAX_SIZE = positive_int_from_env("HERMES_AGENT_CACHE_MAX_SIZE", 16)
+_AGENT_CACHE_IDLE_TTL_SECS = positive_float_from_env(
+    "HERMES_AGENT_CACHE_IDLE_TTL_SECS", 1800.0
+)  # evict agents idle for >30m
+_QUEUED_EVENTS_MAX_PER_SESSION = positive_int_from_env(
+    "HERMES_QUEUED_EVENTS_MAX_PER_SESSION", 200
+)
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
@@ -4318,7 +4324,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             queued_events = {}
             self._queued_events = queued_events
         if session_key in pending_slot:
-            queued_events.setdefault(session_key, []).append(queued_event)
+            overflow = queued_events.setdefault(session_key, [])
+            overflow.append(queued_event)
+            if len(overflow) > _QUEUED_EVENTS_MAX_PER_SESSION:
+                drop_count = len(overflow) - _QUEUED_EVENTS_MAX_PER_SESSION
+                del overflow[:drop_count]
+                logger.warning(
+                    "Dropped oldest queued event(s) for session %s: dropped=%d queue_len=%d",
+                    session_key,
+                    drop_count,
+                    len(overflow),
+                )
         else:
             pending_slot[session_key] = queued_event
 

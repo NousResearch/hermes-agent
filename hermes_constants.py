@@ -20,6 +20,22 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
 )
 
 
+def positive_int_from_env(name: str, default: int) -> int:
+    try:
+        value = int((os.environ.get(name) or "").strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def positive_float_from_env(name: str, default: float) -> float:
+    try:
+        value = float((os.environ.get(name) or "").strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.
 

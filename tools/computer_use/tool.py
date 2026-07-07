@@ -442,6 +442,13 @@ def _text_response(res: ActionResult) -> str:
     payload: Dict[str, Any] = {"ok": res.ok, "action": res.action}
     if res.message:
         payload["message"] = res.message
+    # Surface 10 of NousResearch/hermes-agent#59755: cua-driver 0.7.0
+    # returns a verification status ("verified", "unverified", "failed")
+    # on action responses. Expose it as a first-class field so the model
+    # can make informed decisions (e.g. retrying an unverified action).
+    status_val = res.meta.get("status") if res.meta else None
+    if isinstance(status_val, str) and status_val:
+        payload["status"] = status_val
     if res.meta:
         payload["meta"] = res.meta
     return json.dumps(payload)
@@ -856,6 +863,11 @@ def _maybe_follow_capture(
     resp = _capture_response(cap)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         prefix = f"[{res.action}] ok={res.ok}" + (f" — {res.message}" if res.message else "")
+        # Include verification status in the prefix when the CUA driver
+        # returned one (Surface 10 of #59755).
+        status_val = res.meta.get("status") if res.meta else None
+        if isinstance(status_val, str) and status_val:
+            prefix += f" status={status_val}"
         resp["content"][0]["text"] = prefix + "\n\n" + resp["content"][0]["text"]
         resp["text_summary"] = prefix + "\n\n" + resp["text_summary"]
         return resp
@@ -868,6 +880,11 @@ def _maybe_follow_capture(
     data["ok"] = res.ok
     if res.message:
         data["message"] = res.message
+    # Surface verification status from the CUA driver response
+    # (Surface 10 of NousResearch/hermes-agent#59755).
+    status_val = res.meta.get("status") if res.meta else None
+    if isinstance(status_val, str) and status_val:
+        data["status"] = status_val
     return json.dumps(data)
 
 

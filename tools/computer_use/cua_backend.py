@@ -2098,5 +2098,26 @@ class CuaDriverBackend(ComputerUseBackend):
             message = str(data.get("message", ""))
         elif isinstance(data, str):
             message = data
-        return ActionResult(ok=ok, action=name, message=message,
-                            meta=data if isinstance(data, dict) else {})
+        meta: Dict[str, Any] = data if isinstance(data, dict) else {}
+        # Surface 10 of NousResearch/hermes-agent#59755: cua-driver 0.7.0
+        # returns richer action outcomes including a verification `status`
+        # ("verified", "unverified", "failed") that tells the model whether
+        # the action was confirmed to have taken effect. Extract it from
+        # structuredContent (driver 0.7.0+ canonical location) or the data
+        # dict (back-compat with older drivers that embed it in the text
+        # payload) and expose it as a first-class meta field so downstream
+        # response shaping can surface it to the model.
+        structured = out.get("structuredContent")
+        if isinstance(structured, dict):
+            sc_status = structured.get("status")
+            if isinstance(sc_status, str) and sc_status:
+                meta["status"] = sc_status
+        if "status" not in meta and isinstance(data, dict):
+            dd_status = data.get("status")
+            if isinstance(dd_status, str) and dd_status:
+                meta["status"] = dd_status
+        if "status" in meta:
+            logger.debug(
+                "cua-driver %s action status=%s", name, meta["status"],
+            )
+        return ActionResult(ok=ok, action=name, message=message, meta=meta)

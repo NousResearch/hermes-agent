@@ -1244,12 +1244,84 @@ class CuaDriverBackend(ComputerUseBackend):
         return cua_driver_binary_available()
 
     # ── Capture ────────────────────────────────────────────────────
+    def _capture_desktop_state(self, mode: str = "vision") -> CaptureResult:
+        """Capture the full desktop directly via cua-driver's desktop path.
+
+        Windows CUA can have a healthy MCP/session/screenshot lane while
+        `list_windows` / UIA enumeration hangs (trycua/cua#2110/#2113).
+        For explicit `app="screen"` / `app="desktop"` requests, do not route
+        through window enumeration first. Use `get_desktop_state` directly so
+        users still get a real screenshot when the enumeration layer is sick.
+        """
+        previous_scope: Optional[str] = None
+        try:
+            cfg = self._session.call_tool("get_config", {}, timeout=10.0)
+            sc = cfg.get("structuredContent") or {}
+            if isinstance(sc, dict):
+                val = sc.get("capture_scope")
+                if isinstance(val, str):
+                    previous_scope = val
+        except Exception as e:
+            logger.debug("cua-driver get_config before desktop capture failed: %s", e)
+
+        try:
+            if previous_scope != "desktop":
+                self._session.call_tool(
+                    "set_config",
+                    {"key": "capture_scope", "value": "desktop"},
+                    timeout=10.0,
+                )
+            out = self._session.call_tool("get_desktop_state", {}, timeout=15.0)
+        finally:
+            if previous_scope and previous_scope != "desktop":
+                try:
+                    self._session.call_tool(
+                        "set_config",
+                        {"key": "capture_scope", "value": previous_scope},
+                        timeout=10.0,
+                    )
+                except Exception as e:
+                    logger.debug("cua-driver restore capture_scope failed: %s", e)
+
+        png_b64, image_mime_type = _image_from_tool_result(out)
+        structured = out.get("structuredContent") or {}
+        width = int(structured.get("screenshot_width") or structured.get("screen_width") or 0)
+        height = int(structured.get("screenshot_height") or structured.get("screen_height") or 0)
+        png_bytes_len = 0
+        if png_b64:
+            try:
+                raw = base64.b64decode(png_b64, validate=False)
+                png_bytes_len = len(raw)
+                detected_width, detected_height = _image_dimensions_from_bytes(raw)
+                if detected_width and detected_height:
+                    width = detected_width
+                    height = detected_height
+            except Exception:
+                png_bytes_len = len(png_b64) * 3 // 4
+        return CaptureResult(
+            mode=mode,
+            width=width,
+            height=height,
+            png_b64=png_b64,
+            elements=[],
+            app="screen",
+            window_title="Desktop screenshot via cua-driver get_desktop_state",
+            png_bytes_len=png_bytes_len,
+            image_mime_type=image_mime_type,
+        )
+
     def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
         """Capture the frontmost on-screen window (optionally filtered by app name).
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
-        `get_window_state` (ax/som) or `screenshot` (vision).
+        `get_window_state` (ax/som) or `screenshot` (vision). Explicit
+        whole-screen requests bypass `list_windows` and use `get_desktop_state`
+        directly so Windows screenshot capture still works when enumeration
+        hangs.
         """
+        if app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
+            return self._capture_desktop_state(mode=mode)
+
         # Step 1: enumerate on-screen windows to find target pid/window_id.
         # Surface 3 of NousResearch/hermes-agent#47072: read the canonical
         # `structuredContent.windows` array directly. Pre-fix the wrapper

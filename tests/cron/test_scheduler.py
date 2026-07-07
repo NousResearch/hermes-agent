@@ -4868,3 +4868,87 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+
+class TestMaxRepeatSafeguard:
+    """Tests for the ``max_repeat`` safeguard in cron job creation.
+
+    ``_get_max_repeat`` reads the configured maximum from the cron config
+    section.  ``_apply_max_repeat_to_job`` clamps ``repeat.times`` on a job
+    dict to that maximum and logs a warning when clamping.
+    """
+
+    # ------------------------------------------------------------------
+    # _get_max_repeat
+    # ------------------------------------------------------------------
+
+    def test_default_max_repeat(self):
+        """Default max_repeat is 1000 when config has no setting."""
+        from cron.scheduler import _get_max_repeat
+
+        assert _get_max_repeat(cfg={}) == 1000
+        assert _get_max_repeat(cfg=None) == 1000
+
+    def test_max_repeat_from_config(self):
+        """Reads max_repeat from cron config section."""
+        from cron.scheduler import _get_max_repeat
+
+        assert _get_max_repeat(cfg={"cron": {"max_repeat": 500}}) == 500
+
+    def test_max_repeat_invalid_config_returns_default(self):
+        """Non-integer or missing values fall back to default."""
+        from cron.scheduler import _get_max_repeat
+
+        assert _get_max_repeat(cfg={"cron": {"max_repeat": "not-a-number"}}) == 1000
+        assert _get_max_repeat(cfg={"cron": {"max_repeat": None}}) == 1000
+
+    def test_max_repeat_zero_or_negative_is_accepted(self):
+        """Zero and negative values from config are accepted as-is
+        (they disable repeats, which is a valid policy choice)."""
+        from cron.scheduler import _get_max_repeat
+
+        assert _get_max_repeat(cfg={"cron": {"max_repeat": 0}}) == 0
+        assert _get_max_repeat(cfg={"cron": {"max_repeat": -1}}) == -1
+
+    # ------------------------------------------------------------------
+    # _apply_max_repeat_to_job
+    # ------------------------------------------------------------------
+
+    def test_clamp_high_repeat(self):
+        """repeat.times > max_repeat is clamped."""
+        from cron.scheduler import _apply_max_repeat_to_job
+
+        job = {"id": "j1", "name": "test", "repeat": {"times": 5000, "completed": 0}}
+        clamped = _apply_max_repeat_to_job(job, max_repeat=1000)
+        assert clamped is True
+        assert job["repeat"]["times"] == 1000
+
+    def test_no_clamp_when_below_max(self):
+        """repeat.times <= max_repeat is left unchanged."""
+        from cron.scheduler import _apply_max_repeat_to_job
+
+        job = {"id": "j2", "repeat": {"times": 50, "completed": 0}}
+        clamped = _apply_max_repeat_to_job(job, max_repeat=1000)
+        assert clamped is False
+        assert job["repeat"]["times"] == 50
+
+    def test_no_clamp_for_infinite_repeat(self):
+        """None (infinite) repeat is never clamped."""
+        from cron.scheduler import _apply_max_repeat_to_job
+
+        job = {"id": "j3", "name": "forever", "repeat": {"times": None, "completed": 0}}
+        clamped = _apply_max_repeat_to_job(job, max_repeat=1000)
+        assert clamped is False
+        assert job["repeat"]["times"] is None
+
+    def test_clamp_logs_warning(self, caplog):
+        """A warning is logged when clamping occurs."""
+        from cron.scheduler import _apply_max_repeat_to_job
+
+        caplog.set_level(logging.WARNING)
+
+        job = {"id": "j4", "name": "boom", "repeat": {"times": 9999, "completed": 0}}
+        _apply_max_repeat_to_job(job, max_repeat=1000)
+
+        assert "repeat count 9999 exceeds max_repeat=1000" in caplog.text
+        assert "boom" in caplog.text

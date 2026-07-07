@@ -1220,6 +1220,15 @@ def create_job(
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
 
+    # Apply max_repeat safeguard: clamp repeat.times to the configured
+    # maximum (default 1000). Lazy-import to avoid circular dependency —
+    # scheduler.py imports from this module.
+    try:
+        from cron.scheduler import _apply_max_repeat_to_job
+        _apply_max_repeat_to_job(job)
+    except Exception:
+        pass
+
     with _jobs_lock():
         jobs = load_jobs()
         jobs.append(job)

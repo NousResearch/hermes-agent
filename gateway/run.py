@@ -19531,42 +19531,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     housekeeping_thread.start()
 
-    # systemd sd_notify watchdog — pets the watchdog only when Slack is
-    # healthy, so a blind-but-alive gateway gets force-restarted by systemd
-    # after WatchdogSec. No-ops when not running under systemd (no NOTIFY_SOCKET).
-    from gateway.watchdog import WatchdogHeartbeat
-
-    watchdog_heartbeat: Optional[WatchdogHeartbeat] = None
-    try:
-        from hermes_constants import get_hermes_home
-        from pathlib import Path as _Path
-
-        _watchdog_healthy_window = 60.0
-        try:
-            _wd_cfg = config.gateway_extra if hasattr(config, 'gateway_extra') else {}
-            if not _wd_cfg:
-                _wd_cfg = getattr(config, 'extra', {})
-            _watchdog_enabled = _wd_cfg.get('watchdog', {})
-            if isinstance(_watchdog_enabled, dict):
-                _watchdog_healthy_window = float(
-                    _watchdog_enabled.get('slack_healthy_window_seconds', _watchdog_healthy_window)
-                )
-        except Exception:
-            pass
-
-        watchdog_heartbeat = WatchdogHeartbeat(
-            get_hermes_home() / _Path('runtime') / 'slack-last-event',
-            healthy_window_s=_watchdog_healthy_window,
-        )
-        watchdog_heartbeat.start()
-    except Exception:
-        logger.debug('Watchdog heartbeat init failed (non-fatal)', exc_info=True)
-
     # Wait for shutdown
     await runner.wait_for_shutdown()
-
-    if watchdog_heartbeat is not None:
-        await watchdog_heartbeat.stop()
 
     try:
         from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive

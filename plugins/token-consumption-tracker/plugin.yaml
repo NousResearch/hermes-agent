@@ -1,0 +1,8 @@
+name: token-consumption-tracker
+version: "1.0.0"
+description: "Track token consumption across models and providers. Hooks into API calls to log tokens used and estimated cost. Provides `hermes tokens` CLI command and `/token` slash command for in-session queries."
+author: "NousResearch"
+hooks:
+  - post_api_request
+  - on_session_start
+  - on_session_end

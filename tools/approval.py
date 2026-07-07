@@ -1658,6 +1658,72 @@ def save_permanent_allowlist(patterns: set):
 # =========================================================================
 # Approval prompting + orchestration
 # =========================================================================
+def _try_pt_run_in_terminal_prompt(display_command: str,
+                                   display_description: str,
+                                   timeout_seconds: int | None,
+                                   allow_permanent: bool) -> str | None:
+    """Route a blocking approval prompt through prompt_toolkit's
+    run_in_terminal so a background thread can read stdin without
+    deadlocking the live TUI (issue #15216 / PR #16477).
+
+    When a live prompt_toolkit Application owns the TTY, calling input()
+    from a worker thread competes with the TUI's stdin reader and the
+    keystrokes never reach the reader -> invisible deadlock. run_in_terminal
+    detaches the TUI's stdin reader and restores cooked mode for the duration
+    of the callable, so input() below actually receives the user's choice.
+
+    Returns 'once'/'session'/'always'/'deny', or None when no live
+    prompt_toolkit Application is active (caller falls back to legacy path).
+    """
+    try:
+        from prompt_toolkit.application.current import get_app_or_none
+        from prompt_toolkit.application.run_in_terminal import run_in_terminal
+        from agent.i18n import t
+    except Exception:
+        return None
+
+    app = get_app_or_none()
+    if app is None:
+        return None
+
+    import asyncio
+    import time
+
+    def _render_and_read():
+        try:
+            print()
+            print(f"  {t('approval.dangerous_header', description=display_description)}")
+            print(f"      {display_command}")
+            print()
+            if allow_permanent:
+                print(t("approval.choose_long"))
+            else:
+                print(t("approval.choose_short"))
+            print()
+            sys.stdout.flush()
+            prompt = t("approval.prompt_long") if allow_permanent else t("approval.prompt_short")
+            raw = input(prompt).strip().lower()
+        except (EOFError, OSError):
+            raw = ""
+        choice = raw
+        if choice in {'o', 'once'}:
+            return 'once'
+        elif choice in {'s', 'session'}:
+            return 'session'
+        elif choice in {'a', 'always'}:
+            return 'always' if allow_permanent else 'session'
+        return 'deny'
+
+    async def _schedule():
+        return await app.run_in_terminal(_render_and_read)
+
+    try:
+        future = asyncio.run_coroutine_threadsafe(_schedule(), app.loop)
+        return future.result(timeout=timeout_seconds or 60)
+    except Exception:
+        return "deny"
+
+
 
 def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,
@@ -1694,31 +1760,29 @@ def prompt_dangerous_approval(command: str, description: str,
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
 
-    # Fail-closed guard: if prompt_toolkit owns the terminal (interactive
-    # CLI session) and no approval callback is registered on this thread,
-    # the input() fallback below would spawn a daemon thread whose read
-    # can never see Enter -- the user's keystrokes go to prompt_toolkit,
-    # not input(), producing an invisible 60s deadlock (issue #15216).
-    # Deny fast and log loudly instead so the caller can surface a real
-    # error to the agent. Any thread that needs interactive approval must
-    # install a callback via tools.terminal_tool.set_approval_callback()
-    # before reaching this point (see delegate_tool.py, run_agent.py
-    # _execute_tool_calls_concurrent / _spawn_background_review for the
-    # established pattern).
+    # If prompt_toolkit owns the terminal (interactive CLI session) and no
+    # approval callback is registered on this thread, the legacy input()
+    # fallback would spawn a daemon thread whose read can never see Enter --
+    # the user's keystrokes go to prompt_toolkit, producing an invisible
+    # deadlock (issue #15216). Instead of denying outright, route the
+    # prompt through prompt_toolkit's run_in_terminal, which detaches the
+    # TUI's stdin reader and restores cooked mode so input() actually reads
+    # the user's keystrokes. Falls back to the legacy input() path only when
+    # no live prompt_toolkit Application is present (non-TUI: scripts, tests,
+    # sshd, etc.). Any thread that needs the callback path should install one
+    # via tools.terminal_tool.set_approval_callback() (see run_agent.py
+    # _execute_tool_calls_concurrent).
     try:
-        from prompt_toolkit.application.current import get_app_or_none
-        if get_app_or_none() is not None:
-            logger.warning(
-                "Dangerous-command approval requested on a thread with no "
-                "approval callback while prompt_toolkit is active; denying "
-                "to avoid stdin deadlock. command=%r description=%r",
-                command, description,
-            )
-            return "deny"
+        routed = _try_pt_run_in_terminal_prompt(
+            display_command=display_command,
+            display_description=display_description,
+            timeout_seconds=timeout_seconds,
+            allow_permanent=allow_permanent,
+        )
+        if routed is not None:
+            return routed
     except Exception:
-        # prompt_toolkit not installed, or detection failed -- fall through
-        # to the legacy input() path (safe in non-TUI contexts: scripts,
-        # tests, sshd, etc.).
+        # Detection failed -- fall through to the legacy input() path below.
         pass
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"

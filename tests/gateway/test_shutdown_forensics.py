@@ -63,6 +63,13 @@ class TestSnapshotShutdownContext:
         assert "parent" in ctx
         assert ctx["parent"]["pid"] == os.getppid()
 
+    def test_proc_summary_never_captures_argv(self):
+        """/proc summaries carry comm (executable name), never the argv."""
+        summary = sf._proc_summary(os.getpid())
+        assert summary["pid"] == os.getpid()
+        # cmdline can carry secrets — it must never be persisted in a summary.
+        assert "cmdline" not in summary
+
     def test_under_systemd_flag_uses_invocation_id(self, monkeypatch):
         monkeypatch.setenv("INVOCATION_ID", "abc123")
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
@@ -128,7 +135,27 @@ class TestFormatters:
         line = sf.format_context_for_log(ctx)
         assert "signal=SIGTERM" in line
         assert "parent_pid=" in line
-        assert "parent_cmdline=" in line
+        # comm (executable name), never the argv-bearing cmdline
+        assert "parent_comm=" in line
+        assert "parent_cmdline=" not in line
+
+    def test_format_context_for_log_never_emits_argv(self):
+        """A parent carrying a secret on its argv must not reach the log line."""
+        ctx = {
+            "signal": "SIGTERM",
+            "parent": {
+                "pid": 42,
+                "name": "python",
+                "comm": "python",
+                # Simulate a stale/hostile field: even if a cmdline with a
+                # secret is present in the dict, the formatter must ignore it.
+                "cmdline": "python run.py mongodb+srv://u:hunter2@cluster/db",
+            },
+        }
+        line = sf.format_context_for_log(ctx)
+        assert "parent_comm='python'" in line
+        assert "hunter2" not in line
+        assert "mongodb+srv" not in line
 
     def test_context_as_json_round_trips(self):
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
@@ -173,9 +200,15 @@ class TestSpawnAsyncDiagnostic:
             pass
 
         assert log_path.exists()
+        # The diagnostic can name processes/users and lands in a shared logs
+        # dir, so it must never be group/other-readable.
+        mode = log_path.stat().st_mode & 0o777
+        assert mode == 0o600, f"diag log mode {oct(mode)} — must be 0o600"
         contents = log_path.read_text(encoding="utf-8", errors="replace")
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
+        # No argv-bearing ps/pstree flags should be in the script's output.
+        assert "ps auxf" not in contents
 
     def test_returns_none_on_windows(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sf, "sys", type("M", (), {"platform": "win32"})())

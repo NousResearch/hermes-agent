@@ -58,7 +58,12 @@ def _read_proc_field(pid: int, key: str) -> Optional[str]:
 
 
 def _read_proc_cmdline(pid: int) -> Optional[str]:
-    """Read /proc/<pid>/cmdline as a printable string.  Linux only; None elsewhere."""
+    """Read /proc/<pid>/cmdline as a printable string.  Linux only; None elsewhere.
+
+    NOTE: raw argv can contain secrets (tokens, DB URIs, ``--mcp-config`` blobs).
+    Never write its result into a persisted diagnostic; use :func:`_read_proc_comm`
+    for anything that lands in a log.  Retained for in-memory callers only.
+    """
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as fh:
             data = fh.read()
@@ -70,8 +75,21 @@ def _read_proc_cmdline(pid: int) -> Optional[str]:
     return data.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
 
 
+def _read_proc_comm(pid: int) -> Optional[str]:
+    """Read /proc/<pid>/comm — the executable name only, never arguments.
+
+    Safe for persisted diagnostics: identifies *what program* a pid is without
+    exposing the argv (which can carry secrets).  Linux only; None elsewhere.
+    """
+    try:
+        with open(f"/proc/{pid}/comm", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+
+
 def _proc_summary(pid: int) -> Dict[str, Any]:
-    """Compact /proc/<pid> snapshot: pid, ppid, state, uid, cmdline.
+    """Compact /proc/<pid> snapshot: pid, ppid, state, uid, comm.
 
     Best-effort.  Missing fields are simply omitted rather than raising.
     """
@@ -94,10 +112,11 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
     if uid is not None:
         # "real effective saved fs"
         summary["uid"] = uid.split()[0] if uid else uid
-    cmdline = _read_proc_cmdline(pid)
-    if cmdline:
-        # Truncate aggressively — these can be 4KB
-        summary["cmdline"] = cmdline[:300]
+    # Executable name only — never argv, which can carry secrets that would
+    # then be persisted to the (possibly shared) diagnostic log.
+    comm = _read_proc_comm(pid)
+    if comm:
+        summary["comm"] = comm
     return summary
 
 
@@ -229,10 +248,10 @@ def spawn_async_diagnostic(
     script = (
         f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
         "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; "
-        "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
-        "echo '--- pstree of self ---'; "
-        f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
+        "echo '--- ps (top 60 by cpu, comm only — no argv) ---'; "
+        "ps -eo pid,ppid,user,pcpu,pmem,stat,comm --sort=-pcpu 2>/dev/null | head -60; "
+        "echo '--- pstree of self (no args) ---'; "
+        f"pstree -pl {os.getpid()} 2>/dev/null | head -40 || true; "
         "echo '--- /proc/loadavg ---'; "
         "cat /proc/loadavg 2>/dev/null || true; "
         "echo '--- recent dmesg (oom/killed) ---'; "
@@ -244,7 +263,9 @@ def spawn_async_diagnostic(
         # Open the log file in append mode and let the subprocess inherit.
         # We use os.O_APPEND so concurrent diagnostics from rapid signals
         # don't trample each other.
-        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        # 0o600: the diagnostic must not be world-readable — it still names
+        # processes/users and sits in a shared logs dir.
+        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError:
         return None
 
@@ -282,7 +303,8 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     """Render a shutdown context dict as a single, scannable log line."""
     sig = ctx.get("signal", "?")
     parent = ctx.get("parent") or {}
-    parent_cmd = parent.get("cmdline", "(unknown)")
+    # comm (executable name), not cmdline — argv can carry secrets.
+    parent_comm = parent.get("comm") or "(unknown)"
     parent_name = parent.get("name") or "?"
     parent_pid = parent.get("pid") or "?"
     under_systemd = "yes" if ctx.get("under_systemd") else "no"
@@ -299,7 +321,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     if ctx.get("tracer_pid"):
         extras.append(f"tracer_pid={ctx['tracer_pid']}")
     extras_str = (" " + " ".join(extras)) if extras else ""
-    # Parent cmdline is the most useful single signal — log it prominently.
+    # Parent executable name is the most useful non-sensitive single signal.
     return (
         f"signal={sig} "
         f"under_systemd={under_systemd} "
@@ -307,7 +329,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
         f"parent_name={parent_name} "
         f"loadavg_1m={load_str}"
         f"{extras_str} "
-        f"parent_cmdline={parent_cmd!r}"
+        f"parent_comm={parent_comm!r}"
     )
 
 

@@ -573,6 +573,21 @@ def test_cron_status_reports_stalled_when_no_heartbeat(tmp_path, monkeypatch, ca
     assert "will fire automatically" not in out
 
 
+def test_cron_status_warns_when_heartbeat_missing(tmp_path, monkeypatch, capsys):
+    import cron.jobs as jobs
+    from hermes_cli import cron as cron_cli
+
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4321])
+    monkeypatch.setattr(jobs, "get_ticker_heartbeat_age", lambda: None)
+    monkeypatch.setattr(jobs, "get_ticker_success_age", lambda: None)
+    monkeypatch.setattr("cron.jobs.list_jobs", lambda **k: [])
+
+    cron_cli.cron_status()
+    out = capsys.readouterr().out
+    assert "heartbeat is missing" in out
+    assert "will fire automatically" not in out
+
+
 # ── F8: runtime backstop — never resolve a stored pair that exfiltrates a key ──
 
 

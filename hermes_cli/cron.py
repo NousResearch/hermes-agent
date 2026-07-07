@@ -240,7 +240,16 @@ def cron_status():
         hb_age = get_ticker_heartbeat_age()
         ok_age = get_ticker_success_age()
 
-        if hb_age is not None and hb_age > STALE_AFTER:
+        if hb_age is None:
+            # A live gateway without a ticker heartbeat is not enough evidence
+            # that the scheduler thread is alive.
+            print(color(
+                "⚠ Gateway is running but the cron ticker heartbeat is missing.",
+                Colors.YELLOW,
+            ))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
+        elif hb_age > STALE_AFTER:
             # No heartbeat at all → the ticker thread is gone.
             print(color(
                 "⚠ Gateway is running but the cron ticker looks STALLED — "
@@ -249,7 +258,7 @@ def cron_status():
             ))
             print(f"  PID: {', '.join(map(str, pids))}")
             print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
-        elif hb_age is not None and ok_age is not None and ok_age > STALE_AFTER:
+        elif ok_age is not None and ok_age > STALE_AFTER:
             # Loop is alive (fresh heartbeat) but no tick has SUCCEEDED in a
             # long time → ticks are failing every iteration.
             print(color(

@@ -358,6 +358,7 @@ class MattermostAdapter(BasePlatformAdapter):
             payload: Dict[str, Any] = {
                 "channel_id": chat_id,
                 "message": chunk,
+                "props": {"format": "markdown"},
             }
             # Thread support: reply_to or metadata["thread_id"] is the root post ID.
             resolved_root = await self._thread_root_for_send(reply_to, metadata)
@@ -401,7 +402,7 @@ class MattermostAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         data = await self._api_put(
             f"posts/{message_id}/patch",
-            {"message": formatted},
+            {"message": formatted, "props": {"format": "markdown"}},
         )
         if not data or "id" not in data:
             return SendResult(success=False, error="Failed to edit post")
@@ -541,6 +542,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
+            "props": {"format": "markdown"},
         }
         resolved_root = await self._thread_root_for_send(reply_to, metadata)
         if resolved_root:
@@ -582,6 +584,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
+            "props": {"format": "markdown"},
         }
         resolved_root = await self._thread_root_for_send(reply_to, metadata)
         if resolved_root:
@@ -670,6 +673,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     "channel_id": chat_id,
                     "message": "\n".join(caption_parts),
                     "file_ids": file_ids,
+                    "props": {"format": "markdown"},
                 }
                 resolved_root = await self._thread_root_for_send(None, metadata)
                 if resolved_root:
@@ -1071,6 +1075,7 @@ async def _standalone_send(
             payload: Dict[str, Any] = {
                 "channel_id": chat_id,
                 "message": message,
+                "props": {"format": "markdown"},
             }
             if thread_id:
                 payload["root_id"] = thread_id

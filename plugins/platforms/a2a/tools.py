@@ -64,6 +64,7 @@ def _resolve_peer(agent: str) -> Optional[dict]:
         "auth": entry.get("auth", {}) or {},
         "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)),
         "capabilities": entry.get("capabilities", []) or [],
+        "tenant": entry.get("tenant", ""),
     }
 
 
@@ -85,26 +86,55 @@ def _http_get_json(url: str, headers: dict, timeout: int) -> dict:
 
 def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
     data = json.dumps(body).encode("utf-8")
-    hdrs = {"Content-Type": "application/json", **headers}
+    hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION, **headers}
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _card_url(base_url: str) -> str:
+    # A2A v1.0 canonical discovery path. v0.2 used agent.json; servers may
+    # still serve that as a legacy alias, but clients should prefer this.
+    return base_url.rstrip("/") + "/.well-known/agent-card.json"
+
+
+def _legacy_card_url(base_url: str) -> str:
     return base_url.rstrip("/") + "/.well-known/agent.json"
+
+
+def _fetch_card(base_url: str, headers: dict, timeout: int) -> dict:
+    try:
+        return _http_get_json(_card_url(base_url), headers, timeout)
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+    return _http_get_json(_legacy_card_url(base_url), headers, timeout)
+
+
+def _select_jsonrpc_interface(card: Optional[dict]) -> Optional[dict]:
+    if isinstance(card, dict):
+        for iface in card.get("supportedInterfaces", []) or []:
+            if isinstance(iface, dict) and iface.get("protocolBinding") == "JSONRPC" and iface.get("url"):
+                return iface
+    return None
 
 
 def _rpc_url(base_url: str, card: Optional[dict]) -> str:
     """Prefer the card's JSONRPC interface (v1.0 supportedInterfaces), then the
     card's legacy top-level url, then the configured base."""
-    if isinstance(card, dict):
-        for iface in card.get("supportedInterfaces", []) or []:
-            if isinstance(iface, dict) and iface.get("protocolBinding") == "JSONRPC" and iface.get("url"):
-                return str(iface["url"])
-        if isinstance(card.get("url"), str) and card["url"]:
-            return card["url"]
+    iface = _select_jsonrpc_interface(card)
+    if iface:
+        return str(iface["url"])
+    if isinstance(card, dict) and isinstance(card.get("url"), str) and card["url"]:
+        return card["url"]
     return base_url.rstrip("/")
+
+
+def _interface_tenant(card: Optional[dict], peer: dict) -> str:
+    iface = _select_jsonrpc_interface(card)
+    if iface and iface.get("tenant"):
+        return str(iface["tenant"])
+    return str(peer.get("tenant") or "")
 
 
 # --------------------------------------------------------------------------
@@ -129,7 +159,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     # Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
     card = None
     try:
-        card = _http_get_json(_card_url(base_url), headers, min(timeout, 30))
+        card = _fetch_card(base_url, headers, min(timeout, 30))
     except Exception:
         pass
 
@@ -139,11 +169,15 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     rpc_body = {
         "jsonrpc": "2.0",
         "id": protocol.new_task_id(),
-        "method": "message/send",
+        "method": "SendMessage",
         "params": {
             "message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx),
         },
     }
+
+    tenant = _interface_tenant(card, peer)
+    if tenant:
+        rpc_body["params"]["tenant"] = tenant
 
     security.audit("outbound", agent_label, rpc_body["id"], safe_message)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
@@ -155,17 +189,19 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
         raise ValueError(f"Peer '{agent_label}' returned an error: {err.get('message', err)}")
 
     result = resp.get("result", {})
-    reply = _reply_text_from_result(result)
+    payload = protocol.unwrap_send_message_response(result)
+    reply = _reply_text_from_result(payload)
     reply_ctx, state = ctx, ""
-    if isinstance(result, dict):
-        reply_ctx = result.get("contextId", ctx)
-        state = (result.get("status") or {}).get("state", "")
+    if isinstance(payload, dict):
+        reply_ctx = payload.get("contextId", ctx)
+        state = (payload.get("status") or {}).get("state", "")
     protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
     protocol.metrics.inbound_total += 1
     return reply, reply_ctx, state
 
 
 def _reply_text_from_result(result: Any) -> str:
+    result = protocol.unwrap_send_message_response(result)
     if not isinstance(result, dict):
         return str(result)
     # Artifacts first (final output), then status message (interim/clarify).
@@ -191,7 +227,7 @@ def a2a_discover(args: dict, **_: Any) -> str:
     if not url:
         return "Error: 'url' is required (e.g. http://localhost:9999)."
     try:
-        card = _http_get_json(_card_url(url), {}, _DEFAULT_TIMEOUT)
+        card = _fetch_card(url, {}, _DEFAULT_TIMEOUT)
     except urllib.error.HTTPError as e:
         return f"Error: discovery failed — HTTP {e.code} from {url}."
     except Exception as e:

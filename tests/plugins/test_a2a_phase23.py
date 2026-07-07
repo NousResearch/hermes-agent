@@ -144,13 +144,17 @@ class TestStreamingEndToEnd:
                 _post_sse, base + "/", _send_body("stream me", method="message/stream"))
 
             # Discrimination is by member name; every payload is a StreamResponse.
+            # v1.0 streaming begins with the current Task (or a direct Message),
+            # followed by status/artifact updates until terminal closure.
             for p in payloads:
-                assert set(p.keys()) <= {"statusUpdate", "artifactUpdate"}
+                assert set(p.keys()) <= {"task", "message", "statusUpdate", "artifactUpdate"}
                 assert "kind" not in json.dumps(p)
+            assert "task" in payloads[0]
+            assert payloads[0]["task"]["status"]["state"] == "TASK_STATE_SUBMITTED"
 
             states = [p["statusUpdate"]["status"]["state"]
                       for p in payloads if "statusUpdate" in p]
-            assert states[0] == "TASK_STATE_SUBMITTED"
+            assert states[0] == "TASK_STATE_WORKING"
             assert "TASK_STATE_WORKING" in states
             assert states[-1] == "TASK_STATE_COMPLETED"
             # No v0.3 'final' flag anywhere; closure is the terminal signal.

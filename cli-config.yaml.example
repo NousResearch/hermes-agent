@@ -415,17 +415,6 @@ compression:
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
   codex_gpt55_autoraise: true
 
-  # Codex-native compaction paths are opt-in (default: false) to preserve
-  # Hermes' existing auxiliary summarizer behavior for existing installs.
-  # When true, Codex OAuth uses Responses API compact and Codex app-server
-  # compaction uses the app-server thread compact API.
-  codex_native_compaction: false
-
-  # Codex OAuth / Responses API compaction trigger (default: 0.85 = 85%).
-  # Used only when codex_native_compaction is true. The recent tail still uses
-  # protect_last_n below.
-  codex_responses_threshold: 0.85
-  
   # Fraction of the threshold to preserve as recent tail (default: 0.20 = 20%)
   # e.g. 20% of 50% threshold = 10% of total context kept as recent messages.
   # Summary output is separately capped at 12K tokens (Gemini output limit).
@@ -437,8 +426,9 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
-  # Codex app-server auto-compaction mode:
-  # Used only when codex_native_compaction is true.
+  # Codex app-server (codex CLI runtime) thread-compaction mode. The codex
+  # agent owns the real thread context on this runtime, so Hermes' summarizer
+  # cannot shrink it — compaction goes through the app server instead.
   #   native = let Codex decide when to compact its own thread (default)
   #   hermes = let Hermes threshold trigger Codex thread/compact/start
   #   off    = Hermes will not auto-trigger compaction; Codex may still compact natively

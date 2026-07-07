@@ -178,6 +178,23 @@ nodes:
     assert payload["workflow_id"] == "validate_tool_demo"
 
 
+def test_workflow_validate_accepts_definition_object(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    definition = {
+        "id": "validate_object_demo",
+        "name": "Validate Object Demo",
+        "version": 1,
+        "nodes": {"start": {"type": "pass", "output": {"ok": True}}},
+    }
+
+    payload = json.loads(registry.dispatch("workflow_validate", {"definition": definition}))
+
+    assert "error" not in payload
+    assert payload["workflow_id"] == "validate_object_demo"
+
+
 def test_workflow_draft_tool_returns_validated_spec(_isolated_workflow_home, monkeypatch):
     _enable_workflow_toolset(_isolated_workflow_home)
     import tools.workflow_tools as workflow_tools
@@ -338,6 +355,23 @@ nodes:
     assert payload["workflow_id"] == "deploy_tool_demo"
 
 
+def test_workflow_deploy_accepts_definition_object(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    definition = {
+        "id": "deploy_object_demo",
+        "name": "Deploy Object Demo",
+        "version": 1,
+        "nodes": {"start": {"type": "pass"}},
+    }
+
+    payload = json.loads(registry.dispatch("workflow_deploy", {"definition": definition}))
+
+    assert "error" not in payload
+    assert payload["workflow_id"] == "deploy_object_demo"
+
+
 def test_workflow_deploy_returns_deployed_version_not_latest(_isolated_workflow_home):
     _enable_workflow_toolset(_isolated_workflow_home)
     from hermes_cli import workflows_db as wfdb
@@ -410,6 +444,41 @@ def test_workflow_run_creates_execution_with_provided_input(_isolated_workflow_h
     assert execution.version == spec.version
     assert execution.status == "queued"
     assert execution.input == {"x": 1}
+
+
+def test_workflow_run_accepts_input_object(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    spec = _deploy_demo_workflow()
+    from tools.registry import registry
+
+    payload = json.loads(registry.dispatch("workflow_run", {"workflow_id": spec.id, "input": {"x": 2}}))
+
+    assert "error" not in payload
+    assert payload["input"] == {"x": 2}
+
+
+def test_workflow_run_accepts_null_input_as_empty_object(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    spec = _deploy_demo_workflow()
+    from tools.registry import registry
+
+    payload = json.loads(registry.dispatch("workflow_run", {"workflow_id": spec.id, "input": None}))
+
+    assert "error" not in payload
+    assert payload["input"] == {}
+
+
+@pytest.mark.parametrize("bad_input", [[], "", 0, False])
+def test_workflow_run_rejects_bad_input_object(_isolated_workflow_home, bad_input):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    spec = _deploy_demo_workflow()
+    from tools.registry import registry
+
+    result = registry.dispatch("workflow_run", {"workflow_id": spec.id, "input": bad_input})
+    payload = json.loads(result)
+
+    assert "error" in payload
+    assert "input must be an object" in payload["error"]
 
 
 @pytest.mark.parametrize("input_json", ["{", "[]"])

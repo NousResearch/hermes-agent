@@ -71,15 +71,19 @@ def _parse_version(value: Any) -> int | None:
     return version
 
 
-def _spec_from_definition_text(text: Any) -> WorkflowSpec:
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("definition_text must be a non-empty string")
-    loaded = yaml.safe_load(text)
-    if not isinstance(loaded, dict):
-        raise ValueError("definition_text must decode to a YAML/JSON object")
-    spec = WorkflowSpec.model_validate(loaded)
-    validate_graph(spec)
-    return spec
+def _spec_from_args(args: dict) -> WorkflowSpec:
+    if "definition" in args:
+        raw = args["definition"]
+        if not isinstance(raw, dict):
+            raise ValueError("definition must be a workflow object")
+    else:
+        text = args.get("definition_text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("definition or definition_text is required")
+        raw = yaml.safe_load(text)
+        if not isinstance(raw, dict):
+            raise ValueError("definition_text must decode to a YAML/JSON object")
+    return _spec_from_object(raw)
 
 
 def _spec_from_object(value: Any) -> WorkflowSpec:
@@ -139,6 +143,17 @@ def _parse_input_json(value: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("input_json must decode to a JSON object")
     return data
+
+
+def _input_from_args(args: dict) -> dict[str, Any]:
+    if "input" in args:
+        data = args.get("input")
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            raise ValueError("input must be an object")
+        return data
+    return _parse_input_json(args.get("input_json", "{}"))
 
 
 def _handle_list(args: dict, **_kw) -> str:
@@ -206,7 +221,7 @@ def _handle_refine(args: dict, **_kw) -> str:
 
 def _handle_validate(args: dict, **_kw) -> str:
     try:
-        spec = _spec_from_definition_text(args.get("definition_text"))
+        spec = _spec_from_args(args)
         return tool_result({
             "valid": True,
             "workflow_id": spec.id,
@@ -219,7 +234,7 @@ def _handle_validate(args: dict, **_kw) -> str:
 
 def _handle_deploy(args: dict, **_kw) -> str:
     try:
-        spec = _spec_from_definition_text(args.get("definition_text"))
+        spec = _spec_from_args(args)
         created_by = (
             str(args.get("created_by") or "workflow_tool").strip() or "workflow_tool"
         )
@@ -237,7 +252,7 @@ def _handle_run(args: dict, **_kw) -> str:
     if not workflow_id:
         return tool_error("workflow_id is required")
     try:
-        input_data = _parse_input_json(args.get("input_json", "{}"))
+        input_data = _input_from_args(args)
         with _connect_initialized() as conn:
             execution_id = wfdb.start_execution(
                 conn,
@@ -336,46 +351,55 @@ _WORKFLOW_REFINE_SCHEMA = {
 
 _WORKFLOW_VALIDATE_SCHEMA = {
     "name": "workflow_validate",
-    "description": "Validate workflow YAML/JSON definition text without deploying it.",
+    "description": "Validate a workflow definition object without deploying it; legacy definition_text YAML/JSON is also accepted.",
     "parameters": {
         "type": "object",
         "properties": {
+            "definition": {
+                "type": "object",
+                "description": "Workflow definition object (preferred).",
+            },
             "definition_text": {
                 "type": "string",
-                "description": "Workflow YAML or JSON definition text.",
+                "description": "Legacy workflow YAML or JSON definition text.",
             },
         },
-        "required": ["definition_text"],
+        "required": [],
     },
 }
 
 _WORKFLOW_DEPLOY_SCHEMA = {
     "name": "workflow_deploy",
-    "description": "Validate and deploy workflow YAML/JSON definition text.",
+    "description": "Validate and deploy a workflow definition object; legacy definition_text YAML/JSON is also accepted.",
     "parameters": {
         "type": "object",
         "properties": {
+            "definition": {
+                "type": "object",
+                "description": "Workflow definition object (preferred).",
+            },
             "definition_text": {
                 "type": "string",
-                "description": "Workflow YAML or JSON definition text.",
+                "description": "Legacy workflow YAML or JSON definition text.",
             },
             "created_by": {
                 "type": "string",
                 "description": "Optional deployment source; defaults to workflow_tool.",
             },
         },
-        "required": ["definition_text"],
+        "required": [],
     },
 }
 
 _WORKFLOW_RUN_SCHEMA = {
     "name": "workflow_run",
-    "description": "Start a manual workflow execution with JSON object input.",
+    "description": "Start a manual workflow execution with an input object; legacy input_json is also accepted.",
     "parameters": {
         "type": "object",
         "properties": {
             "workflow_id": {"type": "string", "description": "Workflow id to run."},
-            "input_json": {"type": "string", "description": "JSON object input. Defaults to {}."},
+            "input": {"type": "object", "description": "Execution input object (preferred). Defaults to {}."},
+            "input_json": {"type": "string", "description": "Legacy JSON object input. Defaults to {}."},
         },
         "required": ["workflow_id"],
     },

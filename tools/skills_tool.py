@@ -643,7 +643,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if not skill_matches_environment(frontmatter):
                     continue
 
-                name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
+                name = str(frontmatter.get("name") or skill_dir.name)[:MAX_NAME_LENGTH]
                 if name in seen_names:
                     continue
                 if name in disabled:

@@ -255,6 +255,30 @@ class TestFindAllSkills:
             skills = _find_all_skills()
         assert len(skills[0]["description"]) <= MAX_DESCRIPTION_LENGTH
 
+    def test_null_name_falls_back_to_dir_name(self, tmp_path):
+        """A bare ``name:`` key (YAML null) must not drop the skill."""
+        skill_dir = tmp_path / "null-name"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname:\ndescription: has a null name\n---\n\nBody.\n"
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert skills[0]["name"] == "null-name"
+
+    def test_non_string_name_coerced(self, tmp_path):
+        """A numeric ``name: 123`` must not drop the skill."""
+        skill_dir = tmp_path / "numeric-name"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: 123\ndescription: numeric name\n---\n\nBody.\n"
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert skills[0]["name"] == "123"
+
     def test_skips_git_directories(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "real-skill")

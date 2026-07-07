@@ -11,6 +11,7 @@ Uses discord.py library for:
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -7449,10 +7450,6 @@ def _standalone_sanitize_error(text) -> str:
     )
 
 
-def _standalone_is_mock_object(value: Any) -> bool:
-    return value.__class__.__module__.startswith("unittest.mock")
-
-
 def _standalone_close_response(resp: Any) -> None:
     close = getattr(resp, "close", None)
     if callable(close):
@@ -7467,12 +7464,19 @@ async def _standalone_read_response_bytes_limited(
     resp: Any,
     limit_bytes: int,
 ) -> Tuple[Optional[bytes], bool]:
+    """Read at most *limit_bytes* from an aiohttp-style response body.
+
+    Returns ``(body, truncated)``. Returns ``(None, False)`` when the response
+    object does not expose a streaming ``content.read`` coroutine (e.g. a
+    proxy wrapper or test double) — callers fall back to the object's own
+    ``json()`` / ``text()`` in that case.
+    """
     content = getattr(resp, "content", None)
-    if content is None or _standalone_is_mock_object(content):
+    read = getattr(content, "read", None)
+    if content is None or not inspect.iscoroutinefunction(read):
         return None, False
 
-    read = getattr(content, "read", None)
-    if callable(read):
+    try:
         chunks: list[bytes] = []
         total = 0
         while total <= limit_bytes:
@@ -7487,22 +7491,10 @@ async def _standalone_read_response_bytes_limited(
                 _standalone_close_response(resp)
                 return b"".join(chunks)[:limit_bytes], True
         return b"".join(chunks), False
-
-    iter_chunked = getattr(content, "iter_chunked", None)
-    if callable(iter_chunked):
-        chunks: list[bytes] = []
-        total = 0
-        async for chunk in iter_chunked(limit_bytes + 1):
-            if isinstance(chunk, str):
-                chunk = chunk.encode("utf-8", "replace")
-            total += len(chunk)
-            chunks.append(chunk)
-            if total > limit_bytes:
-                _standalone_close_response(resp)
-                return b"".join(chunks)[:limit_bytes], True
-        return b"".join(chunks), False
-
-    return None, False
+    except (TypeError, AttributeError):
+        # Object quacked like a stream but wasn't one — let the caller use
+        # its native json()/text() instead of failing the send.
+        return None, False
 
 
 def _standalone_response_encoding(resp: Any) -> str:

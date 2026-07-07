@@ -504,3 +504,121 @@ def test_sessions_export_redact_scrubs_secrets(monkeypatch, tmp_path):
     text = next(tmp_path.glob("*.md")).read_text(encoding="utf-8")
     assert secret not in text
     assert "api key:" in text
+
+
+def _trace_fake_db(captured):
+    class FakeDB:
+        def resolve_session_id(self, session_id):
+            return "s1"
+
+        def get_session(self, session_id):
+            return {"id": session_id, "model": "test-model"}
+
+        def get_messages_as_conversation(self, session_id):
+            captured["conv"] = session_id
+            return [
+                {"role": "user", "content": "hello trace"},
+                {"role": "assistant", "content": "hi"},
+            ]
+
+        def close(self):
+            captured["closed"] = True
+
+    return FakeDB()
+
+
+def test_sessions_export_trace_writes_claude_jsonl(monkeypatch, tmp_path, capsys):
+    import json
+
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    captured = {}
+    out = tmp_path / "trace.jsonl"
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: _trace_fake_db(captured))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "sessions", "export", "--format", "trace", "--session-id", "s1", str(out)],
+    )
+
+    main_mod.main()
+
+    assert "Exported 1 session trace" in capsys.readouterr().out
+    lines = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert {rec["type"] for rec in lines} == {"user", "assistant"}
+    assert all("uuid" in rec for rec in lines)
+    assert captured["conv"] == "s1"
+    assert captured["closed"] is True
+
+
+def test_sessions_export_trace_stdout(monkeypatch, capsys):
+    import json
+
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    captured = {}
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: _trace_fake_db(captured))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "sessions", "export", "--format", "trace", "--session-id", "s1", "-"],
+    )
+
+    main_mod.main()
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(lines) == 2
+    assert lines[0]["type"] == "user"
+
+
+def test_sessions_export_trace_upload_routes_to_uploader(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+    from agent import trace_upload as trace_mod
+
+    captured = {}
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: _trace_fake_db(captured))
+
+    def fake_upload(session_id, **kwargs):
+        captured["uploaded"] = session_id
+        captured["kwargs"] = kwargs
+        return "Uploaded -> https://example.test/dataset"
+
+    monkeypatch.setattr(trace_mod, "upload_session_trace", fake_upload)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes", "sessions", "export", "--format", "trace",
+            "--session-id", "s1", "--upload", "--public",
+        ],
+    )
+
+    main_mod.main()
+
+    assert captured["uploaded"] == "s1"
+    assert captured["kwargs"]["private"] is False
+    assert captured["kwargs"]["redact"] is True
+    assert "Uploaded ->" in capsys.readouterr().out
+
+
+def test_sessions_export_trace_only_flag_rejected(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    captured = {}
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: _trace_fake_db(captured))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes", "sessions", "export", "--format", "trace",
+            "--session-id", "s1", "--only", "user-prompts", "-",
+        ],
+    )
+
+    main_mod.main()
+
+    assert "--only user-prompts supports --format jsonl or md." in capsys.readouterr().out

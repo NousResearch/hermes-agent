@@ -45,6 +45,24 @@
     return SDK.fetchJSON(API + path, options);
   }
 
+  function errorMessage(err) {
+    const detail = err && err.detail ? err.detail : err;
+    if (detail && typeof detail === "object") {
+      const parts = [];
+      if (detail.message) parts.push(String(detail.message));
+      if (detail.hint) parts.push(String(detail.hint));
+      if (detail.code) parts.push("(" + String(detail.code) + ")");
+      return parts.join(" ");
+    }
+    if (err && err.message) return String(err.message);
+    return String(detail || err || "Unknown error");
+  }
+
+  const ASSISTANT_ERROR_HINTS = {
+    workflow_assistant_runtime_error: "Check workflow assistant provider/model configuration, then retry or use Advanced YAML.",
+    workflow_assistant_validation_error: "Revise the request, use a template, or switch to Advanced YAML.",
+  };
+
   function asArray(value) {
     return Array.isArray(value) ? value : [];
   }
@@ -769,7 +787,7 @@
     const initialExecutionId = initialExecutionIdFromLocation();
 
     function fail(err) {
-      setError(err && err.message ? err.message : String(err));
+      setError(errorMessage(err));
     }
 
     function updateEditorText(text) {

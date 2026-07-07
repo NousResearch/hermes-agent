@@ -1979,10 +1979,19 @@ class TelegramAdapter(BasePlatformAdapter):
         if not (self._app and self._app.updater):
             raise RuntimeError("Telegram application/updater not initialized")
         try:
-            await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=drop_pending_updates,
-                error_callback=error_callback,
+            # Same watchdog bound as the reconnect ladders: a wedged httpx
+            # connection pool can hang start_polling() forever at bootstrap
+            # too (#59614). A propagating TimeoutError is a builtins
+            # TimeoutError (OSError subclass), so the except below classifies
+            # it via _looks_like_network_error and schedules background
+            # recovery instead of blocking connect() indefinitely.
+            await asyncio.wait_for(
+                self._app.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=drop_pending_updates,
+                    error_callback=error_callback,
+                ),
+                timeout=_UPDATER_START_TIMEOUT,
             )
             return True
         except Exception as err:
@@ -2488,11 +2497,24 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 if not app:
                     raise RuntimeError("Telegram application was torn down during conflict reconnect")
-                await app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=False,
-                    error_callback=self._polling_error_callback_ref,
-                )
+                # Same watchdog bound as the network-error ladder: an
+                # exhausted pool hangs start_polling() on the conflict path
+                # identically (#59614). Timeout converts to RuntimeError so
+                # the except below logs a readable message and schedules the
+                # next conflict attempt instead of wedging attempt N forever.
+                try:
+                    await asyncio.wait_for(
+                        app.updater.start_polling(
+                            allowed_updates=Update.ALL_TYPES,
+                            drop_pending_updates=False,
+                            error_callback=self._polling_error_callback_ref,
+                        ),
+                        timeout=_UPDATER_START_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    raise RuntimeError(
+                        "start_polling() timed out — connection pool may be wedged"
+                    )
                 logger.info(
                     "[%s] Telegram polling resumed after conflict retry %d/%d",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,

@@ -66,7 +66,7 @@ def _bootstrap(monkeypatch, tmp_path, db):
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._is_user_authorized = lambda _source: True
-    runner._set_session_env = lambda _context: None
+    runner._set_session_env = lambda _context, **_kwargs: None
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
     # REAL SessionDB behind the async facade the gateway holds — the
     # production re-baseline does ``await self._session_db.get_session(...)``,

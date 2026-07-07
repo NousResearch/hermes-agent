@@ -82,13 +82,21 @@ class TestGitPushForceLongOptionAbbreviation:
         dangerous, _, _ = detect_dangerous_command("git push -f origin main")
         assert dangerous is True
 
-    def test_git_push_no_force_not_flagged(self):
-        dangerous, _, _ = detect_dangerous_command("git push origin main")
-        assert dangerous is False
+    def test_git_push_no_force_still_requires_approval(self):
+        dangerous, _, desc = detect_dangerous_command("git push origin main")
+        assert dangerous is True
+        assert "remote refs" in desc.lower()
 
-    def test_git_push_set_upstream_not_flagged(self):
-        dangerous, _, _ = detect_dangerous_command(
+    def test_git_push_set_upstream_still_requires_approval(self):
+        dangerous, _, desc = detect_dangerous_command(
             "git push --set-upstream origin feature"
+        )
+        assert dangerous is True
+        assert "remote refs" in desc.lower()
+
+    def test_git_push_dry_run_not_flagged(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "git push --dry-run origin feature"
         )
         assert dangerous is False
 

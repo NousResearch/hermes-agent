@@ -62,7 +62,7 @@ def _make_runner():
     runner._fallback_model = None
     runner._show_reasoning = False
     runner._is_user_authorized = lambda _source: True
-    runner._set_session_env = lambda _context: None
+    runner._set_session_env = lambda _context, **_kwargs: None
     return runner
 
 

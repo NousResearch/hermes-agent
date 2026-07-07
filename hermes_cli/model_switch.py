@@ -2057,7 +2057,11 @@ def list_authenticated_providers(
                         headers=_extra_headers_from_config(ep_cfg) or None,
                     )
                     if live_models:
-                        models_list = live_models
+                        # Merge: keep configured models not in live
+                        # response, then append live-only models.
+                        _live_set = {m.lower() for m in live_models}
+                        _extras = [m for m in models_list if m.lower() not in _live_set]
+                        models_list = _extras + live_models
                 except Exception:
                     pass
 
@@ -2328,8 +2332,19 @@ def list_authenticated_providers(
                         headers=grp.get("extra_headers") or None,
                     )
                     if live_models:
-                        grp["models"] = live_models
-                        grp["total_models"] = len(live_models)
+                        # Merge configured models with live discovery:
+                        # keep explicitly configured models (from the
+                        # ``models:`` dict) that aren't in the live
+                        # response, then append live-only models.  This
+                        # prevents router/combo endpoints from losing
+                        # user-declared models that the /v1/models
+                        # endpoint omits (e.g. aliases, custom names).
+                        _configured = list(grp["models"])
+                        _live_set = {m.lower() for m in live_models}
+                        _extras = [m for m in _configured if m.lower() not in _live_set]
+                        merged = _extras + live_models
+                        grp["models"] = merged
+                        grp["total_models"] = len(merged)
                 except Exception:
                     pass
             results.append({

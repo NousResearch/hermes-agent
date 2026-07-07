@@ -108,7 +108,7 @@ def test_list_authenticated_providers_can_probe_only_current_custom_provider(mon
     offline = next(p for p in providers if p["slug"] == "custom:offline-proxy")
     assert calls == ["http://active.local/v1"]
     assert active["is_current"] is True
-    assert active["models"] == ["active-a", "active-b"]
+    assert active["models"] == ["configured-active", "active-a", "active-b"]
     assert offline["models"] == ["configured-offline"]
 
 

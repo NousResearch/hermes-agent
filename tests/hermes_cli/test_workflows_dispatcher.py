@@ -183,6 +183,13 @@ def _execution_state(exec_id: str):
     return execution, claim, events
 
 
+def test_agent_result_contract_enum_accepts_boolean_values():
+    assert workflows_dispatcher._validate_result_contract(
+        {"approved": True, "review_required": False},
+        {"approved": "true|false", "review_required": "true|false"},
+    ) == []
+
+
 def test_tick_initializes_empty_db_path(tmp_path):
     db_path = tmp_path / "workflows.db"
 

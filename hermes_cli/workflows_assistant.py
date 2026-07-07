@@ -17,7 +17,7 @@ from hermes_cli.workflows_capabilities import (
 )
 from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
 
-_JSON_FENCE_RE = re.compile(r"```json\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 Runner = Callable[[str], str]
 
 
@@ -51,13 +51,44 @@ def _agent_class() -> Any:
     return agent_cls
 
 
-def _extract_json_object(text: str) -> dict[str, Any]:
-    match = _JSON_FENCE_RE.search(text)
-    raw = match.group(1) if match else text
-    data = json.loads(raw.strip())
-    if not isinstance(data, dict):
-        raise AssistantValidationError("assistant payload must be a JSON object")
-    return data
+def _decode_json_dict(raw: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(raw.strip())
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _json_object_candidates(text: str) -> list[dict[str, Any]]:
+    fenced = [match.group(1) for match in _JSON_FENCE_RE.finditer(text)]
+    if fenced:
+        return [data for raw in fenced if (data := _decode_json_dict(raw)) is not None]
+
+    data = _decode_json_dict(text)
+    if data is not None:
+        return [data]
+
+    found: list[dict[str, Any]] = []
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(text):
+        idx = text.find("{", idx)
+        if idx == -1:
+            break
+        try:
+            data, end = decoder.raw_decode(text[idx:])
+        except json.JSONDecodeError:
+            # The first JSON-looking object is malformed. Do not keep scanning into
+            # its children and accidentally accept a nested draft from a broken
+            # wrapper object.
+            if not found:
+                break
+            idx += 1
+            continue
+        if isinstance(data, dict):
+            found.append(data)
+        idx += max(end, 1)
+    return found
 
 
 def _ensure_supported_primitives(spec: WorkflowSpec) -> None:
@@ -82,11 +113,8 @@ def _ensure_agent_task_contracts(spec: WorkflowSpec) -> None:
         raise AssistantValidationError("; ".join(errors))
 
 
-def parse_assistant_payload(payload: dict[str, Any] | str) -> WorkflowDraftResult:
+def _parse_assistant_dict(data: dict[str, Any]) -> WorkflowDraftResult:
     try:
-        data = _extract_json_object(payload) if isinstance(payload, str) else payload
-        if not isinstance(data, dict):
-            raise AssistantValidationError("assistant payload must be a JSON object")
         if "spec" not in data:
             raise AssistantValidationError("assistant payload requires spec")
         spec = WorkflowSpec.model_validate(data["spec"])
@@ -103,8 +131,28 @@ def parse_assistant_payload(payload: dict[str, Any] | str) -> WorkflowDraftResul
         )
     except AssistantValidationError:
         raise
-    except json.JSONDecodeError as exc:
-        raise AssistantValidationError(f"invalid JSON: {exc.msg}") from exc
+    except (ValidationError, ValueError, TypeError) as exc:
+        raise AssistantValidationError(str(exc)) from exc
+
+
+def parse_assistant_payload(payload: dict[str, Any] | str) -> WorkflowDraftResult:
+    try:
+        if isinstance(payload, str):
+            candidates = _json_object_candidates(payload)
+            if not candidates:
+                raise AssistantValidationError("invalid JSON: assistant response did not contain a JSON object")
+            last_error: AssistantValidationError | None = None
+            for data in reversed(candidates):
+                try:
+                    return _parse_assistant_dict(data)
+                except AssistantValidationError as exc:
+                    last_error = exc
+            raise last_error or AssistantValidationError("assistant payload requires spec")
+        if not isinstance(payload, dict):
+            raise AssistantValidationError("assistant payload must be a JSON object")
+        return _parse_assistant_dict(payload)
+    except AssistantValidationError:
+        raise
     except (ValidationError, ValueError, TypeError) as exc:
         raise AssistantValidationError(str(exc)) from exc
 
@@ -209,35 +257,39 @@ def default_model_runner(prompt: str) -> str:
         "skip_memory": True,
         "platform": "workflow_assistant",
         "max_iterations": 3,
+        "suppress_status_output": True,
     }
 
     agent = agent_cls(**kwargs)
-    agent.suppress_status_output = True
     result = agent.run_conversation(prompt)
     if isinstance(result, dict) and "final_response" in result:
         return str(result.get("final_response") or "")
     return str(result or "")
 
 
+def _validation_error_summary(error: AssistantValidationError) -> str:
+    text = str(error)
+    if "invalid JSON" in text:
+        return "invalid JSON"
+    if "unsupported" in text:
+        return "unsupported workflow primitive"
+    if "requires a non-empty result_contract" in text:
+        return "missing agent_task result_contract"
+    if "workflow must define at least one node" in text:
+        return "workflow has no nodes"
+    if "Field required" in text or "field required" in text:
+        return "missing required schema field"
+    return "schema or graph validation failed"
+
+
 def _call_with_repair(prompt: str, runner: Runner, repair_attempts: int) -> WorkflowDraftResult:
-    attempts_left = max(0, repair_attempts)
-    attempt_prompt = prompt
-    while True:
-        try:
-            return parse_assistant_payload(runner(attempt_prompt))
-        except AssistantValidationError as exc:
-            if attempts_left <= 0:
-                raise
-            attempts_left -= 1
-            attempt_prompt = "\n\n".join(
-                [
-                    "The previous workflow draft failed validation.",
-                    f"Validation error: {exc}",
-                    "Original prompt:",
-                    prompt,
-                    "Return JSON only with a corrected workflow draft.",
-                ]
-            )
+    try:
+        return parse_assistant_payload(runner(prompt))
+    except AssistantValidationError as exc:
+        raise AssistantValidationError(
+            "assistant draft failed validation "
+            f"({_validation_error_summary(exc)}); revise the request or workflow and retry"
+        ) from exc
 
 
 def draft_workflow(goal: str, *, runner: Runner, repair_attempts: int = 1) -> WorkflowDraftResult:

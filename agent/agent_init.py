@@ -235,6 +235,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    suppress_status_output: bool = False,
 ):
     """
     Initialize the AI Agent.
@@ -429,7 +430,7 @@ def init_agent(
     agent.tool_progress_callback = tool_progress_callback
     agent.tool_start_callback = tool_start_callback
     agent.tool_complete_callback = tool_complete_callback
-    agent.suppress_status_output = False
+    agent.suppress_status_output = suppress_status_output
     agent.thinking_callback = thinking_callback
     agent.reasoning_callback = reasoning_callback
     agent.clarify_callback = clarify_callback

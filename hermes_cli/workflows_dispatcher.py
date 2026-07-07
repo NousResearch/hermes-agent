@@ -249,7 +249,8 @@ def _validate_result_contract(output: Any, contract: dict[str, Any]) -> list[str
             errors.append(f"result key {key} must be boolean")
         elif isinstance(expected, str) and "|" in expected:
             allowed = {part.strip() for part in expected.split("|") if part.strip()}
-            if str(value) not in allowed:
+            actual = "true" if value is True else "false" if value is False else str(value)
+            if actual not in allowed:
                 errors.append(f"result key {key} must be one of {sorted(allowed)}")
     return errors
 

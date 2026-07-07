@@ -616,6 +616,75 @@ class TestSlashCommandCompleter:
         assert "Skill command" in completions[0].display_meta_text
 
 
+# ── Stacked slash-skill completion ──────────────────────────────────────
+
+
+def _stacked_completer(**extra_skills):
+    skills = {
+        "/skill-a": {"description": "Skill A"},
+        "/skill-b": {"description": "Skill B"},
+        "/skill-c": {"description": "Skill C"},
+        **extra_skills,
+    }
+    return SlashCommandCompleter(skill_commands_provider=lambda: skills)
+
+
+class TestStackedSkillCompletion:
+    """Second+ leading skill tokens keep getting completions (stacked
+    slash-skill invocations, Claude Code v2.1.199 port follow-up)."""
+
+    def test_second_skill_token_completes(self):
+        completions = _completions(_stacked_completer(), "/skill-a /skill-")
+        displays = {c.display_text for c in completions}
+        assert displays == {"/skill-b", "/skill-c"}
+
+    def test_already_typed_skill_not_reoffered(self):
+        completions = _completions(_stacked_completer(), "/skill-a /skill-a")
+        displays = {c.display_text for c in completions}
+        assert "/skill-a" not in displays
+
+    def test_replacement_spans_whole_token(self):
+        completions = _completions(_stacked_completer(), "/skill-a /skill-b")
+        # Exact match gets trailing space (keeps dropdown flowing)
+        assert [c.text for c in completions] == ["/skill-b "]
+        assert completions[0].start_position == -len("/skill-b")
+
+    def test_no_completions_for_instruction_text(self):
+        assert _completions(_stacked_completer(), "/skill-a do the") == []
+        assert _completions(_stacked_completer(), "/skill-a ") == []
+
+    def test_chain_broken_by_non_skill_token_stops_completion(self):
+        completions = _completions(
+            _stacked_completer(), "/skill-a nope /skill-"
+        )
+        assert completions == []
+
+    def test_underscore_form_counts_toward_chain(self):
+        """Telegram underscore form is interchangeable with hyphens."""
+        completions = _completions(_stacked_completer(), "/skill_a /skill-")
+        displays = {c.display_text for c in completions}
+        assert displays == {"/skill-b", "/skill-c"}
+
+    def test_cap_stops_completions(self):
+        skills = {f"/stk-{i}": {"description": f"S{i}"} for i in range(8)}
+        completer = SlashCommandCompleter(skill_commands_provider=lambda: skills)
+        text = " ".join(f"/stk-{i}" for i in range(5)) + " /stk-"
+        assert _completions(completer, text) == []
+
+    def test_below_cap_still_completes(self):
+        skills = {f"/stk-{i}": {"description": f"S{i}"} for i in range(8)}
+        completer = SlashCommandCompleter(skill_commands_provider=lambda: skills)
+        text = " ".join(f"/stk-{i}" for i in range(4)) + " /stk-"
+        displays = {c.display_text for c in _completions(completer, text)}
+        assert displays == {"/stk-4", "/stk-5", "/stk-6", "/stk-7"}
+
+    def test_non_skill_base_command_unaffected(self):
+        """/skills (builtin) still completes its subcommands, not skills."""
+        completions = _completions(_stacked_completer(), "/skills ins")
+        texts = [c.text for c in completions]
+        assert "install" in texts
+
+
 # ── SUBCOMMANDS extraction ──────────────────────────────────────────────
 
 
@@ -906,6 +975,27 @@ class TestGhostText:
 
     def test_no_suggestion_for_non_slash(self):
         assert _suggestion("hello") is None
+
+    # -- stacked slash-skill ghost text -----------------------------------
+
+    def test_stacked_skill_ghost_text(self):
+        """/skill-a /ski → ghost-suggest rest of next unused skill name."""
+        assert _suggestion("/skill-a /ski", completer=_stacked_completer()) == "ll-b"
+        # Exact token already typed — nothing left to ghost
+        assert _suggestion("/skill-a /skill-b", completer=_stacked_completer()) is None
+
+    def test_stacked_skill_ghost_text_skips_used(self):
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {
+                "/alpha": {"description": "A"},
+                "/beta": {"description": "B"},
+            }
+        )
+        assert _suggestion("/alpha /a", completer=completer) is None
+        assert _suggestion("/alpha /b", completer=completer) == "eta"
+
+    def test_stacked_skill_no_ghost_for_instruction(self):
+        assert _suggestion("/skill-a do", completer=_stacked_completer()) is None
 
 
 # ---------------------------------------------------------------------------

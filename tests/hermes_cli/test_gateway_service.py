@@ -431,6 +431,14 @@ class TestGeneratedSystemdUnits:
         # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
+        # ExecStopPost reaps any process the gateway didn't clean up itself,
+        # so long-lived helpers (e.g. adb) can't be left orphaned in the
+        # cgroup and block Restart=always — issue #37454.
+        assert "ExecStopPost=" in unit
+        assert "-m gateway.cgroup_cleanup" in unit
+        # KillMode=mixed is preserved so the gateway still reaps its own
+        # tool-call children before systemd SIGKILLs the cgroup — #8202.
+        assert "KillMode=mixed" in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
@@ -438,6 +446,48 @@ class TestGeneratedSystemdUnits:
         unit = gateway_cli.generate_systemd_unit(system=False)
 
         assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit
+
+    def test_user_unit_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
+        # Regression for the multi-profile gateway restart-loop flap (#48700):
+        # ~/.local/bin/node is often a symlink into a *specific* profile's node
+        # install. The generated unit's PATH must contain the symlink's own
+        # directory (~/.local/bin), NOT the resolved profile target — otherwise
+        # one profile's node path leaks into every profile's unit, making
+        # systemd_unit_is_current() perpetually false and forcing a
+        # daemon-reload restart loop on every boot.
+        local_bin = tmp_path / ".local" / "bin"
+        profile_node_bin = tmp_path / ".hermes" / "profiles" / "jarvis" / "node" / "bin"
+        local_bin.mkdir(parents=True)
+        profile_node_bin.mkdir(parents=True)
+        real_node = profile_node_bin / "node"
+        real_node.write_text("#!/bin/sh\n")
+        link_node = local_bin / "node"
+        link_node.symlink_to(real_node)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(link_node) if cmd == "node" else None)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert str(local_bin) in unit
+        assert str(profile_node_bin) not in unit
+
+    def test_launchd_plist_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
+        # Same #48700 regression for the macOS twin generate_launchd_plist().
+        local_bin = tmp_path / ".local" / "bin"
+        profile_node_bin = tmp_path / ".hermes" / "profiles" / "jarvis" / "node" / "bin"
+        local_bin.mkdir(parents=True)
+        profile_node_bin.mkdir(parents=True)
+        real_node = profile_node_bin / "node"
+        real_node.write_text("#!/bin/sh\n")
+        link_node = local_bin / "node"
+        link_node.symlink_to(real_node)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(link_node) if cmd == "node" else None)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert str(local_bin) in plist
+        assert str(profile_node_bin) not in plist
 
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
@@ -493,6 +543,14 @@ class TestGeneratedSystemdUnits:
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
+        # ExecStopPost reaps any process the gateway didn't clean up itself,
+        # so long-lived helpers (e.g. adb) can't be left orphaned in the
+        # cgroup and block Restart=always — issue #37454.
+        assert "ExecStopPost=" in unit
+        assert "-m gateway.cgroup_cleanup" in unit
+        # KillMode=mixed is preserved so the gateway still reaps its own
+        # tool-call children before systemd SIGKILLs the cgroup — #8202.
+        assert "KillMode=mixed" in unit
 
 
 class TestGatewayStopCleanup:
@@ -1061,6 +1119,46 @@ class TestLaunchdServiceRecovery:
         assert spawned == [True]
         assert gateway_cli._launchd_unsupported_marker_exists()
 
+    def test_launchd_restart_boots_out_stale_registration_before_bootstrap(
+        self, tmp_path, monkeypatch
+    ):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True
+        )
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    3, cmd, stderr="Could not find service"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [
+            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+
     def test_launchd_stop_tolerates_domain_unsupported_bootout(self, monkeypatch, capsys):
         """bootout exit 125 (macOS 26) must fall through to PID-based kill, not raise."""
         def fake_run(cmd, check=False, **kwargs):
@@ -1286,7 +1384,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"gui/501"
+        assert domain == "gui/501"
         # Should have probed gui first
         assert run_calls[0] == ["launchctl", "print", f"gui/501/{label}"]
 
@@ -1308,7 +1406,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"user/501"
+        assert domain == "user/501"
         # Should have tried gui first, then user
         assert len(run_calls) >= 2
 
@@ -1329,7 +1427,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"gui/501"
+        assert domain == "gui/501"
 
     def test_managername_background_selects_user_domain(self, monkeypatch):
         """When managername is Background (non-Aqua), use user/<uid>."""
@@ -1346,7 +1444,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"user/501"
+        assert domain == "user/501"
 
     def test_caches_result_across_calls(self, monkeypatch):
         """Domain detection should run once and cache the result."""
@@ -2671,7 +2769,7 @@ class TestLegacyHermesUnitDetection:
             "ExecStart=/venv/bin/python /opt/hermes/gateway/run.py",
         ]
         for i, execstart in enumerate(variants):
-            name = f"hermes.service" if i == 0 else f"hermes.service"  # same name
+            name = "hermes.service" if i == 0 else "hermes.service"  # same name
             # Test each variant fresh
             (user_dir / "hermes.service").write_text(
                 f"[Unit]\nDescription=Old Hermes\n[Service]\n{execstart}\n",
@@ -3332,3 +3430,163 @@ class TestServiceWorkingDirIsStable:
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
         assert "<key>KeepAlive</key>\n    <dict>" not in plist
+
+
+class TestLaunchctlBootstrapEioRetry:
+    """`_launchctl_bootstrap` must recover from a stale already-loaded label.
+
+    On macOS, ``launchctl bootstrap`` of a label that is still registered in
+    the domain fails with ``5: Input/output error`` (EIO). That is the *already
+    loaded* case — recoverable by booting the leftover out and retrying — not a
+    sign the domain is unmanageable. The regression this guards against
+    misclassified a stale registration as "launchd cannot manage this macOS
+    version" and needlessly degraded the gateway to a detached process.
+    """
+
+    PLIST = "/tmp/ai.hermes.gateway.plist"
+    DOMAIN = "gui/501"
+    LABEL = "ai.hermes.gateway"
+
+    def test_bootstrap_succeeds_first_try_without_bootout(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+
+        assert calls == [["launchctl", "bootstrap", self.DOMAIN, self.PLIST]]
+
+    def test_eio_triggers_bootout_then_retry(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            bootstrap_calls = [c for c in calls if c[1] == "bootstrap"]
+            # First bootstrap hits EIO; bootout clears it; retry succeeds.
+            if cmd[1] == "bootstrap" and len(bootstrap_calls) == 1:
+                raise subprocess.CalledProcessError(5, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+
+        assert calls == [
+            ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
+            ["launchctl", "bootout", f"{self.DOMAIN}/{self.LABEL}"],
+            ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
+        ]
+
+    def test_persistent_eio_reraises_for_domain_fallback(self, monkeypatch):
+        # When the retry also fails, the error must propagate so callers apply
+        # their _launchctl_domain_unsupported fallback (degrade to detached).
+        def fake_run(cmd, check=True, **kwargs):
+            if cmd[1] == "bootstrap":
+                raise subprocess.CalledProcessError(5, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
+            gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+        assert excinfo.value.returncode == 5
+
+    def test_non_eio_failure_reraises_without_bootout(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            if cmd[1] == "bootstrap":
+                raise subprocess.CalledProcessError(125, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
+            gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+        assert excinfo.value.returncode == 125
+        # A non-EIO failure is not the already-loaded case: no bootout/retry.
+        assert calls == [["launchctl", "bootstrap", self.DOMAIN, self.PLIST]]
+
+
+class TestRetryLaunchctlBootstrapUntilRegistered:
+    """`_retry_launchctl_bootstrap_until_registered` — salvage of #53277.
+
+    Covers the three review findings the salvage hardens: retry until the
+    label is actually LISTED (not just a zero bootstrap exit), TimeoutExpired
+    is retried (not escaped leaving the service unloaded), and the retry is
+    bounded by a wall-clock deadline rather than a fixed short window.
+    """
+
+    DOMAIN = "gui/501"
+    PLIST = "/tmp/ai.hermes.gateway.plist"
+    LABEL = "ai.hermes.gateway"
+
+    def test_returns_true_once_label_is_registered(self, monkeypatch):
+        """Success requires launchctl list to confirm registration, not just
+        a zero bootstrap exit."""
+        list_results = iter([1, 0])  # first check: not registered, second: registered
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=next(list_results))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() + 60,
+        )
+        assert ok is True
+
+    def test_timeout_expired_is_retried_not_escaped(self, monkeypatch):
+        """A bootstrap that times out must be retried — it leaves the service
+        unloaded, so it must not escape the retry/log path (finding #2)."""
+        attempts = {"bootstrap": 0}
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap":
+                attempts["bootstrap"] += 1
+                if attempts["bootstrap"] == 1:
+                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if cmd[:2] == ["launchctl", "list"]:
+                # registered only after the second (successful) bootstrap
+                return SimpleNamespace(returncode=0 if attempts["bootstrap"] >= 2 else 1)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() + 60,
+        )
+        assert ok is True
+        assert attempts["bootstrap"] >= 2  # the timeout was retried, not raised
+
+    def test_returns_false_when_deadline_exhausts(self, monkeypatch):
+        """When the label never registers, the loop stops at the deadline and
+        returns False (so the caller logs the persistent orphan)."""
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=1)  # never registered
+            if cmd[1] == "bootstrap":
+                raise subprocess.CalledProcessError(1, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        # Deadline already in the past → exactly one attempt, then give up.
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() - 1,
+        )
+        assert ok is False

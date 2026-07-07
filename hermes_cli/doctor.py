@@ -873,6 +873,32 @@ def _check_long_term_optimization(issues: list[str]) -> None:
             check_ok(f"Skill curator ran recently ({age_days} days ago)")
 
 
+def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
+    """Return toolsets enabled for the CLI, or None if config resolution fails."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        return {str(toolset) for toolset in _get_platform_tools(load_config() or {}, "cli")}
+    except Exception:
+        return None
+
+
+def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
+    """Filter unavailable API-key toolsets to those enabled for the CLI."""
+    api_key_unavailable = [
+        item for item in unavailable
+        if item.get("missing_vars") or item.get("env_vars")
+    ]
+    enabled_toolsets = _enabled_cli_toolsets_for_doctor()
+    if enabled_toolsets is None:
+        return api_key_unavailable
+    return [
+        item for item in api_key_unavailable
+        if str(item.get("name") or "") in enabled_toolsets
+    ]
+
+
 def _read_pyproject_version() -> str | None:
     """Read the ``version = "..."`` from ``pyproject.toml`` at the project root.
 
@@ -1631,8 +1657,8 @@ def run_doctor(args):
                             model_section[k] = raw_config.pop(k)
                         else:
                             raw_config.pop(k)
-                    from utils import atomic_yaml_write
-                    atomic_yaml_write(config_path, raw_config)
+                    from hermes_cli.config import atomic_config_write
+                    atomic_config_write(config_path, raw_config)
                     check_ok("Migrated stale root-level keys into model section")
                     fixed_count += 1
                 else:
@@ -2835,8 +2861,10 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
+        # Count missing API-key requirements only for toolsets enabled in the
+        # current CLI platform. Default-off or explicitly disabled toolsets may
+        # still show warnings above, but should not pollute the final summary.
+        api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
         if api_disabled:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:

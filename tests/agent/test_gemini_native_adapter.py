@@ -85,6 +85,59 @@ def test_build_native_request_uses_original_function_name_for_tool_result():
     assert tool_response["name"] == "get_weather"
 
 
+def test_parallel_tool_results_merge_into_one_user_content():
+    """Gemini requires strict user/model alternation; two consecutive `user`
+    contents are rejected with HTTP 400. Parallel tool calls produce two tool
+    results in a row, so their functionResponses must be grouped into a single
+    user content instead of two consecutive ones."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "user", "content": "Read a.txt and b.txt"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'}},
+                {"id": "call_2", "type": "function",
+                 "function": {"name": "read_file", "arguments": '{"path": "b.txt"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "AAA"},
+        {"role": "tool", "tool_call_id": "call_2", "content": "BBB"},
+    ]
+
+    contents, _ = _build_gemini_contents(messages)
+    roles = [c["role"] for c in contents]
+
+    # No two adjacent contents may share a role.
+    assert all(roles[i] != roles[i - 1] for i in range(1, len(roles))), roles
+    assert roles == ["user", "model", "user"]
+
+    # Both parallel functionResponses land in the single trailing user content.
+    response_parts = [
+        p for p in contents[2]["parts"] if "functionResponse" in p
+    ]
+    outputs = [p["functionResponse"]["response"]["output"] for p in response_parts]
+    assert outputs == ["AAA", "BBB"]
+
+
+def test_consecutive_user_messages_merge_for_gemini_alternation():
+    """Back-to-back user messages must also be merged, not sent as two
+    consecutive user contents."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    contents, _ = _build_gemini_contents(messages)
+    roles = [c["role"] for c in contents]
+    assert roles == ["user", "model"], roles
+
+
 def test_build_native_request_strips_json_schema_only_fields_from_tool_parameters():
     from agent.gemini_native_adapter import build_gemini_request
 

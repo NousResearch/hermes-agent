@@ -2,6 +2,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react'
 
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
 
@@ -52,6 +53,9 @@ export type GatewayEventPayload = {
   credential_warning?: string
   personality?: string
   usage?: Partial<UsageStats>
+  // agent.terminal.output — live chunk for a read-only agent terminal tab
+  process_id?: string
+  chunk?: string
   // clarify.request
   request_id?: string
   question?: string
@@ -72,6 +76,10 @@ export type GatewayEventPayload = {
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string
+  // moa.reference / moa.aggregating (Mixture of Agents per-model relay)
+  label?: string
+  index?: number
+  aggregator?: string
 }
 
 export function textPart(text: string): ChatMessagePart {
@@ -278,7 +286,7 @@ function firstStringField(record: Record<string, unknown>, keys: readonly string
 }
 
 function normalizeToolMatchValue(value: string): string {
-  return value.trim().toLowerCase()
+  return normalize(value)
 }
 
 function collectToolMatchValues(query: string, context: string, preview: string): string[] {

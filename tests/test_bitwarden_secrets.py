@@ -639,20 +639,23 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
     monkeypatch.delenv("MY_BSM_KEY", raising=False)
 
     called = {"n": 0}
-    def fake_apply(**kwargs):
+
+    def fake_fetch(**kwargs):
         called["n"] += 1
-        assert kwargs["enabled"] is True
         assert kwargs["project_id"] == "proj-1"
-        os.environ["MY_BSM_KEY"] = "from-bsm"
-        return bw.FetchResult(
-            secrets={"MY_BSM_KEY": "from-bsm"},
-            applied=["MY_BSM_KEY"],
-        )
+        return {"MY_BSM_KEY": "from-bsm"}, []
 
     monkeypatch.setattr(
-        "agent.secret_sources.bitwarden.apply_bitwarden_secrets",
-        fake_apply,
+        "agent.secret_sources.bitwarden.find_bws",
+        lambda **_kw: Path("/fake/bws"),
     )
+    monkeypatch.setattr(
+        "agent.secret_sources.bitwarden.fetch_bitwarden_secrets",
+        fake_fetch,
+    )
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
 
     from hermes_cli.env_loader import _apply_external_secret_sources
     _apply_external_secret_sources(home)

@@ -1,8 +1,10 @@
 """Tests for Mem0 v3 API — new tool names, paginated responses, update/delete tools."""
 
 import json
+import time
 import pytest
 
+import plugins.memory.mem0 as mem0_plugin
 from plugins.memory.mem0 import Mem0MemoryProvider
 
 
@@ -278,6 +280,90 @@ class TestMem0V3Internal:
         assert "error" in result
         result = json.loads(provider.handle_tool_call("mem0_conclude", {}))
         assert "error" in result
+
+
+class TestMem0Prefetch:
+    """prefetch() must recall on the CURRENT question, synchronously.
+
+    The old implementation ignored its ``query`` and returned whatever a
+    background ``queue_prefetch`` had warmed from the PREVIOUS turn — so the
+    first turn injected nothing and later turns injected stale, off-topic
+    memories. These lock the corrected behaviour.
+    """
+
+    def _make_provider(self, backend):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._backend = backend
+        return provider
+
+    def test_prefetch_searches_current_query(self):
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "user prefers dark mode"}])
+        provider = self._make_provider(backend)
+        result = provider.prefetch("what theme do I like?")
+        kind, query, opts = backend.captured[0]
+        assert kind == "search"
+        assert query == "what theme do I like?"
+        assert opts["filters"] == {"user_id": "u123"}
+        assert opts["top_k"] == 10
+        assert opts["rerank"] is True
+        assert "## Mem0 Memory" in result
+        assert "user prefers dark mode" in result
+
+    def test_prefetch_returns_memories_on_first_call(self):
+        # No prior queue_prefetch / warm — the very first call must still recall.
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
+        provider = self._make_provider(backend)
+        result = provider.prefetch("where do I live?")
+        assert "lives in Berlin" in result
+
+    def test_on_turn_start_queues_current_query(self):
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
+        provider = self._make_provider(backend)
+        provider.on_turn_start(1, "where do I live?")
+        provider._prefetch_thread.join(timeout=1)
+        result = provider.prefetch("where do I live?")
+        assert "lives in Berlin" in result
+        assert len([c for c in backend.captured if c[0] == "search"]) == 1
+
+    def test_slow_prefetch_returns_quickly(self, monkeypatch):
+        class SlowBackend(FakeBackend):
+            def search(self, query, *, filters, top_k=10, rerank=True):
+                time.sleep(0.2)
+                return super().search(query, filters=filters, top_k=top_k, rerank=rerank)
+
+        monkeypatch.setattr(mem0_plugin, "_PREFETCH_WAIT_SECS", 0.01)
+        provider = self._make_provider(
+            SlowBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
+        )
+        started = time.monotonic()
+        assert provider.prefetch("where do I live?") == ""
+        assert time.monotonic() - started < 0.1
+        provider._prefetch_thread.join(timeout=1)
+        assert "lives in Berlin" in provider.prefetch("where do I live?")
+
+    def test_prefetch_empty_results_returns_empty(self):
+        backend = FakeBackend(search_results=[])
+        provider = self._make_provider(backend)
+        assert provider.prefetch("anything") == ""
+
+    def test_prefetch_skips_when_breaker_open(self):
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "x"}])
+        provider = self._make_provider(backend)
+        provider._consecutive_failures = 5
+        provider._breaker_open_until = float("inf")
+        assert provider.prefetch("q") == ""
+        assert backend.captured == []
+
+    def test_queue_prefetch_fires_no_search(self):
+        # prefetch is synchronous now, so the post-turn warm is redundant and
+        # must not fire a wasted backend search.
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "x"}])
+        provider = self._make_provider(backend)
+        provider.queue_prefetch("previous turn text")
+        assert backend.captured == []
 
 
 class TestMem0V3Config:

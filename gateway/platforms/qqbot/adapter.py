@@ -146,6 +146,29 @@ def _coerce_list(value: Any) -> List[str]:
     return _coerce_list_impl(value)
 
 
+def _resolve_qq_secret(name: str, default: str = "") -> str:
+    """Resolve a per-profile ``QQ_*`` setting honoring the active secret scope.
+
+    When a profile secret scope is installed — every secondary multiplex
+    profile is constructed and handled inside ``_profile_runtime_scope``
+    (``gateway/run.py``), as is each per-turn inbound message — read from it so
+    profiles never see each other's ``os.environ`` values. This is the
+    cross-profile credential collision fixed for the WeChat adapter in #59662.
+
+    The primary/active profile is constructed without a scope and legitimately
+    owns ``os.environ``, so fall back to it there instead of failing closed: a
+    bare ``get_secret`` would raise ``UnscopedSecretError`` on the active
+    profile's ``__init__`` and break its startup. Mirrors the scope-aware
+    ``gateway.config._getenv`` reader.
+    """
+    from agent.secret_scope import current_secret_scope, get_secret
+
+    if current_secret_scope() is not None:
+        val = get_secret(name, default)
+        return val if val is not None else default
+    return os.getenv(name, default)
+
+
 # ---------------------------------------------------------------------------
 # QQAdapter
 # ---------------------------------------------------------------------------
@@ -201,9 +224,11 @@ class QQAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.QQBOT)
 
         extra = config.extra or {}
-        self._app_id = str(extra.get("app_id") or os.getenv("QQ_APP_ID", "")).strip()
+        self._app_id = str(
+            extra.get("app_id") or _resolve_qq_secret("QQ_APP_ID", "")
+        ).strip()
         self._client_secret = str(
-            extra.get("client_secret") or os.getenv("QQ_CLIENT_SECRET", "")
+            extra.get("client_secret") or _resolve_qq_secret("QQ_CLIENT_SECRET", "")
         ).strip()
         self._markdown_support = bool(extra.get("markdown_support", True))
 
@@ -2187,13 +2212,13 @@ class QQAdapter(BasePlatformAdapter):
                     }
 
         # 2. QQ-specific env vars (set by `hermes setup gateway` / `hermes gateway`)
-        qq_stt_key = os.getenv("QQ_STT_API_KEY", "")
+        qq_stt_key = _resolve_qq_secret("QQ_STT_API_KEY", "")
         if qq_stt_key:
-            base_url = os.getenv(
+            base_url = _resolve_qq_secret(
                 "QQ_STT_BASE_URL",
                 "https://open.bigmodel.cn/api/coding/paas/v4",
             )
-            model = os.getenv("QQ_STT_MODEL", "glm-asr")
+            model = _resolve_qq_secret("QQ_STT_MODEL", "glm-asr")
             return {
                 "base_url": base_url.rstrip("/"),
                 "api_key": qq_stt_key,
@@ -3145,7 +3170,7 @@ class QQAdapter(BasePlatformAdapter):
     def _open_dm_opted_in(self) -> bool:
         if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
             return True
-        return os.getenv("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        return _resolve_qq_secret("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
     def _is_dm_allowed(self, user_id: str) -> bool:
         if self._dm_policy == "disabled":

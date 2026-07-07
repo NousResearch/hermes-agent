@@ -663,6 +663,114 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_append_message_sets_active_for_transcript_loader(self, db):
+        """Regression #51646: gateway loaders filter on active = 1."""
+        db.create_session(session_id="s1", source="discord")
+        mid = db.append_message("s1", role="user", content="Hello")
+        active = db._conn.execute(
+            "SELECT active FROM messages WHERE id = ?", (mid,)
+        ).fetchone()[0]
+        assert active == 1
+        assert len(db.get_messages_as_conversation("s1")) == 1
+
+    def test_append_message_active_one_when_column_has_no_default(self, tmp_path):
+        """Legacy DBs may have active added without a working INSERT default."""
+        db_path = tmp_path / "legacy_state.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER);
+            INSERT INTO schema_version VALUES (11);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL,
+                message_count INTEGER DEFAULT 0, tool_call_count INTEGER DEFAULT 0,
+                title TEXT, parent_session_id TEXT, model_config TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+                tool_call_id TEXT, tool_calls TEXT, tool_name TEXT,
+                timestamp REAL NOT NULL, token_count INTEGER, finish_reason TEXT,
+                reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT,
+                codex_reasoning_items TEXT, codex_message_items TEXT,
+                platform_message_id TEXT, observed INTEGER DEFAULT 0
+            );
+            CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT);
+            """
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES ('s1', 'discord', 1.0)"
+        )
+        conn.execute("ALTER TABLE messages ADD COLUMN active INTEGER")
+        conn.execute("ALTER TABLE messages ADD COLUMN compacted INTEGER DEFAULT 0")
+        conn.commit()
+        conn.close()
+
+        session_db = SessionDB(db_path=db_path)
+        try:
+            mid = session_db.append_message("s1", role="user", content="gateway turn")
+            active = session_db._conn.execute(
+                "SELECT active FROM messages WHERE id = ?", (mid,)
+            ).fetchone()[0]
+            assert active == 1
+            assert len(session_db.get_messages_as_conversation("s1")) == 1
+        finally:
+            session_db.close()
+
+    def test_startup_heals_null_active_rows(self, tmp_path):
+        """Rows written as active=NULL before the fix are un-hidden on startup.
+
+        The repair UPDATE used to be gated at schema_version < 12, so
+        already-v12+ databases (the exact population hit by #51646) never
+        healed their historical NULL rows. It now runs on every startup.
+        """
+        db_path = tmp_path / "legacy_state.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER);
+            INSERT INTO schema_version VALUES (12);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL,
+                message_count INTEGER DEFAULT 0, tool_call_count INTEGER DEFAULT 0,
+                title TEXT, parent_session_id TEXT, model_config TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+                tool_call_id TEXT, tool_calls TEXT, tool_name TEXT,
+                timestamp REAL NOT NULL, token_count INTEGER, finish_reason TEXT,
+                reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT,
+                codex_reasoning_items TEXT, codex_message_items TEXT,
+                platform_message_id TEXT, observed INTEGER DEFAULT 0
+            );
+            CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT);
+            """
+        )
+        # Default-less active column, as seen in the wild (#51646 PRAGMA).
+        conn.execute("ALTER TABLE messages ADD COLUMN active INTEGER")
+        conn.execute("ALTER TABLE messages ADD COLUMN compacted INTEGER DEFAULT 0")
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES ('s1', 'discord', 1.0)"
+        )
+        # A row written by the pre-fix INSERT: active is NULL.
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES ('s1', 'user', 'old hidden turn', 1.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        session_db = SessionDB(db_path=db_path)
+        try:
+            active = session_db._conn.execute(
+                "SELECT active FROM messages WHERE content = 'old hidden turn'"
+            ).fetchone()[0]
+            assert active == 1
+            assert len(session_db.get_messages_as_conversation("s1")) == 1
+        finally:
+            session_db.close()
+
     def test_append_message_accepts_explicit_timestamp(self, db):
         db.create_session(session_id="s1", source="telegram")
         event_ts = 1777383653.0

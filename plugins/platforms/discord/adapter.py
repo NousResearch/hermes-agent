@@ -11,6 +11,7 @@ Uses discord.py library for:
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -52,6 +53,9 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # every slash command — not just the overflow ones. We keep the desired set
 # at or below this limit at registration time.
 _DISCORD_MAX_APP_COMMANDS = 100
+_DISCORD_SELECT_FIELD_LIMIT = 100
+_DISCORD_BUTTON_LABEL_LIMIT = 80
+_DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational",
     "non_conversational_history",
@@ -117,9 +121,16 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
     _TEXT_INJECT_EXTENSIONS,
+    _prefix_within_utf16_limit,
+    utf16_len,
     validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
+
+
+def _truncate_discord_component_text(text: str, limit: int) -> str:
+    """Return text within Discord's UTF-16 component field budget."""
+    return _prefix_within_utf16_limit(str(text or ""), max(0, limit))
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -6888,7 +6899,10 @@ def _define_discord_view_classes() -> None:
                 desc = "current" if p.get("is_current") else None
                 options.append(
                     discord.SelectOption(
-                        label=label[:100],
+                        label=_truncate_discord_component_text(
+                            label,
+                            _DISCORD_SELECT_FIELD_LIMIT,
+                        ),
                         value=p["slug"],
                         description=desc,
                     )
@@ -6925,8 +6939,14 @@ def _define_discord_view_classes() -> None:
                 short = model_id.split("/")[-1] if "/" in model_id else model_id
                 options.append(
                     discord.SelectOption(
-                        label=short[:100],
-                        value=model_id[:100],
+                        label=_truncate_discord_component_text(
+                            short,
+                            _DISCORD_SELECT_FIELD_LIMIT,
+                        ),
+                        value=_truncate_discord_component_text(
+                            model_id,
+                            _DISCORD_SELECT_FIELD_LIMIT,
+                        ),
                     )
                 )
             if not options:
@@ -7205,15 +7225,18 @@ def _define_discord_view_classes() -> None:
                 #      budget (hyphen, comma, period, paren)
                 #   3. Hard cut at the budget limit (last resort)
                 prefix = f"{index + 1}. "
-                budget = 80 - len(prefix)
-                if len(choice) <= budget:
+                budget = _DISCORD_BUTTON_LABEL_LIMIT - utf16_len(prefix)
+                if utf16_len(choice) <= budget:
                     label_body = choice
                 else:
-                    truncated = choice[: budget - 1].rstrip()
+                    truncated = _prefix_within_utf16_limit(
+                        choice,
+                        max(0, budget - utf16_len(_DISCORD_ELLIPSIS)),
+                    ).rstrip()
                     cut_at = -1
                     # 1. Last space in the trailing half of the budget.
                     space = truncated.rfind(" ")
-                    if space >= budget // 2:
+                    if space >= len(truncated) // 2:
                         cut_at = space
                     # 2. Soft boundary — only if no word boundary found.
                     # Find the latest soft boundary in the trailing half
@@ -7226,11 +7249,11 @@ def _define_discord_view_classes() -> None:
                             (truncated.rfind(s) for s in ("-", ",", ".", ")")),
                             default=-1,
                         )
-                        if latest_soft >= budget // 2:
+                        if latest_soft >= len(truncated) // 2:
                             cut_at = latest_soft + 1
                     if cut_at > 0:
                         truncated = truncated[:cut_at]
-                    label_body = truncated.rstrip() + "…"
+                    label_body = truncated.rstrip() + _DISCORD_ELLIPSIS
                 button = discord.ui.Button(
                     label=f"{prefix}{label_body}",
                     style=discord.ButtonStyle.primary,
@@ -7411,6 +7434,8 @@ if DISCORD_AVAILABLE:
 # same channel on every send when the directory cache has no entry (e.g. fresh
 # install, or channel created after the last directory build).
 _DISCORD_CHANNEL_TYPE_PROBE_CACHE: Dict[str, bool] = {}
+_DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES = 1 * 1024 * 1024
+_DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 
 
 def _remember_channel_is_forum(chat_id: str, is_forum: bool) -> None:
@@ -7445,6 +7470,82 @@ def _standalone_sanitize_error(text) -> str:
         s,
         flags=_re_san.IGNORECASE,
     )
+
+
+def _standalone_close_response(resp: Any) -> None:
+    close = getattr(resp, "close", None)
+    if callable(close):
+        close()
+        return
+    release = getattr(resp, "release", None)
+    if callable(release):
+        release()
+
+
+async def _standalone_read_response_bytes_limited(
+    resp: Any,
+    limit_bytes: int,
+) -> Tuple[Optional[bytes], bool]:
+    """Read at most *limit_bytes* from an aiohttp-style response body.
+
+    Returns ``(body, truncated)``. Returns ``(None, False)`` when the response
+    object does not expose a streaming ``content.read`` coroutine (e.g. a
+    proxy wrapper or test double) — callers fall back to the object's own
+    ``json()`` / ``text()`` in that case.
+    """
+    content = getattr(resp, "content", None)
+    read = getattr(content, "read", None)
+    if content is None or not inspect.iscoroutinefunction(read):
+        return None, False
+
+    try:
+        chunks: list[bytes] = []
+        total = 0
+        while total <= limit_bytes:
+            chunk = await read(limit_bytes + 1 - total)
+            if not chunk:
+                break
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8", "replace")
+            total += len(chunk)
+            chunks.append(chunk)
+            if total > limit_bytes:
+                _standalone_close_response(resp)
+                return b"".join(chunks)[:limit_bytes], True
+        return b"".join(chunks), False
+    except (TypeError, AttributeError):
+        # Object quacked like a stream but wasn't one — let the caller use
+        # its native json()/text() instead of failing the send.
+        return None, False
+
+
+def _standalone_response_encoding(resp: Any) -> str:
+    get_encoding = getattr(resp, "get_encoding", None)
+    if callable(get_encoding):
+        try:
+            return get_encoding() or "utf-8"
+        except Exception:
+            return "utf-8"
+    return "utf-8"
+
+
+async def _standalone_read_text_limited(resp: Any, limit_bytes: int) -> str:
+    body, _truncated = await _standalone_read_response_bytes_limited(resp, limit_bytes)
+    if body is None:
+        return await resp.text()
+    return body.decode(_standalone_response_encoding(resp), "replace")
+
+
+async def _standalone_read_json_limited(resp: Any, limit_bytes: int) -> dict:
+    body, truncated = await _standalone_read_response_bytes_limited(resp, limit_bytes)
+    if body is None:
+        return await resp.json()
+    if truncated:
+        raise ValueError(f"Discord API JSON response exceeds {limit_bytes} bytes")
+    if not body:
+        return {}
+    data = json.loads(body.decode(_standalone_response_encoding(resp), "replace"))
+    return data if isinstance(data, dict) else {}
 
 
 async def _standalone_send(
@@ -7522,7 +7623,10 @@ async def _standalone_send(
                         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), **_sess_kw) as info_sess:
                             async with info_sess.get(info_url, headers=json_headers, **_req_kw) as info_resp:
                                 if info_resp.status == 200:
-                                    info = await info_resp.json()
+                                    info = await _standalone_read_json_limited(
+                                        info_resp,
+                                        _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
+                                    )
                                     is_forum = info.get("type") == 15
                                     _remember_channel_is_forum(chat_id, is_forum)
                     except Exception:
@@ -7568,9 +7672,15 @@ async def _standalone_send(
                                     )
                             async with session.post(thread_url, headers=auth_headers, data=form, **_req_kw) as resp:
                                 if resp.status not in {200, 201}:
-                                    body = await resp.text()
+                                    body = await _standalone_read_text_limited(
+                                        resp,
+                                        _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES,
+                                    )
                                     return {"error": f"Discord forum thread creation error ({resp.status}): {body}"}
-                                data = await resp.json()
+                                data = await _standalone_read_json_limited(
+                                    resp,
+                                    _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
+                                )
                         except Exception as e:
                             return {"error": _standalone_sanitize_error(f"Discord forum thread upload failed: {e}")}
                     else:
@@ -7586,9 +7696,15 @@ async def _standalone_send(
                             **_req_kw,
                         ) as resp:
                             if resp.status not in {200, 201}:
-                                body = await resp.text()
+                                body = await _standalone_read_text_limited(
+                                    resp,
+                                    _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES,
+                                )
                                 return {"error": f"Discord forum thread creation error ({resp.status}): {body}"}
-                            data = await resp.json()
+                            data = await _standalone_read_json_limited(
+                                resp,
+                                _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
+                            )
 
                 thread_id_created = data.get("id")
                 starter_msg_id = (data.get("message") or {}).get("id", thread_id_created)
@@ -7610,9 +7726,15 @@ async def _standalone_send(
             if message.strip() or not media_files:
                 async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
                     if resp.status not in {200, 201}:
-                        body = await resp.text()
+                        body = await _standalone_read_text_limited(
+                            resp,
+                            _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES,
+                        )
                         return {"error": f"Discord API error ({resp.status}): {body}"}
-                    last_data = await resp.json()
+                    last_data = await _standalone_read_json_limited(
+                        resp,
+                        _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
+                    )
 
             # Send each media file as a separate multipart upload
             for media_path, _is_voice in media_files:
@@ -7628,12 +7750,18 @@ async def _standalone_send(
                         form.add_field("files[0]", f, filename=filename)
                         async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
                             if resp.status not in {200, 201}:
-                                body = await resp.text()
+                                body = await _standalone_read_text_limited(
+                                    resp,
+                                    _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES,
+                                )
                                 warning = _standalone_sanitize_error(f"Failed to send media {media_path}: Discord API error ({resp.status}): {body}")
                                 logger.error(warning)
                                 warnings.append(warning)
                                 continue
-                            last_data = await resp.json()
+                            last_data = await _standalone_read_json_limited(
+                                resp,
+                                _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
+                            )
                 except Exception as e:
                     warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {e}")
                     logger.error(warning)

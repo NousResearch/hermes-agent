@@ -1416,7 +1416,11 @@ def test_config_sync_switches_unpinned_session(monkeypatch):
         (
             "sid",
             "new/model --provider nous",
-            {"confirm_expensive_model": True, "pin_session_override": False},
+            {
+                "confirm_expensive_model": True,
+                "pin_session_override": False,
+                "persist_override": False,
+            },
         )
     ]
     assert session["config_model_seen"] == ("new/model", "nous")
@@ -1534,6 +1538,78 @@ def test_config_sync_config_wins_over_env_seed(monkeypatch):
 
     assert calls == ["new/model"]
     assert session["config_model_seen"] == ("new/model", "")
+
+
+def test_config_sync_ignores_env_seed_without_config_model(monkeypatch):
+    # `hermes --tui -m <model>` sets HERMES_MODEL/HERMES_INFERENCE_MODEL as a
+    # launch-scoped seed. When config.yaml has NO model.default (typical
+    # custom-provider-only setup), the sync must NOT adopt the env seed as a
+    # config target — doing so replayed the -m flag as a /model switch and
+    # (with persist_switch_by_default=True) wrote it into config.yaml
+    # permanently.
+    monkeypatch.setenv("HERMES_MODEL", "one-shot/model")
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", "one-shot/model")
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"model": {"provider": "custom:mylocal"}}
+    )
+    session = _sync_test_session()
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda *a, **k: pytest.fail("env seed must not trigger a config sync switch"),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+
+def test_config_model_target_never_reads_env(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "seed/model")
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", "seed/model")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "nous"}})
+
+    assert server._config_model_target() == ("", "nous")
+
+
+def test_apply_model_switch_persist_override_false_never_persists(monkeypatch):
+    # Internal callers (config sync, /moa one-shot + restore) pass
+    # persist_override=False; even with persist_switch_by_default=True the
+    # switch must not write config.yaml.
+    import types as _types
+
+    result = _types.SimpleNamespace(
+        success=True,
+        new_model="new/model",
+        target_provider="nous",
+        base_url="",
+        api_key="key",
+        api_mode="chat_completions",
+        warning_message="",
+        model_info=None,
+        error_message="",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **kw: result
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_persist_behavior",
+        lambda *a: pytest.fail("persist_override must bypass resolve_persist_behavior"),
+    )
+    monkeypatch.setattr(
+        server, "_persist_model_switch",
+        lambda _r: pytest.fail("persist_override=False must not persist"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_cost_guard.expensive_model_warning",
+        lambda *a, **k: None,
+    )
+    session = {"agent": None}
+
+    out = server._apply_model_switch(
+        "sid", session, "new/model --provider nous", persist_override=False
+    )
+
+    assert out["value"] == "new/model"
+    assert session["model_override"]["model"] == "new/model"
 
 
 def test_startup_runtime_uses_tui_provider_env(monkeypatch):
@@ -5887,6 +5963,7 @@ def test_model_options_does_not_overwrite_curated_models(monkeypatch):
     # list_authenticated_providers is the single source.
     assert listing.call_count == 1
     assert listing.call_args.kwargs["probe_custom_providers"] is False
+    assert listing.call_args.kwargs["probe_current_custom_provider"] is True
 
 
 def test_model_options_propagates_list_exception(monkeypatch):
@@ -5926,6 +6003,7 @@ def test_model_options_refresh_allows_custom_provider_probes(monkeypatch):
 
     assert "result" in resp, resp
     assert listing.call_args.kwargs["probe_custom_providers"] is True
+    assert listing.call_args.kwargs["probe_current_custom_provider"] is False
 
 
 class _ImmediateThread:

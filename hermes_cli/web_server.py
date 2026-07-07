@@ -2400,6 +2400,21 @@ async def get_status(profile: Optional[str] = None):
             # Module not importable yet (early startup) — leave as [].
             pass
 
+        # Nous bootstrap-session validity for the NAS health sweep. A hosted
+        # agent whose Nous auth dies terminally (invalid_grant / quarantine)
+        # looks HEALTHY to every liveness/connectivity probe — the machine,
+        # relay, and this dashboard all stay up — yet every inference turn
+        # fails. This is the ONLY signal that surfaces that condition, and it
+        # is determinable with no working token (local auth-store state). NAS
+        # re-mints the bootstrap session when it reads "terminal". Best-effort:
+        # never let auth classification break the public liveness probe.
+        nous_session_valid = "unknown"
+        try:
+            from hermes_cli.auth import get_nous_session_validity
+            nous_session_valid = get_nous_session_validity()
+        except Exception:
+            nous_session_valid = "unknown"
+
         # Always-public liveness + auth-gate shape. Safe for external uptime
         # probes (NAS's wildcard-subdomain liveness probe), the SPA's pre-login
         # bootstrap, and anyone who can curl the host — i.e. exactly the audience
@@ -2422,6 +2437,7 @@ async def get_status(profile: Optional[str] = None):
             "active_sessions": active_sessions,
             "auth_required": auth_required,
             "auth_providers": auth_providers,
+            "nous_session_valid": nous_session_valid,
         }
 
         # Absolute host paths, the gateway PID, and the internal gateway health
@@ -4305,6 +4321,7 @@ def get_model_options(profile: Optional[str] = None, refresh: bool = False):
                 capabilities=True,
                 refresh=bool(refresh),
                 probe_custom_providers=bool(refresh),
+                probe_current_custom_provider=not bool(refresh),
             )
     except HTTPException:
         raise
@@ -6426,11 +6443,11 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     try:
         from agent.anthropic_adapter import (
             read_hermes_oauth_credentials,
-            _HERMES_OAUTH_FILE,
+            _get_hermes_oauth_file,
         )
     except ImportError:
         read_hermes_oauth_credentials = None  # type: ignore
-        _HERMES_OAUTH_FILE = None  # type: ignore
+        _get_hermes_oauth_file = None  # type: ignore
 
     hermes_creds = None
     if read_hermes_oauth_credentials:
@@ -6442,7 +6459,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
         return {
             "logged_in": True,
             "source": "hermes_pkce",
-            "source_label": f"Hermes PKCE ({_HERMES_OAUTH_FILE})",
+            "source_label": f"Hermes PKCE ({_get_hermes_oauth_file() if _get_hermes_oauth_file else None})",
             "token_preview": _truncate_token(hermes_creds.get("accessToken")),
             "expires_at": hermes_creds.get("expiresAt"),
             "has_refresh_token": bool(hermes_creds.get("refreshToken")),
@@ -6879,9 +6896,10 @@ async def disconnect_oauth_provider(
         if provider_id == "anthropic":
             cleared = False
             try:
-                from agent.anthropic_adapter import _HERMES_OAUTH_FILE
-                if _HERMES_OAUTH_FILE.exists():
-                    _HERMES_OAUTH_FILE.unlink()
+                from agent.anthropic_adapter import _get_hermes_oauth_file
+                oauth_file = _get_hermes_oauth_file()
+                if oauth_file.exists():
+                    oauth_file.unlink()
                     cleared = True
             except Exception:
                 pass
@@ -7025,24 +7043,25 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     Mirrors what auth_commands.add_command does so the dashboard flow leaves
     the system in the same state as ``hermes auth add anthropic``.
     """
-    from agent.anthropic_adapter import _HERMES_OAUTH_FILE
+    from agent.anthropic_adapter import _get_hermes_oauth_file
+    oauth_file = _get_hermes_oauth_file()
     payload = {
         "accessToken": access_token,
         "refreshToken": refresh_token,
         "expiresAt": expires_at_ms,
     }
-    _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = _HERMES_OAUTH_FILE.with_name(
-        f"{_HERMES_OAUTH_FILE.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
+    oauth_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = oauth_file.with_name(
+        f"{oauth_file.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
     )
     try:
         with tmp_path.open("w", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, indent=2))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, _HERMES_OAUTH_FILE)
+        os.replace(tmp_path, oauth_file)
         try:
-            _HERMES_OAUTH_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            oauth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
             pass
     finally:
@@ -12860,6 +12879,44 @@ def _resolve_chat_argv(
     return list(argv), str(cwd) if cwd else None, env
 
 
+# Hosts that mean "listen on every interface" — the server should bind to
+# them, but an in-container client must NOT dial them: dialing 0.0.0.0
+# resolves to "any local interface", which on most platforms routes through
+# the kernel's wildcard stack and behind a forward proxy (HTTPS_PROXY with
+# a NO_PROXY that doesn't list 0.0.0.0) gets MITM'd into a failed handshake
+# (issue #58993).  The fix is to use a loopback address for the client
+# netloc while leaving the bind host alone.
+_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
+
+
+def _resolve_client_ws_host() -> Optional[str]:
+    """Return the host the in-container WS client should dial.
+
+    Resolution order:
+
+    1. Explicit ``HERMES_DASHBOARD_WS_HOST`` env var — wins always. Operators
+       running the dashboard behind a forward proxy can pin a routable host
+       (e.g. ``127.0.0.1``, the container's internal IP, or a sidecar DNS
+       name) and bypass auto-detection entirely.
+    2. The configured bind host — if it's a wildcard (``0.0.0.0`` / ``::``),
+       substitute ``127.0.0.1`` since both the dashboard and its TUI child
+       run in the same container.
+    3. Any other bind host (loopback or LAN IP) — preserved verbatim.
+    """
+    explicit = os.environ.get("HERMES_DASHBOARD_WS_HOST", "").strip()
+    if explicit:
+        return explicit
+
+    host = getattr(app.state, "bound_host", None)
+    if not host:
+        return None
+
+    if host in _WILDCARD_HOSTS:
+        return "127.0.0.1"
+
+    return host
+
+
 def _build_gateway_ws_url() -> Optional[str]:
     """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic.
 
@@ -12871,7 +12928,7 @@ def _build_gateway_ws_url() -> Optional[str]:
     the child reads this URL once at startup and reuses it on every reconnect,
     and a 30s-TTL ticket can expire before a slow cold boot even dials.
     """
-    host = getattr(app.state, "bound_host", None)
+    host = _resolve_client_ws_host()
     port = getattr(app.state, "bound_port", None)
 
     if not host or not port:
@@ -12938,7 +12995,7 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     Connections authenticated this way are recorded under the
     ``server-internal`` identity in the audit log.
     """
-    host = getattr(app.state, "bound_host", None)
+    host = _resolve_client_ws_host()
     port = getattr(app.state, "bound_port", None)
 
     if not host or not port:
@@ -13930,13 +13987,21 @@ def mount_spa(application: FastAPI):
     and the SPA's runtime ``__HERMES_BASE_PATH__`` honour that prefix
     without rebuilding the bundle.
     """
-    if not WEB_DIST.exists():
+    # `hermes serve` is the headless backend: it must NEVER serve the browser
+    # SPA, even if a dist is lying around from a prior `dashboard`/build. Take
+    # the no-frontend path so only the JSON-RPC/WS/API surface is reachable.
+    _headless = os.environ.get("HERMES_SERVE_HEADLESS") == "1"
+    if _headless or not WEB_DIST.exists():
+        _msg = (
+            "Headless backend (hermes serve): web UI disabled — use "
+            "`hermes dashboard` for the browser UI."
+            if _headless
+            else "Frontend not built. Run: cd web && npm run build"
+        )
+
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
-            return JSONResponse(
-                {"error": "Frontend not built. Run: cd web && npm run build"},
-                status_code=404,
-            )
+            return JSONResponse({"error": _msg}, status_code=404)
         return
 
     _index_path = WEB_DIST / "index.html"
@@ -15176,6 +15241,7 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     initial_profile: str = "",
+    headless: bool = False,
 ):
     """Start the web UI server.
 
@@ -15183,6 +15249,10 @@ def start_server(
     URL as ``?profile=<name>`` so the SPA's profile switcher preselects it
     — used when a profile alias (``<profile> dashboard``) routes to the
     machine dashboard.
+
+    ``headless`` is the ``serve`` path: the JSON-RPC/WS backend with no UI
+    build and no SPA mount (mount_spa() honours ``HERMES_SERVE_HEADLESS``), so
+    the banner announces the bind rather than a browser URL.
     """
     import uvicorn
 
@@ -15339,8 +15409,17 @@ def start_server(
             app.state.bound_port = actual_port
 
             _write_dashboard_ready_file(actual_port)
-            print(f"HERMES_DASHBOARD_READY port={actual_port}", flush=True)
-            print(f"  Hermes Web UI → http://{host}:{actual_port}")
+            # Port-discovery sentinel parsed by the desktop spawn. `serve` is a
+            # plain backend, not a dashboard, so it announces a neutral token;
+            # `dashboard` keeps the legacy one. The desktop matches either.
+            ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
+            print(f"{ready_token} port={actual_port}", flush=True)
+            if headless:
+                # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
+                # advertise a paste-and-connect URL, just announce the bind.
+                print(f"  Hermes backend listening on {host}:{actual_port}")
+            else:
+                print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)
 
             # Collapse the peer-hangup teardown flood (#50005). When the Desktop

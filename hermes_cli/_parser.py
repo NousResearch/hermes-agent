@@ -112,6 +112,17 @@ def build_top_level_parser():
             "auto-bypassed. Intended for scripts / pipes."
         ),
     )
+    parser.add_argument(
+        "--usage-file",
+        metavar="PATH",
+        default=None,
+        help=(
+            "One-shot mode only: after the run, write a JSON usage report "
+            "(estimated cost, token counts, model, api_calls) to PATH. "
+            "The report is written even when the run fails, so pipelines "
+            "can always account for spend. No effect outside -z/--oneshot."
+        ),
+    )
     # --model / --provider are accepted at the top level so they can pair
     # with -z without needing the `chat` subcommand.  If neither -z nor a
     # subcommand consumes them, they fall through harmlessly as None.

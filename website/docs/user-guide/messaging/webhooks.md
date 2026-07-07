@@ -81,6 +81,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
+| `session_key` | No | Template string (same `{dot.notation}` syntax as `prompt`) that pins all deliveries with the same rendered value to one **persistent session**, instead of the default new-session-per-delivery. E.g. `"{satellite}"` gives each satellite its own ongoing conversation. If unset, or if the template doesn't resolve for a given payload, that delivery falls back to per-delivery behavior. See [Persistent Sessions](#persistent-sessions). |
 | `skills` | No | List of skill names to load for the agent run. |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
@@ -156,6 +157,33 @@ webhooks:
 ```
 
 If `chat_id` is not provided in `deliver_extra`, the delivery falls back to the home channel configured for the target platform.
+
+---
+
+## Persistent Sessions {#persistent-sessions}
+
+By default, every webhook delivery runs in a fresh session — delivery identity *is* conversation identity. That's correct for event streams (each PR event is independent), but wrong for conversational sources like voice satellites or chat bridges, where each POST is one turn in an ongoing dialogue and the agent needs memory of previous turns.
+
+Setting `session_key` on a route separates the two: the rendered template becomes the conversation identity, so repeat events from the same source share one session — like a Telegram or WhatsApp thread.
+
+```yaml
+routes:
+  voice-assistant:
+    secret: "voice-webhook-secret"
+    session_key: "{satellite}"
+    prompt: "[voice from {satellite}] {message}"
+    deliver: homeassistant
+```
+
+Two POSTs with `"satellite": "assist_satellite.pod1"` land in the same session; a POST from `pod2` gets its own. Session count is bounded by distinct rendered values, not by delivery count.
+
+Behavior notes:
+
+- **Idempotency is unchanged** — duplicate deliveries are still deduplicated by delivery ID, regardless of `session_key`.
+- **Fallback** — if the template doesn't resolve against a payload (e.g. the field is missing), that delivery gets a per-delivery session, same as an unconfigured route.
+- **Lifecycle** — persistent sessions are not auto-closed after each event (they expect follow-up turns). Manage them with `hermes sessions prune` or your idle-timeout policy.
+- **Ordering vs. concurrency** — deliveries sharing a `session_key` are processed sequentially on that session. For conversational sources this is what you want (turns stay ordered); routes that need concurrent processing should leave `session_key` unset.
+- **Sender-controlled** — the key is rendered from the payload, so a sender chooses which of the route's sessions their event joins. This is scoped to the route (the route name is part of the session identity) and gated by the route's HMAC secret; the [untrusted-content warning](#authenticated-does-not-mean-trusted) applies to session_key values as it does to every payload field.
 
 ---
 

@@ -687,7 +687,13 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        session_key = ""
+        session_key_tpl = route_config.get("session_key", "")
+        if session_key_tpl:
+            session_key = self._render_prompt(session_key_tpl, payload, event_type, route_name).strip()
+            if "{" in session_key:
+                session_key = ""
+        session_chat_id = f"webhook:{route_name}:{session_key or delivery_id}"
 
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
@@ -771,6 +777,9 @@ class WebhookAdapter(BasePlatformAdapter):
         ``end_session()`` is first-reason-wins and no-ops on an already-ended
         row, so this never clobbers a ``compression``/``agent_close`` reason.
         """
+        route_name = (event.source.user_id or "").removeprefix("webhook:")
+        if self._routes.get(route_name, {}).get("session_key"):
+            return
         await self._end_webhook_session(event, event.source.chat_id)
 
     async def _end_webhook_session(

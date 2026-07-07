@@ -78,6 +78,12 @@ class TestDelegateRequirements(unittest.TestCase):
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
         self.assertNotIn("max_iterations", props)
+        # ACP subprocess transport is operator-controlled via config.yaml, not
+        # model-controlled via delegate_task arguments.
+        self.assertNotIn("acp_command", props)
+        self.assertNotIn("acp_args", props)
+        self.assertNotIn("acp_command", props["tasks"]["items"]["properties"])
+        self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
     def test_schema_description_advertises_runtime_limits(self):
@@ -522,16 +528,7 @@ class TestToolNamePreservation(unittest.TestCase):
                 )
 
     def test_build_child_agent_ignores_acp_command_when_binary_missing(self):
-        """Regression: _build_child_agent must not force provider='copilot-acp'
-        when the override_acp_command binary is not on PATH.
-
-        Without this guard, a model that hallucinates
-        ``delegate_task(acp_command="copilot")`` on a host without the Copilot
-        CLI installed (Railway / headless containers / fresh VPS) would route
-        the subagent through CopilotACPClient, which spawns the binary via
-        subprocess and raises RuntimeError. After 3 retries the asyncio loop
-        teardown can take the entire gateway down.
-        """
+        """Stale delegation.command config must not force ACP subprocess mode."""
         parent = _make_mock_parent(depth=0)
         # The crash scenario is a TG/cron agent on a host with no ACP CLI —
         # parent itself has no acp_command, so clearing the override must NOT
@@ -606,68 +603,20 @@ class TestToolNamePreservation(unittest.TestCase):
         self.assertEqual(captured["provider"], "copilot-acp")
         self.assertEqual(captured["acp_command"], "copilot")
 
-    def test_schema_prunes_acp_command_when_no_acp_binary(self):
-        """Schema-level defense: delegate_task tool schema must NOT advertise
-        acp_command / acp_args to the model when no ACP binary is installed.
-
-        Headless deploys (Railway / Fly / Docker / fresh VPS) typically have
-        none of copilot / claude / codex. Without the schema prune, models
-        occasionally hallucinate ``acp_command="copilot"`` from the field's
-        description and crash subagent runs.
-        """
+    def test_schema_never_exposes_acp_transport_fields(self):
+        """delegate_task must never make ACP transport model-facing."""
         from tools.delegate_tool import _build_dynamic_schema_overrides
 
-        with patch("tools.delegate_tool._acp_binary_available", return_value=False):
+        with patch("shutil.which", return_value="/usr/local/bin/copilot"):
             overrides = _build_dynamic_schema_overrides()
 
         props = overrides["parameters"]["properties"]
-        self.assertNotIn("acp_command", props, "top-level acp_command must be pruned")
-        self.assertNotIn("acp_args", props, "top-level acp_args must be pruned")
+        self.assertNotIn("acp_command", props)
+        self.assertNotIn("acp_args", props)
 
         task_item_props = props["tasks"]["items"]["properties"]
-        self.assertNotIn(
-            "acp_command", task_item_props, "per-task acp_command must be pruned"
-        )
-        self.assertNotIn(
-            "acp_args", task_item_props, "per-task acp_args must be pruned"
-        )
-
-    def test_schema_keeps_acp_command_when_binary_available(self):
-        """Backward compat: when an ACP CLI IS on PATH, schema is unchanged.
-        Users with working ACP setups must still be able to invoke it.
-        """
-        from tools.delegate_tool import _build_dynamic_schema_overrides
-
-        with patch("tools.delegate_tool._acp_binary_available", return_value=True):
-            overrides = _build_dynamic_schema_overrides()
-
-        props = overrides["parameters"]["properties"]
-        self.assertIn("acp_command", props)
-        self.assertIn("acp_args", props)
-
-        task_item_props = props["tasks"]["items"]["properties"]
-        self.assertIn("acp_command", task_item_props)
-        self.assertIn("acp_args", task_item_props)
-
-    def test_acp_binary_available_checks_known_clis(self):
-        """_acp_binary_available must check the known ACP CLI names via
-        shutil.which — guards against typos or accidental list trimming.
-        """
-        from tools.delegate_tool import _KNOWN_ACP_BINARIES, _acp_binary_available
-
-        self.assertIn("copilot", _KNOWN_ACP_BINARIES)
-
-        calls = []
-
-        def fake_which(name):
-            calls.append(name)
-            return None
-
-        with patch("shutil.which", side_effect=fake_which):
-            self.assertFalse(_acp_binary_available())
-
-        for name in _KNOWN_ACP_BINARIES:
-            self.assertIn(name, calls)
+        self.assertNotIn("acp_command", task_item_props)
+        self.assertNotIn("acp_args", task_item_props)
 
     def test_saved_tool_names_set_on_child_before_run(self):
         """_run_single_child must set _delegate_saved_tool_names on the child
@@ -2281,37 +2230,39 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 class TestDispatchDelegateTask(unittest.TestCase):
     """Tests for the _dispatch_delegate_task helper and full param forwarding."""
 
-    @patch("tools.delegate_tool._load_config", return_value={})
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
-    def test_acp_args_forwarded(self, mock_creds, mock_cfg):
-        """Both acp_command and acp_args reach delegate_task via the helper."""
-        mock_creds.return_value = {
-            "provider": None, "base_url": None,
-            "api_key": None, "api_mode": None, "model": None,
-        }
-        parent = _make_mock_parent(depth=0)
-        with patch("tools.delegate_tool._build_child_agent") as mock_build:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True,
-                "api_calls": 1, "messages": [],
-            }
-            mock_child._delegate_saved_tool_names = []
-            mock_child._credential_pool = None
-            mock_child.session_prompt_tokens = 0
-            mock_child.session_completion_tokens = 0
-            mock_child.model = "test"
-            mock_build.return_value = mock_child
+    def test_model_acp_args_not_forwarded(self):
+        """The live model dispatch path strips hidden ACP transport args."""
+        import run_agent
 
-            delegate_task(
-                goal="test",
-                acp_command="claude",
-                acp_args=["--acp", "--stdio"],
-                parent_agent=parent,
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "goal": "test",
+                    "acp_command": "claude",
+                    "acp_args": ["--acp", "--stdio"],
+                    "tasks": [
+                        {
+                            "goal": "nested",
+                            "acp_command": "codex",
+                            "acp_args": ["--acp"],
+                        },
+                    ],
+                },
             )
-            _, kwargs = mock_build.call_args
-            self.assertEqual(kwargs["override_acp_command"], "claude")
-            self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
+
+        self.assertNotIn("acp_command", captured)
+        self.assertNotIn("acp_args", captured)
+        self.assertEqual(captured["goal"], "test")
+        self.assertNotIn("acp_command", captured["tasks"][0])
+        self.assertNotIn("acp_args", captured["tasks"][0])
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
@@ -2600,31 +2551,15 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         self.assertIn("role", task_props)
         self.assertEqual(task_props["role"]["enum"], ["leaf", "orchestrator"])
 
-    def test_acp_command_description_has_do_not_set_guidance(self):
-        # acp_command/acp_args descriptions must NOT bias the model toward
-        # assuming an ACP CLI (Claude, Copilot, etc.) is installed. They must
-        # carry explicit "do not set unless told" guidance so the model doesn't
-        # hallucinate ACP availability (#22013).
+    def test_schema_omits_acp_transport_fields(self):
         from tools.delegate_tool import DELEGATE_TASK_SCHEMA
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-
-        top_acp_desc = props["acp_command"]["description"]
-        self.assertIn("Do NOT set", top_acp_desc)
-        self.assertIn("explicitly told you", top_acp_desc)
 
         task_props = props["tasks"]["items"]["properties"]
-        per_task_acp_desc = task_props["acp_command"]["description"]
-        self.assertIn("Do NOT set", per_task_acp_desc)
-
-    def test_acp_command_description_has_no_claude_as_example(self):
-        # Descriptions must not list 'claude' as a canonical example value —
-        # that directly primes the model to attempt Claude ACP even when it is
-        # not installed (#22013).
-        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
-        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        top_acp_desc = props["acp_command"]["description"].lower()
-        self.assertNotIn("e.g. 'claude'", top_acp_desc)
-        self.assertNotIn("e.g. \"claude\"", top_acp_desc)
+        self.assertNotIn("acp_command", props)
+        self.assertNotIn("acp_args", props)
+        self.assertNotIn("acp_command", task_props)
+        self.assertNotIn("acp_args", task_props)
 
 
 # Sentinel used to distinguish "role kwarg omitted" from "role=None".

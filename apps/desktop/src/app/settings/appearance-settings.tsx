@@ -10,6 +10,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -243,7 +244,7 @@ export function AppearanceSettings() {
   // One box does double duty: filter installed themes live (below), and run a
   // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
   // backend) for anything not already installed.
-  const needle = query.trim().toLowerCase()
+  const needle = normalize(query)
 
   const filteredThemes = availableThemes
     .filter(

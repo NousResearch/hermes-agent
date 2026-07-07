@@ -83,6 +83,34 @@ def test_private_page_blocks_camofox_reads(monkeypatch, _session, tool_call, act
     assert action_phrase in out["error"]
 
 
+@pytest.mark.parametrize(
+    ("tool_call", "action_phrase"),
+    [
+        (lambda: browser_camofox.camofox_click("@e1", task_id="t1"), "click"),
+        (
+            lambda: browser_camofox.camofox_type("@e1", "do-not-send-this", task_id="t1"),
+            "type",
+        ),
+        (lambda: browser_camofox.camofox_press("Enter", task_id="t1"), "press"),
+    ],
+)
+def test_private_page_blocks_camofox_input_actions(monkeypatch, _session, tool_call, action_phrase):
+    _block_active(monkeypatch)
+
+    def fail_post(*_args, **_kwargs):
+        raise AssertionError("Camofox action HTTP call should not run on a private page")
+
+    monkeypatch.setattr(browser_camofox, "_post", fail_post)
+
+    out = json.loads(tool_call())
+
+    assert out["success"] is False
+    assert PRIVATE_URL in out["error"]
+    assert "private or internal address" in out["error"]
+    assert action_phrase in out["error"]
+    assert "do-not-send-this" not in json.dumps(out)
+
+
 def test_snapshot_still_runs_when_page_is_public(monkeypatch, _session):
     _public_page(monkeypatch)
 
@@ -96,6 +124,29 @@ def test_snapshot_still_runs_when_page_is_public(monkeypatch, _session):
 
     assert out["success"] is True
     assert out["element_count"] == 1
+
+
+def test_camofox_click_still_runs_when_page_is_public(monkeypatch, _session):
+    _public_page(monkeypatch)
+    calls = []
+
+    def fake_post(path, body=None, timeout=None):
+        calls.append((path, body, timeout))
+        return {"url": "https://example.test/"}
+
+    monkeypatch.setattr(browser_camofox, "_post", fake_post)
+
+    out = json.loads(browser_camofox.camofox_click("@e1", task_id="t1"))
+
+    assert out["success"] is True
+    assert out["clicked"] == "e1"
+    assert calls == [
+        (
+            "/tabs/tab-1/click",
+            {"userId": "user-1", "ref": "e1"},
+            None,
+        )
+    ]
 
 
 def test_guard_inactive_does_not_probe(monkeypatch, _session):

@@ -6,7 +6,11 @@ interface ModelOptionsRequest {
   sessionId?: null | string
 }
 
-export function requestModelOptions({ gateway, refresh = false, sessionId }: ModelOptionsRequest): Promise<ModelOptionsResponse> {
+export function requestModelOptions({
+  gateway,
+  refresh = false,
+  sessionId
+}: ModelOptionsRequest): Promise<ModelOptionsResponse> {
   if (gateway) {
     const params: Record<string, unknown> = {}
 

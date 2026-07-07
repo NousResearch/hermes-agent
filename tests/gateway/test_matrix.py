@@ -5276,3 +5276,36 @@ class TestDeviceIdRecoveryOnReconnect:
         assert None not in _verify_call.args[0]["@bot:example.org"]
 
         await adapter.disconnect()
+
+
+class TestMatrixDispatchSyncIsolation:
+    """A failing mautrix event handler must not abort the whole sync batch.
+
+    ``_dispatch_sync`` gathers the per-event handler tasks. Without
+    ``return_exceptions=True`` the first exception aborts the gather and the
+    sibling events in the same sync response are silently dropped.
+    """
+
+    @pytest.mark.asyncio
+    async def test_dispatch_sync_isolates_failing_handler(self, caplog):
+        import logging
+
+        adapter = _make_adapter()
+        ran = {"ok": False}
+
+        async def _boom():
+            raise RuntimeError("handler boom")
+
+        async def _ok():
+            ran["ok"] = True
+
+        client = MagicMock()
+        client.handle_sync = MagicMock(return_value=[_boom(), _ok()])
+        adapter._client = client
+
+        with caplog.at_level(logging.WARNING):
+            # Must not raise despite the failing handler.
+            await adapter._dispatch_sync({"next_batch": "s1"})
+
+        assert ran["ok"] is True  # the sibling handler still ran
+        assert "event handler failed" in caplog.text  # failure surfaced, not swallowed

@@ -424,7 +424,10 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+                _effort = "medium"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _effort = reasoning_config.get("effort", "medium") or "medium"
+                extra_body["reasoning"] = {"enabled": True, "effort": _effort}
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
@@ -609,7 +612,11 @@ class ChatCompletionsTransport(ProviderTransport):
         """
         choice = response.choices[0]
         msg = choice.message
-        finish_reason = choice.finish_reason or "stop"
+        # Poolside returns integer finish_reason (e.g. 24) instead of string
+        _fr = choice.finish_reason
+        if isinstance(_fr, int):
+            _fr = str(_fr)
+        finish_reason = _fr or "stop"
 
         tool_calls = None
         if msg.tool_calls:

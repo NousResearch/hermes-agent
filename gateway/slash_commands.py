@@ -38,10 +38,9 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
-from hermes_cli.config import cfg_get, clear_model_endpoint_credentials
+from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
-    atomic_yaml_write,
     base_url_host_matches,
     is_truthy_value,
 )
@@ -190,6 +189,13 @@ class GatewaySlashCommandsMixin:
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
 
+        # Clear the per-session last-resolved-model cache so the next turn
+        # reads from current config instead of falling back to a stale model
+        # after a config change (#58403).
+        _lrm = getattr(self, "_last_resolved_model", None)
+        if _lrm is not None:
+            _lrm.pop(session_key, None)
+
         # Clear session-scoped dangerous-command approvals and /yolo state.
         # /new is a conversation-boundary operation — approval state from the
         # previous conversation must not survive the reset.
@@ -225,9 +231,13 @@ class GatewaySlashCommandsMixin:
             "session_key": session_key,
         })
 
-        # Resolve session config info to surface to the user
+        # Resolve session config info to surface to the user, scoped to the
+        # profile serving this source so a multiplexed /reset //new banner
+        # reports the profile's model, not the base config's (#59003).
         try:
-            session_info = self._format_session_info()
+            session_info = await asyncio.to_thread(
+                self._reset_notice_session_info, source
+            )
         except Exception:
             session_info = ""
 
@@ -2086,7 +2096,7 @@ class GatewaySlashCommandsMixin:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
                 config["agent"]["system_prompt"] = ""
-                atomic_yaml_write(config_path, config)
+                atomic_config_write(config_path, config)
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))
             self._ephemeral_system_prompt = ""
@@ -2099,7 +2109,7 @@ class GatewaySlashCommandsMixin:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
                 config["agent"]["system_prompt"] = new_prompt
-                atomic_yaml_write(config_path, config)
+                atomic_config_write(config_path, config)
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))
 
@@ -2645,7 +2655,7 @@ class GatewaySlashCommandsMixin:
                         current[k] = {}
                     current = current[k]
                 current[keys[-1]] = value
-                atomic_yaml_write(config_path, user_config)
+                atomic_config_write(config_path, user_config)
                 return True
             except Exception as e:
                 logger.error("Failed to save config key %s: %s", key_path, e)
@@ -2748,7 +2758,7 @@ class GatewaySlashCommandsMixin:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
             user_config.setdefault("memory", {})["write_approval"] = bool(enabled)
-            atomic_yaml_write(config_path, user_config)
+            atomic_config_write(config_path, user_config)
             # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)
 
@@ -2804,7 +2814,7 @@ class GatewaySlashCommandsMixin:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
             user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
-            atomic_yaml_write(config_path, user_config)
+            atomic_config_write(config_path, user_config)
             # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)
 
@@ -2856,7 +2866,7 @@ class GatewaySlashCommandsMixin:
                         current[k] = {}
                     current = current[k]
                 current[keys[-1]] = value
-                atomic_yaml_write(config_path, user_config)
+                atomic_config_write(config_path, user_config)
                 return True
             except Exception as e:
                 logger.error("Failed to save config key %s: %s", key_path, e)
@@ -2953,7 +2963,7 @@ class GatewaySlashCommandsMixin:
             if platform_key not in display["platforms"] or not isinstance(display["platforms"].get(platform_key), dict):
                 display["platforms"][platform_key] = {}
             display["platforms"][platform_key]["tool_progress"] = new_mode
-            atomic_yaml_write(config_path, user_config)
+            atomic_config_write(config_path, user_config)
             return (
                 f"{descriptions[new_mode]}\n"
                 + t("gateway.verbose.saved_suffix", platform=platform_key)
@@ -3028,7 +3038,7 @@ class GatewaySlashCommandsMixin:
             if not isinstance(display.get("runtime_footer"), dict):
                 display["runtime_footer"] = {}
             display["runtime_footer"]["enabled"] = new_state
-            atomic_yaml_write(config_path, user_config)
+            atomic_config_write(config_path, user_config)
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)
             return t("gateway.config_save_failed", error=e)
@@ -3133,10 +3143,14 @@ class GatewaySlashCommandsMixin:
             if not runtime_kwargs.get("api_key"):
                 return t("gateway.compress.no_provider")
 
+            # Pass the FULL transcript (tool results included) — same
+            # rationale as the session-hygiene auto-compress in
+            # gateway/run.py (#3854): filtering to user/assistant-only
+            # starves the compressor's tool-result pruning and can trip the
+            # protect-first/last early-return on short filtered histories.
             msgs = [
-                {"role": m.get("role"), "content": m.get("content")}
-                for m in history
-                if m.get("role") in {"user", "assistant"} and m.get("content")
+                m for m in history
+                if m.get("role") in {"user", "assistant", "tool"}
             ]
 
             # Boundary-aware split: only the head is summarized; the most
@@ -3622,6 +3636,13 @@ class GatewaySlashCommandsMixin:
         _pending_notes = getattr(self, "_pending_model_notes", None)
         if isinstance(_pending_notes, dict):
             _pending_notes.pop(session_key, None)
+        # Clear per-session model cache too, for the same reason — the
+        # resumed conversation must resolve from current config, not a
+        # stale value cached under this session_key before the switch
+        # (mirrors /new and the compression-exhausted auto-reset, #58403).
+        _lrm = getattr(self, "_last_resolved_model", None)
+        if isinstance(_lrm, dict):
+            _lrm.pop(session_key, None)
 
         # Evict any cached agent for this session so the next message
         # rebuilds with the correct session_id end-to-end — mirrors
@@ -3666,9 +3687,14 @@ class GatewaySlashCommandsMixin:
         source = event.source
         raw_args = event.get_command_args().strip()
         try:
-            include_all, include_unnamed, target = parse_session_listing_args(raw_args)
+            include_all, include_unnamed, target, search_query = (
+                parse_session_listing_args(raw_args)
+            )
         except ValueError as exc:
             return t("gateway.resume.parse_error", error=exc)
+
+        if search_query == "":
+            return "Usage: `/sessions search <query>`"
 
         if target:
             resume_event = dataclasses.replace(event, text=f"/resume {target}")
@@ -3688,7 +3714,10 @@ class GatewaySlashCommandsMixin:
             current_session_id=current_entry.session_id,
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,
-            limit=10,
+            search_query=search_query,
+            # Search filters at SQL level, so over-fetch before the visibility
+            # cut: origin-invisible matches would otherwise consume the page.
+            limit=50 if search_query else 10,
             exclude_sources=["tool"],
         )
         if not cross_origin:
@@ -3698,10 +3727,15 @@ class GatewaySlashCommandsMixin:
                 row for row in rows
                 if await self._resume_row_visible(source, row, allow_all=False)
             ]
+        rows = rows[:10]
+        if search_query:
+            title = f"Sessions matching “{search_query}”"
+        else:
+            title = "Sessions" if include_unnamed else "Named Sessions"
         return format_gateway_session_listing(
             rows,
             include_source=cross_origin,
-            title="Sessions" if include_unnamed else "Named Sessions",
+            title=title,
         )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
@@ -4336,6 +4370,9 @@ class GatewaySlashCommandsMixin:
         a definitive BLOCKED message, same as the CLI deny flow.
 
         ``/deny`` denies the oldest; ``/deny all`` denies everything.
+        ``/deny <reason>`` (or ``/deny all <reason>``) attaches a one-line
+        reason that is relayed back to the agent so it can adapt instead of
+        only hearing "denied". Ported from qwibitai/nanoclaw#2832.
         """
         source = event.source
         session_key = self._session_key_for_source(source)
@@ -4350,10 +4387,24 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.deny.stale")
             return t("gateway.deny.no_pending")
 
-        args = event.get_command_args().strip().lower()
-        resolve_all = "all" in args
+        # Parse args: a leading "all" token denies every pending command;
+        # anything after it (or the whole arg string when "all" is absent) is
+        # captured verbatim as the optional deny reason relayed to the agent.
+        raw_args = event.get_command_args().strip()
+        tokens = raw_args.split()
+        resolve_all = bool(tokens) and tokens[0].lower() == "all"
+        if resolve_all:
+            reason = raw_args[len(tokens[0]):].strip()
+        else:
+            reason = raw_args
+        # Cap to a sane one-liner; the agent only needs a short hint.
+        if reason:
+            reason = reason[:280].strip()
 
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
+        count = resolve_gateway_approval(
+            session_key, "deny", resolve_all=resolve_all,
+            reason=reason or None,
+        )
         if not count:
             return t("gateway.deny.no_pending")
 
@@ -4362,7 +4413,14 @@ class GatewaySlashCommandsMixin:
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
-        logger.info("User denied %d dangerous command(s) via /deny", count)
+        logger.info(
+            "User denied %d dangerous command(s) via /deny%s",
+            count, " (with reason)" if reason else "",
+        )
+        if reason:
+            if count > 1:
+                return t("gateway.deny.denied_reason_plural", count=count, reason=reason)
+            return t("gateway.deny.denied_reason_singular", reason=reason)
         if count > 1:
             return t("gateway.deny.denied_plural", count=count)
         return t("gateway.deny.denied_singular")

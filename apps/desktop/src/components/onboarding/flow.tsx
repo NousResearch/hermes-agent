@@ -96,21 +96,6 @@ export function FlowPanel({
     )
   }
 
-  if (flow.status === 'awaiting_browser') {
-    return (
-      <Step title={t.onboarding.signInWith(title)}>
-        <p className="text-sm text-muted-foreground">{t.onboarding.autoBrowser(title)}</p>
-        <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t.onboarding.reopenSignInPage}</DocsLink>}>
-          <span className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="size-3 animate-spin" />
-            {t.onboarding.waitingAuthorize}
-          </span>
-          <CancelBtn size="sm" />
-        </FlowFooter>
-      </Step>
-    )
-  }
-
   if (flow.status === 'external_pending') {
     return (
       <Step title={t.onboarding.signInWith(title)}>

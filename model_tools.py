@@ -399,16 +399,19 @@ def _compute_tool_definitions(
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
-                if toolset_name.startswith("hermes-"):
-                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, so
-                    # subtracting the whole bundle would strip core tools shared
-                    # by other enabled toolsets and empty the tool list (#33924).
-                    # Subtract only the bundle's non-core delta; keep core.
-                    from toolsets import bundle_non_core_tools
+                from toolsets import bundle_non_core_tools, get_toolset
+                if toolset_name.startswith("hermes-") or (get_toolset(toolset_name) or {}).get("posture"):
+                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, and
+                    # posture toolsets (`posture: True`, e.g. `coding`) re-list
+                    # those same core tools without owning them, so subtracting
+                    # the whole toolset would strip core tools shared by other
+                    # enabled toolsets and empty the tool list (#33924, #57315).
+                    # Subtract only the non-core delta; keep core.
                     to_remove = bundle_non_core_tools(toolset_name)
                     tools_to_include.difference_update(to_remove)
                     resolved = sorted(to_remove)
-                    if not quiet_mode and toolset_name not in _WARNED_DISABLED_BUNDLES:
+                    if (not quiet_mode and toolset_name.startswith("hermes-")
+                            and toolset_name not in _WARNED_DISABLED_BUNDLES):
                         _WARNED_DISABLED_BUNDLES.add(toolset_name)
                         logger.info(
                             "agent.disabled_toolsets contains platform-bundle "
@@ -718,14 +721,126 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         if not isinstance(value, str):
+            # Recurse into already-native containers so JSON-encoded
+            # *elements* (array items) and *sub-fields* (nested object
+            # properties) get normalized too — e.g. ``todos: ['{"id":...}']``
+            # or ``tasks: [{"goal": "..."}]`` where an element was emitted as
+            # a JSON string. The top-level coercion above only repairs the
+            # outermost value.
+            if expected == "array" and isinstance(value, (list, tuple)):
+                args[key] = _normalize_json_strings_for_schema(value, prop_schema)
+            elif expected == "object" and isinstance(value, dict):
+                args[key] = _normalize_json_strings_for_schema(value, prop_schema)
             continue
         if not expected and not _schema_allows_null(prop_schema):
             continue
         coerced = _coerce_value(value, expected, schema=prop_schema)
         if coerced is not value:
             args[key] = coerced
+            # If we just JSON-parsed a string into a container, recurse so
+            # nested JSON-encoded elements/fields get normalized as well.
+            if isinstance(coerced, (list, tuple, dict)):
+                args[key] = _normalize_json_strings_for_schema(coerced, prop_schema)
 
     return args
+
+
+def _schema_accepts_kind(schema: Any, kind: str) -> bool:
+    """Return True when *schema* permits a value of JSON type *kind*.
+
+    Looks at ``type`` (string or list) and recurses through
+    ``anyOf``/``oneOf``/``allOf`` branches — matching the JSON-Schema shapes
+    open-weight models emit against. ``kind`` is ``"array"`` or ``"object"``.
+    """
+    if not isinstance(schema, dict):
+        return False
+    t = schema.get("type")
+    if t == kind or (isinstance(t, list) and kind in t):
+        return True
+    for union_key in ("anyOf", "oneOf", "allOf"):
+        branches = schema.get(union_key)
+        if isinstance(branches, list) and any(
+            _schema_accepts_kind(b, kind) for b in branches
+        ):
+            return True
+    return False
+
+
+def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
+    """Recursively parse JSON-encoded string values that a schema expects to
+    be arrays or objects, including nested array items and object properties.
+
+    Open-weight models (DeepSeek, Qwen, GLM, and others) sometimes emit a
+    structured field — or an *element* of a structured field — as a
+    JSON-encoded string instead of a native value. The top-level
+    :func:`coerce_tool_args` pass repairs the outermost value; this helper
+    walks the rest of the tree so cases like::
+
+        {"todos": ["{\\"id\\": \\"1\\", \\"content\\": \\"x\\"}"]}
+
+    (a list whose elements are JSON strings) and nested object sub-fields are
+    repaired too. Parsing is schema-guided: a string is only parsed when the
+    matching schema position actually expects an array or object, so
+    legitimate JSON-looking string fields (``type: string``) are preserved.
+
+    Ported from cline/cline#11803, adapted to hermes-agent's coercion layer.
+    Returns the original value object when nothing changed (identity preserved
+    so callers can cheaply detect no-ops).
+    """
+    if not isinstance(schema, dict):
+        return value
+
+    # Parse a JSON-encoded string into the container the schema expects.
+    if isinstance(value, str):
+        trimmed = value.strip()
+        expects_array = _schema_accepts_kind(schema, "array")
+        expects_object = _schema_accepts_kind(schema, "object")
+        if (expects_array and trimmed.startswith("[")) or (
+            expects_object and trimmed.startswith("{")
+        ):
+            try:
+                parsed = json.loads(trimmed)
+            except (ValueError, TypeError):
+                return value
+            if isinstance(parsed, list) and expects_array:
+                value = parsed
+            elif isinstance(parsed, dict) and expects_object:
+                value = parsed
+            else:
+                return value
+        else:
+            return value
+
+    # Recurse into list items using the ``items`` schema.
+    if isinstance(value, list):
+        items_schema = schema.get("items")
+        if not isinstance(items_schema, dict):
+            return value
+        changed = False
+        out = []
+        for item in value:
+            nxt = _normalize_json_strings_for_schema(item, items_schema)
+            changed = changed or (nxt is not item)
+            out.append(nxt)
+        return out if changed else value
+
+    # Recurse into object properties using each property's schema.
+    if isinstance(value, dict):
+        props = schema.get("properties")
+        if not isinstance(props, dict):
+            return value
+        changed = False
+        out = dict(value)
+        for k, prop_schema in props.items():
+            if k not in value or not isinstance(prop_schema, dict):
+                continue
+            nxt = _normalize_json_strings_for_schema(value[k], prop_schema)
+            if nxt is not value[k]:
+                out[k] = nxt
+                changed = True
+        return out if changed else value
+
+    return value
 
 
 def _coerce_value(value: str, expected_type, schema: dict | None = None):

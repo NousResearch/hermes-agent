@@ -39,7 +39,13 @@ const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
-const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
+const {
+  ensureJsonResponse,
+  parseOauthRequestUrl,
+  readResponseText,
+  serializeJsonBody,
+  setJsonRequestHeaders
+} = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
@@ -4470,17 +4476,13 @@ function fetchJsonViaOauthSession(url, options = {}) {
       reject(new Error('OAuth session partition is unavailable.'))
       return
     }
-    let parsed
     try {
-      parsed = new URL(url)
+      parseOauthRequestUrl(url)
     } catch (error) {
-      reject(new Error(`Invalid URL: ${error.message}`))
+      reject(error)
       return
     }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-      return
-    }
+
     const body = serializeJsonBody(options.body)
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
@@ -4491,7 +4493,7 @@ function fetchJsonViaOauthSession(url, options = {}) {
       useSessionCookies: true,
       redirect: 'follow'
     })
-    setJsonRequestHeaders(request)
+    setJsonRequestHeaders(request, options.headers)
 
     let timedOut = false
     const timer = setTimeout(() => {
@@ -4506,32 +4508,15 @@ function fetchJsonViaOauthSession(url, options = {}) {
 
     request.on('response', res => {
       const chunks = []
-      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      res.on('data', chunk => chunks.push(chunk))
       res.on('end', () => {
         if (timedOut) return
         clearTimeout(timer)
-        const text = Buffer.concat(chunks).toString('utf8')
-        const statusCode = res.statusCode || 500
-        if (statusCode >= 400) {
-          const err = new Error(`${statusCode}: ${text || ''}`)
-          err.statusCode = statusCode
-          reject(err)
-          return
-        }
-        if (!text) {
-          resolve(null)
-          return
-        }
-        const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
-        const contentType = String(res.headers['content-type'] || res.headers['Content-Type'] || '')
-        if (looksHtml || contentType.includes('text/html')) {
-          reject(new Error(`Expected JSON from ${url} but got HTML (status ${statusCode}).`))
-          return
-        }
         try {
-          resolve(JSON.parse(text))
-        } catch {
-          reject(new Error(`Invalid JSON from ${url} (status ${statusCode}): ${text.slice(0, 200)}`))
+          const text = readResponseText(chunks)
+          resolve(ensureJsonResponse(url, res, text))
+        } catch (error) {
+          reject(error)
         }
       })
     })

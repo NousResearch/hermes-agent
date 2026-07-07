@@ -316,6 +316,21 @@ class GatewayAuthorizationMixin:
 
         user_id = source.user_id
 
+        # Bots are denied by default even in chat-scoped allowlisted groups.
+        # Otherwise one approved project chat can turn into bot-to-bot loops
+        # whenever another bot replies to Hermes. Operators must explicitly opt
+        # into bot traffic via {PLATFORM}_ALLOW_BOTS=mentions|all.
+        platform_allow_bots_map = {
+            Platform.DISCORD: "DISCORD_ALLOW_BOTS",
+            Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+            Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
+            Platform.SLACK: "SLACK_ALLOW_BOTS",
+        }
+        if getattr(source, "is_bot", False):
+            allow_bots_var = platform_allow_bots_map.get(source.platform)
+            allow_bots = os.getenv(allow_bots_var, "none").lower().strip() if allow_bots_var else "none"
+            return allow_bots in {"mentions", "all"}
+
         # Telegram (and similar) authorize entire group/forum/channel chats
         # by chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
         # That allowlist is chat-scoped, so it must work even when
@@ -341,23 +356,6 @@ class GatewayAuthorizationMixin:
                     }
                     if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                         return True
-
-        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
-        # Checked before the no-user-id guard below: some platforms deliver
-        # bot/automation traffic with no user_id at all -- e.g. Slack Workflow
-        # Builder posts arrive as subtype=bot_message with user=None -- so
-        # deferring past the guard would reject them outright (the same reason
-        # the chat-scoped allowlist above runs early).
-        platform_allow_bots_map = {
-            Platform.DISCORD: "DISCORD_ALLOW_BOTS",
-            Platform.FEISHU: "FEISHU_ALLOW_BOTS",
-            Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
-            Platform.SLACK: "SLACK_ALLOW_BOTS",
-        }
-        if getattr(source, "is_bot", False):
-            allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
-                return True
 
         if not user_id:
             return False

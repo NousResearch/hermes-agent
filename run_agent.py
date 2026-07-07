@@ -2963,70 +2963,66 @@ class AIAgent:
         if reason.startswith("text_response"):
             return ""
 
-        prefix = "⚠️ No reply: "
+        prefix = "⚠️ Model issue: "
         if reason == "empty_response_exhausted":
             return (
                 prefix
-                + "the model returned empty content after retries and any "
-                "fallback providers. Try `continue`, switch model/provider, "
-                "or inspect the tool output above."
+                + "no usable reply arrived after retries and fallback attempts. "
+                "Send `continue` to retry, or switch model/provider if it repeats."
             )
         if reason == "all_retries_exhausted_no_response":
             return (
                 prefix
-                + "all API retries were exhausted before a response was "
-                "produced (provider errors / rate limits). Try `continue` "
-                "or switch provider."
+                + "all API retries failed before a reply was produced. "
+                "Send `continue` to retry, or switch provider."
             )
         if reason == "partial_stream_recovery":
             return (
                 prefix
-                + "streaming stopped early and only a partial response was "
-                "recovered. Send `continue` to resume from where it stopped."
+                + "the stream stopped early and only a partial reply was recovered. "
+                "Send `continue` to resume."
             )
         if reason == "fallback_prior_turn_content":
             return (
                 prefix
-                + "no new content was produced this turn; showing recovered "
-                "prior context. Send `continue` to retry."
+                + "this turn produced no new usable reply; showing recovered context. "
+                "Send `continue` to retry."
             )
         if reason == "interrupted_during_api_call":
             return (
                 prefix
-                + "the request was interrupted mid-call before a reply was "
-                "received. Send `continue` to retry."
+                + "the request was interrupted before a reply arrived. "
+                "Send `continue` to retry."
             )
         if reason == "budget_exhausted":
             return (
                 prefix
-                + "the per-turn iteration/cost budget was exhausted before a "
-                "final answer. Send `continue` to keep going."
+                + "the per-turn budget ended before a final answer. "
+                "Send `continue` to keep going."
             )
         if reason == "ollama_runtime_context_too_small":
             return (
                 prefix
-                + "the local model's context window was too small to finish. "
-                "Increase the context size or use a larger model."
+                + "the local model context window was too small to finish. "
+                "Increase context size or use a larger model."
             )
         if reason.startswith("max_iterations_reached"):
             return (
                 prefix
-                + "the maximum tool-iteration limit was reached before a "
-                "final answer. Send `continue` to keep going, or raise "
-                "`max_iterations`."
+                + "the maximum tool-iteration limit was reached before a final answer. "
+                "Send `continue` to keep going, or raise `max_iterations`."
             )
         if reason.startswith("error_near_max_iterations"):
             return (
                 prefix
-                + "an error occurred near the iteration limit before a final "
-                "answer. Check the tool output above, then send `continue`."
+                + "an internal error happened near the iteration limit. "
+                "Send `continue` to retry, or run `/debug` if it repeats."
             )
         if reason == "pending_tool_result":
             return (
                 prefix
-                + "the turn stopped while a tool result was still pending and "
-                "the model produced no follow-up text. Send `continue` to "
-                "let it summarize."
+                + "the turn stopped while a tool result was still pending. "
+                "Send `continue` to let Hermes summarize it."
             )
         # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
         # which already surfaces its own message) — don't second-guess.

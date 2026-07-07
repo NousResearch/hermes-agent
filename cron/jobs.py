@@ -893,6 +893,25 @@ def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Opti
     )
 
 
+def _normalize_max_turns(value: Any) -> Optional[int]:
+    """Normalize a per-job ``max_turns`` cap: positive int, else None.
+
+    bool is rejected explicitly (bool is an int subclass) and other types are
+    ignored rather than coerced — a malformed cap must fall back to the global
+    config, never silently cap the job at a bogus value.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value > 0 else None
+
+
+def _normalize_job_timeout(value: Any) -> Optional[float]:
+    """Normalize a per-job wall-clock ``timeout`` (seconds): positive number → float, else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -911,6 +930,8 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    max_turns: Optional[int] = None,
+    timeout: Optional[Union[int, float]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1076,6 +1097,9 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        # Per-job execution caps (None = fall back to global config/env).
+        "max_turns": _normalize_max_turns(max_turns),
+        "timeout": _normalize_job_timeout(timeout),
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
@@ -1171,6 +1195,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            # Normalize per-job caps if present in updates.  0 / None / invalid
+            # all mean "clear the cap" (fall back to global config/env).
+            if "max_turns" in updates:
+                updates["max_turns"] = _normalize_max_turns(updates["max_turns"])
+            if "timeout" in updates:
+                updates["timeout"] = _normalize_job_timeout(updates["timeout"])
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

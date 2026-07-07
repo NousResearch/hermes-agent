@@ -543,7 +543,7 @@ class SessionResetPolicy:
 @dataclass
 class ChannelOverride:
     """
-    Per-channel override for model, provider, and system prompt.
+    Per-channel override for model, provider, system prompt, and reasoning effort.
 
     Used in config under platforms.<name>.channel_overrides[channel_id].
     Enables different channels (e.g. Discord #daily vs #dev) to use different
@@ -552,6 +552,7 @@ class ChannelOverride:
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    reasoning_effort: Optional[Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -561,6 +562,8 @@ class ChannelOverride:
             out["provider"] = self.provider
         if self.system_prompt is not None:
             out["system_prompt"] = self.system_prompt
+        if self.reasoning_effort is not None:
+            out["reasoning_effort"] = self.reasoning_effort
         return out
 
     @classmethod
@@ -571,6 +574,7 @@ class ChannelOverride:
             model=data.get("model"),
             provider=data.get("provider"),
             system_prompt=data.get("system_prompt"),
+            reasoning_effort=data.get("reasoning_effort"),
         )
 
 
@@ -629,7 +633,7 @@ class PlatformConfig:
     # Telegram, Matrix, …) ignore it.
     typing_status_text: Optional[str] = None
 
-    # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
+    # Per-channel model/provider/system_prompt/reasoning overrides (channel_id -> ChannelOverride)
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
 
     # Platform-specific settings

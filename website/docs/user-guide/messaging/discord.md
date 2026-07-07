@@ -114,7 +114,7 @@ This is the most critical step in the entire setup. Without the correct intents 
 On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see three toggles:
 
 | Intent | Purpose | Required? |
-|--------|---------|-----------| 
+|--------|---------|-----------|
 | **Presence Intent** | See user online/offline status | Optional |
 | **Server Members Intent** | Access the member list, resolve usernames | **Required** |
 | **Message Content Intent** | Read the text content of messages | **Required** |
@@ -170,7 +170,7 @@ This method requires **Public Bot** to be set to **ON** in Step 2. If you set Pu
 You can construct the invite URL directly using this format:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274878286912
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309237763136
 ```
 
 Replace `YOUR_APP_ID` with the Application ID from Step 1.
@@ -187,6 +187,7 @@ These are the minimum permissions your bot needs:
 
 ### Recommended Additional Permissions
 
+- **Create Public Threads** - create threads
 - **Send Messages in Threads** — respond in thread conversations
 - **Add Reactions** — react to messages for acknowledgment
 
@@ -195,7 +196,7 @@ These are the minimum permissions your bot needs:
 | Level | Permissions Integer | What's Included |
 |-------|-------------------|-----------------|
 | Minimal | `117760` | View Channels, Send Messages, Read Message History, Attach Files |
-| Recommended | `274878286912` | All of the above plus Embed Links, Send Messages in Threads, Add Reactions |
+| Recommended | `309237763136` | All of the above plus Embed Links, Send Messages in Threads, Add Reactions, Create Public Threads |
 
 ## Step 6: Invite to Your Server
 
@@ -592,6 +593,26 @@ gateway:
 - DM admin status does not imply server-channel admin status. Each scope has its own admin list.
 
 Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
+
+### Restricting exec-approval buttons to admins
+
+By default, any user allowed to talk to the bot — including users paired via `hermes pairing approve` — can click the **Approve / Deny** buttons on a dangerous-command prompt. This mirrors plain-chat admission and is the historical behavior. To restrict *approving dangerous commands* to admins only, set `require_admin_for_exec_approval` in the Discord platform's `extra` block:
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      extra:
+        require_admin_for_exec_approval: true   # default: false
+        allow_admin_from:
+          - "123456789012345678"   # only these users may click Approve/Deny
+```
+
+**Behavior:**
+
+- **Default off** — exec-approval buttons stay user-scope; any admitted user can approve. Existing installs are unaffected.
+- **When on** — the clicker must pass the normal admission check **and** be listed in `allow_admin_from` (the same key the slash-command split uses). The lower-stakes component views (model picker, clarify, update prompt) stay user-scope.
+- **Fails closed** — if the toggle is on but `allow_admin_from` is empty, *nobody* can approve and a warning is logged, so the misconfiguration is visible rather than silently locking you out.
 
 ## Interactive Model Picker
 

@@ -5770,25 +5770,32 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # We do NOT cap output by default. Most chat-completions providers treat
-        # an omitted max_tokens as "use the model's max output", which is what we
-        # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
-        # an explicit cap only risks truncating a summary or 400-ing on providers
-        # that reject the parameter outright (e.g. GitHub Copilot / newer OpenAI
-        # GPT-5 models require max_completion_tokens, not max_tokens; ZAI vision
-        # models reject it entirely with error 1210). Omitting it sidesteps all of
-        # those wire-format quirks at once.
+        # We do NOT cap output by default — when callers pass ``None`` the
+        # parameter is omitted entirely and most chat-completions providers
+        # fall back to the model's max output, which is what we want for
+        # auxiliary tasks (compression summaries, titles, vision, etc.). An
+        # unconditional cap would risk truncating a summary, or 400-ing on
+        # providers that reject the parameter outright (e.g. GitHub Copilot
+        # / newer OpenAI GPT-5 models require max_completion_tokens, not
+        # max_tokens; ZAI vision models reject it entirely with error
+        # 1210).
         #
-        # The one exception is the Anthropic Messages wire (MiniMax and any
-        # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
-        # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
-        # there.
+        # However, when a caller DOES supply a deliberate cap (e.g.
+        # ``call_llm(provider="openrouter", max_tokens=512)``) we must
+        # forward it instead of silently dropping it — otherwise the
+        # provider's model-default applies and the caller has no way to
+        # bound an auxiliary call. The retry ladder at agent/auxiliary_
+        # client.py:6288-6294 already strips a 400-rejected max_tokens
+        # parameter, so the wire-rejected safety argument is covered there
+        # without us having to omit it (#59763).
         #
-        # NVIDIA NIM (integrate.api.nvidia.com and local NIM endpoints) is a
-        # second exception: some models—notably minimaxai/minimax-m3—return HTTP
-        # 200 with an empty choices[] payload when max_tokens is omitted. The main
-        # NVIDIA chat path already sends an output cap via the provider profile;
-        # preserve it on the auxiliary path too.
+        # The two hard exceptions that need the field regardless of caller
+        # intent are still mandatory:
+        #   - Anthropic Messages wire (MiniMax / ``/anthropic`` endpoints)
+        #     requires max_tokens, omitting it is a hard 400.
+        #   - NVIDIA NIM (integrate.api.nvidia.com and local NIM endpoints)
+        #     returns HTTP 200 with empty choices[] for some models when
+        #     max_tokens is omitted.
         _effective_base = base_url or (
             _current_custom_base_url() if provider == "custom" else ""
         )
@@ -5801,6 +5808,12 @@ def _build_call_kwargs(
             _is_anthropic_compat_endpoint(provider, _effective_base)
             or _is_nvidia_nim
         ):
+            # Mandatory on these wires — keep the previous always-on branch.
+            kwargs["max_tokens"] = max_tokens
+        else:
+            # Default for OpenAI-wire / OpenRouter / etc.: forward caller
+            # cap. Wire-rejected caps are stripped downstream by the retry
+            # ladder — see comment above.
             kwargs["max_tokens"] = max_tokens
 
     if tools:

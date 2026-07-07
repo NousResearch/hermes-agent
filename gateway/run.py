@@ -1780,6 +1780,45 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 _AGENT_PENDING_SENTINEL = object()
 
 
+def _resolve_max_tokens_cap(runtime: dict) -> Optional[int]:
+    """Resolve the output-token cap for a runtime provider dict.
+
+    Resolution order (matches the original inline logic in
+    :func:`_resolve_runtime_agent_kwargs`):
+
+    1. ``HERMES_MAX_TOKENS`` env var — highest priority so operators can
+       override a config that previously sent too-large requests (#59763).
+    2. ``config.yaml`` ``model.max_tokens`` — the documented global cap.
+    3. Per-provider ``max_output_tokens`` from ``custom_providers`` —
+       only falls through here when the documented global cap (2) is
+       unset, so ``model.max_tokens`` always wins when both are set.
+
+    Returns ``None`` when no cap is configured; callers should treat that
+    as "let the provider / model pick its default."
+    """
+    from hermes_cli.runtime_provider import _get_model_config
+
+    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
+    if _env_mt:
+        try:
+            return int(_env_mt)
+        except (ValueError, TypeError):
+            pass
+
+    model_cfg = _get_model_config()
+    if isinstance(model_cfg, dict):
+        mt = model_cfg.get("max_tokens")
+        if isinstance(mt, int):
+            return mt
+
+    if isinstance(runtime, dict):
+        _runtime_mot = runtime.get("max_output_tokens")
+        if isinstance(_runtime_mot, int) and _runtime_mot > 0:
+            return _runtime_mot
+
+    return None
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -1796,7 +1835,6 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
-        _get_model_config,
     )
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
@@ -1818,26 +1856,6 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    model_cfg = _get_model_config()
-    max_tokens = None
-    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
-    if _env_mt:
-        try:
-            max_tokens = int(_env_mt)
-        except (ValueError, TypeError):
-            max_tokens = None
-    elif isinstance(model_cfg, dict):
-        mt = model_cfg.get("max_tokens")
-        if isinstance(mt, int):
-            max_tokens = mt
-    # Fall back to a per-provider output cap (custom_providers max_output_tokens)
-    # only when the documented global model.max_tokens isn't set, so the global
-    # key always wins.
-    if max_tokens is None:
-        _runtime_mot = runtime.get("max_output_tokens")
-        if isinstance(_runtime_mot, int) and _runtime_mot > 0:
-            max_tokens = _runtime_mot
-
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
@@ -1846,12 +1864,18 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
-        "max_tokens": max_tokens,
+        "max_tokens": _resolve_max_tokens_cap(runtime),
     }
 
 
 def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
-    """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
+    """Resolve runtime credentials for a specific provider (e.g. from channel override).
+
+    Mirrors :func:`_resolve_runtime_agent_kwargs` 1:1 — including the
+    ``max_tokens`` cap resolution — so provider-pinned routes (channel
+    overrides, persisted /model session overrides) honour the same global
+    cap as the default route instead of silently dropping it (#59763).
+    """
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
@@ -1868,6 +1892,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "max_tokens": _resolve_max_tokens_cap(runtime),
     }
 
 
@@ -15347,6 +15372,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
+                # Carry the resolved output-token cap so the fast path at
+                # gateway/run.py:3706 sees it on every turn (#59763). When
+                # ``max_tokens`` is None the cap is intentionally absent —
+                # the model's default applies.
+                override["max_tokens"] = runtime.get("max_tokens")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:

@@ -184,6 +184,46 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     assert call_count["n"] == 2
 
 
+def test_apply_external_secret_sources_status_line_suppresses_secret_names(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.delenv("LEAK_THIS_API_KEY", raising=False)
+    monkeypatch.delenv("LEAK_THIS_TOKEN", raising=False)
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+
+    import agent.secret_sources.bitwarden as bw_module
+
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(
+        bw_module,
+        "fetch_bitwarden_secrets",
+        lambda **_kw: (
+            {"LEAK_THIS_API_KEY": "sk-test", "LEAK_THIS_TOKEN": "tok-test"},
+            [],
+        ),
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    err = capsys.readouterr().err
+    assert "Bitwarden Secrets Manager: applied 2 secrets" in err
+    assert "LEAK_THIS_API_KEY" not in err
+    assert "LEAK_THIS_TOKEN" not in err
+
+
 def test_apply_external_secret_sources_records_onepassword_origin(tmp_path, monkeypatch):
     """When the 1Password source resolves refs, applied vars end up in
     ``_SECRET_SOURCES`` labeled ``onepassword``."""

@@ -795,6 +795,53 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- secret source registration -------------------------------------------
+
+    def register_secret_source(self, source) -> None:
+        """Register an external secret-manager backend.
+
+        ``source`` must be an instance of
+        :class:`agent.secret_sources.base.SecretSource`.  Registered
+        sources run during ``load_hermes_dotenv()`` startup — after
+        ``~/.hermes/.env`` loads, before Hermes reads credentials — when
+        their ``secrets.<source.name>`` config section is enabled.  The
+        orchestrator (``agent.secret_sources.registry.apply_all``) owns
+        ordering, mapped-vs-bulk precedence, conflict warnings, and
+        provenance; the source only fetches.
+
+        NOTE ON TIMING: plugin discovery happens later in startup than
+        the first ``load_hermes_dotenv()`` call, so a plugin-registered
+        source is not consulted by the initial env load of the process
+        that discovers it.  It IS consulted by every subsequently
+        spawned Hermes process (gateway children, cron sessions,
+        subagents), and immediately after a
+        ``reset_secret_source_cache()`` re-pull.  Plugin sources are
+        therefore best for supplying credentials to the running fleet;
+        the bundled sources cover first-process bootstrap.
+
+        Contract requirements (rejected with a warning otherwise):
+        inherit from ``SecretSource``, ``api_version`` matching
+        ``SECRET_SOURCE_API_VERSION``, lowercase unique ``name``,
+        ``shape`` of ``"mapped"`` or ``"bulk"``, unique ``scheme`` (when
+        set), and a ``fetch()`` that never raises and never prompts.
+        See the base-module docstring for the full contract.
+        """
+        from agent.secret_sources.base import SecretSource
+        from agent.secret_sources.registry import register_source
+
+        if not isinstance(source, SecretSource):
+            logger.warning(
+                "Plugin '%s' tried to register a secret source that does "
+                "not inherit from SecretSource. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        if register_source(source):
+            logger.info(
+                "Plugin '%s' registered secret source: %s",
+                self.manifest.name, source.name,
+            )
+
     # -- TTS provider registration -------------------------------------------
 
     def register_tts_provider(self, provider) -> None:
@@ -1236,10 +1283,6 @@ class PluginManager:
         """
         if self._discovered and not force:
             return
-        # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
-        # with all customizations disabled. Skip plugin discovery entirely so
-        # no third-party code (hooks, tools, platforms) loads. Mark as
-        # discovered so callers see a clean empty registry, not a retry loop.
         if env_var_enabled("HERMES_SAFE_MODE"):
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True
@@ -2046,7 +2089,7 @@ def clear_thread_tool_whitelist() -> None:
     _thread_tool_whitelist.allowed = None
 
 
-def get_pre_tool_call_directive(
+def get_pre_tool_call_block_message(
     tool_name: str,
     args: Optional[Dict[str, Any]],
     task_id: str = "",
@@ -2055,38 +2098,22 @@ def get_pre_tool_call_directive(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[Optional[str], Optional[str]]:
-    """Check ``pre_tool_call`` hooks for a blocking or approval directive.
+) -> Optional[str]:
+    """Check ``pre_tool_call`` hooks for a blocking directive.
 
     Plugins that need to enforce policy (rate limiting, security
-    restrictions, approval workflows) can return one of::
+    restrictions, approval workflows) can return::
 
-        {"action": "block",   "message": "Reason the tool was blocked"}
-        {"action": "approve", "message": "Why this needs human confirmation"}
+        {"action": "block", "message": "Reason the tool was blocked"}
 
-    from their ``pre_tool_call`` callback.
-
-    - ``block`` vetoes the tool call outright (the message becomes the tool
-      result the model sees).
-    - ``approve`` ESCALATES to the existing human-approval gate
-      (``prompt_dangerous_approval`` on CLI, the approval callback on the
-      gateway) — the same mechanism Tier-2 dangerous shell patterns use.
-      This lets a plugin require a human ``[o]nce/[s]ession/[a]lways/[d]eny``
-      decision on ANY tool, not just terminal command strings. The caller is
-      responsible for invoking the gate (see
-      :func:`tools.approval.request_tool_approval`).
-
-    The first valid directive wins. Invalid or irrelevant hook return values
-    are silently ignored so existing observer-only hooks are unaffected.
-
-    Returns:
-        ``(directive, message)`` where ``directive`` is ``"block"``,
-        ``"approve"``, or ``None``.
+    from their ``pre_tool_call`` callback.  The first valid block
+    directive wins.  Invalid or irrelevant hook return values are
+    silently ignored so existing observer-only hooks are unaffected.
     """
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
-        return ("block", fmt.format(tool_name=tool_name))
+        return fmt.format(tool_name=tool_name)
 
     hook_results = invoke_hook(
         "pre_tool_call",
@@ -2103,91 +2130,12 @@ def get_pre_tool_call_directive(
     for result in hook_results:
         if not isinstance(result, dict):
             continue
-        action = result.get("action")
-        if action not in ("block", "approve"):
+        if result.get("action") != "block":
             continue
         message = result.get("message")
-        message = message if isinstance(message, str) and message else None
-        # A block directive requires a message (it becomes the tool result);
-        # an approve directive can carry an optional reason.
-        if action == "block" and not message:
-            continue
-        return (action, message)
+        if isinstance(message, str) and message:
+            return message
 
-    return (None, None)
-
-
-def get_pre_tool_call_block_message(
-    tool_name: str,
-    args: Optional[Dict[str, Any]],
-    task_id: str = "",
-    session_id: str = "",
-    tool_call_id: str = "",
-    turn_id: str = "",
-    api_request_id: str = "",
-    middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[str]:
-    """Back-compat shim: return only a ``block`` message (or ``None``).
-
-    Deprecated in favor of :func:`get_pre_tool_call_directive`, which also
-    surfaces the ``approve`` escalation directive. Kept so any external caller
-    importing the old name keeps working; ``approve`` directives are invisible
-    to this shim (it only reports blocks).
-    """
-    directive, message = get_pre_tool_call_directive(
-        tool_name, args, task_id=task_id, session_id=session_id,
-        tool_call_id=tool_call_id, turn_id=turn_id,
-        api_request_id=api_request_id, middleware_trace=middleware_trace,
-    )
-    return message if directive == "block" else None
-
-
-def resolve_pre_tool_block(
-    tool_name: str,
-    args: Optional[Dict[str, Any]],
-    task_id: str = "",
-    session_id: str = "",
-    tool_call_id: str = "",
-    turn_id: str = "",
-    api_request_id: str = "",
-    middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[str]:
-    """Resolve the pre_tool_call directive to a final block message (or None).
-
-    Single entry point for every tool-dispatch site: fetches the plugin
-    directive and, for an ``approve`` escalation, invokes the human-approval
-    gate (:func:`tools.approval.request_tool_approval`). Returns the message
-    the tool result should carry when the call is blocked, or ``None`` when
-    the call may proceed.
-
-    Centralizing this keeps the security-critical fail-closed logic in ONE
-    place instead of copy-pasted across the concurrent/sequential/helper
-    dispatch paths: an ``approve`` directive whose gate errors, denies, or
-    times out is fail-closed to a block; ``block`` blocks with its message;
-    anything else proceeds.
-    """
-    directive, message = get_pre_tool_call_directive(
-        tool_name, args, task_id=task_id, session_id=session_id,
-        tool_call_id=tool_call_id, turn_id=turn_id,
-        api_request_id=api_request_id, middleware_trace=middleware_trace,
-    )
-    if directive == "block":
-        return message
-    if directive == "approve":
-        try:
-            from tools.approval import request_tool_approval
-            result = request_tool_approval(
-                tool_name, message or "", rule_key=tool_name,
-            )
-        except Exception:
-            # Fail-closed: if the gate itself errors, block rather than
-            # silently execute an action a plugin flagged for approval.
-            return f"BLOCKED: plugin approval gate failed for {tool_name}"
-        if not result.get("approved"):
-            return str(
-                result.get("message")
-                or f"BLOCKED: plugin approval required for {tool_name}"
-            )
     return None
 
 

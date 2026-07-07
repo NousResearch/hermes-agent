@@ -1071,6 +1071,17 @@ def _classify_by_status(
             )
         return result_fn(FailoverReason.overloaded, retryable=True)
 
+    # 408 Request Timeout — a transient timing failure the server itself flags
+    # as safe to retry (RFC 9110 §15.5.9), not a malformed request. Commonly
+    # emitted by reverse proxies sitting in front of self-hosted backends
+    # (llama.cpp / Ollama / vLLM) when a long generation outruns the proxy's
+    # request-read window. Route to the dedicated ``timeout`` reason (rebuild
+    # client + retry) instead of falling through to the generic 4xx bucket
+    # below, which would abort the turn on a retry-safe error the same way it
+    # aborts a 400 Bad Request.
+    if status_code == 408:
+        return result_fn(FailoverReason.timeout, retryable=True)
+
     # Other 4xx — non-retryable
     if 400 <= status_code < 500:
         return result_fn(

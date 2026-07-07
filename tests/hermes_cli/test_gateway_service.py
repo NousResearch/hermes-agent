@@ -1384,7 +1384,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"gui/501"
+        assert domain == "gui/501"
         # Should have probed gui first
         assert run_calls[0] == ["launchctl", "print", f"gui/501/{label}"]
 
@@ -1406,7 +1406,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"user/501"
+        assert domain == "user/501"
         # Should have tried gui first, then user
         assert len(run_calls) >= 2
 
@@ -1427,7 +1427,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"gui/501"
+        assert domain == "gui/501"
 
     def test_managername_background_selects_user_domain(self, monkeypatch):
         """When managername is Background (non-Aqua), use user/<uid>."""
@@ -1444,7 +1444,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"user/501"
+        assert domain == "user/501"
 
     def test_caches_result_across_calls(self, monkeypatch):
         """Domain detection should run once and cache the result."""
@@ -2769,7 +2769,7 @@ class TestLegacyHermesUnitDetection:
             "ExecStart=/venv/bin/python /opt/hermes/gateway/run.py",
         ]
         for i, execstart in enumerate(variants):
-            name = f"hermes.service" if i == 0 else f"hermes.service"  # same name
+            name = "hermes.service" if i == 0 else "hermes.service"  # same name
             # Test each variant fresh
             (user_dir / "hermes.service").write_text(
                 f"[Unit]\nDescription=Old Hermes\n[Service]\n{execstart}\n",

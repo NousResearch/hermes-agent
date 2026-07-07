@@ -291,6 +291,7 @@ async def test_agent_notification_carries_message_id_reply_anchor(monkeypatch, t
     Without an anchor, Telegram private-chat topic sends fall back to the main
     chat (see _thread_kwargs_for_send / telegram_dm_topic_reply_fallback)."""
     import tools.process_registry as pr_module
+    from gateway.session import SessionSource
 
     sessions = [SimpleNamespace(
         output_buffer="SMOKE_OK\n", exited=True, exit_code=0, command="sleep 1",
@@ -303,6 +304,18 @@ async def test_agent_notification_carries_message_id_reply_anchor(monkeypatch, t
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
     adapter = runner.adapters[Platform.TELEGRAM]
+
+    # Add the originating session to session_store so it's active
+    runner.session_store._entries["agent:main:telegram:dm:123:24296"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            thread_id="24296",
+            user_id="1",
+            user_name="Fabio",
+        )
+    )
 
     watcher = {
         "session_id": "proc_anchor",
@@ -328,6 +341,7 @@ async def test_agent_notification_no_message_id_is_tolerated(monkeypatch, tmp_pa
     """A watcher dict without message_id (CLI spawn, pre-upgrade checkpoint)
     still injects — message_id is simply None."""
     import tools.process_registry as pr_module
+    from gateway.session import SessionSource
 
     sessions = [SimpleNamespace(
         output_buffer="done\n", exited=True, exit_code=0, command="sleep 1",
@@ -340,6 +354,18 @@ async def test_agent_notification_no_message_id_is_tolerated(monkeypatch, tmp_pa
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
     adapter = runner.adapters[Platform.TELEGRAM]
+
+    # Add the originating session to session_store so it's active
+    runner.session_store._entries["agent:main:telegram:dm:123:24296"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            thread_id="24296",
+            user_id="1",
+            user_name="Fabio",
+        )
+    )
 
     watcher = {
         "session_id": "proc_anchorless",
@@ -556,3 +582,109 @@ def test_parse_session_key_too_short():
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
     assert _parse_session_key("agent:cron:telegram:dm:123") is None
+
+
+# ---------------------------------------------------------------------------
+# Regression test for #60426: notifications injected into wrong sessions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_skips_inactive_sessions(monkeypatch, tmp_path):
+    """When the originating session is no longer active, agent_notify completions are skipped (#60426).
+
+    This prevents process completion notifications from being injected into unrelated sessions
+    (e.g., a cron job session receiving a notification from a closed interactive session).
+
+    The test simulates this by NOT adding the originating session to session_store,
+    which means the gateway won't recognize it as active.
+    """
+    import tools.process_registry as pr_module
+
+    session = SimpleNamespace(
+        output_buffer="task completed\n",
+        exited=True,
+        exit_code=0,
+        command="python task.py",
+    )
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([session]))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    # Simulate a process watcher from a session that is NOT in session_store
+    # (and thus not active)
+    watcher = {
+        "session_id": "proc_inactive",
+        "check_interval": 0,
+        "platform": "telegram",
+        "chat_id": "123",
+        "session_key": "agent:main:telegram:dm:123",  # This session is NOT in session_store
+        "notify_on_complete": True,
+    }
+
+    # Run the watcher — it should skip injection due to inactive session
+    await runner._run_process_watcher(watcher)
+
+    # Verify no notification was injected (handle_message should not be called)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_injects_to_active_sessions(monkeypatch, tmp_path):
+    """When the originating session IS active, agent_notify completions are injected normally (#60426).
+
+    This ensures the guard doesn't break the happy path where the session is still active.
+    """
+    import tools.process_registry as pr_module
+
+    session = SimpleNamespace(
+        output_buffer="task completed\n",
+        exited=True,
+        exit_code=0,
+        command="python task.py",
+    )
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([session]))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    # Simulate a process watcher from a session that IS in session_store
+    # (and thus active)
+    watcher = {
+        "session_id": "proc_active",
+        "check_interval": 0,
+        "platform": "telegram",
+        "chat_id": "123",
+        "session_key": "agent:main:telegram:dm:123",
+        "notify_on_complete": True,
+    }
+
+    # Add the originating session to session_store (makes it active)
+    from gateway.session import SessionSource
+    runner.session_store._entries["agent:main:telegram:dm:123"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="1",
+            user_name="TestUser",
+        )
+    )
+
+    # Run the watcher — it should inject the notification
+    await runner._run_process_watcher(watcher)
+
+    # Verify the notification was injected (handle_message should be called)
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.internal is True
+    assert "task completed" in synth_event.text

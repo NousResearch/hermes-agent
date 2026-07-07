@@ -15324,6 +15324,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             adapter = a
                             break
                     if adapter and source.chat_id:
+                        # Guard against injecting notifications into wrong sessions
+                        # when the originating session is no longer active (#60426)
+                        if session_key and session_key not in self.session_store._entries:
+                            logger.debug(
+                                "Process %s finished — skipping notification for inactive session %s (no active session match)",
+                                session_id,
+                                session_key,
+                            )
+                            break
                         try:
                             synth_event = MessageEvent(
                                 text=synth_text,

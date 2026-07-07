@@ -177,7 +177,7 @@ class TestPerCapabilityBackendSelection:
         monkeypatch.setenv("PARALLEL_API_KEY", "test-key")
         assert web_tools._get_extract_backend() == "parallel"
 
-    def test_search_backend_ignored_when_not_available(self, monkeypatch):
+    def test_search_backend_kept_when_known_but_not_available(self, monkeypatch):
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
@@ -186,8 +186,9 @@ class TestPerCapabilityBackendSelection:
         })
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
-        # Should fall back to firecrawl since exa isn't configured
-        assert web_tools._get_search_backend() == "firecrawl"
+        # Keep the explicit backend so the dispatcher surfaces
+        # "EXA_API_KEY is not set" instead of silently switching engines.
+        assert web_tools._get_search_backend() == "exa"
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
         from tools import web_tools

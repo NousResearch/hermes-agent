@@ -1,0 +1,7 @@
+name: web-perplexity
+version: 1.0.0
+description: "Perplexity Search API — ranked web search results via Perplexity. Requires PERPLEXITY_API_KEY from https://console.perplexity.ai/."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - perplexity

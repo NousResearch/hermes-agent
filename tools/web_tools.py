@@ -279,13 +279,18 @@ def _get_extract_backend() -> str:
 def _get_capability_backend(capability: str) -> str:
     """Shared helper for per-capability backend selection.
 
-    Reads ``web.{capability}_backend`` from config; if set and available,
-    uses it. Otherwise falls through to the shared ``_get_backend()``.
+    Reads ``web.{capability}_backend`` from config. If the configured backend
+    is known, return it even when its credentials are missing so the dispatcher
+    can surface the precise setup error instead of silently falling back to a
+    different search provider.
     """
     cfg = _load_web_config()
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
-    if specific and _is_backend_available(specific):
-        return specific
+    if specific:
+        if _is_backend_available(specific):
+            return specific
+        if specific in _LEGACY_WEB_BACKENDS or _registered_web_provider(specific) is not None:
+            return specific
     return _get_backend()
 
 

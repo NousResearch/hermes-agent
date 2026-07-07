@@ -19415,12 +19415,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Leftover /steer: if a steer arrived after the last tool batch
             # (e.g. during the final API call), the agent couldn't inject it
             # and returned it in result["pending_steer"]. Deliver it as the
-            # next user turn so it isn't silently dropped.
+            # next user turn so it isn't silently dropped. Wrap it in the
+            # [OUT-OF-BAND USER MESSAGE] marker — like the mid-batch and pre-API
+            # drain paths — so the model reads it as a genuine user instruction
+            # rather than raw /steer command text (#60543).
             if result and not pending and not pending_event:
                 _leftover_steer = result.get("pending_steer")
                 if _leftover_steer:
-                    pending = _leftover_steer
-                    logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
+                    from agent.agent_runtime_helpers import format_leftover_steer_for_delivery
+                    pending = format_leftover_steer_for_delivery(_leftover_steer)
+                    logger.debug("Delivering leftover /steer as next turn: '%s...'", _leftover_steer[:40])
 
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent

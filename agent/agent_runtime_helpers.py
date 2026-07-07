@@ -3127,6 +3127,23 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
+def format_leftover_steer_for_delivery(steer_text: str) -> str:
+    """Wrap a leftover /steer for delivery as a standalone next-turn message.
+
+    The "leftover" path is taken when a /steer lands after the final assistant
+    turn — there is no remaining tool batch to drain it into, so the caller
+    delivers it straight to the user-input queue as the next turn. Like the
+    mid-batch (:func:`apply_pending_steer_to_tool_results`) and pre-API drain
+    paths, it must carry the ``[OUT-OF-BAND USER MESSAGE]`` marker; otherwise
+    the model receives raw ``/steer`` command text and treats it as untrusted
+    tool output rather than a genuine user instruction (issue #60543).
+
+    ``format_steer_marker`` prefixes newlines for *appending* to existing tool
+    content; here the marker is the whole message, so surrounding whitespace is
+    stripped for a clean standalone turn.
+    """
+    return format_steer_marker(steer_text).strip()
+
 
 def force_close_tcp_sockets(client: Any) -> int:
     """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
@@ -3204,6 +3221,7 @@ __all__ = [
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",
+    "format_leftover_steer_for_delivery",
     "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]

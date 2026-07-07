@@ -12654,12 +12654,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._pending_input.put(combined)
 
             # If a /steer was left over (agent finished before another tool
-            # batch could absorb it), deliver it as the next user turn.
+            # batch could absorb it), deliver it as the next user turn. Wrap it
+            # in the [OUT-OF-BAND USER MESSAGE] marker — like the mid-batch and
+            # pre-API drain paths — so the model reads it as a genuine user
+            # instruction rather than raw /steer command text (#60543).
             _leftover_steer = result.get("pending_steer") if result else None
             if _leftover_steer and hasattr(self, '_pending_input'):
+                from agent.agent_runtime_helpers import format_leftover_steer_for_delivery
                 preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
                 print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
-                self._pending_input.put(_leftover_steer)
+                self._pending_input.put(format_leftover_steer_for_delivery(_leftover_steer))
 
             return response
             

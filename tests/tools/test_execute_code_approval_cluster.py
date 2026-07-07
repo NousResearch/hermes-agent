@@ -117,14 +117,14 @@ def gw_session(monkeypatch):
     session_key = "cluster-test-session"
     token = A.set_current_session_key(session_key)
     with A._lock:
-        A._gateway_queues.pop(session_key, None)
+        A._gateway_queues.pop((session_key, ""), None)
         A._gateway_notify_cbs.pop(session_key, None)
     try:
         yield session_key
     finally:
         A.reset_current_session_key(token)
         with A._lock:
-            A._gateway_queues.pop(session_key, None)
+            A._gateway_queues.pop((session_key, ""), None)
             A._gateway_notify_cbs.pop(session_key, None)
 
 
@@ -133,7 +133,7 @@ def _register_resolver(session_key: str, result):
     recent queued approval entry with *result* (simulating a user response)."""
     def cb(_approval_data):
         with A._lock:
-            entries = A._gateway_queues.get(session_key, [])
+            entries = A._gateway_queues.get((session_key, ""), [])
             if entries:
                 entry = entries[-1]
                 entry.result = result

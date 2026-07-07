@@ -165,6 +165,17 @@ def get_current_session_key(default: str = "default") -> str:
     return get_session_env("HERMES_SESSION_KEY", default)
 
 
+def get_current_user_id(default: str = "") -> str:
+    """Return the active gateway participant id, if any.
+
+    Used to scope dangerous-command approvals in shared gateway threads so
+    that only the participant who triggered a command can resolve its
+    approval prompt.  Empty string when unavailable (CLI, cron, tests).
+    """
+    from gateway.session_context import get_session_env
+    return get_session_env("HERMES_SESSION_USER_ID", default)
+
+
 def _get_session_platform() -> str:
     """Return the current gateway platform from contextvars/env fallback."""
     try:
@@ -1430,8 +1441,21 @@ class _ApprovalEntry:
         self.reason: Optional[str] = None
 
 
-_gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
+_gateway_queues: dict[tuple, list] = {}      # (session_key, user_id) → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+
+
+def _approval_queue_key(session_key: str, user_id: str = "") -> tuple:
+    """Composite key for the gateway approval queue.
+
+    Keyed by (session_key, user_id) so that in a shared gateway thread
+    (where all participants map to the same session_key by default) a
+    dangerous-command approval prompted by one participant can only be
+    resolved by that same participant — not by any other thread member.
+    When user_id is empty (non-gateway / unavailable), the key collapses to
+    (session_key, "") preserving the previous single-key behavior.
+    """
+    return (session_key, user_id or "")
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -1454,14 +1478,18 @@ def unregister_gateway_notify(session_key: str) -> None:
     """
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        entry.event.set()
+        # User may be empty here (teardown context) — unblock every
+        # (session_key, user_id) variant so no thread hangs.
+        for key in [k for k in _gateway_queues if k[0] == session_key]:
+            entries = _gateway_queues.pop(key, [])
+            for entry in entries:
+                entry.event.set()
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             user_id: str = "") -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -1473,10 +1501,17 @@ def resolve_gateway_approval(session_key: str, choice: str,
     deny (``/deny <reason>``).  It is relayed back to the agent in the
     BLOCKED message so it can adapt instead of only hearing "denied".
 
+    *user_id* scopes the resolution to approvals that the *same* participant
+    triggered.  In a shared gateway thread (where all members map to the same
+    session_key by default) this prevents participant B from approving a
+    destructive command that participant A issued.  Empty *user_id* matches
+    the legacy single-key behavior (non-gateway / unavailable participant id).
+
     Returns the number of approvals resolved (0 means nothing was pending).
     """
+    key = _approval_queue_key(session_key, user_id)
     with _lock:
-        queue = _gateway_queues.get(session_key)
+        queue = _gateway_queues.get(key)
         if not queue:
             return 0
         if resolve_all:
@@ -1485,7 +1520,7 @@ def resolve_gateway_approval(session_key: str, choice: str,
         else:
             targets = [queue.pop(0)]
         if not queue:
-            _gateway_queues.pop(session_key, None)
+            _gateway_queues.pop(key, None)
 
     for entry in targets:
         entry.result = choice
@@ -1495,16 +1530,26 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
-def has_blocking_approval(session_key: str) -> bool:
-    """Check if a session has one or more blocking gateway approvals waiting."""
+def has_blocking_approval(session_key: str, user_id: str = "") -> bool:
+    """Check if a session has one or more blocking gateway approvals waiting.
+
+    *user_id* scopes the check to approvals triggered by the same participant
+    (see resolve_gateway_approval for the rationale).  Empty *user_id* checks
+    the legacy single-key bucket.
+    """
     with _lock:
-        return bool(_gateway_queues.get(session_key))
+        return bool(_gateway_queues.get(_approval_queue_key(session_key, user_id)))
 
 
-def submit_pending(session_key: str, approval: dict):
-    """Store a pending approval request for a session."""
+def submit_pending(session_key: str, approval: dict, user_id: str = ""):
+    """Store a pending approval request for a session.
+
+    *user_id* records which participant triggered the command so that only
+    that participant (or the gateway owner) can later resolve it — closing
+    the cross-user approval hijack in shared gateway threads.
+    """
     with _lock:
-        _pending[session_key] = approval
+        _pending[_approval_queue_key(session_key, user_id)] = approval
 
 
 def approve_session(session_key: str, pattern_key: str):
@@ -1536,8 +1581,15 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
+        # Clean up _pending with both string and tuple keys for backward compat
         _pending.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
+        for pk in [k for k in _pending if isinstance(k, tuple) and k[0] == session_key]:
+            _pending.pop(pk, None)
+        entries = []
+        for pk in [k for k in _gateway_queues if isinstance(k, tuple) and k[0] == session_key]:
+            entries.extend(_gateway_queues.pop(pk, []))
+        # Also pop legacy string key if present
+        entries.extend(_gateway_queues.pop(session_key, []))
     for entry in entries:
         # Session-boundary cleanup should cancel any blocked approval waits
         # immediately so the old run can unwind instead of idling until timeout.
@@ -2094,7 +2146,7 @@ def check_dangerous_command(command: str, env_type: str,
             "command": command,
             "pattern_key": pattern_key,
             "description": description,
-        })
+        }, user_id=get_current_user_id())
         return {
             "approved": False,
             "pattern_key": pattern_key,
@@ -2160,7 +2212,8 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
-                            *, surface: str = "gateway") -> dict:
+                            *, surface: str = "gateway",
+                            user_id: str = "") -> dict:
     """Enqueue *approval_data*, notify the user, and block the calling agent
     thread until the request is resolved or the gateway approval timeout
     elapses — firing pre/post approval hooks and cleaning up the queue entry.
@@ -2179,17 +2232,18 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
+    _qkey = _approval_queue_key(session_key, user_id)
     entry = _ApprovalEntry(approval_data)
     with _lock:
-        _gateway_queues.setdefault(session_key, []).append(entry)
+        _gateway_queues.setdefault(_qkey, []).append(entry)
 
     def _drop_entry() -> None:
         with _lock:
-            queue = _gateway_queues.get(session_key, [])
+            queue = _gateway_queues.get(_qkey, [])
             if entry in queue:
                 queue.remove(entry)
             if not queue:
-                _gateway_queues.pop(session_key, None)
+                _gateway_queues.pop(_qkey, None)
 
     # Notify plugins that an approval is being requested. Fires before the
     # gateway notify callback so observers get the event in real time.
@@ -2546,7 +2600,8 @@ def check_all_command_guards(command: str, env_type: str,
                 "allow_permanent": not has_tirith,
             }
             decision = _await_gateway_decision(
-                session_key, notify_cb, approval_data, surface="gateway"
+                session_key, notify_cb, approval_data, surface="gateway",
+                user_id=get_current_user_id(),
             )
             if decision.get("notify_failed"):
                 return {
@@ -2623,7 +2678,7 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": _disp_combined_desc,
-        })
+        }, user_id=get_current_user_id())
         return {
             "approved": False,
             "pattern_key": primary_key,
@@ -2822,7 +2877,7 @@ def check_execute_code_guard(code: str, env_type: str,
             "pattern_key": pattern_key,
             "pattern_keys": [pattern_key],
             "description": display_description,
-        })
+        }, user_id=get_current_user_id())
         return {
             "approved": False,
             "pattern_key": pattern_key,
@@ -2843,7 +2898,8 @@ def check_execute_code_guard(code: str, env_type: str,
         "description": display_description,
     }
     decision = _await_gateway_decision(
-        session_key, notify_cb, approval_data, surface="gateway"
+        session_key, notify_cb, approval_data, surface="gateway",
+        user_id=get_current_user_id(),
     )
     if decision.get("notify_failed"):
         return {
@@ -2945,6 +3001,7 @@ def request_elicitation_consent(
         try:
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface=surface,
+                user_id=get_current_user_id(),
             )
         except Exception as exc:
             logger.error(

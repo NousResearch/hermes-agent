@@ -140,8 +140,8 @@ async def test_resume_clears_session_scoped_approval_and_yolo_state():
     approve_session(other_key, "recursive delete")
     enable_session_yolo(session_key)
     enable_session_yolo(other_key)
-    runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
-    runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
+    runner._pending_approvals[(session_key, "")] = {"command": "rm -rf /tmp/demo"}
+    runner._pending_approvals[(other_key, "")] = {"command": "rm -rf /tmp/other"}
     runner._update_prompt_pending[session_key] = True
     runner._update_prompt_pending[other_key] = True
 
@@ -150,12 +150,13 @@ async def test_resume_clears_session_scoped_approval_and_yolo_state():
     assert "Resumed session" in result
     assert is_approved(session_key, "recursive delete") is False
     assert is_session_yolo_enabled(session_key) is False
-    assert session_key not in runner._pending_approvals
+    assert (session_key, "") not in runner._pending_approvals
     assert session_key not in runner._update_prompt_pending
-    assert session_key not in runner._pending_skills_reload_notes
+    assert session_key not in runner._update_prompt_pending
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
-    assert other_key in runner._pending_approvals
+    assert (other_key, "") in runner._pending_approvals
+    assert other_key in runner._update_prompt_pending
     assert other_key in runner._update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
 
@@ -173,8 +174,8 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
     approve_session(other_key, "recursive delete")
     enable_session_yolo(session_key)
     enable_session_yolo(other_key)
-    runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
-    runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
+    runner._pending_approvals[(session_key, "")] = {"command": "rm -rf /tmp/demo"}
+    runner._pending_approvals[(other_key, "")] = {"command": "rm -rf /tmp/other"}
     runner._update_prompt_pending[session_key] = True
     runner._update_prompt_pending[other_key] = True
 
@@ -183,12 +184,13 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
     assert "Branched to" in result
     assert is_approved(session_key, "recursive delete") is False
     assert is_session_yolo_enabled(session_key) is False
-    assert session_key not in runner._pending_approvals
+    assert (session_key, "") not in runner._pending_approvals
     assert session_key not in runner._update_prompt_pending
-    assert session_key not in runner._pending_skills_reload_notes
+    assert session_key not in runner._update_prompt_pending
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
-    assert other_key in runner._pending_approvals
+    assert (other_key, "") in runner._pending_approvals
+    assert other_key in runner._update_prompt_pending
     assert other_key in runner._update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
 
@@ -246,8 +248,8 @@ def test_clear_session_boundary_security_state_is_scoped():
     approve_session(other_key, "recursive delete")
     enable_session_yolo(session_key)
     enable_session_yolo(other_key)
-    runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
-    runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
+    runner._pending_approvals[(session_key, "")] = {"command": "rm -rf /tmp/demo"}
+    runner._pending_approvals[(other_key, "")] = {"command": "rm -rf /tmp/other"}
     runner._update_prompt_pending[session_key] = True
     runner._update_prompt_pending[other_key] = True
     runner._pending_skills_reload_notes[session_key] = (
@@ -271,14 +273,14 @@ def test_clear_session_boundary_security_state_is_scoped():
     # Target session cleared
     assert is_approved(session_key, "recursive delete") is False
     assert is_session_yolo_enabled(session_key) is False
-    assert session_key not in runner._pending_approvals
+    assert (session_key, "") not in runner._pending_approvals
     assert session_key not in runner._update_prompt_pending
     assert session_key not in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(session_key) is None
     # Other session untouched
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
-    assert other_key in runner._pending_approvals
+    assert (other_key, "") in runner._pending_approvals
     assert other_key in runner._update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(other_key) is not None
@@ -305,8 +307,8 @@ def test_clear_session_boundary_security_state_wakes_blocked_approvals():
 
     target_entry = _ApprovalEntry({"command": "rm -rf /tmp/demo"})
     other_entry = _ApprovalEntry({"command": "rm -rf /tmp/other"})
-    approval_mod._gateway_queues[session_key] = [target_entry]
-    approval_mod._gateway_queues[other_key] = [other_entry]
+    approval_mod._gateway_queues[(session_key, "")] = [target_entry]
+    approval_mod._gateway_queues[(other_key, "")] = [other_entry]
 
     runner._clear_session_boundary_security_state(session_key)
 
@@ -314,5 +316,5 @@ def test_clear_session_boundary_security_state_wakes_blocked_approvals():
     assert target_entry.result == "deny"
     assert other_entry.event.is_set() is False
     assert other_entry.result is None
-    assert session_key not in approval_mod._gateway_queues
-    assert other_key in approval_mod._gateway_queues
+    assert (session_key, "") not in approval_mod._gateway_queues
+    assert (other_key, "") in approval_mod._gateway_queues

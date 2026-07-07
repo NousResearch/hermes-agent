@@ -21,10 +21,10 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
 
-def _make_source() -> SessionSource:
+def _make_source(user_id: str = "u1") -> SessionSource:
     return SessionSource(
         platform=Platform.TELEGRAM,
-        user_id="u1",
+        user_id=user_id,
         chat_id="c1",
         user_name="tester",
         chat_type="dm",
@@ -37,6 +37,12 @@ def _make_event(text: str) -> MessageEvent:
         source=_make_source(),
         message_id="m1",
     )
+
+
+def _source_user_id(source=None) -> str:
+    """Return the user_id from a source, matching the handler's extraction logic."""
+    src = source or _make_source()
+    return str(src.user_id) if src.user_id else ""
 
 
 def _make_runner():
@@ -99,7 +105,7 @@ class TestBlockingGatewayApproval:
 
         # Simulate what check_all_command_guards does
         entry = _ApprovalEntry({"command": "rm -rf /"})
-        _gateway_queues.setdefault(session_key, []).append(entry)
+        _gateway_queues.setdefault((session_key, ""), []).append(entry)
 
         assert has_blocking_approval(session_key) is True
 
@@ -130,7 +136,7 @@ class TestBlockingGatewayApproval:
         e1 = _ApprovalEntry({"command": "cmd1"})
         e2 = _ApprovalEntry({"command": "cmd2"})
         e3 = _ApprovalEntry({"command": "cmd3"})
-        _gateway_queues[session_key] = [e1, e2, e3]
+        _gateway_queues[(session_key, "")] = [e1, e2, e3]
 
         count = resolve_gateway_approval(session_key, "session", resolve_all=True)
         assert count == 3
@@ -146,14 +152,14 @@ class TestBlockingGatewayApproval:
         session_key = "test-fifo"
         e1 = _ApprovalEntry({"command": "first"})
         e2 = _ApprovalEntry({"command": "second"})
-        _gateway_queues[session_key] = [e1, e2]
+        _gateway_queues[(session_key, "")] = [e1, e2]
 
         count = resolve_gateway_approval(session_key, "once")
         assert count == 1
         assert e1.event.is_set()
         assert e1.result == "once"
         assert not e2.event.is_set()
-        assert len(_gateway_queues[session_key]) == 1
+        assert len(_gateway_queues[(session_key, "")]) == 1
 
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
@@ -166,7 +172,7 @@ class TestBlockingGatewayApproval:
 
         e1 = _ApprovalEntry({"command": "cmd1"})
         e2 = _ApprovalEntry({"command": "cmd2"})
-        _gateway_queues[session_key] = [e1, e2]
+        _gateway_queues[(session_key, "")] = [e1, e2]
 
         unregister_gateway_notify(session_key)
         assert e1.event.is_set()
@@ -179,7 +185,7 @@ class TestBlockingGatewayApproval:
         session_key = "test-boundary-cleanup"
         e1 = _ApprovalEntry({"command": "cmd1"})
         e2 = _ApprovalEntry({"command": "cmd2"})
-        _gateway_queues[session_key] = [e1, e2]
+        _gateway_queues[(session_key, "")] = [e1, e2]
 
         clear_session(session_key)
 
@@ -187,7 +193,7 @@ class TestBlockingGatewayApproval:
         assert e2.event.is_set()
         assert e1.result == "deny"
         assert e2.result == "deny"
-        assert session_key not in _gateway_queues
+        assert (session_key, "") not in _gateway_queues
 
 
 # ------------------------------------------------------------------
@@ -210,7 +216,7 @@ class TestApproveCommand:
         session_key = runner._session_key_for_source(source)
 
         entry = _ApprovalEntry({"command": "test"})
-        _gateway_queues[session_key] = [entry]
+        _gateway_queues[(session_key, _source_user_id())] = [entry]
 
         result = await runner._handle_approve_command(_make_event("/approve"))
         assert "approved" in result.lower()
@@ -228,7 +234,7 @@ class TestApproveCommand:
 
         e1 = _ApprovalEntry({"command": "cmd1"})
         e2 = _ApprovalEntry({"command": "cmd2"})
-        _gateway_queues[session_key] = [e1, e2]
+        _gateway_queues[(session_key, _source_user_id())] = [e1, e2]
 
         result = await runner._handle_approve_command(_make_event("/approve all"))
         assert "2 commands" in result
@@ -246,7 +252,7 @@ class TestApproveCommand:
 
         e1 = _ApprovalEntry({"command": "cmd1"})
         e2 = _ApprovalEntry({"command": "cmd2"})
-        _gateway_queues[session_key] = [e1, e2]
+        _gateway_queues[(session_key, _source_user_id())] = [e1, e2]
 
         result = await runner._handle_approve_command(_make_event("/approve all session"))
         assert "session" in result.lower()
@@ -266,11 +272,11 @@ class TestApproveCommand:
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
-        runner._pending_approvals[session_key] = {"command": "test"}
+        runner._pending_approvals[(session_key, _source_user_id())] = {"command": "test"}
 
         result = await runner._handle_approve_command(_make_event("/approve"))
         assert "expired" in result.lower() or "no longer waiting" in result.lower()
-        assert session_key not in runner._pending_approvals
+        assert (session_key, _source_user_id()) not in runner._pending_approvals
 
 
 # ------------------------------------------------------------------
@@ -293,7 +299,7 @@ class TestDenyCommand:
         session_key = runner._session_key_for_source(source)
 
         entry = _ApprovalEntry({"command": "test"})
-        _gateway_queues[session_key] = [entry]
+        _gateway_queues[(session_key, _source_user_id())] = [entry]
 
         result = await runner._handle_deny_command(_make_event("/deny"))
         assert "denied" in result.lower()
@@ -311,7 +317,7 @@ class TestDenyCommand:
 
         e1 = _ApprovalEntry({"command": "cmd1"})
         e2 = _ApprovalEntry({"command": "cmd2"})
-        _gateway_queues[session_key] = [e1, e2]
+        _gateway_queues[(session_key, _source_user_id())] = [e1, e2]
 
         result = await runner._handle_deny_command(_make_event("/deny all"))
         assert "2 commands" in result
@@ -334,7 +340,7 @@ class TestDenyCommand:
         session_key = runner._session_key_for_source(source)
 
         entry = _ApprovalEntry({"command": "test"})
-        _gateway_queues[session_key] = [entry]
+        _gateway_queues[(session_key, _source_user_id())] = [entry]
 
         result = await runner._handle_deny_command(
             _make_event("/deny that path is still in use")
@@ -354,7 +360,7 @@ class TestDenyCommand:
 
         e1 = _ApprovalEntry({"command": "cmd1"})
         e2 = _ApprovalEntry({"command": "cmd2"})
-        _gateway_queues[session_key] = [e1, e2]
+        _gateway_queues[(session_key, _source_user_id())] = [e1, e2]
 
         result = await runner._handle_deny_command(
             _make_event("/deny all wrong directory")
@@ -373,7 +379,7 @@ class TestDenyCommand:
         session_key = runner._session_key_for_source(source)
 
         entry = _ApprovalEntry({"command": "test"})
-        _gateway_queues[session_key] = [entry]
+        _gateway_queues[(session_key, _source_user_id())] = [entry]
 
         await runner._handle_deny_command(_make_event("/deny"))
         assert entry.result == "deny"
@@ -400,7 +406,7 @@ class TestBareTextNoLongerApproves:
         session_key = runner._session_key_for_source(source)
 
         entry = _ApprovalEntry({"command": "test"})
-        _gateway_queues[session_key] = [entry]
+        _gateway_queues[(session_key, _source_user_id())] = [entry]
 
         # "yes" is not /approve — entry should still be pending
         assert not entry.event.is_set()
@@ -600,7 +606,7 @@ class TestBlockingApprovalE2E:
             time.sleep(0.05)
 
         assert len(notified) == 3
-        assert len(_gateway_queues.get(session_key, [])) == 3
+        assert len(_gateway_queues.get((session_key, ""), [])) == 3
 
         # Approve all at once
         count = resolve_gateway_approval(session_key, "session", resolve_all=True)
@@ -655,7 +661,7 @@ class TestBlockingApprovalE2E:
         from tools.approval import _gateway_queues
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            if len(_gateway_queues.get(session_key, [])) >= 2:
+            if len(_gateway_queues.get((session_key, ""), [])) >= 2:
                 break
             time.sleep(0.05)
 
@@ -895,14 +901,14 @@ class TestCrossSessionApprovalIsolation:
         try:
             # Wait until both sessions have a pending approval in their queue.
             for _ in range(100):
-                if (len(_gateway_queues.get("sess-A", [])) >= 1
-                        and len(_gateway_queues.get("sess-B", [])) >= 1):
+                if (len(_gateway_queues.get(("sess-A", ""), [])) >= 1
+                        and len(_gateway_queues.get(("sess-B", ""), [])) >= 1):
                     break
                 time.sleep(0.05)
 
             # Each command must be parked in its OWN session queue.
-            qa = _gateway_queues.get("sess-A", [])
-            qb = _gateway_queues.get("sess-B", [])
+            qa = _gateway_queues.get(("sess-A", ""), [])
+            qb = _gateway_queues.get(("sess-B", ""), [])
             assert len(qa) == 1, f"sess-A queue should hold 1, got {len(qa)}"
             assert len(qb) == 1, f"sess-B queue should hold 1, got {len(qb)}"
 
@@ -912,7 +918,7 @@ class TestCrossSessionApprovalIsolation:
             assert results["sess-A"] is not None
             assert results["sess-A"]["approved"] is True
             assert results["sess-B"] is None, "sess-B resolved by sess-A's approval (#24100)"
-            assert len(_gateway_queues.get("sess-B", [])) == 1
+            assert len(_gateway_queues.get(("sess-B", ""), [])) == 1
 
             # Now resolve sess-B independently.
             resolve_gateway_approval("sess-B", "once")
@@ -928,3 +934,139 @@ class TestCrossSessionApprovalIsolation:
             os.environ.pop("HERMES_EXEC_ASK", None)
             unregister_gateway_notify("sess-A")
             unregister_gateway_notify("sess-B")
+
+
+# ------------------------------------------------------------------
+# Cross-user approval hijack isolation
+# ------------------------------------------------------------------
+
+
+class TestCrossUserApprovalIsolation:
+    """Verify that in a shared gateway thread, participant B cannot resolve
+    a dangerous command approval that participant A triggered.
+
+    The fix keys _gateway_queues by (session_key, user_id) so that each
+    participant's approvals are isolated even when they share a session_key.
+    """
+
+    def setup_method(self):
+        _clear_approval_state()
+
+    def test_user_b_cannot_approve_user_a_command(self):
+        """Participant B sending 'yes' must not resolve participant A's approval."""
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues,
+            submit_pending, has_blocking_approval,
+            resolve_gateway_approval,
+        )
+
+        session_key = "shared-thread"
+        user_a = "user-111"
+        user_b = "user-222"
+
+        # User A triggers a dangerous command → approval queued under (session_key, user_a)
+        entry_a = _ApprovalEntry({"command": "rm -rf /data"})
+        _gateway_queues.setdefault((session_key, user_a), []).append(entry_a)
+
+        # User B tries to approve — should NOT resolve User A's entry
+        count = resolve_gateway_approval(session_key, "once", user_id=user_b)
+        assert count == 0, "User B resolved User A's approval — hijack!"
+        assert not entry_a.event.is_set(), "User A's entry was resolved by User B"
+
+        # User A can resolve their own approval
+        count = resolve_gateway_approval(session_key, "once", user_id=user_a)
+        assert count == 1
+        assert entry_a.event.is_set()
+        assert entry_a.result == "once"
+
+    def test_has_blocking_approval_scoped_by_user(self):
+        """has_blocking_approval returns True only for the user who triggered it."""
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues,
+            has_blocking_approval,
+        )
+
+        session_key = "shared-thread"
+        user_a = "user-333"
+        user_b = "user-444"
+
+        entry_a = _ApprovalEntry({"command": "drop table"})
+        _gateway_queues.setdefault((session_key, user_a), []).append(entry_a)
+
+        assert has_blocking_approval(session_key, user_a) is True
+        assert has_blocking_approval(session_key, user_b) is False
+        assert has_blocking_approval(session_key, "") is False
+
+    def test_submit_pending_scoped_by_user(self):
+        """submit_pending stores under (session_key, user_id) composite key."""
+        from tools.approval import (
+            _pending, submit_pending,
+        )
+
+        session_key = "shared-thread"
+        user_a = "user-555"
+
+        submit_pending(session_key, {"command": "sudo rm"}, user_id=user_a)
+
+        assert (session_key, user_a) in _pending
+        assert (session_key, "") not in _pending
+        assert (session_key, "other-user") not in _pending
+
+    def test_unregister_clears_all_user_queues(self):
+        """unregister_gateway_notify clears every (session_key, *) variant."""
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues,
+            register_gateway_notify, unregister_gateway_notify,
+        )
+
+        session_key = "shared-thread"
+        register_gateway_notify(session_key, lambda d: None)
+
+        e_a = _ApprovalEntry({"command": "cmd-a"})
+        e_b = _ApprovalEntry({"command": "cmd-b"})
+        _gateway_queues[(session_key, "user-A")] = [e_a]
+        _gateway_queues[(session_key, "user-B")] = [e_b]
+
+        unregister_gateway_notify(session_key)
+
+        assert e_a.event.is_set()
+        assert e_b.event.is_set()
+        assert (session_key, "user-A") not in _gateway_queues
+        assert (session_key, "user-B") not in _gateway_queues
+
+    def test_resolve_all_scoped_to_user(self):
+        """resolve_all=True only resolves entries for the requesting user."""
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues,
+            resolve_gateway_approval,
+        )
+
+        session_key = "shared-thread"
+        e_a1 = _ApprovalEntry({"command": "cmd-a1"})
+        e_a2 = _ApprovalEntry({"command": "cmd-a2"})
+        e_b = _ApprovalEntry({"command": "cmd-b"})
+        _gateway_queues[(session_key, "user-A")] = [e_a1, e_a2]
+        _gateway_queues[(session_key, "user-B")] = [e_b]
+
+        count = resolve_gateway_approval(session_key, "deny", resolve_all=True, user_id="user-A")
+        assert count == 2
+        assert e_a1.event.is_set()
+        assert e_a2.event.is_set()
+        assert not e_b.event.is_set(), "User B's entry was resolved by User A's resolve_all"
+
+    def test_empty_user_id_matches_legacy_behavior(self):
+        """When user_id is empty, the key collapses to (session_key, '')
+        preserving backward compatibility for CLI/cron contexts."""
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues,
+            has_blocking_approval, resolve_gateway_approval,
+        )
+
+        session_key = "legacy-session"
+        entry = _ApprovalEntry({"command": "rm -rf /"})
+        _gateway_queues[(session_key, "")] = [entry]
+
+        assert has_blocking_approval(session_key) is True
+        count = resolve_gateway_approval(session_key, "once")
+        assert count == 1
+        assert entry.event.is_set()

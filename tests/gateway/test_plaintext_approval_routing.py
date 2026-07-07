@@ -88,7 +88,7 @@ def _register_blocking_approval(runner):
     source = _make_source()
     session_key = runner._session_key_for_source(source)
     entry = _ApprovalEntry({"command": "rm -rf /tmp/test"})
-    _gateway_queues.setdefault(session_key, []).append(entry)
+    _gateway_queues.setdefault((session_key, str(source.user_id)), []).append(entry)
     return session_key, entry
 
 

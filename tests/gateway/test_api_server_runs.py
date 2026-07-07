@@ -354,6 +354,7 @@ class TestRunEvents:
             "session-123",
             "once",
             resolve_all=False,
+            user_id="",
         )
 
     @pytest.mark.asyncio
@@ -398,8 +399,8 @@ class TestRunEvents:
                     "pattern_keys": ["shell-c"],
                 })
                 with approval_mod._lock:
-                    approval_mod._gateway_queues[victim_run] = [victim_entry]
-                    approval_mod._gateway_queues[attacker_run] = [attacker_entry]
+                    approval_mod._gateway_queues[(victim_run, "")] = [victim_entry]
+                    approval_mod._gateway_queues[(attacker_run, "")] = [attacker_entry]
 
                 approval_resp = await cli.post(
                     f"/v1/runs/{attacker_run}/approval",
@@ -415,14 +416,14 @@ class TestRunEvents:
                 assert victim_entry.result is None
                 assert not victim_entry.event.is_set()
                 with approval_mod._lock:
-                    assert approval_mod._gateway_queues[victim_run] == [victim_entry]
-                    assert victim_run in approval_mod._gateway_queues
-                    assert attacker_run not in approval_mod._gateway_queues
+                    assert approval_mod._gateway_queues[(victim_run, "")] == [victim_entry]
+                    assert (victim_run, "") in approval_mod._gateway_queues
+                    assert (attacker_run, "") not in approval_mod._gateway_queues
 
                 # Clean up the synthetic pending victim approval and unblock the
                 # slow test agents so their background run tasks can finish.
                 with approval_mod._lock:
-                    approval_mod._gateway_queues.pop(victim_run, None)
+                    approval_mod._gateway_queues.pop((victim_run, ""), None)
                 victim_interrupted.set()
                 attacker_interrupted.set()
 

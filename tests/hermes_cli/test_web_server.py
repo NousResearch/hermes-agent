@@ -9542,6 +9542,22 @@ class TestMiniAppAdminOnlyMutatingEndpoints:
         resp = self.session_client.post("/api/cron/jobs/abcdef123456/pause")
         assert resp.status_code == 404
 
+    # ---- cron delete ----
+
+    def test_non_admin_token_cannot_delete_cron_job(self):
+        resp = self.client.delete("/api/cron/jobs/abcdef123456", headers=self.own)
+        assert resp.status_code == 403
+
+    def test_admin_token_reaches_cron_delete_handler(self):
+        # Same proof shape as the pause case above: a bogus job id 404s past
+        # the admin gate rather than the request never reaching the handler.
+        resp = self.client.delete("/api/cron/jobs/abcdef123456", headers=self.admin)
+        assert resp.status_code == 404
+
+    def test_cookie_caller_reaches_cron_delete_handler(self):
+        resp = self.session_client.delete("/api/cron/jobs/abcdef123456")
+        assert resp.status_code == 404
+
     # ---- skills toggle ----
 
     def test_non_admin_token_cannot_toggle_skill(self):

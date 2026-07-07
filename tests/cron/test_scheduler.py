@@ -4066,10 +4066,11 @@ class TestHomeTargetEnvVarRegistry:
         """``deliver=whatsapp_cloud`` routes through
         WHATSAPP_CLOUD_HOME_CHANNEL — added alongside the existing
         ``whatsapp`` Baileys entry."""
-        from cron.scheduler import _HOME_TARGET_ENV_VARS
+        from cron.scheduler import _HOME_TARGET_ENV_VARS, _KNOWN_DELIVERY_PLATFORMS
 
         assert "whatsapp_cloud" in _HOME_TARGET_ENV_VARS
         assert _HOME_TARGET_ENV_VARS["whatsapp_cloud"] == "WHATSAPP_CLOUD_HOME_CHANNEL"
+        assert "whatsapp_cloud" in _KNOWN_DELIVERY_PLATFORMS
 
     def test_baileys_whatsapp_still_registered(self):
         """Sanity guard: the Cloud addition didn't disturb Baileys

@@ -83,6 +83,9 @@ class TestSchema:
         assert "max_elements" in props
         assert props["max_elements"]["type"] == "integer"
         assert props["max_elements"].get("minimum", 1) >= 1
+        assert "max_depth" in props
+        assert props["max_depth"]["type"] == "integer"
+        assert props["max_depth"].get("minimum", 1) >= 1
 
     def test_schema_max_elements_documents_default_and_upper_bound(self):
         """Schema description must agree with the runtime. The original PR
@@ -97,6 +100,9 @@ class TestSchema:
         prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["max_elements"]
         assert prop.get("default") == _DEFAULT_MAX_ELEMENTS
         assert prop.get("maximum") == _MAX_ALLOWED_MAX_ELEMENTS
+        depth_prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["max_depth"]
+        assert depth_prop.get("default") == 12
+        assert depth_prop.get("maximum") == 100
 
 
 class TestRegistration:
@@ -368,7 +374,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **_kwargs):
                 return CaptureResult(
                     mode=mode, width=1024, height=768,
                     png_b64=fake_png, elements=[],
@@ -436,7 +442,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **_kwargs):
                 return CaptureResult(
                     mode=mode, width=800, height=600,
                     png_b64=fake_png,
@@ -478,7 +484,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **_kwargs):
                 return CaptureResult(
                     mode=mode, width=800, height=600,
                     png_b64="",
@@ -529,6 +535,20 @@ class TestCaptureResponse:
         parsed = json.loads(out)
         assert len(parsed["elements"]) == 250
         assert parsed["truncated_elements"] == 350
+
+    def test_capture_passes_driver_walk_bounds_to_backend(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        handle_computer_use({
+            "action": "capture",
+            "mode": "ax",
+            "max_elements": 250,
+            "max_depth": 7,
+        })
+
+        capture_calls = [c for c in noop_backend.calls if c[0] == "capture"]
+        assert capture_calls[-1][1]["max_elements"] == 250
+        assert capture_calls[-1][1]["max_depth"] == 7
 
     def test_capture_ax_below_cap_is_unchanged(self):
         """Backwards-compat: small captures keep the full elements array and
@@ -627,7 +647,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **_kwargs):
                 return CaptureResult(
                     mode=mode, width=800, height=600,
                     png_b64=fake_png, elements=list(elements),
@@ -1288,7 +1308,7 @@ class TestCaptureAfterAppContext:
             def is_available(self):
                 return True
 
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **_kwargs):
                 captured_app_args.append(app)
                 return CaptureResult(
                     mode=mode, width=100, height=100,
@@ -1354,7 +1374,7 @@ class TestCaptureAfterAppContext:
             def is_available(self):
                 return True
 
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="som", app=None, **_kwargs):
                 captured_app_args.append(app)
                 return CaptureResult(
                     mode=mode, width=100, height=100,
@@ -1572,8 +1592,11 @@ class TestCuaDriverSessionReconnect:
             returncode = 0
             stderr = ""
             # Daemon returns a path, not inline base64.
-            stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
-                      ' "screenshot_file_path": "%s"}' % str(shot))
+            stdout = json.dumps({
+                "element_count": 7,
+                "tree_markdown": "- [0] AXButton",
+                "screenshot_file_path": str(shot),
+            })
 
         import subprocess as _sp
         orig_run = _sp.run
@@ -1685,6 +1708,73 @@ class TestCaptureEmptyResultClipFallback:
         # CLI recovered the window list; capture resolved the Finder window.
         assert "list_windows" in cli_calls
         assert cap.app == "Finder"
+
+
+class TestCaptureSomAxCliImageRefetch:
+    """U6: som/ax must re-fetch screenshot via CLI when MCP drops the image part
+    but structured elements (or tree text) arrived."""
+
+    _TINY_PNG_B64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+
+    def test_som_refetches_png_when_mcp_has_elements_only(self):
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        windows = [{
+            "app_name": "Discord", "pid": 100, "window_id": 5,
+            "is_on_screen": True, "title": "Discord", "z_index": 0,
+        }]
+        backend = CuaDriverBackend()
+        sess = MagicMock()
+        backend._session = cast(Any, sess)
+
+        gws_mcp = {
+            "data": "Discord — 2 elements, turn 1\n",
+            "images": [],
+            "structuredContent": {
+                "elements": [{
+                    "element_index": 1, "role": "AXButton",
+                    "label": "btn", "frame": {"x": 1, "y": 2, "w": 3, "h": 4},
+                }],
+            },
+            "isError": False,
+        }
+        gws_cli = {
+            "data": "",
+            "images": [self._TINY_PNG_B64],
+            "image_mime_types": ["image/png"],
+            "structuredContent": None,
+            "isError": False,
+        }
+
+        def mcp_call(name, args, timeout=30.0):
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": windows}}
+            if name == "get_window_state":
+                return gws_mcp
+            return {"data": "", "images": [], "isError": False, "structuredContent": None}
+
+        sess.call_tool.side_effect = mcp_call
+        cli_calls = []
+
+        def cli_call(name, args, timeout):
+            cli_calls.append((name, args))
+            assert name == "get_window_state"
+            return gws_cli
+
+        sess._call_tool_via_cli.side_effect = cli_call
+
+        cap = backend.capture(mode="som", app="Discord")
+
+        assert len(cli_calls) == 1
+        assert cli_calls[0][1].get("max_elements") == 800
+        assert cli_calls[0][1].get("max_depth") == 12
+        assert cap.png_b64 == self._TINY_PNG_B64
+        assert cap.png_bytes_len > 0
+        assert len(cap.elements) == 1
 
 
 class TestCaptureAppFilterNoMatch:

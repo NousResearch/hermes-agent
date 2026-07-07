@@ -193,8 +193,22 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def stop(self) -> None: self._started = False
     def is_available(self) -> bool: return True
 
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        self.calls.append(("capture", {"mode": mode, "app": app}))
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        max_elements: Optional[int] = None,
+        max_depth: Optional[int] = None,
+    ) -> CaptureResult:
+        self.calls.append((
+            "capture",
+            {
+                "mode": mode,
+                "app": app,
+                "max_elements": max_elements,
+                "max_depth": max_depth,
+            },
+        ))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
                              elements=[], app=app or "", window_title="")
 
@@ -347,7 +361,12 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        cap = backend.capture(mode=mode, app=args.get("app"))
+        cap = backend.capture(
+            mode=mode,
+            app=args.get("app"),
+            max_elements=_coerce_driver_max_elements(args.get("max_elements")),
+            max_depth=_coerce_max_depth(args.get("max_depth")),
+        )
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
     if action == "wait":
@@ -452,10 +471,16 @@ def _text_response(res: ActionResult) -> str:
 # can exhaust session context after a single capture. The model-facing
 # `max_elements` argument lets callers raise this when they need the full tree.
 _DEFAULT_MAX_ELEMENTS = 100
+# Default AX walk cap sent to cua-driver. This is intentionally higher than the
+# response cap above so the backend can still draw SOM overlays for dense UIs
+# without dumping every element into the model-visible JSON.
+_DEFAULT_DRIVER_MAX_ELEMENTS = 800
+_DEFAULT_MAX_DEPTH = 12
 # Hard upper bound on caller-supplied `max_elements`. Without this, a tool
 # call passing a very large integer would silently disable the safeguard and
 # reintroduce the original unbounded behavior.
 _MAX_ALLOWED_MAX_ELEMENTS = 1000
+_MAX_ALLOWED_MAX_DEPTH = 100
 _MIN_PROVIDER_IMAGE_DIMENSION = 8
 
 
@@ -532,6 +557,26 @@ def _coerce_max_elements(value: Any) -> int:
         return _DEFAULT_MAX_ELEMENTS
     if n > _MAX_ALLOWED_MAX_ELEMENTS:
         return _MAX_ALLOWED_MAX_ELEMENTS
+    return n
+
+
+def _coerce_driver_max_elements(value: Any) -> int:
+    if value is None:
+        return _DEFAULT_DRIVER_MAX_ELEMENTS
+    return _coerce_max_elements(value)
+
+
+def _coerce_max_depth(value: Any) -> int:
+    if value is None:
+        return _DEFAULT_MAX_DEPTH
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_DEPTH
+    if n < 1:
+        return _DEFAULT_MAX_DEPTH
+    if n > _MAX_ALLOWED_MAX_DEPTH:
+        return _MAX_ALLOWED_MAX_DEPTH
     return n
 
 

@@ -2384,6 +2384,11 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # When True, Discord approval prompts mention numeric allowed users so
+        # owners notice approval requests in shared channels/threads. Env
+        # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
+        # pings.
+        "approval_mentions": False,
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and

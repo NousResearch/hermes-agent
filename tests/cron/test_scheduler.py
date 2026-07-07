@@ -1239,6 +1239,21 @@ class TestRunJobSessionPersistence:
             mock_agent_cls = entered[-1]  # the AIAgent patch
             yield fake_db, mock_agent_cls
 
+    def test_run_job_uses_per_job_max_turns(self, tmp_path):
+        job = {
+            "id": "bounded-job",
+            "name": "bounded",
+            "prompt": "run a bounded audit",
+            "max_turns": 6,
+        }
+
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["max_iterations"] == 6
+
     def test_run_job_passes_enabled_toolsets_to_agent(self, tmp_path):
         job = {
             "id": "toolset-job",

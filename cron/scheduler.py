@@ -2797,8 +2797,22 @@ def run_job(
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Max iterations. Frequent cron jobs can otherwise keep making progress
+        # forever via retries/tool calls and evade the inactivity watchdog.
+        _default_max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        _raw_max_iterations = job.get("max_turns") or job.get("max_iterations") or _default_max_iterations
+        try:
+            max_iterations = int(_raw_max_iterations)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Job '%s': invalid max_turns/max_iterations=%r; using default %r",
+                job_id,
+                _raw_max_iterations,
+                _default_max_iterations,
+            )
+            max_iterations = int(_default_max_iterations)
+        if max_iterations <= 0:
+            max_iterations = int(_default_max_iterations)
 
         # Provider routing
         pr = _cfg.get("provider_routing") or {}
@@ -2986,13 +3000,20 @@ def run_job(
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+        _job_timeout = (
+            job.get("timeout_seconds")
+            or job.get("inactivity_timeout_seconds")
+            or job.get("cron_timeout_seconds")
+        )
+        _timeout_source = "job" if _job_timeout not in (None, "") else "HERMES_CRON_TIMEOUT"
+        _raw_cron_timeout = str(_job_timeout).strip() if _timeout_source == "job" else os.getenv("HERMES_CRON_TIMEOUT", "").strip()
         if _raw_cron_timeout:
             try:
                 _cron_timeout = float(_raw_cron_timeout)
             except (ValueError, TypeError):
                 logger.warning(
-                    "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
+                    "Invalid cron timeout from %s=%r; using default 600s",
+                    _timeout_source,
                     _raw_cron_timeout,
                 )
                 _cron_timeout = 600.0

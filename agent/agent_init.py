@@ -68,6 +68,34 @@ def _ra():
     return run_agent
 
 
+def _bootstrap_primary_credential_pool(agent, api_key):
+    """Attach a named custom-provider pool before the first request."""
+    if getattr(agent, "_credential_pool", None) is not None:
+        return api_key
+
+    provider = (getattr(agent, "provider", "") or "").strip().lower()
+    if not provider.startswith("custom:"):
+        return api_key
+
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider)
+        if not pool or not pool.has_credentials():
+            return api_key
+        entry = pool.select()
+        runtime_key = (
+            getattr(entry, "runtime_api_key", None)
+            or getattr(entry, "access_token", "")
+        )
+        if runtime_key:
+            agent._credential_pool = pool
+            return runtime_key
+    except Exception:
+        logger.debug("Could not bootstrap primary credential pool for %s", provider, exc_info=True)
+    return api_key
+
+
 def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
     """Build the one-time notice shown when Codex gpt-5.x raises compaction.
 
@@ -733,6 +761,7 @@ def init_agent(
     # router-based implicit auth) can apply it consistently.  Bedrock
     # Claude uses its own timeout path and is not covered here.
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
+    api_key = _bootstrap_primary_credential_pool(agent, api_key)
 
     if agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token

@@ -97,7 +97,10 @@ async function openWindow(call: () => Promise<WindowOpenResult>, failMessage: st
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
-export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
+export async function openSessionInNewWindow(
+  sessionId: string,
+  opts?: { profile?: string | null; watch?: boolean }
+): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }

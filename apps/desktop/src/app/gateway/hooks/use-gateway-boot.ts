@@ -24,7 +24,12 @@ import {
   touchSecondaryGateways
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  initialWindowGatewayProfile,
+  normalizeProfileKey,
+  touchActiveGatewayBackend
+} from '@/store/profile'
 import {
   $activeSessionId,
   $attentionSessionIds,
@@ -333,7 +338,8 @@ export function useGatewayBoot({
 
     async function boot() {
       try {
-        const conn = await desktop.getConnection()
+        const requestedProfile = initialWindowGatewayProfile()
+        const conn = await desktop.getConnection(requestedProfile)
 
         if (cancelled) {
           return
@@ -361,8 +367,8 @@ export function useGatewayBoot({
         // same-profile resumes are no-op swaps and any reconnect targets the
         // right backend. Best-effort: a missing preference means "default".
         try {
-          const pref = await desktop.profile?.get?.()
-          const profileKey = (pref?.profile ?? '').trim() || 'default'
+          const pref = requestedProfile ? null : await desktop.profile?.get?.()
+          const profileKey = requestedProfile || (pref?.profile ?? '').trim() || 'default'
           $activeGatewayProfile.set(profileKey)
           setPrimaryGateway(gateway, profileKey)
           void ensureGatewayForProfile(profileKey)

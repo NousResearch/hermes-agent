@@ -42,17 +42,30 @@ function chatWindowWebPreferences(preloadPath) {
 // scratch window; `watch=1` marks a spectator window (e.g. a running subagent's
 // session): the renderer resumes it lazily so the gateway never builds an agent
 // just to stream into it.
-function buildSessionWindowUrl(sessionId, { devServer, rendererIndexPath, watch, newSession } = {}) {
-  const query = `?win=secondary${newSession ? '&new=1' : ''}${watch ? '&watch=1' : ''}`
+function buildSessionWindowUrl(sessionId, { devServer, rendererIndexPath, profile, watch, newSession } = {}) {
+  const query = new URLSearchParams({ win: 'secondary' })
+
+  if (profile) {
+    query.set('profile', profile)
+  }
+
+  if (newSession) {
+    query.set('new', '1')
+  }
+
+  if (watch) {
+    query.set('watch', '1')
+  }
+
   const route = newSession ? '#/' : `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
 
-    return `${base}/${query}${route}`
+    return `${base}/?${query.toString()}${route}`
   }
 
-  return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
+  return `${pathToFileURL(rendererIndexPath).toString()}?${query.toString()}${route}`
 }
 
 // A small registry keyed by sessionId that guarantees one window per chat:

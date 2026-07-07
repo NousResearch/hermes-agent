@@ -28,7 +28,16 @@ def _run_tick_with_retention(monkeypatch, retention_days):
 
     monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
     monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
-    monkeypatch.setattr(sched, "run_job", lambda _job: (True, "output", "response", None))
+    monkeypatch.setattr(
+        sched,
+        "run_job",
+        lambda _job, *, defer_agent_teardown=None: (
+            True,
+            "output",
+            "response",
+            None,
+        ),
+    )
     monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out.md")
     monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
     monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)

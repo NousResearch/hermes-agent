@@ -31,11 +31,12 @@ class TestDisabledToolsetPreservesEnabledTools:
         """Disabling 'safe' while 'web' is enabled preserves web tools."""
         from model_tools import _compute_tool_definitions
 
-        defs = _compute_tool_definitions(
-            enabled_toolsets=["web"],
-            disabled_toolsets=["safe"],
-            quiet_mode=True,
-        )
+        with patch("tools.registry._check_fn_cached", return_value=True):
+            defs = _compute_tool_definitions(
+                enabled_toolsets=["web"],
+                disabled_toolsets=["safe"],
+                quiet_mode=True,
+            )
         names = _get_tool_names(defs)
         assert "web_search" in names
         assert "web_extract" in names

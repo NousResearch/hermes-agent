@@ -298,6 +298,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "30668368+alex107ivanov@users.noreply.github.com": "alex107ivanov",
     "210088133+rungmc357@users.noreply.github.com": "rungmc357",
     "florian.rutishauser@outlook.com": "flo1t",
     "fanyang@microsoft.com": "fanyangCS",
@@ -845,6 +846,10 @@ AUTHOR_MAP = {
     "maks.mir@yahoo.com": "say8hi",
     "27719690+Mirac1eSky@users.noreply.github.com": "Mirac1eSky",
     "web3blind@users.noreply.github.com": "web3blind",
+    "264741654+web3blind@users.noreply.github.com": "web3blind",
+    # Sessions export format cluster (July 2026): HTML + prompt-only salvages
+    "840004959@qq.com": "simplast",
+    "catbearlove1@gmail.com": "catbearlove1-lang",
     "julia@alexland.us": "alexg0bot",
     "christian@scheid.tech": "scheidti",
     # Moonshot schema anyOf+enum salvage (May 2026)

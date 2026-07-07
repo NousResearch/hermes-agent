@@ -280,9 +280,66 @@ hermes sessions export telegram-history.jsonl --source telegram
 
 # 导出单个 session
 hermes sessions export session.jsonl --session-id 20250305_091523_a1b2c3d4
+
+# 从导出内容中脱敏 API key/token/凭据
+hermes sessions export backup.jsonl --redact
 ```
 
 导出文件每行包含一个 JSON 对象，包含完整的 session 元数据和所有消息。
+
+`export` 接受与 `prune` / `archive` 相同的过滤器 — `--older-than` / `--newer-than` / `--before` / `--after`（时长如 `5h`/`2d`/`1w`、纯数字天数或 ISO 时间戳）、`--source`、`--title`、`--model`、`--provider`、`--cwd`、`--min-messages` / `--max-messages`、`--min-tokens` / `--max-tokens`、`--min-cost` / `--max-cost`、`--min-tool-calls` / `--max-tool-calls`、`--user`、`--chat-id`、`--chat-type`、`--branch` 和 `--end-reason`。加 `--dry-run` 可预览匹配的 session 而不写入任何内容。注意：带过滤器的批量导出只匹配*已结束*的 session；不带过滤器的 `export` 会导出所有 session（包括活跃的）。
+
+### 导出 Session 为 HTML
+
+`--format html` 生成一个完全独立的 HTML 文件 — 无远程依赖 — 带样式化的消息气泡、可折叠的工具输出，多 session 导出时还带侧边栏导航：
+
+```bash
+# 将一个 session 导出为独立 HTML 页面
+hermes sessions export --format html --session-id 20250305_091523_a1b2c3d4 transcript.html
+
+# 将最近一周的所有 Telegram session 导出到一个文件，并脱敏
+hermes sessions export --format html --newer-than 1w --source telegram --redact archive.html
+```
+
+### 只导出你的 Prompt
+
+`--only user-prompts` 只导出你写的 prompt — 不含助手回复、工具输出或系统上下文。适合构建 prompt 库或回顾你问过什么：
+
+```bash
+# 每个 prompt 一条 JSONL 记录（session id、序号、时间戳、文本）
+hermes sessions export prompts.jsonl --session-id 20250305_091523_a1b2c3d4 --only user-prompts
+
+# Markdown 格式，直接输出到 stdout
+hermes sessions export - --session-id 20250305_091523_a1b2c3d4 --only user-prompts --format md
+```
+
+支持 `--format jsonl`（默认）或 `md`，批量导出时同样支持全部过滤器，也可与 `--redact` 组合。
+
+### 导出 Session 为 Markdown/QMD
+
+当你想在隐藏或删除旧 session 之前保留一份可读的文件归档时，传入 `--format md` 或 `--format qmd`。Markdown/QMD 导出会为每个 session 写入一个文件到目录中（默认：`~/.hermes/session-exports`）。
+
+```bash
+# 将单个 session 导出为 Markdown
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4
+
+# 将压缩链（compression lineage）导出为一个逻辑文档
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --lineage logical
+
+# 预览 90 天前已结束的 session，不写入文件
+hermes sessions export --format md --older-than 90 --dry-run
+
+# 将 2 周前已结束的 Telegram session 导出为 QMD 文件
+hermes sessions export --format qmd --older-than 2w --source telegram
+
+# 导出长的 Claude session，并脱敏
+hermes sessions export --format md --model sonnet --min-messages 50 --redact
+
+# 导出并在校验通过后删除一个明确指定的 session
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --delete-after-verified --yes
+```
+
+Markdown/QMD 导出为每个 session 写入一个 `.md` 或 `.qmd` 文件，并附带一个 `manifest.jsonl`，记录文件路径、消息数量、lineage id 和 SHA-256。批量导出必须带至少一个过滤条件，不带过滤条件的批量导出会被拒绝。`--delete-after-verified` 仅限与 `--session-id` 搭配使用，且必须加 `--yes`。`--redact` 会在写入前从消息内容和工具输出中清除密钥（API key、token、凭据）— 任何打算分享的导出都建议加上。
 
 ### 删除 Session
 

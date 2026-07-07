@@ -188,11 +188,52 @@ def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     stale.mkdir()
 
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
 
     assert server._completion_cwd({"profile": "ef-design"}) == str(profile_b)
-    # No profile → unchanged fallback to the launch env var.
+    # No profile and no launch config → fallback to the launch env var.
     assert server._completion_cwd({}) == str(stale)
+
+
+def test_completion_cwd_prefers_launch_config_over_stale_env(monkeypatch, tmp_path):
+    """Dashboard /chat's launch-profile in-memory gateway must honor config.
+
+    The embedded Node TUI child gets TERMINAL_CWD from the dashboard PTY bridge,
+    but the default-profile chat attaches to the dashboard process's already
+    running in-memory gateway. That process may not have TERMINAL_CWD in its own
+    environment (or has a stale one), so config.yaml is read directly and wins
+    over the process env before falling back to the launch directory.
+    """
+    configured = tmp_path / "omni"
+    configured.mkdir()
+    stale = tmp_path / "hermes-agent"
+    stale.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(stale))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}})
+    monkeypatch.setattr(server, "_profile_home", lambda _name: None)
+
+    assert server._completion_cwd({}) == str(configured)
+
+
+def test_default_session_cwd_prefers_launch_config(monkeypatch, tmp_path):
+    """A freshly created / resumed session with no explicit cwd lands in the
+    configured terminal.cwd, not os.getcwd(), even when the in-memory gateway
+    process env carries a stale TERMINAL_CWD."""
+    configured = tmp_path / "workspace"
+    configured.mkdir()
+    stale = tmp_path / "launch-dir"
+    stale.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(stale))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}})
+
+    assert server._default_session_cwd() == str(configured)
+
+    # No launch config → fall back to the process env var.
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    assert server._default_session_cwd() == str(stale)
 
 
 def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
@@ -1410,7 +1451,11 @@ def test_config_sync_switches_unpinned_session(monkeypatch):
         (
             "sid",
             "new/model --provider nous",
-            {"confirm_expensive_model": True, "pin_session_override": False},
+            {
+                "confirm_expensive_model": True,
+                "pin_session_override": False,
+                "persist_override": False,
+            },
         )
     ]
     assert session["config_model_seen"] == ("new/model", "nous")
@@ -1528,6 +1573,78 @@ def test_config_sync_config_wins_over_env_seed(monkeypatch):
 
     assert calls == ["new/model"]
     assert session["config_model_seen"] == ("new/model", "")
+
+
+def test_config_sync_ignores_env_seed_without_config_model(monkeypatch):
+    # `hermes --tui -m <model>` sets HERMES_MODEL/HERMES_INFERENCE_MODEL as a
+    # launch-scoped seed. When config.yaml has NO model.default (typical
+    # custom-provider-only setup), the sync must NOT adopt the env seed as a
+    # config target — doing so replayed the -m flag as a /model switch and
+    # (with persist_switch_by_default=True) wrote it into config.yaml
+    # permanently.
+    monkeypatch.setenv("HERMES_MODEL", "one-shot/model")
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", "one-shot/model")
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"model": {"provider": "custom:mylocal"}}
+    )
+    session = _sync_test_session()
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda *a, **k: pytest.fail("env seed must not trigger a config sync switch"),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+
+def test_config_model_target_never_reads_env(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "seed/model")
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", "seed/model")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "nous"}})
+
+    assert server._config_model_target() == ("", "nous")
+
+
+def test_apply_model_switch_persist_override_false_never_persists(monkeypatch):
+    # Internal callers (config sync, /moa one-shot + restore) pass
+    # persist_override=False; even with persist_switch_by_default=True the
+    # switch must not write config.yaml.
+    import types as _types
+
+    result = _types.SimpleNamespace(
+        success=True,
+        new_model="new/model",
+        target_provider="nous",
+        base_url="",
+        api_key="key",
+        api_mode="chat_completions",
+        warning_message="",
+        model_info=None,
+        error_message="",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **kw: result
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_persist_behavior",
+        lambda *a: pytest.fail("persist_override must bypass resolve_persist_behavior"),
+    )
+    monkeypatch.setattr(
+        server, "_persist_model_switch",
+        lambda _r: pytest.fail("persist_override=False must not persist"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_cost_guard.expensive_model_warning",
+        lambda *a, **k: None,
+    )
+    session = {"agent": None}
+
+    out = server._apply_model_switch(
+        "sid", session, "new/model --provider nous", persist_override=False
+    )
+
+    assert out["value"] == "new/model"
+    assert session["model_override"]["model"] == "new/model"
 
 
 def test_startup_runtime_uses_tui_provider_env(monkeypatch):
@@ -1865,7 +1982,7 @@ def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 
     class _FakeWorker:
-        def __init__(self, key, model):
+        def __init__(self, key, model, profile_home=None):
             self.key = key
 
         def close(self):
@@ -5371,7 +5488,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     unregistered_keys: list[str] = []
 
     class _FakeWorker:
-        def __init__(self, key, model):
+        def __init__(self, key, model, profile_home=None):
             self.key = key
             self._closed = False
 
@@ -5492,7 +5609,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     unregistered_keys: list[str] = []
 
     class _FakeWorker:
-        def __init__(self, key, model):
+        def __init__(self, key, model, profile_home=None):
             self.key = key
 
         def close(self):
@@ -5596,7 +5713,7 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
 
 def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     class _FakeWorker:
-        def __init__(self, key, model):
+        def __init__(self, key, model, profile_home=None):
             self.key = key
 
         def close(self):
@@ -5644,7 +5761,7 @@ def test_session_create_lazy_info_reports_desktop_contract(monkeypatch):
     date" on every launch even against a current backend."""
 
     class _FakeWorker:
-        def __init__(self, key, model):
+        def __init__(self, key, model, profile_home=None):
             self.key = key
 
         def close(self):
@@ -5881,6 +5998,7 @@ def test_model_options_does_not_overwrite_curated_models(monkeypatch):
     # list_authenticated_providers is the single source.
     assert listing.call_count == 1
     assert listing.call_args.kwargs["probe_custom_providers"] is False
+    assert listing.call_args.kwargs["probe_current_custom_provider"] is True
 
 
 def test_model_options_propagates_list_exception(monkeypatch):
@@ -5920,6 +6038,7 @@ def test_model_options_refresh_allows_custom_provider_probes(monkeypatch):
 
     assert "result" in resp, resp
     assert listing.call_args.kwargs["probe_custom_providers"] is True
+    assert listing.call_args.kwargs["probe_current_custom_provider"] is False
 
 
 class _ImmediateThread:
@@ -6470,7 +6589,17 @@ def test_verification_status_returns_recorded_evidence(tmp_path):
     assert verification["evidence"]["scope"] == "full"
 
 
-def test_verification_status_outside_workspace_is_not_applicable(tmp_path):
+def test_verification_status_outside_workspace_is_not_applicable(monkeypatch, tmp_path):
+    # A cwd with no project facts (outside any code workspace) must report
+    # not_applicable. Force the "no facts" precondition rather than relying on
+    # tmp_path's ancestors being pristine — a stray marker file in a shared
+    # tmp-root ancestor (e.g. /tmp/package.json left by another tool) would
+    # otherwise make _marker_root() resolve tmp_path as a workspace and flip
+    # the status to "unverified".
+    import agent.coding_context as coding_context
+
+    monkeypatch.setattr(coding_context, "project_facts_for", lambda _cwd=None: None)
+
     home = tmp_path / ".hermes"
     home.mkdir()
     token = set_hermes_home_override(home)

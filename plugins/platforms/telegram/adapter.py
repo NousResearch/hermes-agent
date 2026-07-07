@@ -416,6 +416,12 @@ def _rich_normalize_linebreaks(text: str) -> str:
 # reconnect/teardown ladder. This is an internal safety bound (not a user knob),
 # applied identically at every stop() site so no path can hang on a dead socket.
 _UPDATER_STOP_TIMEOUT = 15.0
+# start_polling() can also hang when the connection pool is in a degraded state
+# after _drain_polling_connections(), particularly when both primary and fallback
+# Telegram endpoints are unreachable. Bounding start_polling() prevents the
+# reconnect ladder from stalling indefinitely and allows the heartbeat loop to
+# trigger its own recovery path. Refs: NousResearch/hermes-agent#59614
+_UPDATER_START_TIMEOUT = 30.0
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -524,6 +530,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # endpoint) so later sends skip the doomed rich attempt entirely.
         self._rich_send_disabled: bool = False
         self._rich_draft_disabled: bool = False
+        # Transient Telegram sendChatAction failures (network blips, 429/5xx)
+        # can happen on every keep-typing tick while the agent is waiting on a
+        # long model call. Back off per chat so a short Telegram-side outage
+        # does not spam the API/logs or burn the keep-typing budget.
+        self._telegram_typing_cooldown_until: Dict[str, float] = {}
+        self._telegram_typing_cooldown_seconds: float = self._coerce_float_extra(
+            "typing_cooldown_seconds",
+            30.0,
+            min_value=1.0,
+            max_value=300.0,
+        )
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
@@ -902,13 +919,6 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to = metadata.get("telegram_reply_to_message_id")
         return int(reply_to) if reply_to is not None else None
 
-    @staticmethod
-    def _looks_like_private_chat_id(chat_id: str) -> bool:
-        try:
-            return int(chat_id) > 0
-        except (TypeError, ValueError):
-            return False
-
     @classmethod
     def _is_private_dm_topic_send(
         cls,
@@ -926,10 +936,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         return bool(
             thread_id
-            and (
-                metadata and metadata.get("telegram_dm_topic_reply_fallback")
-                or cls._looks_like_private_chat_id(chat_id)
-            )
+            and metadata
+            and metadata.get("telegram_dm_topic_reply_fallback")
         )
 
     @staticmethod
@@ -1254,6 +1262,27 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
             return default
         return bool(value)
+
+    def _coerce_float_extra(
+        self,
+        key: str,
+        default: float,
+        *,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+    ) -> float:
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return default
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if min_value is not None:
+            parsed = max(parsed, min_value)
+        if max_value is not None:
+            parsed = min(parsed, max_value)
+        return parsed
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
@@ -1950,10 +1979,19 @@ class TelegramAdapter(BasePlatformAdapter):
         if not (self._app and self._app.updater):
             raise RuntimeError("Telegram application/updater not initialized")
         try:
-            await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=drop_pending_updates,
-                error_callback=error_callback,
+            # Same watchdog bound as the reconnect ladders: a wedged httpx
+            # connection pool can hang start_polling() forever at bootstrap
+            # too (#59614). A propagating TimeoutError is a builtins
+            # TimeoutError (OSError subclass), so the except below classifies
+            # it via _looks_like_network_error and schedules background
+            # recovery instead of blocking connect() indefinitely.
+            await asyncio.wait_for(
+                self._app.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=drop_pending_updates,
+                    error_callback=error_callback,
+                ),
+                timeout=_UPDATER_START_TIMEOUT,
             )
             return True
         except Exception as err:
@@ -2049,11 +2087,26 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             if not app:
                 raise RuntimeError("Telegram application was torn down during reconnect")
-            await app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=False,
-                error_callback=self._polling_error_callback_ref,
-            )
+            # Guard start_polling() with a timeout: when the connection pool is
+            # in a degraded state (e.g., after _drain_polling_connections()), the
+            # httpx client may hold a stale socket that neither connects nor times
+            # out within PTB's internal flow. Bounding start_polling() prevents
+            # the reconnect ladder from stalling indefinitely and allows the
+            # heartbeat loop to trigger its own recovery path.
+            # Refs: NousResearch/hermes-agent#59614
+            try:
+                await asyncio.wait_for(
+                    app.updater.start_polling(
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=False,
+                        error_callback=self._polling_error_callback_ref,
+                    ),
+                    timeout=_UPDATER_START_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    "start_polling() timed out — connection pool may be wedged"
+                )
             logger.info(
                 "[%s] Telegram polling resumed after network error (attempt %d)",
                 self.name, attempt,
@@ -2444,11 +2497,24 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 if not app:
                     raise RuntimeError("Telegram application was torn down during conflict reconnect")
-                await app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=False,
-                    error_callback=self._polling_error_callback_ref,
-                )
+                # Same watchdog bound as the network-error ladder: an
+                # exhausted pool hangs start_polling() on the conflict path
+                # identically (#59614). Timeout converts to RuntimeError so
+                # the except below logs a readable message and schedules the
+                # next conflict attempt instead of wedging attempt N forever.
+                try:
+                    await asyncio.wait_for(
+                        app.updater.start_polling(
+                            allowed_updates=Update.ALL_TYPES,
+                            drop_pending_updates=False,
+                            error_callback=self._polling_error_callback_ref,
+                        ),
+                        timeout=_UPDATER_START_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    raise RuntimeError(
+                        "start_polling() timed out — connection pool may be wedged"
+                    )
                 logger.info(
                     "[%s] Telegram polling resumed after conflict retry %d/%d",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
@@ -6300,40 +6366,90 @@ class TelegramAdapter(BasePlatformAdapter):
             # Fallback: try as a regular photo
             return await self.send_image(chat_id, animation_url, caption, reply_to, metadata=metadata)
 
+    @staticmethod
+    def _is_transient_typing_error(exc: Exception) -> bool:
+        """Return True for Telegram typing errors worth cooling down."""
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            return True
+
+        status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+        if isinstance(status_code, int) and (status_code == 429 or status_code >= 500):
+            return True
+
+        text = str(exc).lower()
+        if any(marker in text for marker in ("too many requests", "rate limit", "timed out", "timeout", "temporar")):
+            return True
+        if isinstance(exc, (OSError, TimeoutError, ConnectionError, asyncio.TimeoutError)):
+            return True
+        return False
+
+    def _record_typing_cooldown(self, chat_id: str, exc: Exception) -> None:
+        """Suppress Telegram typing refreshes for this chat after transient failures."""
+        if not hasattr(self, "_telegram_typing_cooldown_until"):
+            self._telegram_typing_cooldown_until = {}
+        loop = asyncio.get_running_loop()
+        retry_after = getattr(exc, "retry_after", None)
+        try:
+            delay = float(retry_after) if retry_after is not None else self._telegram_typing_cooldown_seconds
+        except (TypeError, ValueError):
+            delay = self._telegram_typing_cooldown_seconds
+        delay = max(1.0, min(delay, 300.0))
+        self._telegram_typing_cooldown_until[str(chat_id)] = loop.time() + delay
+
+    def _typing_in_cooldown(self, chat_id: str) -> bool:
+        if not hasattr(self, "_telegram_typing_cooldown_until"):
+            self._telegram_typing_cooldown_until = {}
+            self._telegram_typing_cooldown_seconds = 30.0
+        until = self._telegram_typing_cooldown_until.get(str(chat_id))
+        if until is None:
+            return False
+        if asyncio.get_running_loop().time() < until:
+            return True
+        self._telegram_typing_cooldown_until.pop(str(chat_id), None)
+        return False
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
-        if self._bot:
-            _is_dm_topic: bool = False
-            message_thread_id: Optional[int] = None
-            try:
-                _typing_thread = self._metadata_thread_id(metadata)
-                _is_dm_topic = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
-                message_thread_id = self._message_thread_id_for_typing(_typing_thread)
-                await self._bot.send_chat_action(
-                    chat_id=normalize_telegram_chat_id(chat_id),
-                    action="typing",
-                    message_thread_id=message_thread_id,
-                )
-            except Exception as e:
-                # For DM topic lanes, Telegram may reject message_thread_id.
-                # Fall back to sending typing without thread_id so the typing
-                # indicator at least appears in the main DM view.
-                if _is_dm_topic and message_thread_id is not None:
-                    try:
-                        await self._bot.send_chat_action(
-                            chat_id=normalize_telegram_chat_id(chat_id),
-                            action="typing",
-                        )
-                        return
-                    except Exception:
-                        pass
-                # Typing failures are non-fatal; log at debug level only.
-                logger.debug(
-                    "[%s] Failed to send Telegram typing indicator: %s",
-                    self.name,
-                    e,
-                    exc_info=True,
-                )
+        if not self._bot or self._typing_in_cooldown(chat_id):
+            return
+
+        _is_dm_topic: bool = False
+        message_thread_id: Optional[int] = None
+        try:
+            _typing_thread = self._metadata_thread_id(metadata)
+            _is_dm_topic = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+            message_thread_id = self._message_thread_id_for_typing(_typing_thread)
+            await self._bot.send_chat_action(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                action="typing",
+                message_thread_id=message_thread_id,
+            )
+            self._telegram_typing_cooldown_until.pop(str(chat_id), None)
+        except Exception as e:
+            # For DM topic lanes, Telegram may reject message_thread_id.
+            # Fall back to sending typing without thread_id so the typing
+            # indicator at least appears in the main DM view.
+            if _is_dm_topic and message_thread_id is not None:
+                try:
+                    await self._bot.send_chat_action(
+                        chat_id=normalize_telegram_chat_id(chat_id),
+                        action="typing",
+                    )
+                    self._telegram_typing_cooldown_until.pop(str(chat_id), None)
+                    return
+                except Exception as fallback_exc:
+                    if self._is_transient_typing_error(fallback_exc):
+                        self._record_typing_cooldown(chat_id, fallback_exc)
+            elif self._is_transient_typing_error(e):
+                self._record_typing_cooldown(chat_id, e)
+            # Typing failures are non-fatal; log at debug level only.
+            logger.debug(
+                "[%s] Failed to send Telegram typing indicator: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""

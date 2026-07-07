@@ -9,7 +9,7 @@ metadata:
   hermes:
     category: autonomous-ai-agents
     tags: [codex, agents, telemetry, safety, worktrees]
-    related_skills: [codex, opencode]
+    related_skills: [codex, opencode, repomix-context-packaging, test-driven-development]
 ---
 
 # Codex Operations
@@ -69,6 +69,15 @@ Use `terminal`, `read_file`, and `search_files` to establish:
 Do not overwrite unrelated user changes. If the repo is dirty, name the dirty files and avoid them unless John explicitly includes them.
 
 ### 2. War-room plan
+
+For broad or unfamiliar repositories, package context before launching Codex:
+
+- Use `repomix-context-packaging` to create a narrow, secret-checked bundle when
+  file count or token budget would otherwise push Codex into guesswork.
+- Treat the bundle as orientation only; Codex must inspect live files before
+  editing.
+- For feature/bug-fix work, load `test-driven-development` and require a real
+  failing test before production changes unless John explicitly chooses a spike.
 
 Write the plan before running agents:
 

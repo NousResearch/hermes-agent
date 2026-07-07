@@ -168,9 +168,28 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
             out["api_key"] = rt["api_key"]
         if rt.get("api_mode"):
             out["api_mode"] = rt["api_mode"]
+        request_overrides = rt.get("request_overrides")
+        if isinstance(request_overrides, dict):
+            extra_body = request_overrides.get("extra_body")
+            if isinstance(extra_body, dict) and extra_body:
+                out["extra_body"] = dict(extra_body)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
     return out
+
+
+def _merge_slot_extra_body(
+    slot_extra_body: Any,
+    caller_extra_body: Any,
+) -> Any:
+    """Merge slot defaults with a caller override for ``call_llm``."""
+    if isinstance(slot_extra_body, dict) and slot_extra_body:
+        if isinstance(caller_extra_body, dict):
+            return {**slot_extra_body, **caller_extra_body}
+        if caller_extra_body:
+            return caller_extra_body
+        return dict(slot_extra_body)
+    return caller_extra_body
 
 
 def _maybe_apply_moa_cache_control(
@@ -1010,15 +1029,20 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
+        agg_runtime = _slot_runtime(aggregator)
+        agg_extra_body = _merge_slot_extra_body(
+            agg_runtime.pop("extra_body", None),
+            agg_kwargs.get("extra_body"),
+        )
         _agg_response = call_llm(
             task="moa_aggregator",
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=agg_kwargs.get("max_tokens"),
             tools=agg_kwargs.get("tools"),
-            extra_body=agg_kwargs.get("extra_body"),
+            extra_body=agg_extra_body,
             **stream_kwargs,
-            **_slot_runtime(aggregator),
+            **agg_runtime,
         )
         # Non-streaming path (quiet mode / eval / subagents): the aggregator
         # output is available inline, so capture it into the pending trace now.

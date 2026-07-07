@@ -1600,6 +1600,47 @@ class TestWebServerEndpoints:
         assert data["provider"] == "openrouter"
         assert data["model"] == "moonshotai/kimi-k2.6"
 
+    def test_model_set_keeps_named_user_provider(self, monkeypatch):
+        """A user-defined ``providers:`` entry (e.g. a local OpenAI-compatible
+        proxy) is a real provider even though its slug is not in the built-in
+        registry — selecting it in the picker must persist it verbatim. It
+        used to be mistaken for a vendor prefix (unknown slug + slash in the
+        model id) and rewritten to the user's aggregator, silently billing
+        openrouter for traffic meant for the user's own endpoint."""
+        monkeypatch.setattr(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            lambda *_args, **_kwargs: None,
+        )
+        from hermes_cli.config import load_config, save_config
+        cfg = load_config()
+        cfg["model"] = {"provider": "openrouter", "default": "openai/gpt-5.5"}
+        cfg["providers"] = {
+            "commandcode": {
+                "base_url": "http://127.0.0.1:55990/v1",
+                "api_key": "user_test_key",
+                "default_model": "deepseek/deepseek-v4-flash",
+            }
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "commandcode",
+                "model": "deepseek/deepseek-v4-flash",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["provider"] == "commandcode"
+        assert data["model"] == "deepseek/deepseek-v4-flash"
+
+        cfg = load_config()
+        assert cfg["model"]["provider"] == "commandcode"
+        assert cfg["model"]["default"] == "deepseek/deepseek-v4-flash"
+
     def test_model_set_keeps_aggregator_slug_unchanged(self, monkeypatch):
         """The happy path (picker → openrouter + vendor/model) is untouched."""
         monkeypatch.setattr(

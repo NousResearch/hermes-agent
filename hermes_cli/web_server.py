@@ -1010,6 +1010,20 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     canonical = normalize_provider(prov_in)
 
     if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
+        # A user-defined ``providers:`` / ``custom_providers:`` entry is a
+        # real provider even though its slug is not in the built-in registry.
+        # Keep it verbatim — treating it as a vendor prefix below would
+        # silently rewrite it to the user's aggregator and bill openrouter
+        # for traffic meant for the user's own endpoint.
+        try:
+            from hermes_cli.runtime_provider import has_named_custom_provider
+
+            if has_named_custom_provider(prov_in):
+                return prov_in, model_in
+        except Exception:
+            _log.debug(
+                "named-provider check failed for %r", prov_in, exc_info=True
+            )
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that
         # serves vendor-prefixed slugs; otherwise default to openrouter.

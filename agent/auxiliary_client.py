@@ -3932,7 +3932,7 @@ def _call_fallback_candidate_sync(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
-        base_url=fb_base)
+        base_url=fb_base, task=task)
     try:
         return _validate_llm_response(
             fb_client.chat.completions.create(**fb_kwargs), task)
@@ -3949,7 +3949,7 @@ def _call_fallback_candidate_sync(
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     reasoning_config=reasoning_config,
-                    base_url=str(getattr(retry_client, "base_url", "") or fb_base))
+                    base_url=str(getattr(retry_client, "base_url", "") or fb_base), task=task)
                 try:
                     return _validate_llm_response(
                         retry_client.chat.completions.create(**retry_kwargs), task)
@@ -3998,7 +3998,7 @@ async def _call_fallback_candidate_async(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
-        base_url=fb_base)
+        base_url=fb_base, task=task)
     try:
         return _validate_llm_response(
             await fb_client.chat.completions.create(**fb_kwargs), task)
@@ -4016,7 +4016,7 @@ async def _call_fallback_candidate_async(
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     reasoning_config=reasoning_config,
-                    base_url=str(getattr(retry_client, "base_url", "") or fb_base))
+                    base_url=str(getattr(retry_client, "base_url", "") or fb_base), task=task)
                 try:
                     return _validate_llm_response(
                         await retry_client.chat.completions.create(**retry_kwargs), task)

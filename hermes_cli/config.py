@@ -770,6 +770,13 @@ def _secure_dir(path):
         mode = int(mode_str, 8) if mode_str else 0o700
     except ValueError:
         mode = 0o700
+    if mode & ~0o700:
+        logger.warning(
+            "HERMES_HOME_MODE=%03o grants group or world access to %s. "
+            "Use 0o700 for owner-only access unless you have a specific "
+            "reason to widen permissions.",
+            mode, path,
+        )
     try:
         os.chmod(path, mode)
     except (OSError, NotImplementedError):

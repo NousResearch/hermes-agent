@@ -231,10 +231,20 @@ class WSTransport:
             )
 
     async def _safe_send_many(self, lines: list[str]) -> None:
-        """Send a batch of pre-serialized frames in order on the loop thread."""
+        """Send a batch of pre-serialized frames in order on the loop thread.
+
+        ``await asyncio.sleep(0)`` between frames cooperatively yields the event
+        loop after each send.  Without it, a large batch (e.g. ``session.resume``
+        replaying hundreds of history frames) can monopolise the loop long enough
+        for the uvicorn ws keepalive ping to time out and disconnect the client
+        that just reconnected.  The yield has no measurable effect on throughput
+        for normal streaming batches (which are small), but prevents the loop
+        stall on bulk-replay paths.  See #50005 / #53773.
+        """
         try:
             for line in lines:
                 await self._ws.send_text(line)
+                await asyncio.sleep(0)  # yield to event loop between frames
         except Exception as exc:
             self._closed = True
             _log.warning(

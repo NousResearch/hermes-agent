@@ -3172,6 +3172,31 @@ def _current_profile_name() -> str:
 DESKTOP_BACKEND_CONTRACT = 2
 
 
+def _session_info_provider(agent, session: dict | None = None) -> str:
+    """Return the user-facing provider identity for ``session.info``.
+
+    ``agent.provider`` is the resolved runtime/billing class. For named custom
+    providers that value can be the literal ``custom`` even though the user chose
+    a routable provider slug from the desktop picker. If Desktop persists that
+    internal value into its sticky composer state, the next ``session.create``
+    can pair the right model with the wrong provider group.
+
+    The per-session ``model_override`` is the source of truth for picker and
+    live ``/model`` switches, so prefer it while it still describes the agent's
+    current model. Fall back to the runtime provider for older sessions and
+    built-in providers.
+    """
+    provider = str(getattr(agent, "provider", "") or "").strip()
+    override = (session or {}).get("model_override") if isinstance(session, dict) else None
+    if isinstance(override, dict):
+        override_provider = str(override.get("provider") or "").strip()
+        override_model = str(override.get("model") or "").strip()
+        agent_model = str(getattr(agent, "model", "") or "").strip()
+        if override_provider and (not override_model or override_model == agent_model):
+            return override_provider
+    return provider
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         for candidate in _sessions.values():
@@ -3218,7 +3243,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = False
     info: dict = {
         "model": getattr(agent, "model", ""),
-        "provider": getattr(agent, "provider", ""),
+        "provider": _session_info_provider(agent, session),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",

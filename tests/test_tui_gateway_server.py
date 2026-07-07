@@ -4727,6 +4727,51 @@ def test_session_info_includes_session_title(monkeypatch):
     assert info["title"] == "Dashboard title"
 
 
+def test_session_info_prefers_session_model_override_provider_for_custom_runtime():
+    agent = types.SimpleNamespace(
+        tools=[],
+        model="shared-model",
+        provider="custom",
+        base_url="https://provider-a.example/v1",
+        api_mode="codex_responses",
+    )
+    session = {
+        "session_key": "session-key",
+        "history": [],
+        "model_override": {
+            "model": "shared-model",
+            "provider": "custom-provider-a",
+            "base_url": "https://provider-a.example/v1",
+            "api_mode": "codex_responses",
+        },
+    }
+
+    info = server._session_info(agent, session)
+
+    assert info["model"] == "shared-model"
+    assert info["provider"] == "custom-provider-a"
+
+
+def test_session_info_ignores_stale_model_override_provider():
+    agent = types.SimpleNamespace(
+        tools=[],
+        model="current-model",
+        provider="openai-codex",
+    )
+    session = {
+        "session_key": "session-key",
+        "history": [],
+        "model_override": {
+            "model": "old-model",
+            "provider": "custom-provider-a",
+        },
+    }
+
+    info = server._session_info(agent, session)
+
+    assert info["provider"] == "openai-codex"
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

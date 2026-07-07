@@ -1954,6 +1954,48 @@ def test_runtime_refresh_uses_newer_shared_token_before_local_stale_token(
     assert profile_state["access_token"] == shared_token
 
 
+def test_runtime_credentials_merge_shared_token_when_local_access_missing(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """Runtime resolution must not dead-end before consulting shared auth."""
+    from hermes_cli import auth as auth_mod
+
+    profile_b = tmp_path / "profile_b"
+    _setup_nous_auth(
+        profile_b,
+        access_token="local-access-to-remove",
+        refresh_token="local-stale-refresh",
+    )
+    payload = json.loads((profile_b / "auth.json").read_text())
+    payload["providers"]["nous"]["access_token"] = None
+    payload["providers"]["nous"]["agent_key"] = None
+    (profile_b / "auth.json").write_text(json.dumps(payload))
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+
+    shared_state = _full_state_fixture()
+    shared_token = _invoke_jwt(seconds=3600)
+    shared_state["access_token"] = shared_token
+    shared_state["refresh_token"] = "shared-fresh-refresh"
+    shared_state["expires_at"] = "2099-01-01T00:00:00+00:00"
+    shared_state["scope"] = "inference:invoke"
+    auth_mod._write_shared_nous_state(shared_state)
+
+    def _refresh_should_not_happen(**_kwargs):
+        raise AssertionError("shared access token was ignored")
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _refresh_should_not_happen)
+
+    creds = auth_mod.resolve_nous_runtime_credentials()
+
+    assert creds["api_key"] == shared_token
+
+    profile_state = auth_mod.get_provider_auth_state("nous")
+    assert profile_state is not None
+    assert profile_state["refresh_token"] == "shared-fresh-refresh"
+    assert profile_state["access_token"] == shared_token
+    assert profile_state["agent_key"] == shared_token
+
+
 def test_managed_gateway_access_token_uses_newer_shared_token(
     tmp_path, monkeypatch, shared_store_env,
 ):

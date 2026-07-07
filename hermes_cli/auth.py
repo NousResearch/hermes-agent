@@ -5555,6 +5555,7 @@ def resolve_nous_runtime_credentials(
 
         verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
         timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
+        shared_store_lock_timeout = max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
         _oauth_trace(
             "nous_runtime_credentials_start",
             sequence_id=sequence_id,
@@ -5566,6 +5567,13 @@ def resolve_nous_runtime_credentials(
             refresh_token = state.get("refresh_token")
 
             if not isinstance(access_token, str) or not access_token:
+                with _nous_shared_store_lock(timeout_seconds=shared_store_lock_timeout):
+                    if _merge_shared_nous_oauth_state(state):
+                        access_token = state.get("access_token")
+                        refresh_token = state.get("refresh_token")
+                        _persist_state("runtime_shared_merge_missing_access")
+
+            if not isinstance(access_token, str) or not access_token:
                 raise AuthError("No access token found for Nous Portal login.",
                                 provider="nous", relogin_required=True)
 
@@ -5575,7 +5583,7 @@ def resolve_nous_runtime_credentials(
                 expires_at=state.get("expires_at"),
             )
             if force_refresh or invoke_jwt_status is not None:
-                with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
+                with _nous_shared_store_lock(timeout_seconds=shared_store_lock_timeout):
                     if _merge_shared_nous_oauth_state(state):
                         access_token = state.get("access_token")
                         refresh_token = state.get("refresh_token")

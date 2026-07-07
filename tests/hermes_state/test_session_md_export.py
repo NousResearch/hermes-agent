@@ -4,7 +4,7 @@ import hermes_state
 from hermes_state import SessionDB
 
 
-def test_list_export_candidates_filters_ended_old_sessions(tmp_path, monkeypatch):
+def test_export_candidates_via_prune_filters_ended_old_sessions(tmp_path, monkeypatch):
     db = SessionDB(db_path=tmp_path / "state.db")
     monkeypatch.setattr(hermes_state.time, "time", lambda: 2_000_000.0)
     try:
@@ -20,13 +20,16 @@ def test_list_export_candidates_filters_ended_old_sessions(tmp_path, monkeypatch
         db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (1_000_000.0, "old_active"))
         db._conn.commit()
 
-        candidates = db.list_export_candidates(older_than_days=5)
+        # Export uses the shared prune/archive candidate selection.
+        candidates = db.list_prune_candidates(
+            started_before=2_000_000.0 - 5 * 86400, archived=None
+        )
         assert [c["id"] for c in candidates] == ["old_cli"]
     finally:
         db.close()
 
 
-def test_list_export_candidates_ands_source_filter(tmp_path, monkeypatch):
+def test_export_candidates_via_prune_ands_source_filter(tmp_path, monkeypatch):
     db = SessionDB(db_path=tmp_path / "state.db")
     monkeypatch.setattr(hermes_state.time, "time", lambda: 2_000_000.0)
     try:
@@ -36,7 +39,11 @@ def test_list_export_candidates_ands_source_filter(tmp_path, monkeypatch):
             db._conn.execute("UPDATE sessions SET started_at=?, ended_at=? WHERE id=?", (1_000_000.0, 1_000_010.0, sid))
         db._conn.commit()
 
-        candidates = db.list_export_candidates(older_than_days=5, source="telegram")
+        candidates = db.list_prune_candidates(
+            started_before=2_000_000.0 - 5 * 86400,
+            source="telegram",
+            archived=None,
+        )
         assert [c["id"] for c in candidates] == ["old_telegram"]
     finally:
         db.close()

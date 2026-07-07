@@ -4958,39 +4958,6 @@ class SessionDB:
     # Export and cleanup
     # =========================================================================
 
-    def list_export_candidates(
-        self,
-        older_than_days: Optional[int] = None,
-        source: str = None,
-        limit: int = 100000,
-    ) -> List[Dict[str, Any]]:
-        """List ended sessions that match read-only export filters.
-
-        This helper intentionally does not delete, archive, or mutate rows. It
-        backs `hermes sessions export --format md/qmd` bulk exports.
-        """
-        clauses = ["ended_at IS NOT NULL"]
-        params: list[Any] = []
-        if older_than_days is not None:
-            cutoff = time.time() - (older_than_days * 86400)
-            clauses.append("started_at < ?")
-            params.append(cutoff)
-        if source:
-            clauses.append("source = ?")
-            params.append(source)
-        params.append(limit)
-        with self._lock:
-            rows = self._conn.execute(
-                f"""
-                SELECT * FROM sessions
-                WHERE {' AND '.join(clauses)}
-                ORDER BY started_at ASC
-                LIMIT ?
-                """,
-                params,
-            ).fetchall()
-        return [dict(row) for row in rows]
-
     def _is_branch_child_row(self, session: Dict[str, Any]) -> bool:
         raw = session.get("model_config")
         if not raw:

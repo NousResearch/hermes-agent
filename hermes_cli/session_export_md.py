@@ -216,6 +216,34 @@ def verify_export_file(path: Path | str, session: dict[str, Any]) -> tuple[bool,
     return True, "ok"
 
 
+def redact_session_data(session: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of a session export dict with secrets redacted.
+
+    Runs every message's content and tool-call arguments through the
+    force-mode redaction pass (``agent.redact.redact_sensitive_text``), so
+    API keys, tokens, and credentials that appeared in tool output never
+    land in plaintext export files. Force mode ignores the user's global
+    ``security.redact_secrets`` preference — an explicit ``--redact`` export
+    must never emit raw secrets.
+    """
+    from agent.redact import redact_sensitive_text
+
+    def _clean(value: Any) -> Any:
+        if isinstance(value, str):
+            return redact_sensitive_text(value, force=True)
+        if isinstance(value, list):
+            return [_clean(v) for v in value]
+        if isinstance(value, dict):
+            return {k: _clean(v) for k, v in value.items()}
+        return value
+
+    redacted = dict(session)
+    for key in ("messages", "segments"):
+        if key in redacted and redacted[key] is not None:
+            redacted[key] = _clean(redacted[key])
+    return redacted
+
+
 def write_session_markdown(
     session: dict[str, Any], output_dir: Path | str, *, fmt: str = "md", force: bool = False
 ) -> Path:

@@ -245,12 +245,12 @@ class TestProcessSpawn(unittest.TestCase):
                 pid_str = summary.split("PID=")[1].strip()
                 child_pids.add(int(pid_str))
 
-        # At least 2 of the 3 children should have different PIDs from the parent
-        # (spawn guarantees separate processes; the PID is the proof)
+        # All 3 children should have PIDs different from the parent AND
+        # from each other (spawn guarantees separate processes).
         child_pids.discard(parent_pid)
-        self.assertGreaterEqual(
-            len(child_pids), 1,
-            f"Expected child processes with different PIDs from parent ({parent_pid}), "
+        self.assertEqual(
+            len(child_pids), 3,
+            f"Expected 3 distinct child PIDs (all different from parent {parent_pid}), "
             f"got child PIDs: {child_pids}"
         )
 

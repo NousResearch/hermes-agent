@@ -584,7 +584,6 @@ def run_children_in_processes(
         proc = ctx.Process(
             target=_child_process_main,
             args=(spec.params, event_queue, result_queue, spec.interrupt_event),
-            daemon=True,
             name=f"hermes-subagent-{i}",
         )
         spec.process = proc

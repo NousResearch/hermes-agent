@@ -269,7 +269,15 @@ function persistSessionPreviewRegistry(registry: SessionPreviewRegistry) {
     // Drop the inline image bytes before persisting — a screenshot data URL is
     // megabytes and would blow the localStorage quota. On reload the record
     // falls back to reading its `path`/`url`.
-    const lean = JSON.stringify(pruneRegistry(registry), (key, value) => (key === 'dataUrl' ? undefined : value))
+    const pruned = pruneRegistry(registry)
+
+    if (Object.keys(pruned).length === 0) {
+      window.localStorage.removeItem(REGISTRY_STORAGE_KEY)
+
+      return
+    }
+
+    const lean = JSON.stringify(pruned, (key, value) => (key === 'dataUrl' ? undefined : value))
     window.localStorage.setItem(REGISTRY_STORAGE_KEY, lean)
   } catch {
     // Session previews are a desktop convenience; storage failures are nonfatal.

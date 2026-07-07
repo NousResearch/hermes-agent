@@ -15,6 +15,14 @@ const MIN_ENTRIES = 4
 const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 const HOVER_CLOSE_MS = 140
 
+const cssEscape = (value: string): string => {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value)
+  }
+
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
 const ROW_CLASS =
   'row-hover relative flex w-full min-w-0 max-w-full select-none overflow-hidden rounded-md px-2 py-1 text-left outline-hidden'
 
@@ -103,7 +111,7 @@ function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
 
 function scrollToPrompt(id: string) {
   const viewport = document.querySelector<HTMLElement>(VIEWPORT)
-  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${cssEscape(id)}"]`)
 
   if (!viewport || !node) {
     return
@@ -190,7 +198,7 @@ export const ThreadTimeline: FC = () => {
       const top = viewport.getBoundingClientRect().top
 
       const offsets = entries.map(entry => {
-        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(entry.id)}"]`)
+        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${cssEscape(entry.id)}"]`)
 
         return node ? node.getBoundingClientRect().top - top : null
       })

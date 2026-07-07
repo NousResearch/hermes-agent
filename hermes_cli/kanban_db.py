@@ -2680,7 +2680,23 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if task_status == "blocked":
+                    # A task born blocked is an explicit human/ops gate, not a
+                    # transient circuit-breaker block.  Emit the same sticky
+                    # signal used by block_task() so recompute_ready() cannot
+                    # silently promote it on the next dispatcher tick.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "initial_status=blocked",
+                            "kind": None,
+                            "recurrences": 1,
+                        },
+                    )
             return task_id
+
         except sqlite3.IntegrityError:
             if attempt == 1:
                 raise

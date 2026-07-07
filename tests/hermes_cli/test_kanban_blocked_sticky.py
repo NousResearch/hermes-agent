@@ -272,6 +272,35 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Create-time blocked cards are also sticky
+# ---------------------------------------------------------------------------
+
+
+def test_initial_status_blocked_is_not_auto_promoted_by_recompute_ready(kanban_home: Path) -> None:
+    """A card created directly in ``blocked`` is an explicit human gate,
+    not a transient dependency/circuit-breaker block.
+
+    Regression for JT's 2026-07-05 board drift: ``hermes kanban create
+    --initial-status blocked`` wrote only a ``created`` event with
+    ``status='blocked'``.  Because no ``blocked`` event existed,
+    ``recompute_ready`` treated the task as non-sticky and silently
+    promoted it to ``ready`` on the next dispatcher tick.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approval-gated reminder",
+            initial_status="blocked",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        promoted = kb.recompute_ready(conn)
+
+        assert promoted == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+# ---------------------------------------------------------------------------
 # Schema-init recovery on legacy DBs is covered by
 # tests/hermes_cli/test_kanban_db.py::test_connect_migrates_legacy_db_before_optional_column_indexes
 # (landed via #28754 / #28781).  The original PR shipped a duplicate test

@@ -2695,6 +2695,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_via_service = False
         self._detached_restart_helper_started = False
         self._restart_command_source: Optional[SessionSource] = None
+        # Local patch (2026-07-07): one-shot guard so the home-channel
+        # "gateway online" notice is posted at most once per process on
+        # restarts that upstream leaves silent (systemctl/crash/reboot).
+        self._home_channel_startup_notification_sent = False
         # Monotonic-ish wall clock of when this GatewayRunner was constructed.
         # Used by the /restart redelivery guard to bound the window in which a
         # missing dedup marker is treated as a stale redelivery.
@@ -6871,6 +6875,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             finally:
                 _clear_planned_restart_notification()
+                self._home_channel_startup_notification_sent = True
+        elif (
+            connected_count > 0
+            and not self._booted_from_restart
+            and not self._home_channel_startup_notification_sent
+        ):
+            # Local patch (restored 2026-07-07): upstream only posts the
+            # "gateway online" notice for hermes-initiated restarts — the
+            # .restart_pending.json marker is written solely when
+            # self._restart_requested is True. A plain `systemctl restart`,
+            # a systemd auto-restart after a crash, or a machine reboot leaves
+            # _restart_requested False, so no marker is written and the boot is
+            # silent. Post the home-channel notice once per process on first
+            # successful connect so we always learn when Hermes is back,
+            # however it restarted. Deduped against the marker path above and
+            # skipped for chat-originated /restart (self._booted_from_restart),
+            # which keeps its lifecycle in the originating chat.
+            try:
+                await self._send_home_channel_startup_notifications(
+                    skip_targets=None,
+                )
+            finally:
+                self._home_channel_startup_notification_sent = True
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared

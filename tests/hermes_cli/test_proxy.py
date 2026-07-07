@@ -845,6 +845,51 @@ def test_server_strips_client_auth_header():
     asyncio.run(run())
 
 
+def test_server_returns_502_when_upstream_unreachable():
+    """A refused TCP connection to the upstream must surface as 502, not a 500/crash."""
+    async def run():
+        # Nothing is listening on this port -> aiohttp.ClientConnectorError
+        # (an aiohttp.ClientError subclass) when the proxy tries to connect.
+        adapter = FakeAdapter("http://127.0.0.1:1/v1")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions", json={},
+                ) as resp:
+                    assert resp.status == 502
+                    body = await resp.json()
+                    assert body["error"]["type"] == "upstream_unreachable"
+        finally:
+            await proxy_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_returns_504_when_upstream_times_out():
+    """A hung upstream (sock_connect/sock_read timeout) must surface as 504."""
+    async def run():
+        adapter = FakeAdapter("http://unused.example/v1")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        async def _raise_timeout(self, *args, **kwargs):
+            raise asyncio.TimeoutError()
+
+        try:
+            with patch("aiohttp.ClientSession.request", _raise_timeout):
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{proxy_base}/v1/chat/completions", json={},
+                    ) as resp:
+                        assert resp.status == 504
+                        body = await resp.json()
+                        assert body["error"]["type"] == "upstream_timeout"
+        finally:
+            await proxy_runner.cleanup()
+
+    asyncio.run(run())
+
+
 # ---------------------------------------------------------------------------
 # CLI handlers
 # ---------------------------------------------------------------------------

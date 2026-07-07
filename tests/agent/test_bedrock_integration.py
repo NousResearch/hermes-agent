@@ -643,3 +643,40 @@ class TestAuxiliaryClientBedrockResolution:
             )
 
         assert isinstance(client, AsyncBedrockAuxiliaryClient)
+
+    def test_bedrock_converse_shim_normalizes_string_stop(self, monkeypatch):
+        """OpenAI callers may pass stop='STR'; Converse requires a list."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIO...MPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        from agent.auxiliary_client import BedrockAuxiliaryClient
+
+        client = BedrockAuxiliaryClient("us-east-1", "openai.gpt-oss-20b-1:0")
+        with patch("agent.bedrock_adapter.call_converse") as mock_converse:
+            client.chat.completions.create(
+                model="openai.gpt-oss-20b-1:0",
+                messages=[{"role": "user", "content": "hi"}],
+                stop="STOP",
+            )
+        assert mock_converse.call_args.kwargs["stop_sequences"] == ["STOP"]
+
+    def test_bedrock_converse_shim_stream_returns_complete_response(self, monkeypatch):
+        """stream=True is not supported by the shim — a complete response comes
+        back and call_llm's streaming consumer downgrades gracefully."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIO...MPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        from agent.auxiliary_client import BedrockAuxiliaryClient
+
+        client = BedrockAuxiliaryClient("us-east-1", "openai.gpt-oss-20b-1:0")
+        sentinel = object()
+        with patch("agent.bedrock_adapter.call_converse", return_value=sentinel) as mock_converse:
+            resp = client.chat.completions.create(
+                model="openai.gpt-oss-20b-1:0",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+            )
+        # Non-streaming call_converse is still used; the caller's
+        # got-final-object downgrade path handles the rest.
+        assert resp is sentinel
+        assert mock_converse.call_count == 1

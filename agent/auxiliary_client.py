@@ -1369,6 +1369,28 @@ class _BedrockCompletionsAdapter:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
         max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
+        # OpenAI accepts ``stop`` as str or list; Converse requires a list.
+        stop = kwargs.get("stop")
+        if isinstance(stop, str):
+            stop = [stop]
+        if kwargs.get("tool_choice") is not None:
+            # Converse's toolChoice isn't wired through call_converse();
+            # no in-tree auxiliary caller passes tool_choice today. Surface
+            # the drop instead of silently ignoring it.
+            logger.debug(
+                "BedrockAuxiliaryClient: tool_choice=%r not supported by the "
+                "Converse shim — ignored.", kwargs.get("tool_choice"),
+            )
+        if kwargs.get("stream"):
+            # Converse streaming isn't wired through this shim. Return a
+            # complete response instead — call_llm's streaming consumer
+            # detects a final object and downgrades to non-live output.
+            logger.debug(
+                "BedrockAuxiliaryClient: stream=True requested for %s — "
+                "returning a complete response (Converse shim does not "
+                "stream); caller downgrades to non-streaming.",
+                model,
+            )
         return call_converse(
             region=self._region,
             model=model,
@@ -1377,7 +1399,7 @@ class _BedrockCompletionsAdapter:
             max_tokens=int(max_tokens) if max_tokens else 4096,
             temperature=kwargs.get("temperature"),
             top_p=kwargs.get("top_p"),
-            stop_sequences=kwargs.get("stop"),
+            stop_sequences=stop,
         )
 
 

@@ -54,3 +54,49 @@ class TestMediaDirectiveStripping:
         result = compressor._serialize_for_summary(turns)
         assert "MEDIA:" not in result
         assert result.count("[media attachment]") == 2
+
+    def test_multimodal_list_content_does_not_crash(self, compressor):
+        """content as a list (multimodal) must not crash redact_sensitive_text.
+
+        Regression: msg.get('content') can return a list of parts for
+        multimodal messages (images + text).  The old code passed this
+        list directly to redact_sensitive_text(str), which raised
+        AttributeError on list.replace().
+        """
+        turns = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is in this image?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+                ],
+            },
+        ]
+        # Must not raise
+        result = compressor._serialize_for_summary(turns)
+        assert "What is in this image?" in result
+        assert "[image]" in result
+
+    def test_multimodal_list_text_parts_extracted(self, compressor):
+        """Text parts from multimodal list content are preserved in output."""
+        turns = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "first part"},
+                    {"type": "text", "text": "second part"},
+                ],
+            },
+        ]
+        result = compressor._serialize_for_summary(turns)
+        assert "first part" in result
+        assert "second part" in result
+
+    def test_multimodal_list_bare_strings_handled(self, compressor):
+        """Bare strings inside a content list are joined."""
+        turns = [
+            {"role": "user", "content": ["hello", "world"]},
+        ]
+        result = compressor._serialize_for_summary(turns)
+        assert "hello" in result
+        assert "world" in result

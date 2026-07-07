@@ -323,6 +323,8 @@ discord:
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
+  voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -736,6 +738,8 @@ discord:
 ```
 
 Notes:
+- Set `voice_channel_inactivity_timeout_seconds: 0` if you want the bot to remain in the voice channel until an explicit `/voice leave` or manual disconnect. The default preserves the historical 300-second idle auto-leave.
+- `voice_playback_timeout_seconds` is a floor, not a hard cap for long TTS. Hermes probes the generated audio duration and waits for `duration + 30s` when that is longer than the configured floor.
 - The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
 - `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).
 - All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets.

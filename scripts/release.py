@@ -326,6 +326,7 @@ AUTHOR_MAP = {
     "sommerhoff@gmail.com": "andressommerhoff",
     "pwnda.zhang@dbappsecurity.com.cn": "x7peeps",
     "palkin.dominik@gmail.com": "skyc1e",
+    "namredips@gmail.com": "namredips",
     "namredips@users.noreply.github.com": "namredips",
     "mihabubnjevic@gmail.com": "whoislikemiha",
     "m24927605@gmail.com": "m24927605",

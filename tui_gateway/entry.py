@@ -201,6 +201,20 @@ def _log_exit(reason: str) -> None:
             )
     except Exception:
         pass
+
+    # Mirror the explicit shutdown performed by _log_signal().  The normal
+    # interpreter atexit hook also calls _shutdown_sessions(), but clean
+    # gateway-exit paths (broken stdout pipe, stdin EOF) are exactly where the
+    # parent transport has already disappeared.  Finalize live sessions now so
+    # an in-flight turn whose persisted tail is a tool result is marked as an
+    # interrupted TUI shutdown instead of being left for a later WS-orphan reap
+    # (#60286).  The shutdown path is idempotent: repeat atexit invocation sees
+    # no live sessions or an already-finalized session.
+    try:
+        server._shutdown_sessions()
+    except Exception:
+        pass
+
     print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
 
 

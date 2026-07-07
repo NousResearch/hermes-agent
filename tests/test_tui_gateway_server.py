@@ -2324,6 +2324,67 @@ def test_finalize_session_closes_slash_worker(monkeypatch):
     assert closed["count"] == 1
 
 
+def test_shutdown_sessions_persists_tool_tail_and_marks_tui_shutdown(monkeypatch):
+    """Gateway shutdown classifies an interrupted tool-tail as tui_shutdown.
+
+    Regression coverage for #60286: if the command pipe closes after a tool
+    result was incrementally persisted but before a final assistant response,
+    the shutdown path must explicitly end the session as a TUI shutdown instead
+    of leaving it around for a later WS-orphan reap.
+    """
+    persisted = []
+    ended = []
+
+    class _FakeAgent:
+        session_id = "agent-session-id"
+        model = "gpt-5.5"
+        platform = "tui"
+        _session_messages = [
+            {"role": "user", "content": "run a tool"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "done"},
+        ]
+
+        def _persist_session(self, messages, conversation_history=None):
+            persisted.append((list(messages), list(conversation_history or [])))
+
+        def close(self):
+            pass
+
+    class _FakeDB:
+        def end_session(self, session_id, end_reason):
+            ended.append((session_id, end_reason))
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+
+    server._sessions["live-sid"] = _session(
+        agent=_FakeAgent(),
+        history=[{"role": "user", "content": "run a tool"}],
+        running=True,
+        transport=server._detached_ws_transport,
+    )
+    try:
+        server._shutdown_sessions()
+    finally:
+        server._sessions.pop("live-sid", None)
+
+    assert "live-sid" not in server._sessions
+    assert ended == [("agent-session-id", "tui_shutdown")]
+    assert persisted
+    assert persisted[0][0][-1]["role"] == "tool"
+
+
 def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     """A session that rebinds a live transport is NOT considered orphaned."""
 

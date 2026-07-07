@@ -275,10 +275,14 @@ def _is_cron_silence_response(text: str) -> bool:
     # Whole response is exactly a token.
     if _is_token(stripped):
         return True
-    # Marker on its own first or last line (trailing/leading note on a
-    # separate line — e.g. "2 deals filtered\n\n[SILENT]").
+    # Marker on its own line anywhere in the response. This intentionally
+    # accepts a leading cron/policy preamble before the marker: scheduled
+    # watchers often have mandatory policy boilerplate, and that boilerplate
+    # must not turn an explicit silence sentinel into a chat delivery. Keep the
+    # match line-scoped so mid-sentence mentions such as
+    # "I considered staying [SILENT]..." still deliver normally.
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
-    if lines and (_is_token(lines[0]) or _is_token(lines[-1])):
+    if any(_is_token(ln) for ln in lines):
         return True
     # Bracketed sentinel used as a same-line prefix — the documented cron
     # pattern "[SILENT] No changes detected".  Restricted to the bracketed

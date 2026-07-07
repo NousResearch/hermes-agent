@@ -2512,7 +2512,8 @@ class TestSilentDelivery:
     def test_is_cron_silence_response_contract(self):
         """Direct behavior contract for the cron silence matcher."""
         from cron.scheduler import _is_cron_silence_response as sil
-        # Suppress: bare/bracketed/bracketless tokens, prefix, trailing-line.
+        # Suppress: bare/bracketed/bracketless tokens, prefix, and standalone
+        # marker lines even when mandatory cron/policy boilerplate appears first.
         assert sil("[SILENT]")
         assert sil("[silent] nothing new")
         assert sil("[SILENT] No changes detected")
@@ -2521,6 +2522,7 @@ class TestSilentDelivery:
         assert sil("NO_REPLY")
         assert sil("NO REPLY")
         assert sil("Summary.\nSILENT")
+        assert sil("Policy: read required rules first.\n[SILENT]\nNo matching PR found.")
         # Deliver: real content, mid-sentence quotes, bare words, junk.
         assert not sil("Daily report: 4 PRs merged.")
         assert not sil("I stayed [SILENT] but here is the report: 3 items.")

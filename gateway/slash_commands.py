@@ -3558,21 +3558,30 @@ class GatewaySlashCommandsMixin:
 
         # Resolve a numbered choice or a title to a session ID.
         if name.isdigit():
-            try:
-                titled = await _list_titled_sessions()
-                titled = [
-                    s for s in titled
-                    if await self._resume_row_visible(source, s, allow_all)
-                ]
-            except Exception as e:
-                logger.debug("Failed to list titled sessions for numeric resume: %s", e)
-                return t("gateway.resume.list_failed", error=e)
-            index = int(name)
-            if index < 1 or index > len(titled):
-                return t("gateway.resume.out_of_range", index=index)
-            target = titled[index - 1]
-            target_id = target.get("id")
-            name = target.get("title") or name
+            # Check if this number refers to a recent /sessions search result.
+            # When the user just ran /sessions search <query>, the numbered
+            # list they see comes from the search query, not the default
+            # titled-sessions listing (Closes #60136).
+            last_search = getattr(self, "_last_search_results", None)
+            if last_search and name in last_search:
+                target_id = last_search[name]
+                name = ""
+            else:
+                try:
+                    titled = await _list_titled_sessions()
+                    titled = [
+                        s for s in titled
+                        if await self._resume_row_visible(source, s, allow_all)
+                    ]
+                except Exception as e:
+                    logger.debug("Failed to list titled sessions for numeric resume: %s", e)
+                    return t("gateway.resume.list_failed", error=e)
+                index = int(name)
+                if index < 1 or index > len(titled):
+                    return t("gateway.resume.out_of_range", index=index)
+                target = titled[index - 1]
+                target_id = target.get("id")
+                name = target.get("title") or name
         else:
             # Try direct session ID lookup first (so `/resume <session_id>`
             # works in the gateway, not just `/resume <title>`).
@@ -3728,6 +3737,13 @@ class GatewaySlashCommandsMixin:
                 if await self._resume_row_visible(source, row, allow_all=False)
             ]
         rows = rows[:10]
+        # Persist search result indices so /resume <number> resolves against
+        # the displayed search listing, not the default recent-sessions list.
+        # Closes #60136.
+        if search_query:
+            self._last_search_results = {str(i): row["id"] for i, row in enumerate(rows, start=1)}
+        else:
+            self._last_search_results = None
         if search_query:
             title = f"Sessions matching “{search_query}”"
         else:

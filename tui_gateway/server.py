@@ -11701,6 +11701,38 @@ def _(rid, params: dict) -> dict:
         lower = arg.strip().lower()
         if not arg.strip() or lower == "status":
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "show":
+            out = f"{mgr.status_line()}\n{mgr.render_contract()}"
+            return _ok(rid, {"type": "exec", "output": out})
+        if lower.startswith("draft"):
+            objective = arg[len("draft"):].strip()
+            if not objective:
+                return _err(rid, 4004, "Usage: /goal draft <objective in plain language>")
+            from hermes_cli.goals import draft_contract
+            try:
+                contract = draft_contract(objective, timeout=10.0)
+            except Exception as exc:
+                logger.debug("goal draft failed: %s", exc)
+                contract = None
+
+            try:
+                state = mgr.set(objective, contract=contract)
+            except ValueError as exc:
+                return _err(rid, 4004, f"invalid goal: {exc}")
+
+            notice = f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
+            if state.has_contract():
+                notice += "Drafted completion contract:\n"
+                for line in state.contract.render_block().splitlines():
+                    notice += f"  {line}\n"
+                notice += "Tighten any field by re-setting the goal with inline lines (e.g. verify: <command>), then /goal resume. Use /goal show to review."
+            else:
+                notice += "Couldn't draft a contract (aux model unavailable) — running as a free-form goal. The per-turn judge still applies."
+
+            return _ok(
+                rid,
+                {"type": "send", "notice": notice, "message": state.goal},
+            )
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
@@ -11729,22 +11761,59 @@ def _(rid, params: dict) -> dict:
                     "output": "✓ Goal cleared." if had else "No active goal.",
                 },
             )
+        if lower == "wait" or lower.startswith("wait "):
+            wait_arg = arg[len("wait"):].strip()
+            if not wait_arg:
+                return _err(rid, 4004, "Usage: /goal wait <pid> [reason]")
+            
+            wtokens = wait_arg.split(None, 1)
+            try:
+                pid = int(wtokens[0])
+            except (ValueError, IndexError):
+                return _err(rid, 4004, "/goal wait: <pid> must be an integer process id.")
+            
+            reason = wtokens[1].strip() if len(wtokens) > 1 else ""
+            try:
+                mgr.wait_on(pid, reason=reason)
+            except (RuntimeError, ValueError) as exc:
+                return _err(rid, 4004, f"/goal wait: {exc}")
+                
+            rtxt = f" ({reason})" if reason else ""
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": f"⏳ Goal parked on pid {pid}{rtxt}. Loop pauses until it exits.",
+                },
+            )
+        if lower == "unwait":
+            if mgr.stop_waiting():
+                return _ok(rid, {"type": "exec", "output": "▶ Wait barrier cleared — goal loop resumes."})
+            else:
+                return _ok(rid, {"type": "exec", "output": "No wait barrier set."})
 
-        # Otherwise — treat the remaining text as the new goal.
+        # Otherwise treat the arg as the goal text. Inline `field: value`
+        # lines (verify:, constraints:, boundaries:, stop when:) are parsed
+        # into a completion contract; the remaining prose is the headline.
+        from hermes_cli.goals import parse_contract
         try:
-            state = mgr.set(arg)
+            headline, contract = parse_contract(arg)
+            goal_text = headline or arg
+        except Exception as exc:
+            logger.debug("parse_contract failed: %s", exc)
+            goal_text = arg
+            contract = None
+
+        try:
+            state = mgr.set(goal_text, contract=contract if (contract and not contract.is_empty()) else None)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
         notice = (
             f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
             "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
-            "Controls: /goal status · /goal pause · /goal resume · /goal clear"
+            "Controls: /goal status · /goal show · /goal pause · /goal resume · /goal clear"
         )
-        # Send the goal text as the kickoff prompt. The TUI client sees
-        # {type: send, notice, message} → renders `notice` as a sys line,
-        # then submits `message` as a user turn. The post-turn judge
-        # wired in _run_prompt_submit takes over from there.
         return _ok(
             rid,
             {"type": "send", "notice": notice, "message": state.goal},

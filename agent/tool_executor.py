@@ -35,7 +35,11 @@ from agent.decision_packet import (
     decision_packet_tool_result,
     extract_decision_packet,
 )
-from agent.decision_policy import evaluate_tool_call
+from agent.decision_policy import (
+    evaluate_tool_call,
+    fail_closed_result,
+    MUTATING_TOOL_NAMES as DECISION_POLICY_MUTATING_TOOL_NAMES,
+)
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -225,7 +229,15 @@ def _decision_policy_block_result(
         )
     except Exception as exc:
         logger.debug("decision policy tool preflight failed for %s: %s", function_name, exc, exc_info=True)
-        return None
+        # Fail closed for mutating/terminal tools: an unclassifiable action must
+        # not slip through as a silent continue. Read-only tools continue.
+        try:
+            if function_name in DECISION_POLICY_MUTATING_TOOL_NAMES:
+                decision = fail_closed_result(f"{function_name}(...)", detail=str(exc))
+            else:
+                return None
+        except Exception:
+            return None
     if not decision.needs_chad:
         return None
 

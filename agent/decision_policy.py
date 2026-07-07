@@ -29,19 +29,40 @@ READ_ONLY_TOOL_NAMES = frozenset(
 )
 
 LOCAL_MUTATION_TOOL_NAMES = frozenset({"write_file", "patch", "todo", "memory"})
-DECISION_GATED_TOOL_NAMES = frozenset({"send_message", "cronjob"})
-MUTATING_TOOL_NAMES = LOCAL_MUTATION_TOOL_NAMES | DECISION_GATED_TOOL_NAMES | frozenset(
+
+# Browser tools that only observe page state and never trigger a side effect.
+BROWSER_READ_ONLY_TOOL_NAMES = frozenset(
+    {"browser_snapshot", "browser_console", "browser_get_images", "browser_scroll"}
+)
+
+# Browser tools that can submit forms, follow links, drive dialogs, or issue
+# raw devtools commands — i.e. cause external side effects — and therefore
+# cross a finite decision fork.
+BROWSER_INTERACTION_TOOL_NAMES = frozenset(
     {
-        "terminal",
-        "execute_code",
-        "skill_manage",
+        "browser_navigate",
         "browser_click",
         "browser_type",
         "browser_press",
+        "browser_back",
+        "browser_dialog",
+        "browser_cdp",
+    }
+)
+
+# process() actions that only observe an already-approved background process.
+PROCESS_READ_ONLY_ACTIONS = frozenset({"list", "poll", "log", "wait"})
+
+DECISION_GATED_TOOL_NAMES = (
+    frozenset({"send_message", "cronjob", "execute_code", "process"})
+    | BROWSER_INTERACTION_TOOL_NAMES
+)
+MUTATING_TOOL_NAMES = LOCAL_MUTATION_TOOL_NAMES | DECISION_GATED_TOOL_NAMES | frozenset(
+    {
+        "terminal",
+        "skill_manage",
         "browser_scroll",
-        "browser_navigate",
         "delegate_task",
-        "process",
     }
 )
 
@@ -92,9 +113,28 @@ _CONFIG_MUTATION_RE = re.compile(
 _DESTRUCTIVE_FS_RE = re.compile(
     r"""(?ix)
     (?:^|[;&|\n]\s*)
+    (?:sudo\s+)?
     (?:
-        git\s+clean\b|find\b[^\n;&|]*\s-delete\b
+        git\s+clean\b|
+        find\b[^\n;&|]*\s-delete\b|
+        # Direct destructive filesystem verbs. Conservative: any rm/shred/dd/
+        # mv/cp/truncate/rmdir crosses a fork rather than a bounded edit.
+        (?:rm|shred|srm|unlink|rmdir|truncate|dd|mv|cp|rsync)\b
     )
+    """
+)
+
+# A single-`>` redirect truncates its target file. `>>` (append), fd
+# duplication (`2>&1`), and `/dev/null` sinks are not destructive to real
+# workspace files, so they are excluded.
+_TRUNCATING_REDIRECT_RE = re.compile(
+    r"""(?ix)
+    (?<![>&\d])           # not part of >> or an fd like 2>
+    \d?>(?!>)             # a single > optionally prefixed by one fd digit
+    \s*
+    (?!&)                 # not an fd duplication target (>&2)
+    (?!/dev/null\b)       # not the null sink
+    \S
     """
 )
 
@@ -120,7 +160,14 @@ _EXTERNAL_SIDE_EFFECT_RE = re.compile(
     (?:^|[;&|\n]\s*)
     (?:
         curl\b[^\n;&|]*(?:-X|--request)\s*(?:POST|PUT|PATCH|DELETE)\b|
+        # curl that sends a request body/form implies a mutating (non-GET) call
+        # even without an explicit -X flag.
+        curl\b[^\n;&|]*(?:\s-d\b|--data(?:-binary|-raw|-urlencode|-ascii)?\b|\s-F\b|--form\b|-T\b|--upload-file\b)|
+        # wget uploads / non-GET methods.
+        wget\b[^\n;&|]*(?:--post-data\b|--post-file\b|--body-data\b|--body-file\b|--method[=\s]*(?:POST|PUT|PATCH|DELETE))|
         http\b[^\n;&|]*\b(?:POST|PUT|PATCH|DELETE)\b|
+        # `gh api` with a mutating method (default GET is read-only).
+        gh\s+api\b[^\n;&|]*(?:-X|--method)[=\s]*(?:POST|PUT|PATCH|DELETE)\b|
         gh\s+(?:pr|issue|release)\s+(?:create|edit|comment|merge|close|reopen|upload)\b|
         npm\s+publish\b|twine\s+upload\b|docker\s+push\b|
         mail\b|sendmail\b|telegram-send\b|slack\b
@@ -130,6 +177,25 @@ _EXTERNAL_SIDE_EFFECT_RE = re.compile(
 
 _FINANCIAL_RE = re.compile(
     r"(?i)(?:^|[;&|\n]\s*)(?:stripe|paypal|coinbase|crypto|brokerage)\b.*\b(?:pay|refund|charge|buy|sell|trade|transfer)\b"
+)
+
+# Python constructs inside an execute_code payload that can reach a subprocess,
+# the filesystem (mutating), the network, low-level memory, or dynamic code —
+# i.e. the paths that bypass per-command terminal() gating. Read-only compute
+# (math, parsing, os.getcwd, open(...) for read) is intentionally NOT matched.
+_EXECUTE_CODE_RISK_RE = re.compile(
+    r"""(?x)
+    \bsubprocess\b
+    | \bos\.(?:system|popen|exec[lv][pe]*|spawn\w*|posix_spawn\w*|remove|unlink|rename|replace|rmdir|removedirs|chmod|chown|truncate|kill|killpg|putenv|startfile)\b
+    | \bshutil\.(?:rmtree|move|copy\w*|make_archive|unpack_archive)\b
+    | \.(?:write_text|write_bytes|unlink|rmdir|rename|replace|chmod|mkdir|touch)\s*\(
+    | \bopen\s*\([^)]*['\"][waxWAX][btBT+]*['\"]
+    | \b(?:socket|ssl|urllib|urlopen|requests|httpx|aiohttp|http\.client|httplib|ftplib|smtplib|imaplib|poplib|telnetlib|paramiko|websocket|websockets|pycurl)\b
+    | \b(?:ctypes|cffi|mmap)\b
+    | \b__import__\s*\(
+    | \b(?:eval|exec|compile)\s*\(
+    | \bimportlib\b
+    """
 )
 
 
@@ -201,6 +267,38 @@ def evaluate_tool_call(
             evidence=f"tool=cronjob; action={action}; name={_redact(str(args.get('name') or ''))}",
         )
 
+    if name == "execute_code":
+        return _evaluate_execute_code(args)
+
+    if name == "process":
+        action = str(args.get("action") or "").strip().lower()
+        if action in PROCESS_READ_ONLY_ACTIONS or action == "":
+            return continue_result()
+        return _packet_result(
+            reason="Background-process state change requires Chad approval.",
+            proposed_action=f"process action={action}",
+            why=(
+                "Terminating a process or injecting stdin can drive an already-running "
+                "command, confirm a destructive prompt, or push data over its open "
+                "connections — outside the local edit boundary."
+            ),
+            default="Do not kill or write to the process. Continue with read-only actions (list, poll, log, wait).",
+            evidence=f"tool=process; action={action}; session_id={_redact(str(args.get('session_id') or ''))}",
+        )
+
+    if name in BROWSER_INTERACTION_TOOL_NAMES:
+        return _packet_result(
+            reason="Browser interaction requires Chad approval.",
+            proposed_action=f"{name}({ _summarize_args(args) })",
+            why=(
+                "Navigating, clicking, typing, submitting, or issuing raw devtools "
+                "commands in a live browser can submit forms or trigger external side "
+                "effects rather than just observing the page."
+            ),
+            default="Do not interact with the page. Continue with read-only browser_snapshot/console/get_images inspection.",
+            evidence=f"tool={name}",
+        )
+
     if _tool_name_suggests_external_side_effect(name):
         return _packet_result(
             reason="External side-effect tool requires Chad approval.",
@@ -219,12 +317,29 @@ def evaluate_terminal_command(
     env_type: str = "local",
     cwd: str | None = None,
     task_id: str = "default",
+    include_destructive_fs: bool = True,
 ) -> DecisionPolicyResult:
-    """Classify a terminal command before execution."""
+    """Classify a terminal command before execution.
+
+    ``include_destructive_fs`` gates the bare destructive-verb / truncating-
+    redirect category (rm/mv/cp/shred/dd/truncate/``>``). It is on for the
+    doctrine's turn-halt preflights (tool_executor, terminal_tool), where these
+    must stop the turn with a packet. It is turned off by the shared
+    ``check_all_command_guards`` approval layer, whose established interactive
+    approval flow already owns those commands — so the doctrine does not drift
+    on top of it. Every other category always applies.
+    """
 
     del env_type  # Current doctrine is about action semantics, not backend choice.
     command = command or ""
     if not command.strip():
+        return continue_result()
+
+    # Defer catastrophic commands to the unconditional hardline floor. A
+    # NEEDS_CHAD packet is *approvable*; the hardline block is not. Emitting a
+    # (weaker) packet here would let `rm -rf /` become approvable, so we let it
+    # fall through to detect_hardline_command downstream instead.
+    if _is_hardline_command(command):
         return continue_result()
 
     redacted = _redact(command)
@@ -284,7 +399,9 @@ def evaluate_terminal_command(
             evidence=_terminal_evidence(command, cwd=cwd, task_id=task_id),
         )
 
-    if _DESTRUCTIVE_FS_RE.search(command):
+    if include_destructive_fs and (
+        _DESTRUCTIVE_FS_RE.search(command) or _TRUNCATING_REDIRECT_RE.search(command)
+    ):
         return _packet_result(
             reason="Destructive filesystem action requires Chad approval.",
             proposed_action=f"terminal command: {redacted}",
@@ -344,6 +461,47 @@ def _evaluate_file_mutation_tool(
                 ),
             )
     return continue_result()
+
+
+def _evaluate_execute_code(args: Mapping[str, Any]) -> DecisionPolicyResult:
+    """Classify an execute_code payload before its child process runs.
+
+    execute_code runs arbitrary local Python, which bypasses per-command
+    terminal() gating. Pure computation continues; any script that can reach a
+    subprocess, mutate the filesystem, open the network, touch low-level
+    memory, handle credentials/PHI, or embed a gated shell command stops with a
+    Decision Packet.
+    """
+    code = str(args.get("code") or "")
+    if not code.strip():
+        return continue_result()
+
+    risky = bool(_EXECUTE_CODE_RISK_RE.search(code))
+    if not risky and (_command_mentions_secret(code) or _mentions_sensitive_material(code)):
+        risky = True
+    if not risky:
+        # Embedded shell strings (subprocess payloads, os.system args) may carry
+        # git/network/destructive commands even without a flagged Python API.
+        try:
+            if evaluate_terminal_command(code).needs_chad:
+                risky = True
+        except Exception:
+            risky = True  # fail closed for unparseable payloads
+
+    if not risky:
+        return continue_result()
+
+    return _packet_result(
+        reason="Arbitrary code execution requires Chad approval.",
+        proposed_action=f"execute_code({ _summarize_args(args) })",
+        why=(
+            "execute_code runs arbitrary local Python that can spawn subprocesses, "
+            "mutate the filesystem, open network connections, read credentials, or "
+            "otherwise bypass per-command terminal gating."
+        ),
+        default="Do not run the script. Continue with read-only tools or a bounded write_file/patch edit inside the workspace.",
+        evidence=f"tool=execute_code; risk=code-pattern",
+    )
 
 
 def _classify_git_command(command: str) -> tuple[str, str] | None:
@@ -440,23 +598,37 @@ def _branch_args_mutate_strategy(args: Sequence[str]) -> bool:
         "--unset-upstream",
         "--track",
     }
-    if any(arg in mutating_flags for arg in args):
+    if any(arg.split("=", 1)[0] in mutating_flags for arg in args):
         return True
-    read_flags = {
-        "-a",
-        "-r",
-        "-v",
-        "-vv",
-        "--all",
-        "--remotes",
-        "--verbose",
-        "--show-current",
+    # Read-only query flags that consume the following token as a value
+    # (a commit-ish or pattern), not a new branch name to create.
+    read_value_flags = {
         "--contains",
+        "--no-contains",
         "--merged",
         "--no-merged",
-        "--list",
+        "--points-at",
+        "--sort",
+        "--format",
     }
-    return any(not arg.startswith("-") for arg in args) and not all(arg in read_flags for arg in args)
+    positionals: list[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if "=" in arg and arg.split("=", 1)[0] in read_value_flags:
+            continue
+        if arg in read_value_flags:
+            skip_next = True
+            continue
+        if arg.startswith("-"):
+            continue
+        positionals.append(arg)
+    # A bare positional is a new/target branch name → a create/repoint strategy
+    # decision. No bare positional (only flags/consumed query values) is a
+    # read-only listing query.
+    return bool(positionals)
 
 
 def _tool_name_suggests_external_side_effect(name: str) -> bool:
@@ -560,6 +732,23 @@ def _path_inside_any_root(path: Path, roots: Sequence[Path]) -> bool:
     return False
 
 
+def _is_hardline_command(command: str) -> bool:
+    """True if the command hits the unconditional hardline blocklist.
+
+    The decision policy defers to that stronger floor so catastrophic commands
+    stay unconditionally blocked rather than being downgraded to an approvable
+    NEEDS_CHAD packet. Import is lazy + best-effort: if the checker is
+    unavailable, the doctrine's own destructive-FS rules still apply.
+    """
+    try:
+        from tools.approval import detect_hardline_command
+
+        is_hardline, _ = detect_hardline_command(command)
+        return bool(is_hardline)
+    except Exception:
+        return False
+
+
 def _command_mentions_secret(command: str) -> bool:
     lowered = command.lower()
     if any(token in lowered for token in ("gh auth token", "op read", "security find-generic-password", "pass show")):
@@ -602,6 +791,24 @@ def _packet_result(
         evidence_summary=_redact(evidence),
     )
     return DecisionPolicyResult(action="needs_chad", packet=packet)
+
+
+def fail_closed_result(subject: str, *, detail: str = "") -> DecisionPolicyResult:
+    """A NEEDS_CHAD result for when the classifier itself could not run.
+
+    Used by callers to fail closed on an unexpected classifier exception for a
+    mutating/terminal tool, rather than silently continuing.
+    """
+    return _packet_result(
+        reason="Action could not be classified by the decision policy; stopping for Chad.",
+        proposed_action=subject,
+        why=(
+            "The continue-until-fork classifier raised an error, so this action cannot "
+            "be proven safe to continue automatically."
+        ),
+        default="Do not run the action. Continue with read-only inspection, or retry after narrowing it.",
+        evidence=detail or "classifier_exception",
+    )
 
 
 def _summarize_args(args: Mapping[str, Any]) -> str:

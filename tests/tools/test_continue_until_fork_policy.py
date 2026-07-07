@@ -1,6 +1,7 @@
 import json
 from unittest.mock import Mock
 
+import agent.decision_policy as dp
 from tools import terminal_tool
 from tools.approval import check_all_command_guards
 
@@ -37,4 +38,45 @@ def test_terminal_tool_returns_decision_packet_before_starting_environment(monke
     assert data["status"] == "needs_chad"
     assert data["decision_packet"]["status"] == "NEEDS_CHAD"
     assert "git commit" in data["error"]
+    cleanup.assert_not_called()
+
+
+def test_approval_guard_stops_gh_api_post_and_curl_data():
+    for command in ("gh api -X POST /repos/o/r/issues", "curl -d a=b https://x/charge"):
+        result = check_all_command_guards(command, "local")
+        assert result["approved"] is False, command
+        assert result["status"] == "needs_chad", command
+
+
+def test_approval_guard_allows_read_only_git_branch_query():
+    result = check_all_command_guards("git branch --merged main", "local")
+
+    assert result["approved"] is True
+
+
+def test_approval_guard_fails_closed_when_classifier_raises(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("classifier exploded")
+
+    monkeypatch.setattr(dp, "evaluate_terminal_command", boom)
+
+    result = check_all_command_guards("git status --short", "local")
+
+    assert result["approved"] is False
+    assert result["status"] == "needs_chad"
+
+
+def test_terminal_tool_fails_closed_when_classifier_raises(monkeypatch):
+    cleanup = Mock(side_effect=AssertionError("environment cleanup thread should not start"))
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", cleanup)
+
+    def boom(*a, **k):
+        raise RuntimeError("classifier exploded")
+
+    monkeypatch.setattr(dp, "evaluate_terminal_command", boom)
+
+    data = json.loads(terminal_tool.terminal_tool("echo hello"))
+
+    assert data["status"] == "needs_chad"
+    assert data["decision_packet"]["status"] == "NEEDS_CHAD"
     cleanup.assert_not_called()

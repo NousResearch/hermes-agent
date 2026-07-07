@@ -2104,16 +2104,24 @@ def terminal_tool(
             from agent.decision_packet import decision_packet_terminal_result
             from agent.decision_policy import evaluate_terminal_command
 
-            policy_decision = evaluate_terminal_command(
-                command,
-                env_type=env_type,
-                cwd=workdir or cwd,
-                task_id=task_id or effective_task_id,
-            )
+            try:
+                policy_decision = evaluate_terminal_command(
+                    command,
+                    env_type=env_type,
+                    cwd=workdir or cwd,
+                    task_id=task_id or effective_task_id,
+                )
+            except Exception as exc:
+                # Fail closed: an unclassifiable terminal command stops rather
+                # than executing unchecked.
+                logger.debug("decision policy terminal preflight failed: %s", exc, exc_info=True)
+                from agent.decision_policy import fail_closed_result
+
+                policy_decision = fail_closed_result(f"terminal command: {command}", detail=str(exc))
             if policy_decision.needs_chad:
                 return decision_packet_terminal_result(policy_decision.packet)
         except Exception as exc:
-            logger.debug("decision policy terminal preflight failed: %s", exc, exc_info=True)
+            logger.debug("decision policy terminal preflight import failed: %s", exc, exc_info=True)
 
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.

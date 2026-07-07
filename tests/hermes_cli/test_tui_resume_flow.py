@@ -886,6 +886,116 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["prompt"] == "recall this"
 
 
+def test_oneshot_auth_error_uses_configured_fallback(monkeypatch):
+    """Credential-resolution AuthError should fall through before AIAgent exists."""
+    from hermes_cli.auth import AuthError
+    from hermes_cli.oneshot import _run_agent
+
+    captured = {}
+    resolve_calls = []
+    sentinel_db = object()
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def run_conversation(self, prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return {"final_response": "fallback ok", "failed": False, "partial": False}
+
+    class FakeSessionDB:
+        def __new__(cls):
+            return sentinel_db
+
+    def fake_resolve_runtime_provider(**kwargs):
+        resolve_calls.append(kwargs)
+        if kwargs.get("requested") is None:
+            raise AuthError("primary credentials missing")
+        assert kwargs == {
+            "requested": "custom",
+            "target_model": "fallback-model",
+            "explicit_base_url": "https://fallback.example/v1",
+            "explicit_api_key": "fallback-secret",
+        }
+        return {
+            "api_key": "fallback-secret",
+            "base_url": "https://fallback.example/v1",
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        }
+
+    def mod(name, **attrs):
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setenv("FALLBACK_API_KEY", "fallback-secret")
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
+    monkeypatch.setitem(sys.modules, "hermes_state", mod("hermes_state", SessionDB=FakeSessionDB))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {
+                "model": {"default": "primary-model", "provider": "openai-codex"},
+                "fallback_providers": [
+                    {
+                        "provider": "custom",
+                        "model": "fallback-model",
+                        "base_url": "https://fallback.example/v1",
+                        "key_env": "FALLBACK_API_KEY",
+                    }
+                ],
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod("hermes_cli.runtime_provider", resolve_runtime_provider=fake_resolve_runtime_provider),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"web"}),
+    )
+
+    text, result = _run_agent("hello")
+
+    assert text == "fallback ok"
+    assert not result.get("failed")
+    assert resolve_calls[0] == {
+        "requested": None,
+        "target_model": "primary-model",
+        "explicit_base_url": None,
+    }
+    assert captured["model"] == "fallback-model"
+    assert captured["provider"] == "custom"
+    assert captured["base_url"] == "https://fallback.example/v1"
+    assert captured["api_key"] == "fallback-secret"
+    assert captured["session_db"] is sentinel_db
+    assert captured["fallback_model"] == [
+        {
+            "provider": "custom",
+            "model": "fallback-model",
+            "base_url": "https://fallback.example/v1",
+            "key_env": "FALLBACK_API_KEY",
+        }
+    ]
+    assert captured["prompt"] == "hello"
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None

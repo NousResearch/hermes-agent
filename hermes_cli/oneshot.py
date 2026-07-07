@@ -294,6 +294,57 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _fallback_entry_api_key(entry: dict) -> str | None:
+    explicit_api_key = entry.get("api_key")
+    if explicit_api_key:
+        return str(explicit_api_key).strip() or None
+
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+    if not key_env:
+        return None
+
+    return os.getenv(key_env, "").strip() or None
+
+
+def _resolve_runtime_with_auth_fallback(
+    *,
+    resolve_runtime_provider,
+    primary_kwargs: dict,
+    fallback_chain: list[dict],
+) -> tuple[dict, dict | None]:
+    """Resolve the primary runtime, falling back only for setup-time auth failures."""
+    try:
+        return resolve_runtime_provider(**primary_kwargs), None
+    except Exception as primary_exc:
+        from hermes_cli.auth import AuthError
+
+        if not isinstance(primary_exc, AuthError):
+            raise
+
+        for entry in fallback_chain:
+            fb_provider = str(entry.get("provider") or "").strip()
+            fb_model = str(entry.get("model") or "").strip()
+            if not fb_provider or not fb_model:
+                continue
+
+            fb_kwargs = {
+                "requested": fb_provider,
+                "target_model": fb_model,
+            }
+            if entry.get("base_url"):
+                fb_kwargs["explicit_base_url"] = entry.get("base_url")
+            fb_api_key = _fallback_entry_api_key(entry)
+            if fb_api_key:
+                fb_kwargs["explicit_api_key"] = fb_api_key
+
+            try:
+                return resolve_runtime_provider(**fb_kwargs), entry
+            except Exception:
+                continue
+
+        raise primary_exc
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -366,11 +417,21 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    runtime = resolve_runtime_provider(
-        requested=effective_provider,
-        target_model=effective_model or None,
-        explicit_base_url=explicit_base_url_from_alias,
+    # Read the effective fallback chain before provider resolution. The primary
+    # provider can fail while resolving credentials, before AIAgent exists and
+    # before runtime fallback can activate.
+    _fb = get_fallback_chain(cfg)
+    runtime, fallback_entry = _resolve_runtime_with_auth_fallback(
+        resolve_runtime_provider=resolve_runtime_provider,
+        primary_kwargs={
+            "requested": effective_provider,
+            "target_model": effective_model or None,
+            "explicit_base_url": explicit_base_url_from_alias,
+        },
+        fallback_chain=_fb,
     )
+    if fallback_entry is not None:
+        effective_model = str(fallback_entry.get("model") or "").strip() or effective_model
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
@@ -380,9 +441,6 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
-    # Read the effective fallback chain from profile config so oneshot workers
-    # honour the same merge semantics as interactive CLI and gateway sessions.
-    _fb = get_fallback_chain(cfg)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),

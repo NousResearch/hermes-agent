@@ -41,6 +41,7 @@ This skill loads standard reusable prompts from HermesAgent. The v2 prompt files
 | `Use Create Design System` / `Use Design System` | `use-create-design-system`, `Create Design System`, `create-design-system`, `Use Design System`, `use-design-system`, `ใช้ Design System`, `ใช้ Create Design System`, `สร้าง Design System`, `ทำ Design System มาตรฐาน`, `วาง Design System ให้โปรเจกต์` | `references/use-create-design-system.md` |
 | `Use Hermes Structure` | `use-hermes-structure`, `Hermes Structure`, `ใช้ Hermes Structure`, `มาตรฐานกลาง Hermes` | `references/use-hermes-structure.md` |
 | `Use Create Content` | `use-create-content`, `Create Content`, `create-content`, `ใช้ Create Content`, `สร้างคอนเทนต์จากแชท`, `แปลงแชทเป็นคอนเทนต์`, `ทำ Content Master` | `references/use-create-content.md` |
+| `Use Trade-off` | `use-trade-off`, `Use Tradeoff`, `Trade-off`, `trade-off`, `tradeoff`, `ใช้ Trade-off`, `ข้อแลกเปลี่ยน`, `ได้อะไรเสียอะไร`, `Trade-off ของเรื่องนี้คืออะไร` | `references/use-trade-off.md` |
 
 ## How To Use
 

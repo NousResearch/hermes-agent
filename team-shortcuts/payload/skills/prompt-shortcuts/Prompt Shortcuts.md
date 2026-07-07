@@ -256,6 +256,7 @@ Use Create Content
 | `Use Create Design System` / `Use Design System` | `use-create-design-system`, `Create Design System`, `create-design-system`, `Use Design System`, `use-design-system`, `ใช้ Design System`, `ใช้ Create Design System`, `สร้าง Design System`, `ทำ Design System มาตรฐาน`, `วาง Design System ให้โปรเจกต์` | [[skills/prompt-shortcuts/references/use-create-design-system|use-create-design-system]] |
 | `Use Hermes Structure` | `use-hermes-structure`, `Hermes Structure`, `ใช้ Hermes Structure`, `มาตรฐานกลาง Hermes` | [[skills/prompt-shortcuts/references/use-hermes-structure|use-hermes-structure]] |
 | `Use Create Content` | `use-create-content`, `Create Content`, `create-content`, `ใช้ Create Content`, `สร้างคอนเทนต์จากแชท`, `แปลงแชทเป็นคอนเทนต์`, `ทำ Content Master` | [[skills/prompt-shortcuts/references/use-create-content|use-create-content]] |
+| `Use Trade-off` | `use-trade-off`, `Use Tradeoff`, `Trade-off`, `trade-off`, `tradeoff`, `ใช้ Trade-off`, `ข้อแลกเปลี่ยน`, `ได้อะไรเสียอะไร`, `Trade-off ของเรื่องนี้คืออะไร` | [[skills/prompt-shortcuts/references/use-trade-off|use-trade-off]] |
 
 ## ใช้งานกับ AI ตัวอื่น
 

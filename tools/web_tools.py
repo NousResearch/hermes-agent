@@ -320,6 +320,19 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "scrapling":
+        # Local, no-key, no-credentials. Extract-only. Available iff the
+        # ``scrapling`` Python package + its CLI are importable.
+        try:
+            import importlib.util
+            import shutil
+            if importlib.util.find_spec("scrapling") is None:
+                return False
+            if not shutil.which("scrapling"):
+                return False
+        except Exception:
+            return False
+        return True
     if backend == "xai":
         # Cheap probe — env var OR auth.json has OAuth tokens. Must not
         # call resolve_xai_http_credentials() here because the OAuth path

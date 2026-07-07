@@ -43,6 +43,12 @@ except ImportError:  # pragma: no cover - dependency gate
     aiohttp = None  # type: ignore[assignment]
     AIOHTTP_AVAILABLE = False
 
+# Fallback exception class when aiohttp is not available
+if AIOHTTP_AVAILABLE:
+    _ClientError = aiohttp.ClientError
+else:
+    _ClientError = Exception
+
 try:
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -394,7 +400,7 @@ async def _api_post(
             return json.loads(raw)
     try:
         return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
-    except (asyncio.TimeoutError, aiohttp.ClientError):
+    except (asyncio.TimeoutError, _ClientError):
         # Stale pooled connection (aiohttp#12795): the TCPConnector may hand
         # out a server-closed keep-alive connection.  Retry once — the second
         # attempt creates a fresh TCP connection.
@@ -424,7 +430,7 @@ async def _api_get(
             return json.loads(raw)
     try:
         return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
-    except (asyncio.TimeoutError, aiohttp.ClientError):
+    except (asyncio.TimeoutError, _ClientError):
         return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
 

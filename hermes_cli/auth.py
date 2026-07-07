@@ -107,6 +107,7 @@ except Exception:  # pragma: no cover - version import should always succeed
     _HERMES_CLI_VERSION = "unknown"
 CODEX_OAUTH_USER_AGENT = f"hermes-cli/{_HERMES_CLI_VERSION}"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+CODEX_AUTH_JSON_BODY_MAX_BYTES = 1024 * 1024
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -171,6 +172,13 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+
+
+@dataclass
+class _CodexAuthJsonResponse:
+    status_code: int
+    headers: Dict[str, str]
+    payload: Optional[Dict[str, Any]] = None
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -793,6 +801,58 @@ def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return seconds if seconds >= 0 else None
+
+
+def _read_codex_auth_json_response(response: httpx.Response, *, label: str, code: str) -> Dict[str, Any]:
+    chunks: List[bytes] = []
+    total = 0
+    for chunk in response.iter_bytes():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > CODEX_AUTH_JSON_BODY_MAX_BYTES:
+            raise AuthError(
+                f"Codex {label} response exceeded {CODEX_AUTH_JSON_BODY_MAX_BYTES} bytes.",
+                provider="openai-codex",
+                code=code,
+            )
+        chunks.append(chunk)
+
+    try:
+        payload = json.loads(b"".join(chunks).decode("utf-8"))
+    except Exception as exc:
+        raise AuthError(
+            f"Codex {label} response returned invalid JSON: {exc}",
+            provider="openai-codex",
+            code=code,
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise AuthError(
+            f"Codex {label} response must be a JSON object.",
+            provider="openai-codex",
+            code=code,
+        )
+    return payload
+
+
+def _post_codex_auth_json(
+    client: httpx.Client,
+    url: str,
+    *,
+    label: str,
+    code: str,
+    **kwargs: Any,
+) -> _CodexAuthJsonResponse:
+    with client.stream("POST", url, **kwargs) as response:
+        payload = None
+        if response.status_code == 200:
+            payload = _read_codex_auth_json_response(response, label=label, code=code)
+        return _CodexAuthJsonResponse(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            payload=payload,
+        )
 
 
 def format_auth_error(error: Exception) -> str:
@@ -7172,12 +7232,17 @@ def _codex_device_code_login() -> Dict[str, Any]:
     for attempt in range(1, max_attempts + 1):
         try:
             with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-                resp = client.post(
+                resp = _post_codex_auth_json(
+                    client,
                     f"{issuer}/api/accounts/deviceauth/usercode",
+                    label="device code",
+                    code="device_code_response_invalid",
                     json={"client_id": client_id},
                     headers={"Content-Type": "application/json"},
                 )
         except Exception as exc:
+            if isinstance(exc, AuthError):
+                raise
             raise AuthError(
                 f"Failed to request device code: {exc}",
                 provider="openai-codex", code="device_code_request_failed",
@@ -7221,7 +7286,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
             provider="openai-codex", code="device_code_request_error",
         )
 
-    device_data = resp.json()
+    device_data = resp.payload or {}
     user_code = device_data.get("user_code", "")
     device_auth_id = device_data.get("device_auth_id", "")
     poll_interval = max(3, int(device_data.get("interval", "5")))
@@ -7249,14 +7314,17 @@ def _codex_device_code_login() -> Dict[str, Any]:
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
             while _time.monotonic() - start < max_wait:
                 _time.sleep(poll_interval)
-                poll_resp = client.post(
+                poll_resp = _post_codex_auth_json(
+                    client,
                     f"{issuer}/api/accounts/deviceauth/token",
+                    label="device auth poll",
+                    code="device_code_poll_invalid",
                     json={"device_auth_id": device_auth_id, "user_code": user_code},
                     headers={"Content-Type": "application/json"},
                 )
 
                 if poll_resp.status_code == 200:
-                    code_resp = poll_resp.json()
+                    code_resp = poll_resp.payload or {}
                     break
                 elif poll_resp.status_code in {403, 404}:
                     continue  # User hasn't completed login yet
@@ -7288,8 +7356,11 @@ def _codex_device_code_login() -> Dict[str, Any]:
 
     try:
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-            token_resp = client.post(
+            token_resp = _post_codex_auth_json(
+                client,
                 CODEX_OAUTH_TOKEN_URL,
+                label="token exchange",
+                code="token_exchange_invalid",
                 data={
                     "grant_type": "authorization_code",
                     "code": authorization_code,
@@ -7300,6 +7371,8 @@ def _codex_device_code_login() -> Dict[str, Any]:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
     except Exception as exc:
+        if isinstance(exc, AuthError):
+            raise
         raise AuthError(
             f"Token exchange failed: {exc}",
             provider="openai-codex", code="token_exchange_failed",
@@ -7327,7 +7400,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
             provider="openai-codex", code="token_exchange_error",
         )
 
-    tokens = token_resp.json()
+    tokens = token_resp.payload or {}
     access_token = tokens.get("access_token", "")
     refresh_token = tokens.get("refresh_token", "")
 

@@ -7657,19 +7657,23 @@ def _codex_full_login_worker(session_id: str) -> None:
             CODEX_OAUTH_CLIENT_ID,
             CODEX_OAUTH_TOKEN_URL,
             DEFAULT_CODEX_BASE_URL,
+            _post_codex_auth_json,
         )
         issuer = "https://auth.openai.com"
 
         # Step 1: request device code
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-            resp = client.post(
+            resp = _post_codex_auth_json(
+                client,
                 f"{issuer}/api/accounts/deviceauth/usercode",
+                label="dashboard device code",
+                code="dashboard_device_code_response_invalid",
                 json={"client_id": CODEX_OAUTH_CLIENT_ID},
                 headers={"Content-Type": "application/json"},
             )
         if resp.status_code != 200:
             raise RuntimeError(f"deviceauth/usercode returned {resp.status_code}")
-        device_data = resp.json()
+        device_data = resp.payload or {}
         user_code = device_data.get("user_code", "")
         device_auth_id = device_data.get("device_auth_id", "")
         poll_interval = max(3, int(device_data.get("interval", "5")))
@@ -7693,13 +7697,16 @@ def _codex_full_login_worker(session_id: str) -> None:
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
             while time.monotonic() < deadline:
                 time.sleep(poll_interval)
-                poll = client.post(
+                poll = _post_codex_auth_json(
+                    client,
                     f"{issuer}/api/accounts/deviceauth/token",
+                    label="dashboard device auth poll",
+                    code="dashboard_device_code_poll_invalid",
                     json={"device_auth_id": device_auth_id, "user_code": user_code},
                     headers={"Content-Type": "application/json"},
                 )
                 if poll.status_code == 200:
-                    code_resp = poll.json()
+                    code_resp = poll.payload or {}
                     break
                 if poll.status_code in {403, 404}:
                     continue  # user hasn't authorized yet
@@ -7717,8 +7724,11 @@ def _codex_full_login_worker(session_id: str) -> None:
         if not authorization_code or not code_verifier:
             raise RuntimeError("device-auth response missing authorization_code/code_verifier")
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-            token_resp = client.post(
+            token_resp = _post_codex_auth_json(
+                client,
                 CODEX_OAUTH_TOKEN_URL,
+                label="dashboard token exchange",
+                code="dashboard_token_exchange_invalid",
                 data={
                     "grant_type": "authorization_code",
                     "code": authorization_code,
@@ -7730,7 +7740,7 @@ def _codex_full_login_worker(session_id: str) -> None:
             )
         if token_resp.status_code != 200:
             raise RuntimeError(f"token exchange returned {token_resp.status_code}")
-        tokens = token_resp.json()
+        tokens = token_resp.payload or {}
         access_token = tokens.get("access_token", "")
         refresh_token = tokens.get("refresh_token", "")
         if not access_token:

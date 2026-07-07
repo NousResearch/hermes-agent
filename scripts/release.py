@@ -1413,6 +1413,7 @@ AUTHOR_MAP = {
     "178342791+sgtworkman@users.noreply.github.com": "sgtworkman",
     "qiuqfang98@qq.com": "keepcalmqqf",
     "261867348+ai-ag2026@users.noreply.github.com": "ai-ag2026",
+    "ai-ag2026@users.noreply.github.com": "ai-ag2026",  # legacy no-numeric-prefix noreply form
     "yanzh.su@gmail.com": "YanzhongSu",
     "wanderwang@users.noreply.github.com": "WanderWang",
     "yueheime@gmail.com": "yuehei",

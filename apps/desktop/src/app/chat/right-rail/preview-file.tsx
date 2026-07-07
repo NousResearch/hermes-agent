@@ -6,7 +6,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   ReactNode
 } from 'react'
-import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
@@ -14,6 +14,7 @@ import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/comp
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
+import { RichCodeBlock } from '@/components/assistant-ui/embeds'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
@@ -33,10 +34,6 @@ import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
-
-const MermaidDiagram = lazy(() =>
-  import('@/components/chat/mermaid-block').then(m => ({ default: m.MermaidBlock }))
-)
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -295,17 +292,9 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
     )
   }
 
-  if (language === 'mermaid') {
-    return (
-      <Suspense
-        fallback={<div className="my-3 text-xs text-muted-foreground">Loading diagram…</div>}
-      >
-        <MermaidDiagram chart={String(children).replace(/\n$/, '')} />
-      </Suspense>
-    )
-  }
+  const code = String(children).replace(/\n$/, '')
 
-  return (
+  const highlighted = (
     <ShikiHighlighter
       addDefaultStyles={false}
       as="div"
@@ -315,9 +304,13 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
       showLanguage={false}
       theme={SHIKI_THEME}
     >
-      {String(children).replace(/\n$/, '')}
+      {code}
     </ShikiHighlighter>
   )
+
+  // ```mermaid / ```svg fences route to the shared lazy renderers (same
+  // registry the chat transcript uses); everything else stays on Shiki.
+  return <RichCodeBlock code={code} fallback={highlighted} language={language} />
 }
 
 const MARKDOWN_COMPONENTS = {

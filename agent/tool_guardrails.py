@@ -232,6 +232,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._content_repetition: dict[tuple[str, str], int] = {}  # (tool_name, semantic_hash) -> count
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -347,8 +348,37 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
+        # Content-repetition tracking: detect when the same tool returns the
+        # same semantic result with different arguments (varying-args loop).
+        # This covers:
+        #   - fetch/read tools that vary URL/query params but get the same
+        #     error page or blocked-response body
+        #   - vision tools whose result embeds a unique base64 payload each
+        #     call even though the meaningful content is identical
+        content_key = (tool_name, _semantic_result_hash(result))
+        current_repeat = self._content_repetition.get(content_key, 0) + 1
+        self._content_repetition[content_key] = current_repeat
+        content_warning = (
+            self.config.warnings_enabled
+            and current_repeat >= self.config.same_tool_failure_warn_after
+        )
+
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
+            if content_warning:
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="repeated_content_warning",
+                    message=(
+                        f"{tool_name} has returned substantially the same result "
+                        f"{current_repeat} times this turn (even with different "
+                        f"arguments). This looks like a loop — inspect the "
+                        f"error/blocker and change strategy."
+                    ),
+                    tool_name=tool_name,
+                    count=current_repeat,
+                    signature=signature,
+                )
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         result_hash = _result_hash(result)
@@ -443,6 +473,67 @@ def _result_hash(result: str | None) -> str:
     else:
         canonical = result or ""
     return _sha256(canonical)
+
+
+def _semantic_result_hash(result: str | None) -> str:
+    """Return a hash of the *semantic* content, stripping multimodal blobs.
+
+    Unlike ``_result_hash`` — which hashes the entire result verbatim — this
+    function strips base64-encoded multimodal payloads before hashing, so that
+    repeated vision-tool calls loading the same image produce the same hash
+    even though the raw base64 string changes every call.
+
+    Also handles the varying-args / fixed-result case: if the meaningful
+    textual content of the response is identical, the hash will match even
+    when JSON keys differ due to argument variation.
+    """
+    parsed = safe_json_loads(result or "")
+    if parsed is not None:
+        try:
+            clean = _strip_multimodal_content(parsed)
+            canonical = json.dumps(
+                clean,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        except TypeError:
+            canonical = str(parsed)
+    else:
+        canonical = result or ""
+    return _sha256(canonical)
+
+
+def _strip_multimodal_content(obj: Any) -> Any:
+    """Recursively strip base64 data URLs and multimodal payloads from ``obj``.
+
+    Replaces large base64 data URLs (e.g. ``data:image/...;base64,...``) with
+    a placeholder string so they don't cause hash mismatches on re-fetch.
+    """
+    if isinstance(obj, dict):
+        # Vision tool result shape: {"_multimodal": True, "content": [...]}
+        if obj.get("_multimodal") is True and "content" in obj:
+            content = obj["content"]
+            if isinstance(content, list):
+                cleaned = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") in (
+                        "image_url", "image", "base64"
+                    ):
+                        cleaned.append({"type": item.get("type"), "_data": "<multimodal>"})
+                    else:
+                        cleaned.append(_strip_multimodal_content(item))
+                return {"_multimodal": True, "content": cleaned}
+            return obj
+        # Generic dict — walk values
+        return {k: _strip_multimodal_content(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_multimodal_content(v) for v in obj]
+    if isinstance(obj, str) and len(obj) > 500 and "base64" in obj[:100]:
+        # Likely a base64 data URL or large encoded payload
+        return "<multimodal>"
+    return obj
 
 
 def _as_bool(value: Any, default: bool) -> bool:

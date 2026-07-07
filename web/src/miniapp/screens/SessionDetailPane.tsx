@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import type { SessionInfo, SessionMessage, SessionMessagesResponse } from "@/lib/api";
-import { del, get, patch } from "../api";
+import { del, get, patch, post } from "../api";
 import { useMiniApp } from "../context";
 
 function relativeAgo(epochSeconds: number): string {
@@ -122,6 +122,22 @@ export function SessionDetailPane({
       },
     });
 
+  const resume = () =>
+    askConfirm({
+      title: "Resume this session?",
+      body: "Makes this the active session for its Telegram chat, within a few seconds — the chat continues from here instead of wherever it currently is.",
+      label: "Resume",
+      destructive: false,
+      run: async () => {
+        try {
+          await post(`/api/sessions/${id}/resume`);
+          showToast("Resuming — takes effect within a few seconds");
+        } catch {
+          showToast("Couldn't resume session");
+        }
+      },
+    });
+
   return (
     <div style={{ padding: "16px 14px 24px", display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ background: "var(--card)", border: "1px solid var(--line)", borderRadius: 14, padding: "12px 14px" }}>
@@ -179,6 +195,24 @@ export function SessionDetailPane({
 
       {isAdmin && (
         <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+          {session.source === "telegram" && (
+            <button
+              onClick={resume}
+              style={{
+                flex: 1,
+                padding: 11,
+                borderRadius: 11,
+                border: "1px solid color-mix(in srgb, var(--accent) 45%, transparent)",
+                background: "transparent",
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--accent)",
+                cursor: "pointer",
+              }}
+            >
+              Resume
+            </button>
+          )}
           <button
             onClick={archive}
             style={{

@@ -2275,7 +2275,9 @@ DEFAULT_CONFIG = {
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,
-        "user_profile_enabled": True,
+        # User-profile capture can store personally identifying preferences and
+        # traits. Keep it opt-in unless a user explicitly enables it.
+        "user_profile_enabled": False,
         # Approval gate for memory writes (add/replace/remove), applied to BOTH
         # foreground agent turns and the background self-improvement review fork
         # (the source of unprompted "wrong assumption" saves users reported).
@@ -2287,7 +2289,7 @@ DEFAULT_CONFIG = {
         #                     on a prompt). Review staged entries with
         #                     /memory pending, /memory approve <id>,
         #                     /memory reject <id>.
-        # To disable memory entirely, use memory_enabled: false instead.
+        # To disable agent memory entirely, use memory_enabled: false instead.
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token

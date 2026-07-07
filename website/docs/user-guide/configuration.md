@@ -614,7 +614,7 @@ When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed 
 ```yaml
 memory:
   memory_enabled: true
-  user_profile_enabled: true
+  user_profile_enabled: false  # opt in to automatic USER.md profile capture
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval before any memory write

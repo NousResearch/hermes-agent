@@ -563,8 +563,9 @@ memory:
   # Agent's personal notes: environment facts, conventions, things learned
   memory_enabled: true
   
-  # User profile: preferences, communication style, expectations
-  user_profile_enabled: true
+  # User profile: preferences, communication style, expectations.
+  # Disabled by default because it captures personal traits/preferences.
+  user_profile_enabled: false
   
   # Character limits (~2.75 chars per token, model-independent)
   memory_char_limit: 2200   # ~800 tokens

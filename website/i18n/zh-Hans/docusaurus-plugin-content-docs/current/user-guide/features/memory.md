@@ -206,7 +206,7 @@ hermes sessions list    # 浏览过去的会话
 # In ~/.hermes/config.yaml
 memory:
   memory_enabled: true
-  user_profile_enabled: true
+  user_profile_enabled: false  # 需要显式开启自动 USER.md 用户画像捕获
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 ```

@@ -117,6 +117,31 @@ class TestLoadConfigDefaults:
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
+            assert config["memory"]["memory_enabled"] is True
+            assert config["memory"]["user_profile_enabled"] is False
+
+    def test_missing_memory_section_keeps_user_profile_opt_in(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("_config_version: 33\n")
+
+            config = load_config()
+
+            assert config["memory"]["memory_enabled"] is True
+            assert config["memory"]["user_profile_enabled"] is False
+
+    def test_explicit_user_profile_enabled_still_wins(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(
+                "_config_version: 33\n"
+                "memory:\n"
+                "  user_profile_enabled: true\n"
+            )
+
+            config = load_config()
+
+            assert config["memory"]["user_profile_enabled"] is True
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

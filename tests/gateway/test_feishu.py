@@ -2036,7 +2036,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.reply_to_text, "父消息内容")
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_replies_in_thread_when_thread_metadata_present(self):
+    def test_send_does_not_reply_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -2074,7 +2074,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "om_reply")
-        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_metadata_reply_target_for_threaded_feishu_topic(self):
@@ -2113,7 +2113,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(captured["request"].message_id, "om_trigger")
-        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):
@@ -2204,7 +2204,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(sleeps, [])
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_document_reply_uses_thread_flag(self):
+    def test_send_document_reply_does_not_use_thread_flag(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -2256,7 +2256,7 @@ class TestAdapterBehavior(unittest.TestCase):
             os.unlink(file_path)
 
         self.assertTrue(result.success)
-        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_uploads_file_and_sends_file_message(self):

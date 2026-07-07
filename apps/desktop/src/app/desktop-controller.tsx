@@ -99,6 +99,7 @@ import {
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
+import { storedSessionIdForCompressionContinuation } from './desktop-controller-utils'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
@@ -583,7 +584,7 @@ export function DesktopController() {
         })
 
         nextRuntimeId = continued.session_id
-        nextStoredId = continued.stored_session_id || nextRuntimeId
+        nextStoredId = storedSessionIdForCompressionContinuation(parentStoredSessionId)
         const parentState = sessionStateByRuntimeIdRef.current.get(failedRuntimeSessionId)
 
         const continuationNote: ChatMessage = {
@@ -595,6 +596,11 @@ export function DesktopController() {
         activeSessionIdRef.current = nextRuntimeId
         selectedStoredSessionIdRef.current = nextStoredId
         runtimeIdByStoredSessionIdRef.current.set(nextStoredId, nextRuntimeId)
+
+        if (continued.stored_session_id && continued.stored_session_id !== nextStoredId) {
+          runtimeIdByStoredSessionIdRef.current.set(continued.stored_session_id, nextRuntimeId)
+        }
+
         ensureSessionState(nextRuntimeId, nextStoredId)
         setFreshDraftReady(false)
         setActiveSessionId(nextRuntimeId)

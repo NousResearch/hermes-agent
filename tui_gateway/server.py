@@ -1704,7 +1704,7 @@ def _ensure_session_db_row(session: dict) -> None:
     # uses so list_sessions_rich keeps the branch listed and the desktop sidebar
     # can nest it under its parent.
     parent_session_id = session.get("parent_session_id") or None
-    if parent_session_id:
+    if parent_session_id and not session.get("continued_from_dropoff"):
         model_config["_branched_from"] = parent_session_id
     if session.get("continued_from_dropoff"):
         model_config["_continued_from_dropoff"] = True
@@ -5320,6 +5320,20 @@ def _(rid, params: dict) -> dict:
         "source": params.get("source") or session.get("source") or "tui",
         "continued_from_dropoff": True,
     }
+
+    parent_title = str(session.get("pending_title") or "").strip()
+    with _session_db(session) as db:
+        if db is not None:
+            try:
+                parent_title = str(db.get_session_title(parent_session_id) or parent_title or "").strip()
+            except Exception:
+                parent_title = parent_title
+            try:
+                db.end_session(parent_session_id, "compression")
+            except Exception:
+                logger.debug("failed to mark dropoff parent as compression-ended", exc_info=True)
+    if parent_title:
+        create_params["title"] = parent_title
 
     for key in ("cwd", "profile", "model", "provider", "reasoning_effort"):
         value = params.get(key)

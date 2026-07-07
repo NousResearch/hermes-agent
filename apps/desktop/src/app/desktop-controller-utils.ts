@@ -24,3 +24,7 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
     )
   })
 }
+
+export function storedSessionIdForCompressionContinuation(parentStoredSessionId: string): string {
+  return parentStoredSessionId
+}

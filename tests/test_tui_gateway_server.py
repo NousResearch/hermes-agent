@@ -2211,6 +2211,7 @@ def test_session_continue_from_dropoff_creates_seeded_child(monkeypatch):
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
     recorded = []
+    ended = []
 
     class _Store:
         def search(self, query, cwd="", limit=3, timeout_s=0.2):
@@ -2223,7 +2224,16 @@ def test_session_continue_from_dropoff_creates_seeded_child(monkeypatch):
             recorded.append(record)
             return {**record, "id": "dropoff-1", "prompt_hash": "hash-1"}
 
+    class _FakeDB:
+        def get_session_title(self, session_id):
+            assert session_id == "parent-stored"
+            return "Parent title"
+
+        def end_session(self, session_id, end_reason):
+            ended.append((session_id, end_reason))
+
     monkeypatch.setattr(server, "_continuity_store", lambda: _Store())
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
 
     server._sessions["parent-runtime"] = _session(
         agent=types.SimpleNamespace(model="gpt-5.5"),
@@ -2254,6 +2264,7 @@ def test_session_continue_from_dropoff_creates_seeded_child(monkeypatch):
         assert resp["result"]["continued_from_session_id"] == "parent-stored"
         assert child["parent_session_id"] == "parent-stored"
         assert child["continued_from_dropoff"] is True
+        assert child["pending_title"] == "Parent title"
         assert child["history"][0]["role"] == "system"
         assert "compression was exhausted" in child["history"][0]["content"]
         assert "Obsidian policy context" in child["history"][0]["content"]
@@ -2267,9 +2278,50 @@ def test_session_continue_from_dropoff_creates_seeded_child(monkeypatch):
         assert recorded[0]["files"] == ["src/main.ts"]
         assert recorded[0]["pending_prompt_hash"]
         assert "Obsidian policy context" in recorded[0]["recent_summary"]
+        assert ended == [("parent-stored", "compression")]
     finally:
         server._sessions.pop("parent-runtime", None)
         server._sessions.pop(child_sid, None)
+
+
+def test_ensure_session_db_row_marks_dropoff_child_as_compression_not_branch(monkeypatch):
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
+            created.append(
+                {
+                    "key": key,
+                    "source": source,
+                    "model": model,
+                    "model_config": model_config,
+                    "parent_session_id": parent_session_id,
+                    "cwd": cwd,
+                }
+            )
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row(
+        {
+            "continued_from_dropoff": True,
+            "parent_session_id": "parent-stored",
+            "session_key": "child-stored",
+            "source": "tui",
+        }
+    )
+
+    assert created == [
+        {
+            "key": "child-stored",
+            "source": "tui",
+            "model": "test-model",
+            "model_config": {"_continued_from_dropoff": True},
+            "parent_session_id": "parent-stored",
+            "cwd": None,
+        }
+    ]
 
 
 def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):

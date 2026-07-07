@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
 
-import { sameCronSignature } from './desktop-controller-utils'
+import { sameCronSignature, storedSessionIdForCompressionContinuation } from './desktop-controller-utils'
 
 const session = (id: string, title: string | null): SessionInfo => ({ id, title }) as SessionInfo
 
@@ -27,5 +27,11 @@ describe('sameCronSignature', () => {
     const a = [session('a', 't'), session('b', 't')]
     const b = [session('b', 't'), session('a', 't')]
     expect(sameCronSignature(a, b)).toBe(false)
+  })
+})
+
+describe('storedSessionIdForCompressionContinuation', () => {
+  it('keeps the visible conversation anchored to the parent stored session', () => {
+    expect(storedSessionIdForCompressionContinuation('parent-stored')).toBe('parent-stored')
   })
 })

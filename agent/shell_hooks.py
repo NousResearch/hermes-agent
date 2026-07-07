@@ -224,6 +224,15 @@ def register_from_config(
     if not isinstance(cfg, dict):
         return []
 
+    # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): shell hooks are user
+    # customizations too — skip registration entirely so a troubleshooting
+    # run fires zero user-configured code (plugins, MCP, AND hooks).
+    from utils import env_var_enabled
+
+    if env_var_enabled("HERMES_SAFE_MODE"):
+        logger.info("HERMES_SAFE_MODE=1 — shell-hook registration skipped")
+        return []
+
     effective_accept = _resolve_effective_accept(cfg, accept_hooks)
 
     specs = _parse_hooks_block(cfg.get("hooks"))

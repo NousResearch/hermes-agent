@@ -8859,11 +8859,14 @@ def _compression_watchdog_timeout_seconds() -> float:
 
 
 def _turn_idle_watchdog_timeout_seconds() -> float:
-    raw = os.environ.get("HERMES_TURN_IDLE_WATCHDOG_SECONDS", "120")
+    # Normal turns can legitimately wait on user approvals, long tools, or
+    # provider-side work. The out-of-band live watchdog records and alerts on
+    # silence without killing work. Keep in-band interruption opt-in only.
+    raw = os.environ.get("HERMES_TURN_IDLE_WATCHDOG_SECONDS", "0")
     try:
         return max(0.0, float(raw))
     except (TypeError, ValueError):
-        return 120.0
+        return 0.0
 
 
 def _record_turn_watchdog_event(
@@ -9005,10 +9008,12 @@ def _emit_turn_diagnostic(
 
 def _emit_turn_idle_timeout_terminal(sid: str, session: dict, timeout_seconds: float) -> bool:
     with session["history_lock"]:
+        last_progress_event = str(session.get("turn_last_progress_event") or "")
         if (
             not session.get("running")
             or session.get("_turn_terminal_emitted")
             or session.get("compression_started_at")
+            or last_progress_event == "approval.request"
         ):
             return False
         session["_turn_terminal_emitted"] = True
@@ -9016,7 +9021,6 @@ def _emit_turn_idle_timeout_terminal(sid: str, session: dict, timeout_seconds: f
         session["running"] = False
         started_at = float(session.get("turn_started_at") or time.time())
         last_progress_at = float(session.get("turn_last_progress_at") or started_at)
-        last_progress_event = str(session.get("turn_last_progress_event") or "")
         _clear_inflight_turn(session)
     agent = session.get("agent")
     if hasattr(agent, "interrupt"):
@@ -9193,6 +9197,8 @@ def _start_turn_idle_watchdog(sid: str, session: dict) -> threading.Event | None
                 last_progress_event = str(session.get("turn_last_progress_event") or "")
             now = time.time()
             idle_elapsed = now - last_progress_at
+            if last_progress_event == "approval.request":
+                continue
             if idle_elapsed >= timeout_seconds:
                 _emit_turn_idle_timeout_terminal(sid, session, timeout_seconds)
                 return

@@ -6321,10 +6321,10 @@ def test_compression_watchdog_bad_env_uses_desktop_default(monkeypatch):
     assert server._compression_watchdog_timeout_seconds() == 45.0
 
 
-def test_turn_idle_watchdog_default_is_bounded(monkeypatch):
+def test_turn_idle_watchdog_default_is_alert_only(monkeypatch):
     monkeypatch.delenv("HERMES_TURN_IDLE_WATCHDOG_SECONDS", raising=False)
 
-    assert server._turn_idle_watchdog_timeout_seconds() == 120.0
+    assert server._turn_idle_watchdog_timeout_seconds() == 0.0
 
 
 def test_turn_idle_watchdog_env_override(monkeypatch):
@@ -6336,7 +6336,7 @@ def test_turn_idle_watchdog_env_override(monkeypatch):
 def test_turn_idle_watchdog_bad_env_uses_default(monkeypatch):
     monkeypatch.setenv("HERMES_TURN_IDLE_WATCHDOG_SECONDS", "bad")
 
-    assert server._turn_idle_watchdog_timeout_seconds() == 120.0
+    assert server._turn_idle_watchdog_timeout_seconds() == 0.0
 
 
 def test_compression_watchdog_timeout_marks_turn_terminal(monkeypatch):
@@ -6413,6 +6413,36 @@ def test_turn_idle_watchdog_timeout_marks_turn_terminal(monkeypatch):
     assert complete[-1][2]["status"] == "error"
     assert complete[-1][2]["idle_timeout"] is True
     assert complete[-1][2]["retryable"] is True
+
+
+def test_turn_idle_watchdog_does_not_interrupt_approval_wait(monkeypatch):
+    calls = {"interrupted": False}
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupted", True),
+        context_compressor=None,
+    )
+    session = _session(agent=agent, running=True, cwd="/tmp/project")
+    session["turn_started_at"] = time.time() - 180
+    session["turn_last_progress_at"] = time.time() - 150
+    session["turn_last_progress_event"] = "approval.request"
+    server._sessions["sid"] = session
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+
+    try:
+        assert server._emit_turn_idle_timeout_terminal("sid", session, 120) is False
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert calls["interrupted"] is False
+    assert session["running"] is True
+    assert not session.get("_turn_terminal_emitted")
+    assert [e for e in emitted if e[0] == "message.complete"] == []
 
 
 def test_turn_progress_ignores_diagnostics_and_terminal(monkeypatch):

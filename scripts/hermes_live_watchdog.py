@@ -2,10 +2,11 @@
 """Out-of-band live watchdog for Hermes Desktop turns.
 
 The gateway writes a lightweight turn ledger to
-``~/.hermes/logs/turn-watchdog.jsonl``. This process tails that ledger outside
-the agent turn and alerts when a session is running without visible progress.
-It is intentionally independent from Desktop UI state: if the UI or turn thread
-is wedged, this still leaves a forensic alert trail.
+``~/.hermes/logs/turn-watchdog.jsonl`` or a profile-local ledger under
+``~/.hermes/profiles/<profile>/logs/turn-watchdog.jsonl``. This process tails
+those ledgers outside the agent turn and alerts when a session is running
+without visible progress. It is intentionally independent from Desktop UI state:
+if the UI or turn thread is wedged, this still leaves a forensic alert trail.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from typing import Any
 
 DEFAULT_IDLE_SECONDS = 45.0
 DEFAULT_ALERT_COOLDOWN_SECONDS = 60.0
+LEDGER_REFRESH_SECONDS = 10.0
 
 
 def hermes_home() -> Path:
@@ -167,7 +169,24 @@ class LedgerTail:
         return [row for line in lines if (row := load_json(line))]
 
 
-def build_alert(state: TurnState, idle: float, elapsed: float, idle_seconds: float) -> dict[str, Any]:
+def discover_ledgers(home: Path, explicit_ledger: str = "") -> list[Path]:
+    if explicit_ledger:
+        return [Path(explicit_ledger).expanduser()]
+    ledgers = {home / "logs" / "turn-watchdog.jsonl"}
+    profiles_dir = home / "profiles"
+    if profiles_dir.exists():
+        for path in profiles_dir.glob("*/logs/turn-watchdog.jsonl"):
+            ledgers.add(path)
+    return sorted(ledgers)
+
+
+def build_alert(
+    state: TurnState,
+    idle: float,
+    elapsed: float,
+    idle_seconds: float,
+    ledger: Path,
+) -> dict[str, Any]:
     return {
         "ts": utc_now(),
         "severity": "error",
@@ -182,6 +201,7 @@ def build_alert(state: TurnState, idle: float, elapsed: float, idle_seconds: flo
         "elapsed_seconds": round(elapsed, 3),
         "threshold_seconds": idle_seconds,
         "compression": state.compression,
+        "ledger": str(ledger),
         "payload": state.payload,
         "processes": process_snapshot(),
     }
@@ -189,12 +209,18 @@ def build_alert(state: TurnState, idle: float, elapsed: float, idle_seconds: flo
 
 def run(args: argparse.Namespace) -> int:
     home = Path(args.home).expanduser() if args.home else hermes_home()
-    ledger = Path(args.ledger).expanduser() if args.ledger else home / "logs" / "turn-watchdog.jsonl"
     alerts = Path(args.alerts).expanduser() if args.alerts else home / "logs" / "live-watchdog-alerts.jsonl"
     latest = alerts.with_suffix(".latest.json")
     states: dict[str, TurnState] = {}
-    tail = LedgerTail(ledger, from_end=args.from_end)
+    state_ledgers: dict[str, Path] = {}
+    tails: dict[Path, LedgerTail] = {}
+    last_ledger_refresh = 0.0
     stopped = False
+
+    def refresh_ledgers() -> None:
+        for path in discover_ledgers(home, args.ledger):
+            if path not in tails:
+                tails[path] = LedgerTail(path, from_end=args.from_end)
 
     def stop(_signum, _frame) -> None:
         nonlocal stopped
@@ -202,28 +228,36 @@ def run(args: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    refresh_ledgers()
+    watched = ", ".join(str(path) for path in tails) or str(home / "logs" / "turn-watchdog.jsonl")
     print(
-        f"[hermes-live-watchdog] watching {ledger} "
+        f"[hermes-live-watchdog] watching {watched} "
         f"(idle>{args.idle_seconds:.1f}s, cooldown>{args.alert_cooldown:.1f}s)",
         flush=True,
     )
 
     while not stopped:
         now = time.monotonic()
-        for row in tail.rows():
-            sid = str(row.get("session_id") or "")
-            if not sid:
-                continue
-            if is_terminal(row):
-                states.pop(sid, None)
-                continue
-            if not is_progress(row):
-                continue
-            state = states.get(sid)
-            if state is None:
-                state = TurnState(session_id=sid)
-                states[sid] = state
-            state.update(row)
+        if now - last_ledger_refresh >= LEDGER_REFRESH_SECONDS:
+            refresh_ledgers()
+            last_ledger_refresh = now
+        for ledger, tail in list(tails.items()):
+            for row in tail.rows():
+                sid = str(row.get("session_id") or "")
+                if not sid:
+                    continue
+                if is_terminal(row):
+                    states.pop(sid, None)
+                    state_ledgers.pop(sid, None)
+                    continue
+                if not is_progress(row):
+                    continue
+                state = states.get(sid)
+                if state is None:
+                    state = TurnState(session_id=sid)
+                    states[sid] = state
+                state_ledgers[sid] = ledger
+                state.update(row)
 
         for sid, state in list(states.items()):
             last = state.last_progress_at or state.started_at
@@ -234,7 +268,8 @@ def run(args: argparse.Namespace) -> int:
             if now - state.last_alert_at < args.alert_cooldown:
                 continue
             state.last_alert_at = now
-            alert = build_alert(state, idle, elapsed, args.idle_seconds)
+            ledger = state_ledgers.get(sid) or Path("")
+            alert = build_alert(state, idle, elapsed, args.idle_seconds, ledger)
             append_jsonl(alerts, alert)
             latest.write_text(
                 json.dumps(alert, ensure_ascii=False, indent=2, sort_keys=True),
@@ -242,7 +277,7 @@ def run(args: argparse.Namespace) -> int:
             )
             line = (
                 f"[hermes-live-watchdog] STUCK sid={sid[:8]} "
-                f"key={state.session_key} idle={idle:.1f}s last={state.last_event}"
+                f"key={state.session_key} idle={idle:.1f}s last={state.last_event} ledger={ledger}"
             )
             print(line, flush=True)
             if args.notify:

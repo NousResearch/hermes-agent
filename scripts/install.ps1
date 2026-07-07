@@ -245,6 +245,43 @@ function Invoke-NativeWithRelaxedErrorAction {
         $ErrorActionPreference = $prevEAP
     }
 }
+
+function Invoke-NativeCaptureSafe {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory = (Get-Location).Path
+    )
+
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $proc = Start-Process -FilePath $FilePath `
+            -ArgumentList $ArgumentList `
+            -WorkingDirectory $WorkingDirectory `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $stdoutFile `
+            -RedirectStandardError $stderrFile
+        $global:LASTEXITCODE = $proc.ExitCode
+        return [pscustomobject]@{
+            ExitCode = $proc.ExitCode
+            Stdout = [System.IO.File]::ReadAllText($stdoutFile)
+            Stderr = [System.IO.File]::ReadAllText($stderrFile)
+        }
+    } finally {
+        Remove-Item $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Format-NativeCaptureDetail {
+    param($Result)
+
+    if (-not $Result) { return "" }
+    $detail = (($Result.Stdout, $Result.Stderr) -join "`n").Trim()
+    if ($detail) { return ": $detail" }
+    return ""
+}
+
 function Discard-LockfileChurn {
     param([string]$Repo = $InstallDir)
 
@@ -450,10 +487,14 @@ function Install-Uv {
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
 
     if (Test-Path $managedUv) {
-        $script:UvCmd = $managedUv
-        $version = & $managedUv --version
-        Write-Success "Managed uv found ($version)"
-        return $true
+        $uvVersionProbe = Invoke-NativeCaptureSafe -FilePath $managedUv -ArgumentList @("--version")
+        if ($uvVersionProbe.ExitCode -eq 0) {
+            $script:UvCmd = $managedUv
+            $version = $uvVersionProbe.Stdout.Trim()
+            Write-Success "Managed uv found ($version)"
+            return $true
+        }
+        Write-Warn "Managed uv exists but failed to run --version$((Format-NativeCaptureDetail $uvVersionProbe))"
     }
 
     Write-Info "Installing managed uv into $HermesHome\bin ..."
@@ -473,10 +514,17 @@ function Install-Uv {
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
-            $script:UvCmd = $managedUv
-            $version = & $managedUv --version
-            Write-Success "Managed uv installed ($version)"
-            return $true
+            $uvVersionProbe = Invoke-NativeCaptureSafe -FilePath $managedUv -ArgumentList @("--version")
+            if ($uvVersionProbe.ExitCode -eq 0) {
+                $script:UvCmd = $managedUv
+                $version = $uvVersionProbe.Stdout.Trim()
+                Write-Success "Managed uv installed ($version)"
+                return $true
+            }
+
+            Write-Err "uv installed at $managedUv but --version failed$((Format-NativeCaptureDetail $uvVersionProbe))"
+            Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+            return $false
         }
 
         Write-Err "uv installed but not found at $managedUv"
@@ -601,9 +649,12 @@ function Test-Python {
     try {
         $pythonPath = & $UvCmd python find $PythonVersion 2>$null
         if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
-            Write-Success "Python found: $ver"
-            return $true
+            $pythonVersionProbe = Invoke-NativeCaptureSafe -FilePath $pythonPath -ArgumentList @("--version")
+            if ($pythonVersionProbe.ExitCode -eq 0) {
+                $ver = $pythonVersionProbe.Stdout.Trim()
+                Write-Success "Python found: $ver"
+                return $true
+            }
         }
     } catch { }
     
@@ -632,9 +683,12 @@ function Test-Python {
         # since uv may return non-zero due to "already installed" etc.)
         $pythonPath = & $UvCmd python find $PythonVersion 2>$null
         if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
-            Write-Success "Python installed: $ver"
-            return $true
+            $pythonVersionProbe = Invoke-NativeCaptureSafe -FilePath $pythonPath -ArgumentList @("--version")
+            if ($pythonVersionProbe.ExitCode -eq 0) {
+                $ver = $pythonVersionProbe.Stdout.Trim()
+                Write-Success "Python installed: $ver"
+                return $true
+            }
         }
 
         # uv ran but Python still not findable -- show what happened
@@ -654,10 +708,13 @@ function Test-Python {
         try {
             $pythonPath = & $UvCmd python find $fallbackVer 2>$null
             if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Found fallback: $ver"
-                $script:PythonVersion = $fallbackVer
-                return $true
+                $pythonVersionProbe = Invoke-NativeCaptureSafe -FilePath $pythonPath -ArgumentList @("--version")
+                if ($pythonVersionProbe.ExitCode -eq 0) {
+                    $ver = $pythonVersionProbe.Stdout.Trim()
+                    Write-Success "Found fallback: $ver"
+                    $script:PythonVersion = $fallbackVer
+                    return $true
+                }
             }
         } catch { }
     }
@@ -684,16 +741,13 @@ function Test-Python {
 
         if (-not $isStoreStub) {
             try {
-                $prevEAP2 = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
-                $sysVer = & python --version 2>&1
-                $ErrorActionPreference = $prevEAP2
+                $sysVersionProbe = Invoke-NativeCaptureSafe -FilePath $pythonSource -ArgumentList @("--version")
+                $sysVer = $sysVersionProbe.Stdout.Trim()
                 if ($sysVer -match "Python 3\.(1[0-9]|[1-9][0-9])") {
                     Write-Success "Using system Python: $sysVer"
                     return $true
                 }
             } catch {
-                if ($prevEAP2) { $ErrorActionPreference = $prevEAP2 }
             }
         }
     }
@@ -834,26 +888,33 @@ function Install-Git {
     $script:GitInstallFailureReason = $null
     Write-Info "Checking Git..."
 
-    if (Get-Command git -ErrorAction SilentlyContinue) {
-        $version = git --version
-        Write-Success "Git found ($version)"
-        Set-GitBashEnvVar
-        if ($script:GitBashPath -and (Test-GitBashCompatibility -BashPath $script:GitBashPath)) {
-            Write-Success "Git Bash can launch MSYS programs"
-            return $true
-        }
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd) {
+        $gitVersionProbe = Invoke-NativeCaptureSafe -FilePath $gitCmd.Source -ArgumentList @("--version")
+        if ($gitVersionProbe.ExitCode -eq 0) {
+            $version = $gitVersionProbe.Stdout.Trim()
+            Write-Success "Git found ($version)"
+            Set-GitBashEnvVar
 
-        if ($script:GitBashPath -and (Test-MandatoryAslrEnabled)) {
-            $script:GitInstallFailureReason = New-GitBashAslrFailureReason -BashPath $script:GitBashPath
-            Write-Err $script:GitInstallFailureReason
-            return $false
-        }
+            if ($script:GitBashPath -and (Test-GitBashCompatibility -BashPath $script:GitBashPath)) {
+                Write-Success "Git Bash can launch MSYS programs"
+                return $true
+            }
 
-        if ($script:GitBashPath) {
-            $probeDetail = if ($script:GitBashProbeOutput) { ": $script:GitBashProbeOutput" } else { "" }
-            Write-Warn "System Git Bash could not launch required MSYS programs$probeDetail"
+            if ($script:GitBashPath -and (Test-MandatoryAslrEnabled)) {
+                $script:GitInstallFailureReason = New-GitBashAslrFailureReason -BashPath $script:GitBashPath
+                Write-Err $script:GitInstallFailureReason
+                return $false
+            }
+
+            if ($script:GitBashPath) {
+                $probeDetail = if ($script:GitBashProbeOutput) { ": $script:GitBashProbeOutput" } else { "" }
+                Write-Warn "System Git Bash could not launch required MSYS programs$probeDetail"
+            } else {
+                Write-Warn "Git is on PATH, but its Git Bash installation could not be located."
+            }
         } else {
-            Write-Warn "Git is on PATH, but its Git Bash installation could not be located."
+            Write-Warn "Git was found but failed to run --version$((Format-NativeCaptureDetail $gitVersionProbe))"
         }
         Write-Info "Trying a Hermes-managed PortableGit install instead..."
     }
@@ -963,7 +1024,11 @@ function Install-Git {
             [Environment]::SetEnvironmentVariable("Path", ($userPathItems -join ";"), "User")
         }
 
-        $version = & $gitExe --version
+        $gitVersionProbe = Invoke-NativeCaptureSafe -FilePath $gitExe -ArgumentList @("--version")
+        if ($gitVersionProbe.ExitCode -ne 0) {
+            throw "Git installed at $gitExe but --version failed$((Format-NativeCaptureDetail $gitVersionProbe))"
+        }
+        $version = $gitVersionProbe.Stdout.Trim()
         Write-Success "Git $version installed to $gitDir (portable, user-scoped)"
         Set-GitBashEnvVar
         if (-not $script:GitBashPath) {
@@ -1068,25 +1133,39 @@ function Test-NodeVersionOk {
 function Test-Node {
     Write-Info "Checking Node.js (for browser tools)..."
 
-    if (Get-Command node -ErrorAction SilentlyContinue) {
-        $version = node --version
-        if (Test-NodeVersionOk $version) {
-            Ensure-NodeExeOnPath | Out-Null
-            Write-Success "Node.js $version found"
-            $script:HasNode = $true
-            return $true
+    $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+    if ($nodeCmd) {
+        $nodeVersionProbe = Invoke-NativeCaptureSafe -FilePath $nodeCmd.Source -ArgumentList @("--version")
+        if ($nodeVersionProbe.ExitCode -eq 0) {
+            $version = $nodeVersionProbe.Stdout.Trim()
+            if (Test-NodeVersionOk $version) {
+                Ensure-NodeExeOnPath | Out-Null
+                Write-Success "Node.js $version found"
+                $script:HasNode = $true
+                return $true
+            }
+            Write-Warn "Node.js $version is too old for the desktop build (need ^20.19 or >=22.12)"
+        } else {
+            Write-Warn "Node.js was found but failed to run --version$((Format-NativeCaptureDetail $nodeVersionProbe))"
         }
-        Write-Warn "Node.js $version is too old for the desktop build (need ^20.19 or >=22.12)"
     }
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
     $managedNode = "$HermesHome\node\node.exe"
-    if ((Test-Path $managedNode) -and (Test-NodeVersionOk (& $managedNode --version))) {
-        $version = & $managedNode --version
-        $env:Path = "$HermesHome\node;$env:Path"
-        Write-Success "Node.js $version found (Hermes-managed)"
-        $script:HasNode = $true
-        return $true
+    if (Test-Path $managedNode) {
+        $managedNodeVersionProbe = Invoke-NativeCaptureSafe -FilePath $managedNode -ArgumentList @("--version")
+        if (($managedNodeVersionProbe.ExitCode -eq 0) -and (Test-NodeVersionOk $managedNodeVersionProbe.Stdout.Trim())) {
+            $version = $managedNodeVersionProbe.Stdout.Trim()
+            $env:Path = "$HermesHome\node;$env:Path"
+            Write-Success "Node.js $version found (Hermes-managed)"
+            $script:HasNode = $true
+            return $true
+        }
+        if ($managedNodeVersionProbe.ExitCode -ne 0) {
+            Write-Warn "Hermes-managed Node exists but failed to run --version$((Format-NativeCaptureDetail $managedNodeVersionProbe))"
+        } else {
+            Write-Warn "Hermes-managed Node $($managedNodeVersionProbe.Stdout.Trim()) is too old for the desktop build (need ^20.19 or >=22.12)"
+        }
     }
 
     Write-Info "Installing Hermes-managed Node.js $NodeVersion LTS..."
@@ -1135,7 +1214,11 @@ function Test-Node {
                     [Environment]::SetEnvironmentVariable("Path", ($userPathItems -join ";"), "User")
                 }
 
-                $version = & "$HermesHome\node\node.exe" --version
+                $nodeVersionProbe = Invoke-NativeCaptureSafe -FilePath "$HermesHome\node\node.exe" -ArgumentList @("--version")
+                if ($nodeVersionProbe.ExitCode -ne 0) {
+                    throw "Node installed at $HermesHome\node\node.exe but --version failed$((Format-NativeCaptureDetail $nodeVersionProbe))"
+                }
+                $version = $nodeVersionProbe.Stdout.Trim()
                 Write-Success "Node.js $version installed to $HermesHome\node\ (portable, user-scoped)"
                 $script:HasNode = $true
 
@@ -1180,8 +1263,13 @@ function Test-Node {
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (Get-Command node -ErrorAction SilentlyContinue) {
-                $version = node --version
+            $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+            if ($nodeCmd) {
+                $nodeVersionProbe = Invoke-NativeCaptureSafe -FilePath $nodeCmd.Source -ArgumentList @("--version")
+                if ($nodeVersionProbe.ExitCode -ne 0) {
+                    throw "Node installed via winget but --version failed$((Format-NativeCaptureDetail $nodeVersionProbe))"
+                }
+                $version = $nodeVersionProbe.Stdout.Trim()
                 Write-Success "Node.js $version installed via winget"
                 $script:HasNode = $true
                 return $true
@@ -1240,10 +1328,17 @@ function Install-SystemPackages {
     $needFfmpeg = $false
 
     Write-Info "Checking ripgrep (fast file search)..."
-    if (Get-Command rg -ErrorAction SilentlyContinue) {
-        $version = rg --version | Select-Object -First 1
-        Write-Success "$version found"
-        $script:HasRipgrep = $true
+    $rgCmd = Get-Command rg -ErrorAction SilentlyContinue
+    if ($rgCmd) {
+        $rgVersionProbe = Invoke-NativeCaptureSafe -FilePath $rgCmd.Source -ArgumentList @("--version")
+        if ($rgVersionProbe.ExitCode -eq 0) {
+            $version = ($rgVersionProbe.Stdout -split "\r?\n" | Select-Object -First 1).Trim()
+            Write-Success "$version found"
+            $script:HasRipgrep = $true
+        } else {
+            Write-Warn "ripgrep was found but failed to run --version$((Format-NativeCaptureDetail $rgVersionProbe))"
+            $needRipgrep = $true
+        }
     } else {
         $needRipgrep = $true
     }
@@ -3625,6 +3720,11 @@ function Main {
 # All branches funnel through one try/catch so errors don't kill an `irm |
 # iex` PowerShell session, and so failures in stage-driver mode produce a
 # structured JSON error frame instead of a bare exception.
+
+# Dot-sourcing is the supported library seam for executing installer helpers
+# in isolation. Loading the script this way defines functions and stage data
+# without starting an installation.
+if ($MyInvocation.InvocationName -eq ".") { return }
 
 try {
     if ($Ensure -ne "") {

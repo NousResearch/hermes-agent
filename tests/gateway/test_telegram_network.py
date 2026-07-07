@@ -258,6 +258,34 @@ class TestFallbackTransport:
         assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org", "149.154.167.221"]
         assert transport._sticky_ip == "149.154.167.221"
 
+    @pytest.mark.asyncio
+    async def test_repeated_total_connect_failure_enters_cooldown(self, monkeypatch):
+        calls = []
+        behavior = {"api.telegram.org": "connect_error", "149.154.167.220": "connect_error"}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+
+        now = {"t": 1000.0}
+        monkeypatch.setattr(tnet.time, "time", lambda: now["t"])
+        transport = tnet.TelegramFallbackTransport(
+            ["149.154.167.220"],
+            failure_threshold=1,
+            cooldown_seconds=30,
+        )
+
+        with pytest.raises(httpx.ConnectError):
+            await transport.handle_async_request(_telegram_request())
+        assert [c["url_host"] for c in calls] == ["api.telegram.org", "149.154.167.220"]
+
+        calls.clear()
+        with pytest.raises(httpx.ConnectError, match="cooldown"):
+            await transport.handle_async_request(_telegram_request())
+        assert calls == []
+
+        now["t"] += 31
+        with pytest.raises(httpx.ConnectError):
+            await transport.handle_async_request(_telegram_request())
+        assert [c["url_host"] for c in calls] == ["api.telegram.org", "149.154.167.220"]
+
 
 class TestFallbackTransportPassthrough:
     """Requests that don't need fallback behavior."""

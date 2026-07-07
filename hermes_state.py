@@ -767,6 +767,21 @@ CREATE TABLE IF NOT EXISTS messages (
     compacted INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS credential_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    timestamp REAL NOT NULL,
+    provider TEXT,
+    credential_label TEXT,
+    model TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    reasoning_tokens INTEGER DEFAULT 0,
+    api_call_count INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -810,6 +825,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
+CREATE INDEX IF NOT EXISTS idx_credential_usage_time_provider
+    ON credential_usage(timestamp DESC, provider, credential_label);
 """
 
 FTS_SQL = """
@@ -2421,6 +2438,7 @@ class SessionDB:
         billing_provider: Optional[str] = None,
         billing_base_url: Optional[str] = None,
         billing_mode: Optional[str] = None,
+        credential_label: Optional[str] = None,
         api_call_count: int = 0,
         absolute: bool = False,
     ) -> None:
@@ -2501,7 +2519,82 @@ class SessionDB:
         )
         def _do(conn):
             conn.execute(sql, params)
+            if credential_label:
+                conn.execute(
+                    """INSERT INTO credential_usage (
+                       session_id, timestamp, provider, credential_label, model,
+                       input_tokens, output_tokens, cache_read_tokens,
+                       cache_write_tokens, reasoning_tokens, api_call_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        time.time(),
+                        billing_provider,
+                        credential_label,
+                        model,
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                        reasoning_tokens,
+                        api_call_count,
+                    ),
+                )
         self._execute_write(_do)
+
+    def get_credential_usage(
+        self,
+        days: int = 30,
+        provider: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Aggregate per-credential token usage rows for recent model calls."""
+        cutoff = time.time() - (max(0, int(days)) * 86400)
+        where = ["timestamp >= ?"]
+        params: list[Any] = [cutoff]
+        if provider:
+            where.append("provider = ?")
+            params.append(provider)
+        query = f"""
+            SELECT
+                COALESCE(provider, 'unknown') AS provider,
+                COALESCE(credential_label, 'unknown') AS credential_label,
+                COALESCE(model, 'unknown') AS model,
+                COALESCE(SUM(api_call_count), 0) AS api_calls,
+                COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens
+            FROM credential_usage
+            WHERE {' AND '.join(where)}
+            GROUP BY provider, credential_label, model
+            ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)
+                      + COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_write_tokens), 0)
+                      + COALESCE(SUM(reasoning_tokens), 0)) DESC,
+                     credential_label ASC,
+                     model ASC
+        """
+        with self._lock:
+            cursor = self._conn.execute(query, tuple(params))
+            rows = [dict(row) for row in cursor.fetchall()]
+        for row in rows:
+            row["api_calls"] = int(row.get("api_calls") or 0)
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "reasoning_tokens",
+            ):
+                row[key] = int(row.get(key) or 0)
+            row["total_tokens"] = (
+                row["input_tokens"]
+                + row["output_tokens"]
+                + row["cache_read_tokens"]
+                + row["cache_write_tokens"]
+                + row["reasoning_tokens"]
+            )
+        return rows
 
     def ensure_session(
         self,

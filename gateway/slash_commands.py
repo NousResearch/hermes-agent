@@ -4058,6 +4058,43 @@ class GatewaySlashCommandsMixin:
             return "\n".join(parts)
         return t("gateway.usage.no_data")
 
+    async def _handle_codex_usage_command(self, event: MessageEvent) -> str:
+        """Handle /codex-usage — current Codex quota by Hermes credential."""
+        raw_args = event.get_command_args().strip() if event else ""
+        argv = shlex.split(raw_args) if raw_args else ["--compact"]
+        if not argv:
+            argv = ["--compact"]
+        try:
+            from hermes_cli.codex_usage import collect, render_alert, render_compact, render_text
+
+            payload = await asyncio.to_thread(collect)
+            primary = None
+            secondary = None
+            alert = None
+            verbose = False
+            i = 0
+            while i < len(argv):
+                arg = argv[i]
+                if arg in {"--verbose", "verbose"}:
+                    verbose = True
+                elif arg == "--alert-threshold" and i + 1 < len(argv):
+                    i += 1
+                    alert = float(argv[i])
+                elif arg == "--primary-threshold" and i + 1 < len(argv):
+                    i += 1
+                    primary = float(argv[i])
+                elif arg == "--secondary-threshold" and i + 1 < len(argv):
+                    i += 1
+                    secondary = float(argv[i])
+                i += 1
+            if alert is not None or primary is not None or secondary is not None:
+                out = render_alert(payload, alert, None, primary_threshold=primary, secondary_threshold=secondary)
+                return out or "Codex usage OK."
+            return render_text(payload) if verbose else render_compact(payload)
+        except Exception as exc:
+            logger.warning("/codex-usage failed: %s", exc)
+            return f"Codex usage check failed: {exc}"
+
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""
         args = event.get_command_args().strip()

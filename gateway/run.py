@@ -34,6 +34,7 @@ import os
 import re
 import shlex
 import site
+import subprocess
 import sys
 import signal
 import tempfile
@@ -9714,6 +9715,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "usage":
             return await self._handle_usage_command(event)
+
+        if canonical == "codex-usage":
+            return await self._handle_codex_usage_command(event)
 
         if canonical == "credits":
             return await self._handle_credits_command(event)
@@ -19880,6 +19884,58 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
+
+def _socket_state_counts() -> dict[str, int]:
+    try:
+        from agent.network_circuit_breaker import current_socket_state_counts
+        return current_socket_state_counts()
+    except Exception:
+        return {}
+
+
+def _ephemeral_port_range_size() -> int:
+    if sys.platform != "darwin":
+        return 28232
+    try:
+        first_raw = subprocess.check_output(
+            ["sysctl", "-n", "net.inet.ip.portrange.first"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+        last_raw = subprocess.check_output(
+            ["sysctl", "-n", "net.inet.ip.portrange.last"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+        first = int(first_raw)
+        last = int(last_raw)
+        return max(0, last - first + 1)
+    except Exception:
+        return 16384
+
+
+def _gateway_socket_pressure_check() -> bool:
+    try:
+        from agent.network_circuit_breaker import (
+            get_global_network_breaker,
+            socket_pressure_is_high,
+        )
+        threshold = float(os.getenv("HERMES_GATEWAY_SOCKET_PRESSURE_THRESHOLD", "0.70"))
+        cooldown = float(os.getenv("HERMES_GATEWAY_SOCKET_PRESSURE_COOLDOWN_SECONDS", "180"))
+        counts = _socket_state_counts()
+        port_range = _ephemeral_port_range_size()
+        if socket_pressure_is_high(counts, port_range_size=port_range, threshold_ratio=threshold):
+            pressure = int(counts.get("TIME_WAIT", 0)) + int(counts.get("FIN_WAIT_1", 0)) + int(counts.get("LAST_ACK", 0))
+            reason = f"socket pressure high: {pressure}/{port_range} transient TCP states ({counts})"
+            get_global_network_breaker().force_open(reason, cooldown_seconds=cooldown)
+            logger.warning("Gateway socket pressure guard opened network circuit: %s", reason)
+            return True
+    except Exception as exc:
+        logger.debug("Gateway socket pressure check failed: %s", exc)
+    return False
+
 def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """Background thread for gateway-only periodic chores (NOT cron).
 
@@ -19906,6 +19962,8 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     tick_count = 0
     while not stop_event.is_set():
         tick_count += 1
+
+        _gateway_socket_pressure_check()
 
         if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
             try:

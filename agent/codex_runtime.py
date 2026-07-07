@@ -22,6 +22,8 @@ import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
+from agent.credential_usage import resolve_credential_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -209,6 +211,7 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 billing_base_url=agent.base_url,
                 billing_mode="subscription_included"
                 if cost_result.status == "included" else None,
+                credential_label=resolve_credential_label(agent),
                 model=agent.model,
                 api_call_count=1,
             )

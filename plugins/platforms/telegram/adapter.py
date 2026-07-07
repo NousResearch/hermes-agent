@@ -155,6 +155,10 @@ async def _shutdown_abandoned_app(app) -> None:
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     try:
+        from telegram import CopyTextButton
+    except ImportError:
+        CopyTextButton = None
+    try:
         from telegram import LinkPreviewOptions
     except ImportError:
         LinkPreviewOptions = None
@@ -176,6 +180,7 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    CopyTextButton = None
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
@@ -251,7 +256,7 @@ def check_telegram_requirements() -> bool:
     so the adapter's class-level type aliases get rebound.
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
-    global InlineKeyboardMarkup, LinkPreviewOptions, Application
+    global InlineKeyboardMarkup, CopyTextButton, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
@@ -264,6 +269,10 @@ def check_telegram_requirements() -> bool:
     try:
         from telegram import Update as _Update, Bot as _Bot, Message as _Message
         from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
+        try:
+            from telegram import CopyTextButton as _CTB
+        except ImportError:
+            _CTB = None
         try:
             from telegram import LinkPreviewOptions as _LPO
         except ImportError:
@@ -283,6 +292,7 @@ def check_telegram_requirements() -> bool:
     Message = _Message
     InlineKeyboardButton = _IKB
     InlineKeyboardMarkup = _IKM
+    CopyTextButton = _CTB
     LinkPreviewOptions = _LPO
     Application = _App
     CommandHandler = _CH
@@ -345,6 +355,48 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
     closing fence.
     """
     return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'```\n\g<indicator>', text)
+
+
+# ---------------------------------------------------------------------------
+# Telegram copy-to-clipboard buttons
+# ---------------------------------------------------------------------------
+
+_COPY_BUTTON_LINE_RE = re.compile(
+    r'^\s*COPY_BUTTON:\s*(?P<label>[^|\n]{1,64})\|(?P<text>[^\n]{1,256})\s*$',
+    re.MULTILINE,
+)
+
+
+def _extract_copy_buttons(content: str) -> tuple[str, list[tuple[str, str]]]:
+    """Strip ``COPY_BUTTON: label | text`` marker lines and return buttons.
+
+    Telegram's Bot API exposes ``InlineKeyboardButton.copy_text`` for true
+    clipboard-copy buttons, but Hermes final answers are plain markdown.  This
+    narrowly-scoped marker gives the agent a way to request copy buttons on
+    Telegram without adding a new model tool or changing other platforms.
+
+    Invalid/oversized marker lines are left untouched so no user-visible text is
+    silently dropped.  Valid button copy payloads are limited to Telegram's
+    documented 1-256 character range; labels are capped to avoid mobile
+    truncation-heavy keyboards.  The adapter caps the rendered keyboard to the
+    first 20 buttons as a conservative Bot API/client guardrail.
+    """
+    if not content or "COPY_BUTTON:" not in content:
+        return content, []
+
+    buttons: list[tuple[str, str]] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        label = match.group("label").strip()
+        text = match.group("text").strip()
+        if not label or not text or len(text) > 256 or len(buttons) >= 20:
+            return match.group(0)
+        buttons.append((label, text))
+        return ""
+
+    stripped = _COPY_BUTTON_LINE_RE.sub(_replace, content)
+    stripped = re.sub(r'\n{3,}', '\n\n', stripped).strip()
+    return stripped, buttons
 
 
 # ---------------------------------------------------------------------------
@@ -1290,6 +1342,23 @@ class TelegramAdapter(BasePlatformAdapter):
         if LinkPreviewOptions is not None:
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
+
+    def _copy_buttons_markup(self, buttons: list[tuple[str, str]]) -> Optional[Any]:
+        """Build Telegram copy-to-clipboard inline keyboard markup."""
+        if not buttons:
+            return None
+        if CopyTextButton is None:
+            logger.warning("[%s] copy_text buttons requested but CopyTextButton is unavailable", self.name)
+            return None
+        rows = []
+        for label, text in buttons[:20]:
+            rows.append([
+                InlineKeyboardButton(
+                    label,
+                    copy_text=CopyTextButton(text=text),  # type: ignore[reportCallIssue]
+                )
+            ])
+        return InlineKeyboardMarkup(rows)  # type: ignore[reportCallIssue]
 
     # ------------------------------------------------------------------
     # Bot API 10.1 Rich Messages (sendRichMessage)
@@ -3561,14 +3630,22 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        copy_markup = None
+        if CopyTextButton is not None:
+            content, copy_buttons = _extract_copy_buttons(content)
+            if copy_buttons and not content.strip():
+                content = "Copy buttons"
+            copy_markup = self._copy_buttons_markup(copy_buttons)
+        elif "COPY_BUTTON:" in content:
+            logger.warning("[%s] COPY_BUTTON markers requested but CopyTextButton is unavailable", self.name)
         
         try:
-            # Bot API 10.1 rich fast-path: send the raw agent markdown via
-            # sendRichMessage so tables/task lists/etc. render natively. Falls
-            # through to the legacy MarkdownV2 path on permanent/capability
-            # errors or DM-topic routing skips; returns directly on success or
-            # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            # Bot API 10.1 rich messages currently use the raw sendRichMessage
+            # endpoint path, which does not attach reply_markup here.  If copy
+            # buttons were requested, stay on the legacy sendMessage path so the
+            # clipboard keyboard is delivered with the text.
+            if not copy_markup and self._should_attempt_rich(content, metadata=metadata):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
@@ -3677,6 +3754,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **({"reply_markup": copy_markup} if copy_markup is not None and i == len(chunks) - 1 else {}),
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -3691,6 +3769,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
+                                    **({"reply_markup": copy_markup} if copy_markup is not None and i == len(chunks) - 1 else {}),
                                 )
                             else:
                                 raise
@@ -3926,6 +4005,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        copy_markup = None
+        if finalize and CopyTextButton is not None:
+            content, copy_buttons = _extract_copy_buttons(content)
+            if copy_buttons and not content.strip():
+                content = "Copy buttons"
+            copy_markup = self._copy_buttons_markup(copy_buttons)
+        elif finalize and "COPY_BUTTON:" in content:
+            logger.warning("[%s] COPY_BUTTON markers requested but CopyTextButton is unavailable", self.name)
+
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
         # lists, task lists, <details>, block math) and rich is available,
@@ -3936,7 +4024,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # table that exceeds the MarkdownV2 limit must not be split into legacy
         # chunks.  Falls back to the legacy edit path (overflow split included)
         # on capability/permanent rejection.
-        if finalize and self._rich_eligible(content):
+        if finalize and not copy_markup and self._rich_eligible(content):
             rich_result = await self._try_edit_rich(
                 chat_id, message_id, content, metadata=metadata,
             )
@@ -3995,6 +4083,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
+                    **({"reply_markup": copy_markup} if copy_markup is not None else {}),
                 )
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
@@ -4012,6 +4101,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=_plain,
+                    **({"reply_markup": copy_markup} if copy_markup is not None else {}),
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:

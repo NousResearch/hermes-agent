@@ -13,9 +13,12 @@ import asyncio
 import ipaddress
 import logging
 import socket
+import time
 from typing import Iterable, Optional
 
 import httpx
+
+from agent.network_circuit_breaker import get_global_network_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +61,14 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     ``curl --resolve api.telegram.org:443:<ip>``.
     """
 
-    def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
+    def __init__(
+        self,
+        fallback_ips: Iterable[str],
+        *,
+        failure_threshold: int = 3,
+        cooldown_seconds: float = 90.0,
+        **transport_kwargs,
+    ):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
@@ -69,10 +79,26 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         }
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()
+        self._failure_threshold = max(1, int(failure_threshold))
+        self._cooldown_seconds = max(1.0, float(cooldown_seconds))
+        self._consecutive_total_failures = 0
+        self._cooldown_until = 0.0
+        self._cooldown_error: Exception | None = None
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
+
+        now = time.time()
+        if self._cooldown_until > now:
+            error = self._cooldown_error or httpx.ConnectError(
+                "Telegram fallback transport in cooldown after repeated connection failures",
+                request=request,
+            )
+            raise httpx.ConnectError(
+                f"Telegram fallback transport in cooldown for {int(self._cooldown_until - now) + 1}s",
+                request=request,
+            ) from error
 
         sticky_ip = self._sticky_ip
         attempt_order: list[Optional[str]] = [sticky_ip] if sticky_ip else [None]
@@ -96,6 +122,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                                 "[Telegram] Primary api.telegram.org path unreachable; using sticky fallback IP %s",
                                 ip,
                             )
+                self._consecutive_total_failures = 0
+                self._cooldown_until = 0.0
+                self._cooldown_error = None
+                get_global_network_breaker().record_success(surface="telegram")
                 return response
             except Exception as exc:
                 last_error = exc
@@ -121,6 +151,16 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
+        self._consecutive_total_failures += 1
+        self._cooldown_error = last_error
+        if self._consecutive_total_failures >= self._failure_threshold:
+            self._cooldown_until = time.time() + self._cooldown_seconds
+            logger.warning(
+                "[Telegram] All primary/fallback connection attempts failed %d time(s); cooling down for %.0fs",
+                self._consecutive_total_failures,
+                self._cooldown_seconds,
+            )
+        get_global_network_breaker().record_failure(last_error, surface="telegram")
         raise last_error
 
     async def aclose(self) -> None:

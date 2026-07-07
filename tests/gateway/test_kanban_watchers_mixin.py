@@ -7,6 +7,7 @@ that GatewayRunner picks them up via the MRO (behavior-neutral relocation).
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
@@ -67,3 +68,53 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+class RecordingArtifactAdapter:
+    def __init__(self):
+        self.documents = []
+        self.images = []
+        self.videos = []
+
+    def extract_local_files(self, text):
+        return [], text
+
+    async def send_multiple_images(self, chat_id, images, metadata=None):
+        self.images.append((chat_id, images, metadata or {}))
+
+    async def send_document(self, chat_id, file_path, metadata=None):
+        self.documents.append((chat_id, file_path, metadata or {}))
+
+    async def send_video(self, chat_id, video_path, metadata=None):
+        self.videos.append((chat_id, video_path, metadata or {}))
+
+
+def test_artifact_delivery_uses_preserved_completion_evidence(tmp_path):
+    """Notifier should upload durable evidence paths, not only legacy payload paths."""
+    durable = tmp_path / "report.pdf"
+    durable.write_bytes(b"durable report")
+    missing = tmp_path / "missing.pdf"
+    adapter = RecordingArtifactAdapter()
+
+    asyncio.run(
+        GatewayKanbanWatchersMixin()._deliver_kanban_artifacts(
+            adapter=adapter,
+            chat_id="chat-1",
+            metadata={"source": "test"},
+            event_payload={
+                "completion_artifact_evidence": [
+                    {"status": "preserved", "stored_path": str(durable)},
+                    {
+                        "status": "missing",
+                        "original_path": str(missing),
+                        "reason": "source_missing_at_completion",
+                    },
+                ]
+            },
+            task=None,
+        )
+    )
+
+    assert adapter.documents == [("chat-1", str(durable), {"source": "test"})]
+    assert adapter.images == []
+    assert adapter.videos == []

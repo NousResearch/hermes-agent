@@ -1170,6 +1170,91 @@ def test_complete_records_result(kanban_home):
     assert task.completed_at is not None
 
 
+def test_complete_preserves_claimed_artifact_before_scratch_cleanup(kanban_home):
+    workspace = kb.workspaces_root() / "artifact-source"
+    workspace.mkdir(parents=True)
+    report = workspace / "report.md"
+    report.write_bytes(b"durable evidence\n")
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="x",
+            workspace_kind="scratch",
+            workspace_path=str(workspace),
+        )
+        assert kb.complete_task(
+            conn,
+            t,
+            summary="done",
+            metadata={"artifacts": [str(report)]},
+        )
+        run = kb.latest_run(conn, t)
+        events = [e for e in kb.list_events(conn, t) if e.kind == "completed"]
+        attachments = kb.list_attachments(conn, t)
+
+    assert not workspace.exists(), "scratch workspace should still be cleaned up"
+    assert len(attachments) == 1
+    stored = Path(attachments[0].stored_path)
+    assert stored.is_file()
+    assert stored.read_bytes() == b"durable evidence\n"
+    assert stored.is_relative_to(kb.task_attachments_dir(t).resolve())
+
+    evidence = run.metadata["completion_artifact_evidence"]
+    assert len(evidence) == 1
+    ev = evidence[0]
+    assert ev["original_path"] == str(report)
+    assert ev["resolved_path"] == str(report.resolve(strict=False))
+    assert ev["status"] == "preserved"
+    assert ev["stored_path"] == str(stored.resolve())
+    assert ev["attachment_id"] == attachments[0].id
+    assert ev["filename"] == attachments[0].filename
+    assert ev["size"] == len("durable evidence\n".encode("utf-8"))
+    assert ev["sha256"] == "382edde31df119f6a9b8298cecd1d0d3a482ca4becd35b5a80827af11d2b92ac"
+    assert ev["content_type"] == "text/markdown"
+    assert run.metadata["artifacts"] == [str(stored.resolve())]
+    payload = events[-1].payload or {}
+    assert payload["artifacts"] == [str(stored.resolve())]
+    assert payload["completion_artifact_evidence"] == evidence
+
+
+def test_complete_marks_missing_artifact_with_machine_checkable_reason(kanban_home):
+    workspace = kb.workspaces_root() / "missing-artifact-source"
+    workspace.mkdir(parents=True)
+    missing = workspace / "missing-report.md"
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="x",
+            workspace_kind="scratch",
+            workspace_path=str(workspace),
+        )
+        assert kb.complete_task(
+            conn,
+            t,
+            summary="done",
+            metadata={"artifacts": [str(missing)]},
+        )
+        run = kb.latest_run(conn, t)
+        payload = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1].payload or {}
+        attachments = kb.list_attachments(conn, t)
+
+    assert attachments == []
+    assert run.metadata["artifacts"] == []
+    evidence = run.metadata["completion_artifact_evidence"]
+    assert evidence == [
+        {
+            "original_path": str(missing),
+            "resolved_path": str(missing.resolve(strict=False)),
+            "status": "missing",
+            "reason": "source_missing_at_completion",
+        }
+    ]
+    assert "artifacts" not in payload
+    assert payload["completion_artifact_evidence"] == evidence
+
+
 def test_block_then_unblock(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

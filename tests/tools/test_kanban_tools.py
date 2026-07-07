@@ -397,16 +397,23 @@ def test_complete_with_result_only(worker_env):
     assert d["ok"] is True
 
 
-def test_complete_with_artifacts_lands_in_event_payload(worker_env):
-    """``artifacts=[...]`` rides into the completed event payload so the
-    gateway notifier can upload them as native attachments. See the
-    kanban notifier in gateway/run.py for the consumer side."""
+def test_complete_with_artifacts_lands_in_event_payload(worker_env, tmp_path):
+    """``artifacts=[...]`` are verified and promoted to durable attachment paths
+    in the completed event payload so the gateway notifier can upload them even
+    after scratch workspaces are cleaned up."""
+    from pathlib import Path
+
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
+    chart = tmp_path / "q3-revenue.png"
+    report = tmp_path / "q3-report.pdf"
+    chart.write_bytes(b"png-ish")
+    report.write_bytes(b"pdf-ish")
+
     out = kt._handle_complete({
         "summary": "rendered the chart",
-        "artifacts": ["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
+        "artifacts": [str(chart), str(report)],
     })
     assert json.loads(out)["ok"] is True
 
@@ -417,57 +424,102 @@ def test_complete_with_artifacts_lands_in_event_payload(worker_env):
         completed = [e for e in events if e.kind == "completed"]
         assert len(completed) == 1
         payload = completed[0].payload or {}
-        assert payload.get("artifacts") == [
-            "/tmp/q3-revenue.png",
-            "/tmp/q3-report.pdf",
-        ]
-        # And the artifacts also live on metadata for downstream workers
+        durable_paths = payload.get("artifacts")
+        assert len(durable_paths) == 2
+        assert all(Path(p).is_file() for p in durable_paths)
+        assert durable_paths != [str(chart), str(report)]
+        evidence = payload.get("completion_artifact_evidence")
+        assert [e["status"] for e in evidence] == ["preserved", "preserved"]
+        assert [e["original_path"] for e in evidence] == [str(chart), str(report)]
+        assert [e["stored_path"] for e in evidence] == durable_paths
+        # And the durable artifacts also live on metadata for downstream workers
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata.get("artifacts") == [
-            "/tmp/q3-revenue.png",
-            "/tmp/q3-report.pdf",
-        ]
+        assert run.metadata.get("artifacts") == durable_paths
+        assert run.metadata.get("completion_artifact_evidence") == evidence
     finally:
         conn.close()
 
 
-def test_complete_artifacts_accepts_single_string(worker_env):
+def test_complete_artifacts_accepts_single_string(worker_env, tmp_path):
     """A bare string is auto-promoted to a single-element list for convenience."""
+    from pathlib import Path
+
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
+
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(b"chart")
 
     out = kt._handle_complete({
         "summary": "one chart",
-        "artifacts": "/tmp/chart.png",
+        "artifacts": str(chart),
     })
     assert json.loads(out)["ok"] is True
 
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata.get("artifacts") == ["/tmp/chart.png"]
+        durable_paths = run.metadata.get("artifacts")
+        assert len(durable_paths) == 1
+        assert Path(durable_paths[0]).is_file()
+        assert durable_paths[0] != str(chart)
     finally:
         conn.close()
 
 
-def test_complete_artifacts_merges_with_explicit_metadata_field(worker_env):
+def test_complete_surfaces_missing_artifact_evidence(worker_env, tmp_path):
+    """Missing explicit artifacts should be visible in the tool response."""
+    from tools import kanban_tools as kt
+
+    missing = tmp_path / "missing.png"
+    out = kt._handle_complete({
+        "summary": "missing chart",
+        "artifacts": str(missing),
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["artifact_evidence"] == [
+        {
+            "original_path": str(missing),
+            "resolved_path": str(missing.resolve(strict=False)),
+            "status": "missing",
+            "reason": "source_missing_at_completion",
+        }
+    ]
+
+
+def test_complete_artifacts_merges_with_existing_metadata(worker_env, tmp_path):
     """If the worker passes metadata.artifacts AND the top-level artifacts
-    param, merge the two without duplicates."""
+    param, merge the two without duplicates before durability preservation."""
+    from pathlib import Path
+
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.pdf"
+    a.write_bytes(b"a")
+    b.write_bytes(b"b")
+
     out = kt._handle_complete({
         "summary": "merged",
-        "metadata": {"artifacts": ["/tmp/a.png"], "other": "fact"},
-        "artifacts": ["/tmp/b.pdf", "/tmp/a.png"],
+        "metadata": {"artifacts": [str(a)], "other": "fact"},
+        "artifacts": [str(b), str(a)],
     })
     assert json.loads(out)["ok"] is True
 
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        # Order: existing entries first, then new ones, deduplicated.
-        assert run.metadata.get("artifacts") == ["/tmp/a.png", "/tmp/b.pdf"]
+        # Order: existing entries first, then new ones, deduplicated, then
+        # rewritten as durable stored paths.
+        durable_paths = run.metadata.get("artifacts")
+        assert len(durable_paths) == 2
+        assert all(Path(p).is_file() for p in durable_paths)
+        assert durable_paths != [str(a), str(b)]
+        evidence = run.metadata.get("completion_artifact_evidence")
+        assert [e["original_path"] for e in evidence] == [str(a), str(b)]
+        assert [e["stored_path"] for e in evidence] == durable_paths
         assert run.metadata.get("other") == "fact"
     finally:
         conn.close()

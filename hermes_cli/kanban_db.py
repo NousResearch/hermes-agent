@@ -83,6 +83,7 @@ import subprocess
 import sys
 import threading
 import logging
+import mimetypes
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -101,6 +102,7 @@ _log = logging.getLogger(__name__)
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+COMPLETION_ARTIFACT_EVIDENCE_KEY = "completion_artifact_evidence"
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -2962,6 +2964,63 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
 # Attachments
 # ---------------------------------------------------------------------------
 
+def _safe_attachment_filename(raw: str, *, fallback: str = "artifact") -> str:
+    """Return a safe basename for a board-owned attachment blob."""
+    name = (raw or "").replace("\\", "/").split("/")[-1].strip()
+    name = "".join(ch for ch in name if ch.isprintable() and ch != "\x00").strip()
+    name = name.lstrip(".").strip()
+    if not name:
+        name = fallback
+    return name[:200]
+
+
+def _unique_attachment_path(dest_dir: Path, filename: str) -> Path:
+    """Resolve ``filename`` under ``dest_dir`` without clobbering a blob."""
+    stem, dot, ext = filename.partition(".")
+    candidate = filename
+    n = 1
+    while (dest_dir / candidate).exists():
+        candidate = f"{stem} ({n}){dot}{ext}"
+        n += 1
+    return dest_dir / candidate
+
+
+def _insert_attachment_row(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    filename: str,
+    stored_path: str,
+    content_type: Optional[str] = None,
+    size: int = 0,
+    uploaded_by: Optional[str] = None,
+    created_at: Optional[int] = None,
+) -> int:
+    """Insert an attachment row inside an already-open write transaction."""
+    now = int(created_at if created_at is not None else time.time())
+    cur = conn.execute(
+        "INSERT INTO task_attachments "
+        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            task_id,
+            filename.strip(),
+            stored_path,
+            content_type,
+            int(size),
+            uploaded_by,
+            now,
+        ),
+    )
+    _append_event(
+        conn,
+        task_id,
+        "attached",
+        {"filename": filename.strip(), "size": int(size), "by": uploaded_by},
+    )
+    return int(cur.lastrowid or 0)
+
+
 def add_attachment(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2982,33 +3041,20 @@ def add_attachment(
         raise ValueError("attachment filename is required")
     if not stored_path or not stored_path.strip():
         raise ValueError("attachment stored_path is required")
-    now = int(time.time())
     with write_txn(conn):
         if not conn.execute(
             "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
         ).fetchone():
             raise ValueError(f"unknown task {task_id}")
-        cur = conn.execute(
-            "INSERT INTO task_attachments "
-            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                task_id,
-                filename.strip(),
-                stored_path,
-                content_type,
-                int(size),
-                uploaded_by,
-                now,
-            ),
-        )
-        _append_event(
+        return _insert_attachment_row(
             conn,
             task_id,
-            "attached",
-            {"filename": filename.strip(), "size": int(size), "by": uploaded_by},
+            filename=filename.strip(),
+            stored_path=stored_path,
+            content_type=content_type,
+            size=size,
+            uploaded_by=uploaded_by,
         )
-        return int(cur.lastrowid or 0)
 
 
 def list_attachments(conn: sqlite3.Connection, task_id: str) -> list[Attachment]:
@@ -3975,6 +4021,178 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+def _completion_artifact_claims(metadata: Optional[dict]) -> list[str]:
+    """Return unique artifact path claims from completion metadata.
+
+    ``kanban_complete(artifacts=[...])`` stores claims under
+    ``metadata['artifacts']``. Older callers sometimes used a singular
+    ``metadata['artifact']`` field; preserve it too so those claims get the
+    same durability treatment instead of being left as dead scratch paths.
+    """
+    if not isinstance(metadata, dict):
+        return []
+    claims: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        if not isinstance(value, str):
+            return
+        s = value.strip()
+        if s and s not in seen:
+            seen.add(s)
+            claims.append(s)
+
+    raw_artifacts = metadata.get("artifacts")
+    if isinstance(raw_artifacts, str):
+        add(raw_artifacts)
+    elif isinstance(raw_artifacts, (list, tuple)):
+        for item in raw_artifacts:
+            add(item)
+    add(metadata.get("artifact"))
+    return claims
+
+
+def _path_metadata_string(path: Path) -> str:
+    try:
+        return str(path.resolve(strict=False))
+    except OSError:
+        return str(path)
+
+
+def _windows_msys_path(raw: str) -> str:
+    """Translate /c/Users/... paths when a Windows worker used git-bash."""
+    if os.name == "nt" and re.match(r"^/[A-Za-z]/", raw):
+        return f"{raw[1]}:{raw[2:]}"
+    return raw
+
+
+def _resolve_completion_artifact_source(raw: str, workspace_path: Optional[str]) -> Path:
+    expanded = _windows_msys_path(os.path.expanduser(raw.strip()))
+    source = Path(expanded)
+    if not source.is_absolute() and workspace_path:
+        source = Path(workspace_path).expanduser() / source
+    return source
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _prepare_completion_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+    *,
+    expected_run_id: Optional[int] = None,
+    allowed_statuses: Optional[set[str]] = None,
+) -> tuple[Optional[dict], list[dict]]:
+    """Copy claimed completion artifacts to durable task attachments.
+
+    Returns a metadata copy plus machine-checkable evidence records. Missing
+    or uncopyable sources are recorded as unavailable evidence and are not
+    carried forward in ``metadata['artifacts']`` as successful artifact paths.
+    """
+    claims = _completion_artifact_claims(metadata)
+    if not claims or not isinstance(metadata, dict):
+        return metadata, []
+
+    row = conn.execute(
+        "SELECT status, workspace_path, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if allowed_statuses is None:
+        allowed_statuses = {"running", "ready", "blocked"}
+    if not row or row["status"] not in allowed_statuses:
+        return metadata, []
+    if expected_run_id is not None and row["current_run_id"] != int(expected_run_id):
+        return metadata, []
+
+    evidence: list[dict] = []
+    durable_paths: list[str] = []
+    dest_dir = task_attachments_dir(task_id)
+
+    for idx, raw in enumerate(claims, start=1):
+        source = _resolve_completion_artifact_source(raw, row["workspace_path"])
+        resolved_source = _path_metadata_string(source)
+        base = {"original_path": raw, "resolved_path": resolved_source}
+        try:
+            if not source.exists():
+                evidence.append({
+                    **base,
+                    "status": "missing",
+                    "reason": "source_missing_at_completion",
+                })
+                continue
+            if not source.is_file():
+                evidence.append({
+                    **base,
+                    "status": "unavailable",
+                    "reason": "source_not_file_at_completion",
+                })
+                continue
+
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = _safe_attachment_filename(source.name or raw, fallback=f"artifact-{idx}")
+            dest = _unique_attachment_path(dest_dir, safe_name)
+            shutil.copy2(source, dest)
+            stored_path = _path_metadata_string(dest)
+            durable_paths.append(stored_path)
+            content_type, _ = mimetypes.guess_type(dest.name)
+            if content_type is None and dest.suffix.lower() in {".md", ".markdown"}:
+                content_type = "text/markdown"
+            evidence.append({
+                **base,
+                "status": "preserved",
+                "stored_path": stored_path,
+                "filename": dest.name,
+                "size": dest.stat().st_size,
+                "sha256": _sha256_file(dest),
+                "content_type": content_type,
+            })
+        except OSError as exc:
+            evidence.append({
+                **base,
+                "status": "unavailable",
+                "reason": "preservation_failed",
+                "error": str(exc),
+            })
+
+    prepared = dict(metadata)
+    prepared[COMPLETION_ARTIFACT_EVIDENCE_KEY] = evidence
+    prepared["artifacts"] = durable_paths
+    if "artifact" in prepared:
+        prepared["artifact"] = durable_paths[0] if durable_paths else None
+    return prepared, evidence
+
+
+def _record_preserved_completion_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    evidence: list[dict],
+    *,
+    created_at: Optional[int] = None,
+) -> None:
+    """Persist task_attachments rows for already-copied completion artifacts."""
+    for item in evidence:
+        if item.get("status") != "preserved" or item.get("attachment_id"):
+            continue
+        att_id = _insert_attachment_row(
+            conn,
+            task_id,
+            filename=str(item.get("filename") or "artifact"),
+            stored_path=str(item.get("stored_path") or ""),
+            content_type=item.get("content_type"),
+            size=int(item.get("size") or 0),
+            uploaded_by="completion-evidence",
+            created_at=created_at,
+        )
+        item["attachment_id"] = att_id
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4042,6 +4260,15 @@ def complete_task(
     else:
         verified_cards = []
 
+    artifact_evidence: list[dict] = []
+    if isinstance(metadata, dict):
+        metadata, artifact_evidence = _prepare_completion_artifacts(
+            conn,
+            task_id,
+            metadata,
+            expected_run_id=expected_run_id,
+        )
+
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -4080,6 +4307,12 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        _record_preserved_completion_artifacts(
+            conn,
+            task_id,
+            artifact_evidence,
+            created_at=now,
+        )
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
@@ -4123,6 +4356,9 @@ def complete_task(
                 ]
                 if cleaned_artifacts:
                     completed_payload["artifacts"] = cleaned_artifacts
+            evidence = metadata.get(COMPLETION_ARTIFACT_EVIDENCE_KEY)
+            if isinstance(evidence, list) and evidence:
+                completed_payload[COMPLETION_ARTIFACT_EVIDENCE_KEY] = evidence
         _append_event(
             conn, task_id, "completed",
             completed_payload,
@@ -4481,12 +4717,21 @@ def edit_completed_task_result(
 ) -> bool:
     """Backfill the user-visible result for an already completed task."""
     handoff_summary = summary if summary is not None else result
+    artifact_evidence: list[dict] = []
+    if isinstance(metadata, dict):
+        metadata, artifact_evidence = _prepare_completion_artifacts(
+            conn,
+            task_id,
+            metadata,
+            allowed_statuses={"done"},
+        )
     with write_txn(conn):
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if not row or row["status"] != "done":
             return False
+        _record_preserved_completion_artifacts(conn, task_id, artifact_evidence)
         conn.execute(
             "UPDATE tasks SET result = ? WHERE id = ?",
             (result, task_id),

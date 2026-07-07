@@ -552,11 +552,11 @@ def _handle_complete(args: dict, **kw) -> str:
         artifacts = [
             str(p).strip() for p in artifacts if str(p).strip()
         ]
-        # Carry the artifact list inside metadata so it rides the
-        # existing completed-event payload without a schema change at
-        # the DB layer.  The gateway notifier reads payload['artifacts']
-        # off the completion event and uploads each path as a native
-        # attachment.
+        # Carry the artifact claims inside metadata; ``complete_task``
+        # verifies them, rewrites successful claims to durable
+        # board-owned attachment paths, and records machine-checkable
+        # evidence for preserved or unavailable sources.  The gateway
+        # notifier then uploads the durable payload['artifacts'] paths.
         if artifacts:
             if metadata is None:
                 metadata = {}
@@ -655,7 +655,12 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            fields = {"task_id": tid, "run_id": run.id if run else None}
+            if run and isinstance(run.metadata, dict):
+                evidence = run.metadata.get("completion_artifact_evidence")
+                if evidence:
+                    fields["artifact_evidence"] = evidence
+            return _ok(**fields)
         finally:
             conn.close()
     except ValueError as e:

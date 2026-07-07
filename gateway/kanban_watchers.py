@@ -649,26 +649,29 @@ class GatewayKanbanWatchersMixin:
         chat.
 
         Sources scanned, in priority order:
-          1. ``event_payload['artifacts']`` (explicit list — preferred)
-          2. ``event_payload['summary']`` (truncated first line)
-          3. ``task.result`` (legacy fallback)
+          1. ``event_payload['artifacts']`` (durable completion copies)
+          2. ``event_payload['completion_artifact_evidence']`` preserved records
+          3. ``event_payload['summary']`` (truncated first line)
+          4. ``task.result`` (legacy fallback)
 
-        Files are deduplicated, missing files are silently skipped (the
-        path may have been mentioned for reference only), and delivery
-        errors are logged but do not break the notifier loop.
+        Files are deduplicated. Missing/unavailable completion evidence is
+        logged with its machine-checkable reason instead of silently skipped;
+        delivery errors are logged but do not break the notifier loop.
         """
         from pathlib import Path as _Path
 
         candidates: list[str] = []
+        missing_candidates: list[tuple[str, str]] = []
         seen: set[str] = set()
 
-        def _add(path: str) -> None:
+        def _add(path: str, source: str) -> None:
             if not path:
                 return
             expanded = os.path.expanduser(path)
             if expanded in seen:
                 return
             if not os.path.isfile(expanded):
+                missing_candidates.append((expanded, source))
                 return
             seen.add(expanded)
             candidates.append(expanded)
@@ -679,21 +682,46 @@ class GatewayKanbanWatchersMixin:
             if isinstance(raw, (list, tuple)):
                 for item in raw:
                     if isinstance(item, str):
-                        _add(item)
+                        _add(item, "event_payload.artifacts")
 
-            # 2. Paths embedded in the payload summary.
+            evidence = event_payload.get("completion_artifact_evidence")
+            if isinstance(evidence, (list, tuple)):
+                for item in evidence:
+                    if not isinstance(item, dict):
+                        continue
+                    status = item.get("status")
+                    if status == "preserved":
+                        stored_path = item.get("stored_path")
+                        if isinstance(stored_path, str):
+                            _add(stored_path, "completion_artifact_evidence")
+                    elif status in {"missing", "unavailable"}:
+                        logger.warning(
+                            "kanban notifier: completion artifact unavailable "
+                            "(%s): %s",
+                            item.get("original_path") or item.get("resolved_path"),
+                            item.get("reason") or status,
+                        )
+
+            # 3. Paths embedded in the payload summary.
             summary = event_payload.get("summary")
             if isinstance(summary, str) and summary:
                 paths, _ = adapter.extract_local_files(summary)
                 for p in paths:
-                    _add(p)
+                    _add(p, "event_payload.summary")
 
-        # 3. Legacy: paths embedded in task.result.
+        # 4. Legacy: paths embedded in task.result.
         if task is not None and getattr(task, "result", None):
             result_text = str(task.result)
             paths, _ = adapter.extract_local_files(result_text)
             for p in paths:
-                _add(p)
+                _add(p, "task.result")
+
+        for path, source in missing_candidates:
+            logger.warning(
+                "kanban notifier: artifact path from %s is missing: %s",
+                source,
+                path,
+            )
 
         if not candidates:
             return

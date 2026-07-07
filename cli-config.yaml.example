@@ -177,6 +177,21 @@ model:
 # worktree_sync: true   # Default — branch from the fetched remote tip
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
+# -----------------------------------------------------------------------------
+# Model-change announce knobs (all default TRUE / on)
+# -----------------------------------------------------------------------------
+# The gateway posts a one-line "🔀" notice to the conversation when the model or
+# reasoning effort changes, so a switch isn't silently visible only in the footer.
+# Each is independently toggleable:
+#
+# model:
+#   announce_switch: true         # deliberate /reasoning + /model switches (in-session)
+#   announce_route_change: true   # automatic client-side failover (opus@claude-app → opus@f3)
+#   announce_recovery: false      # recovery back to primary (green event; silent by default)
+#
+# Set any to false to silence that class without losing the others (e.g. a heavy
+# /model user can set announce_switch: false).
+
 # =============================================================================
 # Terminal Tool Configuration
 # =============================================================================

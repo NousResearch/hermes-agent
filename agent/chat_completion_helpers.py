@@ -1486,6 +1486,38 @@ def _append_route_change(
         pass  # telemetry never breaks a turn
 
 
+# Friendly, user-facing labels for WHY a failover fired — rendered as a suffix in
+# the fallback announce (``🔄 Model fallback (safety refusal): fable → opus``) so a
+# content-policy refusal is distinguishable from a rate-limit blip in-session.
+# Only the reasons worth surfacing to a human are mapped; anything else → no suffix
+# (the bare "Model fallback: A → B" line, unchanged).
+_FALLBACK_REASON_LABELS = {
+    "content_policy_blocked": "safety refusal",
+    "provider_policy_blocked": "provider policy",
+    "rate_limit": "rate limit",
+    "upstream_rate_limit": "rate limit",
+    "billing": "credit exhausted",
+    "overloaded": "provider overloaded",
+    "server_error": "provider error",
+    "timeout": "timeout",
+    "auth": "auth refresh",
+    "model_not_found": "model unavailable",
+}
+
+
+def _fallback_reason_label(reason: "Any | None") -> "str | None":
+    """Map a FailoverReason (enum or its .value string) to a short user-facing
+    label, or None when the reason isn't worth surfacing (→ no suffix)."""
+    if reason is None:
+        return None
+    val = getattr(reason, "value", reason)
+    try:
+        val = str(val).strip().lower()
+    except Exception:
+        return None
+    return _FALLBACK_REASON_LABELS.get(val)
+
+
 def _emit_fallback_announce(
     agent,
     old_model: str,
@@ -1500,6 +1532,7 @@ def _emit_fallback_announce(
     announce_enabled: bool = True,
     record_event: bool = True,
     kind: str = "fallback",
+    reason: "Any | None" = None,
 ) -> None:
     """Emit a single, always-visible chat status line when a model route changes
     (an automatic failover OR a recovery back to the primary).
@@ -1585,7 +1618,13 @@ def _emit_fallback_announce(
     new_label = _side_label(new_provider, new_model, _ne)
     verb = "Model recovery" if kind == "recovery" else "Model fallback"
     icon = "🔄"
-    msg = f"{icon} {verb}: {old_label} → {new_label}"
+    # Reason rider (why the route changed) — e.g. "safety refusal" vs "rate limit".
+    # A same-model cross-provider failover reads like a rate-limit blip without it;
+    # a content-policy refusal (fable declined → opus answered) is a materially
+    # different event the user wants to distinguish. Recovery has no reason.
+    _reason_label = _fallback_reason_label(reason) if kind != "recovery" else None
+    _reason_suffix = f" ({_reason_label})" if _reason_label else ""
+    msg = f"{icon} {verb}{_reason_suffix}: {old_label} → {new_label}"
     old_lbl = _format_context_window(old_window)
     new_lbl = _format_context_window(new_window)
     if old_lbl and new_lbl and old_lbl != new_lbl:
@@ -2038,6 +2077,7 @@ def try_activate_fallback(
                 announce_enabled=_announce_on,
                 record_event=True,
                 kind="fallback",
+                reason=reason,
             )
         except Exception:
             logger.debug("fallback announce failed", exc_info=True)

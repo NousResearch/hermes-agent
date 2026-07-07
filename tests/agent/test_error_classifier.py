@@ -422,6 +422,21 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
+    def test_400_degraded_function_is_overloaded(self):
+        """NVIDIA NIM can report transient backend function health as HTTP 400.
+        This is not a malformed Hermes request, so cron should back off instead
+        of failing immediately as format_error."""
+        e = MockAPIError(
+            "HTTP 400: {\"status\":400,\"title\":\"Bad Request\","
+            "\"detail\":\"Function id '87ea0ddc-cff1-4bca-bf8b-3bd98a35ddd0': "
+            "DEGRADED function cannot be invoked\"}",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom:nvidia-rotating")
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
     def test_429_normal_rate_limit_still_rotates(self):
         """Guard: a genuine 429 rate limit (no overload language) must still
         classify as rate_limit and rotate the credential. (#14038)"""

@@ -165,6 +165,7 @@ _OVERLOADED_PATTERNS = [
     "currently overloaded",
     "at capacity",
     "over capacity",
+    "degraded function cannot be invoked",
 ]
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
@@ -1213,6 +1214,16 @@ def _classify_400(
             should_rotate_credential=True,
             should_fallback=True,
         )
+
+    # NVIDIA NIM can surface transient backend function health as a 400:
+    # "Function id '<uuid>': DEGRADED function cannot be invoked". The request
+    # shape is valid; retry/backoff is safer than killing cron as format_error.
+    if any(p in error_msg for p in _OVERLOADED_PATTERNS):
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+        )
+
     if any(p in error_msg for p in _BILLING_PATTERNS):
         return result_fn(
             FailoverReason.billing,

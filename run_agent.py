@@ -4632,6 +4632,45 @@ class AIAgent:
         )
         return bool(streamed) and streamed == visible_content
 
+    def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
+        """Extract visible Codex Responses commentary text.
+
+        Codex Responses can keep user-facing mid-turn narration as structured
+        ``phase=commentary`` message items while final answer text remains in
+        assistant ``content``.  Non-streaming gateway surfaces need that
+        commentary through the interim assistant callback before tool calls run.
+        ``phase=analysis`` remains hidden because it is provider scratchpad.
+        """
+        items = assistant_msg.get("codex_message_items")
+        if not isinstance(items, list):
+            return ""
+
+        parts: List[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message":
+                continue
+            phase = item.get("phase")
+            if not isinstance(phase, str) or phase.strip().lower() != "commentary":
+                continue
+            content_parts = item.get("content")
+            if not isinstance(content_parts, list):
+                continue
+            for part in content_parts:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") != "output_text":
+                    continue
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+
+        visible = "\n\n".join(parts).strip()
+        if visible:
+            visible = self._strip_think_blocks(visible).strip()
+        return visible
+
     def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer."""
         cb = getattr(self, "interim_assistant_callback", None)
@@ -4639,6 +4678,8 @@ class AIAgent:
             return
         content = assistant_msg.get("content")
         visible = self._strip_think_blocks(content or "").strip()
+        if not visible or visible == "(empty)":
+            visible = self._extract_codex_interim_visible_text(assistant_msg)
         if not visible or visible == "(empty)":
             return
         already_streamed = self._interim_content_was_streamed(visible)

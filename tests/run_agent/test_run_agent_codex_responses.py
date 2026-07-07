@@ -1941,6 +1941,51 @@ def test_interim_commentary_preserves_assistant_content(monkeypatch):
     assert "I'll inspect the repo structure first." in observed["text"]
 
 
+def test_interim_commentary_uses_codex_commentary_items_when_content_is_empty(monkeypatch):
+    """Codex Responses stores commentary phase text outside content.
+
+    The gateway still needs that visible mid-turn narration to flow through the
+    interim assistant callback; otherwise Discord with streaming disabled gets
+    no natural progress commentary before tools run. Analysis/final-answer items
+    stay hidden from interim delivery.
+    """
+    agent = _build_agent(monkeypatch)
+    observed = {}
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
+        {"text": text, "already_streamed": already_streamed}
+    )
+
+    agent._emit_interim_assistant_message({
+        "role": "assistant",
+        "content": "",
+        "codex_message_items": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "phase": "analysis",
+                "content": [{"type": "output_text", "text": "Need inspect files."}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "I'll inspect the repo first."}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "Done."}],
+            },
+        ],
+    })
+
+    assert observed == {
+        "text": "I'll inspect the repo first.",
+        "already_streamed": False,
+    }
+
+
 def test_stream_delta_strips_leaked_memory_context(monkeypatch):
     agent = _build_agent(monkeypatch)
     observed = []

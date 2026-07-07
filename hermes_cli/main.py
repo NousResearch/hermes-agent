@@ -2217,6 +2217,8 @@ def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
 
+    _apply_safe_mode(args)
+
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
@@ -2326,18 +2328,6 @@ def cmd_chat(args):
     # --yolo: bypass all dangerous command approvals
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
-
-    # --safe-mode: troubleshooting mode that disables ALL customizations.
-    # Inspired by Claude Code v2.1.169's --safe-mode (June 2026): run with a
-    # pristine environment to isolate whether a problem comes from the user's
-    # setup (config, rules files, plugins, MCP servers) or from Hermes itself.
-    # Implemented as a superset of --ignore-user-config + --ignore-rules plus
-    # plugin/MCP discovery suppression (HERMES_SAFE_MODE is checked by
-    # hermes_cli/plugins.py and tools/mcp_tool.py).
-    if getattr(args, "safe_mode", False):
-        os.environ["HERMES_SAFE_MODE"] = "1"
-        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
-        os.environ["HERMES_IGNORE_RULES"] = "1"
 
     # --ignore-user-config: make load_cli_config() / load_config() skip the
     # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
@@ -12351,6 +12341,8 @@ def _should_background_mcp_startup(args) -> bool:
 
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
+    _apply_safe_mode(args)
+
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     if not (
         args.command in _AGENT_COMMANDS
@@ -12414,6 +12406,14 @@ def _prepare_agent_startup(args) -> None:
             "shell-hook registration failed at CLI startup",
             exc_info=True,
         )
+
+
+def _apply_safe_mode(args) -> None:
+    if not getattr(args, "safe_mode", False):
+        return
+    os.environ["HERMES_SAFE_MODE"] = "1"
+    os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+    os.environ["HERMES_IGNORE_RULES"] = "1"
 
 
 def _set_chat_arg_defaults(args) -> None:

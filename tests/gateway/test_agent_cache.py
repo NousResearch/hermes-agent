@@ -228,16 +228,20 @@ class TestExtractCacheBustingConfig:
                 "compression": {
                     "enabled": False,
                     "threshold": 0.6,
+                    "codex_gpt55_autoraise": False,
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
+                    "codex_app_server_auto": "hermes",
                     "some_other_key": "ignored",
                 }
             }
         )
         assert out["compression.enabled"] is False
         assert out["compression.threshold"] == 0.6
+        assert out["compression.codex_gpt55_autoraise"] is False
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
+        assert out["compression.codex_app_server_auto"] == "hermes"
 
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""

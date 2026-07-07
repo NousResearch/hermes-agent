@@ -55,6 +55,7 @@ AUTHOR_MAP = {
     "allenliang2022@users.noreply.github.com": "allenliang2022",  # PR #56932 test coverage folded into #56909 salvage (408 → retryable timeout)
     "m888.braun@hotmail.com": "ManniBr",  # PR #57417 partial salvage (gateway: fail-closed adapter resolution for unregistered secondary profiles)
     "austin@openvm067.space": "austinlaw076",  # PR #57563 partial salvage (auth: lazy per-profile Anthropic OAuth file; gateway: whatsapp_cloud/line added to port-binding platform set)
+    "sunsky.lau@gmail.com": "liuhao1024",  # PR #56993 salvage (gateway: process-level HERMES_HOME for pid/lock/status identity files; #56986)
     "blueirobin02@gmail.com": "irresi",  # PR #59048 salvage (gateway: scope reset banners' session info to the serving profile; #59003)
     "jashlee+microsoft@microsoft.com": "s905060",  # PR #57943 salvage (photon: auto-reinstall stale sidecar node_modules when lockfile is newer than npm's install marker; #59169)
     "lohinth25@proton.me": "l0h1nth",  # PR #32210 salvage (mattermost: accept leading-space slash commands from mobile clients; #25184)
@@ -63,6 +64,7 @@ AUTHOR_MAP = {
     "39274208+falkoro@users.noreply.github.com": "falkoro",  # PRs #58519/#58520 salvage (config: env-ref-aware load_config cache invalidation; auxiliary: honor auxiliary.<task>.base_url/api_key with explicit provider arg)
     "3723267+kevinrajaram@users.noreply.github.com": "kevinrajaram",  # PR #3850 salvage (gateway: add POSIX system dirs to PATH so launchctl/systemctl resolve under UV's minimal-PATH bundled Python; #3849)
     "lord-dubious@users.noreply.github.com": "lord-dubious",  # PR #58453 salvage (preserve static custom provider models declared as dict rows)
+    "williamumu@users.noreply.github.com": "williamumu",  # PR #31041 salvage (pairing: merge split legacy/new pairing store dirs at PairingStore init so approved users aren't re-prompted to pair)
     "jonathan@mintrx.com": "JAlmanzarMint",  # PR #52688 salvage (vision: rasterize SVG / re-encode unsupported raster formats to PNG before embedding), folded into #57890
     "al3060388206@gmail.com": "ooiuuii",  # PR #58466/#58377 salvage (redact: fireworks fw-/fpk_ prefixes; telegram: redact bot tokens out of transport error strings). Also PR #58433 salvage (codex: accept recorded final_text when app-server omits turn/completed) and PR #58472 salvage (gateway: cap proxy SSE line buffer at 16MiB).
     "Jigoooo@users.noreply.github.com": "Jigoooo",  # PR #58474 salvage (auxiliary: fall back to token resolver when anthropic pool has no usable entry)
@@ -164,6 +166,7 @@ AUTHOR_MAP = {
     "65363919+coygeek@users.noreply.github.com": "coygeek",  # PR #37951 salvage (fail closed when provider env blocklist import fails; #37950)
     "5261694+djstunami@users.noreply.github.com": "djstunami",  # PR #5316 salvage / co-author (suppress transient check_fn flakes so subagents keep file/terminal tools; #21658 / #5304)
     "jmmaloney4@gmail.com": "jmmaloney4",  # PR #25206 salvage (re-select credential pool on primary runtime restore; #25205)
+    "hmirin@users.noreply.github.com": "hmirin",
     "dale@dalenguyen.me": "dalenguyen",  # PR #53678 salvage (strip VIRTUAL_ENV/CONDA_PREFIX from terminal subprocess env; #23473)
     "liruixinch@outlook.com": "HexLab98",  # PR #53863 salvage (env-only proxy policy for auxiliary OpenAI clients on macOS; #53702)
     "blaryx@gmail.com": "Blaryxoff",  # PR #32602 salvage (deep-merge PUT /api/config to preserve unrelated sections; #13396)
@@ -294,6 +297,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "florian.rutishauser@outlook.com": "flo1t",
     "fanyang@microsoft.com": "fanyangCS",
     "bigstar0920@gmail.com": "bigstar0920",
     "hello@tanmaychoudhary.com": "tanmayxchoudhary",

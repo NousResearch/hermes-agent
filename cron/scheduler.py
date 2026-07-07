@@ -2211,6 +2211,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
+    from agent.skill_utils import normalize_skill_lookup_name
 
     parts = []
     skipped: list[str] = []
@@ -2241,7 +2242,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             continue
 
         try:
-            loaded = json.loads(skill_view(skill_name))
+            loaded = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
         except (json.JSONDecodeError, TypeError):
             logger.warning("Cron job '%s': skill '%s' returned invalid JSON, skipping", job.get("name", job.get("id")), skill_name)
             skipped.append(skill_name)

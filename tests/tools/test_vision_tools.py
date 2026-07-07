@@ -167,6 +167,106 @@ class TestImageToBase64DataUrl:
 
 
 # ---------------------------------------------------------------------------
+# _download_image — streaming size cap
+# ---------------------------------------------------------------------------
+
+
+class _FakeImageResponse:
+    def __init__(self, *, chunks, headers=None, url="https://example.com/pic.png"):
+        self._chunks = chunks
+        self.headers = headers or {}
+        self.url = url
+        self.is_redirect = False
+        self.next_request = None
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_bytes(self, chunk_size=None):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeImageStream:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *args):
+        return None
+
+
+class _FakeImageClient:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    def stream(self, *args, **kwargs):
+        return _FakeImageStream(self._response)
+
+
+class TestDownloadImageStreaming:
+    def _install_client(self, monkeypatch, response):
+        monkeypatch.setattr("tools.vision_tools.check_website_access", lambda url: None)
+        monkeypatch.setattr(
+            "tools.vision_tools.httpx.AsyncClient",
+            lambda *args, **kwargs: _FakeImageClient(response),
+        )
+
+    @pytest.mark.asyncio
+    async def test_rejects_oversized_content_length(self, tmp_path, monkeypatch):
+        from tools.vision_tools import _download_image
+
+        monkeypatch.setattr("tools.vision_tools._VISION_MAX_DOWNLOAD_BYTES", 8)
+        self._install_client(
+            monkeypatch,
+            _FakeImageResponse(chunks=[b"ok"], headers={"content-length": "9"}),
+        )
+        with pytest.raises(ValueError, match="too large"):
+            await _download_image("https://example.com/pic.png", tmp_path / "pic.png",
+                                  max_retries=1)
+
+    @pytest.mark.asyncio
+    async def test_aborts_oversized_body_without_content_length(
+        self, tmp_path, monkeypatch
+    ):
+        """Chunked responses without Content-Length must still hit the cap."""
+        from tools.vision_tools import _download_image
+
+        monkeypatch.setattr("tools.vision_tools._VISION_MAX_DOWNLOAD_BYTES", 8)
+        self._install_client(
+            monkeypatch,
+            _FakeImageResponse(chunks=[b"xxxx", b"xxxx", b"xxxx"]),  # 12 > 8
+        )
+        destination = tmp_path / "pic.png"
+        with pytest.raises(ValueError, match="too large"):
+            await _download_image("https://example.com/pic.png", destination,
+                                  max_retries=1)
+        assert not destination.exists()  # no truncated file left behind
+
+    @pytest.mark.asyncio
+    async def test_downloads_within_cap(self, tmp_path, monkeypatch):
+        from tools.vision_tools import _download_image
+
+        self._install_client(
+            monkeypatch,
+            _FakeImageResponse(chunks=[b"png-", b"data"]),
+        )
+        destination = tmp_path / "pic.png"
+        result = await _download_image("https://example.com/pic.png", destination,
+                                       max_retries=1)
+        assert result == destination
+        assert destination.read_bytes() == b"png-data"
+
+
+# ---------------------------------------------------------------------------
 # _handle_vision_analyze — type signature & behavior
 # ---------------------------------------------------------------------------
 
@@ -289,7 +389,7 @@ class TestErrorLoggingExcInfo:
             mock_client = AsyncMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.get = AsyncMock(side_effect=ConnectionError("network down"))
+            mock_client.stream = MagicMock(side_effect=ConnectionError("network down"))
             mock_client_cls.return_value = mock_client
 
             dest = tmp_path / "image.jpg"
@@ -505,7 +605,10 @@ class TestVisionSafetyGuards:
             mock_client = AsyncMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.get = AsyncMock(return_value=FakeResponse())
+            stream_cm = AsyncMock()
+            stream_cm.__aenter__ = AsyncMock(return_value=FakeResponse())
+            stream_cm.__aexit__ = AsyncMock(return_value=False)
+            mock_client.stream = MagicMock(return_value=stream_cm)
             mock_client_cls.return_value = mock_client
 
             await _download_image("https://allowed.test/cat.png", tmp_path / "cat.png", max_retries=1)
@@ -1025,7 +1128,10 @@ class TestDownloadRetryClassification:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=mock_response)
+        stream_cm = AsyncMock()
+        stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        stream_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_client.stream = MagicMock(return_value=stream_cm)
         return mock_client
 
     def test_is_retryable_classification(self):
@@ -1060,7 +1166,7 @@ class TestDownloadRetryClassification:
                 "https://example.com/missing.jpg", tmp_path / "x.jpg", max_retries=3
             )
         # Exactly one attempt, zero backoff sleeps.
-        assert mock_client.get.await_count == 1
+        assert mock_client.stream.call_count == 1
         mock_sleep.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1080,7 +1186,7 @@ class TestDownloadRetryClassification:
                 "https://example.com/flaky.jpg", tmp_path / "y.jpg", max_retries=3
             )
         # All three attempts used, two backoff sleeps between them.
-        assert mock_client.get.await_count == 3
+        assert mock_client.stream.call_count == 3
         assert mock_sleep.await_count == 2
 
 

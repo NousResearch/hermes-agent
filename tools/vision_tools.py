@@ -317,34 +317,51 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:
-                response = await client.get(
+                # Stream instead of buffering: client.get() reads the whole
+                # body into memory BEFORE the size check runs, so a chunked
+                # response without Content-Length (or with a lying one) could
+                # balloon RAM far past the cap. Streaming enforces the limit
+                # per-chunk and aborts early.
+                async with client.stream(
+                    "GET",
                     image_url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "image/*,*/*;q=0.8",
                     },
-                )
-                response.raise_for_status()
+                ) as response:
+                    response.raise_for_status()
 
-                # Reject overly large images early via Content-Length header.
-                cl = response.headers.get("content-length")
-                if cl and int(cl) > _VISION_MAX_DOWNLOAD_BYTES:
-                    raise ValueError(
-                        f"Image too large ({int(cl)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
-                    )
+                    # Reject overly large images early via Content-Length header.
+                    cl = response.headers.get("content-length")
+                    if cl and int(cl) > _VISION_MAX_DOWNLOAD_BYTES:
+                        raise ValueError(
+                            f"Image too large ({int(cl)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
+                        )
 
-                final_url = str(response.url)
-                blocked = check_website_access(final_url)
-                if blocked:
-                    raise PermissionError(blocked["message"])
-                
-                # Save the image content (double-check actual size)
-                body = response.content
-                if len(body) > _VISION_MAX_DOWNLOAD_BYTES:
-                    raise ValueError(
-                        f"Image too large ({len(body)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
-                    )
-                destination.write_bytes(body)
+                    final_url = str(response.url)
+                    blocked = check_website_access(final_url)
+                    if blocked:
+                        raise PermissionError(blocked["message"])
+
+                    # Save the image content, enforcing the cap on actual bytes
+                    received = 0
+                    try:
+                        with destination.open("wb") as fh:
+                            async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                                received += len(chunk)
+                                if received > _VISION_MAX_DOWNLOAD_BYTES:
+                                    raise ValueError(
+                                        f"Image too large (>{_VISION_MAX_DOWNLOAD_BYTES} bytes)"
+                                    )
+                                fh.write(chunk)
+                    except BaseException:
+                        # Don't leave a truncated file behind for the caller.
+                        try:
+                            destination.unlink()
+                        except OSError:
+                            pass
+                        raise
             
             return destination
         except Exception as e:

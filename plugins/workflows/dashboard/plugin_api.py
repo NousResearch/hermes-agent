@@ -21,6 +21,7 @@ from hermes_cli.workflows_capabilities import (
     require_implemented_primitives,
     workflow_capabilities,
 )
+from hermes_cli.workflows_redaction import redact_sensitive
 from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
 from utils import is_truthy_value
 
@@ -167,19 +168,37 @@ def _definition_to_dict(record, *, include_spec: bool = False) -> dict[str, Any]
     return payload
 
 
+def _redact_execution_for_display(execution: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(execution)
+    for key in ("input", "context"):
+        if key in redacted:
+            redacted[key] = redact_sensitive(redacted[key])
+    return redacted
+
+
+def _redact_node_run_for_display(node_run: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(node_run)
+    for key in ("input", "output", "payload", "error"):
+        if key in redacted:
+            redacted[key] = redact_sensitive(redacted[key])
+    return redacted
+
+
 def _execution_to_dict(execution: wfdb.WorkflowExecution) -> dict[str, Any]:
-    return {
-        "context": execution.context,
-        "created_at": execution.created_at,
-        "execution_id": execution.execution_id,
-        "input": execution.input,
-        "status": execution.status,
-        "trigger_id": execution.trigger_id,
-        "trigger_type": execution.trigger_type,
-        "updated_at": execution.updated_at,
-        "version": execution.version,
-        "workflow_id": execution.workflow_id,
-    }
+    return _redact_execution_for_display(
+        {
+            "context": execution.context,
+            "created_at": execution.created_at,
+            "execution_id": execution.execution_id,
+            "input": execution.input,
+            "status": execution.status,
+            "trigger_id": execution.trigger_id,
+            "trigger_type": execution.trigger_type,
+            "updated_at": execution.updated_at,
+            "version": execution.version,
+            "workflow_id": execution.workflow_id,
+        }
+    )
 
 
 def _event_to_dict(row) -> dict[str, Any]:
@@ -193,7 +212,7 @@ def _event_to_dict(row) -> dict[str, Any]:
         "id": row["id"],
         "kind": row["kind"],
         "node_run_id": row["node_run_id"],
-        "payload": payload,
+        "payload": redact_sensitive(payload),
     }
 
 
@@ -495,7 +514,10 @@ def execution_node_runs(execution_id: str) -> dict[str, Any]:
     try:
         with _connect_initialized() as conn:
             wfdb.get_execution(conn, execution_id)
-            node_runs = wfdb.list_node_runs(conn, execution_id)
+            node_runs = [
+                _redact_node_run_for_display(row)
+                for row in wfdb.list_node_runs(conn, execution_id)
+            ]
     except KeyError as exc:
         raise _http_404(exc) from exc
     return {"execution_id": execution_id, "node_runs": node_runs}

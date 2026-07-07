@@ -63,6 +63,8 @@
     workflow_assistant_validation_error: "Revise the request, use a template, or switch to Advanced YAML.",
   };
 
+  const PRIVACY_NOTE = "Workflow inputs and outputs are stored locally in Hermes workflow/Kanban history. Do not paste secrets; common secret-looking keys are redacted in dashboard views.";
+
   function asArray(value) {
     return Array.isArray(value) ? value : [];
   }
@@ -1307,6 +1309,7 @@
       return h(Card, { className: "hermes-workflows-panel hermes-workflows-goal" },
         h("h2", null, "What do you want to automate?"),
         h("p", { className: "hermes-workflows-muted" }, "Describe the outcome in plain language. Hermes drafts the graph, cells, inputs, and output contracts for you to review."),
+        h("p", { className: "hermes-workflows-privacy-note" }, PRIVACY_NOTE),
         h("form", { className: "hermes-workflows-stack", onSubmit: draftFromGoal },
           h("textarea", {
             className: "hermes-workflows-goal-input",
@@ -1503,6 +1506,7 @@
       const runSelectValue = selectedDefinition ? definitionSelectionKey(selectedDefinition) : "";
       return h(Card, { className: "hermes-workflows-panel hermes-workflows-run-form" },
         h("h2", null, "Run test"),
+        h("p", { className: "hermes-workflows-privacy-note" }, PRIVACY_NOTE),
         h("form", { className: "hermes-workflows-stack", onSubmit: runWorkflow },
           h("label", null,
             h("span", { className: "hermes-workflows-muted" }, "Workflow id"),
@@ -1601,6 +1605,7 @@
 
     function renderTimeline() {
       return h("div", { className: "hermes-workflows-timeline" },
+        h("p", { className: "hermes-workflows-privacy-note" }, PRIVACY_NOTE),
         selectedExecution ? h("div", { className: "hermes-workflows-event" },
           h("div", { className: "hermes-workflows-item-title" },
             h("strong", null, safeString(selectedExecution.execution_id)),

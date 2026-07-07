@@ -1878,6 +1878,54 @@ def test_run_endpoint_creates_execution_and_list_show_return_it(client):
     assert shown["input"] == {"value": 7}
 
 
+def test_execution_detail_redacts_secret_like_values_for_dashboard_display(client):
+    secret_spec = {
+        "id": "dashboard_secret_demo",
+        "name": "Dashboard Secret Demo",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "start": {
+                "type": "pass",
+                "output": {
+                    "api_key": "${ input.api_key }",
+                    "topic": "${ input.topic }",
+                },
+            }
+        },
+    }
+    _deploy(client, secret_spec)
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/dashboard_secret_demo/run",
+        json={"input": {"api_key": "secret-value", "topic": "safe-topic"}},
+    )
+    assert r.status_code == 200, r.text
+    execution = r.json()["execution"]
+    execution_id = execution["execution_id"]
+
+    assert execution["input"] == {"api_key": "[REDACTED]", "topic": "safe-topic"}
+    assert "secret-value" not in r.text
+
+    shown = client.get(f"/api/plugins/workflows/executions/{execution_id}").json()["execution"]
+    assert shown["input"] == {"api_key": "[REDACTED]", "topic": "safe-topic"}
+    assert shown["context"]["input"] == {"api_key": "[REDACTED]", "topic": "safe-topic"}
+
+    node_runs = client.get(
+        f"/api/plugins/workflows/executions/{execution_id}/node-runs"
+    ).json()["node_runs"]
+    start_run = next(run for run in node_runs if run["node_id"] == "start")
+    assert start_run["output"] == {"api_key": "[REDACTED]", "topic": "safe-topic"}
+
+    events = client.get(f"/api/plugins/workflows/executions/{execution_id}/events").json()["events"]
+    assert "secret-value" not in json.dumps(events)
+    assert "safe-topic" in json.dumps(events)
+
+    with wfdb.connect() as conn:
+        stored = wfdb.get_execution(conn, execution_id)
+    assert stored.input == {"api_key": "secret-value", "topic": "safe-topic"}
+
+
 def test_execution_node_runs_endpoint_returns_workflow_native_state(client):
     _deploy(client, WAIT_SPEC)
     r = client.post(

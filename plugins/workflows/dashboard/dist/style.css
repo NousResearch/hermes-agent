@@ -50,6 +50,14 @@
   font-size: 0.84rem;
 }
 
+.hermes-workflows .hermes-workflows-privacy-note {
+  color: var(--color-muted-foreground);
+  font-size: 0.85rem;
+  border-left: 2px solid rgba(255, 193, 7, 0.65);
+  padding-left: 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
 .hermes-workflows .hermes-workflows-grid {
   display: grid;
   grid-template-columns: minmax(260px, 0.9fr) minmax(340px, 1.3fr);

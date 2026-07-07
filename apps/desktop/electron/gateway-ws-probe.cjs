@@ -30,7 +30,11 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000
 // post-handshake closes the socket almost immediately. Wait a short grace
 // window: a frame (gateway.ready) or a still-open socket means success; an
 // early close means the upgrade was accepted but the session was refused.
-const DEFAULT_READY_GRACE_MS = 750
+// Remote gateways behind proxies or under moderate load can take longer than
+// 750ms to send the first post-upgrade frame. 3 s keeps the probe tolerant of
+// network jitter while still catching a truly dead connection within the
+// overall boot timeout. See issue #41566.
+const DEFAULT_READY_GRACE_MS = 3_000
 
 /**
  * Attempt a live WebSocket connection and classify the outcome.

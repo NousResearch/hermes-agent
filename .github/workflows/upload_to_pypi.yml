@@ -48,7 +48,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3  # v8.3.0
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0

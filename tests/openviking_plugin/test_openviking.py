@@ -1534,6 +1534,50 @@ class TestEnsureClientReloadsEnv:
         assert provider._ensure_client() is None
         assert provider._client is None
 
+    def test_handle_tool_call_reconnects_after_startup_health_failure(self, monkeypatch):
+        instances = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+                self.api_key = api_key
+                self.account = account
+                self.user = user
+                self.agent = agent
+                self.index = len(instances)
+                self.posts = []
+                instances.append(self)
+
+            def health(self):
+                return self.index > 0
+
+            def post(self, path, payload=None, **kwargs):
+                self.posts.append((path, payload or {}))
+                return {"result": {"written_bytes": 11}}
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://openviking.example")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-test")
+
+        provider = OpenVikingMemoryProvider()
+        provider.initialize("session-1")
+
+        assert provider._client is None
+
+        out = json.loads(provider.handle_tool_call(
+            "viking_remember",
+            {"content": "stable fact"},
+        ))
+
+        assert out["status"] == "stored"
+        assert len(instances) == 2
+        assert instances[1].posts[0][0] == "/api/v1/content/write"
+        assert instances[1].posts[0][1]["content"] == "stable fact"
+        assert instances[1].posts[0][1]["mode"] == "create"
+        assert instances[1].posts[0][1]["uri"].startswith(
+            "viking://user/peers/hermes/memories/"
+        )
+
     def test_handle_tool_call_uses_ensure_client(self, monkeypatch):
         provider = OpenVikingMemoryProvider()
         provider._env_refresh_enabled = True

@@ -473,9 +473,18 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         else:
             return f"planning {len(todos_arg)} task(s)"
 
-    if tool_name in {"terminal", "execute_code"}:
-        key = "code" if tool_name == "execute_code" else "command"
-        command = args.get(key)
+    if tool_name == "execute_code":
+        code_text = args.get("code")
+        if code_text is None:
+            return None
+        # Show the first line of Python code as the preview; don't run
+        # through summarize_shell_command (which collapses multi-line
+        # code via _oneline into a run-together inline string).
+        first_line = str(code_text).strip().split("\n")[0] if str(code_text).strip() else ""
+        return _truncate_preview(first_line, max_len) if first_line else None
+
+    if tool_name == "terminal":
+        command = args.get("command")
         if command is None:
             return None
         preview = summarize_shell_command(str(command))

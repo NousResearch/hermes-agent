@@ -16997,19 +16997,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
 
-            # Markdown-capable platforms render a terminal command as a fenced
-            # code block instead of the compact `terminal: "cmd…"` preview.
-            # Gated on the adapter's ``supports_code_blocks`` capability so
-            # plain-text platforms keep the short line.  No language tag is
-            # emitted — Slack mrkdwn renders the tag as a literal first code
-            # line ("bash"), and a bare fence renders correctly everywhere
-            # that supports blocks.
+            # Markdown-capable platforms render a terminal command or
+            # execute_code snippet as a fenced code block instead of the
+            # compact `terminal: "cmd…"` / `execute_code: "line1;line2…"`
+            # preview.  Gated on the adapter's ``supports_code_blocks``
+            # capability so plain-text platforms keep the short line.  No
+            # language tag is emitted — Slack mrkdwn renders the tag as a
+            # literal first code line ("bash"), and a bare fence renders
+            # correctly everywhere that supports blocks.
             #
-            # Verbose mode shows the FULL command.  Non-verbose ("all"/"new")
+            # Verbose mode shows the FULL content.  Non-verbose ("all"/"new")
             # modes still wrap in a fence but truncate to a single line capped
             # at ``tool_preview_length`` (default 40) so a long or multi-line
-            # command doesn't render as a huge block — matching the budget the
-            # non-terminal preview path already applies (#42634).
+            # command/code doesn't render as a huge block — matching the budget
+            # the non-terminal preview path already applies (#42634).
             _code_block_full = None
             _code_block_short = None
             try:
@@ -17018,31 +17019,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _progress_adapter = None
             if (
                 getattr(_progress_adapter, "supports_code_blocks", False)
-                and tool_name == "terminal"
+                and tool_name in ("terminal", "execute_code")
                 and isinstance(args, dict)
-                and isinstance(args.get("command"), str)
-                and args["command"].strip()
             ):
-                from agent.display import get_tool_preview_max_len
-                _cmd_full = args["command"].rstrip()
-                # Consecutive terminal calls: drop the repeated
-                # "💻 terminal" header so back-to-back commands render as
-                # adjacent code blocks under a single header.
-                _block_header = (
-                    "" if last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
-                )
-                _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
-                # Single-line, capped preview for non-verbose modes.
-                _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                _lines = _cmd_full.splitlines()
-                _cmd_short = _lines[0] if _lines else _cmd_full
-                _multiline = len(_lines) > 1
-                if len(_cmd_short) > _cap:
-                    _cmd_short = _cmd_short[:_cap - 3] + "..."
-                elif _multiline:
-                    _cmd_short = _cmd_short + " ..."
-                _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
+                # terminal uses "command", execute_code uses "code"
+                _content_key = "code" if tool_name == "execute_code" else "command"
+                _content_raw = args.get(_content_key)
+                if isinstance(_content_raw, str) and _content_raw.strip():
+                    from agent.display import get_tool_preview_max_len
+                    _cmd_full = _content_raw.rstrip()
+                    # Consecutive terminal/execute_code calls: drop the
+                    # repeated header so back-to-back blocks render under a
+                    # single header.
+                    _block_header = (
+                        "" if last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+                    )
+                    _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
+                    # Single-line, capped preview for non-verbose modes.
+                    _pl = get_tool_preview_max_len()
+                    _cap = _pl if _pl > 0 else 40
+                    _lines = _cmd_full.splitlines()
+                    _cmd_short = _lines[0] if _lines else _cmd_full
+                    _multiline = len(_lines) > 1
+                    if len(_cmd_short) > _cap:
+                        _cmd_short = _cmd_short[:_cap - 3] + "..."
+                    elif _multiline:
+                        _cmd_short = _cmd_short + " ..."
+                    _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":

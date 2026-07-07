@@ -180,11 +180,34 @@ def render_session_markdown(
     return before_verification
 
 
+def _safe_id_component(session_id: str) -> str:
+    """Return a traversal-free filename component for a session ID.
+
+    Session IDs can originate from untrusted input (e.g. the
+    ``X-Hermes-Session-Id`` API header) and are interpolated into the export
+    filename below. Without sanitization a traversal-shaped ID such as
+    ``../../../../tmp/pwned`` would let the caller write the transcript
+    outside the chosen export directory. Mirrors
+    ``run_agent._safe_session_filename_component``: collapse every non
+    ``[A-Za-z0-9_-]`` character to ``_`` (so no path separators or ``.``
+    survive), cap the length, and — when sanitization changed the string —
+    append a short content hash so two distinct IDs that sanitize to the same
+    component don't collide. Clean IDs pass through unchanged.
+    """
+    raw = str(session_id or "").strip()
+    sanitized = re.sub(r"[^\w-]", "_", raw).strip("._")
+    sanitized = sanitized[:96] or "session"
+    if raw and sanitized == raw:
+        return sanitized
+    digest = hashlib.sha256(raw.encode("utf-8", errors="surrogatepass")).hexdigest()[:12]
+    return f"{sanitized}_{digest}"
+
+
 def safe_session_filename(session: dict[str, Any], *, fmt: str = "md") -> str:
     """Return a deterministic, path-safe filename for a session export."""
     if fmt not in {"md", "qmd"}:
         raise ValueError("fmt must be 'md' or 'qmd'")
-    session_id = _session_id(session)
+    session_id = _safe_id_component(_session_id(session))
     title = str(session.get("title") or "session")
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", title).strip(".-_").lower()
     if not slug:

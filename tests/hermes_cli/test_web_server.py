@@ -771,6 +771,38 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert json.loads(path.read_text(encoding="utf-8"))["hosts"]["hermes"]["workspace"] == "myws"
 
+    def test_memory_provider_config_honors_profile_param(self, monkeypatch, tmp_path):
+        # A ?profile= save must land in that profile's config, not the serving
+        # process's — same contract as the skills/toolsets endpoints.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import get_profile_dir
+
+        self._seed_local_honcho()
+
+        worker_home = get_profile_dir("worker")
+        worker_home.mkdir(parents=True, exist_ok=True)
+        worker_cfg = worker_home / "honcho.json"
+        worker_cfg.write_text(json.dumps({"hosts": {"hermes_worker": {"workspace": "kept"}}}), encoding="utf-8")
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config?profile=worker",
+            json={"values": {"peerName": "eri"}},
+        )
+
+        assert resp.status_code == 200
+        worker_hosts = json.loads(worker_cfg.read_text(encoding="utf-8"))["hosts"]
+        host_block = next(iter(worker_hosts.values()))
+        assert host_block["peerName"] == "eri"
+        # The serving process's own config is untouched.
+        own = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))
+        assert "peerName" not in json.dumps(own)
+
+        fields = self._provider_field_map(
+            self.client.get("/api/memory/providers/honcho/config?profile=worker").json()
+        )
+        assert fields["peerName"]["value"] == "eri"
+
     def test_put_honcho_rejects_malformed_number_and_json(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
 

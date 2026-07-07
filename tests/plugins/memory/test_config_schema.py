@@ -17,6 +17,30 @@ def test_schemas_are_cached_per_provider():
     assert get_provider_config_schema("honcho") is get_provider_config_schema("honcho")
 
 
+def test_cache_keys_on_schema_path_not_name(monkeypatch, tmp_path):
+    # User-installed plugins are per-profile; two profiles' plugins sharing a
+    # name must not answer for each other.
+    import plugins.memory as memory
+
+    schemas = {}
+    for label in ("A", "B"):
+        plugin_dir = tmp_path / label / "custom"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "config_schema.py").write_text(
+            "from plugins.memory.config_schema import ProviderConfigSchema\n"
+            f'CONFIG_SCHEMA = ProviderConfigSchema(name="custom", label="{label}")\n',
+            encoding="utf-8",
+        )
+        schemas[label] = plugin_dir
+
+    monkeypatch.setattr(config_schema, "_SCHEMA_CACHE", {})
+    monkeypatch.setattr(memory, "find_provider_dir", lambda name: schemas["A"])
+    assert get_provider_config_schema("custom").label == "A"
+
+    monkeypatch.setattr(memory, "find_provider_dir", lambda name: schemas["B"])
+    assert get_provider_config_schema("custom").label == "B"
+
+
 def test_broken_schema_is_not_cached(monkeypatch, tmp_path):
     # A load failure must retry on the next request, not pin an empty panel.
     broken_dir = tmp_path / "broken"
@@ -30,7 +54,7 @@ def test_broken_schema_is_not_cached(monkeypatch, tmp_path):
     monkeypatch.setattr(memory, "find_provider_dir", lambda name: broken_dir)
 
     assert get_provider_config_schema("broken") is None
-    assert "broken" not in config_schema._SCHEMA_CACHE
+    assert not config_schema._SCHEMA_CACHE
 
     schema_file.write_text(
         "from plugins.memory.config_schema import ProviderConfigSchema\n"

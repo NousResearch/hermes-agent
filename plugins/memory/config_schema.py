@@ -104,34 +104,39 @@ class ProviderConfigSchema:
         return tuple(f for f in self.fields if f.inline)
 
 
-_SCHEMA_CACHE: dict[str, ProviderConfigSchema | None] = {}
+_SCHEMA_CACHE: dict[str, ProviderConfigSchema] = {}
 
 
 def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
     """Return the ``CONFIG_SCHEMA`` declared by the provider plugin ``name``.
 
     Providers without a ``config_schema.py`` (e.g. ``builtin``) return ``None``
-    and simply render no config panel.
+    and simply render no config panel. The cache keys on the resolved schema
+    file, not the name: user-installed plugins are per-profile, so one
+    profile's lookup must never answer for another's.
     """
-
-    if name in _SCHEMA_CACHE:
-        return _SCHEMA_CACHE[name]
 
     from plugins.memory import find_provider_dir
 
-    schema: ProviderConfigSchema | None = None
     provider_dir = find_provider_dir(name)
     path = provider_dir / "config_schema.py" if provider_dir else None
-    if path is not None and path.is_file():
-        try:
-            spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            schema = getattr(module, "CONFIG_SCHEMA", None)
-        except Exception:
-            # Never cache a failed load: it would pin an empty panel until restart.
-            _log.exception("failed to load config schema for memory provider %r", name)
-            return None
+    if path is None or not path.is_file():
+        return None
 
-    _SCHEMA_CACHE[name] = schema
+    key = str(path)
+    if key in _SCHEMA_CACHE:
+        return _SCHEMA_CACHE[key]
+
+    try:
+        spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        schema = getattr(module, "CONFIG_SCHEMA", None)
+    except Exception:
+        # Never cache a failed load: it would pin an empty panel until restart.
+        _log.exception("failed to load config schema for memory provider %r", name)
+        return None
+
+    if schema is not None:
+        _SCHEMA_CACHE[key] = schema
     return schema

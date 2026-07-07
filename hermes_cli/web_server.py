@@ -4177,13 +4177,17 @@ def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str
 
 
 @app.get("/api/memory/providers/{name}/config")
-async def get_memory_provider_config(name: str):
-    provider = await asyncio.to_thread(get_provider_config_schema, name)
-    if provider is None:
-        # Undeclared providers (e.g. builtin) have no config surface. Return an
-        # empty schema so the generic panel simply renders nothing.
-        return {"name": name, "label": name, "docs_url": "", "fields": []}
-    return await asyncio.to_thread(_memory_provider_payload, provider)
+async def get_memory_provider_config(name: str, profile: Optional[str] = None):
+    def _run():
+        with _profile_scope(profile):
+            provider = get_provider_config_schema(name)
+            if provider is None:
+                # Undeclared providers (e.g. builtin) have no config surface. Return
+                # an empty schema so the generic panel simply renders nothing.
+                return {"name": name, "label": name, "docs_url": "", "fields": []}
+            return _memory_provider_payload(provider)
+
+    return await asyncio.to_thread(_run)
 
 
 def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
@@ -4203,13 +4207,16 @@ def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[
 
 
 @app.put("/api/memory/providers/{name}/config")
-async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate):
-    provider = await asyncio.to_thread(get_provider_config_schema, name)
-    if provider is None:
-        raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate, profile: Optional[str] = None):
+    def _run():
+        with _profile_scope(profile):
+            provider = get_provider_config_schema(name)
+            if provider is None:
+                raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+            _update_memory_provider_config(provider, body.values or {})
 
     try:
-        await asyncio.to_thread(_update_memory_provider_config, provider, body.values or {})
+        await asyncio.to_thread(_run)
         return {"ok": True}
     except HTTPException:
         raise

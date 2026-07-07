@@ -2158,6 +2158,13 @@ class TestReconnection:
             run_count += 1
             if target_server is not self_srv:
                 return await original_run_stdio(self_srv, config)
+            # After the final retry, run() parks in
+            # _wait_for_reconnect_or_shutdown(timeout=_PARKED_RETRY_INTERVAL)
+            # (a real asyncio.wait — the patched asyncio.sleep doesn't cover
+            # it). Signal shutdown so the park exits immediately instead of
+            # blocking the test for the 300s self-probe interval.
+            if run_count > _MAX_INITIAL_CONNECT_RETRIES:
+                self_srv._shutdown_event.set()
             raise ConnectionError("recycle reconnect failed")
 
         async def _test():

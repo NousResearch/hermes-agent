@@ -1,11 +1,9 @@
 """OpenRouter-compatible image generation backend (OpenRouter + Nous Portal).
 
-Both OpenRouter and the Nous Portal inference endpoint speak the same
-OpenAI-style ``/chat/completions`` image-generation protocol: send
-``modalities: ["image", "text"]`` with an image-output model (e.g.
-``google/gemini-3-pro-image``), pass reference images as ``image_url``
-content parts for grounding, and read the generated images back from
-``choices[0].message.images[].image_url.url`` (a ``data:image/...;base64`` URI).
+Uses the dedicated ``/api/v1/images`` endpoint on OpenRouter (and compatible
+portals). The request carries ``{model, prompt, n, aspect_ratio, ...}`` and
+reference images are passed via ``input_references`` for image-to-image
+grounding. The response is ``{data: [{b64_json}], usage}``.
 
 Nous Portal proxies OpenRouter, so one implementation services both — we only
 swap the resolved ``(base_url, api_key)``. Credentials are resolved through the
@@ -112,27 +110,22 @@ def _to_image_url_part(ref: str) -> Optional[str]:
 
 
 def _extract_images(payload: Dict[str, Any]) -> List[str]:
-    """Pull generated image URLs from a chat-completions response.
+    """Pull generated images from the /api/v1/images response.
 
-    OpenRouter returns generated images under
-    ``choices[0].message.images[].image_url.url`` (typically a base64 data URI).
+    The response shape is ``{data: [{b64_json: "<base64>", media_type?: "..."}]}``.
+    Returns base64 data URIs suitable for saving.
     """
     out: List[str] = []
-    choices = payload.get("choices") if isinstance(payload, dict) else None
-    if not isinstance(choices, list):
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
         return out
-    for choice in choices:
-        message = choice.get("message") if isinstance(choice, dict) else None
-        images = message.get("images") if isinstance(message, dict) else None
-        if not isinstance(images, list):
+    for item in data:
+        if not isinstance(item, dict):
             continue
-        for image in images:
-            if not isinstance(image, dict):
-                continue
-            image_url = image.get("image_url")
-            url = image_url.get("url") if isinstance(image_url, dict) else None
-            if isinstance(url, str) and url.strip():
-                out.append(url.strip())
+        b64 = item.get("b64_json")
+        if isinstance(b64, str) and b64.strip():
+            media_type = item.get("media_type") or "image/png"
+            out.append(f"data:{media_type};base64,{b64.strip()}")
     return out
 
 
@@ -327,11 +320,14 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         for ref in reference_image_urls or []:
             references.append(str(ref))
 
-        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        # Build input_references for image-to-image grounding.
+        input_references: List[Dict[str, Any]] = []
         for ref in references[:_MAX_REFERENCE_IMAGES]:
             part = _to_image_url_part(ref)
             if part:
-                content.append({"type": "image_url", "image_url": {"url": part}})
+                input_references.append(
+                    {"type": "image_url", "image_url": {"url": part}}
+                )
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -344,14 +340,16 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         for i, model_id in enumerate(model_chain):
             payload: Dict[str, Any] = {
                 "model": model_id,
-                "modalities": ["image", "text"],
-                "messages": [{"role": "user", "content": content}],
-                "image_config": {"aspect_ratio": or_aspect},
+                "prompt": prompt,
+                "n": 1,
+                "aspect_ratio": or_aspect,
             }
+            if input_references:
+                payload["input_references"] = input_references
             is_last = i == len(model_chain) - 1
             try:
                 response = requests.post(
-                    f"{base_url}/chat/completions",
+                    f"{base_url}/images",
                     headers=headers,
                     json=payload,
                     timeout=_REQUEST_TIMEOUT,

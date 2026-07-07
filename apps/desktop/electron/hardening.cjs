@@ -1,4 +1,5 @@
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { fileURLToPath } = require('node:url')
 
@@ -142,7 +143,14 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
 
 function resolveRequestedPathForIpc(filePath, options = {}) {
   const purpose = String(options.purpose || 'File read')
-  const raw = rejectUnsafePathSyntax(filePath, purpose)
+  let raw = rejectUnsafePathSyntax(filePath, purpose)
+
+  // Gateway-reported cwds (config `terminal.cwd`, remote sessions) routinely
+  // arrive as `~/...`. Node's fs has no shell — without expansion the path
+  // resolves under process.cwd() and every read "ENOENT"s forever.
+  if (raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')) {
+    raw = path.join(os.homedir(), raw.slice(1))
+  }
 
   if (/^file:/i.test(raw)) {
     let resolvedPath
@@ -178,7 +186,10 @@ async function statForIpc(fsImpl, resolvedPath, purpose, typeLabel) {
     if (code === 'ENOENT' || code === 'ENOTDIR') {
       throw ipcPathError(code || 'ENOENT', `${purpose} failed: ${typeLabel} does not exist.`)
     }
-    throw ipcPathError(code || 'read-error', `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`)
+    throw ipcPathError(
+      code || 'read-error',
+      `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`
+    )
   }
 }
 
@@ -193,7 +204,10 @@ async function realpathForIpc(fsImpl, resolvedPath, purpose) {
     return realPath
   } catch (error) {
     const code = error && typeof error === 'object' ? error.code : ''
-    throw ipcPathError(code || 'read-error', `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`)
+    throw ipcPathError(
+      code || 'read-error',
+      `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`
+    )
   }
 }
 

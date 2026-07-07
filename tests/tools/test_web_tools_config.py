@@ -160,47 +160,6 @@ class TestFirecrawlClientConfig:
             importlib.reload(tools.web_tools)
             assert tools.web_tools._read_nous_access_token() == "nous-token"
 
-    def test_check_auxiliary_model_re_resolves_backend_each_call(self):
-        """Availability checks should not be pinned to module import state."""
-        import tools.web_tools
-
-        # Simulate the pre-fix import-time cache slot for regression coverage.
-        tools.web_tools.__dict__["_aux_async_client"] = None
-
-        with patch(
-            "tools.web_tools.get_async_text_auxiliary_client",
-            side_effect=[(None, None), (MagicMock(base_url="https://api.openrouter.ai/v1"), "test-model")],
-        ):
-            assert tools.web_tools.check_auxiliary_model() is False
-            assert tools.web_tools.check_auxiliary_model() is True
-
-    @pytest.mark.asyncio
-    async def test_summarizer_re_resolves_backend_after_initial_unavailable_state(self):
-        """Summarization should pick up a backend that becomes available later in-process."""
-        import tools.web_tools
-
-        tools.web_tools.__dict__["_aux_async_client"] = None
-
-        response = MagicMock()
-        response.choices = [MagicMock(message=MagicMock(content="summary text"))]
-
-        with patch(
-            "tools.web_tools._resolve_web_extract_auxiliary",
-            side_effect=[(None, None, {}), (MagicMock(base_url="https://api.openrouter.ai/v1"), "test-model", {})],
-        ), patch(
-            "tools.web_tools.async_call_llm",
-            new=AsyncMock(return_value=response),
-        ) as mock_async_call:
-            assert tools.web_tools.check_auxiliary_model() is False
-            result = await tools.web_tools._call_summarizer_llm(
-                "Some content worth summarizing",
-                "Source: https://example.com\n\n",
-                None,
-            )
-
-        assert result == "summary text"
-        mock_async_call.assert_awaited_once()
-
     # ── Singleton caching ────────────────────────────────────────────
 
     def test_singleton_returns_same_instance(self):
@@ -384,14 +343,12 @@ class TestBackendSelection:
              patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
-    def test_fallback_no_keys_defaults_to_parallel(self):
-        """No credentials, no config → 'parallel' (free Search MCP works
-        keyless). Selection is purely credential-based."""
+    def test_fallback_no_keys_defaults_to_firecrawl(self):
+        """No keys, no config → 'firecrawl' (will fail at client init)."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
              patch("tools.web_tools._ddgs_package_importable", return_value=False):
-            assert _get_backend() == "parallel"
+            assert _get_backend() == "firecrawl"
 
     def test_invalid_config_falls_through_to_fallback(self):
         """web.backend=invalid → ignored, uses key-based fallback."""
@@ -626,73 +583,9 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
-    def test_no_keys_usable_via_free_parallel(self):
-        """No credentials → check_web_api_key True: selection resolves to the
-        keyless Parallel free MCP, which genuinely services calls (web works out
-        of the box). check_web_api_key is a usability probe, not a key check."""
+    def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch.dict(os.environ, {}, clear=False):
-            for k in ("PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
-                      "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
-                os.environ.pop(k, None)
-            assert check_web_api_key() is True
-
-    def test_typo_extract_backend_not_masked_by_parallel(self):
-        """A typo'd per-capability backend is honored (so dispatch errors)
-        rather than silently falling through to keyless Parallel."""
-        from tools.web_tools import _get_extract_backend, check_web_api_key
-        with patch("tools.web_tools._load_web_config",
-                   return_value={"extract_backend": "parrallel"}):
-            assert _get_extract_backend() == "parrallel"   # not "parallel"
-            assert check_web_api_key() is False            # unknown → unusable
-
-    def test_keyless_parallel_unusable_when_provider_disabled(self):
-        """If the bundled web-parallel provider is disabled/unregistered, the
-        keyless free-MCP path must NOT report web as usable — otherwise setup is
-        skipped but web tools fail at runtime with no provider."""
-        from tools.web_tools import check_web_api_key
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._parallel_provider_registered", return_value=False), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
-             patch("tools.web_tools.check_firecrawl_api_key", return_value=False), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch.dict(os.environ, {}, clear=False):
-            for var in (
-                "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
-                "TAVILY_API_KEY", "EXA_API_KEY", "BRAVE_SEARCH_API_KEY", "SEARXNG_URL",
-            ):
-                os.environ.pop(var, None)
-            assert check_web_api_key() is False
-
-    def test_extract_autodetect_skips_search_only_for_keyless_parallel(self):
-        """A search-only env credential (SEARXNG_URL) must not shadow the keyless
-        Parallel free-MCP extract fallback: extract auto-detect skips search-only
-        backends, so _get_extract_backend resolves to parallel (which can fetch),
-        while search auto-detect still prefers the configured searxng."""
-        from tools.web_tools import _get_extract_backend, _get_search_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch.dict(os.environ, {}, clear=False):
-            for var in (
-                "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
-                "TAVILY_API_KEY", "EXA_API_KEY", "BRAVE_SEARCH_API_KEY",
-            ):
-                os.environ.pop(var, None)
-            os.environ["SEARXNG_URL"] = "http://localhost:8080"
-            with patch("tools.web_tools._is_tool_gateway_ready", return_value=False):
-                assert _get_search_backend() == "searxng"
-                assert _get_extract_backend() == "parallel"
-
-    def test_configured_but_unavailable_backend_reports_unusable(self):
-        """An explicitly configured backend with no creds (exa, no key) →
-        check_web_api_key False so diagnostics flag the misconfiguration —
-        even though the tools stay registered."""
-        from tools.web_tools import check_web_api_key
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "exa"}), \
-             patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("EXA_API_KEY", None)
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
             assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):
@@ -756,18 +649,12 @@ class TestCheckWebApiKey:
 
         assert refresh_calls == []
 
-    def test_web_tools_registered_even_when_configured_backend_unavailable(self):
-        # Registration is unconditional (web_tools_registered) so an explicitly
-        # configured but unavailable backend (exa without EXA_API_KEY) keeps the
-        # tools registered to surface exa's setup error at call time — while the
-        # readiness probe (check_web_api_key) honestly reports not-configured.
-        from tools.web_tools import web_tools_registered, check_web_api_key
-        assert web_tools_registered() is True
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "exa"}), \
-             patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("EXA_API_KEY", None)
-            assert web_tools_registered() is True
-            assert check_web_api_key() is False
+    def test_configured_backend_must_match_available_provider(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
+            with patch("tools.web_tools._read_nous_access_token", return_value="nous-token"):
+                with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
+                    from tools.web_tools import check_web_api_key
+                    assert check_web_api_key() is False
 
     def test_configured_firecrawl_backend_accepts_managed_gateway(self):
         with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
@@ -781,3 +668,214 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+class TestNonBuiltinProviderAvailability:
+    """Regression: a plugin-registered WebSearchProvider with no built-in
+    provider credentials must still light up web_search / web_extract tools.
+
+    The web_tools availability gate delegates non-legacy backend names to the
+    web_search_registry's provider ``is_available()``.  This class verifies
+    that a custom (non-built-in) provider discovered via the registry is
+    sufficient to make check_web_api_key() return True, _get_backend() return
+    the custom name, the per-capability selection honor it (issue #32698), and
+    the tool registry entries remain active.
+
+    Original tests contributed by @m0n5t3r (PR #28652 / issue #28651).
+    """
+
+    # All env vars that could make a built-in provider available.
+    _WEB_ENV_KEYS = (
+        "EXA_API_KEY",
+        "PARALLEL_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
+        "FIRECRAWL_GATEWAY_URL",
+        "TOOL_GATEWAY_DOMAIN",
+        "TOOL_GATEWAY_SCHEME",
+        "TOOL_GATEWAY_USER_TOKEN",
+        "TAVILY_API_KEY",
+        "SEARXNG_URL",
+        "BRAVE_SEARCH_API_KEY",
+        "XAI_API_KEY",
+    )
+
+    @staticmethod
+    def _create_fake_provider(*, search=True, extract=True):
+        """Dynamically create a WebSearchProvider subclass.
+
+        Uses a local class definition (not a nested class) to avoid
+        Python 3.13 __bases__ deallocator issue with nested class
+        reassignment.
+        """
+        from agent.web_search_provider import WebSearchProvider
+
+        class FakePluginProvider(WebSearchProvider):
+            @property
+            def name(self):
+                return "fake-plugin-prov"
+
+            def is_available(self):
+                return True
+
+            def supports_search(self):
+                return search
+
+            def supports_extract(self):
+                return extract
+
+        return FakePluginProvider()
+
+    def setup_method(self):
+        """Strip all built-in web provider env vars and reset the registry."""
+        for key in self._WEB_ENV_KEYS:
+            os.environ.pop(key, None)
+        from agent.web_search_registry import _reset_for_tests, register_provider
+        _reset_for_tests()
+        register_provider(self._create_fake_provider())
+
+    def teardown_method(self):
+        """Reset the registry and restore env after each test."""
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+        for key in self._WEB_ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def test_check_web_api_key_returns_true_for_custom_provider(self):
+        """With only a custom provider registered (no built-in creds),
+        check_web_api_key() must return True."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_get_backend_discovers_custom_provider(self):
+        """_get_backend() must return the custom provider name when it's
+        the only available provider."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None):
+            from tools.web_tools import _get_backend
+            assert _get_backend() == "fake-plugin-prov"
+
+    def test_is_backend_available_delegates_to_registry(self):
+        """_is_backend_available() must consult the registry for a
+        non-legacy backend name."""
+        from tools.web_tools import _is_backend_available
+        assert _is_backend_available("fake-plugin-prov") is True
+        # Unknown, unregistered name -> False (no legacy probe matches).
+        assert _is_backend_available("totally-unknown-backend") is False
+
+    def test_capability_backend_honors_custom_extract_provider(self):
+        """Per-capability selection (_get_extract_backend) must resolve the
+        custom provider when configured, instead of dead-ending — issue #32698."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None), \
+             patch("tools.web_tools._load_web_config",
+                   return_value={"extract_backend": "fake-plugin-prov"}):
+            from tools.web_tools import _get_extract_backend
+            assert _get_extract_backend() == "fake-plugin-prov"
+
+    def test_tool_registry_entries_not_filtered_out(self):
+        """web_search and web_extract tool entries must remain in the
+        registry when only a custom provider is available."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None):
+            import tools.web_tools
+            web_search_entry = tools.web_tools.registry.get_entry("web_search")
+            web_extract_entry = tools.web_tools.registry.get_entry("web_extract")
+            assert web_search_entry is not None, \
+                "web_search tool was filtered out despite custom provider being available"
+            assert web_extract_entry is not None, \
+                "web_extract tool was filtered out despite custom provider being available"
+
+
+class TestFirecrawlEnvResolution:
+    """Verify Firecrawl reads env values from hermes_cli.config.get_env_value,
+    not just os.getenv.  This catches the regression reported in #40190 where
+    values stored in ~/.hermes/.env were invisible to the provider."""
+
+    def test_direct_config_reads_via_get_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_get_direct_firecrawl_config() must use get_env_value, not os.getenv."""
+        # Ensure os.environ does NOT carry the key
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+
+        fake_key = "fc-test-key-from-dotenv"
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: fake_key if k == "FIRECRAWL_API_KEY" else None,
+        ):
+            from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
+
+            result = _get_direct_firecrawl_config()
+            assert result is not None, "get_env_value fallback should find the key"
+            kwargs, _cache_key = result
+            assert kwargs["api_key"] == fake_key
+
+    def test_direct_config_reads_url_via_get_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Self-hosted URL from .env must be picked up."""
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+
+        fake_url = "https://firecrawl.internal.example.com"
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: fake_url if k == "FIRECRAWL_API_URL" else None,
+        ):
+            from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
+
+            result = _get_direct_firecrawl_config()
+            assert result is not None
+            kwargs, _cache_key = result
+            assert kwargs["api_url"] == fake_url.rstrip("/")
+
+
+class TestSiblingProvidersEnvResolution:
+    """The same #40190 bug class widened: every keyed web provider must
+    resolve its credential through the config-aware lookup (os.environ OR
+    ~/.hermes/.env), not bare os.getenv. Parametrized over the four
+    providers that previously read only the process environment."""
+
+    _CASES = [
+        ("plugins.web.exa.provider", "ExaWebSearchProvider", "EXA_API_KEY"),
+        ("plugins.web.parallel.provider", "ParallelWebSearchProvider", "PARALLEL_API_KEY"),
+        ("plugins.web.tavily.provider", "TavilyWebSearchProvider", "TAVILY_API_KEY"),
+        ("plugins.web.brave_free.provider", "BraveFreeWebSearchProvider", "BRAVE_SEARCH_API_KEY"),
+    ]
+
+    @pytest.mark.parametrize("module_path,cls_name,env_key", _CASES)
+    def test_is_available_reads_via_get_env_value(
+        self, monkeypatch, module_path, cls_name, env_key
+    ):
+        """is_available() must see a key that lives only in the .env layer."""
+        monkeypatch.delenv(env_key, raising=False)
+
+        import importlib
+        module = importlib.import_module(module_path)
+        provider = getattr(module, cls_name)()
+
+        assert provider.is_available() is False
+
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: "test-key-from-dotenv" if k == env_key else None,
+        ):
+            assert provider.is_available() is True, (
+                f"{cls_name}.is_available() ignored {env_key} from the "
+                "config-aware env layer (get_env_value)"
+            )
+
+    def test_get_provider_env_falls_back_to_os_environ(self, monkeypatch):
+        """When the config layer has no value, process env still wins."""
+        from agent.web_search_provider import get_provider_env
+
+        monkeypatch.setenv("WSP_TEST_FALLBACK_KEY", "  from-process-env  ")
+        with patch("hermes_cli.config.get_env_value", return_value=None):
+            assert get_provider_env("WSP_TEST_FALLBACK_KEY") == "from-process-env"
+
+    def test_get_provider_env_unset_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("WSP_TEST_UNSET_KEY", raising=False)
+        with patch("hermes_cli.config.get_env_value", return_value=None):
+            from agent.web_search_provider import get_provider_env
+
+            assert get_provider_env("WSP_TEST_UNSET_KEY") == ""

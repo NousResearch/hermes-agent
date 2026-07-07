@@ -126,8 +126,8 @@ def test_cmd_update_on_git_install_does_not_print_docker_message(
 
     ``subprocess.run`` is mocked because the git path will otherwise shell
     out to ``git fetch upstream`` / ``git fetch origin`` — on CI runners
-    with no ``upstream`` remote configured this can hang past the 30s
-    pytest-timeout depending on git's network behaviour.  The stub
+    with no ``upstream`` remote configured this can hang past a timeout
+    depending on git's network behaviour.  The stub
     returns a successful CompletedProcess-shaped object with ``"0\\n"``
     stdout, which both keeps the flow shell-free AND parses cleanly as
     the "0 commits behind" rev-list output the check path later parses

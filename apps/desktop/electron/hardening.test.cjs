@@ -106,6 +106,19 @@ test('resolveRequestedPathForIpc resolves relative paths from the trimmed base d
   )
 })
 
+test('resolveRequestedPathForIpc expands ~ to the home directory', () => {
+  assert.equal(resolveRequestedPathForIpc('~', { purpose: 'Directory read' }), path.resolve(os.homedir()))
+  assert.equal(
+    resolveRequestedPathForIpc('~/www/project', { purpose: 'Directory read' }),
+    path.resolve(os.homedir(), 'www/project')
+  )
+  // `~user` shorthand is NOT expanded — only the caller's own home.
+  assert.equal(
+    resolveRequestedPathForIpc('~other/secret', { baseDir: os.tmpdir(), purpose: 'Directory read' }),
+    path.resolve(os.tmpdir(), '~other/secret')
+  )
+})
+
 test('resolveReadableFileForIpc validates existence type size and sensitivity', async t => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-hardening-'))
   t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))

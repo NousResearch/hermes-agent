@@ -8,6 +8,7 @@ import type {
   SessionBranchResponse,
   SessionCompressResponse,
   SessionUsageResponse,
+  SlashExecResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
@@ -72,38 +73,48 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: true })
       }
 
-      const switchModel = (confirmExpensiveModel = false) => ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { confirm_expensive_model: confirmExpensiveModel, key: 'model', session_id: ctx.sid, value: modelValueForConfigSet(arg) })
-        .then(
-          ctx.guarded<ConfigSetResponse>(r => {
-            if (r.confirm_required) {
-              patchOverlayState({
-                confirm: {
-                  cancelLabel: 'Cancel',
-                  confirmLabel: 'Switch anyway',
-                  danger: true,
-                  detail: r.confirm_message || r.warning || 'This model has unusually high known pricing.',
-                  onConfirm: () => switchModel(true),
-                  title: 'Expensive model selection'
-                }
-              })
+      if (arg.trim() === '--refresh') {
+        return patchOverlayState({ modelPicker: { refresh: true } })
+      }
 
-              return
-            }
-
-            if (!r.value) {
-              return ctx.transcript.sys('error: invalid response: model switch')
-            }
-
-            ctx.transcript.sys(`model → ${r.value}`)
-            ctx.local.maybeWarn(r)
-
-            patchUiState(state => ({
-              ...state,
-              info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
-            }))
+      const switchModel = (confirmExpensiveModel = false) =>
+        ctx.gateway
+          .rpc<ConfigSetResponse>('config.set', {
+            confirm_expensive_model: confirmExpensiveModel,
+            key: 'model',
+            session_id: ctx.sid,
+            value: modelValueForConfigSet(arg)
           })
-        )
+          .then(
+            ctx.guarded<ConfigSetResponse>(r => {
+              if (r.confirm_required) {
+                patchOverlayState({
+                  confirm: {
+                    cancelLabel: 'Cancel',
+                    confirmLabel: 'Switch anyway',
+                    danger: true,
+                    detail: r.confirm_message || r.warning || 'This model has unusually high known pricing.',
+                    onConfirm: () => switchModel(true),
+                    title: 'Expensive model selection'
+                  }
+                })
+
+                return
+              }
+
+              if (!r.value) {
+                return ctx.transcript.sys('error: invalid response: model switch')
+              }
+
+              ctx.transcript.sys(`model → ${r.value}`)
+              ctx.local.maybeWarn(r)
+
+              patchUiState(state => ({
+                ...state,
+                info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
+              }))
+            })
+          )
 
       switchModel()
     }
@@ -341,6 +352,31 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'toggle / adopt / resize an animated pet',
+    name: 'pet',
+    usage: '/pet [toggle | list | scale <n> | <slug>]',
+    run: (arg, ctx, cmd) => {
+      const sub = arg.trim().toLowerCase()
+
+      // Gallery picker — the interactive browse surface.
+      if (sub === 'list') {
+        return patchOverlayState({ petPicker: true })
+      }
+
+      // Bare /pet and /pet toggle flip display.pet.enabled via the slash worker.
+      ctx.gateway.gw
+        .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+        .then(
+          ctx.guarded<SlashExecResponse>(r => {
+            const body = r.output || '/pet: no output'
+            ctx.transcript.sys(r.warning ? `warning: ${r.warning}\n${body}` : body)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
     help: 'switch theme skin (fires skin.changed)',
     name: 'skin',
     run: (arg, ctx) => {
@@ -417,31 +453,29 @@ export const sessionCommands: SlashCommand[] = [
           )
       }
 
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg })
-        .then(
-          ctx.guarded<ConfigSetResponse>(r => {
-            if (!r.value) {
-              return
-            }
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg }).then(
+        ctx.guarded<ConfigSetResponse>(r => {
+          if (!r.value) {
+            return
+          }
 
-            if (r.value === 'hide') {
-              patchUiState(state => ({
-                ...state,
-                sections: { ...state.sections, thinking: 'hidden' },
-                showReasoning: false
-              }))
-            } else if (r.value === 'show') {
-              patchUiState(state => ({
-                ...state,
-                sections: { ...state.sections, thinking: 'expanded' },
-                showReasoning: true
-              }))
-            }
+          if (r.value === 'hide') {
+            patchUiState(state => ({
+              ...state,
+              sections: { ...state.sections, thinking: 'hidden' },
+              showReasoning: false
+            }))
+          } else if (r.value === 'show') {
+            patchUiState(state => ({
+              ...state,
+              sections: { ...state.sections, thinking: 'expanded' },
+              showReasoning: true
+            }))
+          }
 
-            ctx.transcript.sys(`reasoning: ${r.value}`)
-          })
-        )
+          ctx.transcript.sys(`reasoning: ${r.value}`)
+        })
+      )
     }
   },
 
@@ -553,6 +587,7 @@ export const sessionCommands: SlashCommand[] = [
         // even with zero API calls or on a resumed session. Render it whenever
         // present, before the token panel.
         const creditsLines = r?.credits_lines ?? []
+
         if (creditsLines.length) {
           ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
         }
@@ -561,25 +596,19 @@ export const sessionCommands: SlashCommand[] = [
           if (!creditsLines.length) {
             ctx.transcript.sys('no API calls yet')
           }
+
           return
         }
 
         const f = (v: number | undefined) => (v ?? 0).toLocaleString()
-        const cost = r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
 
         const rows: [string, string][] = [
           ['Model', r.model ?? ''],
           ['Input tokens', f(r.input)],
-          ['Cache read tokens', f(r.cache_read)],
-          ['Cache write tokens', f(r.cache_write)],
           ['Output tokens', f(r.output)],
           ['Total tokens', f(r.total)],
           ['API calls', f(r.calls)]
         ]
-
-        if (cost) {
-          rows.push(['Cost', cost])
-        }
 
         const sections: PanelSection[] = [{ rows }]
 

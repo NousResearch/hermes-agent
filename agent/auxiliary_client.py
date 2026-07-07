@@ -3648,6 +3648,7 @@ def _retry_same_provider_sync(
     effective_timeout: float,
     effective_extra_body: dict,
     reasoning_config: Optional[dict],
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -3685,6 +3686,11 @@ def _retry_same_provider_sync(
         base_url=retry_base or resolved_base_url,
         task=task,
     )
+    # Preserve per-request attribution headers (e.g. Copilot's
+    # ``x-initiator: user``) across the rebuilt-client retry — dropping them
+    # here would let a recovery retry silently lose capability gating (#60293).
+    if extra_headers:
+        retry_kwargs["extra_headers"] = dict(extra_headers)
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return _validate_llm_response(
@@ -3708,6 +3714,7 @@ async def _retry_same_provider_async(
     effective_timeout: float,
     effective_extra_body: dict,
     reasoning_config: Optional[dict],
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -3745,6 +3752,10 @@ async def _retry_same_provider_async(
         base_url=retry_base or resolved_base_url,
         task=task,
     )
+    # Preserve per-request attribution headers across the rebuilt-client
+    # retry — see the sync variant above (#60293).
+    if extra_headers:
+        retry_kwargs["extra_headers"] = dict(extra_headers)
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return _validate_llm_response(
@@ -7090,6 +7101,7 @@ def call_llm(
     timeout: float = None,
     extra_body: dict = None,
     reasoning_config: Optional[dict] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
@@ -7115,6 +7127,9 @@ def call_llm(
         extra_body: Additional request body fields.
         reasoning_config: Optional Hermes reasoning config for direct model calls
               such as MoA reference/aggregator slots.
+        extra_headers: Additional per-request HTTP headers. These override
+            client-level defaults for providers that gate capabilities on
+            request attribution (for example Copilot's ``x-initiator``).
         stream: When True, return the raw SDK streaming iterator instead of a
             validated complete response. The caller is responsible for consuming
             chunks (and for any fallback). Used by the MoA aggregator so its
@@ -7228,6 +7243,8 @@ def call_llm(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
         base_url=_base_info or resolved_base_url, task=task)
+    if extra_headers:
+        kwargs["extra_headers"] = dict(extra_headers)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
@@ -7481,6 +7498,7 @@ def call_llm(
                     effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
                     reasoning_config=reasoning_config,
+                    extra_headers=extra_headers,
                 )
 
         # ── Same-provider credential-pool recovery ─────────────────────
@@ -7524,6 +7542,7 @@ def call_llm(
                         effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
                         reasoning_config=reasoning_config,
+                        extra_headers=extra_headers,
                     )
                 except Exception as retry2_err:
                     # The rotated key also hit a quota/auth wall.  Mark it

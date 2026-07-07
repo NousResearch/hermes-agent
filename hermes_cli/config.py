@@ -906,6 +906,16 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    # Optional append-only audit bridge. When enabled, every message persisted
+    # to Hermes state.db is also mirrored to TheWon OTel-style Blackbox raw logs
+    # before context compression can compact the live transcript. Fail-open:
+    # Blackbox write failures never block Hermes session persistence.
+    "blackbox": {
+        "enabled": False,
+        "agent_id": "VN",
+        "thewon_system": "/Users/elroy/TheWon/System",
+        "project": "TheWon",
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

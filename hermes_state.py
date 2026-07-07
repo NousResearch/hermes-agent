@@ -2812,7 +2812,27 @@ class SessionDB:
                 )
             return msg_id
 
-        return self._execute_write(_do)
+        msg_id = self._execute_write(_do)
+        try:
+            from agent.blackbox_bridge import record_session_message
+
+            record_session_message(
+                session_id=session_id,
+                message_id=msg_id,
+                role=role,
+                content=content,
+                tool_name=tool_name,
+                tool_calls=tool_calls,
+                tool_call_id=tool_call_id,
+                token_count=token_count,
+                finish_reason=finish_reason,
+                platform_message_id=platform_message_id,
+                observed=observed,
+                timestamp=timestamp,
+            )
+        except Exception as exc:
+            logger.debug("blackbox bridge append_message hook failed: %s", exc)
+        return msg_id
 
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
@@ -2924,6 +2944,17 @@ class SessionDB:
             )
 
         self._execute_write(_do)
+        try:
+            from agent.blackbox_bridge import record_transcript_event
+
+            record_transcript_event(
+                session_id=session_id,
+                event_type="transcript_rewrite",
+                messages=messages,
+                extra={"reason": "replace_messages"},
+            )
+        except Exception as exc:
+            logger.debug("blackbox bridge replace_messages hook failed: %s", exc)
 
     def archive_and_compact(
         self, session_id: str, compacted_messages: List[Dict[str, Any]]
@@ -2975,7 +3006,19 @@ class SessionDB:
             )
             return inserted
 
-        return self._execute_write(_do)
+        inserted = self._execute_write(_do)
+        try:
+            from agent.blackbox_bridge import record_transcript_event
+
+            record_transcript_event(
+                session_id=session_id,
+                event_type="context_compaction",
+                messages=compacted_messages,
+                extra={"active_message_count": inserted},
+            )
+        except Exception as exc:
+            logger.debug("blackbox bridge archive_and_compact hook failed: %s", exc)
+        return inserted
 
 
     def get_messages(

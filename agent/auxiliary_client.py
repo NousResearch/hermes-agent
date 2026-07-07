@@ -3466,7 +3466,7 @@ def _auth_refresh_provider_for_route(
     Auto-routed auxiliary calls keep ``resolved_provider == "auto"`` even
     after _get_cached_client() selects a concrete backend. Infer the backend
     from the selected client's base URL so auth refresh works for auto →
-    Copilot/Codex/Anthropic/Nous routes too. (#20832)
+    Copilot/Codex/Anthropic/Nous/xAI routes too. (#20832)
     """
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized and normalized != "auto":
@@ -3479,6 +3479,10 @@ def _auth_refresh_provider_for_route(
         return "anthropic"
     if base_url_host_matches(client_base_url, "inference-api.nousresearch.com"):
         return "nous"
+    if base_url_host_matches(client_base_url, "api.x.ai") or base_url_host_matches(
+        client_base_url, "x.ai"
+    ):
+        return "xai-oauth"
     return normalized
 
 

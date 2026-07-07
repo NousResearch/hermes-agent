@@ -78,6 +78,33 @@ def test_validate_reports_bad_edge_target(workflow_home, tmp_path, capsys):
     assert "Traceback" not in err
 
 
+def test_validate_rejects_unsupported_send_message(workflow_home, tmp_path, capsys):
+    spec_path = tmp_path / "unsupported.yaml"
+    spec_path.write_text(
+        """
+id: unsupported_send_message_demo
+name: Unsupported Send Message Demo
+version: 1
+triggers:
+  - type: manual
+nodes:
+  start:
+    type: send_message
+    output:
+      text: hi
+edges: []
+""".strip(),
+        encoding="utf-8",
+    )
+
+    rc, out, err = _run(["validate", str(spec_path)], capsys)
+
+    assert rc == 1
+    assert out == ""
+    assert "unsupported node type: send_message on node start" in err
+    assert "Traceback" not in err
+
+
 def test_main_workflow_validate_bad_edge_exits_without_traceback(
     workflow_home,
     tmp_path,

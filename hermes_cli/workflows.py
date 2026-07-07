@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from hermes_cli import workflows_db as wfdb
 from hermes_cli import workflows_dispatcher
+from hermes_cli.workflows_capabilities import require_implemented_primitives
 from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
 
 
@@ -124,6 +125,7 @@ def _load_spec(path: str) -> WorkflowSpec:
         raise ValueError("workflow file must contain a YAML object")
     spec = WorkflowSpec.model_validate(raw)
     validate_graph(spec)
+    require_implemented_primitives(spec)
     return spec
 
 

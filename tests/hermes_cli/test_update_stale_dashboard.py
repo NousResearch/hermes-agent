@@ -117,6 +117,50 @@ class TestFindStaleDashboardPids:
             )
             assert sorted(_find_stale_dashboard_pids()) == [12345, 12346, 12347]
 
+    def test_matches_profile_flag_variants(self):
+        """Backends launched with --profile/-p between the program and the
+        subcommand must still be detected.
+
+        The Hermes Desktop Electron app keeps a backend pool, one per
+        profile, spawned as ``python -m hermes_cli.main --profile <name>
+        dashboard --no-open``. The old adjacent-substring patterns
+        ("hermes_cli.main dashboard") missed these, so profile backends
+        survived ``hermes update`` indefinitely, serving stale code.
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(30001, "/usr/bin/python3 -m hermes_cli.main --profile lonelylofi dashboard --no-open"),
+                    _ps_line(30002, "hermes -p vc-athena serve"),
+                    _ps_line(30003, "hermes --profile=coder dashboard --port 9200"),
+                    _ps_line(30004, "/opt/hermes/venv/bin/hermes --profile ops serve --host 127.0.0.1"),
+                ]) + "\n",
+                stderr="",
+            )
+            assert sorted(_find_stale_dashboard_pids()) == [30001, 30002, 30003, 30004]
+
+    def test_profile_flag_values_and_other_subcommands_not_matched(self):
+        """The subcommand is the first positional after the program token.
+
+        A profile literally named "dashboard" (flag value), a ``profile``
+        subcommand taking "dashboard" as its argument, and a chat session
+        launched under a profile that merely *mentions* dashboard must all
+        stay unmatched — the reaper kills processes, so no false positives.
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(41001, "hermes -p dashboard chat"),
+                    _ps_line(41002, "hermes profile use dashboard"),
+                    _ps_line(41003, "python3 -m hermes_cli.main --profile ops chat -q 'restart the dashboard'"),
+                    _ps_line(41004, "hermes gateway run --profile serve"),
+                ]) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == []
+
     def test_self_pid_excluded(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -130,6 +174,18 @@ class TestFindStaleDashboardPids:
             pids = _find_stale_dashboard_pids()
         assert os.getpid() not in pids
         assert 12345 in pids
+
+    def test_windows_style_cmdlines_use_same_matcher(self):
+        """The wmic (Windows) branch feeds raw CommandLine strings through the
+        same matcher as the POSIX ps branch — exercise it directly with
+        Windows paths, including the console-script ``hermes.exe`` form."""
+        live = sys.modules["hermes_cli.main"]
+        matcher = live._cmdline_matches_dashboard_server
+        assert matcher(r"C:\Python312\python.exe -m hermes_cli.main --profile ops dashboard --no-open")
+        assert matcher(r"C:\Users\a\venv\Scripts\hermes.exe serve --port 8642")
+        # wmic reports quoted executable paths when they contain spaces.
+        assert matcher(r'"C:\Program Files\Hermes\hermes.exe" dashboard')
+        assert not matcher(r"C:\Python312\python.exe -m hermes_cli.main --profile ops chat")
 
     def test_ps_not_found_returns_empty(self):
         with patch("subprocess.run", side_effect=FileNotFoundError):

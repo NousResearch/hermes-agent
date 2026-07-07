@@ -64,7 +64,10 @@ function runGh(args, cwd, ghBin) {
 }
 
 function gitFor(cwd, gitBin) {
-  return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+  // simple-git rejects Windows paths with spaces (C:\Program Files\Git\...).
+  // Fall back to PATH lookup — 'git' is on PATH on Windows regardless.
+  const binary = gitBin && !gitBin.includes(' ') ? gitBin : 'git'
+  return simpleGit({ baseDir: cwd, binary, maxConcurrentProcesses: 4, trimmed: false })
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve

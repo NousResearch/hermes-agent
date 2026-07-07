@@ -570,7 +570,13 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         ("seven_day", "Current week"),
         ("seven_day_opus", "Opus week"),
         ("seven_day_sonnet", "Sonnet week"),
+        ("seven_day_fable", "Fable week"),
     )
+    # Also pick up any seven_day_<model> keys not in the explicit mapping
+    seen_keys = {k for k, _ in mapping}
+    for key in sorted(payload.keys()):
+        if key.startswith("seven_day_") and key not in seen_keys:
+            mapping = (*mapping, (key, key.replace("seven_day_", "").replace("_", " ").title() + " week"))
     for key, label in mapping:
         window = payload.get(key) or {}
         util = window.get("utilization")

@@ -181,6 +181,62 @@ class TestReapOrphanedBrowserSessions:
         assert not d.exists()
 
 
+class TestOrphanedChromiumCleanup:
+    """Tests for _kill_orphaned_chromium_for_session() — kills Chromium
+    processes left behind when the agent-browser daemon dies before cleanup.
+
+    When the daemon (Node process) crashes or is SIGKILLed, its Chromium
+    children are reparented to PID 1 and the normal tree-kill path (which
+    walks children of the daemon PID) never reaches them.  The reaper
+    discovers the dead daemon PID, removes the socket dir, and calls
+    _kill_orphaned_chromium_for_session to scan for surviving Chromium
+    processes by matching the ``agent-browser-chrome-`` pattern in their
+    command line.
+    """
+
+    def test_dead_daemon_triggers_chromium_scan(self, fake_tmpdir):
+        """When the daemon PID is dead, orphaned Chromium is scanned + killed."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(fake_tmpdir, "h_dead123456", pid=999999999)
+
+        chromium_killed = []
+
+        def mock_kill_chromium(socket_dir, session_name):
+            chromium_killed.append((socket_dir, session_name))
+            return 0
+
+        with patch("tools.browser_tool._kill_orphaned_chromium_for_session",
+                    side_effect=mock_kill_chromium):
+            _reap_orphaned_browser_sessions()
+
+        assert len(chromium_killed) == 1
+        assert chromium_killed[0][1] == "h_dead123456"
+        assert not d.exists()
+
+    def test_alive_daemon_does_not_trigger_chromium_scan(self, fake_tmpdir):
+        """When the daemon PID is alive, Chromium scan is NOT triggered
+        (the tree-kill path handles it)."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(fake_tmpdir, "h_alive1234567", pid=12345)
+
+        chromium_killed = []
+
+        def mock_kill_chromium(socket_dir, session_name):
+            chromium_killed.append(session_name)
+            return 0
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid"), \
+             patch("tools.browser_tool._kill_orphaned_chromium_for_session",
+                   side_effect=mock_kill_chromium):
+            _reap_orphaned_browser_sessions()
+
+        assert len(chromium_killed) == 0
+
+
 class TestOwnerPidCrossProcess:
     """Tests for owner_pid-based cross-process safe reaping.
 

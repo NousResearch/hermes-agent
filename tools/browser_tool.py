@@ -1626,6 +1626,71 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     return True
 
 
+def _kill_orphaned_chromium_for_session(socket_dir: str, session_name: str) -> int:
+    """Kill Chromium processes orphaned by a dead agent-browser daemon.
+
+    When the agent-browser daemon (a Node process) dies before its owner
+    cleans up, Chromium child processes it spawned are reparented to PID 1
+    and left running indefinitely — consuming CPU and memory with no one to
+    shut them down.  The daemon's ``.pid`` file points at the dead Node
+    process, so the reaper's normal tree-kill path (which walks children of
+    the *daemon* PID) never reaches them.
+
+    This function scans running processes for Chromium instances whose
+    ``--user-data-dir`` command-line argument references the
+    ``agent-browser-chrome-*`` pattern that agent-browser assigns to its
+    spawned Chromium, and terminates them via ``psutil``.
+
+    Security: matches on the ``agent-browser-chrome-`` prefix in the process
+    command line, which is specific to agent-browser-spawned Chromium and
+    distinct from user-installed Chrome/Chromium.  Same-user only (psutil
+    can only signal same-user processes).
+
+    Returns the number of Chromium processes killed.
+    """
+    try:
+        import psutil
+    except ImportError:
+        logger.warning(
+            "Cannot scan for orphaned Chromium (session %s): psutil unavailable",
+            session_name)
+        return 0
+
+    killed = 0
+    # Collect the actual proc objects we terminated so we can wait on them
+    # without re-scanning the entire process table.
+    terminated_procs = []
+
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            cmdline = " ".join(proc.info["cmdline"] or [])
+            if "agent-browser-chrome-" in cmdline and "--user-data-dir=" in cmdline:
+                proc.terminate()
+                terminated_procs.append(proc)
+                killed += 1
+                logger.info(
+                    "Killed orphaned Chromium PID %d (session %s, daemon gone)",
+                    proc.info["pid"], session_name)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        except Exception as exc:
+            logger.debug("Error scanning process %d for orphaned Chromium: %s",
+                         getattr(proc, 'pid', -1), exc)
+
+    # Give SIGTERM a moment, then escalate to SIGKILL for any survivors
+    if terminated_procs:
+        gone, alive = psutil.wait_procs(terminated_procs, timeout=3)
+        for proc in alive:
+            try:
+                proc.kill()
+                logger.info("Force-killed orphaned Chromium PID %d (session %s)",
+                            proc.pid, session_name)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+    return killed
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -1714,10 +1779,19 @@ def _reap_orphaned_browser_sessions():
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
-        # Check if the daemon is still alive. ``os.kill(pid, 0)`` on Windows
+        # Check if the daemon is still alive.  ``os.kill(pid, 0)`` on Windows
         # is NOT a no-op — use the handle-based existence check.
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
+            # The daemon (Node process) is gone, but it may have left behind
+            # orphaned Chromium child processes.  When the daemon dies
+            # unexpectedly (SIGKILL, crash, OOM), Chromium processes are
+            # reparented to PID 1 and the tree-kill path below never runs.
+            # Scan for Chromium processes whose --user-data-dir references
+            # this session's socket directory and terminate them before
+            # cleaning up the socket dir.  See issue: orphaned Chrome
+            # processes accumulate ~20% CPU / ~14 GB RAM over 10 days.
+            _kill_orphaned_chromium_for_session(socket_dir, session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 

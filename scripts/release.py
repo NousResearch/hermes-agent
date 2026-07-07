@@ -45,12 +45,15 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
-    "ishengeqi@163.com": "isheng-eqi",  # PR #59428 salvage (cron: reject past one-shot timestamps in update_job fallback + resume_job; #59395)
+    "spiky02plateau@users.noreply.github.com": "spiky02plateau",  # PR #32824 salvage (usage: fetch Codex account limits from the credential pool in pool-only setups; superseded by #60028)
+    "taylorhp@gmail.com": "hwrdprkns",  # PR #36896 salvage (secrets: 1Password op:// secret source + shared _cache substrate, adapted onto the SecretSource interface)
+    "ishengeqi@163.com": "isheng-eqi",  # PR #59428 salvage (cron: reject past one-shot timestamps in update_job fallback + resume_job; #59395). Also PR #59446 salvage (cron: advance one-shot next_run_at before dispatch so concurrent gateway+desktop schedulers can't double-execute; #59229).
     "derek2000139@qq.com": "derek2000139",  # PR #57838 salvage (desktop/windows: pre-write update marker before quit dwell so the renderer's waitForUpdateToFinish gate parks instead of respawning a backend that re-locks venv .pyd files mid-update)
     "AndreasHiltner@users.noreply.github.com": "AndreasHiltner",  # PR #56854 salvage (gateway: route multiplex profile responses through the profile's own adapter — 53-site _adapter_for_source sweep)
     "allenliang2022@users.noreply.github.com": "allenliang2022",  # PR #56932 test coverage folded into #56909 salvage (408 → retryable timeout)
     "m888.braun@hotmail.com": "ManniBr",  # PR #57417 partial salvage (gateway: fail-closed adapter resolution for unregistered secondary profiles)
     "sunsky.lau@gmail.com": "liuhao1024",  # PR #56993 salvage (gateway: process-level HERMES_HOME for pid/lock/status identity files; #56986)
+    "blueirobin02@gmail.com": "irresi",  # PR #59048 salvage (gateway: scope reset banners' session info to the serving profile; #59003)
     "jashlee+microsoft@microsoft.com": "s905060",  # PR #57943 salvage (photon: auto-reinstall stale sidecar node_modules when lockfile is newer than npm's install marker; #59169)
     "lohinth25@proton.me": "l0h1nth",  # PR #32210 salvage (mattermost: accept leading-space slash commands from mobile clients; #25184)
     "perkintahmaz50@gmail.com": "devatnull",  # PR #58704 salvage (whatsapp: native Baileys polls, clarify-as-poll, location pins, structured quoted replies, PTT/audio split, bridge_helpers extraction)
@@ -64,6 +67,7 @@ AUTHOR_MAP = {
     "root@vmi3351581.contaboserver.net": "ostravajih",  # PR #58374 salvage (poolside: coerce integer finish_reason and tool_call id to strings)
     "hello@sahil-shubham.in": "sahil-shubham",  # PR #58448 salvage (whatsapp_cloud: honor documented WHATSAPP_CLOUD_ALLOWED_USERS / ALLOW_ALL_USERS in the DM intake gate)
     "ahmet.tunc@gmail.com": "Ahmett101",  # PR #58445 salvage (profiles: allowlist default-export roots + preserve symlinks)
+    "Ahmett101@users.noreply.github.com": "Ahmett101",  # PR #59455 salvage (background-review: guard summarize against list-shaped tool responses; #59437)
     "wyuebei@gmail.com": "wyuebei-cloud",  # PR #56640 salvage (hermes journey: replace GNU-only %-d strftime with dt.day for Windows)
     "yingwaizhiying@gmail.com": "msh01",  # PR #58250 salvage (telegram: wall-clock init timeout via daemon-thread deadline + abandon the shielded initialize task on timeout so the retry ladder advances instead of hanging on attempt 1/8 under s6 supervision; #58236). Also covers PR #58276 salvage (compression: preserve a real user turn after compaction; #55677).
     "danilo@falcao.org": "danilofalcao",  # PR #56674 salvage (update: skip unsupported platform.matrix lazy refresh on native Windows — python-olm has no Windows wheel)
@@ -283,6 +287,12 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "fanyang@microsoft.com": "fanyangCS",
+    "bigstar0920@gmail.com": "bigstar0920",
+    "hello@tanmaychoudhary.com": "tanmayxchoudhary",
+    "285906080+AIalliAI@users.noreply.github.com": "AIalliAI",
+    "waseemshahwan@users.noreply.github.com": "waseemshahwan",
+    "hellno@users.noreply.github.com": "hellno",
     "perkintahmaz50@gmail.com": "devatnull",
     "marxb@protonmail.com": "Marxb85",
     "153708448+hunjaiboy@users.noreply.github.com": "yyzquwu",  # PR #47567 salvage (Matrix: register inbound handlers with wait_sync=True so _dispatch_sync's gather awaits them; without it mautrix fire-and-forgets and inbound intake has no completion point)

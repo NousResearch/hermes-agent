@@ -111,10 +111,35 @@ def _is_path_unsafe(value: object) -> bool:
     s = str(value)
     if ".." in s or "/" in s or "\\" in s:
         return True
-    # Leading Windows drive path, e.g. "C:\..." or "d:/...". A bare "x:"
+    # Leading Windows drive path, e.g. "C:\\..." or "d:/...". A bare "x:"
     # with no following separator isn't a usable absolute path, and the
     # separator forms are already caught above — but keep an explicit guard
     # for the drive-letter prefix in case a separator was normalized away.
+    return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
+
+
+def _is_session_key_unsafe(value: object) -> bool:
+    """Return True if ``value`` could be a real traversal vector in a session_key.
+
+    ``session_key`` is a *logical* routing key (e.g.
+    ``agent:main:google_chat:group:spaces/<id>``) — it never touches the
+    filesystem, so the strict separator-rejecting guard from
+    ``_is_path_unsafe`` is over-broad: it falsely rejects Google Chat
+    resource names (``spaces/<id>``, ``spaces/<id>/threads/<id>``) and any
+    other platform whose native IDs legitimately contain ``/``.
+
+    The relaxed check only blocks genuine traversal: parent-dir ``..``,
+    a *leading* path separator (``/``/``\\``, which would make the key
+    absolute on disk if it ever were written), and a leading Windows
+    drive letter. Interior ``/`` is allowed.
+    """
+    if not value:
+        return False
+    s = str(value)
+    if ".." in s:
+        return True
+    if s.startswith("/") or s.startswith("\\"):
+        return True
     return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
 
 
@@ -741,12 +766,21 @@ class SessionEntry:
         session_key = data["session_key"]
         session_id = data["session_id"]
 
-        # Validate path-sensitive fields to prevent directory traversal (CWE-22)
-        for _field, _val in (("session_key", session_key), ("session_id", session_id)):
-            if _is_path_unsafe(_val):
-                raise ValueError(
-                    f"Invalid {_field}: potential directory traversal detected"
-                )
+        # Validate path-sensitive fields to prevent directory traversal (CWE-22).
+        # ``session_id`` is the value used as a filename
+        # (``sessions_dir / f"{session_id}.json"``), so it must pass the strict
+        # guard. ``session_key`` is a *logical* routing key that never touches
+        # the filesystem — interior ``/`` is legitimate (Google Chat resource
+        # names are ``spaces/<id>`` and ``spaces/<id>/threads/<id>``), so it
+        # only needs the relaxed guard against genuine traversal vectors.
+        if _is_path_unsafe(session_id):
+            raise ValueError(
+                "Invalid session_id: potential directory traversal detected"
+            )
+        if _is_session_key_unsafe(session_key):
+            raise ValueError(
+                "Invalid session_key: potential directory traversal detected"
+            )
 
         return cls(
             session_key=session_key,
@@ -1225,6 +1259,45 @@ class SessionStore:
         except Exception:
             return None
 
+    @staticmethod
+    def _profile_from_session_key(session_key: Optional[str]) -> Optional[str]:
+        """Extract the profile namespace encoded in a gateway session key."""
+        if not session_key:
+            return None
+        parts = str(session_key).split(":")
+        if len(parts) < 2 or parts[0] != "agent":
+            return None
+        namespace = parts[1] or "main"
+        return "default" if namespace == "main" else namespace
+
+    @staticmethod
+    def _active_profile_name() -> str:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name() or "default"
+        except Exception:
+            return "default"
+
+    def _recovered_row_allowed_for_active_profile(
+        self,
+        *,
+        requested_session_key: str,
+        recovered: Dict[str, Any],
+    ) -> bool:
+        """Prevent non-multiplexed gateways from reviving another profile's row."""
+        if getattr(self.config, "multiplex_profiles", False):
+            return True
+
+        recovered_key = str(recovered.get("session_key") or "")
+        if not recovered_key or recovered_key == requested_session_key:
+            return True
+
+        recovered_profile = self._profile_from_session_key(recovered_key)
+        if recovered_profile is None:
+            return True
+
+        return recovered_profile == self._active_profile_name()
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
@@ -1284,6 +1357,18 @@ class SessionStore:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
             return None
         if not recovered:
+            return None
+        if not self._recovered_row_allowed_for_active_profile(
+            requested_session_key=session_key,
+            recovered=recovered,
+        ):
+            logger.warning(
+                "Gateway session DB recovery ignored %s for %s because "
+                "multiplex_profiles is disabled and the row belongs to a "
+                "different profile",
+                recovered.get("session_key"),
+                session_key,
+            )
             return None
         try:
             self._db.reopen_session(str(recovered["id"]))

@@ -331,6 +331,19 @@ describe('mergeSessionPage', () => {
     expect(merged.find(s => s.id === 'tip-5')?._lineage_root_id).toBe('root')
   })
 
+  it('does not preserve a stale compression-ended row from the keep set', () => {
+    // Repro: a row can be pinned while it is the live tip, then auto-compression
+    // turns it into an ended parent. The backend now returns the projected
+    // continuation tip, but the old pinned id in the keep set must not keep the
+    // ended parent visible as a second row that opens the same conversation.
+    const previous = [session({ end_reason: 'compression', id: 'tip-4' })] as SessionInfo[]
+    const incoming = [session({ id: 'tip-5', _lineage_root_id: 'root' })] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['tip-4'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip-5'])
+  })
+
   it('preserves an unrelated pinned session even when lineage dedup is active', () => {
     // Regression guard: lineage dedup must not accidentally evict sessions
     // from a different lineage that happen to be in the keep set.

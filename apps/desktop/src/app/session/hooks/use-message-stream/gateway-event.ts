@@ -8,6 +8,7 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, isSessionBusyMessage, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
+import { emitDesktopDiagnostic } from '@/lib/desktop-diagnostics'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
@@ -590,6 +591,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
+      } else if (event.type === 'diagnostic.event') {
+        const severity = payload?.severity
+        emitDesktopDiagnostic({
+          component: typeof payload?.component === 'string' ? payload.component : 'gateway',
+          event: typeof payload?.event === 'string' ? payload.event : 'event',
+          message: typeof payload?.message === 'string' ? payload.message : 'Gateway diagnostic event',
+          severity:
+            severity === 'debug' || severity === 'info' || severity === 'warn' || severity === 'error' || severity === 'fatal'
+              ? severity
+              : 'info',
+          details: {
+            ...(payload?.details && typeof payload.details === 'object' ? payload.details : {}),
+            sessionId
+          }
+        })
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)

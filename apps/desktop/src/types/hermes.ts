@@ -329,6 +329,7 @@ export interface SessionInfo {
    *  workspaces and not-yet-backfilled rows. */
   git_repo_root?: null | string
   ended_at: null | number
+  end_reason?: null | string
   id: string
   /** Original root id of a compression chain, when this entry is a projected
    *  continuation tip. Stable across compressions — used as the durable id for

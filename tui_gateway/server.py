@@ -37,6 +37,7 @@ from tui_gateway.transport import (
 )
 
 logger = logging.getLogger(__name__)
+_WATCHDOG_THREAD = threading.Thread
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
@@ -1060,6 +1061,26 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
 
 
+def _emit_diagnostic_event(
+    sid: str,
+    *,
+    component: str,
+    event: str,
+    message: str,
+    severity: str = "info",
+    details: dict | None = None,
+) -> None:
+    payload = {
+        "component": component,
+        "event": event,
+        "message": message,
+        "severity": severity,
+    }
+    if details:
+        payload["details"] = details
+    _emit("diagnostic.event", sid, payload)
+
+
 def _emit_approval_request(sid: str, data: dict | None) -> None:
     """Emit an ``approval.request`` event to the TUI client with the command
     redacted. The approval payload is built from the RAW command string, so a
@@ -1088,6 +1109,24 @@ def _status_update(sid: str, kind: str, text: str | None = None):
 
         if COMPACTION_STATUS_MARKER in body:
             out_kind = "compacting"
+    if out_kind == "compacting":
+        session = _sessions.get(sid) or {}
+        now = time.time()
+        session["compression_started_at"] = now
+        session["compression_last_heartbeat_at"] = now
+        session["compression_status_text"] = body
+        _emit_diagnostic_event(
+            sid,
+            component="compression",
+            event="start",
+            message="Context compression started",
+            details={
+                "session_id": sid,
+                "session_key": session.get("session_key") or "",
+                "cwd": session.get("cwd") or "",
+                "status": body,
+            },
+        )
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
@@ -8802,12 +8841,138 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
+def _compression_watchdog_timeout_seconds() -> float:
+    raw = os.environ.get("HERMES_COMPRESSION_WATCHDOG_SECONDS", "240")
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 240.0
+
+
+def _turn_terminal_emitted(session: dict) -> bool:
+    with session["history_lock"]:
+        if session.get("_turn_terminal_emitted"):
+            return False
+        session["_turn_terminal_emitted"] = True
+        return True
+
+
+def _clear_compression_tracking(session: dict) -> None:
+    session.pop("compression_started_at", None)
+    session.pop("compression_last_heartbeat_at", None)
+    session.pop("compression_status_text", None)
+
+
+def _emit_compression_timeout_terminal(sid: str, session: dict, timeout_seconds: float) -> bool:
+    with session["history_lock"]:
+        started_at = session.get("compression_started_at")
+        if not session.get("running") or not started_at or session.get("_turn_terminal_emitted"):
+            return False
+        session["_turn_terminal_emitted"] = True
+        session["_turn_cancel_requested"] = True
+        session["running"] = False
+        _clear_inflight_turn(session)
+    agent = session.get("agent")
+    if hasattr(agent, "interrupt"):
+        try:
+            agent.interrupt()
+        except Exception:
+            pass
+    elapsed = max(0.0, time.time() - float(started_at))
+    message = (
+        "Context compression did not finish within "
+        f"{int(timeout_seconds)}s. Continuing in a fresh session."
+    )
+    logger.warning(
+        "compression watchdog timeout: sid=%s session_key=%s elapsed=%.1fs timeout=%.1fs",
+        sid,
+        session.get("session_key") or "",
+        elapsed,
+        timeout_seconds,
+    )
+    _emit_diagnostic_event(
+        sid,
+        component="compression",
+        event="timeout",
+        message=message,
+        severity="error",
+        details={
+            "session_id": sid,
+            "session_key": session.get("session_key") or "",
+            "cwd": session.get("cwd") or "",
+            "elapsed_seconds": round(elapsed, 3),
+            "timeout_seconds": timeout_seconds,
+            "status": session.get("compression_status_text") or "",
+        },
+    )
+    _clear_compression_tracking(session)
+    _emit(
+        "message.complete",
+        sid,
+        {
+            "text": message,
+            "status": "error",
+            "compression_exhausted": True,
+            "usage": _get_usage(agent) if agent is not None else {},
+        },
+    )
+    try:
+        _emit("session.info", sid, _session_info(agent, session))
+    except Exception:
+        pass
+    return True
+
+
+def _start_compression_watchdog(sid: str, session: dict) -> threading.Event | None:
+    timeout_seconds = _compression_watchdog_timeout_seconds()
+    if timeout_seconds <= 0:
+        return None
+    stop = threading.Event()
+    heartbeat_seconds = min(30.0, max(5.0, timeout_seconds / 4.0))
+
+    def watch() -> None:
+        while not stop.wait(1.0):
+            with session["history_lock"]:
+                if not session.get("running") or session.get("_turn_terminal_emitted"):
+                    return
+                started_at = session.get("compression_started_at")
+                last_heartbeat = float(session.get("compression_last_heartbeat_at") or 0)
+            if not started_at:
+                continue
+            now = time.time()
+            elapsed = now - float(started_at)
+            if elapsed >= timeout_seconds:
+                _emit_compression_timeout_terminal(sid, session, timeout_seconds)
+                return
+            if now - last_heartbeat >= heartbeat_seconds:
+                with session["history_lock"]:
+                    session["compression_last_heartbeat_at"] = now
+                _emit_diagnostic_event(
+                    sid,
+                    component="compression",
+                    event="heartbeat",
+                    message="Context compression is still running",
+                    details={
+                        "session_id": sid,
+                        "session_key": session.get("session_key") or "",
+                        "cwd": session.get("cwd") or "",
+                        "elapsed_seconds": round(elapsed, 3),
+                        "timeout_seconds": timeout_seconds,
+                    },
+                )
+
+    _WATCHDOG_THREAD(target=watch, daemon=True).start()
+    return stop
+
+
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
+        session["_turn_terminal_emitted"] = False
+        _clear_compression_tracking(session)
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session["agent"]
@@ -8823,6 +8988,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        compression_watchdog_stop = _start_compression_watchdog(sid, session)
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -8954,6 +9120,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             except (TypeError, ValueError):
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)
+            if session.get("_turn_terminal_emitted"):
+                return
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
                 # Restore the model the user was on before the /moa one-shot.
@@ -9070,6 +9238,32 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
+            compression_started_at = session.get("compression_started_at")
+            if not _turn_terminal_emitted(session):
+                return
+            if compression_started_at:
+                _emit_diagnostic_event(
+                    sid,
+                    component="compression",
+                    event="failure" if status == "error" else "success",
+                    message=(
+                        "Context compression failed"
+                        if status == "error"
+                        else "Context compression finished"
+                    ),
+                    severity="error" if status == "error" else "info",
+                    details={
+                        "session_id": sid,
+                        "session_key": session.get("session_key") or "",
+                        "cwd": session.get("cwd") or "",
+                        "elapsed_seconds": round(time.time() - float(compression_started_at), 3),
+                        "status": status,
+                        "compression_exhausted": bool(
+                            isinstance(result, dict) and result.get("compression_exhausted")
+                        ),
+                    },
+                )
+                _clear_compression_tracking(session)
             with session["history_lock"]:
                 _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
@@ -9221,11 +9415,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 pass
             if home_token is not None:
                 reset_hermes_home_override(home_token)
+            if compression_watchdog_stop is not None:
+                compression_watchdog_stop.set()
             _clear_session_context(session_tokens)
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
+                _clear_compression_tracking(session)
             _emit("session.info", sid, _session_info(agent, session))
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over

@@ -6276,6 +6276,69 @@ def test_prompt_submit_marks_compression_exhausted_message_complete(monkeypatch)
     assert payload.get("compression_exhausted") is True
 
 
+def test_status_update_emits_compression_diagnostic(monkeypatch):
+    from agent.conversation_compression import COMPACTION_STATUS
+
+    session = _session(cwd="/tmp/project")
+    server._sessions["sid"] = session
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+
+    try:
+        server._status_update("sid", "lifecycle", COMPACTION_STATUS)
+    finally:
+        server._sessions.pop("sid", None)
+
+    diagnostic = [e for e in emitted if e[0] == "diagnostic.event"]
+    assert diagnostic, "expected compression diagnostic event"
+    assert diagnostic[-1][2]["component"] == "compression"
+    assert diagnostic[-1][2]["event"] == "start"
+    assert diagnostic[-1][2]["details"]["cwd"] == "/tmp/project"
+    status = [e for e in emitted if e[0] == "status.update"]
+    assert status[-1][2]["kind"] == "compacting"
+    assert session.get("compression_started_at")
+
+
+def test_compression_watchdog_timeout_marks_turn_terminal(monkeypatch):
+    calls = {"interrupted": False}
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupted", True),
+        context_compressor=None,
+    )
+    session = _session(agent=agent, running=True, cwd="/tmp/project")
+    session["compression_started_at"] = time.time() - 99
+    session["compression_status_text"] = "Compacting context"
+    server._sessions["sid"] = session
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {"context_used": 0})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session: {"running": False})
+
+    try:
+        assert server._emit_compression_timeout_terminal("sid", session, 30) is True
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert calls["interrupted"] is True
+    assert session["running"] is False
+    assert session["_turn_terminal_emitted"] is True
+    diagnostic = [e for e in emitted if e[0] == "diagnostic.event"]
+    assert diagnostic[-1][2]["event"] == "timeout"
+    complete = [e for e in emitted if e[0] == "message.complete"]
+    assert complete, "expected terminal message.complete"
+    assert complete[-1][2]["status"] == "error"
+    assert complete[-1][2]["compression_exhausted"] is True
+
+
 def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     """An empty final_response with NO backend error must stay empty — do not
     synthesize an error string. Preserves the existing None/empty-sentinel

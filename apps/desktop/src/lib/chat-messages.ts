@@ -85,6 +85,11 @@ export type GatewayEventPayload = {
   label?: string
   index?: number
   aggregator?: string
+  // diagnostic.event — backend/gateway diagnostics mirrored to desktop logs
+  component?: string
+  event?: string
+  severity?: string
+  details?: Record<string, unknown>
 }
 
 export function textPart(text: string): ChatMessagePart {

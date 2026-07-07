@@ -5,11 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { emitDesktopDiagnostic } from '@/lib/desktop-diagnostics'
 import type { TodoItem } from '@/lib/todos'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
+
+vi.mock('@/lib/desktop-diagnostics', () => ({
+  emitDesktopDiagnostic: vi.fn(),
+  sendDesktopHeartbeat: vi.fn()
+}))
 
 const SID = 'session-1'
 const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
@@ -137,5 +143,31 @@ describe('useMessageStream turn-end todo cleanup', () => {
       SID,
       'Context length exceeded (358,245 tokens). Cannot compress further.'
     )
+  })
+
+  it('forwards gateway diagnostic events to desktop diagnostics', async () => {
+    await mountStream()
+
+    act(() =>
+      handleEvent!({
+        payload: {
+          component: 'compression',
+          event: 'timeout',
+          message: 'Context compression timed out',
+          severity: 'error',
+          details: { elapsed_seconds: 240 }
+        },
+        session_id: SID,
+        type: 'diagnostic.event'
+      })
+    )
+
+    expect(emitDesktopDiagnostic).toHaveBeenCalledWith({
+      component: 'compression',
+      event: 'timeout',
+      message: 'Context compression timed out',
+      severity: 'error',
+      details: { elapsed_seconds: 240, sessionId: SID }
+    })
   })
 })

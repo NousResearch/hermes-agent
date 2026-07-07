@@ -111,3 +111,102 @@ async def test_branch1_opc_text_result_edits_stub():
     kw = edit_call.kwargs["api_kwargs"]
     assert kw["inline_message_id"] == "imi_abc"
     assert "Here is your answer." in kw["text"]
+
+
+# ---------------------------------------------------------------------------
+# Caller authorization gate (fail-closed) — _handle_guest_message_update
+#
+# The human caller for a guest update is in raw guest_bot_caller_user, not
+# from_user. Unauthorized callers are denied before any state registration or
+# API call; empty allowlist / missing caller => deny.
+# ---------------------------------------------------------------------------
+
+import plugins.platforms.telegram.adapter as _tg_adapter_mod  # noqa: E402
+
+
+def _make_guest_update(caller_id="999", chat_id="42", text="@bot hi",
+                       gqid="gq1", update_id=1,
+                       caller_key="guest_bot_caller_user"):
+    raw = {"guest_query_id": gqid, "chat": {"id": int(chat_id), "type": "supergroup"}, "text": text}
+    if caller_id is not None:
+        raw[caller_key] = {"id": int(caller_id), "username": "someone"}
+    update = MagicMock()
+    update.api_kwargs = {"guest_message": raw}
+    update.update_id = update_id
+    return update, raw
+
+
+def _fake_guest_msg(chat_id="42", text="@bot hi", chat_type="supergroup"):
+    msg = MagicMock()
+    msg.text = text
+    msg.caption = None
+    msg.chat.id = int(chat_id)
+    msg.chat.type = chat_type
+    msg.from_user = None  # guest messages carry the caller in guest_bot_caller_user
+    return msg
+
+
+@pytest.mark.asyncio
+async def test_guest_caller_unauthorized_is_denied():
+    """A caller not in any allowlist is denied before state/API — reads the id
+    from guest_bot_caller_user (from_user is None here)."""
+    adapter = _make_adapter()
+    update, _ = _make_guest_update(caller_id="999")
+    msg = _fake_guest_msg()
+
+    with patch.object(_tg_adapter_mod.Message, "de_json", return_value=msg), \
+         patch.object(adapter, "_is_callback_user_authorized", return_value=False) as mock_auth, \
+         patch.object(adapter, "_should_process_message") as mock_should:
+        await adapter._handle_guest_message_update(update, MagicMock())
+
+    mock_auth.assert_called_once()
+    assert mock_auth.call_args.args[0] == "999"  # caller id from the raw field
+    assert adapter._pending_guest_queries == {}
+    adapter._bot.do_api_request.assert_not_called()
+    mock_should.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guest_caller_authorized_passes_gate():
+    """An authorized caller passes the gate and reaches normal processing."""
+    adapter = _make_adapter()
+    update, _ = _make_guest_update(caller_id="123304346")
+    msg = _fake_guest_msg()
+
+    with patch.object(_tg_adapter_mod.Message, "de_json", return_value=msg), \
+         patch.object(adapter, "_is_callback_user_authorized", return_value=True) as mock_auth, \
+         patch.object(adapter, "_should_process_message", return_value=False) as mock_should:
+        await adapter._handle_guest_message_update(update, MagicMock())
+
+    mock_auth.assert_called_once()
+    mock_should.assert_called_once()  # gate passed → reached processing
+
+
+@pytest.mark.asyncio
+async def test_guest_missing_caller_field_denies_fail_closed():
+    """No guest_bot_caller_user and no from_user => empty caller => real
+    _is_callback_user_authorized denies (no runner, no env allowlist)."""
+    adapter = _make_adapter()
+    update, _ = _make_guest_update(caller_id=None)  # no caller field at all
+    msg = _fake_guest_msg()
+
+    with patch.object(_tg_adapter_mod.Message, "de_json", return_value=msg):
+        await adapter._handle_guest_message_update(update, MagicMock())
+
+    assert adapter._pending_guest_queries == {}
+    adapter._bot.do_api_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guest_allowlisted_caller_via_env_passes(monkeypatch):
+    """End-to-end through the real gate: env allowlist authorizes the caller."""
+    adapter = _make_adapter()
+    update, _ = _make_guest_update(caller_id="999")
+    msg = _fake_guest_msg()
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")
+
+    with patch.object(_tg_adapter_mod.Message, "de_json", return_value=msg), \
+         patch.object(adapter, "_should_process_message", return_value=False) as mock_should:
+        await adapter._handle_guest_message_update(update, MagicMock())
+
+    mock_should.assert_called_once()  # real gate allowed the env-allowlisted caller

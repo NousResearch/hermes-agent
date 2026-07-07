@@ -1218,6 +1218,49 @@ def test_complete_preserves_claimed_artifact_before_scratch_cleanup(kanban_home)
     assert payload["completion_artifact_evidence"] == evidence
 
 
+def test_complete_rejects_over_limit_artifact_without_copying(kanban_home, monkeypatch):
+    monkeypatch.setattr(kb, "KANBAN_ATTACHMENT_MAX_BYTES", 8)
+    workspace = kb.workspaces_root() / "oversized-artifact-source"
+    workspace.mkdir(parents=True)
+    report = workspace / "huge-report.bin"
+    report.write_bytes(b"0123456789")
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="x",
+            workspace_kind="scratch",
+            workspace_path=str(workspace),
+        )
+        assert kb.complete_task(
+            conn,
+            t,
+            summary="done",
+            metadata={"artifacts": [str(report)]},
+        )
+        run = kb.latest_run(conn, t)
+        payload = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1].payload or {}
+        attachments = kb.list_attachments(conn, t)
+
+    assert not workspace.exists(), "scratch workspace should still be cleaned up"
+    assert attachments == []
+    assert run.metadata["artifacts"] == []
+    evidence = run.metadata["completion_artifact_evidence"]
+    assert evidence == [
+        {
+            "original_path": str(report),
+            "resolved_path": str(report.resolve(strict=False)),
+            "status": "unavailable",
+            "reason": "source_exceeds_size_limit",
+            "size": 10,
+            "limit": 8,
+        }
+    ]
+    assert "artifacts" not in payload
+    assert payload["completion_artifact_evidence"] == evidence
+    assert not kb.task_attachments_dir(t).exists()
+
+
 def test_complete_marks_missing_artifact_with_machine_checkable_reason(kanban_home):
     workspace = kb.workspaces_root() / "missing-artifact-source"
     workspace.mkdir(parents=True)

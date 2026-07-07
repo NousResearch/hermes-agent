@@ -644,9 +644,10 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 # Attachments — upload / list / download / delete (#35338)
 # ---------------------------------------------------------------------------
 
-# Cap a single upload so a runaway request can't fill the disk. 25 MB
-# comfortably covers PDFs, images, and source docs — the kanban use case.
-_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+# Cap a single upload so a runaway request can't fill the disk. Completion
+# artifact preservation reuses the same central cap in ``kanban_db`` so workers
+# cannot bypass the dashboard upload guard by claiming oversized files.
+_MAX_ATTACHMENT_BYTES = kanban_db.KANBAN_ATTACHMENT_MAX_BYTES
 
 
 def _safe_attachment_name(raw: str) -> str:

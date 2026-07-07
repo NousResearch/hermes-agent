@@ -103,6 +103,11 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 COMPLETION_ARTIFACT_EVIDENCE_KEY = "completion_artifact_evidence"
+# Shared cap for every durable Kanban attachment write path. Dashboard uploads
+# and completion-artifact preservation both land under task attachments; keeping
+# one limit prevents workers from bypassing the UI's disk-growth guard by
+# claiming arbitrarily large completion artifacts.
+KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -4082,6 +4087,30 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _copy_file_bounded(source: Path, dest: Path, *, max_bytes: int) -> int:
+    """Copy ``source`` to ``dest`` without writing more than ``max_bytes``.
+
+    Callers should still preflight ``stat()`` when possible so known-oversized
+    files fail before opening a destination. This streaming guard is the second
+    line of defense for files that grow between stat and copy or for platforms
+    where size metadata is unreliable. Partial destinations are removed before
+    raising.
+    """
+    total = 0
+    try:
+        with source.open("rb") as src, dest.open("wb") as out:
+            for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("source_exceeds_size_limit")
+                out.write(chunk)
+        shutil.copystat(source, dest)
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+    return total
+
+
 def _prepare_completion_artifacts(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4135,10 +4164,25 @@ def _prepare_completion_artifacts(
                 })
                 continue
 
+            source_size = source.stat().st_size
+            if source_size > KANBAN_ATTACHMENT_MAX_BYTES:
+                evidence.append({
+                    **base,
+                    "status": "unavailable",
+                    "reason": "source_exceeds_size_limit",
+                    "size": source_size,
+                    "limit": KANBAN_ATTACHMENT_MAX_BYTES,
+                })
+                continue
+
             dest_dir.mkdir(parents=True, exist_ok=True)
             safe_name = _safe_attachment_filename(source.name or raw, fallback=f"artifact-{idx}")
             dest = _unique_attachment_path(dest_dir, safe_name)
-            shutil.copy2(source, dest)
+            copied_size = _copy_file_bounded(
+                source,
+                dest,
+                max_bytes=KANBAN_ATTACHMENT_MAX_BYTES,
+            )
             stored_path = _path_metadata_string(dest)
             durable_paths.append(stored_path)
             content_type, _ = mimetypes.guess_type(dest.name)
@@ -4149,10 +4193,27 @@ def _prepare_completion_artifacts(
                 "status": "preserved",
                 "stored_path": stored_path,
                 "filename": dest.name,
-                "size": dest.stat().st_size,
+                "size": copied_size,
                 "sha256": _sha256_file(dest),
                 "content_type": content_type,
             })
+        except ValueError as exc:
+            if str(exc) == "source_exceeds_size_limit":
+                try:
+                    size = source.stat().st_size
+                except OSError:
+                    size = None
+                item = {
+                    **base,
+                    "status": "unavailable",
+                    "reason": "source_exceeds_size_limit",
+                    "limit": KANBAN_ATTACHMENT_MAX_BYTES,
+                }
+                if size is not None:
+                    item["size"] = size
+                evidence.append(item)
+            else:
+                raise
         except OSError as exc:
             evidence.append({
                 **base,

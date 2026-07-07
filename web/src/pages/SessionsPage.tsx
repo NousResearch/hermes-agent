@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
+import type { SessionRefreshSnapshotItem } from "@/lib/session-refresh";
 import type {
   SessionInfo,
   SessionMessage,
@@ -835,12 +836,15 @@ export default function SessionsPage() {
     loadStats();
   }, [loadStats]);
 
-  // Refs for the overview poll's new-session detection. The poll effect
+  // Refs for the overview poll's stale-list detection. The poll effect
   // below is mounted once with stable deps, so it reads the current page
-  // and the last-seen newest session id through refs instead of capturing
-  // stale values. ``newestSeenRef`` starts null so the first poll sets a
-  // baseline without triggering a redundant reload (mount already loads).
-  const newestSeenRef = useRef<string | null>(null);
+  // and the last overview snapshot through refs instead of capturing
+  // stale values. ``overviewSnapshotRef`` starts null so the first poll
+  // sets a baseline without triggering a redundant reload (mount already
+  // loads).
+  const overviewSnapshotRef = useRef<
+    readonly SessionRefreshSnapshotItem[] | null
+  >(null);
   const pageRef = useRef(page);
   pageRef.current = page;
 
@@ -861,16 +865,13 @@ export default function SessionsPage() {
           setOverviewSessions(r.sessions);
           // The dashboard server and a terminal CLI are separate
           // processes sharing one session DB — there is no push channel,
-          // so we detect sessions created in another process here. The
-          // overview poll already fetches the 50 newest sessions, so we
-          // reuse its head id as a cheap change signal: when it changes,
-          // silently refresh the paginated list so the new session shows
-          // up in real time without a visible loading flicker.
-          const newest = r.sessions[0]?.id ?? null;
-          if (shouldRefreshSessions(newestSeenRef.current, newest)) {
+          // so we detect new sessions and active-session changes from the
+          // overview poll and silently refresh the paginated list without
+          // a visible loading flicker.
+          if (shouldRefreshSessions(overviewSnapshotRef.current, r.sessions)) {
             loadSessions(pageRef.current, true);
           }
-          newestSeenRef.current = newest;
+          overviewSnapshotRef.current = r.sessions;
         })
         .catch(() => {});
     };

@@ -41,6 +41,7 @@ import {
   updateHubSkills
 } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 // Dedup rank when the same skill surfaces from multiple sources — higher trust
 // wins. Mirrors the backend's unified_search `_TRUST_RANK`.
@@ -144,10 +145,17 @@ export function SkillsHub({ query }: SkillsHubProps) {
   const { t } = useI18n()
   const h = t.skills.hub
 
+  // Both hub queries below are answered by the active profile's backend (and
+  // carry its installed map), so their cache keys need the profile segment.
+  const hubProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+
   // Sources + featured + the installed map — one cached fetch, revalidated on
   // mount and re-fetched (from the store) after an action lands.
+  // Sources carry the per-profile installed map, so key by the live gateway
+  // profile (store/hub-actions invalidates by the HUB_SOURCES_KEY prefix,
+  // which matches every profile segment).
   const sourcesQuery = useQuery({
-    queryKey: HUB_SOURCES_KEY,
+    queryKey: [...HUB_SOURCES_KEY, hubProfile],
     queryFn: getSkillHubSources,
     staleTime: 5 * 60_000
   })
@@ -168,7 +176,7 @@ export function SkillsHub({ query }: SkillsHubProps) {
 
   const sourceSearches = useQueries({
     queries: searchableSources.map(source => ({
-      queryKey: ['skill-hub-search', term, source.id],
+      queryKey: ['skill-hub-search', hubProfile, term, source.id],
       queryFn: () => searchSkillsHub(term, source.id),
       enabled: term.length > 0,
       staleTime: 60_000
@@ -323,7 +331,9 @@ export function SkillsHub({ query }: SkillsHubProps) {
         <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-1.5 text-[0.68rem] text-(--ui-text-tertiary)">
           <span className="min-w-0 truncate">
             {term.length > 0 ? h.resultCount(results.length, null) : h.featured}
-            {anyFetching && results.length > 0 && <span className="ml-2 text-(--ui-text-quaternary)">{h.searching}</span>}
+            {anyFetching && results.length > 0 && (
+              <span className="ml-2 text-(--ui-text-quaternary)">{h.searching}</span>
+            )}
           </span>
 
           {hasInstalled && (

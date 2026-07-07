@@ -1103,6 +1103,8 @@ export interface Translations {
     failedSaveSoul: string
     failedCreate: string
     failedRename: string
+    workingBadge: (count: number) => string
+    attentionBadge: (count: number) => string
   }
 
   cron: {
@@ -1175,6 +1177,71 @@ export interface Translations {
     promptScheduleRequired: string
     saveChanges: string
     createAction: string
+  }
+
+  kanban: {
+    title: string
+    close: string
+    loading: string
+    failedLoad: string
+    count: (count: number) => string
+    board: string
+    nudgeDispatcher: string
+    nudgeSent: (spawned: number, promoted: number) => string
+    nudgeFailed: string
+    newCard: string
+    noTasks: string
+    unassigned: string
+    priority: string
+    progressTitle: (done: number, total: number) => string
+    diagnostics: string
+    movedByRules: (column: string) => string
+    moveFailed: string
+    columnLabels: Record<string, string>
+    loadingDetail: string
+    status: string
+    assignee: string
+    description: string
+    noDescription: string
+    latestSummary: string
+    dependencies: string
+    parents: string
+    children: string
+    none: string
+    comments: string
+    noComments: string
+    commentPlaceholder: string
+    addComment: string
+    commentFailed: string
+    events: string
+    noEvents: string
+    runHistory: string
+    noRuns: string
+    runActive: string
+    workerLog: string
+    loadingLog: string
+    noWorkerLog: string
+    attachments: string
+    noAttachments: string
+    updateFailed: string
+    newCardTitle: string
+    newCardDesc: string
+    titleLabel: string
+    titlePlaceholder: string
+    assigneeLabel: string
+    assigneePlaceholder: string
+    bodyLabel: string
+    bodyPlaceholder: string
+    priorityLabel: string
+    parentLabel: string
+    parentNone: string
+    optional: string
+    createCard: string
+    creating: string
+    created: string
+    createFailed: string
+    titleRequired: string
+    assigneeRequired: string
   }
 
   artifacts: {
@@ -2066,5 +2133,24 @@ export interface Translations {
       description: string
       toggle: string
     }
+  }
+
+  // Cross-profile "All profiles" overview in the command center. Kept as its
+  // own top-level block (adjacent to commandCenter, appended at the end) so it
+  // composes with the existing section without touching its shape.
+  commandCenterOverview: {
+    sectionLabel: string
+    sectionDescription: string
+    working: (count: number) => string
+    attention: (count: number) => string
+    sessions: (count: number) => string
+    idle: string
+    noActivity: string
+    currentBadge: string
+    switch: string
+    openBoard: string
+    kanbanUnavailable: string
+    noHotCards: string
+    openCard: (title: string) => string
   }
 }

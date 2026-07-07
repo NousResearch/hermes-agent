@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -12,6 +13,7 @@ import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -236,7 +238,9 @@ export function ConfigSettings({
     isError: schemaFailed,
     refetch: refetchSchema
   } = useQuery({
-    queryKey: ['hermes-config-schema'],
+    // Schema comes from the active profile's backend (versions can differ
+    // across pooled/remote backends), so key it per profile like the record.
+    queryKey: ['hermes-config-schema', normalizeProfileKey(useStore($activeGatewayProfile))],
     queryFn: getHermesConfigSchema,
     staleTime: 5 * 60 * 1000
   })

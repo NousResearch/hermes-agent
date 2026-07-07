@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
@@ -10,6 +11,7 @@ import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
+import { $activeGatewayProfile, normalizeProfileKey } from '../store/profile'
 
 import { InlineNotice } from './notifications'
 import { Button } from './ui/button'
@@ -53,8 +55,11 @@ export function ModelPickerDialog({
   // the `hermes model` CLI picker, which shows the curated list verbatim.
   const [search, setSearch] = useState('')
 
+  // Profile segment keeps each backend's catalog in its own cache slot.
+  const modelOptionsProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+
   const modelOptions = useQuery({
-    queryKey: ['model-options', sessionId || 'global'],
+    queryKey: ['model-options', modelOptionsProfile, sessionId || 'global'],
     queryFn: () => requestModelOptions({ gateway: gw, sessionId }),
     enabled: open
   })

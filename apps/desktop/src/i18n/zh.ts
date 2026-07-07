@@ -208,6 +208,7 @@ export const zh: Translations = {
       'nav.messaging': '打开消息',
       'nav.artifacts': '打开制品',
       'nav.cron': '打开定时任务',
+      'nav.kanban': '打开看板',
       'nav.agents': '打开智能体',
       'session.new': '新建会话',
       'session.newWindow': '在新窗口中新建会话',
@@ -1502,7 +1503,9 @@ export const zh: Translations = {
     failedLoadSoul: '加载 SOUL.md 失败',
     failedSaveSoul: '保存 SOUL.md 失败',
     failedCreate: '创建配置档案失败',
-    failedRename: '重命名配置档案失败'
+    failedRename: '重命名配置档案失败',
+    workingBadge: count => `${count} 个会话运行中`,
+    attentionBadge: count => `${count} 个会话等待你的输入`
   },
 
   cron: {
@@ -1616,6 +1619,81 @@ export const zh: Translations = {
     createAction: '创建定时任务'
   },
 
+  kanban: {
+    title: '看板',
+    close: '关闭看板',
+    loading: '正在加载看板…',
+    failedLoad: '加载看板失败',
+    count: count => `${count} 张卡片`,
+    board: '面板',
+    nudgeDispatcher: '触发调度器',
+    nudgeSent: (spawned, promoted) => `已触发调度器 — 启动 ${spawned}，晋级 ${promoted}`,
+    nudgeFailed: '触发调度器失败',
+    newCard: '新建卡片',
+    noTasks: '暂无卡片',
+    unassigned: '未分配',
+    priority: '优先级',
+    progressTitle: (done, total) => `子任务已完成 ${done}/${total}`,
+    diagnostics: '诊断',
+    movedByRules: column => `已按面板规则移至「${column}」`,
+    moveFailed: '移动失败',
+    columnLabels: {
+      triage: '分诊',
+      todo: '待办',
+      scheduled: '已排程',
+      ready: '就绪',
+      running: '进行中',
+      blocked: '受阻',
+      review: '评审',
+      done: '完成',
+      archived: '已归档'
+    },
+    loadingDetail: '正在加载卡片…',
+    status: '状态',
+    assignee: '负责人',
+    description: '描述',
+    noDescription: '暂无描述',
+    latestSummary: '最新摘要',
+    dependencies: '依赖关系',
+    parents: '父任务：',
+    children: '子任务：',
+    none: '无',
+    comments: '评论',
+    noComments: '暂无评论',
+    commentPlaceholder: '添加评论…（⌘Enter 发送）',
+    addComment: '评论',
+    commentFailed: '添加评论失败',
+    events: '事件',
+    noEvents: '暂无事件',
+    runHistory: '运行历史',
+    noRuns: '暂无运行记录',
+    runActive: '进行中',
+    workerLog: '工作进程日志',
+    loadingLog: '正在加载日志…',
+    noWorkerLog: '暂无工作进程日志',
+    attachments: '附件',
+    noAttachments: '暂无附件',
+    updateFailed: '更新失败',
+    newCardTitle: '新建卡片',
+    newCardDesc: '调度器会把就绪卡片交给其指定的配置档案执行。',
+    titleLabel: '标题',
+    titlePlaceholder: '需要做什么？',
+    assigneeLabel: '负责人',
+    assigneePlaceholder: '选择配置档案',
+    bodyLabel: '描述',
+    bodyPlaceholder: '目标、方案、验收标准…',
+    priorityLabel: '优先级',
+    parentLabel: '父卡片',
+    parentNone: '无父卡片',
+    optional: '可选',
+    createCard: '创建卡片',
+    creating: '创建中…',
+    created: '卡片已创建',
+    createFailed: '创建卡片失败',
+    titleRequired: '标题为必填项。',
+    assigneeRequired: '负责人为必填项。'
+  },
+
   artifacts: {
     search: '搜索产物…',
     refresh: '刷新产物',
@@ -1656,7 +1734,8 @@ export const zh: Translations = {
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
-      artifacts: '产物'
+      artifacts: '产物',
+      kanban: '看板'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',
@@ -2619,5 +2698,21 @@ export const zh: Translations = {
       description: '显示移动端侧边栏。',
       toggle: '切换侧边栏'
     }
+  },
+
+  commandCenterOverview: {
+    sectionLabel: '全部配置档案',
+    sectionDescription: '总览所有配置档案的活动，以及共享的看板',
+    working: count => `${count} 个进行中`,
+    attention: count => `${count} 个待输入`,
+    sessions: count => `${count} 个会话`,
+    idle: '空闲',
+    noActivity: '暂无活动',
+    currentBadge: '当前',
+    switch: '切换',
+    openBoard: '打开看板',
+    kanbanUnavailable: '此后端不支持看板。',
+    noHotCards: '没有待审查或被阻塞的卡片',
+    openCard: title => `在看板中打开「${title}」`
   }
 }

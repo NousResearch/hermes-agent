@@ -50,6 +50,7 @@ import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
   CRON_ROUTE,
+  KANBAN_ROUTE,
   MESSAGING_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
@@ -128,6 +129,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.messaging': () => navigate(MESSAGING_ROUTE),
     'nav.artifacts': () => navigate(ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
+    'nav.kanban': () => navigate(KANBAN_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
     'session.new': () => {

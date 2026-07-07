@@ -25,6 +25,7 @@ import {
   Globe,
   type IconComponent,
   Info,
+  Kanban,
   KeyRound,
   Layers3,
   MessageCircle,
@@ -56,6 +57,7 @@ import {
 } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { requestStartWorkSession } from '@/store/projects'
 import { runGatewayRestart } from '@/store/system-actions'
 import { applyBackendUpdate } from '@/store/updates'
@@ -68,6 +70,7 @@ import {
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
+  KANBAN_ROUTE,
   MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
@@ -301,8 +304,12 @@ export function CommandPalette() {
 
   // Server-backed sources for the type-to-search groups, fetched lazily while
   // the palette is open. react-query handles caching/dedup/staleness.
+  // Config is profile-scoped (the sessions/archived lists below are cross-
+  // profile aggregates, so they stay unscoped).
+  const paletteProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+
   const configQuery = useQuery({
-    queryKey: ['command-palette', 'config'],
+    queryKey: ['command-palette', 'config', paletteProfile],
     queryFn: getHermesConfigRecord,
     enabled: open
   })
@@ -452,6 +459,14 @@ export function CommandPalette() {
             keywords: ['schedule', 'jobs'],
             label: t.shell.statusbar.cron,
             run: go(CRON_ROUTE)
+          },
+          {
+            action: 'nav.kanban',
+            icon: Kanban,
+            id: 'nav-kanban',
+            keywords: ['kanban', 'board', 'tasks', 'cards', 'dispatcher'],
+            label: t.kanban.title,
+            run: go(KANBAN_ROUTE)
           },
           { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
           { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) },

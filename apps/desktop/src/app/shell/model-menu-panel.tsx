@@ -36,6 +36,7 @@ import {
   modelVisibilityKey,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $activeSessionId,
   $currentFastMode,
@@ -81,8 +82,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const modelPresets = useStore($modelPresets)
   const visibleModels = useStore($visibleModels)
 
+  // Profile-scoped key: the catalog comes from whichever backend the gateway
+  // is on, so hopping profiles re-keys (warm per-profile caches, no bleed).
+  const modelOptionsProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+
   const modelOptions = useQuery({
-    queryKey: ['model-options', activeSessionId || 'global'],
+    queryKey: ['model-options', modelOptionsProfile, activeSessionId || 'global'],
     // Gateway-first even with no session yet: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers like `moa`
     // that the local REST fallback can't know about (#53817).
@@ -140,7 +145,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     setRefreshing(true)
 
     try {
-      const queryKey = ['model-options', activeSessionId || 'global']
+      const queryKey = ['model-options', modelOptionsProfile, activeSessionId || 'global']
 
       const next = await requestModelOptions({ gateway, refresh: true, sessionId: activeSessionId })
 
@@ -148,7 +153,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     } catch {
       // Network/backend hiccup — fall back to a plain invalidate so the next
       // open re-fetches (still cached, but no worse than before).
-      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+      void queryClient.invalidateQueries({ queryKey: ['model-options', modelOptionsProfile] })
     } finally {
       setRefreshing(false)
     }

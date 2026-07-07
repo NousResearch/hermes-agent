@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -24,12 +25,24 @@ vi.mock('@/hermes', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
   getGlobalModelOptions: () => getGlobalModelOptions(),
   getAuxiliaryModels: () => getAuxiliaryModels(),
+  // MoA catalog is optional (refresh() falls back to null) — but the export
+  // must exist or the whole Promise.all throws synchronously and the panel
+  // renders its error state instead of the provider list.
+  getMoaModels: vi.fn(async () => null),
+  saveMoaModels: vi.fn(async () => ({ ok: true })),
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   getHermesConfigRecord: () => getHermesConfigRecord(),
+  // Pulled in transitively via @/store/profile (profile-scoped query keys).
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
+  setApiRequestProfile: vi.fn(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config)
 }))
+
+// Keep the profile store's gateway/starmap side effects inert in this suite.
+vi.mock('@/store/gateway', () => ({ $gateway: { get: () => null }, ensureGatewayForProfile: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 vi.mock('@/store/onboarding', () => ({
   startManualProviderOAuth: (slug: string) => startManualProviderOAuth(slug)
@@ -76,7 +89,16 @@ afterEach(() => {
 async function renderModelSettings() {
   const { ModelSettings } = await import('./model-settings')
 
-  return render(<ModelSettings />)
+  // ModelSettings reaches useHermesConfigRecord (react-query) via the fast
+  // switch, so it needs a provider — throwaway client per render keeps the
+  // per-profile config cache from leaking between tests.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+  return render(
+    <QueryClientProvider client={client}>
+      <ModelSettings />
+    </QueryClientProvider>
+  )
 }
 
 describe('ModelSettings', () => {
@@ -91,11 +113,12 @@ describe('ModelSettings', () => {
     const triggers = await screen.findAllByRole('combobox')
     fireEvent.click(triggers[0])
 
-    // "Nous" shows in both the trigger and the open list; the unconfigured
-    // provider + its setup hint are the unique signal of the full universe.
+    // "Nous" shows in both the trigger and the open list; the unconfigured,
+    // model-less provider being listed at all is the unique signal of the
+    // full-universe payload (its setup affordance only renders once selected —
+    // covered by the next test).
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(await screen.findByText(/DeepSeek/)).toBeTruthy()
-    expect(await screen.findByText(/set up/)).toBeTruthy()
   })
 
   it('activates an unconfigured api_key provider inline by saving its key', async () => {

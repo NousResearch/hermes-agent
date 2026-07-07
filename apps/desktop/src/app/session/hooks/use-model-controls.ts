@@ -4,6 +4,7 @@ import { useCallback } from 'react'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
+import { activeProfileQueryKey } from '@/store/profile'
 import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
@@ -26,10 +27,15 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
     (provider: string, model: string, includeGlobal: boolean) => {
       const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
 
-      queryClient.setQueryData<ModelOptionsResponse>(['model-options', activeSessionId || 'global'], patch)
+      // Keys carry the live gateway profile segment (see the model-options
+      // useQuery call sites) — writes land on the active profile's slot only.
+      queryClient.setQueryData<ModelOptionsResponse>(
+        ['model-options', activeProfileQueryKey(), activeSessionId || 'global'],
+        patch
+      )
 
       if (includeGlobal) {
-        queryClient.setQueryData<ModelOptionsResponse>(['model-options', 'global'], patch)
+        queryClient.setQueryData<ModelOptionsResponse>(['model-options', activeProfileQueryKey(), 'global'], patch)
       }
     },
     [activeSessionId, queryClient]
@@ -99,7 +105,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
           value: `${selection.model} --provider ${selection.provider}`
         })
 
-        void queryClient.invalidateQueries({ queryKey: ['model-options', activeSessionId] })
+        void queryClient.invalidateQueries({ queryKey: ['model-options', activeProfileQueryKey(), activeSessionId] })
 
         return true
       } catch (err) {

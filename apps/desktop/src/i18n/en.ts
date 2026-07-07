@@ -213,6 +213,7 @@ export const en: Translations = {
       'nav.messaging': 'Open messaging',
       'nav.artifacts': 'Open artifacts',
       'nav.cron': 'Open scheduled jobs',
+      'nav.kanban': 'Open kanban board',
       'nav.agents': 'Open agents',
       'session.new': 'New session',
       'session.newWindow': 'New session in window',
@@ -1323,7 +1324,9 @@ export const en: Translations = {
     failedLoadSoul: 'Failed to load SOUL.md',
     failedSaveSoul: 'Failed to save SOUL.md',
     failedCreate: 'Failed to create profile',
-    failedRename: 'Failed to rename profile'
+    failedRename: 'Failed to rename profile',
+    workingBadge: count => (count === 1 ? '1 session working' : `${count} sessions working`),
+    attentionBadge: count => (count === 1 ? '1 session needs your input' : `${count} sessions need your input`)
   },
 
   cron: {
@@ -1438,6 +1441,81 @@ export const en: Translations = {
     createAction: 'Create cron'
   },
 
+  kanban: {
+    title: 'Kanban',
+    close: 'Close kanban',
+    loading: 'Loading kanban board…',
+    failedLoad: 'Failed to load kanban board',
+    count: count => (count === 1 ? '1 card' : `${count} cards`),
+    board: 'Board',
+    nudgeDispatcher: 'Nudge dispatcher',
+    nudgeSent: (spawned, promoted) => `Dispatcher nudged — spawned ${spawned}, promoted ${promoted}`,
+    nudgeFailed: 'Dispatch nudge failed',
+    newCard: 'New card',
+    noTasks: 'No cards',
+    unassigned: 'Unassigned',
+    priority: 'Priority',
+    progressTitle: (done, total) => `${done} of ${total} children done`,
+    diagnostics: 'Diagnostics',
+    movedByRules: column => `Moved to ${column} by board rules`,
+    moveFailed: 'Move failed',
+    columnLabels: {
+      triage: 'Triage',
+      todo: 'Todo',
+      scheduled: 'Scheduled',
+      ready: 'Ready',
+      running: 'In progress',
+      blocked: 'Blocked',
+      review: 'Review',
+      done: 'Done',
+      archived: 'Archived'
+    },
+    loadingDetail: 'Loading card…',
+    status: 'Status',
+    assignee: 'Assignee',
+    description: 'Description',
+    noDescription: 'No description',
+    latestSummary: 'Latest summary',
+    dependencies: 'Dependencies',
+    parents: 'Parents:',
+    children: 'Children:',
+    none: 'none',
+    comments: 'Comments',
+    noComments: 'No comments yet',
+    commentPlaceholder: 'Add a comment… (⌘Enter to send)',
+    addComment: 'Comment',
+    commentFailed: 'Failed to add comment',
+    events: 'Events',
+    noEvents: 'No events',
+    runHistory: 'Run history',
+    noRuns: 'No runs yet',
+    runActive: 'active',
+    workerLog: 'Worker log',
+    loadingLog: 'Loading log…',
+    noWorkerLog: 'No worker log yet',
+    attachments: 'Attachments',
+    noAttachments: 'No attachments',
+    updateFailed: 'Update failed',
+    newCardTitle: 'New card',
+    newCardDesc: 'The dispatcher hands ready cards to their assigned profile.',
+    titleLabel: 'Title',
+    titlePlaceholder: 'What needs to be done?',
+    assigneeLabel: 'Assignee',
+    assigneePlaceholder: 'Pick a profile',
+    bodyLabel: 'Description',
+    bodyPlaceholder: 'Goal, approach, acceptance criteria…',
+    priorityLabel: 'Priority',
+    parentLabel: 'Parent card',
+    parentNone: 'No parent',
+    optional: 'Optional',
+    createCard: 'Create card',
+    creating: 'Creating…',
+    created: 'Card created',
+    createFailed: 'Failed to create card',
+    titleRequired: 'Title is required.',
+    assigneeRequired: 'Assignee is required.'
+  },
+
   artifacts: {
     search: 'Search artifacts...',
     refresh: 'Refresh artifacts',
@@ -1478,7 +1556,8 @@ export const en: Translations = {
       'new-session': 'New session',
       skills: 'Capabilities',
       messaging: 'Messaging',
-      artifacts: 'Artifacts'
+      artifacts: 'Artifacts',
+      kanban: 'Kanban'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',
@@ -2470,5 +2549,21 @@ export const en: Translations = {
       description: 'Displays the mobile sidebar.',
       toggle: 'Toggle Sidebar'
     }
+  },
+
+  commandCenterOverview: {
+    sectionLabel: 'All profiles',
+    sectionDescription: 'Activity across every profile, plus the shared kanban board',
+    working: count => `${count} working`,
+    attention: count => (count === 1 ? '1 needs input' : `${count} need input`),
+    sessions: count => `${count} ${count === 1 ? 'session' : 'sessions'}`,
+    idle: 'Idle',
+    noActivity: 'No activity yet',
+    currentBadge: 'Current',
+    switch: 'Switch',
+    openBoard: 'Open board',
+    kanbanUnavailable: 'Kanban is not available on this backend.',
+    noHotCards: 'Nothing in review or blocked',
+    openCard: title => `Open "${title}" on the kanban board`
   }
 }

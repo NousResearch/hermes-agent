@@ -2693,6 +2693,27 @@ class TestWebServerEndpoints:
 
         assert seen_encodings == {"index": "utf-8", "css": "utf-8"}
 
+    def test_headless_serve_disables_spa_even_with_a_dist(self, monkeypatch, tmp_path):
+        """`hermes serve` (HERMES_SERVE_HEADLESS) must NOT serve the SPA even
+        when a built dist is present — only the API/WS surface is reachable."""
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text("<html><body>UI</body></html>", encoding="utf-8")
+
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        app_ = FastAPI()
+        ws.mount_spa(app_)
+
+        for route in ("/", "/chat"):
+            resp = TestClient(app_).get(route)
+            assert resp.status_code == 404
+            assert "web UI disabled" in resp.json()["error"]
+
     def test_set_model_main_nous_applies_gateway_defaults(self, monkeypatch):
         """Switching the main provider to Nous calls apply_nous_managed_defaults
         (mirroring the CLI's post-model-selection Tool Gateway routing) and

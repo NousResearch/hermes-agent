@@ -506,6 +506,12 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             tc_id = msg.get("tool_call_id")
             if tc_id and tc_id in known_tool_ids:
                 filtered.append(msg)
+                # Consume the id so a SECOND tool result carrying the same
+                # tool_call_id (duplicate from a retry/crash/session-resume
+                # glitch) falls into the drop branch below instead of being
+                # replayed — strict providers (DeepSeek) reject a duplicate
+                # tool_call_id with HTTP 400 (#58327). Credit: #55436.
+                known_tool_ids.discard(tc_id)
             else:
                 repairs += 1
         else:
@@ -723,7 +729,14 @@ def recover_with_credential_pool(
     # that seeded the pool.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
-    if current_provider and pool_provider and current_provider != pool_provider:
+    # Guard: skip credential pool recovery when the pool is scoped to a
+    # different provider than the agent.  Only guard when the pool has a
+    # known provider — an empty pool provider means "unscoped" (applies to
+    # any provider).  An empty agent provider is treated as a mismatch
+    # because swapping the pool's credentials would set base_url/api_key
+    # without fixing the empty provider field, leaving the agent in a
+    # corrupted state (provider="" model="").
+    if pool_provider and current_provider != pool_provider:
         # Custom endpoints use two naming conventions for the SAME provider:
         # the agent carries the generic ``custom`` label while the pool is
         # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
@@ -2382,6 +2395,41 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    # --- Drop empty / malformed tool_calls arrays on assistant messages ---
+    # An assistant message carrying ``tool_calls: []`` (an empty array) — or a
+    # non-list value under the key — is semantically identical to an assistant
+    # message with no tool calls, but strict OpenAI-compatible providers reject
+    # the empty array outright: DeepSeek v4 returns HTTP 400 "Invalid
+    # 'messages[N].tool_calls': empty array. Expected an array with minimum
+    # length 1, but got an empty array instead." (#58755, follow-up to #56980).
+    # Empty arrays reach here from session resume, host-fed histories, or the
+    # consecutive-assistant merge in ``repair_message_sequence`` (which
+    # preserves a pre-existing ``[]`` on the surviving turn). This is the final
+    # pre-API chokepoint, so normalize defensively — and, per the #56980
+    # review, do it HERE on the per-call copy rather than in
+    # ``repair_message_sequence``, which would destructively rewrite the
+    # persisted trajectory. Shallow-copy the message before dropping the key so
+    # stored history (and prompt caching) stays byte-stable.
+    normalized: List[Dict[str, Any]] = []
+    dropped_empty_tool_calls = 0
+    for msg in messages:
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and "tool_calls" in msg
+            and not (isinstance(msg["tool_calls"], list) and msg["tool_calls"])
+        ):
+            msg = {k: v for k, v in msg.items() if k != "tool_calls"}
+            dropped_empty_tool_calls += 1
+        normalized.append(msg)
+    if dropped_empty_tool_calls:
+        messages = normalized
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped empty/invalid tool_calls on %d "
+            "assistant message(s)",
+            dropped_empty_tool_calls,
+        )
+
     # --- Repair tool_calls whose function.name is empty/missing ---
     # Some providers (and partially-streamed responses) emit a tool_call with
     # id="call_xxx" but function.name="". Downstream Responses-API adapters
@@ -2477,6 +2525,50 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         _ra().logger.debug(
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
+        )
+
+    # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a
+    # payload where the same tool_call_id appears more than once with HTTP 400
+    # "Duplicate value for 'tool_call_id'" (#58327). Duplicates can arise from
+    # retries, crash/resume glitches, or a compression window that re-emits a
+    # tool result. This is the final pre-API chokepoint, so dedup defensively
+    # here even though repair_message_sequence also consumes matched ids.
+    #   (a) collapse duplicate tool_calls WITHIN an assistant message
+    #   (b) drop later tool result messages reusing an already-seen id
+    seen_assistant_call_ids: set = set()
+    seen_result_call_ids: set = set()
+    deduped: List[Dict[str, Any]] = []
+    removed_dupes = 0
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            kept_tcs = []
+            for tc in msg.get("tool_calls") or []:
+                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                if cid and cid in seen_assistant_call_ids:
+                    removed_dupes += 1
+                    continue
+                if cid:
+                    seen_assistant_call_ids.add(cid)
+                kept_tcs.append(tc)
+            if len(kept_tcs) != len(msg.get("tool_calls") or []):
+                msg = {**msg, "tool_calls": kept_tcs}
+            deduped.append(msg)
+        elif role == "tool":
+            cid = (msg.get("tool_call_id") or "").strip()
+            if cid and cid in seen_result_call_ids:
+                removed_dupes += 1
+                continue
+            if cid:
+                seen_result_call_ids.add(cid)
+            deduped.append(msg)
+        else:
+            deduped.append(msg)
+    if removed_dupes:
+        messages = deduped
+        _ra().logger.debug(
+            "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
+            removed_dupes,
         )
     return messages
 

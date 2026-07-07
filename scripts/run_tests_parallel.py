@@ -612,7 +612,7 @@ def _handle_shutdown_signal(signum, frame):
     print(f"\n\nReceived {sig_name}, waiting for in-flight tests to complete...", flush=True)
 
     if _running_futures:
-        done, _ = wait(_running_futures, timeout=None)
+        done, _ = wait(_running_futures, timeout=120)
         print(f"  {len(done)} test(s) completed after signal.", flush=True)
 
     print(f"\nExiting after {sig_name} (caught by harness).", flush=True)

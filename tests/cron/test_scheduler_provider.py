@@ -493,8 +493,7 @@ def test_heartbeat_age_detects_staleness(tmp_path, monkeypatch):
     cron_dir = tmp_path / "cron"
     cron_dir.mkdir(parents=True)
     hb = cron_dir / "ticker_heartbeat"
-    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
-    monkeypatch.setattr(jobs, "TICKER_HEARTBEAT_FILE", hb)
+    monkeypatch.setattr(jobs, "_get_ticker_heartbeat_file", lambda: hb)
 
     import time as _t
     hb.write_text(str(_t.time() - 10_000), encoding="utf-8")
@@ -505,19 +504,23 @@ def test_heartbeat_age_detects_staleness(tmp_path, monkeypatch):
 def test_heartbeat_write_failure_is_silent(tmp_path, monkeypatch):
     """A real atomic-write failure must be swallowed AND leave no temp file.
 
-    Point CRON_DIR at a path that cannot be created (its parent is a regular
-    file), so ensure_dirs()/mkstemp inside _atomic_write_epoch genuinely fail.
-    record_ticker_heartbeat must not raise, and no stray .hb_*.tmp may leak.
+    Point the heartbeat file getter at a path that cannot be created (its
+    parent is a regular file), so ensure_dirs()/mkstemp inside
+    _atomic_write_epoch genuinely fail. record_ticker_heartbeat must not
+    raise, and no stray temp file may leak.
     """
     import cron.jobs as jobs
 
     blocker = tmp_path / "not_a_dir"
     blocker.write_text("i am a file, not a directory")
     bad_cron_dir = blocker / "cron"  # parent is a file -> mkdir/mkstemp fail
-    monkeypatch.setattr(jobs, "CRON_DIR", bad_cron_dir)
-    monkeypatch.setattr(jobs, "OUTPUT_DIR", bad_cron_dir / "output")
-    monkeypatch.setattr(jobs, "TICKER_HEARTBEAT_FILE", bad_cron_dir / "ticker_heartbeat")
-    monkeypatch.setattr(jobs, "TICKER_SUCCESS_FILE", bad_cron_dir / "ticker_last_success")
+    bad_heartbeat = bad_cron_dir / "ticker_heartbeat"
+    bad_success = bad_cron_dir / "ticker_last_success"
+
+    # Patch the getter functions to return bad paths
+    monkeypatch.setattr(jobs, "_get_ticker_heartbeat_file", lambda: bad_heartbeat)
+    monkeypatch.setattr(jobs, "_get_ticker_success_file", lambda: bad_success)
+    monkeypatch.setattr(jobs, "_get_cron_dir", lambda: bad_cron_dir)
 
     jobs.record_ticker_heartbeat(success=True)  # must not raise
 

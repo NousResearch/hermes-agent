@@ -1552,14 +1552,27 @@ class SessionDB:
                     (SCHEMA_VERSION,),
                 )
 
-        # Unique title index — always ensure it exists
+        # Unique title index — scoped per source so that TUI, desktop, CLI,
+        # and gateway sessions don't block each other's renames.
+        # Migration runs once: check sqlite_master for the old global index
+        # definition and only rebuild when it's present.
         try:
-            cursor.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
-                "ON sessions(title) WHERE title IS NOT NULL"
-            )
+            row = cursor.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='index' AND name='idx_sessions_title_unique'"
+            ).fetchone()
+            existing_sql = row["sql"] if row else ""
+            needs_rebuild = not existing_sql or "source" not in existing_sql
+            if needs_rebuild:
+                cursor.execute(
+                    "DROP INDEX IF EXISTS idx_sessions_title_unique"
+                )
+                cursor.execute(
+                    "CREATE UNIQUE INDEX idx_sessions_title_unique "
+                    "ON sessions(source, title) WHERE title IS NOT NULL"
+                )
         except sqlite3.OperationalError:
-            pass  # Index already exists
+            pass  # Concurrent access or index already correct
 
         if fts5_available:
             # FTS5 setup. Run the DDL even when the virtual table exists so
@@ -2707,10 +2720,15 @@ class SessionDB:
         title = self.sanitize_title(title)
         def _do(conn):
             if title:
-                # Check uniqueness (allow the same session to keep its own title)
+                # Check uniqueness (allow the same session to keep its own
+                # title).  Scoped per source so that TUI, desktop, CLI, and
+                # gateway sessions don't block each other's renames — only
+                # a collision within the same source is an error.
                 cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
-                    (title, session_id),
+                    "SELECT id FROM sessions "
+                    "WHERE title = ? AND id != ? "
+                    "AND source = (SELECT source FROM sessions WHERE id = ?)",
+                    (title, session_id, session_id),
                 )
                 conflict = cursor.fetchone()
                 if conflict:

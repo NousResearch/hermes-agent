@@ -2568,6 +2568,22 @@ class TestSessionTitleLineage:
         with pytest.raises(ValueError, match="already in use"):
             db.set_session_title("child", "shared")
 
+    def test_cross_source_title_does_not_conflict(self, db):
+        """A desktop session can use a title already held by a TUI session."""
+        db.create_session("tui_sess", "tui")
+        db.create_session("desk_sess", "desktop")
+        db.set_session_title("tui_sess", "Shared Title")
+        # No ValueError — different source
+        assert db.set_session_title("desk_sess", "Shared Title") is True
+
+    def test_same_source_title_still_conflicts(self, db):
+        """Two desktop sessions cannot share the same title."""
+        db.create_session("a", "desktop")
+        db.create_session("b", "desktop")
+        db.set_session_title("a", "Shared Title")
+        with pytest.raises(ValueError, match="already in use"):
+            db.set_session_title("b", "Shared Title")
+
 
 class TestSanitizeTitle:
     """Tests for SessionDB.sanitize_title() validation and cleaning."""

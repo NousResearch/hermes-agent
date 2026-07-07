@@ -14,7 +14,7 @@ import {
   type ParentToolInput,
   type RunTimeline
 } from '@/store/run-timeline'
-import { $activeSessionId, $messages, $sessions } from '@/store/session'
+import { $activeSessionId, $messages, $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 
 import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
@@ -118,15 +118,17 @@ export function ObservatoryView({ onClose }: ObservatoryViewProps) {
   const [seek, setSeek] = useState(0)
 
   const activeSessionId = useStore($activeSessionId)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messages = useStore($messages)
   const sessions = useStore($sessions)
   const subagentsBySession = useStore($subagentsBySession)
 
   const nowMs = Date.now()
 
-  const sid = activeSessionId ?? ''
+  const sid = selectedStoredSessionId || activeSessionId || ''
   const session = sessions.find(s => s.id === sid)
-  const liveSubs: SubagentProgress[] = sid ? (subagentsBySession[sid] ?? []) : []
+  const liveSessionId = activeSessionId || sid
+  const liveSubs: SubagentProgress[] = liveSessionId ? (subagentsBySession[liveSessionId] ?? []) : []
   const hasLiveChildren = liveSubs.length > 0
 
   // Historical child lanes come from persisted subagent sessions. Only fetched

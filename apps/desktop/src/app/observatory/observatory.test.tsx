@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { buildRunTimeline } from '@/store/run-timeline'
-import { $activeSessionId, $messages, $sessions } from '@/store/session'
+import { $activeSessionId, $messages, $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $subagentsBySession } from '@/store/subagents'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -62,6 +62,7 @@ function toolMessage(id: string, calls: { id: string; name: string; startedAt?: 
 
 beforeEach(() => {
   $activeSessionId.set(null)
+  $selectedStoredSessionId.set(null)
   $messages.set([])
   $sessions.set([])
   $subagentsBySession.set({})
@@ -175,7 +176,41 @@ describe('ObservatoryView', () => {
     await waitFor(() => expect(screen.getByTestId('bar-child-a')).toBeTruthy())
     expect(getSessionChildren).toHaveBeenCalledWith('done-1', undefined)
     // Header flags the historical source.
-    expect(screen.getByText(/historical/)).toBeTruthy()
+    expect(screen.getAllByText(/historical/).length).toBeGreaterThan(0)
+  })
+
+  it('renders persisted child lanes for a selected stored session even when the active runtime id differs', async () => {
+    // Regression for real Desktop QA: the visible/loaded transcript is keyed by
+    // the stored session id, but activeSessionId may point at a live runtime/new
+    // chat id. Observatory must query historical children for the selected
+    // stored session, otherwise the backend 404s and the UI falls back to a
+    // parent-only lane.
+    $activeSessionId.set('runtime-current')
+    $selectedStoredSessionId.set('stored-historical')
+    $sessions.set([session('stored-historical', 'Stored historical run', { ended_at: CREATED_S + 120 })])
+    $messages.set([toolMessage('m1', [{ id: 't1', name: 'delegate_task', startedAt: CREATED_S, durationS: 1 }])])
+    getSessionChildren.mockResolvedValue({
+      session_id: 'stored-historical',
+      children: [
+        {
+          id: 'stored-child',
+          title: null,
+          started_at: CREATED_S + 1,
+          ended_at: CREATED_S + 60,
+          tool_call_count: 6,
+          message_count: 13,
+          model: 'gpt-5.5',
+          status: 'completed'
+        }
+      ]
+    })
+
+    renderWithQuery(<ObservatoryView onClose={vi.fn()} />)
+
+    await waitFor(() => expect(screen.getByTestId('bar-stored-child')).toBeTruthy())
+    expect(getSessionChildren).toHaveBeenCalledWith('stored-historical', undefined)
+    expect(getSessionChildren).not.toHaveBeenCalledWith('runtime-current', undefined)
+    expect(screen.getAllByText(/historical/).length).toBeGreaterThan(0)
   })
 
   it('does NOT fetch persisted children when the live store already has subagents', () => {

@@ -145,6 +145,41 @@ class TestDiscordRequest:
         assert exc_info.value.status == 403
         assert "Missing Access" in exc_info.value.body
 
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_response_body_size_limit(self, mock_urlopen_fn, monkeypatch):
+        monkeypatch.setattr("tools.discord_tool._DISCORD_RESPONSE_BODY_MAX_BYTES", 8)
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = b"x" * 9
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen_fn.return_value = mock_resp
+
+        with pytest.raises(DiscordAPIError) as exc_info:
+            _discord_request("GET", "/test", "tok")
+
+        assert exc_info.value.status == 502
+        assert "response body exceeded 8 bytes" in exc_info.value.body
+        mock_resp.read.assert_called_once_with(9)
+
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_http_error_body_size_limit(self, mock_urlopen_fn, monkeypatch):
+        monkeypatch.setattr("tools.discord_tool._DISCORD_ERROR_BODY_MAX_BYTES", 8)
+        http_error = urllib.error.HTTPError(
+            url="https://discord.com/api/v10/test",
+            code=403,
+            msg="Forbidden",
+            hdrs={},
+            fp=BytesIO(b"x" * 9),
+        )
+        mock_urlopen_fn.side_effect = http_error
+
+        with pytest.raises(DiscordAPIError) as exc_info:
+            _discord_request("GET", "/test", "tok")
+
+        assert exc_info.value.status == 403
+        assert "error body exceeded 8 bytes" in exc_info.value.body
+
 
 # ---------------------------------------------------------------------------
 # Main handler: validation

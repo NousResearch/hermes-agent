@@ -597,6 +597,22 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    try:
+        from agent.smart_model_router import evaluate_turn_route
+
+        _smart_route_decision = evaluate_turn_route(
+            agent,
+            original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+        )
+        if _smart_route_decision is not None:
+            agent._last_smart_route_decision = _smart_route_decision.as_dict()
+        else:
+            agent._last_smart_route_decision = None
+    except Exception as exc:
+        logger.debug("smart model routing observe step skipped: %s", exc, exc_info=True)
+
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None

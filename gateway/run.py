@@ -2975,15 +2975,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: (session_key, user_id), Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[tuple, Dict[str, Any]] = {}
 
-    def _pending_approvals_key(self, session_key: str, user_id: str = "") -> tuple:
-        """Composite key for the per-session pending-approvals map.
-
-        Mirrors tools.approval._approval_queue_key so that in a shared
-        gateway thread each participant's pending approval is tracked (and
-        expired) independently — closing the cross-user approval hijack.
-        """
-        return (session_key, user_id or "")
-
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
@@ -3126,6 +3117,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set after a wake (re-arm cooldown, 0.F) so we don't immediately re-go
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
+
+
+    def _pending_approvals_key(self, session_key: str, user_id: str = "") -> tuple:
+        """Composite key for the per-session pending-approvals map.
+
+        Mirrors tools.approval._approval_queue_key so that in a shared
+        gateway thread each participant's pending approval is tracked (and
+        expired) independently — closing the cross-user approval hijack.
+        """
+        return (session_key, user_id or "")
 
 
     def _wire_teams_pipeline_runtime(self) -> None:

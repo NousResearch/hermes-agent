@@ -17,8 +17,10 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -1914,7 +1916,7 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str, timeout_seconds: Optional[int] = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -1970,7 +1972,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
-    script_timeout = _get_script_timeout()
+    script_timeout = int(timeout_seconds) if timeout_seconds else _get_script_timeout()
 
     # Pick an interpreter by extension.  Bash for .sh/.bash, Python for
     # everything else.  We deliberately do NOT honour the file's own
@@ -1999,18 +2001,50 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
-        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=script_timeout,
-            cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
-            **popen_kwargs,
-        )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {"start_new_session": True}
+        run_env = _sanitize_subprocess_env(os.environ.copy())
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stdout_file, tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stderr_file:
+            proc = subprocess.Popen(
+                argv,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+                cwd=str(path.parent),
+                env=run_env,
+                **popen_kwargs,
+            )
+            timed_out = False
+            try:
+                proc.communicate(timeout=script_timeout)
+                result_returncode = proc.returncode
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                try:
+                    if sys.platform == "win32":
+                        proc.kill()
+                    else:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+                result_returncode = proc.returncode
+
+            if not timed_out and sys.platform != "win32":
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except OSError:
+                    pass
+
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read().strip()
+            stderr = stderr_file.read().strip()
+
+        if timed_out:
+            return False, f"Script timed out after {script_timeout}s: {path}"
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2022,8 +2056,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if result_returncode != 0:
+            parts = [f"Script exited with code {result_returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
@@ -2091,7 +2125,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output = _run_job_script(script_path, job.get("script_timeout_seconds"))
         if success:
             if script_output:
                 prompt = (
@@ -2444,7 +2478,7 @@ def run_job(
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(script_path, job.get("script_timeout_seconds"))
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2533,7 +2567,7 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script(script_path, job.get("script_timeout_seconds"))
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

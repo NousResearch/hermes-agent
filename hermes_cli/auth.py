@@ -2896,6 +2896,80 @@ def _spotify_interactive_setup(redirect_uri_hint: str) -> str:
     return raw
 
 
+def _parse_pasted_callback(raw: str) -> dict:
+    """Parse a pasted callback URL / query string into the loopback shape.
+
+    Accepts any of:
+
+    * full URL:  ``http://127.0.0.1:56121/callback?code=abc&state=xyz``
+    * bare query string:  ``?code=abc&state=xyz``  or  ``code=abc&state=xyz``
+    * bare code (no state, only used when the upstream omits state):
+      ``abc-the-code-value``
+
+    Returns ``{"code", "state", "error", "error_description"}`` with
+    missing keys set to ``None`` so the Spotify PKCE callsite can keep
+    using the same validation path (state check, error check, etc.)
+    it already uses for the HTTP server output. Regression for #26923 —
+    formalises the curl-the-callback-URL workaround the reporter used
+    while waiting for upstream support.
+    """
+    stripped = raw.strip()
+    result: dict = {
+        "code": None,
+        "state": None,
+        "error": None,
+        "error_description": None,
+    }
+    if not stripped:
+        return result
+    query = ""
+    if stripped.startswith(("http://", "https://")):
+        try:
+            parsed = urlparse(stripped)
+        except Exception:
+            return result
+        query = parsed.query or ""
+    elif stripped.startswith("?"):
+        query = stripped[1:]
+    elif "=" in stripped:
+        # Looks like a bare query fragment (``code=...&state=...``).
+        query = stripped
+    else:
+        # Treat as a bare opaque code value with no state.
+        result["code"] = stripped
+        return result
+    params = parse_qs(query, keep_blank_values=False)
+    for key in ("code", "state", "error", "error_description"):
+        values = params.get(key)
+        if values:
+            result[key] = values[0]
+    return result
+
+
+def _prompt_manual_callback_paste(redirect_uri: str) -> dict:
+    """Read a callback URL from stdin as a fallback for browser-only remotes.
+
+    Used when ``--manual-paste`` is set or when the loopback listener
+    cannot bind. Returns the parsed callback dict (same shape as the
+    HTTP handler output) so the existing state / error validation in
+    the caller works unchanged. See #26923.
+    """
+    print()
+    print("─── Manual callback paste ─────────────────────────────────────")
+    print("After approving in your browser, your browser will try to load")
+    print(f"  {redirect_uri}")
+    print("which fails (the loopback listener is on this remote machine,")
+    print("not on your laptop) — that is expected. Copy the FULL URL")
+    print("from your browser's address bar of that failed page and paste")
+    print("it below. A bare '?code=...&state=...' fragment also works.")
+    print("───────────────────────────────────────────────────────────────")
+    try:
+        raw = input("Callback URL: ")
+    except (EOFError, KeyboardInterrupt):
+        raw = ""
+    return _parse_pasted_callback(raw)
+
+
 def login_spotify_command(args) -> None:
     existing_state = get_provider_auth_state("spotify") or {}
 

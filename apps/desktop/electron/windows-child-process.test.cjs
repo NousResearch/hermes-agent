@@ -110,6 +110,19 @@ test('desktop backend teardown tree-kills Windows backend descendants', () => {
   assert.doesNotMatch(quitSnippet, /hermesProcess\.kill\('SIGTERM'\)/)
 })
 
+test('pooled backend startup failures clean up partial children', () => {
+  const source = readElectronFile('main.cjs')
+  const ensureIndex = source.indexOf('async function ensureBackend(profile)')
+  assert.notEqual(ensureIndex, -1, 'missing ensureBackend')
+  const snippet = source.slice(ensureIndex, ensureIndex + 1400)
+
+  assert.match(snippet, /spawnPoolBackend\(key, entry\)\.catch\(error => \{/)
+  assert.match(snippet, /event: 'startup\.failure'/)
+  assert.match(snippet, /stopBackendChild\(entry\.process\)/)
+  assert.match(snippet, /backendPool\.delete\(key\)/)
+  assert.match(snippet, /throw error/)
+})
+
 test('intentional or interactive desktop child processes stay documented', () => {
   const source = readElectronFile('main.cjs')
 

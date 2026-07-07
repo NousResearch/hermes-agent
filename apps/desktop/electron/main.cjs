@@ -5438,6 +5438,15 @@ async function ensureBackend(profile) {
 
   const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now() }
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
+    rememberLog(`Hermes backend for profile "${key}" startup failed: ${error.message}`)
+    recordDiagnosticEvent({
+      component: 'backend',
+      event: 'startup.failure',
+      message: `Pooled backend startup failed for profile ${key}: ${error.message}`,
+      severity: 'error',
+      details: { profile: key, error: error.message, mode: 'pool' }
+    })
+    stopBackendChild(entry.process)
     backendPool.delete(key)
     throw error
   })

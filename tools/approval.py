@@ -2053,10 +2053,6 @@ def _run_approval_gate(
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
-    session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
-        return {"approved": True, "message": None}
-
     if approval_callback is None:
         try:
             from tools.terminal_tool import _get_approval_callback
@@ -2068,7 +2064,9 @@ def _run_approval_gate(
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
-        # Cron sessions: respect cron_mode config
+        # Cron sessions: respect cron_mode config (evaluated BEFORE
+        # is_approved so an "Always" tap in an interactive session
+        # doesn't create a standing grant for cron jobs).
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
                 return {
@@ -2103,6 +2101,14 @@ def _run_approval_gate(
             "HERMES_GATEWAY_SESSION to require approval.",
             autoapprove_log_prefix, pattern_key, description,
         )
+        return {"approved": True, "message": None}
+
+    # Permanent allowlist / session approval (evaluated AFTER the
+    # non-interactive / cron branches above so an "Always" tap in an
+    # interactive session can't silently override cron_mode: deny or
+    # fail_closed_when_no_human).
+    session_key = get_current_session_key()
+    if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
     if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):

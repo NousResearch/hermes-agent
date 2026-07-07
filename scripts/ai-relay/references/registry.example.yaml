@@ -19,6 +19,7 @@ ai:
     price_per_call_thb: 3      # [สมมติ]
     fallback_rank: 2
     login_hint: "codex login"
+    login_cmd: "codex login"        # relay-relogin เอาไปรัน login ให้อัตโนมัติได้
     enabled: true
   grok:
     vendor: xai
@@ -28,6 +29,7 @@ ai:
     price_per_call_thb: 2      # [สมมติ]
     fallback_rank: 1
     login_hint: "grok login --device-auth"
+    login_cmd: "grok login --device-auth"   # relay-relogin เอาไปรัน login ให้อัตโนมัติได้
     enabled: true
   gemini:
     vendor: google
@@ -37,7 +39,7 @@ ai:
     price_per_call_thb: 1.5    # [สมมติ]
     fallback_rank: 3
     login_hint: "gemini auth login (หรือใส่ GEMINI_API_KEY ใน .env)"
-    enabled: true
+    enabled: false            # ยังไม่ใช้ (เจ้าของแจ้ง 2026-07-06) · เปิดใหม่ = enabled: true
   sonnet:
     vendor: anthropic
     roles: [coder, reviewer]

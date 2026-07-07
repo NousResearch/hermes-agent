@@ -175,6 +175,54 @@ def test_relay_suggest_reviewer_must_be_different_vendor_from_coder():
     assert reg[out["reviewer"]]["vendor"] != reg[out["coder"]]["vendor"]
 
 
+def load_relay_relogin():
+    path = ROOT / "relay-relogin.py"
+    assert path.exists(), "ต้องมี scripts/ai-relay/relay-relogin.py"
+    return load_module("relay_relogin", "relay-relogin.py")
+
+
+def test_relay_relogin_lists_only_down_enabled_tools_with_login_cmd_first():
+    relay_relogin = load_relay_relogin()
+    reg = {
+        "codex":  {"enabled": True, "login_hint": "codex login", "login_cmd": "codex login"},
+        "grok":   {"enabled": True, "login_hint": "grok login --device-auth", "login_cmd": "grok login --device-auth"},
+        "opus":   {"enabled": True, "login_hint": "claude (login ผ่าน Claude Code)"},   # ไม่มี login_cmd
+        "gemini": {"enabled": False, "login_hint": "x"},   # ปิดอยู่ → ไม่นับ
+    }
+    status_map = {
+        "codex":  {"ready": False, "live": "auth"},
+        "grok":   {"ready": True},                          # พร้อม → ไม่ต้อง login
+        "opus":   {"ready": False, "hint": "ยังไม่ล็อกอิน"},
+    }
+    plan = relay_relogin.relogin_plan(reg, status_map)
+    tools = [p["tool"] for p in plan]
+    assert "grok" not in tools          # พร้อมแล้ว ไม่อยู่ในรายการ
+    assert "gemini" not in tools        # ปิดอยู่ ไม่อยู่ในรายการ
+    assert set(tools) == {"codex", "opus"}
+    # ตัวที่มีคำสั่ง login (codex) ต้องมาก่อนตัวที่ไม่มี (opus) เพื่อ --run พาทำได้
+    assert tools[0] == "codex"
+    assert plan[0]["login_cmd"] == "codex login"
+    assert plan[1]["login_cmd"] is None
+
+
+def test_relay_relogin_safe_login_argv_allowlist():
+    # GPT-5 fix: --run รันได้เฉพาะคำสั่ง login ที่โปรแกรมอยู่ในรายชื่ออนุญาต (กัน registry ถูกแก้เป็น rm)
+    relay_relogin = load_relay_relogin()
+    allowed = {"codex", "grok", "gemini", "claude"}
+    assert relay_relogin.safe_login_argv("codex login", allowed) == ["codex", "login"]
+    assert relay_relogin.safe_login_argv("grok login --device-auth", allowed) == ["grok", "login", "--device-auth"]
+    # คำสั่งอันตราย/ไม่อยู่ในรายชื่อ → None (ไม่รัน)
+    assert relay_relogin.safe_login_argv("rm -rf /", allowed) is None
+    assert relay_relogin.safe_login_argv("", allowed) is None
+    assert relay_relogin.safe_login_argv(None, allowed) is None
+
+
+def test_relay_relogin_empty_when_all_ready():
+    relay_relogin = load_relay_relogin()
+    reg = {"codex": {"enabled": True, "login_cmd": "codex login"}}
+    assert relay_relogin.relogin_plan(reg, {"codex": {"ready": True}}) == []
+
+
 def load_relay_report():
     path = ROOT / "relay-report.py"
     assert path.exists(), "ต้องมี scripts/ai-relay/relay-report.py"

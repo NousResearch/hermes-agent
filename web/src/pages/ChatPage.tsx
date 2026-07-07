@@ -688,6 +688,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
+    // Track whether the user has manually scrolled up. When at bottom,
+    // auto-scroll on new data so the latest messages stay visible.
+    let scrolledUp = false;
+    term.onScroll(() => {
+      const buffer = term.buffer.active;
+      scrolledUp = buffer.viewportY < buffer.baseY;
+    });
+
     ws.onopen = () => {
       clearReconnectTimer();
       reconnectAttemptRef.current = 0;
@@ -724,6 +732,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         term.write(ev.data);
       } else {
         term.write(new Uint8Array(ev.data as ArrayBuffer));
+      }
+      // Auto-scroll unless user scrolled up to read history.
+      // xterm.js doesn't auto-follow programmatic writes with VT100 cursor
+      // positioning (used by Ink's full-screen rendering), so the viewport
+      // can lag behind the session content without this explicit push.
+      if (!scrolledUp) {
+        term.scrollToBottom();
       }
     };
 

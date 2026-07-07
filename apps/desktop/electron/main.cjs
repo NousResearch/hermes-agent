@@ -24,7 +24,7 @@ const https = require('node:https')
 const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
-const { execFileSync, spawn } = require('node:child_process')
+const { execFile, execFileSync, spawn } = require('node:child_process')
 const { installEmbedReferer } = require('./embed-referer.cjs')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
@@ -5278,7 +5278,13 @@ async function ensureBackend(profile) {
 
   const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now() }
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
-    backendPool.delete(key)
+    // A failed spawn can still leave a live child (health-check timeout after
+    // the process already bound its port). Anything dropped from the Map must
+    // be dead — the Map is the only registry the reaper and the shutdown
+    // kill-all ever look at, so a delete-without-kill leaks the process.
+    if (backendPool.get(key) === entry) backendPool.delete(key)
+    stopBackendChild(entry.process)
+    waitForBackendExit(entry.process).catch(() => {})
     throw error
   })
   backendPool.set(key, entry)
@@ -5405,12 +5411,17 @@ async function spawnPoolBackend(profile, entry) {
   })
   child.once('error', error => {
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
-    backendPool.delete(profile)
+    // Guard both deletes: a reaped child's late exit/error event must not
+    // evict a successor entry registered under the same profile key while
+    // the old child was still shutting down. An evicted successor keeps
+    // running untracked — the reaper and shutdown never see it again
+    // (the 2026-07-05 orphaned "--profile ezra serve" incident).
+    if (backendPool.get(profile) === entry) backendPool.delete(profile)
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
     rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
-    backendPool.delete(profile)
+    if (backendPool.get(profile) === entry) backendPool.delete(profile)
     if (!ready) {
       rejectStart?.(
         new Error(`Hermes backend for profile "${profile}" exited before it became ready (${signal || code}).`)
@@ -5453,6 +5464,10 @@ function stopPoolBackend(profile) {
   if (!entry) return
   backendPool.delete(profile)
   stopBackendChild(entry.process)
+  // SIGTERM alone is not enough once the entry left the Map: a child that
+  // ignores or outlives the graceful shutdown would keep running with no
+  // registry pointing at it. Escalate to SIGKILL in the background.
+  waitForBackendExit(entry.process).catch(() => {})
 }
 
 async function teardownPoolBackendAndWait(profile) {
@@ -5469,6 +5484,59 @@ function stopAllPoolBackends() {
   for (const profile of [...backendPool.keys()]) {
     stopPoolBackend(profile)
   }
+}
+
+// One-shot boot sweep for pool backends orphaned by a previous app run.
+// A backend still owned by a live app instance has that instance as its
+// parent, so PPID 1 plus our exact spawn shape ("--profile <name> …
+// --host 127.0.0.1 --port 0") can only be a leaked child. Deliberately
+// requires --profile: an orphaned PRIMARY backend (crash-only case) is
+// left alone. POSIX only — Windows kills whole trees via job objects and
+// has no reparent-to-1 equivalent.
+function sweepStrayPoolBackends() {
+  if (IS_WINDOWS) return
+  execFile('ps', ['-axo', 'pid=,ppid=,command='], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
+    if (error) return
+    const stray = []
+    for (const line of String(stdout).split('\n')) {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
+      if (!match) continue
+      const pid = Number(match[1])
+      const ppid = Number(match[2])
+      const command = match[3]
+      if (ppid !== 1 || pid === process.pid) continue
+      if (!command.includes('hermes_cli.main')) continue
+      if (!/--profile\s+\S+/.test(command)) continue
+      if (!command.includes('--host 127.0.0.1 --port 0')) continue
+      // Never touch gateways (a profile-pinned launchd gateway also has
+      // PPID 1; it never carries --port 0, but keep the belt with the
+      // suspenders).
+      if (/\bgateway\b/.test(command)) continue
+      stray.push(pid)
+    }
+    const killed = []
+    for (const pid of stray) {
+      try {
+        process.kill(pid, 'SIGTERM')
+        killed.push(pid)
+        rememberLog(`Sweeping stray profile backend from a previous run (pid ${pid})`)
+      } catch {
+        // Already gone or not ours to signal.
+      }
+    }
+    if (killed.length === 0) return
+    const escalation = setTimeout(() => {
+      for (const pid of killed) {
+        try {
+          process.kill(pid, 0)
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // Exited after SIGTERM — nothing to escalate.
+        }
+      }
+    }, 5000)
+    if (typeof escalation.unref === 'function') escalation.unref()
+  })
 }
 
 function profileNameFromDeleteRequest(request) {
@@ -7620,6 +7688,7 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
+  sweepStrayPoolBackends()
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.

@@ -2468,6 +2468,10 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        # Ignore a channel/thread message addressed to another user (first token
+        # @mentions someone other than the bot) unless the bot is also mentioned.
+        # Opt-in; default off keeps existing behaviour. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
+        "ignore_other_user_mentions": False,
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 

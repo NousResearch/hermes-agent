@@ -3321,6 +3321,9 @@ class SlackAdapter(BasePlatformAdapter):
                 thread_ts = None
 
         # In channels, respond if:
+        #   (unless ignore_other_user_mentions is on and the message opens by
+        #    @mentioning another user without also mentioning the bot — then
+        #    stay silent regardless of the rules below)
         #   0. Channel is in free_response_channels, OR require_mention is
         #      disabled — always process regardless of mention.
         #   1. The bot is @mentioned in this message, OR
@@ -3342,6 +3345,22 @@ class SlackAdapter(BasePlatformAdapter):
             if allowed_channels and channel_id not in allowed_channels:
                 logger.debug(
                     "[Slack] Ignoring message in non-allowed channel: %s", channel_id
+                )
+                return
+
+            # A message that opens by @mentioning another user is directed at
+            # that person. Stay silent unless we are also mentioned — this
+            # overrides free-response and mentioned-thread auto-follow so the
+            # bot does not butt in on chatter aimed at someone else.
+            self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
+            if (
+                self._slack_ignore_other_user_mentions()
+                and not is_mentioned
+                and self._slack_message_addressed_to_other_user(routing_text, self_uids)
+            ):
+                logger.debug(
+                    "[Slack] Ignoring message addressed to another user in channel %s",
+                    channel_id,
                 )
                 return
 
@@ -4763,6 +4782,45 @@ class SlackAdapter(BasePlatformAdapter):
             "on",
         }
 
+    def _slack_ignore_other_user_mentions(self) -> bool:
+        """When true, ignore channel/thread messages addressed to another user.
+
+        A message whose first token @-mentions someone other than this bot is
+        treated as directed at that person; the bot stays silent unless it is
+        also mentioned. Defaults to False (opt-in) so existing behaviour is
+        unchanged until enabled. Mirrors Discord's ``ignore_other_user_mentions``
+        (PR #33501), adapted to Slack's thread model: the trigger is a *leading*
+        mention ("addressed to"), so a message that merely references another
+        user mid-sentence still reaches the bot.
+        """
+        configured = self.config.extra.get("ignore_other_user_mentions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("SLACK_IGNORE_OTHER_USER_MENTIONS", "false").lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+
+    def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
+        """Return True when ``text`` opens by @-mentioning a non-bot user.
+
+        Slack renders a user mention as ``<@U123>`` (or ``<@U123|name>``). A
+        message whose first token is such a mention is addressed to that user.
+        Returns False when the leading mention is the bot itself (``self_uids``),
+        when there is no leading user mention, or for channel/broadcast tokens
+        (``<!here>``, ``<#C…>``) which address the room rather than a person.
+        """
+        if not text:
+            return False
+        match = re.match(r"\s*<@([^>|\s]+)(?:\|[^>]*)?>", text)
+        if not match:
+            return False
+        return match.group(1) not in self_uids
+
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""
         raw = self.config.extra.get("free_response_channels")
@@ -5076,6 +5134,10 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
     if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):
         os.environ["SLACK_STRICT_MENTION"] = str(slack_cfg["strict_mention"]).lower()
+    if "ignore_other_user_mentions" in slack_cfg and not os.getenv("SLACK_IGNORE_OTHER_USER_MENTIONS"):
+        os.environ["SLACK_IGNORE_OTHER_USER_MENTIONS"] = str(
+            slack_cfg["ignore_other_user_mentions"]
+        ).lower()
     if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
         os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
     frc = slack_cfg.get("free_response_channels")
@@ -5125,9 +5187,9 @@ def register(ctx) -> None:
         # and the static _PLATFORMS["slack"] dict in hermes_cli/gateway.py.
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of config.yaml slack:
-        # keys (require_mention, strict_mention, allow_bots,
-        # free_response_channels, reactions, allowed_channels) into SLACK_*
-        # env vars that the adapter reads via os.getenv(). Replaces the
+        # keys (require_mention, strict_mention, ignore_other_user_mentions,
+        # allow_bots, free_response_channels, reactions, allowed_channels) into
+        # SLACK_* env vars that the adapter reads via os.getenv(). Replaces the
         # hardcoded block in gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration

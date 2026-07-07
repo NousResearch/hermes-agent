@@ -1850,6 +1850,10 @@ DEFAULT_CONFIG = {
         "turn_isolation": False,
         "compute_host_heartbeat_secs": 15,
         "compute_host_respawn_max": 3,
+        # Dormant/default-off rollout gate for the indexed session.list recency
+        # path. Config.yaml only: no env override, so production stays on the
+        # legacy CTE until an operator deliberately flips this key.
+        "session_list_denorm": False,
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

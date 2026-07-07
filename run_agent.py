@@ -6095,6 +6095,12 @@ class AIAgent:
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
+        if not tool_calls:
+            # Strict providers (DeepSeek) reject `"tool_calls": []` with
+            # HTTP 400 "Expected an array with minimum length 1" — an empty
+            # list can appear in histories written by older versions.
+            del api_msg["tool_calls"]
+            return api_msg
         from agent.transports.chat_completions import _model_consumes_thought_signature
         _STRIP_KEYS = {"call_id", "response_item_id"}
         if not _model_consumes_thought_signature(model):

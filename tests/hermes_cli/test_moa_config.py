@@ -281,3 +281,79 @@ def test_reference_max_tokens_in_flattened_view():
     active preset's reference_max_tokens."""
     cfg = normalize_moa_config(_preset(reference_max_tokens=750))
     assert cfg["reference_max_tokens"] == 750
+
+
+# ── Per-slot max_tokens ────────────────────────────────────────────────────
+
+
+def test_slot_max_tokens_preserved():
+    """A max_tokens field on a reference slot survives normalization."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": 600},
+                        {"provider": "openai-codex", "model": "gpt-5.5"},
+                    ],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                }
+            }
+        }
+    )
+    refs = cfg["presets"]["p"]["reference_models"]
+    assert refs[0] == {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": 600}
+    assert refs[1] == {"provider": "openai-codex", "model": "gpt-5.5"}
+
+
+def test_slot_max_tokens_coerced_from_string():
+    """Hand-edited YAML string '600' coerces to int on a slot."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": "600"},
+                    ],
+                }
+            }
+        }
+    )
+    refs = cfg["presets"]["p"]["reference_models"]
+    assert refs[0]["max_tokens"] == 600
+
+
+def test_slot_max_tokens_invalid_dropped():
+    """Non-positive / non-numeric slot max_tokens is dropped (slot kept)."""
+    for bad in (0, -5, "abc", "", None):
+        cfg = normalize_moa_config(
+            {
+                "presets": {
+                    "p": {
+                        "reference_models": [
+                            {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": bad},
+                        ],
+                    }
+                }
+            }
+        )
+        ref = cfg["presets"]["p"]["reference_models"][0]
+        assert "max_tokens" not in ref, bad
+        assert ref["provider"] == "openrouter"
+
+
+def test_slot_max_tokens_absent_by_default():
+    """Slots without max_tokens don't get the field — backward compat."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+                    ],
+                }
+            }
+        }
+    )
+    ref = cfg["presets"]["p"]["reference_models"][0]
+    assert "max_tokens" not in ref

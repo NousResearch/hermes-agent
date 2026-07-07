@@ -73,7 +73,7 @@ def _coerce_fanout(value: Any) -> str:
     return mode if mode in {"per_iteration", "user_turn"} else "per_iteration"
 
 
-def _clean_slot(slot: Any) -> dict[str, str] | None:
+def _clean_slot(slot: Any) -> dict[str, Any] | None:
     if not isinstance(slot, dict):
         return None
     provider = str(slot.get("provider") or "").strip()
@@ -87,7 +87,16 @@ def _clean_slot(slot: Any) -> dict[str, str] | None:
     # an invalid slot is dropped, falling back to the preset's defaults.
     if provider.lower() == "moa":
         return None
-    return {"provider": provider, "model": model}
+    cleaned: dict[str, Any] = {"provider": provider, "model": model}
+    # Optional per-slot max_tokens: overrides the preset-level
+    # reference_max_tokens for this specific reference model. None (the
+    # default) = no cap, so existing slots are unaffected. Allows tuning
+    # each advisor's output length independently — useful when one model
+    # is verbose and another is terse.
+    slot_mt = _coerce_int_or_none(slot.get("max_tokens"))
+    if slot_mt is not None:
+        cleaned["max_tokens"] = slot_mt
+    return cleaned
 
 
 def _default_preset() -> dict[str, Any]:

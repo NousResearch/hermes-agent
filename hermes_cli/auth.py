@@ -5608,6 +5608,18 @@ def resolve_nous_runtime_credentials(
         )
         client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
 
+        def _refresh_effective_inference_base_url() -> None:
+            nonlocal stored_inference_base_url, inference_base_url
+            stored_inference_base_url = (
+                _validate_nous_inference_url_from_network(
+                    _optional_base_url(state.get("inference_base_url"))
+                )
+                or DEFAULT_NOUS_INFERENCE_URL
+            )
+            inference_base_url = (
+                _nous_inference_env_override() or stored_inference_base_url
+            )
+
         def _persist_state(reason: str) -> None:
             nonlocal persisted_state, state_persisted
             # Skip writes where only derived TTL countdowns changed; this keeps
@@ -5658,6 +5670,16 @@ def resolve_nous_runtime_credentials(
         with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
+
+            if not isinstance(access_token, str) or not access_token:
+                with _nous_shared_store_lock(
+                    timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
+                ):
+                    if _merge_shared_nous_oauth_state(state):
+                        access_token = state.get("access_token")
+                        refresh_token = state.get("refresh_token")
+                        _refresh_effective_inference_base_url()
+                        _persist_state("runtime_shared_merge_missing_access_token")
 
             if not isinstance(access_token, str) or not access_token:
                 raise AuthError("No access token found for Nous Portal login.",

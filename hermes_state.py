@@ -23,6 +23,7 @@ import sqlite3
 import sys
 import threading
 import time
+import platform
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -411,6 +412,57 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         db_label,
         exc,
     )
+
+
+# ---------------------------------------------------------------------------
+# Config-driven database pragmas
+# ---------------------------------------------------------------------------
+def apply_database_pragmas(
+    conn: sqlite3.Connection,
+    *,
+    db_label: str = "state.db",
+) -> None:
+    """Apply optional database PRAGMAs from ``config.yaml``."""
+    try:
+        # ponytail: local import avoids circular with hermes_cli.config
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+    except Exception:
+        return
+
+    journal_mode = cfg_get(cfg, "database", "journal_mode", default="")
+    if journal_mode:
+        journal_mode = str(journal_mode).strip().upper()
+        if journal_mode:
+            try:
+                current = conn.execute("PRAGMA journal_mode").fetchone()
+                current = current[0].upper() if current and current[0] else ""
+            except sqlite3.OperationalError:
+                current = ""
+
+            if current != journal_mode:
+                if platform.system() == "Windows" and journal_mode != "WAL":
+                    return
+                try:
+                    conn.execute(f"PRAGMA journal_mode={journal_mode}")
+                except sqlite3.OperationalError:
+                    pass
+
+    wal_autocheckpoint = cfg_get(cfg, "database", "wal_autocheckpoint", default="")
+    if wal_autocheckpoint is not None and str(wal_autocheckpoint).strip().isdigit():
+        try:
+            conn.execute(f"PRAGMA wal_autocheckpoint={int(wal_autocheckpoint)}")
+        except sqlite3.OperationalError:
+            pass
+
+    journal_size_limit = cfg_get(cfg, "database", "journal_size_limit", default="")
+    if journal_size_limit is not None and str(journal_size_limit).strip().isdigit():
+        try:
+            conn.execute(f"PRAGMA journal_size_limit={int(journal_size_limit)}")
+        except sqlite3.OperationalError:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # Malformed-schema recovery
@@ -948,6 +1000,7 @@ class SessionDB:
                 )
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
+                apply_database_pragmas(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
 

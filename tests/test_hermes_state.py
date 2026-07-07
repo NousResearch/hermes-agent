@@ -5362,3 +5362,85 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+
+class TestApplyDatabasePragmas:
+    """Config-driven database pragma application."""
+
+    def test_honors_wal_autocheckpoint_from_config(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        db_path = tmp_path / "pragmas.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            cfg = {
+                "database": {
+                    "journal_mode": "WAL",
+                    "wal_autocheckpoint": 250,
+                }
+            }
+            monkeypatch.setattr(
+                "hermes_cli.config.load_config",
+                lambda: cfg,
+            )
+            monkeypatch.setattr(
+                "hermes_cli.config.cfg_get",
+                lambda c, *keys, default="": (
+                    c.get("database", {}).get(keys[-1], default)
+                ),
+            )
+            apply_database_pragmas(conn, db_label="test.db")
+            val = conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
+            assert val == 250
+        finally:
+            conn.close()
+
+    def test_honors_journal_size_limit_from_config(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        db_path = tmp_path / "pragmas.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            cfg = {
+                "database": {
+                    "journal_mode": "WAL",
+                    "journal_size_limit": 10485760,
+                }
+            }
+            monkeypatch.setattr(
+                "hermes_cli.config.load_config",
+                lambda: cfg,
+            )
+            monkeypatch.setattr(
+                "hermes_cli.config.cfg_get",
+                lambda c, *keys, default="": (
+                    c.get("database", {}).get(keys[-1], default)
+                ),
+            )
+            apply_database_pragmas(conn, db_label="test.db")
+            val = conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+            assert val == 10485760
+        finally:
+            conn.close()
+
+    def test_noop_when_database_section_missing(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        db_path = tmp_path / "pragmas.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+            monkeypatch.setattr(
+                "hermes_cli.config.load_config",
+                lambda: {},
+            )
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        finally:
+            conn.close()
+

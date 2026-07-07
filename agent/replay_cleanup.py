@@ -138,3 +138,120 @@ def sanitize_replay_history(
     if not agent_history:
         return agent_history
     return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Stale dangerous-confirmation text expiry (#59607)
+# ──────────────────────────────────────────────────────────────────────
+
+# How long a high-risk confirmation phrase remains valid.
+# Short on purpose: dangerous side effects should not survive any restart
+# or session resumption gap. The user can always re-confirm if needed.
+_DANGEROUS_CONFIRMATION_EXPIRY_SECONDS = 60.0
+
+# Confirmation phrases that unlock destructive host actions.
+# Substring match (case-insensitive) so that user variants (e.g. trailing
+# punctuation, additional context) still match. Add new patterns here when
+# new high-risk actions are introduced.
+_DANGEROUS_CONFIRMATION_PATTERNS: tuple = (
+    "confirm forced restart",
+    "confirm forced reboot",
+    "confirm shutdown",
+    "confirm reboot",
+    "confirm power off",
+    "yes, delete everything",
+    "confirm wipe",
+    "confirm factory reset",
+    # i18n variants observed in the original incident
+    "確認強制重開機",
+    "確認強制重開",
+    "確認重啟",
+)
+
+# Replacement text for an expired confirmation. Redacting in place (rather
+# than deleting the message) preserves strict user/assistant role
+# alternation in the replayed history.
+_EXPIRED_CONFIRMATION_SENTINEL = (
+    "[A high-risk confirmation previously given here has EXPIRED and must "
+    "not be acted on. Ask the user to re-confirm explicitly before "
+    "performing any destructive action.]"
+)
+
+
+def is_dangerous_confirmation(content: Any) -> bool:
+    """Return True if a user-message text matches a known dangerous confirmation.
+
+    Used by ``strip_stale_dangerous_confirmations`` to decide which
+    transcript rows to expire. Substring + case-insensitive so that
+    ``"Please confirm forced restart, the host is critical"`` still matches.
+    """
+    if not isinstance(content, str):
+        return False
+    text = content.strip().lower()
+    return any(pattern in text for pattern in _DANGEROUS_CONFIRMATION_PATTERNS)
+
+
+def strip_stale_dangerous_confirmations(
+    agent_history: List[Dict[str, Any]],
+    *,
+    now: float,
+    expiry_seconds: float = _DANGEROUS_CONFIRMATION_EXPIRY_SECONDS,
+) -> List[Dict[str, Any]]:
+    """Expire stale dangerous-confirmation text in user messages (#59607).
+
+    When a high-risk side effect (e.g. host restart via ``shutdown.exe``)
+    runs, the user's plain-text confirmation phrase is persisted in the
+    conversation transcript.  If the host restart killed the gateway
+    process before the assistant's tool result was written, the
+    transcript tail ends on the assistant's text response — and the
+    dangerous confirmation text remains in the user role.
+
+    On the next inbound message — possibly a casual "are you there?" from
+    the user minutes later — the LLM sees the stale confirmation and may
+    interpret the new turn as a fresh re-confirmation, re-executing the
+    destructive action.  This is the failure mode reported in #59607.
+
+    Expired confirmations are REDACTED IN PLACE, not removed: deleting a
+    user message from the incident tail (``user(confirm) →
+    assistant("OK, restarting")``) would leave two consecutive assistant
+    messages, violating the strict role-alternation invariant providers
+    enforce.  The message survives with its role intact; only the trigger
+    text is replaced by a sentinel that tells the model the confirmation
+    has expired.
+
+    Messages without a timestamp are left untouched (backward
+    compatibility: legacy transcripts and in-memory test scaffolding have
+    no timestamps).  User messages that contain dangerous confirmation
+    text but are within the expiry window are also left untouched — they
+    represent a fresh confirmation that has not yet been acted on.
+
+    Complements 75ed07ace (which strips the *assistant* side of the
+    broken tail) by handling the *user* side: a stale plain-text
+    confirmation that the assistant has not yet responded to in a way
+    the resume logic recognises.
+    """
+    if not agent_history:
+        return agent_history
+
+    cleaned: List[Dict[str, Any]] = []
+    for msg in agent_history:
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "user"
+            and is_dangerous_confirmation(msg.get("content", ""))
+        ):
+            ts = msg.get("timestamp")
+            if ts is not None and (now - float(ts)) > expiry_seconds:
+                logger.debug(
+                    "Redacting stale dangerous-confirmation text in user "
+                    "message (age=%.1fs, expiry=%.1fs): %r",
+                    now - float(ts),
+                    expiry_seconds,
+                    (msg.get("content") or "")[:80],
+                )
+                redacted = dict(msg)
+                redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL
+                cleaned.append(redacted)
+                continue
+        cleaned.append(msg)
+    return cleaned

@@ -1625,8 +1625,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # hand-builds messages and calls chat.completions.create() directly,
             # bypassing the transport — so mirror that sanitization here:
             # tool_name (SQLite FTS bookkeeping), the codex_* reasoning carriers,
+            # timestamp (preserved on gateway user replay entries for the
+            # stale-confirmation expiry check — #47868 rejection class),
             # and every Hermes-internal underscore-prefixed scaffolding key.
-            for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items"):
+            for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp"):
                 api_msg.pop(schema_foreign, None)
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 api_msg.pop(internal_key, None)
@@ -1979,6 +1981,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             t.join(timeout=0.3)
             if agent._interrupt_requested:
                 raise InterruptedError("Agent interrupted during Bedrock API call")
+        # Worker exited before the poll loop observed the interrupt flag. The
+        # Bedrock stream callback breaks out and returns a PARTIAL response
+        # without raising on interrupt (see bedrock_adapter.py
+        # stream_converse_with_callbacks / on_interrupt_check), so result[
+        # "response"] is populated with error=None and the in-loop raise above
+        # never fires. Re-check here so /stop is not silently swallowed on the
+        # Bedrock path — mirrors the post-worker guard on the main streaming
+        # loop. (#59999 area)
+        if agent._interrupt_requested:
+            raise InterruptedError("Agent interrupted during Bedrock API call (post-worker)")
         if result["error"] is not None:
             raise result["error"]
         return result["response"]
@@ -3039,6 +3051,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
             raise InterruptedError("Agent interrupted during streaming API call")
+    # Worker thread exited before the main thread's poll loop could check
+    # the interrupt flag.  If the worker returned early due to an interrupt
+    # (e.g. _call_anthropic() detected _interrupt_requested and returned
+    # None), the InterruptedError above was never raised.  Re-check the
+    # flag here so /stop is not silently swallowed.  (#59999 area)
+    if agent._interrupt_requested:
+        raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
     if result["error"] is not None:
         if deltas_were_sent["yes"]:
             # Streaming failed AFTER some tokens were already delivered to

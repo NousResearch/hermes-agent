@@ -58,7 +58,12 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
+from agent.retry_utils import (
+    adaptive_rate_limit_backoff,
+    is_zai_coding_overload_error,
+    jittered_backoff,
+    zai_coding_overload_retry_ceiling,
+)
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -1514,7 +1519,7 @@ def run_conversation(
                     elif _resp_error_code == 504:
                         _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
                     elif _resp_error_code == 429:
-                        _failure_hint = f"rate limited by upstream provider (429)"
+                        _failure_hint = "rate limited by upstream provider (429)"
                     elif _resp_error_code in {500, 502}:
                         _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
                     elif _resp_error_code in {503, 529}:
@@ -2355,11 +2360,11 @@ def run_conversation(
                         agent._unicode_sanitization_passes += 1
                         if _surrogates_found:
                             agent._buffer_vprint(
-                                f"⚠️  Stripped invalid surrogate characters from messages. Retrying..."
+                                "⚠️  Stripped invalid surrogate characters from messages. Retrying..."
                             )
                         else:
                             agent._buffer_vprint(
-                                f"⚠️  Surrogate encoding error — retrying after full-payload sanitization..."
+                                "⚠️  Surrogate encoding error — retrying after full-payload sanitization..."
                             )
                         continue
                     if _is_ascii_codec:
@@ -2766,7 +2771,7 @@ def run_conversation(
                 ):
                     _retry.copilot_auth_retry_attempted = True
                     if agent._try_refresh_copilot_client_credentials():
-                        agent._buffer_vprint(f"🔐 Copilot credentials refreshed after 401. Retrying request...")
+                        agent._buffer_vprint("🔐 Copilot credentials refreshed after 401. Retrying request...")
                         continue
                 if (
                     agent.api_mode == "anthropic_messages"
@@ -2989,10 +2994,10 @@ def run_conversation(
                     )
                     if agent.providers_allowed:
                         agent._buffer_vprint(
-                            f"      Your provider_routing.only restriction is filtering out tool-capable providers."
+                            "      Your provider_routing.only restriction is filtering out tool-capable providers."
                         )
                         agent._buffer_vprint(
-                            f"      Try removing the restriction or adding providers that support tools for this model."
+                            "      Try removing the restriction or adding providers that support tools for this model."
                         )
                     agent._buffer_vprint(
                         f"      Check which providers support tools: https://openrouter.ai/models/{_model}"
@@ -3147,6 +3152,18 @@ def run_conversation(
                     FailoverReason.timeout,
                     FailoverReason.overloaded,
                 }
+                # Z.AI Coding Plan GLM-5.2 overload 429s classify as
+                # `overloaded` (to spare the credential pool), but `overloaded`
+                # is excluded from `is_rate_limited` — the gate for the adaptive
+                # Z.AI backoff below. Detect the overload directly so its
+                # long-backoff schedule runs, and raise the retry ceiling so the
+                # long tier (30/60/90/120s) is reachable. See
+                # zai_coding_overload_retry_ceiling() for the ceiling rationale.
+                _is_zai_coding_overload = is_zai_coding_overload_error(
+                    base_url=str(_base), model=_model, error=api_error
+                )
+                if _is_zai_coding_overload:
+                    max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
                 _should_fallback = (
                     is_rate_limited
                     or (_is_transport_failure and retry_count >= 2)
@@ -3154,8 +3171,7 @@ def run_conversation(
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
-                    # for the single-credential-pool and CloudCode-quota
-                    # exceptions.  Fixes #11314 and #13636.
+                    # for the single-credential-pool exception.  Fixes #11314.
                     #
                     # Exception: an upstream-aggregator 429 — the credential
                     # pool can't help when the *upstream* model (DeepSeek,
@@ -3166,8 +3182,6 @@ def run_conversation(
                         False if _is_upstream
                         else _ra()._pool_may_recover_from_rate_limit(
                             agent._credential_pool,
-                            provider=agent.provider,
-                            base_url=getattr(agent, "base_url", None),
                         )
                     )
                     if not pool_may_recover:
@@ -4100,7 +4114,7 @@ def run_conversation(
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
-                if is_rate_limited and not _retry_after:
+                if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
                     wait_time, _backoff_policy = adaptive_rate_limit_backoff(
                         retry_count,
                         base_url=str(_base),
@@ -4108,13 +4122,14 @@ def run_conversation(
                         error=api_error,
                         default_wait=wait_time,
                     )
-                if is_rate_limited:
+                if is_rate_limited or _is_zai_coding_overload:
                     _policy_note = ""
                     if _backoff_policy == "zai_coding_overload_long":
                         _policy_note = " (Z.AI Coding overload adaptive long backoff)"
                     elif _backoff_policy == "zai_coding_overload_short":
                         _policy_note = " (Z.AI Coding overload short retry)"
-                    _rate_limit_status = f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
+                    _wait_reason = "Provider overloaded" if _is_zai_coding_overload and not is_rate_limited else "Rate limited"
+                    _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
                     # Normal retries are buffered to avoid noisy transient chatter. Long
                     # Z.AI Coding waits are different: they can last minutes, so surface
                     # progress immediately instead of making the TUI look frozen.
@@ -4319,7 +4334,7 @@ def run_conversation(
             if has_incomplete_scratchpad(assistant_message.content or ""):
                 agent._incomplete_scratchpad_retries += 1
                 
-                agent._buffer_vprint(f"⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
+                agent._buffer_vprint("⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
                 
                 if agent._incomplete_scratchpad_retries <= 2:
                     agent._buffer_vprint(f"🔄 Retrying API call ({agent._incomplete_scratchpad_retries}/2)...")
@@ -4668,7 +4683,7 @@ def run_conversation(
                     else:
                         # Instead of returning partial, inject tool error results so the model can recover.
                         # Using tool results (not user messages) preserves role alternation.
-                        agent._buffer_vprint(f"⚠️  Injecting recovery tool results for invalid JSON...")
+                        agent._buffer_vprint("⚠️  Injecting recovery tool results for invalid JSON...")
                         agent._invalid_json_retries = 0  # Reset for next attempt
                         
                         # Append the assistant message with its (broken) tool_calls

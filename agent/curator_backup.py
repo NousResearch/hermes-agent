@@ -627,6 +627,12 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
                     raise tarfile.TarError(
                         f"refusing to extract unsafe path: {name!r}"
                     )
+                # Symlinks can bypass the path check on Python < 3.12
+                # where filter='data' is unavailable (zip-slip via symlink).
+                if member.issym() or member.islnk():
+                    raise tarfile.TarError(
+                        f"refusing to extract symlink: {name!r}"
+                    )
             try:
                 tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
             except TypeError:

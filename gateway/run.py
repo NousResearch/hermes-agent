@@ -7605,12 +7605,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _lrm = getattr(self, "_last_resolved_model", None)
                         if _lrm is not None:
                             _lrm.pop(key, None)
-                        _pending_approvals = getattr(self, "_pending_approvals", None)
-                        if isinstance(_pending_approvals, dict):
-                            _pending_approvals.pop(key, None)
-                        _update_prompt_pending = getattr(self, "_update_prompt_pending", None)
-                        if isinstance(_update_prompt_pending, dict):
-                            _update_prompt_pending.pop(key, None)
+                        # Full conversation-boundary security-state clear —
+                        # pending approvals, YOLO/session-approved dangerous
+                        # commands, pending skill-reload notes, slash-confirm
+                        # state. Finalization is a boundary just like /new
+                        # and /resume (which already call this); without it,
+                        # a /yolo or "/approve session" grant made before the
+                        # session went idle would still be live if a later
+                        # message resurrects this session_key (#58403-adjacent).
+                        self._clear_session_boundary_security_state(key)
                         # Persist the finalized flag to sessions.json AND
                         # state.db (single write-path, #9006) — also drops
                         # the persisted /model override, since finalization
@@ -10632,6 +10635,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _lrm = getattr(self, "_last_resolved_model", None)
             if _lrm is not None:
                 _lrm.pop(session_key, None)
+            # Full conversation-boundary security-state clear — pending
+            # approvals, YOLO/session-approved dangerous commands, pending
+            # skill-reload notes, slash-confirm state. Auto-reset is a full
+            # conversation boundary just like /new and /resume (which
+            # already call this); without it, a /yolo or "/approve session"
+            # grant made before the auto-reset would silently bypass
+            # dangerous-command approval in the "fresh" conversation.
+            self._clear_session_boundary_security_state(session_key)
             # Evict the cached agent so the fresh session does not inherit the
             # previous conversation's context_compressor._previous_summary —
             # the cache is keyed on the stable session_key, so an auto-reset
@@ -11629,6 +11640,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _lrm = getattr(self, "_last_resolved_model", None)
                 if _lrm is not None:
                     _lrm.pop(session_key, None)
+                # Full conversation-boundary security-state clear — pending
+                # approvals, YOLO/session-approved dangerous commands,
+                # pending skill-reload notes, slash-confirm state. This
+                # auto-reset is a full conversation boundary just like /new
+                # and /resume (which already call this); without it, a
+                # /yolo or "/approve session" grant from the oversized
+                # conversation would silently bypass dangerous-command
+                # approval in the "fresh" post-reset conversation.
+                self._clear_session_boundary_security_state(session_key)
                 if new_entry is not None:
                     # Drop the stale reference to the bloated compressed child and
                     # re-point the Telegram topic binding at the fresh session.

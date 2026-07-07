@@ -121,6 +121,34 @@ def test_gate_b_drops_low_cosine(monkeypatch, tmp_path):
     assert outcome == "ran_kept_2_of_4"
 
 
+def test_gate_b_telemetry_logs_cosine_distribution(monkeypatch, tmp_path, caplog):
+    """Telemetry (2026-07-07): the ran_kept line must carry the cosine DISTRIBUTION
+    (cos_max/cos_med/cos_min + per-candidate list) so an operator can tell a genuinely
+    on-topic recall from junk that merely slipped the low floor — not just a kept/total count."""
+    import logging
+    p = _provider(monkeypatch, tmp_path)
+    _write_floor_cfg(tmp_path, {"enabled": True, "min_cosine": 0.10})
+    embeds = [_Q, _NEAR, _ORTHO]
+    monkeypatch.setattr(p, "_dedup_embed", lambda texts, *, timeout=15: embeds)
+    results = _results("near1", "junk1")
+    with caplog.at_level(logging.INFO):
+        p._apply_gate_b_cosine("substantive query", results, budget_s=3.0)
+    line = next((r.getMessage() for r in caplog.records if "prefetch_floor outcome=ran_kept" in r.getMessage()), "")
+    assert line, "no ran_kept telemetry line emitted"
+    # distribution fields present
+    for field in ("cos_max=", "cos_med=", "cos_min=", "cos=", "floor="):
+        assert field in line, f"telemetry missing {field}: {line}"
+    # cos_max >= cos_min (sorted), and the per-candidate list has one entry per candidate
+    import re as _re
+    cmax = float(_re.search(r"cos_max=([0-9.]+)", line).group(1))
+    cmin = float(_re.search(r"cos_min=([0-9.]+)", line).group(1))
+    assert cmax >= cmin
+    cos_list = _re.search(r"cos=([0-9.,]+)", line).group(1).split(",")
+    assert len(cos_list) == 2, f"expected 2 per-candidate cosines, got {cos_list}"
+    # no memory TEXT leaks into the telemetry (privacy) — only a query hash
+    assert "near1" not in line and "junk1" not in line and "substantive query" not in line
+
+
 def test_gate_b_saturated_score_does_not_save_low_cosine(monkeypatch, tmp_path):
     p = _provider(monkeypatch, tmp_path)
     _write_floor_cfg(tmp_path, {"enabled": True, "min_cosine": 0.10})

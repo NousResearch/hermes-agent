@@ -932,9 +932,25 @@ class Mem0MemoryProvider(MemoryProvider):
                 return results, "failed_open"
             floor = self._prefetch_floor_cosine()
             qv = vecs[0]
-            kept = [r for r, cv in zip(results, vecs[1:]) if self._dedup_cos(qv, cv) >= floor]
-            logger.info("mem0.prefetch_floor outcome=ran_kept_%d_of_%d floor=%.2f",
-                        len(kept), len(results), floor)
+            # Score every candidate so the telemetry can show the actual relevance
+            # DISTRIBUTION (not just a kept/total count). This is the signal that answers
+            # "is recall injecting junk?" — a `ran_kept_5_of_5` with a top cosine of 0.12 is
+            # junk that slipped the floor; the same count with a 0.55 top is genuinely on-topic.
+            scored = [(r, self._dedup_cos(qv, cv)) for r, cv in zip(results, vecs[1:])]
+            kept = [r for r, c in scored if c >= floor]
+            cosines = sorted((round(c, 3) for _, c in scored), reverse=True)
+            # min/median/max over ALL candidates + how many cleared the floor. No memory TEXT
+            # is logged (privacy) — only the scalar cosines and counts.
+            cmax = cosines[0] if cosines else 0.0
+            cmin = cosines[-1] if cosines else 0.0
+            cmed = cosines[len(cosines) // 2] if cosines else 0.0
+            logger.info(
+                "mem0.prefetch_floor outcome=ran_kept_%d_of_%d floor=%.2f "
+                "cos_max=%.3f cos_med=%.3f cos_min=%.3f cos=%s q=%s",
+                len(kept), len(results), floor, cmax, cmed, cmin,
+                ",".join(f"{c:.3f}" for c in cosines),
+                self._prefetch_query_hash(query),
+            )
             return kept, f"ran_kept_{len(kept)}_of_{len(results)}"
         except Exception as e:
             # Any unforeseen error → fail open (INV-2), never break recall.
@@ -1361,6 +1377,8 @@ class Mem0MemoryProvider(MemoryProvider):
                         keyword_search=self._keyword_search,
                         top_k=5,
                     )))
+                    _floor_outcome = "no_results"
+                    _injected = 0
                     # GATE B (cosine, weak SECONDARY): a substantive query passed Gate A, so
                     # trim any truly-orthogonal candidate (cos < low floor) that slipped into
                     # the top-5. Budget = time left before the 10s join ceiling (−0.5s margin);
@@ -1383,8 +1401,21 @@ class Mem0MemoryProvider(MemoryProvider):
                             if results:
                                 lines = [r.get("memory", "") for r in results if r.get("memory")]
                                 self._prefetch_result = "\n".join(f"- {l}" for l in lines)
+                                _injected = len(lines)
                             else:
                                 self._prefetch_result = ""
+                                _injected = 0
+                    # Final "what recall actually injected this turn" line — fires on EVERY
+                    # substantive turn (past Gate A), regardless of whether Gate B ran, was
+                    # disabled, or exact-token-bypassed. `injected` is the number of memory lines
+                    # placed in front of the model; `floor_outcome` says which path decided it.
+                    # No memory text (privacy). This is the top-level recall observability row.
+                    logger.info(
+                        "mem0.prefetch injected=%d floor_outcome=%s rerank=%s exact=%s q=%s",
+                        _injected, _floor_outcome, _pf_rerank,
+                        self._is_exact_token_query(run_query),
+                        self._prefetch_query_hash(run_query),
+                    )
                     self._record_success()
             except Exception as e:
                 self._record_failure()

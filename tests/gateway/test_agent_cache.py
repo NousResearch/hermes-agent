@@ -378,6 +378,10 @@ class TestExtractCacheBustingConfig:
         assert parse_calls == [config_path]
 
         config_path.write_text("{\n  \"changed\": true\n}")
+        # Nudge mtime forward so the cache-busting check detects the edit
+        # even on filesystems with coarse (1 s) timestamp resolution.
+        import os as _os, time as _time
+        _os.utime(config_path, (_time.time() + 2, _time.time() + 2))
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first

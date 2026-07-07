@@ -168,6 +168,15 @@ _DANGEROUS_CONFIRMATION_PATTERNS: tuple = (
     "確認重啟",
 )
 
+# Replacement text for an expired confirmation. Redacting in place (rather
+# than deleting the message) preserves strict user/assistant role
+# alternation in the replayed history.
+_EXPIRED_CONFIRMATION_SENTINEL = (
+    "[A high-risk confirmation previously given here has EXPIRED and must "
+    "not be acted on. Ask the user to re-confirm explicitly before "
+    "performing any destructive action.]"
+)
+
 
 def is_dangerous_confirmation(content: Any) -> bool:
     """Return True if a user-message text matches a known dangerous confirmation.
@@ -188,7 +197,7 @@ def strip_stale_dangerous_confirmations(
     now: float,
     expiry_seconds: float = _DANGEROUS_CONFIRMATION_EXPIRY_SECONDS,
 ) -> List[Dict[str, Any]]:
-    """Strip stale dangerous-confirmation text in user messages (#59607).
+    """Expire stale dangerous-confirmation text in user messages (#59607).
 
     When a high-risk side effect (e.g. host restart via ``shutdown.exe``)
     runs, the user's plain-text confirmation phrase is persisted in the
@@ -202,14 +211,19 @@ def strip_stale_dangerous_confirmations(
     interpret the new turn as a fresh re-confirmation, re-executing the
     destructive action.  This is the failure mode reported in #59607.
 
-    This function strips user messages whose content matches a known
-    dangerous confirmation pattern *and* whose timestamp is older than
-    ``expiry_seconds`` (default: 60s).  Messages without a timestamp are
-    left untouched (backward compatibility: legacy transcripts and
-    in-memory test scaffolding have no timestamps).  User messages that
-    contain dangerous confirmation text but are within the expiry window
-    are also left untouched — they represent a fresh confirmation that
-    has not yet been acted on.
+    Expired confirmations are REDACTED IN PLACE, not removed: deleting a
+    user message from the incident tail (``user(confirm) →
+    assistant("OK, restarting")``) would leave two consecutive assistant
+    messages, violating the strict role-alternation invariant providers
+    enforce.  The message survives with its role intact; only the trigger
+    text is replaced by a sentinel that tells the model the confirmation
+    has expired.
+
+    Messages without a timestamp are left untouched (backward
+    compatibility: legacy transcripts and in-memory test scaffolding have
+    no timestamps).  User messages that contain dangerous confirmation
+    text but are within the expiry window are also left untouched — they
+    represent a fresh confirmation that has not yet been acted on.
 
     Complements 75ed07ace (which strips the *assistant* side of the
     broken tail) by handling the *user* side: a stale plain-text
@@ -229,12 +243,15 @@ def strip_stale_dangerous_confirmations(
             ts = msg.get("timestamp")
             if ts is not None and (now - float(ts)) > expiry_seconds:
                 logger.debug(
-                    "Stripping stale dangerous-confirmation text from user "
+                    "Redacting stale dangerous-confirmation text in user "
                     "message (age=%.1fs, expiry=%.1fs): %r",
                     now - float(ts),
                     expiry_seconds,
                     (msg.get("content") or "")[:80],
                 )
+                redacted = dict(msg)
+                redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL
+                cleaned.append(redacted)
                 continue
         cleaned.append(msg)
     return cleaned

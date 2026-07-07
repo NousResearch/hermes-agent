@@ -515,6 +515,16 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             msg = msg[:17] + "..."
         return f"to {target}: \"{msg}\""
 
+    if tool_name == "skill_view":
+        name = _oneline(str(args.get("name") or ""))
+        file_path = args.get("file_path")
+        if file_path:
+            file_path = _oneline(str(file_path))
+            preview = f"{name} → {file_path}" if name else file_path
+        else:
+            preview = name
+        return _truncate_preview(preview, max_len) if preview else None
+
     key = primary_args.get(tool_name)
     if not key:
         for fallback_key in ("query", "text", "command", "path", "name", "prompt", "code", "goal"):
@@ -535,6 +545,122 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
+
+
+# =========================================================================
+# Friendly tool labels (human-phrased verbs for built-in tools)
+#
+# Turns "web_search <query>" into "Searching the web for <query>" — the
+# ChatGPT-style "Searching…/Reading…" surface.  Curated and built-in only:
+# we know each core tool's semantics, so the verb is fixed, not computed.
+# Custom/plugin/MCP tools have no entry and fall back to the raw preview.
+# =========================================================================
+
+# Each entry maps a built-in tool name to its present-participle verb phrase.
+# A trailing space-then-preview is appended by build_tool_label() when the
+# tool's argument preview is available (e.g. "Reading docs/api.md").
+_TOOL_VERBS: dict[str, str] = {
+    "web_search": "Searching the web",
+    "web_extract": "Reading",
+    "browser_navigate": "Browsing",
+    "browser_click": "Clicking",
+    "browser_type": "Typing",
+    "read_file": "Reading",
+    "write_file": "Writing",
+    "patch": "Editing",
+    "search_files": "Searching files",
+    "terminal": "Running",
+    "execute_code": "Running code",
+    "image_generate": "Generating image",
+    "video_generate": "Generating video",
+    "text_to_speech": "Generating speech",
+    "vision_analyze": "Looking at the image",
+    "session_search": "Searching past sessions",
+    "skill_view": "Reading skill",
+    "skills_list": "Listing skills",
+    "skill_manage": "Updating skill",
+    "delegate_task": "Delegating",
+    "cronjob": "Scheduling",
+    "clarify": "Asking",
+    "memory": "Updating memory",
+    "todo": "Updating tasks",
+}
+
+# Verbs that read better without the raw argument preview appended.
+_TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
+    "skills_list",
+    "session_search",
+})
+
+# Verbs that take a "for" connector before the preview (search-style phrasing):
+# "Searching the web for <query>" reads better than "Searching the web <query>".
+_TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({
+    "web_search",
+    "search_files",
+})
+
+_friendly_tool_labels: bool = True
+
+
+def set_friendly_tool_labels(enabled: bool) -> None:
+    """Toggle friendly human-phrased tool labels (display.friendly_tool_labels)."""
+    global _friendly_tool_labels
+    _friendly_tool_labels = bool(enabled)
+
+
+def get_friendly_tool_labels() -> bool:
+    """Return whether friendly tool labels are enabled."""
+    return _friendly_tool_labels
+
+
+def get_tool_verb(tool_name: str) -> str | None:
+    """Return the friendly verb for a built-in tool, or None.
+
+    Returns None when friendly labels are disabled or the tool has no curated
+    verb (custom/plugin/MCP tools).  Callers that already hold a computed
+    argument preview can compose ``f"{verb} {preview}"`` themselves; use
+    :func:`tool_verb_connector` to pick the right joiner.
+    """
+    if not _friendly_tool_labels:
+        return None
+    return _TOOL_VERBS.get(tool_name)
+
+
+def tool_verb_connector(tool_name: str) -> str:
+    """Return the connector between a verb and its preview (" for " or " ")."""
+    return " for " if tool_name in _TOOL_VERBS_FOR_CONNECTOR else " "
+
+
+def verb_drops_preview(tool_name: str) -> bool:
+    """Whether the verb should render alone, without the argument preview."""
+    return tool_name in _TOOL_VERBS_NO_PREVIEW
+
+
+def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
+    """Build a human-phrased status label for a tool call.
+
+    For built-in tools with a known verb (``web_search`` -> "Searching the
+    web for ..."), returns the verb optionally followed by the argument
+    preview.  For everything else (custom/plugin/MCP tools, or when friendly
+    labels are disabled) returns the raw preview, so callers can use this as a
+    drop-in replacement for :func:`build_tool_preview`.
+    """
+    if not _friendly_tool_labels:
+        return build_tool_preview(tool_name, args, max_len=max_len)
+
+    verb = _TOOL_VERBS.get(tool_name)
+    if not verb:
+        return build_tool_preview(tool_name, args, max_len=max_len)
+
+    if tool_name in _TOOL_VERBS_NO_PREVIEW:
+        return verb
+
+    preview = build_tool_preview(tool_name, args, max_len=max_len)
+    if not preview:
+        return verb
+    if tool_name in _TOOL_VERBS_FOR_CONNECTOR:
+        return f"{verb} for {preview}"
+    return f"{verb} {preview}"
 
 
 # =========================================================================
@@ -1268,7 +1394,11 @@ def get_cute_tool_message(
     if tool_name == "skills_list":
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
     if tool_name == "skill_view":
-        return _wrap(f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}")
+        label = args.get("name", "")
+        file_path = args.get("file_path")
+        if file_path:
+            label = f"{label} → {file_path}" if label else str(file_path)
+        return _wrap(f"┊ 📚 skill     {_trunc(label, 44)}  {dur}")
     if tool_name == "image_generate":
         return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
     if tool_name == "text_to_speech":

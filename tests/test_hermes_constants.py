@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -435,6 +436,18 @@ class TestParseReasoningEffort:
         """The literal "none" disables reasoning explicitly."""
         assert parse_reasoning_effort("none") == {"enabled": False}
 
+    @pytest.mark.parametrize("value", [False, "false", "FALSE", "disabled", " Disabled "])
+    def test_false_aliases_disable_reasoning(self, value):
+        """YAML `reasoning_effort: false`/`off`/`no` reaches loaders as a
+        boolean; users also hand-write "false"/"disabled". All must mean
+        disabled — not "unset, fall back to the default and keep thinking"."""
+        assert parse_reasoning_effort(value) == {"enabled": False}
+
+    @pytest.mark.parametrize("value", [None, True])
+    def test_non_string_non_false_returns_none(self, value):
+        """None and boolean True fall back to the caller default."""
+        assert parse_reasoning_effort(value) is None
+
     @pytest.mark.parametrize("level", list(VALID_REASONING_EFFORTS))
     def test_each_valid_level(self, level):
         """Every level listed in VALID_REASONING_EFFORTS is accepted as-is."""
@@ -460,7 +473,7 @@ class TestParseReasoningEffort:
 
     @pytest.mark.parametrize(
         "value",
-        ["bogus", "very-high", "max", "0", "off", "true", "default"],
+        ["bogus", "very-high", "0", "off", "true", "default"],
     )
     def test_unknown_levels_return_none(self, value):
         """Unrecognized strings fall back to the caller default (None)."""
@@ -469,11 +482,11 @@ class TestParseReasoningEffort:
     def test_known_supported_levels_are_documented(self):
         """Guard against silently dropping a documented level.
 
-        The docstring promises "minimal", "low", "medium", "high", "xhigh".
-        If someone removes one from VALID_REASONING_EFFORTS without updating
-        the docstring, this test will fail and force the call out.
+        The docstring promises "minimal", "low", "medium", "high", "xhigh",
+        "max". If someone removes one from VALID_REASONING_EFFORTS without
+        updating the docstring, this test will fail and force the call out.
         """
-        documented = {"minimal", "low", "medium", "high", "xhigh"}
+        documented = {"minimal", "low", "medium", "high", "xhigh", "max"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
 
 
@@ -610,6 +623,43 @@ class TestAgentBrowserRunnable:
         # the package at run time, so the validator trusts it without stat.
         assert agent_browser_runnable("npx agent-browser") is True
         assert agent_browser_runnable("/usr/local/bin/npx agent-browser") is True
+
+    def test_version_probe_uses_windows_hide_flags(self, tmp_path, monkeypatch):
+        good = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho hi\n")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        import hermes_cli._subprocess_compat as subprocess_compat
+        import subprocess as subprocess_mod
+
+        monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(subprocess_mod, "run", fake_run)
+
+        assert agent_browser_runnable(str(good)) is True
+        assert captured[0][0] == [str(good), "--version"]
+        assert captured[0][1]["creationflags"] == 0x08000000
+
+
+    def test_node_tool_probe_uses_windows_hide_flags(self, tmp_path, monkeypatch):
+        good = self._stub(tmp_path, "node", "#!/bin/sh\necho v22\n")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        import hermes_cli._subprocess_compat as subprocess_compat
+        import subprocess as subprocess_mod
+
+        monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(subprocess_mod, "run", fake_run)
+
+        assert node_tool_runnable(str(good)) is True
+        assert captured[0][0] == [str(good), "--version"]
+        assert captured[0][1]["creationflags"] == 0x08000000
 
 
 class TestGetHermesDir:

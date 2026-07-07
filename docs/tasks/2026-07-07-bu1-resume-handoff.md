@@ -6,6 +6,54 @@
 > Plan of record: `~/brain/wiki/synthesis/hermes-adoption-plan-v4.md` (brain d15bafd).
 > Working plan + phase list: `~/.claude/plans/you-are-the-fable-compressed-puzzle.md`.
 
+---
+
+## UPDATE 2026-07-07 (post-fix, third session) — RESUME AT CLOSER, not self-repair
+
+The self-repair described below is **DONE, verified, and security-re-passed (verdict: SHIP)** — but
+NOT yet committed. A third session ran the fix through the warm Codex context (dual-review) and
+independently verified it. Two sessions were silently downgraded to Opus; **confirm the Fable seat
+(`/model` → `claude-fable-5`) before any judgment call.** Working steps live in
+`~/.claude/plans/you-are-the-fable-dazzling-puzzle.md`.
+
+**On disk now** — worktree `~/projects/hermes-agent-guardrails`, branch `feature/guardrails`,
+HEAD unchanged `9d635eca1`, fixes UNCOMMITTED:
+- `M write-fence.sh, repo-guard.sh, install.sh, tests/hook-matrix.sh, docs/tasks/2026-07-07-bu1-guardrails.md`
+  + untracked `?? bop/agent-hooks/patch_parser.py` (vendored, byte-identical to pinned
+  `tools/patch_parser.py` via `cmp`). Diff scoped to `bop/` + task doc only.
+- **`bash bop/tests/hook-matrix.sh` → 44 passed, 0 failed.**
+
+**All four findings cleared** (independent sonnet re-pass, SHIP):
+1. CRITICAL self-disarm — CLOSED. allow_roots now only `~/.hermes/{workspace,outbox}` + exact-file
+   `MEMORY.md` (exact-string membership, so `MEMORY.md.evil`/`MEMORY.md/x` denied); six control
+   surfaces in deny_roots, checked before allow.
+2. HIGH parser drift — CLOSED. Vendored `parse_v4a_patch()` collects file_path+new_path incl. MOVE;
+   fails closed on import/parse error, no regex fallback; verified against the installed copy.
+3. MEDIUM NPI — CLOSED. SSN widened (hyphen/space/dot/bare-9); header marks scan best-effort.
+4. MEDIUM repo-guard — DOCUMENTED. Header-only change.
+
+**NEW low-sev, NON-BLOCKING finding:** `sys.path.insert(0, hook_dir)` in write-fence is an
+import-shadowing surface, BUT `hook_dir` (`~/.hermes/agent-hooks`) is in write-fence's own
+deny_roots so the write/patch tools can't plant a shim there; only a `terminal` write could, and
+that's already backstopped by `approvals.mode:manual` (consistent with the stated threat model).
+Vendored parser is ast-clean (no exec/eval/network at import). **Cheap zero-downside hardening:**
+load the parser via `importlib.util.spec_from_file_location`/`module_from_spec` by exact path
+instead of `sys.path.insert`.
+
+**RESUME AT STEP 3 (closer).** Fresh session's call: (a) fold the importlib hardening into a quick
+round-3 via the still-warm `codex-guardrails` tmux, re-run matrix to green, then land — recommended,
+zero-downside; or (b) land as-is (SHIP already, finding non-blocking) and file the hardening as
+follow-up. Then: dispatch `closer` with the gate packet (matrix 44/44 + `git diff --stat
+origin/main..HEAD` scope proof + SHIP verdict) → push `feature/guardrails`, PR vs fork main,
+auto-merge (squash) on all-green, no direct-to-main → `bash bop/install.sh` → re-run matrix vs
+installed copies → F3.5 `chain-smoke` → kill `codex-guardrails` tmux (still ALIVE — keep warm until
+landing) → retire worktree → `/checkpoint`.
+
+**Everything below is the ORIGINAL (pre-fix) handoff, kept for the record. The findings section is
+now HISTORICAL — the fixes are applied.**
+
+---
+
 ## Current state at a glance
 
 - **DONE + committed:** Step 0 (brain d15bafd), fork+pin (fork main @ 6a6766f), F0, F1.5, F2

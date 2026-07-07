@@ -132,8 +132,29 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+def _is_default_off_toolset(item: dict) -> bool:
+    """Return True for opt-in toolsets that are intentionally unavailable.
+
+    ``doctor`` should not warn about every bundled-but-disabled integration.
+    Toolsets such as Home Assistant, Spotify, MoA, video generation, Discord
+    admin tools, and X search are shipped with Hermes but are default-off
+    until the user explicitly configures credentials or enables them via
+    ``hermes tools``. Surfacing them as per-toolset warnings makes a clean
+    install look dirty, even though the final missing-API-key summary is
+    already scoped to CLI-enabled toolsets by
+    :func:`_missing_api_key_toolsets_for_summary`.
+    """
+    name = item.get("name")
+    try:
+        from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+
+        return name in _DEFAULT_OFF_TOOLSETS
+    except Exception:
+        return False
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
-    """Adjust runtime-gated tool availability for doctor diagnostics."""
+    """Adjust runtime-gated / opt-in tool availability for doctor diagnostics."""
     updated_available = list(available)
     updated_unavailable = []
     for item in unavailable:
@@ -145,6 +166,12 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
         if name == "honcho" and _honcho_is_configured_for_doctor():
             if "honcho" not in updated_available:
                 updated_available.append("honcho")
+            continue
+        if _is_default_off_toolset(item):
+            # Default-off integrations are healthy when absent. If the user
+            # explicitly enables one and it is still unavailable, the runtime
+            # tool gating path will keep its schemas out; doctor should stay
+            # focused on actionable setup issues, not every optional backend.
             continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable

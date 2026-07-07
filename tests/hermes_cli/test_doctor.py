@@ -191,6 +191,57 @@ class TestDoctorToolAvailabilityOverrides:
 
         assert doctor._doctor_tool_availability_detail("kanban") == "(runtime-gated; loaded only for dispatcher-spawned workers)"
 
+    def test_suppresses_warning_for_default_off_toolset_missing_creds(self, monkeypatch):
+        # Home Assistant is opt-in (_DEFAULT_OFF_TOOLSETS) — a clean install
+        # that never configured it should not surface a doctor warning.
+        homeassistant_entry = {
+            "name": "homeassistant",
+            "missing_vars": ["HOMEASSISTANT_URL", "HOMEASSISTANT_TOKEN"],
+            "tools": ["homeassistant_call_service"],
+        }
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [homeassistant_entry],
+        )
+
+        assert available == []
+        assert unavailable == []
+
+    def test_suppresses_warning_for_each_default_off_toolset(self, monkeypatch):
+        from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+
+        entries = [
+            {"name": name, "missing_vars": ["SOME_KEY"], "tools": ["some_tool"]}
+            for name in _DEFAULT_OFF_TOOLSETS
+        ]
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides([], entries)
+
+        assert available == []
+        assert unavailable == []
+
+    def test_leaves_normally_enabled_toolset_unavailable_when_missing_creds(self, monkeypatch):
+        # A non-opt-in toolset (e.g. a core web-search provider) missing its
+        # API key must still be reported so the user can fix a real problem.
+        search_entry = {
+            "name": "web_search",
+            "missing_vars": ["SEARCH_API_KEY"],
+            "tools": ["web_search"],
+        }
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [search_entry],
+        )
+
+        assert available == []
+        assert unavailable == [search_entry]
+
+    def test_default_off_toolset_detection_helper(self):
+        assert doctor._is_default_off_toolset({"name": "spotify"}) is True
+        assert doctor._is_default_off_toolset({"name": "web_search"}) is False
+
 
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):

@@ -1426,9 +1426,18 @@ class HindsightMemoryProvider(MemoryProvider):
                     if config_changed:
                         profile_env = _materialize_embedded_profile_env(self._config)
                         if client._manager.is_running(profile):
+                            # Do not kill a healthy shared embedded daemon from inside a
+                            # live gateway/session. Several Hermes profiles can share the
+                            # default Hindsight profile, and restarting here can terminate
+                            # in-flight retain/recall requests, surfacing as Hindsight HTTP
+                            # 500s to the caller. The updated env is materialized for the
+                            # next natural daemon start; explicit operational restarts can
+                            # still be performed outside an active request path.
                             with open(log_path, "a", encoding="utf-8") as f:
-                                f.write("\n=== Config changed, restarting daemon ===\n")
-                            client._manager.stop(profile)
+                                f.write(
+                                    "\n=== Config changed; healthy daemon left running "
+                                    "(restart deferred) ===\n"
+                                )
 
                     client._ensure_started()
                     with open(log_path, "a", encoding="utf-8") as f:

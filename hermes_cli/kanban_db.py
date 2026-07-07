@@ -880,6 +880,7 @@ class Task:
     # the defaults; empty list = explicitly no extra skills.
     skills: Optional[list] = None
     model_override: Optional[str] = None
+    provider_override: Optional[str] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -977,7 +978,16 @@ class Task:
                 row["current_step_key"] if "current_step_key" in keys else None
             ),
             skills=skills_value,
-            model_override=row["model_override"] if "model_override" in keys and row["model_override"] else None,
+            model_override=(
+                row["model_override"]
+                if "model_override" in keys and row["model_override"]
+                else None
+            ),
+            provider_override=(
+                row["provider_override"]
+                if "provider_override" in keys and row["provider_override"]
+                else None
+            ),
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
             ),
@@ -1141,6 +1151,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to the worker, overriding the profile's default model. NULL = use
     -- the profile default.
     model_override       TEXT,
+    -- Per-task provider override selected by workflow/CLI routing.
+    -- NULL = use the profile default provider.
+    provider_override    TEXT,
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -1947,6 +1960,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
 
+    if "provider_override" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "provider_override", "provider_override TEXT"
+        )
+
     if "goal_mode" not in cols:
         # Ralph-style goal loop toggle for the dispatched worker. 0 (the
         # default) = classic single-shot worker, preserving the behaviour
@@ -2410,6 +2428,7 @@ def create_task(
     workflow_template_id: Optional[str] = None,
     current_step_key: Optional[str] = None,
     model_override: Optional[str] = None,
+    provider_override: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2448,6 +2467,10 @@ def create_task(
         )
     if branch_name is not None:
         branch_name = str(branch_name).strip() or None
+    if model_override is not None:
+        model_override = str(model_override).strip() or None
+    if provider_override is not None:
+        provider_override = str(provider_override).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
 
@@ -2639,9 +2662,9 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         workflow_template_id, current_step_key,
-                        skills, model_override, max_retries,
+                        skills, model_override, provider_override, max_retries,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2663,6 +2686,7 @@ def create_task(
                         current_step_key,
                         json.dumps(skills_list) if skills_list is not None else None,
                         model_override,
+                        provider_override,
                         int(max_retries) if max_retries is not None else None,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,

@@ -11,7 +11,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from hermes_cli.auth import AuthError, resolve_provider
+from hermes_cli.auth import AuthError, read_credential_pool, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
@@ -159,6 +159,33 @@ def show_status(args):
         "GitHub": "GITHUB_TOKEN",
     }
 
+    # Mapping from display names to credential pool provider IDs.
+    # Used to check the native auth store when the env var is absent.
+    _pool_ids: dict[str, str] = {
+        "OpenRouter": "openrouter",
+        "OpenAI": "openai-api",
+        "Google / Gemini": "gemini",
+        "DeepSeek": "deepseek",
+        "xAI / Grok": "xai-oauth",
+        "NVIDIA NIM": "nvidia",
+        "Z.AI / GLM": "zai",
+        "Kimi": "kimi-coding",
+        "StepFun Step Plan": "stepfun",
+        "MiniMax": "minimax",
+        "MiniMax-CN": "minimax-cn",
+    }
+
+    def _has_pool_credential(display_name: str) -> bool:
+        """Return True if the credential pool has at least one entry."""
+        pool_id = _pool_ids.get(display_name)
+        if not pool_id:
+            return False
+        try:
+            entries = read_credential_pool(pool_id)
+            return bool(entries)
+        except Exception:
+            return False
+
     def _resolve_env(env_ref) -> str:
         """Return first non-empty env var value from a str or tuple of names."""
         if isinstance(env_ref, tuple):
@@ -177,7 +204,12 @@ def show_status(args):
             continue
         value = _resolve_env(env_ref)
         has_key = bool(value)
-        display = redact_key(value)
+        # Fallback: check the credential pool when the env var is absent.
+        if not has_key and _has_pool_credential(name):
+            has_key = True
+            display = color("(auth pool)", Colors.DIM)
+        else:
+            display = redact_key(value)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key

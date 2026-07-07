@@ -13123,6 +13123,35 @@ def main():
                 seen_plugin_commands.add(cmd_info["name"])
 
             discover_plugins()
+
+            # Bundled platform plugins load lazily (deferred): their module —
+            # and thus any ``ctx.register_cli_command()`` call inside the
+            # plugin's ``register()`` — is only imported when the
+            # platform_registry is first asked for that platform (gateway
+            # start / setup / send). A standalone ``hermes <platform> ...``
+            # invocation parses args before the registry is ever touched, so
+            # the plugin's subcommand would never be wired up and argparse
+            # rejects it as an invalid choice. If the first positional token
+            # names a deferred platform, force-resolve just that one so its
+            # ``register()`` runs and registers its CLI command. Only the
+            # matched platform is imported, so the lazy-load fast path for
+            # chat and every built-in subcommand is preserved.
+            _first_plugin_token = _first_positional_argv()
+            if (
+                _first_plugin_token is not None
+                and _first_plugin_token not in _BUILTIN_SUBCOMMANDS
+            ):
+                try:
+                    from gateway.platform_registry import platform_registry
+
+                    if _first_plugin_token in platform_registry._deferred:
+                        platform_registry.get(_first_plugin_token)
+                except Exception as _exc:
+                    logging.getLogger(__name__).debug(
+                        "Deferred platform CLI resolve failed for '%s': %s",
+                        _first_plugin_token, _exc,
+                    )
+
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
                     continue

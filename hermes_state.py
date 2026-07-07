@@ -3710,7 +3710,11 @@ class SessionDB:
 
 
     def get_messages(
-        self, session_id: str, include_inactive: bool = False
+        self,
+        session_id: str,
+        include_inactive: bool = False,
+        limit: Optional[int] = None,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -3721,14 +3725,22 @@ class SessionDB:
 
         Ordered by AUTOINCREMENT id (true insertion order) rather than
         timestamp — see c03acca50 for the WSL2 clock-regression rationale.
+
+        When ``limit`` is provided, returns at most ``limit`` messages
+        starting from ``offset`` (0-based, in insertion order). Enables
+        pagination for the API endpoint to avoid loading entire transcripts.
         """
         active_clause = "" if include_inactive else " AND active = 1"
+        sql = (
+            "SELECT * FROM messages WHERE session_id = ?"
+            f"{active_clause} ORDER BY id"
+        )
+        params: list = [session_id]
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ?"
-                f"{active_clause} ORDER BY id",
-                (session_id,),
-            )
+            cursor = self._conn.execute(sql, params)
             rows = cursor.fetchall()
         result = []
         for row in rows:

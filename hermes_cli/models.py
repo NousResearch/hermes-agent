@@ -3769,6 +3769,15 @@ def validate_requested_model(
       - recognized: whether it matched a known provider catalog
       - message: optional warning / guidance for the user
     """
+    # Check for spaces in the original input before stripping
+    if model_name and any(ch.isspace() for ch in model_name):
+        return {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": "Model names cannot contain spaces.",
+        }
+    
     requested = (model_name or "").strip()
     normalized = normalize_provider(provider)
     if normalized == "openrouter" and base_url and "openrouter.ai" not in base_url:

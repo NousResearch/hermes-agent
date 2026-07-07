@@ -250,10 +250,9 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
     pip_pkgs = ["playwright", "websockets"]
     print(f"\n[1/3] pip install: {' '.join(pip_pkgs)}")
     try:
-        res = _sp.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", *pip_pkgs],
-            check=False,
-        )
+        from hermes_cli.tools_config import _pip_install
+
+        res = _pip_install(["--upgrade", *pip_pkgs], capture_output=False)
         if res.returncode != 0:
             print("  pip install failed")
             return 1

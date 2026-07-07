@@ -505,6 +505,8 @@ def cmd_status(args) -> None:
 
 def memory_command(args) -> None:
     """Route memory subcommands."""
+    import json
+
     sub = getattr(args, "memory_command", None)
     if sub == "setup":
         provider = getattr(args, "provider", None)
@@ -514,5 +516,51 @@ def memory_command(args) -> None:
             cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
+    elif sub == "audit":
+        from hermes_cli.memory_hygiene import audit_memory, format_audit_report
+
+        report = audit_memory(write_metadata=getattr(args, "write_metadata", False))
+        target = getattr(args, "target", "all")
+        if target != "all":
+            report = dict(report)
+            report["stores"] = {target: report["stores"][target]}
+            report["summary"] = dict(report.get("summary", {}))
+            report["summary"]["entry_count"] = report["stores"][target]["entry_count"]
+            report["summary"]["total_issues"] = sum(
+                len(entry["issues"]) for entry in report["stores"][target]["entries"]
+            )
+            report["summary"]["stores_over_80_pct"] = [
+                target
+            ] if report["stores"][target]["usage_pct"] > 80 else []
+        if getattr(args, "json", False):
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(format_audit_report(report), end="")
+    elif sub in {"pending", "approve", "reject", "deny", "drop", "approval", "mode"}:
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+        from tools.memory_tool import load_on_disk_store
+
+        raw_args = [sub]
+        if sub in {"approve", "reject", "deny", "drop"}:
+            raw_args.append(getattr(args, "pending_id", ""))
+        elif sub in {"approval", "mode"} and getattr(args, "mode", None):
+            raw_args.append(getattr(args, "mode"))
+
+        def _set_approval(enabled: bool) -> None:
+            config = load_config()
+            if not isinstance(config.get("memory"), dict):
+                config["memory"] = {}
+            config["memory"]["write_approval"] = bool(enabled)
+            save_config(config)
+
+        out = handle_pending_subcommand(
+            wa.MEMORY,
+            raw_args,
+            memory_store=load_on_disk_store(),
+            set_mode_fn=_set_approval,
+        )
+        print(out or "Unknown memory review subcommand.")
     else:
         cmd_status(args)

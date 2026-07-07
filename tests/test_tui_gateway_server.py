@@ -6321,6 +6321,24 @@ def test_compression_watchdog_bad_env_uses_desktop_default(monkeypatch):
     assert server._compression_watchdog_timeout_seconds() == 45.0
 
 
+def test_turn_idle_watchdog_default_is_bounded(monkeypatch):
+    monkeypatch.delenv("HERMES_TURN_IDLE_WATCHDOG_SECONDS", raising=False)
+
+    assert server._turn_idle_watchdog_timeout_seconds() == 120.0
+
+
+def test_turn_idle_watchdog_env_override(monkeypatch):
+    monkeypatch.setenv("HERMES_TURN_IDLE_WATCHDOG_SECONDS", "7.5")
+
+    assert server._turn_idle_watchdog_timeout_seconds() == 7.5
+
+
+def test_turn_idle_watchdog_bad_env_uses_default(monkeypatch):
+    monkeypatch.setenv("HERMES_TURN_IDLE_WATCHDOG_SECONDS", "bad")
+
+    assert server._turn_idle_watchdog_timeout_seconds() == 120.0
+
+
 def test_compression_watchdog_timeout_marks_turn_terminal(monkeypatch):
     calls = {"interrupted": False}
     agent = types.SimpleNamespace(
@@ -6355,6 +6373,65 @@ def test_compression_watchdog_timeout_marks_turn_terminal(monkeypatch):
     assert complete, "expected terminal message.complete"
     assert complete[-1][2]["status"] == "error"
     assert complete[-1][2]["compression_exhausted"] is True
+
+
+def test_turn_idle_watchdog_timeout_marks_turn_terminal(monkeypatch):
+    calls = {"interrupted": False}
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupted", True),
+        context_compressor=None,
+    )
+    session = _session(agent=agent, running=True, cwd="/tmp/project")
+    session["turn_started_at"] = time.time() - 180
+    session["turn_last_progress_at"] = time.time() - 150
+    session["turn_last_progress_event"] = "tool.complete"
+    server._sessions["sid"] = session
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {"context_used": 0})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session: {"running": False})
+
+    try:
+        assert server._emit_turn_idle_timeout_terminal("sid", session, 120) is True
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert calls["interrupted"] is True
+    assert session["running"] is False
+    assert session["_turn_terminal_emitted"] is True
+    diagnostic = [e for e in emitted if e[0] == "diagnostic.event"]
+    assert diagnostic[-1][2]["component"] == "turn"
+    assert diagnostic[-1][2]["event"] == "idle_timeout"
+    assert diagnostic[-1][2]["details"]["last_progress_event"] == "tool.complete"
+    complete = [e for e in emitted if e[0] == "message.complete"]
+    assert complete, "expected terminal message.complete"
+    assert complete[-1][2]["status"] == "error"
+    assert complete[-1][2]["idle_timeout"] is True
+    assert complete[-1][2]["retryable"] is True
+
+
+def test_turn_progress_ignores_diagnostics_and_terminal(monkeypatch):
+    session = _session(running=True)
+    session["turn_last_progress_at"] = 1.0
+    session["turn_last_progress_event"] = "prompt.submit"
+    server._sessions["sid"] = session
+
+    try:
+        server._mark_turn_progress("sid", "diagnostic.event")
+        assert session["turn_last_progress_event"] == "prompt.submit"
+        server._mark_turn_progress("sid", "message.delta")
+        assert session["turn_last_progress_event"] == "message.delta"
+        updated_at = session["turn_last_progress_at"]
+        server._mark_turn_progress("sid", "message.complete")
+        assert session["turn_last_progress_event"] == "message.delta"
+        assert session["turn_last_progress_at"] == updated_at
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):

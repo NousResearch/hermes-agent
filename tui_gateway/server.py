@@ -1055,6 +1055,7 @@ def write_json(obj: dict) -> bool:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None):
+    _mark_turn_progress(sid, event)
     params = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
@@ -8853,6 +8854,30 @@ def _compression_watchdog_timeout_seconds() -> float:
         return 45.0
 
 
+def _turn_idle_watchdog_timeout_seconds() -> float:
+    raw = os.environ.get("HERMES_TURN_IDLE_WATCHDOG_SECONDS", "120")
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 120.0
+
+
+def _mark_turn_progress(sid: str, event: str) -> None:
+    if event in {"diagnostic.event", "session.info", "message.complete"}:
+        return
+    session = _sessions.get(sid)
+    if not session:
+        return
+    try:
+        with session["history_lock"]:
+            if not session.get("running") or session.get("_turn_terminal_emitted"):
+                return
+            session["turn_last_progress_at"] = time.time()
+            session["turn_last_progress_event"] = event
+    except Exception:
+        pass
+
+
 def _turn_terminal_emitted(session: dict) -> bool:
     with session["history_lock"]:
         if session.get("_turn_terminal_emitted"):
@@ -8865,6 +8890,108 @@ def _clear_compression_tracking(session: dict) -> None:
     session.pop("compression_started_at", None)
     session.pop("compression_last_heartbeat_at", None)
     session.pop("compression_status_text", None)
+
+
+def _clear_turn_watchdog_tracking(session: dict) -> None:
+    session.pop("turn_started_at", None)
+    session.pop("turn_last_progress_at", None)
+    session.pop("turn_last_progress_event", None)
+
+
+def _emit_turn_diagnostic(
+    sid: str,
+    session: dict,
+    event: str,
+    message: str,
+    *,
+    severity: str = "info",
+    details: dict | None = None,
+) -> None:
+    started_at = session.get("turn_started_at")
+    base_details = {
+        "session_id": sid,
+        "session_key": session.get("session_key") or "",
+        "cwd": session.get("cwd") or "",
+    }
+    if started_at:
+        base_details["elapsed_seconds"] = round(max(0.0, time.time() - float(started_at)), 3)
+    if details:
+        base_details.update(details)
+    _emit_diagnostic_event(
+        sid,
+        component="turn",
+        event=event,
+        message=message,
+        severity=severity,
+        details=base_details,
+    )
+
+
+def _emit_turn_idle_timeout_terminal(sid: str, session: dict, timeout_seconds: float) -> bool:
+    with session["history_lock"]:
+        if (
+            not session.get("running")
+            or session.get("_turn_terminal_emitted")
+            or session.get("compression_started_at")
+        ):
+            return False
+        session["_turn_terminal_emitted"] = True
+        session["_turn_cancel_requested"] = True
+        session["running"] = False
+        started_at = float(session.get("turn_started_at") or time.time())
+        last_progress_at = float(session.get("turn_last_progress_at") or started_at)
+        last_progress_event = str(session.get("turn_last_progress_event") or "")
+        _clear_inflight_turn(session)
+    agent = session.get("agent")
+    if hasattr(agent, "interrupt"):
+        try:
+            agent.interrupt()
+        except Exception:
+            pass
+    elapsed = max(0.0, time.time() - started_at)
+    idle_elapsed = max(0.0, time.time() - last_progress_at)
+    message = (
+        "Hermes did not produce turn progress for "
+        f"{int(timeout_seconds)}s. The turn was stopped so the chat can continue."
+    )
+    logger.warning(
+        "turn idle watchdog timeout: sid=%s session_key=%s elapsed=%.1fs idle=%.1fs last_event=%s timeout=%.1fs",
+        sid,
+        session.get("session_key") or "",
+        elapsed,
+        idle_elapsed,
+        last_progress_event,
+        timeout_seconds,
+    )
+    _emit_turn_diagnostic(
+        sid,
+        session,
+        "idle_timeout",
+        message,
+        severity="error",
+        details={
+            "elapsed_seconds": round(elapsed, 3),
+            "idle_seconds": round(idle_elapsed, 3),
+            "timeout_seconds": timeout_seconds,
+            "last_progress_event": last_progress_event,
+        },
+    )
+    _emit(
+        "message.complete",
+        sid,
+        {
+            "text": message,
+            "status": "error",
+            "idle_timeout": True,
+            "retryable": True,
+            "usage": _get_usage(agent) if agent is not None else {},
+        },
+    )
+    try:
+        _emit("session.info", sid, _session_info(agent, session))
+    except Exception:
+        pass
+    return True
 
 
 def _emit_compression_timeout_terminal(sid: str, session: dict, timeout_seconds: float) -> bool:
@@ -8969,6 +9096,48 @@ def _start_compression_watchdog(sid: str, session: dict) -> threading.Event | No
     return stop
 
 
+def _start_turn_idle_watchdog(sid: str, session: dict) -> threading.Event | None:
+    timeout_seconds = _turn_idle_watchdog_timeout_seconds()
+    if timeout_seconds <= 0:
+        return None
+    stop = threading.Event()
+    heartbeat_seconds = min(30.0, max(10.0, timeout_seconds / 3.0))
+    last_reported = 0.0
+
+    def watch() -> None:
+        nonlocal last_reported
+        while not stop.wait(1.0):
+            with session["history_lock"]:
+                if not session.get("running") or session.get("_turn_terminal_emitted"):
+                    return
+                if session.get("compression_started_at"):
+                    continue
+                started_at = float(session.get("turn_started_at") or time.time())
+                last_progress_at = float(session.get("turn_last_progress_at") or started_at)
+                last_progress_event = str(session.get("turn_last_progress_event") or "")
+            now = time.time()
+            idle_elapsed = now - last_progress_at
+            if idle_elapsed >= timeout_seconds:
+                _emit_turn_idle_timeout_terminal(sid, session, timeout_seconds)
+                return
+            if idle_elapsed >= heartbeat_seconds and now - last_reported >= heartbeat_seconds:
+                last_reported = now
+                _emit_turn_diagnostic(
+                    sid,
+                    session,
+                    "idle_heartbeat",
+                    "Turn is still running without visible progress",
+                    details={
+                        "idle_seconds": round(idle_elapsed, 3),
+                        "timeout_seconds": timeout_seconds,
+                        "last_progress_event": last_progress_event,
+                    },
+                )
+
+    _WATCHDOG_THREAD(target=watch, daemon=True).start()
+    return stop
+
+
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
         history = list(session["history"])
@@ -8977,6 +9146,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session["attached_images"] = []
         session["_turn_terminal_emitted"] = False
         _clear_compression_tracking(session)
+        now = time.time()
+        session["turn_started_at"] = now
+        session["turn_last_progress_at"] = now
+        session["turn_last_progress_event"] = "prompt.submit"
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session["agent"]
@@ -8993,7 +9166,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
         compression_watchdog_stop = _start_compression_watchdog(sid, session)
+        turn_idle_watchdog_stop = _start_turn_idle_watchdog(sid, session)
         try:
+            _emit_turn_diagnostic(sid, session, "start", "Turn started")
             from tools.approval import (
                 reset_current_session_key,
                 set_current_session_key,
@@ -9123,7 +9298,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
+            _emit_turn_diagnostic(sid, session, "agent_call.start", "Agent call started")
             result = agent.run_conversation(run_message, **run_kwargs)
+            _emit_turn_diagnostic(sid, session, "agent_call.complete", "Agent call completed")
             if session.get("_turn_terminal_emitted"):
                 return
             if "moa_one_shot_restore" in session:
@@ -9270,6 +9447,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 _clear_compression_tracking(session)
             with session["history_lock"]:
                 _clear_inflight_turn(session)
+            _emit_turn_diagnostic(
+                sid,
+                session,
+                "complete",
+                "Turn completed",
+                details={"status": status},
+            )
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -9410,6 +9594,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             print(
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
+            _emit_turn_diagnostic(
+                sid,
+                session,
+                "error",
+                "Turn raised an exception",
+                severity="error",
+                details={"error_type": type(e).__name__, "error": str(e)},
+            )
             _emit("error", sid, {"message": str(e)})
         finally:
             try:
@@ -9421,12 +9613,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 reset_hermes_home_override(home_token)
             if compression_watchdog_stop is not None:
                 compression_watchdog_stop.set()
+            if turn_idle_watchdog_stop is not None:
+                turn_idle_watchdog_stop.set()
             _clear_session_context(session_tokens)
+            _emit_turn_diagnostic(sid, session, "finally", "Turn cleanup finished")
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
                 _clear_compression_tracking(session)
+                _clear_turn_watchdog_tracking(session)
             _emit("session.info", sid, _session_info(agent, session))
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over

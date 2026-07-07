@@ -1951,18 +1951,17 @@ class MCPServerTask:
         if _MCP_LOGGING_CALLBACK_SUPPORTED:
             sampling_kwargs["logging_callback"] = self._make_logging_callback()
 
-        # Reap any orphaned subprocesses from a prior failed connection
-        # attempt before spawning a new one.  Without this, each retry in
+        # Reap any orphaned subprocesses from prior failed connection
+        # attempts before spawning a new one.  Without this, each retry in
         # the run() reconnect loop spawns a fresh process pair while the
         # previous failed pair lingers — leading to rapid zombie
-        # accumulation (see #57355).
-        _kill_orphaned_mcp_children()
-
-        # A previous stdio transport for this same server may have survived
-        # SDK context teardown and been marked orphaned in the prior
-        # _run_stdio() finally block. Reap it before spawning the replacement
-        # so reconnect churn cannot accumulate one child per attempt.
-        _kill_orphaned_mcp_children(server_name=self.name)
+        # accumulation (see #57355, #57228).  The unscoped sweep also
+        # opportunistically reaps orphans left by *other* servers that
+        # never reconnect; per-server filtering via ``server_name`` remains
+        # available for scoped call sites.  Run in a worker thread: the
+        # reaper blocks up to 2s (SIGTERM → wait → SIGKILL) when orphans
+        # exist, which would otherwise stall the shared MCP event loop.
+        await asyncio.to_thread(_kill_orphaned_mcp_children)
 
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()

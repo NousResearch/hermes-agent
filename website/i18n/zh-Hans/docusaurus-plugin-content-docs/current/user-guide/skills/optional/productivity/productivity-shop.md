@@ -1,12 +1,12 @@
 ---
-title: "Shop App — Shop"
-sidebar_label: "Shop App"
-description: "Shop"
+title: "Shop — Shop.app：商品搜索、订单追踪、退货、重新下单"
+sidebar_label: "Shop"
+description: "Shop.app：商品搜索、订单追踪、退货、重新下单"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Shop App
+# Shop
 
 Shop.app：商品搜索、订单追踪、退货、重新下单。
 
@@ -14,8 +14,8 @@ Shop.app：商品搜索、订单追踪、退货、重新下单。
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/productivity/shop-app` 安装 |
-| 路径 | `optional-skills/productivity/shop-app` |
+| 来源 | 可选 — 使用 `hermes skills install official/productivity/shop` 安装 |
+| 路径 | `optional-skills/productivity/shop` |
 | 版本 | `0.0.28` |
 | 作者 | community |
 | 许可证 | MIT |

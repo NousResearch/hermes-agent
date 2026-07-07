@@ -3249,10 +3249,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           - ``_auto_tts_default``: global default from ``voice.auto_tts``
           - ``_auto_tts_enabled_chats``: chats with mode ``voice_only``/``all``
           - ``_auto_tts_disabled_chats``: chats with mode ``off``
+
+        Also wires Discord voice callbacks at adapter startup.  `/voice channel`
+        used to be the only path that installed these callbacks, which meant the
+        newer auto-join path could connect/listen/transcribe but then dropped the
+        transcript before it reached the agent.
         """
         platform = getattr(adapter, "platform", None)
         if not isinstance(platform, Platform):
             return
+
+        if platform == Platform.DISCORD:
+            if hasattr(adapter, "_voice_input_callback"):
+                adapter._voice_input_callback = self._handle_voice_channel_input
+            if hasattr(adapter, "_on_voice_disconnect"):
+                adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+            if hasattr(adapter, "_voice_mode_getter"):
+                adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
+                    self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+                )
 
         disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
         enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)

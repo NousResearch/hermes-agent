@@ -91,6 +91,43 @@ async def test_auto_join_called_when_enabled_and_user_allowed(monkeypatch, adapt
 
 
 @pytest.mark.asyncio
+async def test_auto_join_binds_configured_text_channel_for_transcript_routing(monkeypatch, adapter):
+    """Auto-join must bind a text/session anchor.
+
+    Without this, the adapter can join the VC and transcribe speech, but
+    GatewayRunner._handle_voice_channel_input has no chat to route the
+    synthetic VOICE MessageEvent through.
+    """
+    adapter._voice_auto_join_cfg = {
+        "auto_join_on_user_join": True,
+        "auto_join_users": [],
+        "auto_join_text_channel_id": "123456789",
+    }
+    adapter._allowed_user_ids = {"42"}
+    bot = await _connect_adapter(monkeypatch, adapter)
+
+    adapter.join_voice_channel = AsyncMock(return_value=True)
+
+    guild = SimpleNamespace(id=1)
+    member = _make_member(42, guild, name="mxu")
+    channel = SimpleNamespace(id=99, name="General")
+
+    await bot._events["on_voice_state_update"](
+        member,
+        _make_voice_state(None),
+        _make_voice_state(channel),
+    )
+
+    adapter.join_voice_channel.assert_awaited_once_with(channel)
+    assert adapter._voice_text_channels[guild.id] == 123456789
+    assert adapter._voice_sources[guild.id]["platform"] == "discord"
+    assert adapter._voice_sources[guild.id]["chat_id"] == "123456789"
+    assert adapter._voice_sources[guild.id]["user_id"] == "42"
+    assert adapter._voice_sources[guild.id]["scope_id"] == "1"
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_auto_join_not_called_when_flag_off(monkeypatch, adapter):
     adapter._voice_auto_join_cfg = {"auto_join_on_user_join": False, "auto_join_users": []}
     adapter._allowed_user_ids = {"42"}

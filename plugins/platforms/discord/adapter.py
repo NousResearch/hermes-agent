@@ -1209,11 +1209,49 @@ class DiscordAdapter(BasePlatformAdapter):
                             if not already_here:
                                 try:
                                     await adapter_self.join_voice_channel(after.channel)
+
+                                    # Auto-join does not originate from a slash command, so
+                                    # there is no event.source to bind as the text/session
+                                    # anchor. Pick an explicit configured channel first, then
+                                    # fall back to Discord home/free-response config. This is
+                                    # what lets the gateway turn future VC transcripts into a
+                                    # real MessageEvent and route the agent's TTS reply back to
+                                    # this voice connection.
+                                    text_channel_id = str(
+                                        auto_cfg.get("auto_join_text_channel_id")
+                                        or os.getenv("DISCORD_HOME_CHANNEL")
+                                        or os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "").split(",")[0].strip()
+                                    ).strip()
+                                    if text_channel_id:
+                                        try:
+                                            text_channel_int = int(text_channel_id)
+                                        except (TypeError, ValueError):
+                                            logger.warning(
+                                                "[%s] Ignoring invalid discord.voice.auto_join_text_channel_id=%r",
+                                                adapter_self.name,
+                                                text_channel_id,
+                                            )
+                                        else:
+                                            adapter_self._voice_text_channels[guild_id] = text_channel_int
+                                            adapter_self._voice_sources[guild_id] = {
+                                                "platform": Platform.DISCORD.value,
+                                                "chat_id": str(text_channel_int),
+                                                "chat_name": getattr(after.channel, "name", None),
+                                                "chat_type": "channel",
+                                                "user_id": str(member.id),
+                                                "user_name": getattr(member, "display_name", None) or getattr(member, "name", None) or str(member.id),
+                                                "thread_id": None,
+                                                "chat_topic": None,
+                                                "scope_id": str(guild_id),
+                                                "guild_id": str(guild_id),
+                                            }
+
                                     logger.info(
-                                        "[%s] Auto-joined voice channel %s (triggered by %s)",
+                                        "[%s] Auto-joined voice channel %s (triggered by %s, text_channel=%s)",
                                         adapter_self.name,
                                         after.channel.name,
                                         member.display_name,
+                                        text_channel_id or "none",
                                     )
                                 except Exception as e:
                                     logger.warning(
@@ -2703,6 +2741,10 @@ class DiscordAdapter(BasePlatformAdapter):
         defaults: Dict[str, Any] = {
             "auto_join_on_user_join": False,
             "auto_join_users": [],
+            # Optional text channel used as the session anchor for automatic VC
+            # joins. Without an anchor, auto-join could hear/transcribe but had
+            # nowhere to route the synthetic MessageEvent.
+            "auto_join_text_channel_id": "",
         }
         try:
             from hermes_cli.config import read_raw_config

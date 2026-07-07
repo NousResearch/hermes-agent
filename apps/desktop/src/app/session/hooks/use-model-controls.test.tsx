@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { QueryClient } from '@tanstack/react-query'
 import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

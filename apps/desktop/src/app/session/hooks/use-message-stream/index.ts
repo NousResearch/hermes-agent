@@ -34,6 +34,7 @@ import { completionErrorText, delegateTaskPayloads, STREAM_DELTA_FLUSH_MS } from
 
 interface MessageStreamOptions {
   activeSessionIdRef: MutableRefObject<string | null>
+  continueFromCompressionExhausted?: (sessionId: string, errorMessage: string) => Promise<void> | void
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,
@@ -57,6 +58,7 @@ interface QueuedStreamDeltas {
 
 export function useMessageStream({
   activeSessionIdRef,
+  continueFromCompressionExhausted,
   hydrateFromStoredSession,
   queryClient,
   refreshHermesConfig,
@@ -529,6 +531,7 @@ export function useMessageStream({
     appendReasoningDelta,
     activeSessionIdRef,
     compactedTurnRef,
+    continueFromCompressionExhausted,
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
     completeAssistantMessage,

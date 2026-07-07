@@ -15,8 +15,14 @@ import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
-import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import {
+  getSessionMessages,
+  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+  type SessionCreateResponse,
+  type SessionMessage,
+  triggerCronJob
+} from '../hermes'
+import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, textPart, toChatMessages } from '../lib/chat-messages'
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
@@ -37,6 +43,7 @@ import {
   unpinSession
 } from '../store/layout'
 import { respondToApprovalAction } from '../store/native-notifications'
+import { notify } from '../store/notifications'
 import { $paneOpen } from '../store/panes'
 import { setPetActivity } from '../store/pet'
 import { setPetScale } from '../store/pet-gallery'
@@ -63,14 +70,18 @@ import {
   $sessions,
   getRememberedSessionId,
   sessionPinId,
+  setActiveSessionId,
   setAwaitingResponse,
   setBusy,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
+  setFreshDraftReady,
   setMessages,
-  setRememberedSessionId
+  setRememberedSessionId,
+  setSelectedStoredSessionId,
+  setSessionStartedAt
 } from '../store/session'
 import { onSessionsChanged } from '../store/session-sync'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '../store/todos'
@@ -113,6 +124,7 @@ import { useMessageStream } from './session/hooks/use-message-stream'
 import { useModelControls } from './session/hooks/use-model-controls'
 import { usePreviewRouting } from './session/hooks/use-preview-routing'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
+import { consumeContinuationPrompt, rememberContinuationPrompt } from './session/hooks/use-prompt-actions/continuation-recovery'
 import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
 import { useSessionListActions } from './session/hooks/use-session-list-actions'
@@ -546,6 +558,102 @@ export function DesktopController() {
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
+  const continueFromCompressionExhausted = useCallback(
+    async (failedRuntimeSessionId: string, errorMessage: string) => {
+      const prompt = consumeContinuationPrompt(failedRuntimeSessionId)
+      const parentStoredSessionId = selectedStoredSessionIdRef.current
+
+      if (!prompt || !parentStoredSessionId) {
+        return
+      }
+
+      let nextRuntimeId: string | null = null
+      let nextStoredId: string | null = null
+
+      try {
+        const continued = await requestGateway<
+          SessionCreateResponse & { continued_from_session_id?: string; dropoff_message_count?: number }
+        >('session.continue_from_dropoff', {
+          cwd: $currentCwd.get().trim() || undefined,
+          error: errorMessage,
+          parent_session_id: parentStoredSessionId,
+          pending_prompt: prompt,
+          profile: $activeGatewayProfile.get() || undefined,
+          session_id: failedRuntimeSessionId
+        })
+
+        nextRuntimeId = continued.session_id
+        nextStoredId = continued.stored_session_id || nextRuntimeId
+        const parentState = sessionStateByRuntimeIdRef.current.get(failedRuntimeSessionId)
+
+        const continuationNote: ChatMessage = {
+          id: `continuation-${Date.now()}`,
+          role: 'system',
+          parts: [textPart('Continued in a fresh compacted context from the previous oversized chat.')]
+        }
+
+        activeSessionIdRef.current = nextRuntimeId
+        selectedStoredSessionIdRef.current = nextStoredId
+        runtimeIdByStoredSessionIdRef.current.set(nextStoredId, nextRuntimeId)
+        ensureSessionState(nextRuntimeId, nextStoredId)
+        setFreshDraftReady(false)
+        setActiveSessionId(nextRuntimeId)
+        setSelectedStoredSessionId(nextStoredId)
+        setSessionStartedAt(Date.now())
+        navigate(sessionRoute(nextStoredId), { replace: true })
+
+        updateSessionState(
+          nextRuntimeId,
+          state => ({
+            ...state,
+            messages: [...(parentState?.messages ?? state.messages), continuationNote],
+            busy: true,
+            awaitingResponse: true,
+            interrupted: false,
+            pendingBranchGroup: null,
+            sawAssistantPayload: false
+          }),
+          nextStoredId
+        )
+
+        rememberContinuationPrompt(nextRuntimeId, prompt)
+        await requestGateway('prompt.submit', { session_id: nextRuntimeId, text: prompt }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+      } catch (err) {
+        setBusy(false)
+        setAwaitingResponse(false)
+
+        if (nextRuntimeId) {
+          updateSessionState(
+            nextRuntimeId,
+            state => ({
+              ...state,
+              awaitingResponse: false,
+              busy: false,
+              turnStartedAt: null
+            }),
+            nextStoredId
+          )
+        }
+
+        notify({
+          kind: 'error',
+          title: 'Continuation failed',
+          message: err instanceof Error ? err.message : String(err)
+        })
+      }
+    },
+    [
+      activeSessionIdRef,
+      ensureSessionState,
+      navigate,
+      requestGateway,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionIdRef,
+      sessionStateByRuntimeIdRef,
+      updateSessionState
+    ]
+  )
+
   const refreshActiveMessagingTranscript = useCallback(async () => {
     const storedSessionId = selectedStoredSessionIdRef.current
     const runtimeSessionId = activeSessionIdRef.current
@@ -584,6 +692,7 @@ export function DesktopController() {
 
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,
+    continueFromCompressionExhausted,
     hydrateFromStoredSession,
     queryClient,
     refreshHermesConfig,

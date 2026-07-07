@@ -16,6 +16,7 @@ const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `
 
 let handleEvent: ((event: RpcEvent) => void) | null = null
 let stateByRuntimeId: Map<string, ClientSessionState>
+let continueFromCompressionExhausted: (sessionId: string, errorMessage: string) => Promise<void>
 
 function Harness() {
   const activeSessionIdRef = useRef<string | null>(SID)
@@ -26,6 +27,7 @@ function Harness() {
     activeSessionIdRef,
     hydrateFromStoredSession: vi.fn(async () => undefined),
     queryClient: queryClientRef.current,
+    continueFromCompressionExhausted,
     refreshHermesConfig: vi.fn(async () => undefined),
     refreshSessions: vi.fn(async () => undefined),
     sessionStateByRuntimeIdRef,
@@ -55,6 +57,7 @@ const complete = () => act(() => handleEvent!({ payload: { text: 'done' }, sessi
 describe('useMessageStream turn-end todo cleanup', () => {
   beforeEach(() => {
     handleEvent = null
+    continueFromCompressionExhausted = vi.fn(async () => undefined)
     stateByRuntimeId = new Map()
     clearSessionTodos(SID)
   })
@@ -112,5 +115,27 @@ describe('useMessageStream turn-end todo cleanup', () => {
     expect(state?.turnStartedAt).toBeNull()
     expect(state?.messages.at(-1)?.pending).toBe(false)
     expect(state?.messages.at(-1)?.error).toBe('Context length exceeded and cannot compress further.')
+  })
+
+  it('requests automatic continuation when compression is exhausted', async () => {
+    await mountStream()
+
+    act(() => handleEvent!({ payload: undefined, session_id: SID, type: 'message.start' }))
+    act(() =>
+      handleEvent!({
+        payload: {
+          compression_exhausted: true,
+          status: 'error',
+          text: 'Context length exceeded (358,245 tokens). Cannot compress further.'
+        },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    expect(continueFromCompressionExhausted).toHaveBeenCalledWith(
+      SID,
+      'Context length exceeded (358,245 tokens). Cannot compress further.'
+    )
   })
 })

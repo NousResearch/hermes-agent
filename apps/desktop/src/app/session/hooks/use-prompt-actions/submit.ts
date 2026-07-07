@@ -17,6 +17,7 @@ import { clearSessionReplyReady, setAwaitingResponse, setBusy, setMessages } fro
 
 import type { ClientSessionState } from '../../../types'
 
+import { rememberContinuationPrompt } from './continuation-recovery'
 import {
   _submitInFlight,
   type GatewayRequest,
@@ -255,6 +256,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         let submitErr: unknown = null
 
         try {
+          rememberContinuationPrompt(sessionId, text)
           await withSessionBusyRetry(() =>
             requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
@@ -294,6 +296,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 sessionId = recoveredId
                 seedOptimistic(recoveredId)
                 rewriteOptimistic(recoveredId)
+                rememberContinuationPrompt(recoveredId, text)
                 await withSessionBusyRetry(() =>
                   requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
                 )
@@ -314,6 +317,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 sessionId = recoveredId
                 seedOptimistic(recoveredId)
                 rewriteOptimistic(recoveredId)
+                rememberContinuationPrompt(recoveredId, text)
                 await withSessionBusyRetry(() =>
                   requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
                 )

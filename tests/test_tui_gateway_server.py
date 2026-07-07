@@ -2207,6 +2207,71 @@ def test_session_create_does_not_persist_empty_row(monkeypatch):
         server._sessions.pop(sid, None)
 
 
+def test_session_continue_from_dropoff_creates_seeded_child(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    recorded = []
+
+    class _Store:
+        def search(self, query, cwd="", limit=3, timeout_s=0.2):
+            assert "continue the work" in query
+            assert cwd == "/tmp"
+            assert timeout_s <= 0.2
+            return [{"id": "dropoff-old", "source_path": "continuity", "snippet": "Prior decision"}]
+
+        def record_dropoff(self, record):
+            recorded.append(record)
+            return {**record, "id": "dropoff-1", "prompt_hash": "hash-1"}
+
+    monkeypatch.setattr(server, "_continuity_store", lambda: _Store())
+
+    server._sessions["parent-runtime"] = _session(
+        agent=types.SimpleNamespace(model="gpt-5.5"),
+        cwd="/tmp",
+        history=[
+            {"role": "user", "content": "Keep the Obsidian policy context and inspect @file:src/main.ts."},
+            {"role": "assistant", "content": "I will preserve the relevant constraints."},
+        ],
+        session_key="parent-stored",
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.continue_from_dropoff",
+            "params": {
+                "error": "Context length exceeded. Cannot compress further.",
+                "parent_session_id": "parent-stored",
+                "pending_prompt": "continue the work",
+                "session_id": "parent-runtime",
+            },
+        }
+    )
+
+    child_sid = resp["result"]["session_id"]
+    try:
+        child = server._sessions[child_sid]
+        assert resp["result"]["continued_from_session_id"] == "parent-stored"
+        assert child["parent_session_id"] == "parent-stored"
+        assert child["continued_from_dropoff"] is True
+        assert child["history"][0]["role"] == "system"
+        assert "compression was exhausted" in child["history"][0]["content"]
+        assert "Obsidian policy context" in child["history"][0]["content"]
+        assert "Retrieved continuity context" in child["history"][0]["content"]
+        assert "dropoff-old" in child["history"][0]["content"]
+        assert resp["result"]["continuity_record_id"] == "dropoff-1"
+        assert recorded
+        assert recorded[0]["parent_session_id"] == "parent-stored"
+        assert recorded[0]["child_session_id"] == resp["result"]["stored_session_id"]
+        assert recorded[0]["cwd"] == "/tmp"
+        assert recorded[0]["files"] == ["src/main.ts"]
+        assert recorded[0]["pending_prompt_hash"]
+        assert "Obsidian policy context" in recorded[0]["recent_summary"]
+    finally:
+        server._sessions.pop("parent-runtime", None)
+        server._sessions.pop(child_sid, None)
+
+
 def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     """An explicitly chosen workspace is persisted as the session cwd."""
     created = []
@@ -6162,6 +6227,53 @@ def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     assert payload.get("status") == "error"
     assert payload.get("text", "").startswith("Error:")
     assert "kimi-k2.6" in payload.get("text", "")
+
+
+def test_prompt_submit_marks_compression_exhausted_message_complete(monkeypatch):
+    """A context-overflow terminal failure must carry a machine-readable flag
+    so desktop can recover with a continuation instead of pattern-matching text."""
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": "Context length exceeded (358,245 tokens). Cannot compress further.",
+                "messages": [],
+                "api_calls": 1,
+                "completed": False,
+                "failed": True,
+                "partial": True,
+                "error": "Context length exceeded (358,245 tokens). Cannot compress further.",
+                "compression_exhausted": True,
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        }
+    )
+
+    complete_events = [e for e in emitted if e[0] == "message.complete"]
+    assert complete_events, "expected message.complete to be emitted"
+    payload = complete_events[-1][2]
+    assert payload.get("status") == "error"
+    assert payload.get("compression_exhausted") is True
 
 
 def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):

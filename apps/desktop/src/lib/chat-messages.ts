@@ -29,6 +29,7 @@ export type GatewayEventPayload = {
   text?: string
   rendered?: string
   status?: string
+  compression_exhausted?: boolean
   message?: string
   id?: string
   name?: string

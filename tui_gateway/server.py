@@ -1662,6 +1662,8 @@ def _ensure_session_db_row(session: dict) -> None:
     parent_session_id = session.get("parent_session_id") or None
     if parent_session_id:
         model_config["_branched_from"] = parent_session_id
+    if session.get("continued_from_dropoff"):
+        model_config["_continued_from_dropoff"] = True
     try:
         db.create_session(
             key,
@@ -4859,6 +4861,111 @@ def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 
 
+def _clip_dropoff_text(value: Any, limit: int = 1200) -> str:
+    text = _content_display_text(value).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}…"
+
+
+def _build_dropoff_seed(
+    session: dict,
+    pending_prompt: Any = "",
+    error_message: str = "",
+    recall_hits: list[dict] | None = None,
+) -> list[dict]:
+    with session["history_lock"]:
+        history = [dict(msg) for msg in (session.get("history") or [])]
+
+    recent_lines: list[str] = []
+    for msg in history[-10:]:
+        role = str(msg.get("role") or "user")
+        if role not in {"assistant", "system", "user"}:
+            continue
+        text = _clip_dropoff_text(msg.get("content"), 1000)
+        if text:
+            recent_lines.append(f"- {role}: {text}")
+
+    agent = session.get("agent")
+    model = str(getattr(agent, "model", "") or "") if agent is not None else ""
+    pending_note = "The user's triggering prompt will be submitted again after this continuation starts."
+    if _clip_dropoff_text(pending_prompt, 240):
+        pending_note = "The user's triggering prompt is intentionally not duplicated here; it will be replayed next."
+
+    sections = [
+        "Hermes continued this chat automatically because the previous context was too large and compression was exhausted.",
+        f"Parent session: {session.get('session_key') or ''}",
+        f"Workspace: {_session_cwd(session)}",
+        f"Model: {model or _resolve_model()}",
+        f"Recovery reason: {_clip_dropoff_text(error_message, 500) or 'context compression exhausted'}",
+        pending_note,
+        "Recent transcript context:",
+        "\n".join(recent_lines) if recent_lines else "- No recent transcript text was available.",
+    ]
+    if recall_hits:
+        recall_lines = []
+        for hit in recall_hits[:3]:
+            source = hit.get("source_path") or hit.get("id") or "continuity"
+            snippet = _clip_dropoff_text(hit.get("snippet"), 500)
+            if snippet:
+                recall_lines.append(f"- [{hit.get('id')}] {source}: {snippet}")
+        if recall_lines:
+            sections.extend(["Retrieved continuity context:", "\n".join(recall_lines)])
+
+    return [{"role": "system", "content": "\n\n".join(part for part in sections if part)}]
+
+
+def _continuity_store():
+    from hermes_cli.context_continuity import ContinuityStore
+
+    return ContinuityStore()
+
+
+def _dropoff_record(
+    session: dict,
+    *,
+    child_session_id: str,
+    error_message: str,
+    parent_session_id: str,
+    pending_prompt: Any,
+) -> dict:
+    from hermes_cli.context_continuity import (
+        prompt_hash,
+        referenced_files,
+        summarize_recent,
+    )
+
+    with session["history_lock"]:
+        history = [dict(msg) for msg in (session.get("history") or [])]
+        queued = dict(session.get("queued_prompt") or {})
+        inflight = dict(session.get("inflight_turn") or {})
+
+    recent_summary = summarize_recent(history, limit=8)
+    cwd = _session_cwd(session)
+
+    return {
+        "child_session_id": child_session_id,
+        "cwd": cwd,
+        "decisions": [],
+        "error": error_message,
+        "files": referenced_files(history, cwd=cwd),
+        "inflight": {
+            "assistant": _clip_dropoff_text(inflight.get("assistant"), 1000),
+            "streaming": bool(inflight.get("streaming")),
+            "user": _clip_dropoff_text(inflight.get("user"), 1000),
+        },
+        "model": str(getattr(session.get("agent"), "model", "") or ""),
+        "open_tasks": [],
+        "parent_session_id": parent_session_id,
+        "pending_prompt_hash": prompt_hash(pending_prompt),
+        "prompt_hash": prompt_hash(pending_prompt),
+        "queued_prompt": _clip_dropoff_text(queued.get("text"), 2000),
+        "recent_summary": recent_summary,
+        "source": session.get("source") or "tui",
+        "trigger": error_message or "context compression exhausted",
+    }
+
+
 def _start_inflight_turn(session: dict, text: Any) -> None:
     now = time.time()
     session["inflight_turn"] = {
@@ -5058,6 +5165,7 @@ def _(rid, params: dict) -> dict:
             "active_session_lease": lease,
             "cols": cols,
             "created_at": now,
+            "continued_from_dropoff": is_truthy_value(params.get("continued_from_dropoff", False)),
             "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
             "history": history,
@@ -5130,6 +5238,146 @@ def _(rid, params: dict) -> dict:
             },
         },
     )
+
+
+@method("session.continue_from_dropoff")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    parent_session_id = str(params.get("parent_session_id") or session.get("session_key") or "").strip()
+    if not parent_session_id:
+        return _err(rid, 4006, "parent_session_id required")
+
+    pending_prompt = params.get("pending_prompt") or params.get("text") or ""
+    error_message = str(params.get("error") or params.get("message") or "").strip()
+    store = _continuity_store()
+    try:
+        recall_hits = store.search(
+            f"{error_message}\n{_clip_dropoff_text(pending_prompt, 1000)}",
+            cwd=_session_cwd(session),
+            limit=3,
+            timeout_s=0.2,
+        )
+    except Exception:
+        recall_hits = []
+    seed = _build_dropoff_seed(
+        session,
+        pending_prompt=pending_prompt,
+        error_message=error_message,
+        recall_hits=recall_hits,
+    )
+
+    create_params = {
+        "cols": int(params.get("cols") or session.get("cols") or 80),
+        "messages": seed,
+        "parent_session_id": parent_session_id,
+        "source": params.get("source") or session.get("source") or "tui",
+        "continued_from_dropoff": True,
+    }
+
+    for key in ("cwd", "profile", "model", "provider", "reasoning_effort"):
+        value = params.get(key)
+        if value:
+            create_params[key] = value
+
+    override = session.get("model_override")
+    if isinstance(override, dict):
+        if "model" not in create_params and override.get("model"):
+            create_params["model"] = override.get("model")
+        if "provider" not in create_params and override.get("provider"):
+            create_params["provider"] = override.get("provider")
+
+    if params.get("fast"):
+        create_params["fast"] = True
+
+    created = _methods["session.create"](rid, create_params)
+    if created.get("error"):
+        return created
+
+    result = dict(created.get("result") or {})
+    result["continued_from_session_id"] = parent_session_id
+    result["dropoff_message_count"] = len(seed)
+    child_session_id = str(result.get("stored_session_id") or result.get("session_id") or "")
+    if child_session_id:
+        try:
+            record = store.record_dropoff(
+                _dropoff_record(
+                    session,
+                    child_session_id=child_session_id,
+                    error_message=error_message,
+                    parent_session_id=parent_session_id,
+                    pending_prompt=pending_prompt,
+                )
+            )
+            result["continuity_record_id"] = record.get("id")
+            result["pending_prompt_hash"] = record.get("prompt_hash")
+        except Exception as exc:
+            # Recovery must not fail just because diagnostics/recall storage is
+            # unavailable. Surface the warning to logs and continue the child.
+            print(
+                f"[tui_gateway] continuity ledger write failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+
+    return _ok(rid, result)
+
+
+@method("continuity.status")
+def _(rid, params: dict) -> dict:
+    try:
+        status = _continuity_store().status()
+    except Exception as exc:
+        return _err(rid, 5011, f"continuity status failed: {exc}")
+    return _ok(rid, status)
+
+
+@method("continuity.search")
+def _(rid, params: dict) -> dict:
+    query = str(params.get("query") or "").strip()
+    cwd = str(params.get("cwd") or "").strip()
+    try:
+        limit = int(params.get("limit") or 5)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        timeout_s = float(params.get("timeout_s") or 0.5)
+    except (TypeError, ValueError):
+        timeout_s = 0.5
+    hits = _continuity_store().search(query, cwd=cwd, limit=limit, timeout_s=timeout_s)
+    return _ok(rid, {"hits": hits, "query": query})
+
+
+@method("continuity.settings.get")
+def _(rid, params: dict) -> dict:
+    status = _continuity_store().status()
+    return _ok(rid, status.get("settings") or {})
+
+
+@method("continuity.settings.set")
+def _(rid, params: dict) -> dict:
+    patch = params.get("settings") if isinstance(params.get("settings"), dict) else params
+    settings = _continuity_store().save_settings(dict(patch or {}))
+    return _ok(
+        rid,
+        {
+            "obsidian_allowlisted_folders": settings.normalized_allowlist(),
+            "obsidian_last_indexed_at": settings.obsidian_last_indexed_at,
+            "obsidian_mirror_enabled": settings.obsidian_mirror_enabled,
+            "obsidian_read_enabled": settings.obsidian_read_enabled,
+            "obsidian_vault_path": settings.obsidian_vault_path,
+        },
+    )
+
+
+@method("continuity.obsidian.index")
+def _(rid, params: dict) -> dict:
+    try:
+        result = _continuity_store().index_obsidian(timeout_s=float(params.get("timeout_s") or 2.0))
+    except Exception as exc:
+        return _err(rid, 5012, f"obsidian index failed: {exc}")
+    return _ok(rid, result)
 
 
 @method("session.list")
@@ -8813,6 +9061,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 status = "complete"
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            if isinstance(result, dict) and result.get("compression_exhausted"):
+                payload["compression_exhausted"] = True
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

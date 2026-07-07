@@ -1803,6 +1803,7 @@ class AIAgent:
                 id(item) for item in (conversation_history or [])
                 if isinstance(item, dict)
             }
+            compact_api_session = getattr(self, "platform", None) == "api_server"
 
             for _msg_idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
@@ -1829,6 +1830,12 @@ class AIAgent:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 _row_timestamp = msg.get("timestamp")
+                if compact_api_session and role not in {"user", "assistant"}:
+                    # API/browser clients receive live tool progress over the
+                    # stream and own their visible chat history. Persisting raw
+                    # tool rows here silently balloons future resumed context.
+                    msg[_DB_PERSISTED_MARKER] = True
+                    continue
                 # Apply the persist override to THIS row's written values only
                 # (never to the live dict). Match the original guard: text-only
                 # content is replaced; multimodal (list) content is left intact
@@ -1852,21 +1859,31 @@ class AIAgent:
                         elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
                             _txt.append("[screenshot]")
                     content = "\n".join(_txt) if _txt else None
+                if (
+                    compact_api_session
+                    and role == "assistant"
+                    and not (isinstance(content, str) and content.strip())
+                ):
+                    # Assistant tool-call stubs are useful during a live turn,
+                    # but make a poor durable transcript when replayed later.
+                    msg[_DB_PERSISTED_MARKER] = True
+                    continue
                 tool_calls_data = None
-                if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
-                    tool_calls_data = [
-                        {"name": tc.function.name, "arguments": tc.function.arguments}
-                        for tc in msg.tool_calls
-                    ]
-                elif isinstance(msg.get("tool_calls"), list):
-                    tool_calls_data = msg["tool_calls"]
+                if not compact_api_session:
+                    if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
+                        tool_calls_data = [
+                            {"name": tc.function.name, "arguments": tc.function.arguments}
+                            for tc in msg.tool_calls
+                        ]
+                    elif isinstance(msg.get("tool_calls"), list):
+                        tool_calls_data = msg["tool_calls"]
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
                     content=content,
-                    tool_name=msg.get("tool_name"),
+                    tool_name=None if compact_api_session else msg.get("tool_name"),
                     tool_calls=tool_calls_data,
-                    tool_call_id=msg.get("tool_call_id"),
+                    tool_call_id=None if compact_api_session else msg.get("tool_call_id"),
                     finish_reason=msg.get("finish_reason"),
                     reasoning=msg.get("reasoning") if role == "assistant" else None,
                     reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,

@@ -4036,10 +4036,19 @@ class SessionDB:
         session_id: str,
         include_ancestors: bool = False,
         include_inactive: bool = False,
+        chat_text_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
         Used by the gateway to restore conversation history.
+
+        ``chat_text_only=True`` mirrors the api_server write-path compaction
+        on load: only user messages and non-empty assistant text are
+        returned, and tool plumbing (tool_calls/tool_call_id/tool_name) is
+        stripped. This keeps sessions persisted by earlier versions -- whose
+        rows still contain raw tool transcripts -- from replaying hidden
+        tool bloat (or dangling tool_calls, which providers reject) into
+        future context.
 
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
@@ -4074,14 +4083,21 @@ class SessionDB:
             content = self._decode_content(row["content"])
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
+            if chat_text_only:
+                if row["role"] not in {"user", "assistant"}:
+                    continue
+                if row["role"] == "assistant" and not (
+                    isinstance(content, str) and content.strip()
+                ):
+                    continue
             msg = {"role": row["role"], "content": content}
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
-            if row["tool_call_id"]:
+            if row["tool_call_id"] and not chat_text_only:
                 msg["tool_call_id"] = row["tool_call_id"]
-            if row["tool_name"]:
+            if row["tool_name"] and not chat_text_only:
                 msg["tool_name"] = row["tool_name"]
-            if row["tool_calls"]:
+            if row["tool_calls"] and not chat_text_only:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])
                 except (json.JSONDecodeError, TypeError):

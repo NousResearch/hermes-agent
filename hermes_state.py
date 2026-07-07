@@ -122,7 +122,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -772,6 +772,14 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS gateway_routing (
+    scope TEXT NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    entry_json TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (scope, session_key)
+);
+
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,
@@ -794,6 +802,8 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_active_null
+    ON messages(active) WHERE active IS NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
@@ -1373,6 +1383,23 @@ class SessionDB:
         # column (idx_messages_session_active) — same ordering constraint.
         cursor.executescript(DEFERRED_INDEX_SQL)
 
+        # Heal NULL ``active`` rows unconditionally on every startup.
+        # On real-world DBs the reconciler-added ``active`` column can lack
+        # its NOT NULL DEFAULT 1 (older reconciler builds reconstructed the
+        # type without the default — see #51646: PRAGMA shows
+        # (17,'active','INTEGER',0,None,0) in the wild), so INSERTs that
+        # omitted the column wrote NULL and the ``WHERE active = 1``
+        # transcript loaders hid the whole history.  The INSERTs now set
+        # active=1 explicitly; this idempotent repair un-hides rows written
+        # before the fix.  It was previously gated at ``current_version <
+        # 12`` which never re-ran for already-v12+ databases.
+        try:
+            cursor.execute(
+                "UPDATE messages SET active = 1 WHERE active IS NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
+
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True
         if not fts5_available:
@@ -1487,18 +1514,6 @@ class SessionDB:
                         fts_migrations_complete = False
                 else:
                     fts_migrations_complete = False
-            if current_version < 12:
-                # v12: messages.active flag for rewind/undo soft-deletion.
-                # The declarative reconcile_columns() above adds the
-                # column itself; this UPDATE is belt-and-suspenders to
-                # ensure any rows that pre-existed the ADD COLUMN have
-                # active=1 rather than NULL.
-                try:
-                    cursor.execute(
-                        "UPDATE messages SET active = 1 WHERE active IS NULL"
-                    )
-                except sqlite3.OperationalError:
-                    pass
             if current_version < 16:
                 # v16: tag delegate subagent rows so pickers stay clean after
                 # parent deletes that used to orphan them (parent_session_id → NULL).
@@ -1713,6 +1728,83 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET expiry_finalized = ? WHERE id = ?",
                 (1 if finalized else 0, session_id),
+            )
+
+        self._execute_write(_do)
+
+    # ── Gateway routing index (replaces sessions.json, #9006 follow-up) ────
+
+    def save_gateway_routing_entry(
+        self, session_key: str, entry_json: str, *, scope: str = ""
+    ) -> None:
+        """Upsert one gateway routing entry (session_key -> SessionEntry JSON).
+
+        The gateway_routing table is the durable replacement for
+        sessions.json: one row per routing key, holding the full serialized
+        ``SessionEntry`` so the gateway can rehydrate exactly what it wrote.
+
+        ``scope`` namespaces the index the way separate sessions.json files
+        did (one per sessions_dir) — callers pass their sessions_dir path so
+        two stores with different directories never share routing state.
+        """
+        if not session_key or not entry_json:
+            return
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(scope, session_key) DO UPDATE SET
+                       entry_json = excluded.entry_json,
+                       updated_at = excluded.updated_at""",
+                (scope, session_key, entry_json, time.time()),
+            )
+
+        self._execute_write(_do)
+
+    def replace_gateway_routing_entries(
+        self, entries: Dict[str, str], *, scope: str = ""
+    ) -> None:
+        """Atomically replace the routing index for *scope* with *entries*.
+
+        Mirrors the sessions.json full-rewrite semantics: keys absent from
+        *entries* are removed (pruned/reset sessions disappear from the
+        index).  Runs as a single write transaction.  Other scopes are
+        untouched.
+        """
+        now = time.time()
+
+        def _do(conn):
+            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
+            if entries:
+                conn.executemany(
+                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    [(scope, k, v, now) for k, v in entries.items() if k and v],
+                )
+
+        self._execute_write(_do)
+
+    def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
+        """Load routing entries for *scope* as {session_key: entry_json}."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?",
+                (scope,),
+            ).fetchall()
+        return {r["session_key"]: r["entry_json"] for r in rows}
+
+    def delete_gateway_routing_entries(
+        self, session_keys: List[str], *, scope: str = ""
+    ) -> None:
+        """Remove routing entries for the given session keys in *scope*."""
+        if not session_keys:
+            return
+
+        def _do(conn):
+            conn.executemany(
+                "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                [(scope, k) for k in session_keys],
             )
 
         self._execute_write(_do)
@@ -3380,8 +3472,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3399,6 +3491,7 @@ class SessionDB:
                     codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
+                    1,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -3471,8 +3564,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3490,6 +3583,7 @@ class SessionDB:
                     codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
+                    1,
                 ),
             )
             inserted += 1
@@ -5181,13 +5275,211 @@ class SessionDB:
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    @staticmethod
+    def _prune_filter_where(
+        *,
+        started_before: Optional[float] = None,
+        started_after: Optional[float] = None,
+        source: Optional[str] = None,
+        title_like: Optional[str] = None,
+        end_reason: Optional[str] = None,
+        cwd_prefix: Optional[str] = None,
+        min_messages: Optional[int] = None,
+        max_messages: Optional[int] = None,
+        archived: Optional[bool] = None,
+        model_like: Optional[str] = None,
+        provider: Optional[str] = None,
+        user_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        chat_type: Optional[str] = None,
+        branch_like: Optional[str] = None,
+        min_tokens: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        min_cost: Optional[float] = None,
+        max_cost: Optional[float] = None,
+        min_tool_calls: Optional[int] = None,
+        max_tool_calls: Optional[int] = None,
+    ) -> Tuple[str, list]:
+        """Build the shared WHERE clause for bulk prune/archive selection.
+
+        All filters AND together. Only ended sessions are ever candidates
+        (``ended_at IS NOT NULL``) so a live session is never selected.
+        ``archived`` is a tri-state: ``None`` = both, ``True`` = only
+        archived rows, ``False`` = only unarchived rows.
+
+        String matching conventions: ``model_like`` / ``branch_like`` /
+        ``title_like`` are case-insensitive substring matches (model slugs
+        and branch names vary in prefix format); ``provider`` / ``user_id``
+        / ``chat_id`` / ``chat_type`` / ``source`` / ``end_reason`` are
+        exact (case-insensitive for provider). Token bounds apply to
+        ``input_tokens + output_tokens``; cost bounds apply to
+        ``COALESCE(actual_cost_usd, estimated_cost_usd)``.
+
+        The clause references the ``s`` table alias — callers must select
+        ``FROM sessions s``.
+        """
+        clauses = ["s.ended_at IS NOT NULL"]
+        params: list = []
+        if started_before is not None:
+            clauses.append("s.started_at < ?")
+            params.append(started_before)
+        if started_after is not None:
+            clauses.append("s.started_at >= ?")
+            params.append(started_after)
+        if source:
+            clauses.append("s.source = ?")
+            params.append(source)
+        if title_like:
+            clauses.append("LOWER(COALESCE(s.title, '')) LIKE ?")
+            params.append(f"%{title_like.lower()}%")
+        if end_reason:
+            clauses.append("s.end_reason = ?")
+            params.append(end_reason)
+        if cwd_prefix:
+            clause, clause_params = _cwd_prefix_clause(cwd_prefix)
+            clauses.append(clause)
+            params.extend(clause_params)
+        if min_messages is not None:
+            clauses.append("s.message_count >= ?")
+            params.append(min_messages)
+        if max_messages is not None:
+            clauses.append("s.message_count <= ?")
+            params.append(max_messages)
+        if model_like:
+            clauses.append("LOWER(COALESCE(s.model, '')) LIKE ?")
+            params.append(f"%{model_like.lower()}%")
+        if provider:
+            clauses.append("LOWER(COALESCE(s.billing_provider, '')) = ?")
+            params.append(provider.lower())
+        if user_id:
+            clauses.append("s.user_id = ?")
+            params.append(user_id)
+        if chat_id:
+            clauses.append("s.chat_id = ?")
+            params.append(chat_id)
+        if chat_type:
+            clauses.append("s.chat_type = ?")
+            params.append(chat_type)
+        if branch_like:
+            clauses.append("LOWER(COALESCE(s.git_branch, '')) LIKE ?")
+            params.append(f"%{branch_like.lower()}%")
+        if min_tokens is not None:
+            clauses.append(
+                "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) >= ?"
+            )
+            params.append(min_tokens)
+        if max_tokens is not None:
+            clauses.append(
+                "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) <= ?"
+            )
+            params.append(max_tokens)
+        if min_cost is not None:
+            clauses.append(
+                "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0) >= ?"
+            )
+            params.append(min_cost)
+        if max_cost is not None:
+            clauses.append(
+                "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0) <= ?"
+            )
+            params.append(max_cost)
+        if min_tool_calls is not None:
+            clauses.append("COALESCE(s.tool_call_count, 0) >= ?")
+            params.append(min_tool_calls)
+        if max_tool_calls is not None:
+            clauses.append("COALESCE(s.tool_call_count, 0) <= ?")
+            params.append(max_tool_calls)
+        if archived is True:
+            clauses.append("s.archived = 1")
+        elif archived is False:
+            clauses.append("s.archived = 0")
+        return " AND ".join(clauses), params
+
+    def list_prune_candidates(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        **filters,
+    ) -> List[Dict[str, Any]]:
+        """Return the sessions a matching :meth:`prune_sessions` /
+        :meth:`archive_sessions` call would touch, without modifying anything.
+
+        Backs ``--dry-run`` and pre-confirmation counts. Accepts the same
+        keyword filters as :meth:`_prune_filter_where` (unknown names raise
+        ``TypeError`` there). Rows are ordered oldest-first and carry
+        ``id, source, title, model, started_at, ended_at, message_count,
+        archived``.
+        """
+        if filters.get("started_before") is None and older_than_days is not None:
+            filters["started_before"] = time.time() - (older_than_days * 86400)
+        where, params = self._prune_filter_where(source=source, **filters)
+        with self._lock:
+            cursor = self._conn.execute(
+                f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
+                           s.ended_at, s.message_count, s.archived
+                    FROM sessions s WHERE {where}
+                    ORDER BY s.started_at ASC""",
+                params,
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def archive_sessions(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        **filters,
+    ) -> int:
+        """Bulk-archive (soft-hide) every session matching the filters.
+
+        Same filter surface as :meth:`prune_sessions`, but instead of deleting
+        rows it flips ``archived = 1`` via :meth:`set_session_archived` so
+        each match's compression lineage is archived as a unit (an unarchived
+        compression root would otherwise resurrect the conversation in
+        Desktop's projected list). Nothing is deleted; messages and transcript
+        files are untouched. Returns the number of sessions matched.
+
+        ``archived`` defaults to ``False`` here (only select rows not yet
+        archived) so repeat runs are idempotent no-ops.
+        """
+        filters.setdefault("archived", False)
+        rows = self.list_prune_candidates(
+            older_than_days=older_than_days, source=source, **filters
+        )
+        for row in rows:
+            self.set_session_archived(row["id"], True)
+        return len(rows)
+
     def prune_sessions(
         self,
-        older_than_days: int = 90,
+        older_than_days: Optional[float] = 90,
         source: str = None,
         sessions_dir: Optional[Path] = None,
+        **filters,
     ) -> int:
-        """Delete sessions older than N days. Returns count of deleted sessions.
+        """Delete sessions matching the filters. Returns count deleted.
+
+        Default behavior (no keyword filters) is unchanged: delete ended
+        sessions older than ``older_than_days`` days, optionally restricted
+        to ``source``. Additional keyword filters AND together — the full
+        set is defined by :meth:`_prune_filter_where`:
+
+        * ``started_before`` / ``started_after`` — epoch bounds on
+          ``started_at``. ``started_before`` overrides ``older_than_days``;
+          pass ``older_than_days=None`` for no upper age bound (e.g. when
+          only pruning a recent window via ``started_after``).
+        * ``title_like`` / ``model_like`` / ``branch_like`` —
+          case-insensitive substring matches.
+        * ``end_reason`` / ``provider`` / ``user_id`` / ``chat_id`` /
+          ``chat_type`` — exact matches (provider case-insensitive, against
+          ``billing_provider``).
+        * ``cwd_prefix`` — session cwd equals or is under this path.
+        * ``min_messages`` / ``max_messages`` — bounds on message_count.
+        * ``min_tokens`` / ``max_tokens`` — bounds on input+output tokens.
+        * ``min_cost`` / ``max_cost`` — bounds on USD cost
+          (actual, falling back to estimated).
+        * ``min_tool_calls`` / ``max_tool_calls`` — bounds on tool_call_count.
+        * ``archived`` — tri-state: None = both (default), True = only
+          archived, False = only unarchived.
 
         Only prunes ended sessions (not active ones).  Child sessions outside
         the prune window are orphaned (parent_session_id set to NULL) rather
@@ -5196,21 +5488,15 @@ class SessionDB:
         ``request_dump_*``) for every pruned session, outside the DB
         transaction.
         """
-        cutoff = time.time() - (older_than_days * 86400)
+        if filters.get("started_before") is None and older_than_days is not None:
+            filters["started_before"] = time.time() - (older_than_days * 86400)
+        where, where_params = self._prune_filter_where(source=source, **filters)
         removed_ids: list[str] = []
 
         def _do(conn):
-            if source:
-                cursor = conn.execute(
-                    """SELECT id FROM sessions
-                       WHERE started_at < ? AND ended_at IS NOT NULL AND source = ?""",
-                    (cutoff, source),
-                )
-            else:
-                cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
-                    (cutoff,),
-                )
+            cursor = conn.execute(
+                f"SELECT s.id FROM sessions s WHERE {where}", where_params
+            )
             session_ids = {row["id"] for row in cursor.fetchall()}
 
             if not session_ids:

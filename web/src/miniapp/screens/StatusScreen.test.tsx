@@ -38,6 +38,7 @@ function renderStatus(isAdmin: boolean): string {
           gateway_start_time: REAL_START_TIME,
           telegram_allowlist_updated_at: REAL_START_TIME + 100,
         }}
+        onOpenLog={() => {}}
       />
     </MiniAppContext.Provider>,
   );

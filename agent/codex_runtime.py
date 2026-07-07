@@ -594,6 +594,56 @@ def _raise_stream_error(event: Any) -> None:
     )
 
 
+class _DisplayDeltaDeduper:
+    """Turn a progressive-snapshot delta stream into true incremental deltas.
+
+    Sibling fix to the cumulative ``message`` output-item dedup: the Bedrock
+    "mantle" Responses endpoint (gpt-5.x) restarts the ``output_text.delta``
+    stream from the beginning of the full answer on every new ``output_item``
+    when a reply is long and interleaves reasoning. The final assembled text is
+    protected by collapsing cumulative message items, but the *live display*
+    path forwards each raw delta straight to ``on_text_delta`` — so the user
+    watches the whole answer replay N times (observed 27x on a 9.8k-char reply,
+    i.e. 268k chars streamed to the terminal).
+
+    This state machine tracks the text already shown and only forwards the
+    genuinely-new suffix. On a well-behaved endpoint (true incremental deltas)
+    it is a transparent pass-through; on a snapshot-replaying endpoint it
+    suppresses the repeats. ``reset_item()`` is called on each new
+    ``output_item`` so the per-item accumulator restarts while the displayed
+    watermark keeps growing monotonically.
+    """
+
+    def __init__(self) -> None:
+        self._displayed = ""      # everything already forwarded to the user
+        self._item_buf = ""       # deltas accumulated within the current item
+
+    def reset_item(self) -> None:
+        self._item_buf = ""
+
+    def feed(self, delta: str) -> str:
+        """Return only the newly-visible suffix for this delta ("" if none)."""
+        if not delta:
+            return ""
+        self._item_buf += delta
+        # Normal incremental case: nothing seen yet, or the running buffer
+        # extends what we've displayed — forward the new tail.
+        if self._item_buf.startswith(self._displayed):
+            new = self._item_buf[len(self._displayed):]
+            if new:
+                self._displayed = self._item_buf
+            return new
+        # The buffer is a prefix of (or equal to) what's already shown: a pure
+        # replay from the start of the answer — suppress entirely.
+        if self._displayed.startswith(self._item_buf):
+            return ""
+        # Divergent content (genuinely different text, not a snapshot of the
+        # same answer). Be conservative: forward the raw delta and advance the
+        # watermark so we don't wedge.
+        self._displayed += delta
+        return delta
+
+
 def _consume_codex_event_stream(
     event_iter: Any,
     *,
@@ -648,6 +698,12 @@ def _consume_codex_event_stream(
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
     saw_terminal = False
+    # Snapshot-replay guard for the LIVE display path. The mantle endpoint
+    # restarts the output_text.delta stream from the top of the answer on each
+    # new output_item; without this the user watches the reply replay N times.
+    # Final assembly is protected separately (cumulative message-item dedup);
+    # this only affects what on_text_delta forwards to the screen.
+    display_deduper = _DisplayDeltaDeduper()
 
     for event in event_iter:
         if on_event is not None:
@@ -690,6 +746,10 @@ def _consume_codex_event_stream(
                 active_message_phase = None
             if "function_call" in str(item_type):
                 has_tool_calls = True
+            # New output item: the mantle endpoint restarts the delta stream
+            # from the top of the answer here, so reset the per-item snapshot
+            # accumulator (the displayed watermark keeps growing).
+            display_deduper.reset_item()
             continue
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
@@ -706,18 +766,23 @@ def _consume_codex_event_stream(
             elif delta_text:
                 collected_text_deltas.append(delta_text)
                 if not has_tool_calls:
-                    if not first_delta_fired:
-                        first_delta_fired = True
-                        if on_first_delta is not None:
+                    # Only the genuinely-new suffix reaches the screen; on a
+                    # snapshot-replaying endpoint this suppresses the repeats,
+                    # on a well-behaved one it's a transparent pass-through.
+                    display_text = display_deduper.feed(delta_text)
+                    if display_text:
+                        if not first_delta_fired:
+                            first_delta_fired = True
+                            if on_first_delta is not None:
+                                try:
+                                    on_first_delta()
+                                except Exception:
+                                    logger.debug("Codex stream on_first_delta raised", exc_info=True)
+                        if on_text_delta is not None:
                             try:
-                                on_first_delta()
+                                on_text_delta(display_text)
                             except Exception:
-                                logger.debug("Codex stream on_first_delta raised", exc_info=True)
-                    if on_text_delta is not None:
-                        try:
-                            on_text_delta(delta_text)
-                        except Exception:
-                            logger.debug("Codex stream on_text_delta raised", exc_info=True)
+                                logger.debug("Codex stream on_text_delta raised", exc_info=True)
             continue
 
         if "function_call" in event_type:

@@ -69,6 +69,34 @@ class TestSplitPairingDirMigration:
         assert migrated["ou_other"]["user_name"] == "Other"
 
 
+class TestProfileScopedDiscovery:
+    def test_list_approved_scopes_platform_discovery_to_profile_dir(self, tmp_path):
+        # A profile-scoped store must enumerate platforms from its own
+        # per-profile directory (self._dir), not the module-global PAIRING_DIR.
+        # Regression: _all_platforms iterated PAIRING_DIR while every per-file
+        # path helper routed through self._dir, so a profile store confirmed a
+        # user via is_approved() (reads self._dir) yet returned [] from
+        # list_approved() (scanned the empty global dir).
+        home = tmp_path / "home"
+        global_dir = tmp_path / "global-pairing"
+        global_dir.mkdir(parents=True)
+
+        with patch("gateway.pairing.PAIRING_DIR", global_dir), patch(
+            "gateway.pairing.get_hermes_home", return_value=home
+        ):
+            store = PairingStore(profile="alice")
+            # Store lives under the profile dir, provably distinct from PAIRING_DIR.
+            assert store._dir != global_dir
+            with store._lock:
+                store._approve_user("telegram", "tg-456", "Bob")
+
+            assert store.is_approved("telegram", "tg-456") is True
+            approved = store.list_approved()
+
+        assert [r["user_id"] for r in approved] == ["tg-456"]
+        assert approved[0]["platform"] == "telegram"
+
+
 # ---------------------------------------------------------------------------
 # _secure_write
 # ---------------------------------------------------------------------------

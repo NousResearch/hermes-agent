@@ -4487,6 +4487,16 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                     "enabled": body.enabled,
                 }
             normalized = normalize_moa_config(raw)
+            # Preserve persistence-only fields the Desktop/dashboard payload
+            # never round-trips. normalize_moa_config drops keys it doesn't
+            # know about, and this endpoint does a wholesale overwrite of
+            # cfg["moa"], so a hand-edited save_traces / trace_dir would be
+            # silently discarded on every GUI save (issue #58819).
+            prev_moa = cfg.get("moa")
+            if isinstance(prev_moa, dict):
+                for key in ("save_traces", "trace_dir"):
+                    if key in prev_moa and key not in normalized:
+                        normalized[key] = prev_moa[key]
             cfg["moa"] = normalized
             save_config(cfg)
             return {"ok": True, **normalized}

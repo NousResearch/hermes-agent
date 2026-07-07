@@ -510,6 +510,41 @@ class TestWebServerEndpoints:
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
+    def test_put_moa_models_preserves_save_traces_and_trace_dir(self):
+        """save_traces / trace_dir survive a Desktop MOA save (issue #58819).
+
+        The Desktop payload never carries these persistence-only fields, and
+        set_moa_models does a wholesale overwrite of cfg["moa"], so without the
+        preserve step a hand-edited save_traces/trace_dir is silently dropped.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        moa = dict(cfg.get("moa") or {})
+        moa["save_traces"] = True
+        moa["trace_dir"] = "/tmp/moa-traces"
+        cfg["moa"] = moa
+        save_config(cfg)
+
+        payload = {
+            "reference_models": [
+                {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+            ],
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+            "max_tokens": 4096,
+            "enabled": True,
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        cfg = load_config()
+        assert cfg["moa"]["save_traces"] is True
+        assert cfg["moa"]["trace_dir"] == "/tmp/moa-traces"
+        # And the newly submitted slots still applied.
+        assert cfg["moa"]["reference_models"] == payload["reference_models"]
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

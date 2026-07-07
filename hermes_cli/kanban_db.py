@@ -2614,6 +2614,18 @@ def create_task(
                 # plus a deterministic branch (project slug + task id). Together
                 # these kill the random ``wt/<task-id>`` worker fallback and the
                 # unanchored ``.worktrees/<id>`` under the dispatcher's cwd.
+                #
+                # IMPORTANT: child tasks with an existing parent that already
+                # has a worktree inherit that worktree instead of creating a
+                # fresh one.  This ensures a coding task and its review task
+                # (or other parent-child pairs, e.g. swarm worker + verifier)
+                # operate on the same checkout, so the reviewer can see the
+                # coder's changes.
+                if parents and workspace_kind == "worktree":
+                    _parent_wt = _inherit_parent_worktree(conn, parents)
+                    if _parent_wt is not None:
+                        workspace_path = _parent_wt["workspace_path"]
+                        branch_name = _parent_wt["branch_name"]
                 if project_obj is not None and workspace_kind == "worktree":
                     if project_repo and not workspace_path:
                         workspace_path = os.path.join(
@@ -2700,6 +2712,31 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
     ).fetchall()
     present = {r["id"] for r in rows}
     return [p for p in parents if p not in present]
+
+
+def _inherit_parent_worktree(
+    conn: sqlite3.Connection, parents: tuple[str, ...] | list[str]
+) -> Optional[dict[str, Optional[str]]]:
+    """Look up the first parent task that has a worktree workspace and return
+    its ``workspace_path`` and ``branch_name`` so child tasks can share the
+    same checkout.
+
+    Returns ``None`` when no parent has a worktree (child falls through to
+    the normal project-linked worktree or scratch workspace logic).
+    """
+    placeholders = ",".join("?" * len(parents))
+    rows = conn.execute(
+        f"SELECT workspace_kind, workspace_path, branch_name "
+        f"FROM tasks WHERE id IN ({placeholders})",
+        parents,
+    ).fetchall()
+    for r in rows:
+        if r["workspace_kind"] == "worktree" and r["workspace_path"]:
+            return {
+                "workspace_path": r["workspace_path"],
+                "branch_name": r["branch_name"],
+            }
+    return None
 
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:

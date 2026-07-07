@@ -20,6 +20,8 @@ interface VoiceConversationOptions {
   onFatalError?: () => void
   onSubmit: (text: string) => Promise<void> | void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
+  shouldHoldTranscript?: (text: string) => boolean
+  onTranscriptHeld?: (text: string) => void
   pendingResponse: () => PendingVoiceResponse | null
   consumePendingResponse: () => void
 }
@@ -30,6 +32,8 @@ export function useVoiceConversation({
   onFatalError,
   onSubmit,
   onTranscribeAudio,
+  shouldHoldTranscript,
+  onTranscriptHeld,
   pendingResponse,
   consumePendingResponse
 }: VoiceConversationOptions) {
@@ -166,6 +170,15 @@ export function useVoiceConversation({
             return
           }
 
+          if (shouldHoldTranscript?.(transcript)) {
+            awaitingSpokenResponseRef.current = false
+            resetSpeechBuffer()
+            onTranscriptHeld?.(transcript)
+            setStatus('idle')
+
+            return
+          }
+
           awaitingSpokenResponseRef.current = true
           resetSpeechBuffer()
           await onSubmit(transcript)
@@ -183,7 +196,7 @@ export function useVoiceConversation({
         turnClosingRef.current = false
       }
     },
-    [handle, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [handle, onSubmit, onTranscribeAudio, onTranscriptHeld, shouldHoldTranscript, voiceCopy.transcriptionFailed]
   )
 
   const startListening = useCallback(async () => {

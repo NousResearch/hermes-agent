@@ -98,6 +98,43 @@ npm run lint
 npm run test:desktop:all
 ```
 
+For Voice changes, also run the focused automated checks:
+
+```bash
+# Renderer voice safety / composer integration
+npm run test:ui -- --run \
+  src/lib/voice-risk.test.ts \
+  src/app/chat/composer/hooks/use-composer-voice.test.tsx \
+  src/app/chat/composer/hooks/use-voice-conversation.test.tsx
+
+# Backend STT/TTS routes and CLI/gateway voice behavior
+cd ../..
+env -u PYTHONPATH uv run --extra dev pytest -q \
+  tests/hermes_cli/test_web_server.py \
+  tests/tools/test_voice_mode.py \
+  tests/tools/test_voice_cli_integration.py \
+  tests/hermes_cli/test_voice_wrapper.py \
+  tests/hermes_cli/test_tts_picker.py \
+  tests/tools/test_tts_speed.py \
+  tests/tools/test_tts_opus_routing.py \
+  tests/tools/test_tts_plugin_dispatch.py \
+  tests/gateway/test_tts_media_routing.py \
+  tests/gateway/test_voice_command.py \
+  tests/gateway/test_voice_mode_platform_isolation.py \
+  tests/gateway/test_telegram_audio_vs_voice.py \
+  tests/gateway/test_send_voice_reply_notify.py \
+  tests/gateway/test_auto_voice_reply_format.py \
+  -k 'audio or voice or tts or elevenlabs or speak or transcribe'
+```
+
+Manual Voice smoke must be done on a real desktop with a microphone and speakers; containers/headless CI cannot validate OS microphone prompts or actual autoplay behavior:
+
+1. Start the app, open a chat, and enable hands-free voice.
+2. Say a harmless request such as “summarize this session”; it should transcribe and submit automatically.
+3. Say a risky command such as “delete all files in downloads”; it should **not** submit, should place the transcript in the composer draft, should stop hands-free mode, and should show the risky-command warning.
+4. Use push-to-dictate mode; it should insert text without auto-submitting.
+5. After a normal assistant reply, verify TTS playback starts and can be stopped.
+
 ### Troubleshooting
 
 Boot logs land in `HERMES_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure.

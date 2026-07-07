@@ -3,8 +3,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
+import { isRiskyVoiceTranscript } from '@/lib/voice-risk'
 import { resetBrowseState } from '@/store/composer-input-history'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $messages } from '@/store/session'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 
@@ -85,6 +86,23 @@ export function useComposerVoice({
     }
   }
 
+  const handleRiskyVoiceTranscript = useCallback(
+    (text: string) => {
+      // Risky spoken commands (delete files, push, deploy, pay, message someone,
+      // touch secrets) never auto-submit: park the transcript in the draft, stop
+      // the hands-free loop, and warn so the user reviews and sends manually.
+      setVoiceConversationActive(false)
+      insertText(text)
+      focusInput()
+      notify({
+        kind: 'warning',
+        title: t.notifications.voice.confirmationRequired,
+        message: t.notifications.voice.riskyTranscriptHeld
+      })
+    },
+    [focusInput, insertText, t.notifications.voice.confirmationRequired, t.notifications.voice.riskyTranscriptHeld]
+  )
+
   const submitVoiceTurn = async (text: string) => {
     if (busy) {
       return
@@ -102,8 +120,10 @@ export function useComposerVoice({
     enabled: voiceConversationActive,
     onFatalError: () => setVoiceConversationActive(false),
     onSubmit: submitVoiceTurn,
+    onTranscriptHeld: handleRiskyVoiceTranscript,
     onTranscribeAudio,
-    pendingResponse
+    pendingResponse,
+    shouldHoldTranscript: isRiskyVoiceTranscript
   })
 
   // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting

@@ -1431,8 +1431,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             thread_id=getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
         )
     
-    # Discord
-    discord_token = getenv("DISCORD_BOT_TOKEN")
+    # Discord — prefer profile-scoped secret, fall back to process env
+    from agent.secret_scope import get_secret as _get_discord_secret
+    discord_token = (_get_discord_secret("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_BOT_TOKEN") or "").strip()
     if discord_token:
         discord_config = _enable_from_env(Platform.DISCORD)
         discord_config.token = discord_token

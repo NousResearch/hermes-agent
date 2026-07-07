@@ -5271,8 +5271,11 @@ class DiscordAdapter(BasePlatformAdapter):
         cleaned = re.sub(r"\s+", " ", str(name or "")).strip()
         if not cleaned:
             return False
-        if len(cleaned) > 80:
-            cleaned = cleaned[:77].rstrip() + "..."
+        # Discord thread names are budgeted in UTF-16 code units (emoji count
+        # double) — truncate with the UTF-16 helpers, not code-point slices.
+        from gateway.platforms.base import utf16_len, _prefix_within_utf16_limit
+        if utf16_len(cleaned) > 80:
+            cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
 
         try:
             thread = self._client.get_channel(thread_id_int)

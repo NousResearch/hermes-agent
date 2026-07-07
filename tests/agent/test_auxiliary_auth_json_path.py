@@ -23,15 +23,17 @@ class TestAuthJsonPath:
         assert str(profile_a) in str(path_a)
         assert path_a.name == "auth.json"
 
-        # Switch profile
-        monkeypatch.setattr(
-            "agent.auxiliary_client.get_hermes_home",
-            lambda: profile_b,
-        )
+        # Switch profile — reload and then re-apply monkeypatch
+        # (reload re-executes the import from hermes_cli.config, overwriting
+        # the module-level name set by monkeypatch)
         import importlib
         import agent.auxiliary_client as aux_mod
 
         importlib.reload(aux_mod)
+        monkeypatch.setattr(
+            "agent.auxiliary_client.get_hermes_home",
+            lambda: profile_b,
+        )
         path_b = aux_mod._auth_json_path()
         assert str(profile_b) in str(path_b)
         assert path_a != path_b

@@ -330,6 +330,18 @@ class CLIAgentSetupMixin:
                 pass
         
         try:
+            # Ensure prefill messages are loaded (may not be set by Desktop app
+            # or other consumers that use CLIAgentSetupMixin directly).
+            if getattr(self, "prefill_messages", None) is None:
+                from cli import CLI_CONFIG
+                from hermes_cli.prefill import (
+                    load_prefill_messages,
+                    resolve_prefill_messages_file,
+                )
+
+                self.prefill_messages = load_prefill_messages(
+                    resolve_prefill_messages_file(CLI_CONFIG)
+                )
             runtime = runtime_override or {
                 "api_key": self.api_key,
                 "base_url": self.base_url,

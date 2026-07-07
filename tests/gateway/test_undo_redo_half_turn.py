@@ -155,3 +155,80 @@ def test_null_content_tail_confirmation_does_not_stringify_none(store):
 
     assert "Redid" in msg
     assert "None" not in msg
+
+
+def test_undo_output_shows_new_tail_preview_at_user_message(store):
+    """/undo lands the thread at the prior user message; the reply text names it."""
+    src = _source("tail-user")
+    entry = store.get_or_create_session(src)
+    db = store._db
+    db.append_message(entry.session_id, "user", "what's the plan for the homelab DNS?")
+    db.append_message(entry.session_id, "assistant", "Here is a long answer. " * 200)
+    runner = _runner(store)
+
+    msg = asyncio.run(runner._handle_undo_command(_event("/undo", src)))
+
+    # Primary line still reports the count...
+    assert "Undid 1 half-turn" in msg
+    # ...and the new second line confirms WHERE we landed: the user's message.
+    assert "Now at" in msg
+    assert "your message" in msg
+    assert "what's the plan for the homelab DNS?" in msg
+
+
+def test_redo_output_shows_new_tail_preview_at_assistant_reply(store):
+    src = _source("tail-asst")
+    entry = store.get_or_create_session(src)
+    db = store._db
+    db.append_message(entry.session_id, "user", "q")
+    db.append_message(entry.session_id, "assistant", "the assistant reply we restore")
+    runner = _runner(store)
+
+    asyncio.run(runner._handle_undo_command(_event("/undo", src)))
+    msg = asyncio.run(runner._handle_redo_command(_event("/redo", src)))
+
+    assert "Redid" in msg
+    assert "Now at" in msg
+    assert "my reply" in msg
+    assert "the assistant reply we restore" in msg
+
+
+def test_undo_to_empty_thread_reports_start_of_thread(store):
+    src = _source("tail-empty")
+    entry = store.get_or_create_session(src)
+    db = store._db
+    db.append_message(entry.session_id, "user", "only message")
+    db.append_message(entry.session_id, "assistant", "only reply")
+    runner = _runner(store)
+
+    # Undo both half-turns -> nothing active remains.
+    msg = asyncio.run(runner._handle_undo_command(_event("/undo 2", src)))
+
+    assert "Undid 2 half-turn" in msg
+    assert "Now at" in msg
+    assert "start of the thread" in msg
+
+
+def test_tail_preview_notext_fallback_for_tool_only_tail(store):
+    """A tail with no renderable text names the party instead of stringifying None."""
+    src = _source("tail-notext")
+    entry = store.get_or_create_session(src)
+    db = store._db
+    # user -> assistant(text) -> user -> assistant(tool-call only) -> tool
+    db.append_message(entry.session_id, "user", "q1")
+    db.append_message(entry.session_id, "assistant", "a1 text")
+    db.append_message(entry.session_id, "user", "q2")
+    db.append_message(
+        entry.session_id,
+        "assistant",
+        None,
+        tool_calls=[{"id": "c1", "type": "function", "function": {"name": "x"}}],
+    )
+    db.append_message(entry.session_id, "tool", "", tool_call_id="c1")
+    runner = _runner(store)
+
+    # Undo the tool half-turn: tail becomes the "q2" user message (has text).
+    msg = asyncio.run(runner._handle_undo_command(_event("/undo", src)))
+    assert "Now at" in msg
+    assert "None" not in msg
+    assert "q2" in msg

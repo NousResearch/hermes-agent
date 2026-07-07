@@ -1954,6 +1954,56 @@ def test_runtime_refresh_uses_newer_shared_token_before_local_stale_token(
     assert profile_state["access_token"] == shared_token
 
 
+def test_runtime_credentials_merges_shared_token_before_empty_local_access_token(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """A profile with access_token=None must recover from the shared store.
+
+    ``resolve_nous_access_token()`` already merges shared OAuth state before
+    giving up. The runtime path must do the same so sibling profiles that
+    share a valid Nous login do not dead-end on an empty local auth.json.
+    """
+    from hermes_cli import auth as auth_mod
+
+    profile_b = tmp_path / "profile_b"
+    _setup_nous_auth(
+        profile_b,
+        access_token="local-placeholder",
+        refresh_token="local-stale-refresh",
+        expires_at="2000-01-01T00:00:00+00:00",
+        expires_in=0,
+    )
+    auth_path = profile_b / "auth.json"
+    auth_payload = json.loads(auth_path.read_text())
+    auth_payload["providers"]["nous"]["access_token"] = None
+    auth_path.write_text(json.dumps(auth_payload, indent=2))
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+
+    shared_state = _full_state_fixture()
+    shared_token = _invoke_jwt(seconds=3600)
+    shared_state["access_token"] = shared_token
+    shared_state["refresh_token"] = "shared-fresh-refresh"
+    shared_state["expires_at"] = _future_iso(3600)
+    shared_state["scope"] = auth_mod.DEFAULT_NOUS_SCOPE
+    shared_state["inference_base_url"] = auth_mod.DEFAULT_NOUS_INFERENCE_URL
+    auth_mod._write_shared_nous_state(shared_state)
+
+    def _refresh_should_not_happen(**_kwargs):
+        raise AssertionError("empty local access token should recover from shared store")
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _refresh_should_not_happen)
+
+    creds = auth_mod.resolve_nous_runtime_credentials()
+
+    assert creds["api_key"] == shared_token
+    assert creds["base_url"] == auth_mod.DEFAULT_NOUS_INFERENCE_URL
+
+    profile_state = auth_mod.get_provider_auth_state("nous")
+    assert profile_state is not None
+    assert profile_state["access_token"] == shared_token
+    assert profile_state["refresh_token"] == "shared-fresh-refresh"
+
+
 def test_managed_gateway_access_token_uses_newer_shared_token(
     tmp_path, monkeypatch, shared_store_env,
 ):

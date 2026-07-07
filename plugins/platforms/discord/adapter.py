@@ -7447,13 +7447,14 @@ def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
 
 
 def _derive_forum_thread_name(message: str) -> str:
-    """Derive a thread name from the first line of the message, capped at 100 chars."""
+    """Derive a thread name from the first line of the message, capped at 100
+    UTF-16 code units (Discord's thread-name limit)."""
     first_line = message.strip().split("\n", 1)[0].strip()
     # Strip common markdown heading prefixes
     first_line = first_line.lstrip("#").strip()
     if not first_line:
         first_line = "New Post"
-    return first_line[:100]
+    return _prefix_within_utf16_limit(first_line, 100)
 
 
 def _standalone_sanitize_error(text) -> str:

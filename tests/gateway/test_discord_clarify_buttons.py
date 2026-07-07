@@ -28,6 +28,7 @@ if _repo not in sys.path:
 from plugins.platforms.discord.adapter import (  # noqa: E402
     ClarifyChoiceView,
     DiscordAdapter,
+    _derive_forum_thread_name,
 )
 from gateway.config import PlatformConfig  # noqa: E402
 from gateway.platforms.base import utf16_len  # noqa: E402
@@ -76,6 +77,19 @@ def _make_interaction(*, user_id="42", display_name="Tester", roles=None,
     else:
         message = None
     return SimpleNamespace(user=user, response=response, message=message)
+
+
+# ===========================================================================
+# Forum thread-name derivation
+# ===========================================================================
+
+def test_forum_thread_name_capped_by_utf16_units():
+    # 100 emoji = 200 UTF-16 units; must be clamped to <= 100.
+    name = _derive_forum_thread_name("\U0001F600" * 100)
+    assert utf16_len(name) <= 100
+    # BMP text: 200 ASCII chars clamp to exactly 100 units.
+    ascii_name = _derive_forum_thread_name("x" * 200)
+    assert utf16_len(ascii_name) == 100
 
 
 # ===========================================================================

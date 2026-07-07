@@ -163,17 +163,15 @@ def _ensure_qrcode_installed() -> bool:
 
     import subprocess
 
-    # Try uv first (Hermes convention), then pip
-    for cmd in (
-        [sys.executable, "-m", "uv", "pip", "install", "qrcode"],
-        [sys.executable, "-m", "pip", "install", "-q", "qrcode"],
-    ):
-        try:
-            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    from hermes_cli.tools_config import _pip_install
+
+    try:
+        result = _pip_install(["-q", "qrcode"], timeout=120)
+        if result.returncode == 0:
             import qrcode  # noqa: F401,F811
             return True
-        except (subprocess.CalledProcessError, ImportError, FileNotFoundError):
-            continue
+    except (subprocess.SubprocessError, ImportError, OSError):
+        pass
     return False
 
 

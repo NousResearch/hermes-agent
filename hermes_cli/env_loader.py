@@ -363,8 +363,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         if src.applied:
             print(
                 f"  {src.label}: applied {len(src.applied)} "
-                f"secret{'s' if len(src.applied) != 1 else ''} "
-                f"({', '.join(sorted(src.applied))})",
+                f"secret{'s' if len(src.applied) != 1 else ''}",
                 file=sys.stderr,
             )
         if src.result.error:

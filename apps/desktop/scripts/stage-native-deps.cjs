@@ -249,6 +249,49 @@ function resolveJsClosure(roots) {
 // package is copied whole (minus node_modules/ — the closure is flattened so
 // every dep already has its own top-level entry) into a real node_modules
 // layout, which keeps the deps' own internal require()s working unchanged.
+// Workaround for Node.js 24.x cpSync bug on Windows: recursive cpSync calls
+// cpSyncOverrideFile which tries to unlink the destination first; on paths
+// with non-ASCII characters (e.g. "í" in user folder) the unlink returns
+// "The operation completed successfully" with errno 0 and an empty code,
+// aborting the build. copyFileSync opens dest with O_TRUNC (no unlink), so
+// it sidesteps the bug. Recursive walk + per-file copyFileSync is functionally
+// equivalent to cpSync(recursive:true) for our use case.
+function copyDirSyncSafe(src, dest) {
+  fs.mkdirSync(dest, { recursive: true })
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (entry.name === 'node_modules') continue
+    const srcPath = path.join(src, entry.name)
+    const destPath = path.join(dest, entry.name)
+    if (entry.isDirectory()) {
+      copyDirSyncSafe(srcPath, destPath)
+    } else if (entry.isFile()) {
+      try {
+        fs.copyFileSync(srcPath, destPath)
+      } catch (err) {
+        // Retry once after a short delay: Windows Defender / AV scans
+        // can hold a brief handle on newly-written files and cause the
+        // first copy attempt to fail.
+        const delayMs = 250
+        const start = Date.now()
+        let lastErr = err
+        while (Date.now() - start < 5000) {
+          try {
+            fs.copyFileSync(srcPath, destPath)
+            lastErr = null
+            break
+          } catch (e) {
+            lastErr = e
+            const busy = require('node:child_process')
+              .execSync(`powershell -NoProfile -Command "Start-Sleep -Milliseconds ${delayMs}"`,
+                        { stdio: 'ignore' })
+          }
+        }
+        if (lastErr) throw lastErr
+      }
+    }
+  }
+}
+
 function stageJsClosure(roots) {
   const closure = resolveJsClosure(roots)
   rmrf(JS_DEP_STAGE_ROOT)
@@ -259,10 +302,7 @@ function stageJsClosure(roots) {
     ensureDir(path.dirname(dest))
     // Copy the package directory but skip any nested node_modules/ — the
     // closure is flattened, so nested copies would just bloat the bundle.
-    fs.cpSync(fromDir, dest, {
-      recursive: true,
-      filter: src => path.basename(src) !== 'node_modules'
-    })
+    copyDirSyncSafe(fromDir, dest)
     staged += 1
   }
   console.log(

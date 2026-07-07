@@ -458,6 +458,9 @@ None of them are required; include only the layers you need.
     "hidden": false
   },
   "slots": ["sidebar", "header-left"],
+  "nav_items": [
+    { "path": "/my-plugin/reports", "label": "Reports", "icon": "BarChart3" }
+  ],
   "entry": "dist/index.js",
   "css": "dist/style.css",
   "api": "plugin_api.py"
@@ -476,6 +479,7 @@ None of them are required; include only the layers you need.
 | `tab.override` | No | Set to a built-in route path (`"/"`, `"/sessions"`, `"/config"`, ...) to **replace** that page instead of adding a new tab. See [Replacing built-in pages](#replacing-built-in-pages-taboverride). |
 | `tab.hidden` | No | When true, register the component and any slots without adding a tab to the nav. Used by slot-only plugins. See [Slot-only plugins](#slot-only-plugins-tabhidden). |
 | `slots` | No | Named shell slots this plugin populates. **Documentation aid only** — actual registration happens from the JS bundle via `registerSlot()`. Listing slots here makes discovery surfaces more informative. |
+| `nav_items` | No | Extra navigation entries this plugin contributes beyond its own tab — a list of `{ "path", "label", "icon"? }` objects (`path` must start with `/`; `icon` is a Lucide icon name). Served verbatim on `/api/dashboard/plugins` for shell/theme plugins and custom navs to render (the built-in nav bar ignores it). Malformed entries are dropped at discovery time rather than failing the endpoint. |
 | `entry` | Yes | Path to the JS bundle relative to `dashboard/`. Defaults to `dist/index.js`. |
 | `css` | No | Path to a CSS file to inject as a `<link>` tag. |
 | `api` | No | Path to a Python file with FastAPI routes. Mounted at `/api/plugins/<name>/`. |

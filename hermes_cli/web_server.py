@@ -14557,6 +14557,39 @@ def _discover_dashboard_plugins() -> list:
                 slots: List[str] = []
                 if isinstance(slots_src, list):
                     slots = [s for s in slots_src if isinstance(s, str) and s]
+                # Nav items: optional extra navigation entries this plugin
+                # contributes beyond its own tab — a list of
+                # ``{"path": "/...", "label": "...", "icon": "..."}`` dicts.
+                # Consumed by shell/theme plugins (and available to any
+                # frontend) via /api/dashboard/plugins; the stock nav
+                # ignores it. Sanitized entry-by-entry so a malformed
+                # manifest can't 500 the plugins endpoint: ``path`` must be
+                # a string starting with "/", ``label`` a non-empty string;
+                # anything else is dropped. ``icon`` (optional) is a Lucide
+                # icon name like the top-level ``icon`` field.
+                nav_items_src = data.get("nav_items")
+                nav_items: List[Dict[str, str]] = []
+                if isinstance(nav_items_src, list):
+                    for raw_nav in nav_items_src:
+                        if not isinstance(raw_nav, dict):
+                            continue
+                        nav_path = raw_nav.get("path")
+                        nav_label = raw_nav.get("label")
+                        if (
+                            not isinstance(nav_path, str)
+                            or not nav_path.startswith("/")
+                            or not isinstance(nav_label, str)
+                            or not nav_label.strip()
+                        ):
+                            continue
+                        nav_item = {
+                            "path": nav_path,
+                            "label": nav_label.strip(),
+                        }
+                        nav_icon = raw_nav.get("icon")
+                        if isinstance(nav_icon, str) and nav_icon.strip():
+                            nav_item["icon"] = nav_icon.strip()
+                        nav_items.append(nav_item)
                 # Validate ``api`` at discovery time so the value cached
                 # on the plugin entry is already safe to feed into the
                 # importer.  An attacker-controlled manifest can name
@@ -14581,6 +14614,7 @@ def _discover_dashboard_plugins() -> list:
                     "icon": data.get("icon", "Puzzle"),
                     "version": data.get("version", "0.0.0"),
                     "tab": tab_info,
+                    "nav_items": nav_items,
                     "slots": slots,
                     "entry": data.get("entry", "dist/index.js"),
                     "css": data.get("css"),

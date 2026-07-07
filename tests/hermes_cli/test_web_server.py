@@ -5860,6 +5860,85 @@ class TestDashboardPluginManifestExtensions:
             "chat:top",
         ]
 
+    def test_nav_items_carried_through(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "nav-plugin", {
+            "name": "nav-plugin",
+            "label": "Nav Plugin",
+            "tab": {"path": "/nav-plugin"},
+            "nav_items": [
+                {"path": "/nav-plugin/reports", "label": "Reports", "icon": "BarChart3"},
+                {"path": "/nav-plugin/inbox", "label": "  Inbox  "},
+            ],
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "nav-plugin")
+        assert entry["nav_items"] == [
+            {"path": "/nav-plugin/reports", "label": "Reports", "icon": "BarChart3"},
+            {"path": "/nav-plugin/inbox", "label": "Inbox"},  # label stripped
+        ]
+
+    def test_nav_items_default_empty(self, tmp_path, monkeypatch):
+        """Manifests without nav_items get an empty list, not a KeyError."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "no-nav", {
+            "name": "no-nav",
+            "label": "No Nav",
+            "tab": {"path": "/no-nav"},
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "no-nav")
+        assert entry["nav_items"] == []
+
+    def test_nav_items_drops_malformed_entries(self, tmp_path, monkeypatch):
+        """Malformed entries are dropped one-by-one; a bad manifest must
+        degrade to fewer nav items, never 500 the plugins endpoint."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "messy-nav", {
+            "name": "messy-nav",
+            "label": "Messy",
+            "tab": {"path": "/messy-nav"},
+            "nav_items": [
+                "not-a-dict",
+                42,
+                None,
+                {"path": "no-leading-slash", "label": "Bad Path"},
+                {"path": "/ok", "label": ""},            # empty label
+                {"path": "/ok", "label": "   "},         # whitespace label
+                {"path": "/ok"},                          # missing label
+                {"label": "Missing Path"},
+                {"path": "/ok", "label": 7},              # non-string label
+                {"path": "/good", "label": "Good", "icon": 3},  # bad icon dropped
+            ],
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "messy-nav")
+        assert entry["nav_items"] == [{"path": "/good", "label": "Good"}]
+
+    def test_nav_items_non_list_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "dict-nav", {
+            "name": "dict-nav",
+            "label": "Dict Nav",
+            "tab": {"path": "/dict-nav"},
+            "nav_items": {"path": "/x", "label": "X"},  # dict, not list
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "dict-nav")
+        assert entry["nav_items"] == []
+
 
 # ---------------------------------------------------------------------------
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.
